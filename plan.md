@@ -732,7 +732,101 @@ This is **recursive reasoning** - the system can spawn sub-problems as needed, b
 - Handles retries on execution failures
 - Generates final summary with reasoning traces
 
-### 10. Live Feedback / Monitoring (`feedback.py`)
+### 10. Session History & Artifact Store (`history.py`)
+
+**Purpose**: Persist complete session state for review, debugging, and resumption.
+
+**Storage structure:**
+```
+.constat/
+├── sessions/
+│   ├── 2024-01-15_143022_abc123/
+│   │   ├── session.json       # Metadata, config, timestamps
+│   │   ├── queries.jsonl      # All queries in order
+│   │   ├── artifacts/
+│   │   │   ├── 001_code.py    # Generated code
+│   │   │   ├── 001_output.txt # Execution output
+│   │   │   ├── 002_code.py
+│   │   │   └── ...
+│   │   └── state.json         # Final state (for resumption)
+│   └── ...
+└── config.yaml
+```
+
+**Session metadata (`session.json`):**
+```json
+{
+  "session_id": "2024-01-15_143022_abc123",
+  "created_at": "2024-01-15T14:30:22Z",
+  "config_hash": "sha256:...",
+  "databases": ["chinook", "northwind"],
+  "status": "completed",  // running, completed, failed, interrupted
+  "total_queries": 5,
+  "total_duration_ms": 45230
+}
+```
+
+**Query record (`queries.jsonl`):**
+```json
+{"query_id": 1, "timestamp": "...", "question": "Top 5 genres by revenue?", "success": true, "attempts": 1, "duration_ms": 3200}
+{"query_id": 2, "timestamp": "...", "question": "Compare to last year", "success": true, "attempts": 2, "duration_ms": 5100}
+```
+
+**Artifact tracking:**
+Each query produces artifacts:
+- Generated code (before and after retries)
+- Execution output (stdout/stderr)
+- Error tracebacks (if any)
+- Tool calls made (get_table_schema, find_relevant_tables)
+
+**Key operations:**
+
+```python
+class SessionHistory:
+    def __init__(self, storage_dir: Path = ".constat/sessions"):
+        ...
+
+    def create_session(self, config: Config) -> str:
+        """Create new session, return session_id."""
+
+    def record_query(self, session_id: str, question: str, result: QueryResult):
+        """Record a completed query with all artifacts."""
+
+    def list_sessions(self, limit: int = 20) -> list[SessionSummary]:
+        """List recent sessions with summary info."""
+
+    def get_session(self, session_id: str) -> SessionDetail:
+        """Get full session detail including all queries."""
+
+    def get_artifacts(self, session_id: str, query_id: int) -> list[Artifact]:
+        """Get artifacts for a specific query."""
+
+    def resume_session(self, session_id: str) -> Session:
+        """Load session state for resumption."""
+```
+
+**CLI integration:**
+```bash
+# List recent sessions
+constat history
+
+# View session detail
+constat history abc123
+
+# View specific query artifacts
+constat history abc123 --query 2
+
+# Resume interrupted session
+constat resume abc123
+```
+
+**Use cases:**
+- **Debugging**: Review what code was generated, what errors occurred
+- **Audit**: Full trace of questions asked and answers provided
+- **Resumption**: Continue an interrupted multi-step analysis
+- **Comparison**: Compare runs with different prompts or configs
+
+### 11. Live Feedback / Monitoring (`feedback.py`)
 
 **Critical for user trust** - a 10-minute silent run feels broken. Every action must be visible.
 

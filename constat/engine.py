@@ -59,35 +59,44 @@ SCHEMA_TOOLS = [
 ]
 
 
-SYSTEM_PROMPT_TEMPLATE = """You are a data analyst assistant. Answer questions by writing Python code that queries databases and prints the answer.
+# Engine system prompt (constat-owned) - controls code generation behavior
+ENGINE_SYSTEM_PROMPT = """You are a data analyst assistant. Answer questions by writing Python code that queries databases and prints the answer.
+
+## Tools
+You have access to these tools to explore the database schema:
+- get_table_schema(table): Get detailed column info for a specific table (e.g., "chinook.Track")
+- find_relevant_tables(query): Semantic search for tables relevant to your query
+
+IMPORTANT: Use these tools FIRST to understand the schema before writing code.
+
+## Code Environment
+Your code will have access to:
+- Database connections: `db_<name>` for each database (e.g., `db_chinook`, `db_northwind`)
+- `db`: alias for the first database (for simple single-db queries)
+- `pd`: pandas (imported as pd)
+- `np`: numpy (imported as np)
+
+## Code Generation Rules
+1. ALWAYS use the tools first to discover relevant tables and their exact column names
+2. Use pandas `pd.read_sql(query, db_<name>)` to query databases
+3. For cross-database queries, load from each DB separately and join in pandas
+4. Print a clear, formatted answer at the end
+5. Keep code simple and focused - no unnecessary complexity
+6. Handle potential NULL values appropriately
+
+## Output Format
+Return ONLY the Python code wrapped in ```python ... ``` markers.
+Do not include explanations outside the code block."""
+
+
+# Template combining engine prompt with schema and domain context
+SYSTEM_PROMPT_TEMPLATE = """{engine_prompt}
 
 ## Available Databases
 {schema_overview}
 
 ## Domain Context
-{domain_context}
-
-## Tools
-You have access to these tools to explore the schema:
-- get_table_schema(table): Get detailed column info for a table
-- find_relevant_tables(query): Search for tables relevant to your query
-
-## Code Environment
-Your code will have access to:
-- `db`: SQLAlchemy engine connected to the database
-- `pd`: pandas (imported as pd)
-- `np`: numpy (imported as np)
-
-## Instructions
-1. First, use tools to understand which tables and columns you need
-2. Write Python code that queries the database and prints the answer
-3. Use pandas read_sql() with the db connection
-4. Print a clear, formatted answer at the end
-5. Keep code simple and focused on answering the question
-
-## Output Format
-Return ONLY the Python code wrapped in ```python ... ``` markers.
-Do not include explanations outside the code block."""
+{domain_context}"""
 
 
 RETRY_PROMPT_TEMPLATE = """Your previous code failed to execute.
@@ -132,8 +141,15 @@ class QueryEngine:
         )
 
     def _build_system_prompt(self) -> str:
-        """Build the system prompt with schema context."""
+        """Build the full system prompt.
+
+        Combines:
+        - Engine prompt (constat-owned): code generation rules, tool usage
+        - Schema overview (auto-generated): databases, tables, relationships
+        - Domain context (user-owned): business context, terminology
+        """
         return SYSTEM_PROMPT_TEMPLATE.format(
+            engine_prompt=ENGINE_SYSTEM_PROMPT,
             schema_overview=self.schema_manager.get_overview(),
             domain_context=self.config.system_prompt or "No additional domain context provided.",
         )
@@ -147,13 +163,18 @@ class QueryEngine:
 
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution."""
-        # For now, assume single database - get first connection
-        db_name = self.config.databases[0].name if self.config.databases else None
-        db = self.schema_manager.get_connection(db_name) if db_name else None
+        globals_dict = {}
 
-        return {
-            "db": db,
-        }
+        # Provide all database connections
+        # - Individual connections as db_<name> (e.g., db_chinook, db_northwind)
+        # - Also 'db' as alias to first database for backwards compatibility
+        for i, db_config in enumerate(self.config.databases):
+            conn = self.schema_manager.get_connection(db_config.name)
+            globals_dict[f"db_{db_config.name}"] = conn
+            if i == 0:
+                globals_dict["db"] = conn  # backwards compat
+
+        return globals_dict
 
     def query(self, question: str) -> QueryResult:
         """
