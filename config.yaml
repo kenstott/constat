@@ -1,0 +1,41 @@
+# Test configuration using Chinook sample database
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: ${ANTHROPIC_API_KEY}
+
+databases:
+  - name: chinook
+    uri: sqlite:///./data/chinook.db
+
+system_prompt: |
+  You are analyzing data for a digital music store.
+
+  Key concepts:
+  - Artists create Albums, which contain Tracks
+  - Tracks have a Genre (Rock, Jazz, Metal, etc.) and MediaType (MPEG, AAC)
+  - Customers purchase tracks via Invoices and InvoiceLines
+  - Employees are sales representatives who support customers
+  - Playlists are curated collections of tracks
+
+  Common analyses:
+  - Revenue by artist, genre, or country
+  - Top-selling tracks or albums
+  - Customer purchase patterns
+  - Sales rep performance
+
+  Key relationships:
+  - Track.AlbumId → Album.AlbumId → Artist.ArtistId
+  - InvoiceLine.TrackId → Track (with UnitPrice, Quantity)
+  - Invoice.CustomerId → Customer.CustomerId
+  - Customer.SupportRepId → Employee.EmployeeId
+
+execution:
+  timeout_seconds: 60
+  max_retries: 10
+  allowed_imports:
+    - pandas
+    - numpy
+    - scipy
+    - sklearn

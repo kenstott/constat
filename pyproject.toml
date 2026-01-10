@@ -1,0 +1,29 @@
+[project]
+name = "constat"
+version = "0.1.0"
+description = "Multi-Step AI Reasoning Engine"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
+    "sentence-transformers>=2.2",
+    "numpy>=1.24",
+    "anthropic>=0.30",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
