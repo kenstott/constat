@@ -279,12 +279,12 @@ class TestSessionResumption:
         all_artifacts = session2.datastore.get_artifacts()
         print(f"\n--- Saved Artifacts ---")
         for artifact in all_artifacts:
-            print(f"  Step {artifact['step_number']}, Attempt {artifact['attempt']}, Type: {artifact['type']}")
-            if artifact['type'] == 'code':
-                print(f"    Code preview: {artifact['content'][:100]}...")
+            print(f"  Step {artifact.step_number}, Attempt {artifact.attempt}, Type: {artifact.type}")
+            if artifact.type == 'code':
+                print(f"    Code preview: {artifact.content[:100]}...")
 
         # Should have code artifacts for multiple steps
-        code_artifacts = [a for a in all_artifacts if a['type'] == 'code']
+        code_artifacts = [a for a in all_artifacts if a.type == 'code']
         assert len(code_artifacts) >= 2, "Should have code artifacts from both initial and follow-up"
 
     def test_resume_nonexistent_session(self, fresh_history_dir):
