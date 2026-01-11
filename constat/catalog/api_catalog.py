@@ -678,6 +678,302 @@ def _generate_tags(name: str, return_type: str, arguments: list[OperationArgumen
     return tags
 
 
+def introspect_openapi_spec(
+    spec_url: Optional[str] = None,
+    spec_path: Optional[str] = None,
+    spec_inline: Optional[dict] = None,
+    base_url: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+    timeout: float = 30.0,
+) -> APICatalog:
+    """
+    Parse an OpenAPI/Swagger spec and create an APICatalog.
+
+    Supports OpenAPI 3.x and Swagger 2.0 specifications in JSON or YAML format.
+
+    Args:
+        spec_url: URL to download the OpenAPI spec from
+        spec_path: Local file path to the OpenAPI spec
+        spec_inline: Inline OpenAPI spec as a dict (embedded in config)
+        base_url: Override the base URL from the spec (optional)
+        headers: Headers to use when downloading spec (e.g., for auth)
+        timeout: Request timeout in seconds
+
+    Returns:
+        APICatalog populated with operations from the spec
+
+    Example:
+        # From URL
+        catalog = introspect_openapi_spec(
+            spec_url="https://petstore.swagger.io/v2/swagger.json"
+        )
+
+        # From local file
+        catalog = introspect_openapi_spec(
+            spec_path="./specs/my-api.yaml"
+        )
+
+        # From inline spec
+        catalog = introspect_openapi_spec(
+            spec_inline={
+                "openapi": "3.0.0",
+                "info": {"title": "My API", "version": "1.0"},
+                "paths": {
+                    "/users/{id}": {
+                        "get": {
+                            "operationId": "getUser",
+                            "parameters": [
+                                {"name": "id", "in": "path", "required": True}
+                            ]
+                        }
+                    }
+                }
+            }
+        )
+
+        # Search for operations
+        results = catalog.find_relevant_operations("create a new pet")
+    """
+    import yaml
+    from pathlib import Path
+
+    if not spec_url and not spec_path and not spec_inline:
+        raise ValueError("One of spec_url, spec_path, or spec_inline must be provided")
+
+    # Load the spec
+    if spec_inline:
+        # Use inline spec directly
+        spec = spec_inline
+    elif spec_url:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(spec_url, headers=headers or {})
+            response.raise_for_status()
+            content = response.text
+
+            # Parse as JSON or YAML
+            try:
+                spec = json.loads(content)
+            except json.JSONDecodeError:
+                spec = yaml.safe_load(content)
+    else:
+        spec_file = Path(spec_path)
+        if not spec_file.exists():
+            raise FileNotFoundError(f"OpenAPI spec not found: {spec_path}")
+
+        with open(spec_file) as f:
+            content = f.read()
+
+        if spec_file.suffix in (".yaml", ".yml"):
+            spec = yaml.safe_load(content)
+        else:
+            spec = json.loads(content)
+
+    # Determine OpenAPI version
+    openapi_version = spec.get("openapi", spec.get("swagger", "2.0"))
+    is_openapi3 = openapi_version.startswith("3")
+
+    # Get base URL
+    if base_url:
+        api_base_url = base_url
+    elif is_openapi3:
+        servers = spec.get("servers", [])
+        api_base_url = servers[0]["url"] if servers else ""
+    else:
+        # Swagger 2.0
+        host = spec.get("host", "")
+        base_path = spec.get("basePath", "")
+        schemes = spec.get("schemes", ["https"])
+        api_base_url = f"{schemes[0]}://{host}{base_path}"
+
+    catalog = APICatalog()
+    operations = []
+
+    # Parse paths
+    paths = spec.get("paths", {})
+    for path, path_item in paths.items():
+        for method in ["get", "post", "put", "patch", "delete", "head", "options"]:
+            if method not in path_item:
+                continue
+
+            operation_data = path_item[method]
+            operation_id = operation_data.get("operationId", f"{method}_{path.replace('/', '_')}")
+
+            # Determine operation type
+            if method == "get":
+                op_type = OperationType.QUERY
+            else:
+                op_type = OperationType.MUTATION
+
+            # Parse parameters
+            arguments = []
+            all_params = path_item.get("parameters", []) + operation_data.get("parameters", [])
+
+            for param in all_params:
+                # Handle $ref
+                if "$ref" in param:
+                    param = _resolve_openapi_ref(spec, param["$ref"])
+
+                param_name = param.get("name", "unknown")
+                param_in = param.get("in", "query")  # path, query, header, cookie
+                required = param.get("required", param_in == "path")
+
+                # Get type
+                if is_openapi3:
+                    schema = param.get("schema", {})
+                    param_type = _openapi_type_to_string(schema)
+                else:
+                    param_type = param.get("type", "string")
+
+                arguments.append(OperationArgument(
+                    name=param_name,
+                    type=f"{param_type}{'!' if required else ''}",
+                    description=param.get("description", ""),
+                    requirement=ArgumentType.REQUIRED if required else ArgumentType.OPTIONAL,
+                ))
+
+            # Parse request body (OpenAPI 3.x)
+            if is_openapi3 and "requestBody" in operation_data:
+                request_body = operation_data["requestBody"]
+                content = request_body.get("content", {})
+                required = request_body.get("required", False)
+
+                # Get the first content type schema
+                for content_type, media_type in content.items():
+                    schema = media_type.get("schema", {})
+                    body_type = _openapi_type_to_string(schema)
+                    arguments.append(OperationArgument(
+                        name="body",
+                        type=f"{body_type}{'!' if required else ''}",
+                        description=request_body.get("description", "Request body"),
+                        requirement=ArgumentType.REQUIRED if required else ArgumentType.OPTIONAL,
+                    ))
+                    break  # Just use first content type
+
+            # Parse response type
+            responses = operation_data.get("responses", {})
+            return_type = "void"
+            for status_code in ["200", "201", "default"]:
+                if status_code in responses:
+                    response = responses[status_code]
+                    if is_openapi3:
+                        content = response.get("content", {})
+                        for content_type, media_type in content.items():
+                            schema = media_type.get("schema", {})
+                            return_type = _openapi_type_to_string(schema)
+                            break
+                    else:
+                        schema = response.get("schema", {})
+                        return_type = _openapi_type_to_string(schema)
+                    break
+
+            # Build description
+            summary = operation_data.get("summary", "")
+            description = operation_data.get("description", summary)
+            full_description = f"{method.upper()} {path}"
+            if description:
+                full_description = f"{description} ({method.upper()} {path})"
+
+            # Generate tags
+            op_tags = operation_data.get("tags", [])
+            generated_tags = _generate_openapi_tags(method, path, operation_id)
+            all_tags = list(set(op_tags + generated_tags))
+
+            operations.append(OperationMetadata(
+                name=operation_id,
+                operation_type=op_type,
+                description=full_description,
+                arguments=arguments,
+                return_type=return_type,
+                use_cases=_generate_use_cases(operation_id, description),
+                tags=all_tags,
+                deprecated=operation_data.get("deprecated", False),
+            ))
+
+    catalog.register_operations(operations)
+    catalog.build_index()
+
+    return catalog
+
+
+def _resolve_openapi_ref(spec: dict, ref: str) -> dict:
+    """Resolve a $ref pointer in an OpenAPI spec."""
+    if not ref.startswith("#/"):
+        return {}
+
+    parts = ref[2:].split("/")
+    result = spec
+    for part in parts:
+        result = result.get(part, {})
+    return result
+
+
+def _openapi_type_to_string(schema: dict) -> str:
+    """Convert OpenAPI schema to a type string."""
+    if not schema:
+        return "object"
+
+    # Handle $ref
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        # Extract type name from ref like "#/components/schemas/Pet"
+        return ref.split("/")[-1]
+
+    schema_type = schema.get("type", "object")
+
+    if schema_type == "array":
+        items = schema.get("items", {})
+        item_type = _openapi_type_to_string(items)
+        return f"[{item_type}]"
+
+    if schema_type == "object":
+        # Check for additionalProperties (map type)
+        if "additionalProperties" in schema:
+            value_type = _openapi_type_to_string(schema["additionalProperties"])
+            return f"Map<string, {value_type}>"
+        # Check for title or return generic object
+        return schema.get("title", "object")
+
+    # Simple types
+    type_map = {
+        "string": "string",
+        "integer": "int",
+        "number": "float",
+        "boolean": "boolean",
+        "null": "null",
+    }
+    return type_map.get(schema_type, schema_type)
+
+
+def _generate_openapi_tags(method: str, path: str, operation_id: str) -> list[str]:
+    """Generate tags for an OpenAPI operation."""
+    tags = []
+
+    # Method-based tags
+    if method == "get":
+        tags.append("read")
+        if "{" not in path:
+            tags.append("list")
+        else:
+            tags.append("single")
+    elif method == "post":
+        tags.append("create")
+    elif method in ("put", "patch"):
+        tags.append("update")
+    elif method == "delete":
+        tags.append("delete")
+
+    # Path-based tags
+    path_lower = path.lower()
+    if "search" in path_lower or "query" in path_lower:
+        tags.append("search")
+    if "upload" in path_lower:
+        tags.append("upload")
+    if "download" in path_lower or "export" in path_lower:
+        tags.append("download")
+
+    return tags
+
+
 def create_constat_api_catalog() -> APICatalog:
     """
     Create APICatalog with Constat's GraphQL operations.

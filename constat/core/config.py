@@ -232,11 +232,75 @@ class StorageConfig(BaseModel):
 
 
 class APIConfig(BaseModel):
-    """External API configuration (GraphQL or REST)."""
-    url: str  # Endpoint URL
-    type: str = "graphql"  # graphql | rest
+    """External API configuration (GraphQL or OpenAPI).
+
+    GraphQL Example:
+        apis:
+          countries:
+            type: graphql
+            url: https://countries.trevorblades.com/graphql
+
+    OpenAPI Example (auto-discovers endpoints from spec URL):
+        apis:
+          petstore:
+            type: openapi
+            spec_url: https://petstore.swagger.io/v2/swagger.json
+
+    OpenAPI from local file:
+        apis:
+          internal:
+            type: openapi
+            spec_path: ./specs/internal-api.yaml
+
+    OpenAPI inline (for simple APIs without a spec file):
+        apis:
+          simple_api:
+            type: openapi
+            url: https://api.example.com
+            spec_inline:
+              openapi: "3.0.0"
+              info:
+                title: Simple API
+                version: "1.0"
+              paths:
+                /users/{userId}:
+                  get:
+                    operationId: getUser
+                    parameters:
+                      - name: userId
+                        in: path
+                        required: true
+                        schema:
+                          type: string
+                    responses:
+                      "200":
+                        description: User details
+
+    Auth can be provided at multiple levels:
+    1. In headers (engine config) - shared across all users
+    2. In user config - user-specific credentials override engine config
+    """
+    # API type: graphql | openapi
+    type: str = "graphql"
+
+    # Base URL for the API
+    url: Optional[str] = None
+
+    # OpenAPI spec location (for type=openapi)
+    spec_url: Optional[str] = None  # URL to download OpenAPI spec
+    spec_path: Optional[str] = None  # Local path to OpenAPI spec file
+    spec_inline: Optional[dict] = None  # Inline OpenAPI spec (embedded in config)
+
     description: str = ""  # What this API provides
     headers: dict[str, str] = Field(default_factory=dict)  # Auth headers, etc.
+
+    # Auth configuration (alternative to headers)
+    auth_type: Optional[str] = None  # bearer | basic | api_key
+    auth_token: Optional[str] = None  # Token for bearer auth
+    auth_username: Optional[str] = None  # Username for basic auth
+    auth_password: Optional[str] = None  # Password for basic auth
+    api_key: Optional[str] = None  # API key value
+    api_key_header: str = "X-API-Key"  # Header name for API key
 
 
 class ExecutionConfig(BaseModel):

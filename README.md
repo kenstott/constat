@@ -375,14 +375,70 @@ databases:
 # EXTERNAL APIs
 #==============================================================================
 
-# Optional: External APIs (GraphQL/REST) keyed by name
+# Optional: External APIs keyed by name
 apis:
+  # GraphQL API (auto-introspects schema)
   countries:
+    type: graphql
     url: https://countries.trevorblades.com/graphql
-    type: graphql                           # graphql | rest
     description: "Country data for geographic enrichment"
-    # headers:                              # Optional auth headers
-    #   Authorization: Bearer ${API_TOKEN}
+
+  # OpenAPI from URL (auto-discovers all endpoints)
+  petstore:
+    type: openapi
+    spec_url: https://petstore.swagger.io/v2/swagger.json
+    description: "Pet store API"
+
+  # OpenAPI from local file
+  internal_api:
+    type: openapi
+    spec_path: ./specs/internal-api.yaml
+    description: "Internal services"
+
+  # OpenAPI inline (for simple APIs without a spec file)
+  weather:
+    type: openapi
+    url: https://api.weather.gov              # Base URL
+    spec_inline:
+      openapi: "3.0.0"
+      info:
+        title: Weather API
+        version: "1.0"
+      paths:
+        /points/{lat},{lon}:
+          get:
+            operationId: getPoint
+            summary: Get forecast office and grid info for a location
+            parameters:
+              - name: lat
+                in: path
+                required: true
+                schema:
+                  type: number
+              - name: lon
+                in: path
+                required: true
+                schema:
+                  type: number
+
+  # API with authentication
+  protected_api:
+    type: openapi
+    spec_url: https://api.example.com/openapi.json
+    # Auth option 1: Bearer token
+    auth_type: bearer
+    auth_token: ${API_TOKEN}
+    # Auth option 2: Basic auth
+    # auth_type: basic
+    # auth_username: ${API_USER}
+    # auth_password: ${API_PASS}
+    # Auth option 3: API key
+    # auth_type: api_key
+    # api_key: ${API_KEY}
+    # api_key_header: X-API-Key            # Header name (default: X-API-Key)
+    # Auth option 4: Raw headers
+    # headers:
+    #   Authorization: Bearer ${TOKEN}
 
 #==============================================================================
 # DOMAIN CONTEXT (SYSTEM PROMPT)
