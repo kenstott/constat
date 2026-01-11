@@ -8,6 +8,7 @@ from constat.catalog.schema_manager import SchemaManager
 from constat.catalog.api_catalog import APICatalog
 from constat.discovery import (
     DiscoveryTools,
+    PromptBuilder,
     SchemaDiscoveryTools,
     APIDiscoveryTools,
     DocumentDiscoveryTools,
@@ -325,3 +326,93 @@ class TestAPIDiscoveryTools:
 
         assert isinstance(result, list)
         assert len(result) == 0
+
+
+class TestPromptBuilder:
+    """Test automatic prompt building based on model capabilities."""
+
+    def test_supports_tools_claude_3(self, schema_manager, config):
+        """Claude 3 models should support tools."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        assert builder.supports_tools("claude-3-opus-20240229")
+        assert builder.supports_tools("claude-3-sonnet-20240229")
+        assert builder.supports_tools("claude-3-haiku-20240307")
+        assert builder.supports_tools("claude-sonnet-4-20250514")
+
+    def test_supports_tools_gpt4(self, schema_manager, config):
+        """GPT-4 models should support tools."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        assert builder.supports_tools("gpt-4")
+        assert builder.supports_tools("gpt-4-turbo")
+        assert builder.supports_tools("gpt-3.5-turbo")
+
+    def test_no_tools_legacy_models(self, schema_manager, config):
+        """Legacy models should not support tools."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        assert not builder.supports_tools("claude-2")
+        assert not builder.supports_tools("claude-instant-1.2")
+        assert not builder.supports_tools("text-davinci-003")
+        assert not builder.supports_tools("gpt-3.5-turbo-instruct")
+
+    def test_build_prompt_tool_mode(self, schema_manager, config):
+        """Tool-capable model should get minimal prompt."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        prompt, use_tools = builder.build_prompt("claude-3-opus-20240229")
+
+        assert use_tools is True
+        assert "Discovery Tools" in prompt
+        assert "list_databases" in prompt
+        # Should NOT contain full schema
+        assert "Columns:" not in prompt
+
+    def test_build_prompt_full_mode(self, schema_manager, config):
+        """Non-tool model should get comprehensive prompt."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        prompt, use_tools = builder.build_prompt("claude-2")
+
+        assert use_tools is False
+        # Should contain full schema documentation
+        assert "Available Databases" in prompt
+        assert "chinook" in prompt
+        # Should have column details
+        assert "Columns:" in prompt
+
+    def test_build_prompt_includes_documents(self, schema_manager, config):
+        """Full mode should include document content."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        prompt, use_tools = builder.build_prompt("claude-2")
+
+        assert use_tools is False
+        # Should include document content
+        assert "Reference Documents" in prompt
+        assert "VIP" in prompt or "Business Rules" in prompt
+
+    def test_estimate_tokens(self, schema_manager, config):
+        """Token estimation should show savings for tool mode."""
+        tools = DiscoveryTools(schema_manager=schema_manager, config=config)
+        builder = PromptBuilder(tools)
+
+        # Tool-capable model
+        estimate = builder.estimate_tokens("claude-3-opus-20240229")
+        assert estimate["supports_tools"] is True
+        assert estimate["mode"] == "tool_discovery"
+        assert estimate["savings_percent"] > 0
+        assert estimate["prompt_tokens"] < estimate["full_prompt_tokens"]
+
+        # Non-tool model
+        estimate = builder.estimate_tokens("claude-2")
+        assert estimate["supports_tools"] is False
+        assert estimate["mode"] == "full_prompt"
+        assert estimate["savings_percent"] == 0

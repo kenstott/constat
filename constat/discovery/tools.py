@@ -156,7 +156,7 @@ class DiscoveryTools:
         return list(self._handlers.keys())
 
 
-# Minimal system prompt for discovery-based planning
+# Minimal system prompt for discovery-based planning (tool calling mode)
 DISCOVERY_SYSTEM_PROMPT = """You are a data analysis assistant with access to databases, APIs, and reference documents.
 
 IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tools to find what you need.
@@ -199,3 +199,281 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 
 Always verify resources exist before planning to use them.
 """
+
+
+class PromptBuilder:
+    """
+    Builds system prompts based on LLM tool calling capability.
+
+    Automatically detects whether tool calling is supported:
+    - If supported → minimal prompt with discovery tools
+    - If not supported → comprehensive prompt with full metadata
+
+    This is NOT configurable - it's automatic based on the LLM model.
+    """
+
+    # Models known to support tool calling
+    TOOL_CAPABLE_MODELS = {
+        # Anthropic Claude models with tool support
+        "claude-3", "claude-sonnet", "claude-opus", "claude-haiku",
+        # OpenAI models with function calling
+        "gpt-4", "gpt-3.5-turbo",
+        # Google models
+        "gemini",
+    }
+
+    # Models/providers known to NOT support tool calling
+    NO_TOOL_MODELS = {
+        "claude-2", "claude-instant",
+        "gpt-3.5-turbo-instruct",
+        "text-davinci", "text-curie", "text-babbage", "text-ada",
+    }
+
+    def __init__(self, discovery_tools: "DiscoveryTools"):
+        self.tools = discovery_tools
+
+    def supports_tools(self, model: str) -> bool:
+        """
+        Check if a model supports tool calling.
+
+        Args:
+            model: Model name/ID
+
+        Returns:
+            True if model supports tool calling
+        """
+        model_lower = model.lower()
+
+        # Check against known non-tool models first
+        for pattern in self.NO_TOOL_MODELS:
+            if pattern in model_lower:
+                return False
+
+        # Check against known tool-capable models
+        for pattern in self.TOOL_CAPABLE_MODELS:
+            if pattern in model_lower:
+                return True
+
+        # Default: assume modern models support tools
+        # This is a reasonable default as tool calling is becoming standard
+        return True
+
+    def build_prompt(
+        self,
+        model: str,
+        custom_prompt: str = "",
+    ) -> tuple[str, bool]:
+        """
+        Build appropriate system prompt based on model capabilities.
+
+        Automatically determines whether to use tool-based or full-prompt mode.
+
+        Args:
+            model: Model name/ID being used
+            custom_prompt: Additional custom prompt content
+
+        Returns:
+            Tuple of (system_prompt, use_tools) where use_tools indicates
+            whether discovery tools should be included in the API call
+        """
+        use_tools = self.supports_tools(model)
+
+        if use_tools:
+            prompt = self._build_tool_prompt(custom_prompt)
+        else:
+            prompt = self._build_full_prompt(
+                include_schema=True,
+                include_apis=True,
+                include_documents=True,
+                custom_prompt=custom_prompt,
+            )
+
+        return prompt, use_tools
+
+    def _build_tool_prompt(self, custom_prompt: str) -> str:
+        """Build minimal prompt for tool-based discovery."""
+        parts = [DISCOVERY_SYSTEM_PROMPT]
+        if custom_prompt:
+            parts.append(f"\n## Additional Context\n{custom_prompt}")
+        return "\n".join(parts)
+
+    def _build_full_prompt(
+        self,
+        include_schema: bool,
+        include_apis: bool,
+        include_documents: bool,
+        custom_prompt: str,
+    ) -> str:
+        """Build comprehensive prompt with full metadata (no tool calling)."""
+        parts = [
+            "You are a data analysis assistant with access to databases, APIs, and reference documents.",
+            "",
+        ]
+
+        # Add schema overview
+        if include_schema and self.tools.schema_tools:
+            schema_section = self._build_schema_section()
+            if schema_section:
+                parts.append(schema_section)
+
+        # Add API documentation
+        if include_apis and self.tools.api_tools:
+            api_section = self._build_api_section()
+            if api_section:
+                parts.append(api_section)
+
+        # Add document content
+        if include_documents and self.tools.doc_tools:
+            doc_section = self._build_document_section()
+            if doc_section:
+                parts.append(doc_section)
+
+        # Add custom prompt
+        if custom_prompt:
+            parts.append(f"## Additional Context\n{custom_prompt}")
+
+        return "\n".join(parts)
+
+    def _build_schema_section(self) -> str:
+        """Build comprehensive schema documentation."""
+        lines = ["## Available Databases\n"]
+
+        databases = self.tools.schema_tools.list_databases()
+
+        for db in databases:
+            lines.append(f"### {db['name']}")
+            if db.get('description'):
+                lines.append(f"{db['description']}\n")
+
+            # Get tables for this database
+            tables = self.tools.schema_tools.list_tables(db['name'])
+
+            for table in tables:
+                lines.append(f"#### {table['name']}")
+                if table.get('description'):
+                    lines.append(f"{table['description']}")
+                lines.append(f"Rows: ~{table['row_count']:,}")
+
+                # Get full schema
+                schema = self.tools.schema_tools.get_table_schema(db['name'], table['name'])
+                if 'columns' in schema:
+                    lines.append("Columns:")
+                    for col in schema['columns']:
+                        col_line = f"  - {col['name']}: {col['type']}"
+                        if col.get('primary_key'):
+                            col_line += " (PK)"
+                        if col.get('comment'):
+                            col_line += f" - {col['comment']}"
+                        lines.append(col_line)
+
+                # Add foreign keys
+                if schema.get('foreign_keys'):
+                    lines.append("Foreign Keys:")
+                    for fk in schema['foreign_keys']:
+                        lines.append(f"  - {fk['from']} → {fk['to']}")
+
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _build_api_section(self) -> str:
+        """Build comprehensive API documentation."""
+        lines = ["## Available APIs\n"]
+
+        apis = self.tools.api_tools.list_apis()
+        if not apis:
+            return ""
+
+        for api in apis:
+            lines.append(f"### {api['name']} ({api['type']})")
+            if api.get('description'):
+                lines.append(f"{api['description']}")
+            if api.get('url'):
+                lines.append(f"URL: {api['url']}")
+            lines.append("")
+
+            # Get operations
+            operations = self.tools.api_tools.list_operations(api['name'])
+
+            for op in operations:
+                lines.append(f"#### {op['name']} ({op['type']})")
+                if op.get('description'):
+                    lines.append(f"{op['description']}")
+
+                # Get full details
+                details = self.tools.api_tools.get_operation_details(op['name'])
+                if 'arguments' in details and details['arguments']:
+                    lines.append("Arguments:")
+                    for arg in details['arguments']:
+                        arg_line = f"  - {arg['name']}: {arg['type']}"
+                        if arg.get('required'):
+                            arg_line += " (required)"
+                        if arg.get('description'):
+                            arg_line += f" - {arg['description']}"
+                        lines.append(arg_line)
+
+                if details.get('return_type'):
+                    lines.append(f"Returns: {details['return_type']}")
+
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _build_document_section(self) -> str:
+        """Build reference document content."""
+        lines = ["## Reference Documents\n"]
+
+        documents = self.tools.doc_tools.list_documents()
+        if not documents:
+            return ""
+
+        for doc in documents:
+            lines.append(f"### {doc['name']}")
+            if doc.get('description'):
+                lines.append(f"{doc['description']}")
+            if doc.get('tags'):
+                lines.append(f"Tags: {', '.join(doc['tags'])}")
+            lines.append("")
+
+            # Get full content
+            content = self.tools.doc_tools.get_document(doc['name'])
+            if 'content' in content:
+                # Indent document content
+                doc_content = content['content']
+                # Limit very long documents
+                if len(doc_content) > 5000:
+                    doc_content = doc_content[:5000] + "\n\n[Document truncated...]"
+                lines.append(doc_content)
+
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def estimate_tokens(self, model: str) -> dict:
+        """
+        Estimate token count for both prompt modes.
+
+        Rough estimate: ~4 characters per token for English text.
+
+        Args:
+            model: Model name/ID
+
+        Returns:
+            Dict with token estimates and which mode will be used
+        """
+        use_tools = self.supports_tools(model)
+        prompt, _ = self.build_prompt(model)
+
+        # Also calculate what full prompt would be for comparison
+        full_prompt = self._build_full_prompt(True, True, True, "")
+
+        return {
+            "model": model,
+            "supports_tools": use_tools,
+            "mode": "tool_discovery" if use_tools else "full_prompt",
+            "prompt_tokens": len(prompt) // 4,
+            "full_prompt_tokens": len(full_prompt) // 4,
+            "savings_percent": round(
+                (1 - len(prompt) / max(len(full_prompt), 1)) * 100
+            ) if use_tools else 0,
+        }

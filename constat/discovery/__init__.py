@@ -23,6 +23,7 @@ Usage:
 
 from .tools import (
     DiscoveryTools,
+    PromptBuilder,
     DISCOVERY_TOOL_SCHEMAS,
     DISCOVERY_SYSTEM_PROMPT,
 )
@@ -34,6 +35,7 @@ from .fact_tools import FactResolutionTools, FACT_TOOL_SCHEMAS
 __all__ = [
     # Main interface
     "DiscoveryTools",
+    "PromptBuilder",
     "DISCOVERY_TOOL_SCHEMAS",
     "DISCOVERY_SYSTEM_PROMPT",
     # Individual tool classes
