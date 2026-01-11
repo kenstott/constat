@@ -458,7 +458,7 @@ class Session:
 
         # Create persistent datastore for this session
         session_dir = self.history._session_dir(self.session_id)
-        datastore_path = session_dir / "datastore.duckdb"
+        datastore_path = session_dir / "datastore.db"
         self.datastore = DataStore(db_path=datastore_path)
 
         # Save problem statement to datastore (for UI restoration)
@@ -597,7 +597,7 @@ class Session:
 
         # Load the datastore (contains tables, state, scratchpad, artifacts)
         session_dir = self.history._session_dir(session_id)
-        datastore_path = session_dir / "datastore.duckdb"
+        datastore_path = session_dir / "datastore.db"
 
         if datastore_path.exists():
             self.datastore = DataStore(db_path=datastore_path)

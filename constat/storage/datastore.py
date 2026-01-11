@@ -1,27 +1,46 @@
-"""DuckDB datastore for persistent intermediate storage.
+"""SQLAlchemy-based datastore for persistent intermediate storage.
 
 Provides persistent storage for:
 - Tables created during step execution
 - State variables shared between steps
 - Session artifacts for history/resumption
 - Rich artifacts (charts, HTML, diagrams, images)
+
+Supports multiple backends via SQLAlchemy:
+- DuckDB (default): duckdb:///path/to/file.duckdb or duckdb:///:memory:
+- PostgreSQL: postgresql://user:pass@host:port/db
+- SQLite: sqlite:///path/to/file.db or sqlite:///:memory:
 """
 
 import json
 from pathlib import Path
 from typing import Any, Optional, Union
 
-import duckdb
 import pandas as pd
+from sqlalchemy import (
+    create_engine,
+    MetaData,
+    Table,
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    inspect,
+    text,
+    func,
+)
+from sqlalchemy.engine import Engine
+from sqlalchemy.dialects import postgresql, sqlite
 
 from constat.core.models import Artifact, ArtifactType, ARTIFACT_MIME_TYPES
 
 
 class DataStore:
     """
-    DuckDB-based persistent datastore for session state.
+    SQLAlchemy-based persistent datastore for session state.
 
-    Each session gets its own DuckDB database file that persists:
+    Each session gets its own database that persists:
     - Tables created by execution steps
     - State variables (serialized as JSON)
     - Metadata about what each step produced
@@ -30,101 +49,200 @@ class DataStore:
     - State sharing between steps via tables
     - Session resumption with full data context
     - History inspection with actual data (not just logs)
+
+    Supports multiple backends:
+    - DuckDB (default for local): duckdb:///file.duckdb
+    - PostgreSQL (for production): postgresql://user:pass@host/db
+    - SQLite: sqlite:///file.db
+
+    Usage:
+        # DuckDB (default)
+        store = DataStore(db_path="/path/to/session.duckdb")
+
+        # PostgreSQL
+        store = DataStore(uri="postgresql://user:pass@localhost/constat_session_123")
+
+        # SQLite
+        store = DataStore(uri="sqlite:///session.db")
     """
 
-    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+    # Internal table names
+    INTERNAL_TABLES = {
+        "_constat_state",
+        "_constat_table_registry",
+        "_constat_scratchpad",
+        "_constat_artifacts",
+        "_constat_session",
+        "_constat_plan_steps",
+    }
+
+    def __init__(
+        self,
+        db_path: Optional[Union[str, Path]] = None,
+        uri: Optional[str] = None,
+    ):
         """
         Initialize the datastore.
 
         Args:
-            db_path: Path to DuckDB file. If None, uses in-memory database.
+            db_path: Path to database file. Creates SQLite database at path.
+                     If None and no uri, uses in-memory SQLite.
+            uri: SQLAlchemy connection URI. Takes precedence over db_path.
+                 Examples:
+                   - sqlite:///path/to/file.db
+                   - postgresql://user:pass@host/db
+                   - duckdb:///path/to/file.duckdb (requires duckdb-engine)
         """
-        self.db_path = Path(db_path) if db_path else None
-
-        if self.db_path:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self.conn = duckdb.connect(str(self.db_path))
+        if uri:
+            self.uri = uri
+        elif db_path:
+            path = Path(db_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Use SQLite as default (always available)
+            # For .duckdb extension, try DuckDB first
+            if str(path).endswith('.duckdb'):
+                try:
+                    # Check if duckdb-engine is available
+                    import duckdb_engine  # noqa
+                    self.uri = f"duckdb:///{path}"
+                except ImportError:
+                    # Fall back to SQLite
+                    sqlite_path = str(path).replace('.duckdb', '.db')
+                    self.uri = f"sqlite:///{sqlite_path}"
+            else:
+                self.uri = f"sqlite:///{path}"
         else:
-            self.conn = duckdb.connect(":memory:")
+            self.uri = "sqlite:///:memory:"
+
+        self.db_path = Path(db_path) if db_path else None
+        self.engine = create_engine(self.uri)
+        self.metadata = MetaData()
 
         self._init_metadata_tables()
 
     def _init_metadata_tables(self) -> None:
         """Create internal metadata tables."""
-        # Table to track state variables
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS _constat_state (
-                key VARCHAR PRIMARY KEY,
-                value_json VARCHAR,
-                step_number INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        with self.engine.begin() as conn:
+            # State variables table
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _constat_state (
+                    key VARCHAR(255) PRIMARY KEY,
+                    value_json TEXT,
+                    step_number INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
-        # Table to track which step created which tables
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS _constat_table_registry (
-                table_name VARCHAR PRIMARY KEY,
-                step_number INTEGER,
-                row_count INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                description VARCHAR
-            )
-        """)
+            # Table registry
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _constat_table_registry (
+                    table_name VARCHAR(255) PRIMARY KEY,
+                    step_number INTEGER,
+                    row_count INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    description TEXT
+                )
+            """))
 
-        # Scratchpad - narrative per step
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS _constat_scratchpad (
-                step_number INTEGER PRIMARY KEY,
-                goal VARCHAR,
-                narrative VARCHAR,
-                tables_created VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            # Scratchpad - narrative per step
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _constat_scratchpad (
+                    step_number INTEGER PRIMARY KEY,
+                    goal TEXT,
+                    narrative TEXT,
+                    tables_created TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
-        # Artifact catalog - code, outputs, errors, rich content per step/attempt
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS _constat_artifacts (
-                id INTEGER PRIMARY KEY,
-                name VARCHAR,
-                step_number INTEGER,
-                attempt INTEGER,
-                artifact_type VARCHAR,
-                content_type VARCHAR,
-                content VARCHAR,
-                title VARCHAR,
-                description VARCHAR,
-                metadata_json VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            # Artifact catalog
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _constat_artifacts (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(255),
+                    step_number INTEGER,
+                    attempt INTEGER,
+                    artifact_type VARCHAR(50),
+                    content_type VARCHAR(100),
+                    content TEXT,
+                    title VARCHAR(255),
+                    description TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
-        # Session metadata - problem statement and status
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS _constat_session (
-                key VARCHAR PRIMARY KEY,
-                value VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            # Session metadata
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _constat_session (
+                    key VARCHAR(255) PRIMARY KEY,
+                    value TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
-        # Plan steps - the plan structure for UI restoration
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS _constat_plan_steps (
-                step_number INTEGER PRIMARY KEY,
-                goal VARCHAR,
-                expected_inputs VARCHAR,
-                expected_outputs VARCHAR,
-                status VARCHAR,
-                code VARCHAR,
-                error VARCHAR,
-                attempts INTEGER DEFAULT 0,
-                duration_ms INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMP
-            )
-        """)
+            # Plan steps
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _constat_plan_steps (
+                    step_number INTEGER PRIMARY KEY,
+                    goal TEXT,
+                    expected_inputs TEXT,
+                    expected_outputs TEXT,
+                    status VARCHAR(50),
+                    code TEXT,
+                    error TEXT,
+                    attempts INTEGER DEFAULT 0,
+                    duration_ms INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP
+                )
+            """))
+
+    def _execute(self, sql: str, params: Optional[list] = None):
+        """Execute a SQL statement with optional parameters."""
+        with self.engine.begin() as conn:
+            if params:
+                # Convert to named parameters for SQLAlchemy
+                result = conn.execute(text(sql), self._to_named_params(sql, params))
+            else:
+                result = conn.execute(text(sql))
+            return result
+
+    def _to_named_params(self, sql: str, params: list) -> dict:
+        """Convert positional params to named params."""
+        # Replace ? with :p0, :p1, etc.
+        named_sql = sql
+        param_dict = {}
+        for i, param in enumerate(params):
+            named_sql = named_sql.replace("?", f":p{i}", 1)
+            param_dict[f"p{i}"] = param
+        return param_dict
+
+    def _upsert(self, table: str, key_col: str, key_val: Any, data: dict) -> None:
+        """Insert or update a row."""
+        with self.engine.begin() as conn:
+            # Check if row exists
+            result = conn.execute(
+                text(f"SELECT 1 FROM {table} WHERE {key_col} = :key"),
+                {"key": key_val}
+            ).fetchone()
+
+            if result:
+                # Update
+                set_clause = ", ".join(f"{k} = :{k}" for k in data.keys())
+                conn.execute(
+                    text(f"UPDATE {table} SET {set_clause} WHERE {key_col} = :key"),
+                    {**data, "key": key_val}
+                )
+            else:
+                # Insert
+                data[key_col] = key_val
+                cols = ", ".join(data.keys())
+                vals = ", ".join(f":{k}" for k in data.keys())
+                conn.execute(
+                    text(f"INSERT INTO {table} ({cols}) VALUES ({vals})"),
+                    data
+                )
 
     def save_dataframe(
         self,
@@ -134,7 +252,7 @@ class DataStore:
         description: str = "",
     ) -> None:
         """
-        Save a pandas DataFrame as a DuckDB table.
+        Save a pandas DataFrame as a table.
 
         Args:
             name: Table name
@@ -142,17 +260,20 @@ class DataStore:
             step_number: Which step created this table
             description: Human-readable description
         """
-        # Register the DataFrame and create table from it
-        self.conn.register("_temp_df", df)
-        self.conn.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM _temp_df")
-        self.conn.unregister("_temp_df")
+        # Use pandas to_sql for cross-database compatibility
+        df.to_sql(name, self.engine, if_exists="replace", index=False)
 
         # Update registry
-        self.conn.execute("""
-            INSERT OR REPLACE INTO _constat_table_registry
-            (table_name, step_number, row_count, description)
-            VALUES (?, ?, ?, ?)
-        """, [name, step_number, len(df), description])
+        self._upsert(
+            "_constat_table_registry",
+            "table_name",
+            name,
+            {
+                "step_number": step_number,
+                "row_count": len(df),
+                "description": description,
+            }
+        )
 
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
         """
@@ -165,8 +286,8 @@ class DataStore:
             DataFrame or None if table doesn't exist
         """
         try:
-            return self.conn.execute(f"SELECT * FROM {name}").df()
-        except duckdb.CatalogException:
+            return pd.read_sql_table(name, self.engine)
+        except Exception:
             return None
 
     def query(self, sql: str) -> pd.DataFrame:
@@ -179,7 +300,7 @@ class DataStore:
         Returns:
             Query results as DataFrame
         """
-        return self.conn.execute(sql).df()
+        return pd.read_sql_query(sql, self.engine)
 
     def set_state(self, key: str, value: Any, step_number: int = 0) -> None:
         """
@@ -191,10 +312,12 @@ class DataStore:
             step_number: Which step set this variable
         """
         value_json = json.dumps(value)
-        self.conn.execute("""
-            INSERT OR REPLACE INTO _constat_state (key, value_json, step_number)
-            VALUES (?, ?, ?)
-        """, [key, value_json, step_number])
+        self._upsert(
+            "_constat_state",
+            "key",
+            key,
+            {"value_json": value_json, "step_number": step_number}
+        )
 
     def get_state(self, key: str) -> Optional[Any]:
         """
@@ -206,10 +329,11 @@ class DataStore:
         Returns:
             Value or None if not found
         """
-        result = self.conn.execute(
-            "SELECT value_json FROM _constat_state WHERE key = ?",
-            [key]
-        ).fetchone()
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT value_json FROM _constat_state WHERE key = :key"),
+                {"key": key}
+            ).fetchone()
 
         if result:
             return json.loads(result[0])
@@ -217,9 +341,10 @@ class DataStore:
 
     def get_all_state(self) -> dict[str, Any]:
         """Get all state variables as a dictionary."""
-        rows = self.conn.execute(
-            "SELECT key, value_json FROM _constat_state"
-        ).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT key, value_json FROM _constat_state")
+            ).fetchall()
 
         return {key: json.loads(value_json) for key, value_json in rows}
 
@@ -230,18 +355,19 @@ class DataStore:
         Returns:
             List of table info dicts
         """
-        rows = self.conn.execute("""
-            SELECT table_name, step_number, row_count, created_at, description
-            FROM _constat_table_registry
-            ORDER BY step_number, table_name
-        """).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT table_name, step_number, row_count, created_at, description
+                FROM _constat_table_registry
+                ORDER BY step_number, table_name
+            """)).fetchall()
 
         return [
             {
                 "name": row[0],
                 "step_number": row[1],
                 "row_count": row[2],
-                "created_at": str(row[3]),
+                "created_at": str(row[3]) if row[3] else None,
                 "description": row[4],
             }
             for row in rows
@@ -257,13 +383,18 @@ class DataStore:
         Returns:
             List of column info dicts or None if table doesn't exist
         """
+        inspector = inspect(self.engine)
         try:
-            result = self.conn.execute(f"DESCRIBE {name}").fetchall()
+            columns = inspector.get_columns(name)
             return [
-                {"name": row[0], "type": row[1], "nullable": row[2] == "YES"}
-                for row in result
+                {
+                    "name": col["name"],
+                    "type": str(col["type"]),
+                    "nullable": col.get("nullable", True),
+                }
+                for col in columns
             ]
-        except duckdb.CatalogException:
+        except Exception:
             return None
 
     def drop_table(self, name: str) -> bool:
@@ -277,13 +408,14 @@ class DataStore:
             True if dropped, False if didn't exist
         """
         try:
-            self.conn.execute(f"DROP TABLE IF EXISTS {name}")
-            self.conn.execute(
-                "DELETE FROM _constat_table_registry WHERE table_name = ?",
-                [name]
-            )
+            with self.engine.begin() as conn:
+                conn.execute(text(f"DROP TABLE IF EXISTS {name}"))
+                conn.execute(
+                    text("DELETE FROM _constat_table_registry WHERE table_name = :name"),
+                    {"name": name}
+                )
             return True
-        except duckdb.CatalogException:
+        except Exception:
             return False
 
     def clear_step_data(self, step_number: int) -> None:
@@ -293,19 +425,21 @@ class DataStore:
         Useful when retrying or revising a step.
         """
         # Get tables created by this step
-        tables = self.conn.execute(
-            "SELECT table_name FROM _constat_table_registry WHERE step_number = ?",
-            [step_number]
-        ).fetchall()
+        with self.engine.connect() as conn:
+            tables = conn.execute(
+                text("SELECT table_name FROM _constat_table_registry WHERE step_number = :step"),
+                {"step": step_number}
+            ).fetchall()
 
         for (table_name,) in tables:
             self.drop_table(table_name)
 
         # Clear state variables from this step
-        self.conn.execute(
-            "DELETE FROM _constat_state WHERE step_number = ?",
-            [step_number]
-        )
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM _constat_state WHERE step_number = :step"),
+                {"step": step_number}
+            )
 
     def export_state_summary(self) -> dict:
         """
@@ -340,18 +474,20 @@ class DataStore:
             tables_created: List of table names created by this step
         """
         tables_str = ",".join(tables_created) if tables_created else ""
-        self.conn.execute("""
-            INSERT OR REPLACE INTO _constat_scratchpad
-            (step_number, goal, narrative, tables_created)
-            VALUES (?, ?, ?, ?)
-        """, [step_number, goal, narrative, tables_str])
+        self._upsert(
+            "_constat_scratchpad",
+            "step_number",
+            step_number,
+            {"goal": goal, "narrative": narrative, "tables_created": tables_str}
+        )
 
     def get_scratchpad_entry(self, step_number: int) -> Optional[dict]:
         """Get scratchpad entry for a step."""
-        result = self.conn.execute(
-            "SELECT goal, narrative, tables_created FROM _constat_scratchpad WHERE step_number = ?",
-            [step_number]
-        ).fetchone()
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT goal, narrative, tables_created FROM _constat_scratchpad WHERE step_number = :step"),
+                {"step": step_number}
+            ).fetchone()
 
         if result:
             return {
@@ -364,11 +500,12 @@ class DataStore:
 
     def get_scratchpad(self) -> list[dict]:
         """Get all scratchpad entries in order."""
-        rows = self.conn.execute("""
-            SELECT step_number, goal, narrative, tables_created
-            FROM _constat_scratchpad
-            ORDER BY step_number
-        """).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT step_number, goal, narrative, tables_created
+                FROM _constat_scratchpad
+                ORDER BY step_number
+            """)).fetchall()
 
         return [
             {
@@ -427,8 +564,11 @@ class DataStore:
             Artifact ID
         """
         # Get next ID
-        result = self.conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM _constat_artifacts").fetchone()
-        artifact_id = result[0]
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT COALESCE(MAX(id), 0) + 1 FROM _constat_artifacts")
+            ).fetchone()
+            artifact_id = result[0]
 
         # Auto-generate name if not provided
         if name is None:
@@ -437,11 +577,26 @@ class DataStore:
         # Serialize metadata
         metadata_json = json.dumps(metadata) if metadata else None
 
-        self.conn.execute("""
-            INSERT INTO _constat_artifacts
-            (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [artifact_id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json])
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO _constat_artifacts
+                    (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json)
+                    VALUES (:id, :name, :step_number, :attempt, :artifact_type, :content_type, :content, :title, :description, :metadata_json)
+                """),
+                {
+                    "id": artifact_id,
+                    "name": name,
+                    "step_number": step_number,
+                    "attempt": attempt,
+                    "artifact_type": artifact_type,
+                    "content_type": content_type,
+                    "content": content,
+                    "title": title,
+                    "description": description,
+                    "metadata_json": metadata_json,
+                }
+            )
 
         return artifact_id
 
@@ -479,7 +634,6 @@ class DataStore:
             try:
                 artifact_type = ArtifactType(artifact_type)
             except ValueError:
-                # Keep as string for backward compatibility
                 type_str = artifact_type
                 content_type = None
         else:
@@ -666,12 +820,16 @@ class DataStore:
         Returns:
             Artifact object or None if not found
         """
-        result = self.conn.execute("""
-            SELECT id, name, step_number, attempt, artifact_type, content_type,
-                   content, title, description, metadata_json, created_at
-            FROM _constat_artifacts
-            WHERE name = ?
-        """, [name]).fetchone()
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, name, step_number, attempt, artifact_type, content_type,
+                           content, title, description, metadata_json, created_at
+                    FROM _constat_artifacts
+                    WHERE name = :name
+                """),
+                {"name": name}
+            ).fetchone()
 
         if result:
             return self._row_to_artifact(result)
@@ -687,12 +845,16 @@ class DataStore:
         Returns:
             Artifact object or None if not found
         """
-        result = self.conn.execute("""
-            SELECT id, name, step_number, attempt, artifact_type, content_type,
-                   content, title, description, metadata_json, created_at
-            FROM _constat_artifacts
-            WHERE id = ?
-        """, [artifact_id]).fetchone()
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, name, step_number, attempt, artifact_type, content_type,
+                           content, title, description, metadata_json, created_at
+                    FROM _constat_artifacts
+                    WHERE id = :id
+                """),
+                {"id": artifact_id}
+            ).fetchone()
 
         if result:
             return self._row_to_artifact(result)
@@ -745,23 +907,25 @@ class DataStore:
                    content, title, description, metadata_json, created_at
             FROM _constat_artifacts
         """
-        params = []
+        params = {}
         conditions = []
 
         if step_number is not None:
-            conditions.append("step_number = ?")
-            params.append(step_number)
+            conditions.append("step_number = :step_number")
+            params["step_number"] = step_number
 
         if artifact_type is not None:
-            conditions.append("artifact_type = ?")
-            params.append(artifact_type)
+            conditions.append("artifact_type = :artifact_type")
+            params["artifact_type"] = artifact_type
 
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
 
         query += " ORDER BY step_number, attempt, id"
 
-        rows = self.conn.execute(query, params).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(query), params).fetchall()
+
         return [self._row_to_artifact(row) for row in rows]
 
     def list_artifacts(self, include_content: bool = False) -> list[dict]:
@@ -775,21 +939,23 @@ class DataStore:
             List of artifact metadata dicts
         """
         if include_content:
-            rows = self.conn.execute("""
-                SELECT id, name, step_number, attempt, artifact_type, content_type,
-                       content, title, description, metadata_json, created_at
-                FROM _constat_artifacts
-                ORDER BY step_number, attempt, id
-            """).fetchall()
+            with self.engine.connect() as conn:
+                rows = conn.execute(text("""
+                    SELECT id, name, step_number, attempt, artifact_type, content_type,
+                           content, title, description, metadata_json, created_at
+                    FROM _constat_artifacts
+                    ORDER BY step_number, attempt, id
+                """)).fetchall()
 
             return [self._row_to_artifact(row).to_dict() for row in rows]
         else:
-            rows = self.conn.execute("""
-                SELECT id, name, step_number, attempt, artifact_type, content_type,
-                       LENGTH(content) as content_length, title, description, created_at
-                FROM _constat_artifacts
-                ORDER BY step_number, attempt, id
-            """).fetchall()
+            with self.engine.connect() as conn:
+                rows = conn.execute(text("""
+                    SELECT id, name, step_number, attempt, artifact_type, content_type,
+                           LENGTH(content) as content_length, title, description, created_at
+                    FROM _constat_artifacts
+                    ORDER BY step_number, attempt, id
+                """)).fetchall()
 
             return [
                 {
@@ -824,24 +990,23 @@ class DataStore:
 
     def set_session_meta(self, key: str, value: str) -> None:
         """Set a session metadata value (problem, status, etc.)."""
-        self.conn.execute("""
-            INSERT OR REPLACE INTO _constat_session (key, value)
-            VALUES (?, ?)
-        """, [key, value])
+        self._upsert("_constat_session", "key", key, {"value": value})
 
     def get_session_meta(self, key: str) -> Optional[str]:
         """Get a session metadata value."""
-        result = self.conn.execute(
-            "SELECT value FROM _constat_session WHERE key = ?",
-            [key]
-        ).fetchone()
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT value FROM _constat_session WHERE key = :key"),
+                {"key": key}
+            ).fetchone()
         return result[0] if result else None
 
     def get_all_session_meta(self) -> dict[str, str]:
         """Get all session metadata."""
-        rows = self.conn.execute(
-            "SELECT key, value FROM _constat_session"
-        ).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT key, value FROM _constat_session")
+            ).fetchall()
         return {key: value for key, value in rows}
 
     # --- Plan step methods ---
@@ -855,17 +1020,17 @@ class DataStore:
         status: str = "pending",
     ) -> None:
         """Save a plan step."""
-        self.conn.execute("""
-            INSERT OR REPLACE INTO _constat_plan_steps
-            (step_number, goal, expected_inputs, expected_outputs, status)
-            VALUES (?, ?, ?, ?, ?)
-        """, [
+        self._upsert(
+            "_constat_plan_steps",
+            "step_number",
             step_number,
-            goal,
-            ",".join(expected_inputs) if expected_inputs else "",
-            ",".join(expected_outputs) if expected_outputs else "",
-            status,
-        ])
+            {
+                "goal": goal,
+                "expected_inputs": ",".join(expected_inputs) if expected_inputs else "",
+                "expected_outputs": ",".join(expected_outputs) if expected_outputs else "",
+                "status": status,
+            }
+        )
 
     def update_plan_step(
         self,
@@ -877,44 +1042,44 @@ class DataStore:
         duration_ms: Optional[int] = None,
     ) -> None:
         """Update a plan step's execution state."""
-        updates = []
-        values = []
+        updates = {}
 
         if status is not None:
-            updates.append("status = ?")
-            values.append(status)
+            updates["status"] = status
         if code is not None:
-            updates.append("code = ?")
-            values.append(code)
+            updates["code"] = code
         if error is not None:
-            updates.append("error = ?")
-            values.append(error)
+            updates["error"] = error
         if attempts is not None:
-            updates.append("attempts = ?")
-            values.append(attempts)
+            updates["attempts"] = attempts
         if duration_ms is not None:
-            updates.append("duration_ms = ?")
-            values.append(duration_ms)
+            updates["duration_ms"] = duration_ms
 
-        if status == "completed" or status == "failed":
-            updates.append("completed_at = CURRENT_TIMESTAMP")
+        if not updates:
+            return
 
-        if updates:
-            values.append(step_number)
-            self.conn.execute(f"""
-                UPDATE _constat_plan_steps
-                SET {", ".join(updates)}
-                WHERE step_number = ?
-            """, values)
+        # Build and execute update query
+        set_clause = ", ".join(f"{k} = :{k}" for k in updates.keys())
+        if status in ("completed", "failed"):
+            set_clause += ", completed_at = CURRENT_TIMESTAMP"
+
+        updates["step_number"] = step_number
+
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(f"UPDATE _constat_plan_steps SET {set_clause} WHERE step_number = :step_number"),
+                updates
+            )
 
     def get_plan_steps(self) -> list[dict]:
         """Get all plan steps for UI restoration."""
-        rows = self.conn.execute("""
-            SELECT step_number, goal, expected_inputs, expected_outputs,
-                   status, code, error, attempts, duration_ms, created_at, completed_at
-            FROM _constat_plan_steps
-            ORDER BY step_number
-        """).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT step_number, goal, expected_inputs, expected_outputs,
+                       status, code, error, attempts, duration_ms, created_at, completed_at
+                FROM _constat_plan_steps
+                ORDER BY step_number
+            """)).fetchall()
 
         return [
             {
@@ -956,7 +1121,7 @@ class DataStore:
 
     def close(self) -> None:
         """Close the database connection."""
-        self.conn.close()
+        self.engine.dispose()
 
     def __enter__(self):
         return self

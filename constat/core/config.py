@@ -129,6 +129,17 @@ class LLMConfig(BaseModel):
             return self.model
 
 
+class StorageConfig(BaseModel):
+    """Storage configuration for artifact store."""
+    # SQLAlchemy URI for the artifact store
+    # Default: Uses DuckDB file per session
+    # Options:
+    #   - duckdb:///path/to/file.duckdb (embedded, single-user)
+    #   - postgresql://user:pass@host:port/db (production, multi-user)
+    #   - sqlite:///path/to/file.db (embedded alternative)
+    artifact_store_uri: Optional[str] = None
+
+
 class ExecutionConfig(BaseModel):
     """Execution settings for generated code."""
     timeout_seconds: int = 60
@@ -161,6 +172,7 @@ class Config(BaseModel):
     databases_description: str = ""  # Global context for all databases (e.g., "Each database represents a company")
     system_prompt: str = ""
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
 
     # User credentials cache (populated when merge_user_config is called)
     # Excluded from serialization
