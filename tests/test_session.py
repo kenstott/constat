@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from constat.core.config import Config
+from constat.core.models import ArtifactType
 from constat.storage.history import SessionHistory
 from constat.session import Session, SessionConfig
 from constat.catalog.schema_manager import SchemaManager
@@ -279,12 +280,12 @@ class TestSessionResumption:
         all_artifacts = session2.datastore.get_artifacts()
         print(f"\n--- Saved Artifacts ---")
         for artifact in all_artifacts:
-            print(f"  Step {artifact.step_number}, Attempt {artifact.attempt}, Type: {artifact.type}")
-            if artifact.type == 'code':
+            print(f"  Step {artifact.step_number}, Attempt {artifact.attempt}, Type: {artifact.artifact_type}")
+            if artifact.artifact_type == ArtifactType.CODE:
                 print(f"    Code preview: {artifact.content[:100]}...")
 
         # Should have code artifacts for multiple steps
-        code_artifacts = [a for a in all_artifacts if a.type == 'code']
+        code_artifacts = [a for a in all_artifacts if a.artifact_type == ArtifactType.CODE]
         assert len(code_artifacts) >= 2, "Should have code artifacts from both initial and follow-up"
 
     def test_resume_nonexistent_session(self, fresh_history_dir):
