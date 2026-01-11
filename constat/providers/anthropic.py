@@ -1,27 +1,13 @@
 """Anthropic Claude provider with tool support."""
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import anthropic
 
-
-@dataclass
-class ToolResult:
-    """Result from a tool call."""
-    tool_use_id: str
-    result: Any
+from .base import BaseLLMProvider
 
 
-@dataclass
-class GenerationResult:
-    """Result from LLM generation."""
-    content: str
-    tool_calls: list[dict] = field(default_factory=list)
-    stop_reason: str = ""
-
-
-class AnthropicProvider:
+class AnthropicProvider(BaseLLMProvider):
     """Anthropic Claude provider with tool calling support."""
 
     def __init__(
@@ -39,6 +25,7 @@ class AnthropicProvider:
         tools: Optional[list[dict]] = None,
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
+        model: Optional[str] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
@@ -49,17 +36,19 @@ class AnthropicProvider:
             tools: Tool definitions in Anthropic format
             tool_handlers: Dict mapping tool names to handler functions
             max_tokens: Maximum tokens to generate
+            model: Override model for this call (for tiered model selection)
 
         Returns:
             Final text response after all tool calls are resolved
         """
         messages = [{"role": "user", "content": user_message}]
         tool_handlers = tool_handlers or {}
+        use_model = model or self.model
 
         while True:
             # Make API call
             kwargs = {
-                "model": self.model,
+                "model": use_model,
                 "max_tokens": max_tokens,
                 "system": system,
                 "messages": messages,
@@ -126,45 +115,3 @@ class AnthropicProvider:
                     if block.type == "text":
                         text_parts.append(block.text)
                 return "\n".join(text_parts)
-
-    def generate_code(
-        self,
-        system: str,
-        user_message: str,
-        tools: Optional[list[dict]] = None,
-        tool_handlers: Optional[dict[str, Callable]] = None,
-        max_tokens: int = 4096,
-    ) -> str:
-        """
-        Generate code, extracting from markdown code blocks if present.
-
-        Returns just the code string, stripped of markdown fencing.
-        """
-        response = self.generate(
-            system=system,
-            user_message=user_message,
-            tools=tools,
-            tool_handlers=tool_handlers,
-            max_tokens=max_tokens,
-        )
-
-        return self._extract_code(response)
-
-    def _extract_code(self, text: str) -> str:
-        """Extract Python code from markdown code blocks."""
-        import re
-
-        # Try to find ```python ... ``` block
-        pattern = r"```python\s*(.*?)\s*```"
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-
-        # Try generic ``` ... ``` block
-        pattern = r"```\s*(.*?)\s*```"
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-
-        # No code block found, return as-is
-        return text.strip()
