@@ -1,21 +1,31 @@
-"""API discovery tools for GraphQL and REST endpoints.
+"""API discovery and execution tools for GraphQL and REST endpoints.
 
-These tools allow the LLM to discover API operations on-demand
-rather than loading everything into the system prompt upfront.
+These tools allow the LLM to:
+1. Discover API operations on-demand (without loading everything upfront)
+2. Execute queries against external APIs to fetch data
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from constat.catalog.api_catalog import APICatalog, OperationType
+from constat.catalog.api_executor import APIExecutor, APIExecutionError
 from constat.core.config import Config
 
 
 class APIDiscoveryTools:
-    """Tools for discovering API operations on-demand."""
+    """Tools for discovering and executing API operations."""
 
     def __init__(self, api_catalog: APICatalog, config: Optional[Config] = None):
         self.api_catalog = api_catalog
         self.config = config
+        self._executor: Optional[APIExecutor] = None
+
+    @property
+    def executor(self) -> Optional[APIExecutor]:
+        """Lazy-initialize API executor."""
+        if self._executor is None and self.config:
+            self._executor = APIExecutor(self.config)
+        return self._executor
 
     def list_apis(self) -> list[dict]:
         """
@@ -178,6 +188,72 @@ class APIDiscoveryTools:
             for m in matches
         ]
 
+    def execute_graphql(
+        self,
+        api: str,
+        query: str,
+        variables: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """
+        Execute a GraphQL query against an external API.
+
+        Args:
+            api: Name of the API (as configured in config.yaml)
+            query: GraphQL query string (e.g., "{ countries { name code } }")
+            variables: Optional query variables
+
+        Returns:
+            Query result data, or error dict if execution fails
+        """
+        if not self.executor:
+            return {"error": "No API executor configured. Check that APIs are defined in config."}
+
+        try:
+            return self.executor.execute_graphql(api, query, variables)
+        except APIExecutionError as e:
+            return {
+                "error": str(e),
+                "status_code": e.status_code,
+                "response": e.response_body,
+            }
+
+    def execute_rest(
+        self,
+        api: str,
+        path: str,
+        method: str = "GET",
+        path_params: Optional[dict[str, Any]] = None,
+        query_params: Optional[dict[str, Any]] = None,
+        body: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        """
+        Execute a REST API call.
+
+        Args:
+            api: Name of the API (as configured in config.yaml)
+            path: API path or operation ID (e.g., "/users/{userId}" or "getUser")
+            method: HTTP method (GET, POST, PUT, PATCH, DELETE)
+            path_params: Parameters to substitute in path
+            query_params: Query string parameters
+            body: Request body for POST/PUT/PATCH
+
+        Returns:
+            API response data, or error dict if execution fails
+        """
+        if not self.executor:
+            return {"error": "No API executor configured. Check that APIs are defined in config."}
+
+        try:
+            return self.executor.execute_rest(
+                api, path, path_params, query_params, body, method
+            )
+        except APIExecutionError as e:
+            return {
+                "error": str(e),
+                "status_code": e.status_code,
+                "response": e.response_body,
+            }
+
 
 # Tool schemas for LLM
 API_TOOL_SCHEMAS = [
@@ -240,6 +316,63 @@ API_TOOL_SCHEMAS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "execute_graphql",
+        "description": "Execute a GraphQL query against an external API to fetch data. Use this after discovering the API and its operations.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "api": {
+                    "type": "string",
+                    "description": "Name of the API (as shown in list_apis)",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "GraphQL query string (e.g., '{ countries { name code } }')",
+                },
+                "variables": {
+                    "type": "object",
+                    "description": "Optional query variables",
+                },
+            },
+            "required": ["api", "query"],
+        },
+    },
+    {
+        "name": "execute_rest",
+        "description": "Execute a REST API call to fetch or modify data. Use this after discovering the API and its operations.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "api": {
+                    "type": "string",
+                    "description": "Name of the API (as shown in list_apis)",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "API path or operation ID (e.g., '/users/{userId}' or 'getUser')",
+                },
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                    "description": "HTTP method (default: GET)",
+                },
+                "path_params": {
+                    "type": "object",
+                    "description": "Parameters to substitute in path (e.g., {\"userId\": \"123\"})",
+                },
+                "query_params": {
+                    "type": "object",
+                    "description": "Query string parameters",
+                },
+                "body": {
+                    "type": "object",
+                    "description": "Request body for POST/PUT/PATCH",
+                },
+            },
+            "required": ["api", "path"],
         },
     },
 ]

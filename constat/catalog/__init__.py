@@ -1,4 +1,4 @@
-"""Schema and API discovery with vector search."""
+"""Schema and API discovery with vector search and execution."""
 
 from .schema_manager import (
     ColumnMetadata,
@@ -18,6 +18,10 @@ from .api_catalog import (
     create_constat_api_catalog,
     introspect_graphql_endpoint,
 )
+from .api_executor import (
+    APIExecutor,
+    APIExecutionError,
+)
 
 __all__ = [
     # Schema Manager
@@ -36,4 +40,7 @@ __all__ = [
     "OperationType",
     "create_constat_api_catalog",
     "introspect_graphql_endpoint",
+    # API Executor
+    "APIExecutor",
+    "APIExecutionError",
 ]

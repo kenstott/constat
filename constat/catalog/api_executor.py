@@ -1,0 +1,401 @@
+"""API executor for querying external GraphQL and REST APIs as data sources.
+
+This module provides the actual execution layer that was missing - it can
+execute queries against external APIs configured in the config.
+
+Usage:
+    from constat.catalog.api_executor import APIExecutor
+    from constat.core.config import Config
+
+    config = Config.from_yaml("config.yaml")
+    executor = APIExecutor(config)
+
+    # Execute a GraphQL query
+    result = executor.execute_graphql(
+        api_name="countries",
+        query="{ countries { name code } }"
+    )
+
+    # Execute a REST call
+    result = executor.execute_rest(
+        api_name="petstore",
+        operation="getPetById",
+        params={"petId": 123}
+    )
+"""
+
+import json
+from typing import Any, Optional
+from urllib.parse import urljoin, urlencode
+
+import httpx
+
+from constat.core.config import Config, APIConfig
+
+
+class APIExecutionError(Exception):
+    """Raised when an API call fails."""
+    def __init__(self, message: str, status_code: Optional[int] = None, response_body: Optional[str] = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_body = response_body
+
+
+class APIExecutor:
+    """
+    Executes queries against external GraphQL and REST APIs.
+
+    This is the actual execution layer for API data sources. It handles:
+    - GraphQL query execution
+    - REST/OpenAPI call execution
+    - Authentication (bearer, basic, api_key, custom headers)
+    - Error handling and response parsing
+    """
+
+    def __init__(self, config: Config, timeout: float = 30.0):
+        """
+        Initialize the API executor.
+
+        Args:
+            config: Configuration containing API definitions
+            timeout: Request timeout in seconds
+        """
+        self.config = config
+        self.timeout = timeout
+        self._client: Optional[httpx.Client] = None
+
+    @property
+    def client(self) -> httpx.Client:
+        """Lazy-initialize HTTP client."""
+        if self._client is None:
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
+
+    def close(self):
+        """Close the HTTP client."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def _get_api_config(self, api_name: str) -> APIConfig:
+        """Get API config by name."""
+        if api_name not in self.config.apis:
+            available = list(self.config.apis.keys())
+            raise APIExecutionError(
+                f"API '{api_name}' not found. Available APIs: {available}"
+            )
+        return self.config.apis[api_name]
+
+    def _build_headers(self, api_config: APIConfig) -> dict[str, str]:
+        """Build request headers including authentication."""
+        headers = {"Content-Type": "application/json"}
+
+        # Add custom headers from config
+        headers.update(api_config.headers)
+
+        # Add authentication
+        if api_config.auth_type == "bearer" and api_config.auth_token:
+            headers["Authorization"] = f"Bearer {api_config.auth_token}"
+        elif api_config.auth_type == "basic" and api_config.auth_username:
+            import base64
+            credentials = f"{api_config.auth_username}:{api_config.auth_password or ''}"
+            encoded = base64.b64encode(credentials.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded}"
+        elif api_config.auth_type == "api_key" and api_config.api_key:
+            headers[api_config.api_key_header] = api_config.api_key
+
+        return headers
+
+    def execute_graphql(
+        self,
+        api_name: str,
+        query: str,
+        variables: Optional[dict[str, Any]] = None,
+        operation_name: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Execute a GraphQL query against an external API.
+
+        Args:
+            api_name: Name of the API (as configured)
+            query: GraphQL query string
+            variables: Optional query variables
+            operation_name: Optional operation name (for queries with multiple operations)
+
+        Returns:
+            The 'data' portion of the GraphQL response
+
+        Raises:
+            APIExecutionError: If the request fails or returns errors
+        """
+        api_config = self._get_api_config(api_name)
+
+        if api_config.type != "graphql":
+            raise APIExecutionError(
+                f"API '{api_name}' is type '{api_config.type}', not 'graphql'"
+            )
+
+        if not api_config.url:
+            raise APIExecutionError(f"API '{api_name}' has no URL configured")
+
+        headers = self._build_headers(api_config)
+
+        payload: dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        if operation_name:
+            payload["operationName"] = operation_name
+
+        try:
+            response = self.client.post(
+                api_config.url,
+                headers=headers,
+                json=payload,
+            )
+        except httpx.RequestError as e:
+            raise APIExecutionError(f"Request to {api_config.url} failed: {e}")
+
+        if response.status_code != 200:
+            raise APIExecutionError(
+                f"GraphQL request failed with status {response.status_code}",
+                status_code=response.status_code,
+                response_body=response.text,
+            )
+
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            raise APIExecutionError(
+                "Invalid JSON response from GraphQL API",
+                response_body=response.text,
+            )
+
+        # Check for GraphQL errors
+        if "errors" in result and result["errors"]:
+            error_messages = [e.get("message", str(e)) for e in result["errors"]]
+            raise APIExecutionError(
+                f"GraphQL errors: {'; '.join(error_messages)}",
+                response_body=json.dumps(result),
+            )
+
+        return result.get("data", {})
+
+    def execute_rest(
+        self,
+        api_name: str,
+        operation: str,
+        path_params: Optional[dict[str, Any]] = None,
+        query_params: Optional[dict[str, Any]] = None,
+        body: Optional[dict[str, Any]] = None,
+        method: Optional[str] = None,
+    ) -> Any:
+        """
+        Execute a REST API call.
+
+        Args:
+            api_name: Name of the API (as configured)
+            operation: Operation ID or path pattern (e.g., "/users/{userId}" or "getUser")
+            path_params: Parameters to substitute in path (e.g., {"userId": "123"})
+            query_params: Query string parameters
+            body: Request body for POST/PUT/PATCH
+            method: HTTP method (auto-detected from operation if not specified)
+
+        Returns:
+            Parsed JSON response (or raw text if not JSON)
+
+        Raises:
+            APIExecutionError: If the request fails
+        """
+        api_config = self._get_api_config(api_name)
+
+        if api_config.type != "openapi":
+            raise APIExecutionError(
+                f"API '{api_name}' is type '{api_config.type}', not 'openapi'"
+            )
+
+        if not api_config.url:
+            raise APIExecutionError(f"API '{api_name}' has no base URL configured")
+
+        # Resolve operation to path and method
+        path, http_method = self._resolve_operation(api_config, operation, method)
+
+        # Substitute path parameters
+        if path_params:
+            for key, value in path_params.items():
+                path = path.replace(f"{{{key}}}", str(value))
+
+        # Build full URL
+        url = urljoin(api_config.url.rstrip("/") + "/", path.lstrip("/"))
+
+        # Add query parameters
+        if query_params:
+            url = f"{url}?{urlencode(query_params)}"
+
+        headers = self._build_headers(api_config)
+
+        try:
+            if http_method.upper() == "GET":
+                response = self.client.get(url, headers=headers)
+            elif http_method.upper() == "POST":
+                response = self.client.post(url, headers=headers, json=body)
+            elif http_method.upper() == "PUT":
+                response = self.client.put(url, headers=headers, json=body)
+            elif http_method.upper() == "PATCH":
+                response = self.client.patch(url, headers=headers, json=body)
+            elif http_method.upper() == "DELETE":
+                response = self.client.delete(url, headers=headers)
+            else:
+                raise APIExecutionError(f"Unsupported HTTP method: {http_method}")
+        except httpx.RequestError as e:
+            raise APIExecutionError(f"Request to {url} failed: {e}")
+
+        if response.status_code >= 400:
+            raise APIExecutionError(
+                f"REST request failed with status {response.status_code}",
+                status_code=response.status_code,
+                response_body=response.text,
+            )
+
+        # Parse response
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                return response.json()
+            except json.JSONDecodeError:
+                return response.text
+        else:
+            return response.text
+
+    def _resolve_operation(
+        self,
+        api_config: APIConfig,
+        operation: str,
+        method: Optional[str],
+    ) -> tuple[str, str]:
+        """
+        Resolve an operation to a path and HTTP method.
+
+        If operation looks like a path (starts with /), use it directly.
+        Otherwise, look it up in the OpenAPI spec.
+        """
+        # If it looks like a path, use it directly
+        if operation.startswith("/"):
+            return operation, method or "GET"
+
+        # Look up in OpenAPI spec
+        spec = self._get_openapi_spec(api_config)
+        if not spec:
+            raise APIExecutionError(
+                f"Cannot resolve operation '{operation}' without OpenAPI spec"
+            )
+
+        # Search for operationId in paths
+        for path, path_item in spec.get("paths", {}).items():
+            for http_method, operation_def in path_item.items():
+                if http_method in ("get", "post", "put", "patch", "delete"):
+                    if operation_def.get("operationId") == operation:
+                        return path, method or http_method.upper()
+
+        raise APIExecutionError(
+            f"Operation '{operation}' not found in OpenAPI spec"
+        )
+
+    def _get_openapi_spec(self, api_config: APIConfig) -> Optional[dict]:
+        """Get OpenAPI spec from config (inline, file, or URL)."""
+        if api_config.spec_inline:
+            return api_config.spec_inline
+
+        if api_config.spec_path:
+            import yaml
+            from pathlib import Path
+            spec_path = Path(api_config.spec_path)
+            if spec_path.exists():
+                with open(spec_path) as f:
+                    if spec_path.suffix in (".yaml", ".yml"):
+                        return yaml.safe_load(f)
+                    else:
+                        return json.load(f)
+
+        if api_config.spec_url:
+            try:
+                response = self.client.get(api_config.spec_url)
+                if response.status_code == 200:
+                    content_type = response.headers.get("content-type", "")
+                    if "yaml" in content_type or api_config.spec_url.endswith((".yaml", ".yml")):
+                        import yaml
+                        return yaml.safe_load(response.text)
+                    else:
+                        return response.json()
+            except Exception:
+                pass
+
+        return None
+
+    def list_available_apis(self) -> list[dict[str, Any]]:
+        """List all configured APIs with their details."""
+        result = []
+        for name, api_config in self.config.apis.items():
+            result.append({
+                "name": name,
+                "type": api_config.type,
+                "url": api_config.url or api_config.spec_url or "",
+                "description": api_config.description,
+                "has_auth": bool(
+                    api_config.auth_token or
+                    api_config.auth_username or
+                    api_config.api_key or
+                    api_config.headers
+                ),
+            })
+        return result
+
+    def execute(
+        self,
+        api_name: str,
+        query_or_operation: str,
+        params: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        """
+        Execute a query against an API (auto-detects GraphQL vs REST).
+
+        Args:
+            api_name: Name of the API
+            query_or_operation: GraphQL query string or REST operation/path
+            params: Variables (GraphQL) or parameters (REST)
+
+        Returns:
+            API response data
+        """
+        api_config = self._get_api_config(api_name)
+
+        if api_config.type == "graphql":
+            return self.execute_graphql(api_name, query_or_operation, variables=params)
+        else:
+            # For REST, try to split params into path and query params
+            path_params = {}
+            query_params = {}
+            body = None
+
+            if params:
+                # Simple heuristic: params with names matching {param} in path go to path_params
+                for key, value in params.items():
+                    if f"{{{key}}}" in query_or_operation:
+                        path_params[key] = value
+                    elif isinstance(value, dict):
+                        body = value
+                    else:
+                        query_params[key] = value
+
+            return self.execute_rest(
+                api_name,
+                query_or_operation,
+                path_params=path_params or None,
+                query_params=query_params or None,
+                body=body,
+            )

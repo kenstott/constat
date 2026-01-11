@@ -86,6 +86,8 @@ class DiscoveryTools:
                 "list_api_operations": self.api_tools.list_operations,
                 "get_operation_details": self.api_tools.get_operation_details,
                 "search_operations": self.api_tools.search_operations,
+                "execute_graphql": self.api_tools.execute_graphql,
+                "execute_rest": self.api_tools.execute_rest,
             })
 
         # Document tools
