@@ -30,11 +30,18 @@ databases:
 # External APIs keyed by name
 apis:
   countries:
-    url: https://countries.trevorblades.com/graphql
     type: graphql
+    url: https://countries.trevorblades.com/graphql
     description: |
       Country data including names, codes, capitals, currencies, languages, and continents.
       Useful for enriching customer data with geographic information.
+
+  petstore:
+    type: openapi
+    spec_url: https://petstore.swagger.io/v2/swagger.json
+    description: |
+      Sample Pet Store API for testing OpenAPI integration.
+      Provides CRUD operations for pets, orders, and users.
 
 system_prompt: |
   You are analyzing data across two different business databases and a countries API.
@@ -59,6 +66,11 @@ system_prompt: |
   - Query country information by code or name
   - Get continent, capital, currency, languages
   - Useful for geographic analysis across both databases
+
+  ## API: Petstore (OpenAPI Test Endpoint)
+  - Sample REST API for testing OpenAPI integration
+  - Operations: findPetsByStatus, getPetById, addPet, placeOrder, etc.
+  - Use httpx to call endpoints
 
   ## Cross-Database Analysis
   When a question spans both databases, query each separately and join
