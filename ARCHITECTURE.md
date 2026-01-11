@@ -6,29 +6,15 @@ Technical documentation of the system architecture and logic flow.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              User Interface                                  │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────────────────┐   │
-│  │      CLI        │  │      REPL       │  │      Python SDK            │   │
-│  │   (cli.py)      │  │   (repl.py)     │  │    (session.py)            │   │
-│  └────────┬────────┘  └────────┬────────┘  └─────────────┬──────────────┘   │
-└───────────┼────────────────────┼─────────────────────────┼──────────────────┘
-            │                    │                         │
-            └────────────────────┼─────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                               API Layer                                      │
-│  ┌──────────────────────────┐  ┌──────────────────────────────────────────┐ │
-│  │      GraphQL API         │  │         REST API (planned)               │ │
-│  │  (api/graphql/)          │  │                                          │ │
-│  │  - createSession         │  │  - POST /api/v1/solve                    │ │
-│  │  - solve, resolveFact    │  │  - WebSocket streaming                   │ │
-│  │  - sessionEvents (sub)   │  │                                          │ │
-│  └────────────┬─────────────┘  └────────────────────┬─────────────────────┘ │
-└───────────────┼─────────────────────────────────────┼───────────────────────┘
-                └─────────────────┬────────────────────┘
-                                  │
-                                  ▼
+│                          Client Access Layer                                 │
+│  ┌───────────┐ ┌───────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │    CLI    │ │   REPL    │ │ Python SDK  │ │GraphQL API  │ │ REST API  │ │
+│  │ (cli.py)  │ │(repl.py)  │ │(session.py) │ │(api/graphql)│ │ (planned) │ │
+│  └─────┬─────┘ └─────┬─────┘ └──────┬──────┘ └──────┬──────┘ └─────┬─────┘ │
+└────────┼─────────────┼──────────────┼───────────────┼───────────────┼───────┘
+         └─────────────┴──────────────┴───────────────┴───────────────┘
+                                      │
+                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Session Layer                                   │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
@@ -62,13 +48,19 @@ Technical documentation of the system architecture and logic flow.
                                                             │
                     ┌───────────────────────────────────────┴───────────────┐
                     │                   Data Sources                         │
+                    │  (All external systems that Constat queries)           │
                     │                                                        │
-                    │  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
-                    │  │   SQL    │  │  NoSQL   │  │   API    │            │
-                    │  │(SQLAlch.)│  │Connectors│  │ Catalog  │            │
-                    │  └──────────┘  └──────────┘  └──────────┘            │
+                    │  ┌──────────┐  ┌──────────┐  ┌────────────────────┐   │
+                    │  │   SQL    │  │  NoSQL   │  │   External APIs    │   │
+                    │  │Databases │  │Databases │  │  (GraphQL, REST)   │   │
+                    │  │(SQLAlch.)│  │Connectors│  │   (API Catalog)    │   │
+                    │  └──────────┘  └──────────┘  └────────────────────┘   │
                     └────────────────────────────────────────────────────────┘
 ```
+
+**Key distinction:**
+- **Client Access Layer**: Ways to USE Constat (CLI, REPL, SDK, exposed GraphQL/REST APIs)
+- **Data Sources**: External systems Constat QUERIES (SQL databases, NoSQL databases, external GraphQL/REST APIs via API Catalog)
 
 ## Request Processing Flow
 
