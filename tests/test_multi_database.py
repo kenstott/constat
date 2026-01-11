@@ -11,9 +11,9 @@ import os
 import pytest
 from pathlib import Path
 
-from constat.config import Config
-from constat.engine import QueryEngine
-from constat.schema_manager import SchemaManager
+from constat.core.config import Config
+from constat.execution.engine import QueryEngine
+from constat.catalog.schema_manager import SchemaManager
 
 
 pytestmark = pytest.mark.skipif(

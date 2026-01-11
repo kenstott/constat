@@ -2,7 +2,7 @@
 
 import pytest
 
-from constat.executor import PythonExecutor, format_error_for_retry
+from constat.execution.executor import PythonExecutor, format_error_for_retry
 
 
 @pytest.fixture

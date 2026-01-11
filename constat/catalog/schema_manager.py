@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
-from .config import Config, DatabaseConfig
+from constat.core.config import Config, DatabaseConfig, DatabaseCredentials
 
 
 @dataclass
@@ -163,7 +163,13 @@ class SchemaManager:
     def _connect_all(self) -> None:
         """Establish connections to all configured databases."""
         for db_config in self.config.databases:
-            engine = create_engine(db_config.uri)
+            # Get credentials from config (user credentials take priority)
+            user_creds = self.config.get_database_credentials(db_config.name)
+
+            # Get connection URI with credentials applied
+            connection_uri = db_config.get_connection_uri(user_credentials=user_creds)
+
+            engine = create_engine(connection_uri)
             # Test connection
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
@@ -304,7 +310,21 @@ class SchemaManager:
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt."""
-        lines = ["Available databases:"]
+        lines = []
+
+        # Add global databases description if provided
+        if self.config.databases_description:
+            lines.append(self.config.databases_description)
+            lines.append("")
+
+        lines.append("Available databases:")
+
+        # Build a lookup for database descriptions
+        db_descriptions = {
+            db.name: db.description
+            for db in self.config.databases
+            if db.description
+        }
 
         # Group tables by database
         by_db: dict[str, list[TableMetadata]] = {}
@@ -314,7 +334,13 @@ class SchemaManager:
         for db_name, tables in sorted(by_db.items()):
             table_names = ", ".join(t.name for t in sorted(tables, key=lambda t: t.name))
             total_rows = sum(t.row_count for t in tables)
-            lines.append(f"  {db_name}: {table_names} ({len(tables)} tables, ~{total_rows:,} rows)")
+
+            # Include database description if available
+            if db_name in db_descriptions:
+                lines.append(f"  {db_name}: {db_descriptions[db_name]}")
+                lines.append(f"    Tables: {table_names} ({len(tables)} tables, ~{total_rows:,} rows)")
+            else:
+                lines.append(f"  {db_name}: {table_names} ({len(tables)} tables, ~{total_rows:,} rows)")
 
         # Add key relationships
         all_fks = []

@@ -33,6 +33,7 @@ class ExecutionResult:
     compile_error: Optional[CompileError] = None
     runtime_error: Optional[RuntimeError_] = None
     return_value: Any = None
+    namespace: Optional[dict] = None  # Variables after execution (for auto-saving)
 
     def error_message(self) -> Optional[str]:
         """Get formatted error message for LLM retry."""
@@ -149,6 +150,7 @@ class PythonExecutor:
                 success=True,
                 stdout=stdout_capture.getvalue(),
                 stderr=stderr_capture.getvalue(),
+                namespace=exec_globals,  # Return namespace for auto-saving
             )
 
         except Exception as e:

@@ -1,0 +1,431 @@
+"""Session history and artifact storage for review, debugging, and resumption."""
+
+import hashlib
+import json
+import os
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+
+@dataclass
+class Artifact:
+    """A single artifact from a query execution."""
+    id: str
+    query_id: int
+    artifact_type: str  # code, output, error, tool_call
+    content: str
+    attempt: int = 1
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class QueryRecord:
+    """Record of a single query execution."""
+    query_id: int
+    timestamp: str
+    question: str
+    success: bool
+    attempts: int
+    duration_ms: int
+    answer: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class SessionSummary:
+    """Summary info for listing sessions."""
+    session_id: str
+    created_at: str
+    databases: list[str]
+    status: str
+    total_queries: int
+    total_duration_ms: int
+
+
+@dataclass
+class SessionDetail:
+    """Full session detail including queries."""
+    session_id: str
+    created_at: str
+    config_hash: str
+    databases: list[str]
+    status: str
+    total_queries: int
+    total_duration_ms: int
+    queries: list[QueryRecord]
+
+
+class SessionHistory:
+    """
+    Persist complete session state for review, debugging, and resumption.
+
+    Storage structure:
+        .constat/
+        ├── sessions/
+        │   ├── 2024-01-15_143022_abc123/
+        │   │   ├── session.json       # Metadata, config, timestamps
+        │   │   ├── queries.jsonl      # All queries in order
+        │   │   ├── artifacts/
+        │   │   │   ├── 001_code.py    # Generated code
+        │   │   │   ├── 001_output.txt # Execution output
+        │   │   │   └── ...
+        │   │   └── state.json         # Final state (for resumption)
+    """
+
+    def __init__(self, storage_dir: Optional[Path] = None):
+        """
+        Initialize session history storage.
+
+        Args:
+            storage_dir: Directory for session storage. Defaults to .constat/sessions
+        """
+        if storage_dir is None:
+            storage_dir = Path(".constat/sessions")
+        self.storage_dir = Path(storage_dir)
+
+    def _ensure_dir(self, path: Path) -> None:
+        """Ensure directory exists."""
+        path.mkdir(parents=True, exist_ok=True)
+
+    def _generate_session_id(self) -> str:
+        """Generate a unique session ID with timestamp prefix."""
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y-%m-%d_%H%M%S")
+        suffix = uuid.uuid4().hex[:8]
+        return f"{timestamp}_{suffix}"
+
+    def _hash_config(self, config_dict: dict) -> str:
+        """Generate hash of config for change detection."""
+        config_str = json.dumps(config_dict, sort_keys=True)
+        return f"sha256:{hashlib.sha256(config_str.encode()).hexdigest()[:16]}"
+
+    def _session_dir(self, session_id: str) -> Path:
+        """Get the directory for a session."""
+        return self.storage_dir / session_id
+
+    def _artifacts_dir(self, session_id: str) -> Path:
+        """Get the artifacts directory for a session."""
+        return self._session_dir(session_id) / "artifacts"
+
+    def create_session(self, config_dict: dict, databases: list[str]) -> str:
+        """
+        Create a new session.
+
+        Args:
+            config_dict: Configuration dictionary for hash generation
+            databases: List of database names in this session
+
+        Returns:
+            session_id: Unique identifier for this session
+        """
+        session_id = self._generate_session_id()
+        session_dir = self._session_dir(session_id)
+        self._ensure_dir(session_dir)
+        self._ensure_dir(self._artifacts_dir(session_id))
+
+        # Write session metadata
+        metadata = {
+            "session_id": session_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "config_hash": self._hash_config(config_dict),
+            "databases": databases,
+            "status": "running",
+            "total_queries": 0,
+            "total_duration_ms": 0,
+        }
+
+        with open(session_dir / "session.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        # Create empty queries file
+        (session_dir / "queries.jsonl").touch()
+
+        return session_id
+
+    def record_query(
+        self,
+        session_id: str,
+        question: str,
+        success: bool,
+        attempts: int,
+        duration_ms: int,
+        answer: Optional[str] = None,
+        error: Optional[str] = None,
+        attempt_history: Optional[list[dict]] = None,
+    ) -> int:
+        """
+        Record a completed query with all artifacts.
+
+        Args:
+            session_id: Session to record to
+            question: The user's question
+            success: Whether query succeeded
+            attempts: Number of attempts made
+            duration_ms: Total duration in milliseconds
+            answer: The answer if successful
+            error: Error message if failed
+            attempt_history: List of attempt details with code/errors
+
+        Returns:
+            query_id: Sequential ID of this query
+        """
+        session_dir = self._session_dir(session_id)
+        session_file = session_dir / "session.json"
+        queries_file = session_dir / "queries.jsonl"
+
+        # Read current session metadata
+        with open(session_file) as f:
+            metadata = json.load(f)
+
+        # Increment query count
+        query_id = metadata["total_queries"] + 1
+        metadata["total_queries"] = query_id
+        metadata["total_duration_ms"] += duration_ms
+
+        # Create query record
+        query_record = {
+            "query_id": query_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "question": question,
+            "success": success,
+            "attempts": attempts,
+            "duration_ms": duration_ms,
+        }
+        if answer:
+            query_record["answer"] = answer
+        if error:
+            query_record["error"] = error
+
+        # Append to queries file
+        with open(queries_file, "a") as f:
+            f.write(json.dumps(query_record) + "\n")
+
+        # Save artifacts from attempt history
+        if attempt_history:
+            artifacts_dir = self._artifacts_dir(session_id)
+            for attempt in attempt_history:
+                attempt_num = attempt.get("attempt", 1)
+                prefix = f"{query_id:03d}_{attempt_num:02d}"
+
+                # Save code
+                if attempt.get("code"):
+                    with open(artifacts_dir / f"{prefix}_code.py", "w") as f:
+                        f.write(attempt["code"])
+
+                # Save output
+                if attempt.get("stdout"):
+                    with open(artifacts_dir / f"{prefix}_output.txt", "w") as f:
+                        f.write(attempt["stdout"])
+
+                # Save error
+                if attempt.get("error"):
+                    with open(artifacts_dir / f"{prefix}_error.txt", "w") as f:
+                        f.write(attempt["error"])
+
+        # Update session metadata
+        with open(session_file, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        return query_id
+
+    def complete_session(self, session_id: str, status: str = "completed") -> None:
+        """
+        Mark a session as completed.
+
+        Args:
+            session_id: Session to complete
+            status: Final status (completed, failed, interrupted)
+        """
+        session_file = self._session_dir(session_id) / "session.json"
+
+        with open(session_file) as f:
+            metadata = json.load(f)
+
+        metadata["status"] = status
+        metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+        with open(session_file, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+    def list_sessions(self, limit: int = 20) -> list[SessionSummary]:
+        """
+        List recent sessions with summary info.
+
+        Args:
+            limit: Maximum number of sessions to return
+
+        Returns:
+            List of session summaries, newest first
+        """
+        if not self.storage_dir.exists():
+            return []
+
+        sessions = []
+        for session_dir in sorted(self.storage_dir.iterdir(), reverse=True):
+            if not session_dir.is_dir():
+                continue
+
+            session_file = session_dir / "session.json"
+            if not session_file.exists():
+                continue
+
+            try:
+                with open(session_file) as f:
+                    metadata = json.load(f)
+
+                sessions.append(SessionSummary(
+                    session_id=metadata["session_id"],
+                    created_at=metadata["created_at"],
+                    databases=metadata.get("databases", []),
+                    status=metadata.get("status", "unknown"),
+                    total_queries=metadata.get("total_queries", 0),
+                    total_duration_ms=metadata.get("total_duration_ms", 0),
+                ))
+
+                if len(sessions) >= limit:
+                    break
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        return sessions
+
+    def get_session(self, session_id: str) -> Optional[SessionDetail]:
+        """
+        Get full session detail including all queries.
+
+        Args:
+            session_id: Session to retrieve
+
+        Returns:
+            SessionDetail or None if not found
+        """
+        session_dir = self._session_dir(session_id)
+        session_file = session_dir / "session.json"
+        queries_file = session_dir / "queries.jsonl"
+
+        if not session_file.exists():
+            return None
+
+        with open(session_file) as f:
+            metadata = json.load(f)
+
+        queries = []
+        if queries_file.exists():
+            with open(queries_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        q = json.loads(line)
+                        queries.append(QueryRecord(
+                            query_id=q["query_id"],
+                            timestamp=q["timestamp"],
+                            question=q["question"],
+                            success=q["success"],
+                            attempts=q["attempts"],
+                            duration_ms=q["duration_ms"],
+                            answer=q.get("answer"),
+                            error=q.get("error"),
+                        ))
+
+        return SessionDetail(
+            session_id=metadata["session_id"],
+            created_at=metadata["created_at"],
+            config_hash=metadata.get("config_hash", ""),
+            databases=metadata.get("databases", []),
+            status=metadata.get("status", "unknown"),
+            total_queries=metadata.get("total_queries", 0),
+            total_duration_ms=metadata.get("total_duration_ms", 0),
+            queries=queries,
+        )
+
+    def get_artifacts(self, session_id: str, query_id: int) -> list[Artifact]:
+        """
+        Get artifacts for a specific query.
+
+        Args:
+            session_id: Session ID
+            query_id: Query ID within the session
+
+        Returns:
+            List of artifacts for this query
+        """
+        artifacts_dir = self._artifacts_dir(session_id)
+        if not artifacts_dir.exists():
+            return []
+
+        prefix = f"{query_id:03d}_"
+        artifacts = []
+
+        for artifact_file in sorted(artifacts_dir.glob(f"{prefix}*")):
+            # Parse filename: 001_01_code.py -> query_id=1, attempt=1, type=code
+            parts = artifact_file.stem.split("_")
+            if len(parts) >= 3:
+                attempt = int(parts[1])
+                artifact_type = parts[2]
+            else:
+                attempt = 1
+                artifact_type = parts[1] if len(parts) >= 2 else "unknown"
+
+            with open(artifact_file) as f:
+                content = f.read()
+
+            artifacts.append(Artifact(
+                id=artifact_file.stem,
+                query_id=query_id,
+                artifact_type=artifact_type,
+                content=content,
+                attempt=attempt,
+            ))
+
+        return artifacts
+
+    def save_state(self, session_id: str, state: dict) -> None:
+        """
+        Save session state for resumption.
+
+        Args:
+            session_id: Session to save state for
+            state: State dictionary to persist
+        """
+        state_file = self._session_dir(session_id) / "state.json"
+        with open(state_file, "w") as f:
+            json.dump(state, f, indent=2)
+
+    def load_state(self, session_id: str) -> Optional[dict]:
+        """
+        Load session state for resumption.
+
+        Args:
+            session_id: Session to load state from
+
+        Returns:
+            State dictionary or None if not found
+        """
+        state_file = self._session_dir(session_id) / "state.json"
+        if not state_file.exists():
+            return None
+
+        with open(state_file) as f:
+            return json.load(f)
+
+    def delete_session(self, session_id: str) -> bool:
+        """
+        Delete a session and all its artifacts.
+
+        Args:
+            session_id: Session to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        import shutil
+
+        session_dir = self._session_dir(session_id)
+        if not session_dir.exists():
+            return False
+
+        shutil.rmtree(session_dir)
+        return True

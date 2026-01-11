@@ -1,0 +1,966 @@
+"""DuckDB datastore for persistent intermediate storage.
+
+Provides persistent storage for:
+- Tables created during step execution
+- State variables shared between steps
+- Session artifacts for history/resumption
+- Rich artifacts (charts, HTML, diagrams, images)
+"""
+
+import json
+from pathlib import Path
+from typing import Any, Optional, Union
+
+import duckdb
+import pandas as pd
+
+from constat.core.models import Artifact, ArtifactType, ARTIFACT_MIME_TYPES
+
+
+class DataStore:
+    """
+    DuckDB-based persistent datastore for session state.
+
+    Each session gets its own DuckDB database file that persists:
+    - Tables created by execution steps
+    - State variables (serialized as JSON)
+    - Metadata about what each step produced
+
+    This enables:
+    - State sharing between steps via tables
+    - Session resumption with full data context
+    - History inspection with actual data (not just logs)
+    """
+
+    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+        """
+        Initialize the datastore.
+
+        Args:
+            db_path: Path to DuckDB file. If None, uses in-memory database.
+        """
+        self.db_path = Path(db_path) if db_path else None
+
+        if self.db_path:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = duckdb.connect(str(self.db_path))
+        else:
+            self.conn = duckdb.connect(":memory:")
+
+        self._init_metadata_tables()
+
+    def _init_metadata_tables(self) -> None:
+        """Create internal metadata tables."""
+        # Table to track state variables
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _constat_state (
+                key VARCHAR PRIMARY KEY,
+                value_json VARCHAR,
+                step_number INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Table to track which step created which tables
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _constat_table_registry (
+                table_name VARCHAR PRIMARY KEY,
+                step_number INTEGER,
+                row_count INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                description VARCHAR
+            )
+        """)
+
+        # Scratchpad - narrative per step
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _constat_scratchpad (
+                step_number INTEGER PRIMARY KEY,
+                goal VARCHAR,
+                narrative VARCHAR,
+                tables_created VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Artifact catalog - code, outputs, errors, rich content per step/attempt
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _constat_artifacts (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR,
+                step_number INTEGER,
+                attempt INTEGER,
+                artifact_type VARCHAR,
+                content_type VARCHAR,
+                content VARCHAR,
+                title VARCHAR,
+                description VARCHAR,
+                metadata_json VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Session metadata - problem statement and status
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _constat_session (
+                key VARCHAR PRIMARY KEY,
+                value VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Plan steps - the plan structure for UI restoration
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _constat_plan_steps (
+                step_number INTEGER PRIMARY KEY,
+                goal VARCHAR,
+                expected_inputs VARCHAR,
+                expected_outputs VARCHAR,
+                status VARCHAR,
+                code VARCHAR,
+                error VARCHAR,
+                attempts INTEGER DEFAULT 0,
+                duration_ms INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        """)
+
+    def save_dataframe(
+        self,
+        name: str,
+        df: pd.DataFrame,
+        step_number: int = 0,
+        description: str = "",
+    ) -> None:
+        """
+        Save a pandas DataFrame as a DuckDB table.
+
+        Args:
+            name: Table name
+            df: DataFrame to save
+            step_number: Which step created this table
+            description: Human-readable description
+        """
+        # Register the DataFrame and create table from it
+        self.conn.register("_temp_df", df)
+        self.conn.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM _temp_df")
+        self.conn.unregister("_temp_df")
+
+        # Update registry
+        self.conn.execute("""
+            INSERT OR REPLACE INTO _constat_table_registry
+            (table_name, step_number, row_count, description)
+            VALUES (?, ?, ?, ?)
+        """, [name, step_number, len(df), description])
+
+    def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
+        """
+        Load a table as a pandas DataFrame.
+
+        Args:
+            name: Table name
+
+        Returns:
+            DataFrame or None if table doesn't exist
+        """
+        try:
+            return self.conn.execute(f"SELECT * FROM {name}").df()
+        except duckdb.CatalogException:
+            return None
+
+    def query(self, sql: str) -> pd.DataFrame:
+        """
+        Execute SQL query and return results as DataFrame.
+
+        Args:
+            sql: SQL query
+
+        Returns:
+            Query results as DataFrame
+        """
+        return self.conn.execute(sql).df()
+
+    def set_state(self, key: str, value: Any, step_number: int = 0) -> None:
+        """
+        Save a state variable.
+
+        Args:
+            key: Variable name
+            value: Value (must be JSON-serializable)
+            step_number: Which step set this variable
+        """
+        value_json = json.dumps(value)
+        self.conn.execute("""
+            INSERT OR REPLACE INTO _constat_state (key, value_json, step_number)
+            VALUES (?, ?, ?)
+        """, [key, value_json, step_number])
+
+    def get_state(self, key: str) -> Optional[Any]:
+        """
+        Get a state variable.
+
+        Args:
+            key: Variable name
+
+        Returns:
+            Value or None if not found
+        """
+        result = self.conn.execute(
+            "SELECT value_json FROM _constat_state WHERE key = ?",
+            [key]
+        ).fetchone()
+
+        if result:
+            return json.loads(result[0])
+        return None
+
+    def get_all_state(self) -> dict[str, Any]:
+        """Get all state variables as a dictionary."""
+        rows = self.conn.execute(
+            "SELECT key, value_json FROM _constat_state"
+        ).fetchall()
+
+        return {key: json.loads(value_json) for key, value_json in rows}
+
+    def list_tables(self) -> list[dict]:
+        """
+        List all user tables with metadata.
+
+        Returns:
+            List of table info dicts
+        """
+        rows = self.conn.execute("""
+            SELECT table_name, step_number, row_count, created_at, description
+            FROM _constat_table_registry
+            ORDER BY step_number, table_name
+        """).fetchall()
+
+        return [
+            {
+                "name": row[0],
+                "step_number": row[1],
+                "row_count": row[2],
+                "created_at": str(row[3]),
+                "description": row[4],
+            }
+            for row in rows
+        ]
+
+    def get_table_schema(self, name: str) -> Optional[list[dict]]:
+        """
+        Get schema for a table.
+
+        Args:
+            name: Table name
+
+        Returns:
+            List of column info dicts or None if table doesn't exist
+        """
+        try:
+            result = self.conn.execute(f"DESCRIBE {name}").fetchall()
+            return [
+                {"name": row[0], "type": row[1], "nullable": row[2] == "YES"}
+                for row in result
+            ]
+        except duckdb.CatalogException:
+            return None
+
+    def drop_table(self, name: str) -> bool:
+        """
+        Drop a table.
+
+        Args:
+            name: Table name
+
+        Returns:
+            True if dropped, False if didn't exist
+        """
+        try:
+            self.conn.execute(f"DROP TABLE IF EXISTS {name}")
+            self.conn.execute(
+                "DELETE FROM _constat_table_registry WHERE table_name = ?",
+                [name]
+            )
+            return True
+        except duckdb.CatalogException:
+            return False
+
+    def clear_step_data(self, step_number: int) -> None:
+        """
+        Clear all data created by a specific step.
+
+        Useful when retrying or revising a step.
+        """
+        # Get tables created by this step
+        tables = self.conn.execute(
+            "SELECT table_name FROM _constat_table_registry WHERE step_number = ?",
+            [step_number]
+        ).fetchall()
+
+        for (table_name,) in tables:
+            self.drop_table(table_name)
+
+        # Clear state variables from this step
+        self.conn.execute(
+            "DELETE FROM _constat_state WHERE step_number = ?",
+            [step_number]
+        )
+
+    def export_state_summary(self) -> dict:
+        """
+        Export a summary of datastore state for context.
+
+        Returns:
+            Dict with tables, state variables, and their metadata
+        """
+        return {
+            "tables": self.list_tables(),
+            "state": self.get_all_state(),
+            "scratchpad": self.get_scratchpad(),
+            "artifacts": self.list_artifacts(),
+        }
+
+    # --- Scratchpad methods ---
+
+    def add_scratchpad_entry(
+        self,
+        step_number: int,
+        goal: str,
+        narrative: str,
+        tables_created: Optional[list[str]] = None,
+    ) -> None:
+        """
+        Add or update a scratchpad entry for a step.
+
+        Args:
+            step_number: Step number
+            goal: Goal of the step
+            narrative: Step result narrative (printed output)
+            tables_created: List of table names created by this step
+        """
+        tables_str = ",".join(tables_created) if tables_created else ""
+        self.conn.execute("""
+            INSERT OR REPLACE INTO _constat_scratchpad
+            (step_number, goal, narrative, tables_created)
+            VALUES (?, ?, ?, ?)
+        """, [step_number, goal, narrative, tables_str])
+
+    def get_scratchpad_entry(self, step_number: int) -> Optional[dict]:
+        """Get scratchpad entry for a step."""
+        result = self.conn.execute(
+            "SELECT goal, narrative, tables_created FROM _constat_scratchpad WHERE step_number = ?",
+            [step_number]
+        ).fetchone()
+
+        if result:
+            return {
+                "step_number": step_number,
+                "goal": result[0],
+                "narrative": result[1],
+                "tables_created": result[2].split(",") if result[2] else [],
+            }
+        return None
+
+    def get_scratchpad(self) -> list[dict]:
+        """Get all scratchpad entries in order."""
+        rows = self.conn.execute("""
+            SELECT step_number, goal, narrative, tables_created
+            FROM _constat_scratchpad
+            ORDER BY step_number
+        """).fetchall()
+
+        return [
+            {
+                "step_number": row[0],
+                "goal": row[1],
+                "narrative": row[2],
+                "tables_created": row[3].split(",") if row[3] else [],
+            }
+            for row in rows
+        ]
+
+    def get_scratchpad_as_markdown(self) -> str:
+        """Get scratchpad as markdown for LLM context."""
+        entries = self.get_scratchpad()
+        if not entries:
+            return "(no previous steps)"
+
+        parts = []
+        for entry in entries:
+            section = f"## Step {entry['step_number']}: {entry['goal']}\n{entry['narrative']}"
+            if entry['tables_created']:
+                section += f"\n\n**Tables created:** {', '.join(entry['tables_created'])}"
+            parts.append(section)
+
+        return "\n\n".join(parts)
+
+    # --- Artifact catalog methods ---
+
+    def add_artifact(
+        self,
+        step_number: int,
+        attempt: int,
+        artifact_type: str,
+        content: str,
+        name: Optional[str] = None,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        content_type: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> int:
+        """
+        Add an artifact (code, output, error, or rich content) to the catalog.
+
+        Args:
+            step_number: Step number
+            attempt: Attempt number within the step
+            artifact_type: Type of artifact (code, output, error, html, svg, etc.)
+            content: Artifact content
+            name: Unique name for the artifact (auto-generated if not provided)
+            title: Human-readable title for display
+            description: Description of the artifact
+            content_type: MIME type override
+            metadata: Additional metadata (JSON-serializable)
+
+        Returns:
+            Artifact ID
+        """
+        # Get next ID
+        result = self.conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM _constat_artifacts").fetchone()
+        artifact_id = result[0]
+
+        # Auto-generate name if not provided
+        if name is None:
+            name = f"artifact_{artifact_id}_{artifact_type}"
+
+        # Serialize metadata
+        metadata_json = json.dumps(metadata) if metadata else None
+
+        self.conn.execute("""
+            INSERT INTO _constat_artifacts
+            (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [artifact_id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json])
+
+        return artifact_id
+
+    def save_rich_artifact(
+        self,
+        name: str,
+        artifact_type: Union[ArtifactType, str],
+        content: str,
+        step_number: int = 0,
+        attempt: int = 1,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> Artifact:
+        """
+        Save a rich artifact (chart, HTML, diagram, image, etc.).
+
+        This is the preferred method for saving artifacts from step code.
+
+        Args:
+            name: Unique name for the artifact
+            artifact_type: Type of artifact (ArtifactType enum or string)
+            content: Artifact content (base64 for binary types)
+            step_number: Step number that created this artifact
+            attempt: Attempt number within the step
+            title: Human-readable title for display
+            description: Description of the artifact
+            metadata: Additional metadata (e.g., chart config, dimensions)
+
+        Returns:
+            Artifact object with assigned ID
+        """
+        # Convert string to enum if needed
+        if isinstance(artifact_type, str):
+            try:
+                artifact_type = ArtifactType(artifact_type)
+            except ValueError:
+                # Keep as string for backward compatibility
+                type_str = artifact_type
+                content_type = None
+        else:
+            type_str = artifact_type.value
+            content_type = ARTIFACT_MIME_TYPES.get(artifact_type)
+
+        artifact_id = self.add_artifact(
+            step_number=step_number,
+            attempt=attempt,
+            artifact_type=type_str if isinstance(artifact_type, str) else artifact_type.value,
+            content=content,
+            name=name,
+            title=title,
+            description=description,
+            content_type=content_type if 'content_type' in dir() else ARTIFACT_MIME_TYPES.get(artifact_type) if isinstance(artifact_type, ArtifactType) else None,
+            metadata=metadata,
+        )
+
+        return Artifact(
+            id=artifact_id,
+            name=name,
+            artifact_type=artifact_type if isinstance(artifact_type, ArtifactType) else ArtifactType.TEXT,
+            content=content,
+            step_number=step_number,
+            attempt=attempt,
+            title=title,
+            description=description,
+            metadata=metadata or {},
+        )
+
+    def save_chart(
+        self,
+        name: str,
+        spec: dict,
+        step_number: int = 0,
+        title: Optional[str] = None,
+        chart_type: str = "vega-lite",
+    ) -> Artifact:
+        """
+        Save a chart specification (Vega-Lite, Plotly, etc.).
+
+        Args:
+            name: Unique name for the chart
+            spec: Chart specification as a dictionary
+            step_number: Step number that created this chart
+            title: Human-readable title
+            chart_type: Type of chart spec (vega-lite, plotly)
+
+        Returns:
+            Artifact object
+        """
+        artifact_type = ArtifactType.PLOTLY if chart_type == "plotly" else ArtifactType.CHART
+        return self.save_rich_artifact(
+            name=name,
+            artifact_type=artifact_type,
+            content=json.dumps(spec),
+            step_number=step_number,
+            title=title,
+            metadata={"chart_type": chart_type},
+        )
+
+    def save_html(
+        self,
+        name: str,
+        html_content: str,
+        step_number: int = 0,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Artifact:
+        """
+        Save HTML content.
+
+        Args:
+            name: Unique name for the artifact
+            html_content: HTML string
+            step_number: Step number that created this
+            title: Human-readable title
+            description: Description
+
+        Returns:
+            Artifact object
+        """
+        return self.save_rich_artifact(
+            name=name,
+            artifact_type=ArtifactType.HTML,
+            content=html_content,
+            step_number=step_number,
+            title=title,
+            description=description,
+        )
+
+    def save_diagram(
+        self,
+        name: str,
+        diagram_code: str,
+        diagram_format: str = "mermaid",
+        step_number: int = 0,
+        title: Optional[str] = None,
+    ) -> Artifact:
+        """
+        Save a diagram (Mermaid, Graphviz, etc.).
+
+        Args:
+            name: Unique name for the diagram
+            diagram_code: Diagram source code
+            diagram_format: Format of the diagram (mermaid, graphviz, plantuml)
+            step_number: Step number
+            title: Human-readable title
+
+        Returns:
+            Artifact object
+        """
+        type_map = {
+            "mermaid": ArtifactType.MERMAID,
+            "graphviz": ArtifactType.GRAPHVIZ,
+            "dot": ArtifactType.GRAPHVIZ,
+        }
+        artifact_type = type_map.get(diagram_format, ArtifactType.DIAGRAM)
+
+        return self.save_rich_artifact(
+            name=name,
+            artifact_type=artifact_type,
+            content=diagram_code,
+            step_number=step_number,
+            title=title,
+            metadata={"format": diagram_format},
+        )
+
+    def save_image(
+        self,
+        name: str,
+        image_data: str,
+        image_format: str = "png",
+        step_number: int = 0,
+        title: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> Artifact:
+        """
+        Save an image (PNG, SVG, JPEG).
+
+        Args:
+            name: Unique name for the image
+            image_data: Image data (base64 for PNG/JPEG, XML for SVG)
+            image_format: Format of the image (png, svg, jpeg)
+            step_number: Step number
+            title: Human-readable title
+            width: Image width in pixels
+            height: Image height in pixels
+
+        Returns:
+            Artifact object
+        """
+        type_map = {
+            "png": ArtifactType.PNG,
+            "svg": ArtifactType.SVG,
+            "jpeg": ArtifactType.JPEG,
+            "jpg": ArtifactType.JPEG,
+        }
+        artifact_type = type_map.get(image_format, ArtifactType.PNG)
+
+        metadata = {}
+        if width:
+            metadata["width"] = width
+        if height:
+            metadata["height"] = height
+
+        return self.save_rich_artifact(
+            name=name,
+            artifact_type=artifact_type,
+            content=image_data,
+            step_number=step_number,
+            title=title,
+            metadata=metadata if metadata else None,
+        )
+
+    def get_artifact_by_name(self, name: str) -> Optional[Artifact]:
+        """
+        Get an artifact by its name.
+
+        Args:
+            name: Artifact name
+
+        Returns:
+            Artifact object or None if not found
+        """
+        result = self.conn.execute("""
+            SELECT id, name, step_number, attempt, artifact_type, content_type,
+                   content, title, description, metadata_json, created_at
+            FROM _constat_artifacts
+            WHERE name = ?
+        """, [name]).fetchone()
+
+        if result:
+            return self._row_to_artifact(result)
+        return None
+
+    def get_artifact_by_id(self, artifact_id: int) -> Optional[Artifact]:
+        """
+        Get an artifact by its ID.
+
+        Args:
+            artifact_id: Artifact ID
+
+        Returns:
+            Artifact object or None if not found
+        """
+        result = self.conn.execute("""
+            SELECT id, name, step_number, attempt, artifact_type, content_type,
+                   content, title, description, metadata_json, created_at
+            FROM _constat_artifacts
+            WHERE id = ?
+        """, [artifact_id]).fetchone()
+
+        if result:
+            return self._row_to_artifact(result)
+        return None
+
+    def _row_to_artifact(self, row: tuple) -> Artifact:
+        """Convert a database row to an Artifact object."""
+        # Try to convert artifact_type string to enum
+        type_str = row[4]
+        try:
+            artifact_type = ArtifactType(type_str)
+        except ValueError:
+            artifact_type = ArtifactType.TEXT
+
+        # Parse metadata
+        metadata = {}
+        if row[9]:
+            try:
+                metadata = json.loads(row[9])
+            except json.JSONDecodeError:
+                pass
+
+        return Artifact(
+            id=row[0],
+            name=row[1] or f"artifact_{row[0]}",
+            step_number=row[2],
+            attempt=row[3],
+            artifact_type=artifact_type,
+            content_type=row[5],
+            content=row[6],
+            title=row[7],
+            description=row[8],
+            metadata=metadata,
+            created_at=str(row[10]) if row[10] else None,
+        )
+
+    def get_artifacts(self, step_number: Optional[int] = None, artifact_type: Optional[str] = None) -> list[Artifact]:
+        """
+        Get artifacts, optionally filtered by step or type.
+
+        Args:
+            step_number: Filter by step number (None for all)
+            artifact_type: Filter by artifact type (None for all)
+
+        Returns:
+            List of Artifact objects
+        """
+        query = """
+            SELECT id, name, step_number, attempt, artifact_type, content_type,
+                   content, title, description, metadata_json, created_at
+            FROM _constat_artifacts
+        """
+        params = []
+        conditions = []
+
+        if step_number is not None:
+            conditions.append("step_number = ?")
+            params.append(step_number)
+
+        if artifact_type is not None:
+            conditions.append("artifact_type = ?")
+            params.append(artifact_type)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY step_number, attempt, id"
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def list_artifacts(self, include_content: bool = False) -> list[dict]:
+        """
+        List artifact metadata.
+
+        Args:
+            include_content: If True, include content in results
+
+        Returns:
+            List of artifact metadata dicts
+        """
+        if include_content:
+            rows = self.conn.execute("""
+                SELECT id, name, step_number, attempt, artifact_type, content_type,
+                       content, title, description, metadata_json, created_at
+                FROM _constat_artifacts
+                ORDER BY step_number, attempt, id
+            """).fetchall()
+
+            return [self._row_to_artifact(row).to_dict() for row in rows]
+        else:
+            rows = self.conn.execute("""
+                SELECT id, name, step_number, attempt, artifact_type, content_type,
+                       LENGTH(content) as content_length, title, description, created_at
+                FROM _constat_artifacts
+                ORDER BY step_number, attempt, id
+            """).fetchall()
+
+            return [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "step_number": row[2],
+                    "attempt": row[3],
+                    "type": row[4],
+                    "content_type": row[5],
+                    "content_length": row[6],
+                    "title": row[7],
+                    "description": row[8],
+                    "created_at": str(row[9]) if row[9] else None,
+                }
+                for row in rows
+            ]
+
+    def get_artifacts_by_type(self, artifact_type: Union[ArtifactType, str]) -> list[Artifact]:
+        """
+        Get all artifacts of a specific type.
+
+        Args:
+            artifact_type: The type of artifacts to retrieve
+
+        Returns:
+            List of Artifact objects
+        """
+        type_str = artifact_type.value if isinstance(artifact_type, ArtifactType) else artifact_type
+        return self.get_artifacts(artifact_type=type_str)
+
+    # --- Session metadata methods ---
+
+    def set_session_meta(self, key: str, value: str) -> None:
+        """Set a session metadata value (problem, status, etc.)."""
+        self.conn.execute("""
+            INSERT OR REPLACE INTO _constat_session (key, value)
+            VALUES (?, ?)
+        """, [key, value])
+
+    def get_session_meta(self, key: str) -> Optional[str]:
+        """Get a session metadata value."""
+        result = self.conn.execute(
+            "SELECT value FROM _constat_session WHERE key = ?",
+            [key]
+        ).fetchone()
+        return result[0] if result else None
+
+    def get_all_session_meta(self) -> dict[str, str]:
+        """Get all session metadata."""
+        rows = self.conn.execute(
+            "SELECT key, value FROM _constat_session"
+        ).fetchall()
+        return {key: value for key, value in rows}
+
+    # --- Plan step methods ---
+
+    def save_plan_step(
+        self,
+        step_number: int,
+        goal: str,
+        expected_inputs: Optional[list[str]] = None,
+        expected_outputs: Optional[list[str]] = None,
+        status: str = "pending",
+    ) -> None:
+        """Save a plan step."""
+        self.conn.execute("""
+            INSERT OR REPLACE INTO _constat_plan_steps
+            (step_number, goal, expected_inputs, expected_outputs, status)
+            VALUES (?, ?, ?, ?, ?)
+        """, [
+            step_number,
+            goal,
+            ",".join(expected_inputs) if expected_inputs else "",
+            ",".join(expected_outputs) if expected_outputs else "",
+            status,
+        ])
+
+    def update_plan_step(
+        self,
+        step_number: int,
+        status: Optional[str] = None,
+        code: Optional[str] = None,
+        error: Optional[str] = None,
+        attempts: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+    ) -> None:
+        """Update a plan step's execution state."""
+        updates = []
+        values = []
+
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if code is not None:
+            updates.append("code = ?")
+            values.append(code)
+        if error is not None:
+            updates.append("error = ?")
+            values.append(error)
+        if attempts is not None:
+            updates.append("attempts = ?")
+            values.append(attempts)
+        if duration_ms is not None:
+            updates.append("duration_ms = ?")
+            values.append(duration_ms)
+
+        if status == "completed" or status == "failed":
+            updates.append("completed_at = CURRENT_TIMESTAMP")
+
+        if updates:
+            values.append(step_number)
+            self.conn.execute(f"""
+                UPDATE _constat_plan_steps
+                SET {", ".join(updates)}
+                WHERE step_number = ?
+            """, values)
+
+    def get_plan_steps(self) -> list[dict]:
+        """Get all plan steps for UI restoration."""
+        rows = self.conn.execute("""
+            SELECT step_number, goal, expected_inputs, expected_outputs,
+                   status, code, error, attempts, duration_ms, created_at, completed_at
+            FROM _constat_plan_steps
+            ORDER BY step_number
+        """).fetchall()
+
+        return [
+            {
+                "step_number": row[0],
+                "goal": row[1],
+                "expected_inputs": row[2].split(",") if row[2] else [],
+                "expected_outputs": row[3].split(",") if row[3] else [],
+                "status": row[4],
+                "code": row[5],
+                "error": row[6],
+                "attempts": row[7],
+                "duration_ms": row[8],
+                "created_at": str(row[9]) if row[9] else None,
+                "completed_at": str(row[10]) if row[10] else None,
+            }
+            for row in rows
+        ]
+
+    def get_full_session_state(self) -> dict:
+        """
+        Get complete session state for UI restoration.
+
+        Returns everything needed to fully restore the UI:
+        - Session metadata (problem, status)
+        - Plan steps with status and code
+        - Tables created
+        - State variables
+        - Scratchpad entries
+        - Artifact summaries
+        """
+        return {
+            "session": self.get_all_session_meta(),
+            "plan_steps": self.get_plan_steps(),
+            "tables": self.list_tables(),
+            "state": self.get_all_state(),
+            "scratchpad": self.get_scratchpad(),
+            "artifacts": self.list_artifacts(),
+        }
+
+    def close(self) -> None:
+        """Close the database connection."""
+        self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False

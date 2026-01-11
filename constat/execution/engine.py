@@ -3,10 +3,10 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .config import Config
+from constat.core.config import Config
 from .executor import ExecutionResult, PythonExecutor, format_error_for_retry
-from .providers.anthropic import AnthropicProvider
-from .schema_manager import SchemaManager
+from constat.providers.anthropic import AnthropicProvider
+from constat.catalog.schema_manager import SchemaManager
 
 
 @dataclass
