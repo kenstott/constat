@@ -367,10 +367,8 @@ class Subscription:
 
 def _get_db_description(ctx: GraphQLContext, db_name: str) -> str:
     """Get description for a database."""
-    if ctx.config:
-        for db in ctx.config.databases:
-            if db.name == db_name:
-                return db.description
+    if ctx.config and db_name in ctx.config.databases:
+        return ctx.config.databases[db_name].description
     return ""
 
 

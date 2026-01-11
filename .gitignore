@@ -39,3 +39,6 @@ htmlcov/
 # Misc
 .DS_Store
 *.log
+
+# Constat session data
+.constat/

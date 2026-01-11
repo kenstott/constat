@@ -21,45 +21,30 @@ class DatabaseCredentials(BaseModel):
 
 class DatabaseConfig(BaseModel):
     """Database connection configuration."""
-    name: str
+    # Note: 'name' is the dict key, not stored in the model
     uri: str  # SQLAlchemy URI (env vars already substituted)
     description: str = ""  # What this database contains/represents
 
     # Optional credentials (alternative to embedding in URI)
+    # These can be provided in engine config or merged in from user config
     username: Optional[str] = None
     password: Optional[str] = None
 
-    # If True, credentials must be provided at runtime (user session credentials)
-    requires_user_credentials: bool = False
-
-    def get_connection_uri(self, user_credentials: Optional[DatabaseCredentials] = None) -> str:
+    def get_connection_uri(self) -> str:
         """
         Get the connection URI with credentials applied.
 
-        Credential priority:
-        1. User session credentials (if requires_user_credentials is True)
-        2. Database config credentials (username/password fields)
-        3. URI as-is (credentials embedded or no auth needed)
-
-        Args:
-            user_credentials: Optional credentials from user session
+        If username/password are set (from engine config or merged user config),
+        they are injected into the URI. Otherwise returns URI as-is.
 
         Returns:
             Connection URI with credentials applied
         """
-        # If requires user credentials, they must be provided
-        if self.requires_user_credentials:
-            if user_credentials is None or not user_credentials.is_complete():
-                raise ValueError(
-                    f"Database '{self.name}' requires user credentials but none were provided"
-                )
-            return self._inject_credentials(user_credentials.username, user_credentials.password)
-
-        # Use config-level credentials if provided
+        # Use credentials if provided
         if self.username and self.password:
             return self._inject_credentials(self.username, self.password)
 
-        # Return URI as-is
+        # Return URI as-is (credentials embedded or no auth needed)
         return self.uri
 
     def _inject_credentials(self, username: str, password: str) -> str:
@@ -140,6 +125,14 @@ class StorageConfig(BaseModel):
     artifact_store_uri: Optional[str] = None
 
 
+class APIConfig(BaseModel):
+    """External API configuration (GraphQL or REST)."""
+    url: str  # Endpoint URL
+    type: str = "graphql"  # graphql | rest
+    description: str = ""  # What this API provides
+    headers: dict[str, str] = Field(default_factory=dict)  # Auth headers, etc.
+
+
 class ExecutionConfig(BaseModel):
     """Execution settings for generated code."""
     timeout_seconds: int = 60
@@ -147,52 +140,56 @@ class ExecutionConfig(BaseModel):
     allowed_imports: list[str] = Field(default_factory=list)
 
 
-class UserConfig(BaseModel):
-    """
-    User-level configuration that can be merged with the global config.
-
-    This allows users to:
-    - Provide their own database credentials
-    - Override specific database settings
-    - Add user-specific customizations
-    """
-    # Database credentials by database name
-    database_credentials: dict[str, DatabaseCredentials] = Field(default_factory=dict)
-
-    # Optional database config overrides (merge with global)
-    databases: list[DatabaseConfig] = Field(default_factory=list)
-
-
 class Config(BaseModel):
     """Root configuration model."""
     model_config = {"extra": "ignore"}
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
-    databases: list[DatabaseConfig] = Field(default_factory=list)
-    databases_description: str = ""  # Global context for all databases (e.g., "Each database represents a company")
+
+    # Databases keyed by name for easy merging
+    # YAML format: databases: {main: {uri: ...}, analytics: {uri: ...}}
+    databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
+
+    # External APIs keyed by name
+    # YAML format: apis: {countries: {url: ..., type: graphql}}
+    apis: dict[str, APIConfig] = Field(default_factory=dict)
+
+    databases_description: str = ""  # Global context for all databases
     system_prompt: str = ""
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
 
-    # User credentials cache (populated when merge_user_config is called)
-    # Excluded from serialization
-    user_credentials_cache: dict[str, DatabaseCredentials] = Field(
-        default_factory=dict,
-        exclude=True,
-        description="Internal cache for user credentials, populated by merge_user_config"
-    )
-
     @classmethod
-    def from_yaml(cls, path: str | Path, user_config: Optional["UserConfig"] = None) -> "Config":
+    def from_yaml(
+        cls,
+        path: str | Path,
+        user_config_path: Optional[str | Path] = None,
+        user_config: Optional[dict] = None,
+    ) -> "Config":
         """
         Load config from YAML file with env var substitution.
 
+        User config can be provided via file or dict. It uses the same structure
+        as the main config and is merged in (user values override engine values).
+
         Args:
             path: Path to the main config YAML file
-            user_config: Optional user config to merge (for credentials/overrides)
+            user_config_path: Optional path to user config YAML file
+            user_config: Optional user config dict (same structure as YAML)
 
         Returns:
             Merged Config object
+
+        Example:
+            # With user config file
+            config = Config.from_yaml("config.yaml", user_config_path="user-config.yaml")
+
+            # With user config dict
+            config = Config.from_yaml("config.yaml", user_config={
+                "databases": [
+                    {"name": "main", "username": "alice", "password": "secret"}
+                ]
+            })
         """
         path = Path(path)
         if not path.exists():
@@ -203,89 +200,82 @@ class Config(BaseModel):
 
         # Substitute environment variables: ${VAR_NAME}
         substituted = _substitute_env_vars(raw_content)
-
         data = yaml.safe_load(substituted)
-        config = cls.model_validate(data)
 
-        # Merge user config if provided
-        if user_config:
-            config = config.merge_user_config(user_config)
+        # Load user config from file if provided
+        user_data = None
+        if user_config_path:
+            user_path = Path(user_config_path)
+            if user_path.exists():
+                with open(user_path) as f:
+                    user_raw = f.read()
+                user_substituted = _substitute_env_vars(user_raw)
+                user_data = yaml.safe_load(user_substituted)
+        elif user_config:
+            user_data = user_config
 
-        return config
+        # Merge user config into engine config
+        if user_data:
+            data = cls._merge_configs(data, user_data)
 
-    def merge_user_config(self, user_config: "UserConfig") -> "Config":
+        return cls.model_validate(data)
+
+    @staticmethod
+    def _merge_configs(engine: dict, user: dict) -> dict:
         """
-        Merge user configuration into this config.
+        Merge user config into engine config.
 
-        User config can:
-        - Provide credentials for databases
-        - Override database settings
-        - Add new databases
+        User values override engine values. Databases and APIs (dicts) are deep-merged by key.
 
         Args:
-            user_config: User configuration to merge
+            engine: Engine config dict
+            user: User config dict
 
         Returns:
-            New Config with user settings applied
+            Merged config dict
         """
-        # Create a copy of the config
-        merged = self.model_copy(deep=True)
+        merged = dict(engine)
 
-        # Store user credentials
-        merged.user_credentials_cache = dict(user_config.database_credentials)
+        # Merge databases (dict keyed by name)
+        if "databases" in user:
+            engine_dbs = dict(merged.get("databases", {}))
 
-        # Merge database overrides
-        for user_db in user_config.databases:
-            # Find matching database by name
-            found = False
-            for i, db in enumerate(merged.databases):
-                if db.name == user_db.name:
-                    # Merge: user values override, but keep base values for unset fields
-                    merged_db = db.model_copy(update={
-                        k: v for k, v in user_db.model_dump().items()
-                        if v is not None and v != "" and v != []
-                    })
-                    merged.databases[i] = merged_db
-                    found = True
-                    break
+            for db_name, user_db in user["databases"].items():
+                if db_name in engine_dbs:
+                    # Merge: user values override engine values
+                    engine_dbs[db_name] = {**engine_dbs[db_name], **user_db}
+                else:
+                    # Add new database from user config
+                    engine_dbs[db_name] = user_db
 
-            if not found:
-                # Add new database from user config
-                merged.databases.append(user_db)
+            merged["databases"] = engine_dbs
+
+        # Merge APIs (dict keyed by name)
+        if "apis" in user:
+            engine_apis = dict(merged.get("apis", {}))
+
+            for api_name, user_api in user["apis"].items():
+                if api_name in engine_apis:
+                    engine_apis[api_name] = {**engine_apis[api_name], **user_api}
+                else:
+                    engine_apis[api_name] = user_api
+
+            merged["apis"] = engine_apis
+
+        # Merge other top-level keys (user overrides engine)
+        for key in user:
+            if key not in ("databases", "apis"):
+                if key in merged and isinstance(merged[key], dict) and isinstance(user[key], dict):
+                    # Deep merge dicts
+                    merged[key] = {**merged[key], **user[key]}
+                else:
+                    merged[key] = user[key]
 
         return merged
 
-    def get_database_credentials(self, database_name: str) -> Optional[DatabaseCredentials]:
-        """
-        Get credentials for a database.
-
-        Checks user credentials first, then database config credentials.
-
-        Args:
-            database_name: Name of the database
-
-        Returns:
-            DatabaseCredentials or None if no credentials available
-        """
-        # Check user credentials first
-        if database_name in self.user_credentials_cache:
-            return self.user_credentials_cache[database_name]
-
-        # Check database config
-        for db in self.databases:
-            if db.name == database_name:
-                if db.username and db.password:
-                    return DatabaseCredentials(username=db.username, password=db.password)
-                break
-
-        return None
-
-    def get_database_config(self, name: str) -> Optional[DatabaseConfig]:
+    def get_database(self, name: str) -> Optional[DatabaseConfig]:
         """Get database config by name."""
-        for db in self.databases:
-            if db.name == name:
-                return db
-        return None
+        return self.databases.get(name)
 
 
 def _substitute_env_vars(content: str) -> str:

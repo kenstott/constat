@@ -8,7 +8,7 @@ import pytest
 
 from constat.core.config import (
     Config, LLMConfig, LLMTiersConfig, DatabaseConfig,
-    DatabaseCredentials, UserConfig
+    DatabaseCredentials
 )
 
 
@@ -82,17 +82,15 @@ class TestDatabaseConfig:
     def test_database_with_description(self):
         """Test database config with description."""
         db = DatabaseConfig(
-            name="chinook",
             uri="sqlite:///./data/chinook.db",
             description="Digital music store selling tracks and albums online",
         )
 
-        assert db.name == "chinook"
         assert db.description == "Digital music store selling tracks and albums online"
 
     def test_database_description_defaults_empty(self):
         """Test that description defaults to empty string."""
-        db = DatabaseConfig(name="test", uri="sqlite:///test.db")
+        db = DatabaseConfig(uri="sqlite:///test.db")
 
         assert db.description == ""
 
@@ -113,7 +111,7 @@ llm:
     simple: claude-3-5-haiku-20241022
 
 databases:
-  - name: test_db
+  test_db:
     uri: sqlite:///test.db
     description: Test database
 """
@@ -140,7 +138,7 @@ llm:
   api_key: test-key
 
 databases:
-  - name: test_db
+  test_db:
     uri: sqlite:///test.db
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
@@ -170,10 +168,10 @@ databases_description: |
   Each database represents a different company.
 
 databases:
-  - name: company_a
+  company_a:
     uri: sqlite:///a.db
     description: Company A's sales data
-  - name: company_b
+  company_b:
     uri: sqlite:///b.db
     description: Company B's inventory data
 """
@@ -186,8 +184,8 @@ databases:
 
                 assert "Each database represents a different company" in config.databases_description
                 assert len(config.databases) == 2
-                assert config.databases[0].description == "Company A's sales data"
-                assert config.databases[1].description == "Company B's inventory data"
+                assert config.databases["company_a"].description == "Company A's sales data"
+                assert config.databases["company_b"].description == "Company B's inventory data"
             finally:
                 os.unlink(f.name)
 
@@ -201,7 +199,7 @@ llm:
   model: claude-sonnet-4-20250514
   api_key: ${TEST_API_KEY}
 
-databases: []
+databases: {}
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
@@ -223,7 +221,7 @@ llm:
   model: claude-sonnet-4-20250514
   api_key: ${NONEXISTENT_VAR_FOR_TEST}
 
-databases: []
+databases: {}
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
@@ -253,7 +251,6 @@ class TestDatabaseCredentials:
     def test_database_config_with_credentials(self):
         """Test database config with inline credentials."""
         db = DatabaseConfig(
-            name="test_db",
             uri="postgresql://localhost:5432/test",
             username="admin",
             password="secret123"
@@ -266,45 +263,13 @@ class TestDatabaseCredentials:
 
     def test_database_config_uri_passthrough(self):
         """Test that URI is returned as-is when no credentials."""
-        db = DatabaseConfig(
-            name="test_db",
-            uri="sqlite:///./data/test.db"
-        )
+        db = DatabaseConfig(uri="sqlite:///./data/test.db")
 
         assert db.get_connection_uri() == "sqlite:///./data/test.db"
-
-    def test_database_config_user_credentials_override(self):
-        """Test that user credentials override config credentials."""
-        db = DatabaseConfig(
-            name="test_db",
-            uri="postgresql://localhost:5432/test",
-            username="config_user",
-            password="config_pass",
-            requires_user_credentials=True
-        )
-
-        user_creds = DatabaseCredentials(username="session_user", password="session_pass")
-        uri = db.get_connection_uri(user_credentials=user_creds)
-
-        assert "session_user" in uri
-        assert "session_pass" in uri
-        assert "config_user" not in uri
-
-    def test_database_config_requires_user_credentials(self):
-        """Test that missing user credentials raises error when required."""
-        db = DatabaseConfig(
-            name="secure_db",
-            uri="postgresql://localhost:5432/secure",
-            requires_user_credentials=True
-        )
-
-        with pytest.raises(ValueError, match="requires user credentials"):
-            db.get_connection_uri()
 
     def test_credential_injection_with_special_chars(self):
         """Test that special characters in credentials are properly escaped."""
         db = DatabaseConfig(
-            name="test_db",
             uri="postgresql://localhost:5432/test",
             username="user@domain",
             password="p@ss:word/123"
@@ -316,123 +281,168 @@ class TestDatabaseCredentials:
         assert "p%40ss%3Aword%2F123" in uri
 
 
-class TestUserConfig:
-    """Tests for user config and merging."""
+class TestUserConfigMerging:
+    """Tests for user config merging."""
 
-    def test_user_config_creation(self):
-        """Test creating user config with credentials."""
-        user_config = UserConfig(
-            database_credentials={
-                "db1": DatabaseCredentials(username="user1", password="pass1"),
-                "db2": DatabaseCredentials(username="user2", password="pass2"),
-            }
-        )
-
-        assert len(user_config.database_credentials) == 2
-        assert user_config.database_credentials["db1"].username == "user1"
-
-    def test_config_merge_user_credentials(self):
+    def test_merge_user_credentials(self):
         """Test merging user credentials into config."""
-        base_config = Config(
-            databases=[
-                DatabaseConfig(name="db1", uri="postgresql://localhost/db1"),
-                DatabaseConfig(name="db2", uri="postgresql://localhost/db2"),
-            ]
-        )
+        engine_yaml = """
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: test-key
 
-        user_config = UserConfig(
-            database_credentials={
-                "db1": DatabaseCredentials(username="alice", password="secret"),
-            }
-        )
+databases:
+  db1:
+    uri: postgresql://localhost/db1
+  db2:
+    uri: postgresql://localhost/db2
+"""
+        user_yaml = """
+databases:
+  db1:
+    username: alice
+    password: secret
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as engine_f:
+            engine_f.write(engine_yaml)
+            engine_f.flush()
 
-        merged = base_config.merge_user_config(user_config)
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as user_f:
+                user_f.write(user_yaml)
+                user_f.flush()
 
-        # User credentials should be accessible
-        creds = merged.get_database_credentials("db1")
-        assert creds is not None
-        assert creds.username == "alice"
-        assert creds.password == "secret"
+                try:
+                    config = Config.from_yaml(engine_f.name, user_config_path=user_f.name)
 
-        # Non-provided credentials should be None
-        assert merged.get_database_credentials("db2") is None
+                    # User credentials should be merged
+                    assert config.databases["db1"].username == "alice"
+                    assert config.databases["db1"].password == "secret"
 
-    def test_config_merge_database_overrides(self):
-        """Test merging database config overrides."""
-        base_config = Config(
-            databases=[
-                DatabaseConfig(
-                    name="db1",
-                    uri="postgresql://localhost/db1",
-                    description="Base description"
-                ),
-            ]
-        )
+                    # db2 should not have credentials
+                    assert config.databases["db2"].username is None
+                finally:
+                    os.unlink(engine_f.name)
+                    os.unlink(user_f.name)
 
-        user_config = UserConfig(
-            databases=[
-                DatabaseConfig(
-                    name="db1",
-                    uri="postgresql://localhost/db1",
-                    username="custom_user",
-                    password="custom_pass"
-                ),
-            ]
-        )
+    def test_merge_preserves_engine_values(self):
+        """Test that engine values are preserved when user config doesn't override."""
+        engine_yaml = """
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: test-key
 
-        merged = base_config.merge_user_config(user_config)
+databases:
+  db1:
+    uri: postgresql://localhost/db1
+    description: Engine description
+"""
+        user_yaml = """
+databases:
+  db1:
+    username: alice
+    password: secret
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as engine_f:
+            engine_f.write(engine_yaml)
+            engine_f.flush()
 
-        db = merged.get_database_config("db1")
-        assert db is not None
-        assert db.username == "custom_user"
-        assert db.password == "custom_pass"
-        # Base description should be preserved
-        assert db.description == "Base description"
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as user_f:
+                user_f.write(user_yaml)
+                user_f.flush()
 
-    def test_config_merge_add_new_database(self):
+                try:
+                    config = Config.from_yaml(engine_f.name, user_config_path=user_f.name)
+
+                    # Engine description should be preserved
+                    assert config.databases["db1"].description == "Engine description"
+                    # User credentials should be merged
+                    assert config.databases["db1"].username == "alice"
+                finally:
+                    os.unlink(engine_f.name)
+                    os.unlink(user_f.name)
+
+    def test_user_can_add_new_databases(self):
         """Test that user config can add new databases."""
-        base_config = Config(
-            databases=[
-                DatabaseConfig(name="db1", uri="sqlite:///db1.db"),
-            ]
-        )
+        engine_yaml = """
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: test-key
 
-        user_config = UserConfig(
-            databases=[
-                DatabaseConfig(name="db2", uri="sqlite:///db2.db", description="User DB"),
-            ]
-        )
+databases:
+  db1:
+    uri: sqlite:///db1.db
+"""
+        user_yaml = """
+databases:
+  db2:
+    uri: sqlite:///db2.db
+    description: User's personal database
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as engine_f:
+            engine_f.write(engine_yaml)
+            engine_f.flush()
 
-        merged = base_config.merge_user_config(user_config)
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as user_f:
+                user_f.write(user_yaml)
+                user_f.flush()
 
-        assert len(merged.databases) == 2
-        db2 = merged.get_database_config("db2")
-        assert db2 is not None
-        assert db2.description == "User DB"
+                try:
+                    config = Config.from_yaml(engine_f.name, user_config_path=user_f.name)
 
-    def test_get_database_credentials_priority(self):
-        """Test credential lookup priority: user > config."""
+                    assert len(config.databases) == 2
+                    assert "db1" in config.databases
+                    assert "db2" in config.databases
+                    assert config.databases["db2"].description == "User's personal database"
+                finally:
+                    os.unlink(engine_f.name)
+                    os.unlink(user_f.name)
+
+    def test_merge_with_dict(self):
+        """Test merging with dict instead of file."""
+        engine_yaml = """
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: test-key
+
+databases:
+  db1:
+    uri: postgresql://localhost/db1
+"""
+        user_config = {
+            "databases": {
+                "db1": {"username": "bob", "password": "pass123"}
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(engine_yaml)
+            f.flush()
+
+            try:
+                config = Config.from_yaml(f.name, user_config=user_config)
+
+                assert config.databases["db1"].username == "bob"
+                assert config.databases["db1"].password == "pass123"
+            finally:
+                os.unlink(f.name)
+
+
+class TestConfigHelpers:
+    """Tests for config helper methods."""
+
+    def test_get_database(self):
+        """Test get_database helper."""
         config = Config(
-            databases=[
-                DatabaseConfig(
-                    name="db1",
-                    uri="postgresql://localhost/db1",
-                    username="config_user",
-                    password="config_pass"
-                ),
-            ]
-        )
-
-        # Without user credentials, should use config
-        creds = config.get_database_credentials("db1")
-        assert creds.username == "config_user"
-
-        # With user credentials, should use those instead
-        user_config = UserConfig(
-            database_credentials={
-                "db1": DatabaseCredentials(username="user_user", password="user_pass"),
+            databases={
+                "main": DatabaseConfig(uri="sqlite:///main.db"),
+                "analytics": DatabaseConfig(uri="sqlite:///analytics.db"),
             }
         )
-        merged = config.merge_user_config(user_config)
-        creds = merged.get_database_credentials("db1")
-        assert creds.username == "user_user"
+
+        assert config.get_database("main") is not None
+        assert config.get_database("main").uri == "sqlite:///main.db"
+        assert config.get_database("nonexistent") is None

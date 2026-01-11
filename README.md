@@ -81,11 +81,11 @@ Connect to any SQLAlchemy-supported database:
 ```yaml
 # config.yaml
 databases:
-  - name: sales
+  sales:
     uri: postgresql://${DB_USER}:${DB_PASS}@localhost/sales
     description: "Sales transactions and customer data"
 
-  - name: analytics
+  analytics:
     uri: bigquery://my-project/analytics
     description: "Analytics warehouse"
 ```
@@ -165,34 +165,196 @@ All connectors provide:
    SQL   MongoDB Cassandra DynamoDB CosmosDB Firestore
 ```
 
+## CLI Usage
+
+```bash
+# Solve a single problem
+constat solve "What are the top 5 customers by revenue?" -c config.yaml
+
+# Start interactive REPL
+constat repl -c config.yaml
+
+# View session history
+constat history
+
+# Resume a previous session
+constat resume abc123 -c config.yaml
+
+# Validate config file
+constat validate -c config.yaml
+
+# Show database schema
+constat schema -c config.yaml
+
+# Generate sample config
+constat init
+```
+
 ## Configuration
 
-### Basic Configuration
+### Configuration Hierarchy
+
+Constat uses a layered configuration system with merge semantics:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Engine Config (config.yaml)                                │
+│  - LLM settings, execution defaults, artifact storage       │
+│  - Shared by all users, deployed with the application       │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ merged with (user overrides engine)
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  User Config (user-config.yaml or runtime dict)             │
+│  - Same YAML structure as engine config                     │
+│  - Provides user-specific database credentials              │
+│  - Can override any engine setting                          │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Final Config                                               │
+│  - Engine values as defaults                                │
+│  - User values override where specified                     │
+│  - Databases merged by name                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Merge Rules:**
+- User config uses **the same YAML structure** as engine config
+- User values **override** engine values
+- Databases are **merged by name** (user credentials added to matching engine database)
+- New databases in user config are **added** to the list
+
+### Complete Configuration Reference
 
 ```yaml
-# config.yaml
+# config.yaml - Complete reference with all options
+
+#==============================================================================
+# LLM CONFIGURATION
+#==============================================================================
 llm:
-  provider: anthropic
+  # Required: LLM provider
+  provider: anthropic                    # anthropic | openai | gemini | grok | ollama
+
+  # Required: Model to use
   model: claude-sonnet-4-20250514
-  api_key: ${ANTHROPIC_API_KEY}  # Environment variable substitution
+
+  # Required: API key (use env var for security)
+  api_key: ${ANTHROPIC_API_KEY}
+
+  # Optional: Use different models for different tasks (cost optimization)
   tiers:
-    planning: claude-sonnet-4-20250514
-    codegen: claude-sonnet-4-20250514
-    simple: claude-3-5-haiku-20241022
+    planning: claude-sonnet-4-20250514   # Complex reasoning for plan generation
+    codegen: claude-sonnet-4-20250514    # Accurate code generation
+    simple: claude-3-5-haiku-20241022    # Fast, cheap for simple tasks
 
+  # Optional: Provider-specific settings
+  # base_url: https://api.anthropic.com  # Custom API endpoint
+  # max_tokens: 4096                     # Max output tokens
+
+#==============================================================================
+# DATABASE CONFIGURATION
+#==============================================================================
+
+# Optional: Global context explaining relationship between databases
+databases_description: |
+  These databases represent different systems within a retail company.
+  Sales data is in sales_db, inventory in inventory_db.
+
+# Required: Databases keyed by name (dict format for easy merging)
 databases:
-  - name: main
-    uri: postgresql://localhost/app
-    description: "Primary application database"
+  # SQL Database (SQLAlchemy URI) with credentials in env vars
+  sales_db:
+    uri: postgresql://${DB_USER}:${DB_PASS}@localhost:5432/sales
+    description: "Customer transactions, orders, and revenue data"
 
-storage:
-  # Default: SQLite file per session
-  # For production multi-user: use PostgreSQL
-  artifact_store_uri: postgresql://localhost/constat_artifacts
+  # With separate credentials (recommended - can be overridden by user config)
+  inventory_db:
+    uri: mysql+pymysql://localhost:3306/inventory
+    username: ${INVENTORY_USER}
+    password: ${INVENTORY_PASS}
+    description: "Warehouse stock levels and shipments"
 
+  # Without credentials (user config provides them)
+  sensitive_db:
+    uri: postgresql://localhost:5432/sensitive
+    description: "Requires user authentication"
+
+  # SQLite (local file)
+  analytics:
+    uri: sqlite:///./data/analytics.db
+    description: "Historical metrics and trends"
+
+  # BigQuery
+  warehouse:
+    uri: bigquery://my-project/dataset
+    description: "Data warehouse"
+
+#==============================================================================
+# DOMAIN CONTEXT (SYSTEM PROMPT)
+#==============================================================================
+
+# Optional: Domain knowledge for the LLM
+# This is included in every prompt and helps the LLM understand your data
+system_prompt: |
+  You are analyzing data for a retail company.
+
+  Key business concepts:
+  - customer_tier: Found in sales_db.customers.tier_level (gold/silver/bronze)
+  - revenue: Found in sales_db.transactions, aggregate by SUM(amount)
+  - region: Geographic sales regions (north/south/east/west)
+
+  Common relationships:
+  - Customers linked to transactions via customer_id
+  - Targets set per-region per-quarter in sales_db.targets
+
+  Business rules:
+  - "Underperforming" means < 80% of target
+  - "VIP customer" means tier_level = 'gold' OR lifetime_value > 100000
+  - Q1 = Jan-Mar, Q2 = Apr-Jun, Q3 = Jul-Sep, Q4 = Oct-Dec
+
+  Data quality notes:
+  - Some older transactions have NULL region (default to 'unknown')
+  - Customer tiers are updated monthly
+
+#==============================================================================
+# EXECUTION SETTINGS
+#==============================================================================
 execution:
+  # Timeout per step in seconds (default: 60)
   timeout_seconds: 60
+
+  # Max retry attempts per step (default: 10)
   max_retries: 10
+
+  # Optional: Restrict imports in generated code
+  allowed_imports:
+    - pandas
+    - numpy
+    - scipy
+    - sklearn
+    - plotly
+    - altair
+    - matplotlib
+
+#==============================================================================
+# STORAGE SETTINGS
+#==============================================================================
+storage:
+  # SQLAlchemy URI for artifact storage
+  # Default: SQLite file per session in ~/.constat/sessions/
+
+  # SQLite (simple, default)
+  artifact_store_uri: sqlite:///~/.constat/artifacts.db
+
+  # PostgreSQL (production, multi-user)
+  # artifact_store_uri: postgresql://${DB_USER}:${DB_PASS}@localhost/constat
+
+  # DuckDB (analytical workloads, requires duckdb-engine)
+  # artifact_store_uri: duckdb:///~/.constat/artifacts.duckdb
 ```
 
 ### Environment Variable Substitution
@@ -216,14 +378,14 @@ Environment variables are substituted at config load time. Missing variables rai
 
 Three ways to provide database credentials:
 
-**1. Embedded in URI:**
+**1. Embedded in URI (simple, not recommended for production):**
 ```yaml
 databases:
   - name: main
     uri: postgresql://myuser:mypass@localhost/mydb
 ```
 
-**2. Separate fields (recommended for security):**
+**2. Separate fields with environment variables (recommended for single-user):**
 ```yaml
 databases:
   - name: main
@@ -232,24 +394,51 @@ databases:
     password: ${DB_PASSWORD}
 ```
 
-**3. User-provided at runtime:**
+**3. User config file (multi-user deployments):**
+
+Engine config defines databases without credentials:
 ```yaml
+# config.yaml (engine config - no credentials)
 databases:
-  - name: main
+  main:
     uri: postgresql://localhost/mydb
-    requires_user_credentials: true  # Credentials provided per session
+    description: "Main application database"
+  analytics:
+    uri: postgresql://localhost/analytics
+```
+
+Each user provides their credentials via user config (same structure):
+```yaml
+# user-config.yaml
+databases:
+  main:
+    username: alice
+    password: secret123
+  analytics:
+    username: alice
+    password: secret456
+  # Users can also add their own databases
+  personal_db:
+    uri: sqlite:///~/my-data.db
+    description: "My personal analysis database"
 ```
 
 ```python
-from constat.core.config import UserConfig, DatabaseCredentials
+# Load with user config - credentials merged automatically
+config = Config.from_yaml("config.yaml", user_config_path="user-config.yaml")
 
-user_config = UserConfig(
-    database_credentials={
-        "main": DatabaseCredentials(username="user", password="pass")
+# Or provide as dict at runtime (e.g., from API request)
+config = Config.from_yaml("config.yaml", user_config={
+    "databases": {
+        "main": {"username": "alice", "password": "secret123"}
     }
-)
-config = Config.from_yaml("config.yaml", user_config=user_config)
+})
 ```
+
+The configs are deep-merged by database name:
+- User credentials fill in engine database definitions
+- Users can add entirely new databases
+- User values override engine values where both exist
 
 ### NoSQL Database Configuration
 

@@ -1,19 +1,43 @@
-# Test configuration with two sample databases
+# Test configuration with two sample databases and a GraphQL API
 
 llm:
   provider: anthropic
   model: claude-sonnet-4-20250514
   api_key: ${ANTHROPIC_API_KEY}
 
-databases:
-  - name: chinook
-    uri: sqlite:///./data/chinook.db
+  # Model tiering for cost optimization (optional)
+  # If not specified, uses 'model' for all tasks
+  tiers:
+    planning: claude-sonnet-4-20250514    # Complex reasoning for plan generation
+    codegen: claude-sonnet-4-20250514     # Accurate code generation
+    simple: claude-3-5-haiku-20241022     # Fast, cheap for simple tasks
 
-  - name: northwind
+# Global context for all databases
+databases_description: |
+  Each database represents a different company's operational data.
+  They share similar concepts (customers, employees, orders) but are separate businesses.
+
+# Databases keyed by name (dict format for easy merging)
+databases:
+  chinook:
+    uri: sqlite:///./data/chinook.db
+    description: Digital music store selling tracks and albums online
+
+  northwind:
     uri: sqlite:///./data/northwind.db
+    description: Food and beverage distribution company shipping products to retailers
+
+# External APIs keyed by name
+apis:
+  countries:
+    url: https://countries.trevorblades.com/graphql
+    type: graphql
+    description: |
+      Country data including names, codes, capitals, currencies, languages, and continents.
+      Useful for enriching customer data with geographic information.
 
 system_prompt: |
-  You are analyzing data across two different business databases.
+  You are analyzing data across two different business databases and a countries API.
 
   ## Database 1: Chinook (Digital Music Store)
   - Artists create Albums, which contain Tracks
@@ -21,6 +45,7 @@ system_prompt: |
   - Customers purchase tracks via Invoices and InvoiceLines
   - Employees are sales representatives (SupportRepId)
   - Revenue = SUM(InvoiceLine.UnitPrice * InvoiceLine.Quantity)
+  - Customer.Country contains the country name (e.g., "USA", "Canada", "France")
 
   ## Database 2: Northwind (Product Distribution Company)
   - Suppliers provide Products in Categories
@@ -28,12 +53,24 @@ system_prompt: |
   - Employees manage customer relationships and orders
   - Shippers deliver orders
   - Revenue = SUM(OrderDetails.UnitPrice * OrderDetails.Quantity)
+  - Customer.Country contains the country name
+
+  ## API: Countries (Geographic Data)
+  - Query country information by code or name
+  - Get continent, capital, currency, languages
+  - Useful for geographic analysis across both databases
 
   ## Cross-Database Analysis
   When a question spans both databases, query each separately and join
   the results in pandas (in-memory). Both databases have:
   - Customers, Employees, Orders/Invoices
   - But different business domains (music vs. product distribution)
+
+  ## Geographic Enrichment
+  Use the Countries API to enrich customer analysis with:
+  - Continent groupings
+  - Currency information
+  - Language demographics
 
 execution:
   timeout_seconds: 60
@@ -43,3 +80,4 @@ execution:
     - numpy
     - scipy
     - sklearn
+    - httpx

@@ -311,7 +311,8 @@ NOT_POSSIBLE: <reason>
                 # Execute query
                 # TODO: Get appropriate connection based on tables in query
                 # For now, use first database
-                db_name = self.config.databases[0].name if self.config else None
+                db_names = list(self.config.databases.keys()) if self.config else []
+                db_name = db_names[0] if db_names else None
                 if db_name:
                     conn = self.schema_manager.get_connection(db_name)
                     import pandas as pd
@@ -481,9 +482,165 @@ Generate the derivation function for {fact_name}:
 
         return None
 
+    def add_user_fact(
+        self,
+        fact_name: str,
+        value: Any,
+        reasoning: Optional[str] = None,
+        **params,
+    ) -> Fact:
+        """
+        Add a user-provided fact to the cache.
+
+        This is used when the user provides missing facts via natural language
+        follow-up. The fact is added to the cache with USER_PROVIDED source.
+
+        Args:
+            fact_name: Name of the fact (e.g., "march_attendance")
+            value: The value provided by user
+            reasoning: Optional explanation from user
+            **params: Parameters for the fact
+
+        Returns:
+            The created Fact
+        """
+        cache_key = self._cache_key(fact_name, params)
+
+        fact = Fact(
+            name=cache_key,
+            value=value,
+            confidence=1.0,  # User-provided facts are treated as certain
+            source=FactSource.USER_PROVIDED,
+            reasoning=reasoning,
+        )
+
+        self._cache[cache_key] = fact
+        self.resolution_log.append(fact)
+        return fact
+
+    def add_user_facts_from_text(self, user_text: str) -> list[Fact]:
+        """
+        Extract facts from natural language user input and add to cache.
+
+        Uses LLM to parse statements like:
+        - "There were 1 million people at the march"
+        - "The revenue threshold should be $50,000"
+
+        Args:
+            user_text: Natural language text containing facts
+
+        Returns:
+            List of extracted and cached facts
+        """
+        if not self.llm:
+            return []
+
+        prompt = f"""Extract factual statements from this user input:
+
+User input: {user_text}
+
+For each fact, provide:
+- FACT_NAME: A short identifier (e.g., "march_attendance", "revenue_threshold")
+- VALUE: The value (number, string, etc.)
+- REASONING: Brief explanation
+
+If the input contains multiple facts, list them all.
+If the input contains no extractable facts, respond with "NO_FACTS".
+
+Example format:
+---
+FACT_NAME: march_attendance
+VALUE: 1000000
+REASONING: User stated there were 1 million people at the march
+---
+FACT_NAME: revenue_threshold
+VALUE: 50000
+REASONING: User specified revenue threshold should be $50,000
+---
+"""
+
+        try:
+            response = self.llm.generate(
+                system="You are a fact extraction assistant. Extract structured facts from natural language.",
+                user_message=prompt,
+                max_tokens=500,
+            )
+
+            if "NO_FACTS" in response:
+                return []
+
+            facts = []
+            current_fact: dict[str, Any] = {}
+
+            for line in response.split("\n"):
+                line = line.strip()
+                if line.startswith("---"):
+                    if current_fact.get("fact_name") and current_fact.get("value") is not None:
+                        fact = self.add_user_fact(
+                            fact_name=current_fact["fact_name"],
+                            value=current_fact["value"],
+                            reasoning=current_fact.get("reasoning"),
+                        )
+                        facts.append(fact)
+                    current_fact = {}
+                elif line.startswith("FACT_NAME:"):
+                    current_fact["fact_name"] = line.split(":", 1)[1].strip()
+                elif line.startswith("VALUE:"):
+                    value_str = line.split(":", 1)[1].strip()
+                    # Try to parse as number
+                    try:
+                        current_fact["value"] = float(value_str)
+                        if current_fact["value"] == int(current_fact["value"]):
+                            current_fact["value"] = int(current_fact["value"])
+                    except ValueError:
+                        current_fact["value"] = value_str
+                elif line.startswith("REASONING:"):
+                    current_fact["reasoning"] = line.split(":", 1)[1].strip()
+
+            # Handle last fact if not terminated with ---
+            if current_fact.get("fact_name") and current_fact.get("value") is not None:
+                fact = self.add_user_fact(
+                    fact_name=current_fact["fact_name"],
+                    value=current_fact["value"],
+                    reasoning=current_fact.get("reasoning"),
+                )
+                facts.append(fact)
+
+            return facts
+
+        except Exception:
+            return []
+
+    def get_unresolved_facts(self) -> list[Fact]:
+        """Get all facts that could not be resolved."""
+        return [f for f in self.resolution_log if f.source == FactSource.UNRESOLVED]
+
+    def get_unresolved_summary(self) -> str:
+        """Get a human-readable summary of unresolved facts."""
+        unresolved = self.get_unresolved_facts()
+        if not unresolved:
+            return "All facts were resolved successfully."
+
+        lines = ["The following facts could not be resolved:"]
+        for fact in unresolved:
+            lines.append(f"  - {fact.name}")
+            if fact.reasoning:
+                lines.append(f"    Reason: {fact.reasoning}")
+
+        lines.append("")
+        lines.append("You can provide these facts by describing them. For example:")
+        lines.append('  "The attendance was 1 million people"')
+        lines.append('  "The revenue threshold should be $50,000"')
+
+        return "\n".join(lines)
+
     def clear_cache(self) -> None:
         """Clear the resolution cache."""
         self._cache.clear()
+
+    def clear_unresolved(self) -> None:
+        """Remove unresolved facts from log, allowing re-resolution."""
+        self.resolution_log = [f for f in self.resolution_log if f.source != FactSource.UNRESOLVED]
 
     def get_audit_log(self) -> list[dict]:
         """Get all resolutions for audit purposes."""

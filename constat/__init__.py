@@ -19,13 +19,13 @@ Main classes:
 
 # Core models and configuration
 from constat.core.config import (
+    APIConfig,
     Config,
     DatabaseConfig,
     DatabaseCredentials,
     ExecutionConfig,
     LLMConfig,
     LLMTiersConfig,
-    UserConfig,
 )
 from constat.core.models import (
     Artifact,
@@ -74,13 +74,13 @@ __version__ = "0.1.0"
 
 __all__ = [
     # Core
+    "APIConfig",
     "Config",
     "DatabaseConfig",
     "DatabaseCredentials",
     "ExecutionConfig",
     "LLMConfig",
     "LLMTiersConfig",
-    "UserConfig",
     "Artifact",
     "ArtifactType",
     "ARTIFACT_MIME_TYPES",

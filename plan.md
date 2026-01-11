@@ -137,16 +137,24 @@ llm:
     codegen: claude-sonnet-4-20250514    # Needs accuracy
     simple: claude-3-5-haiku-20241022    # Fact routing, SQL gen
 
+# Global context for all databases (helps LLM understand the relationship)
+databases_description: |
+  Each database represents a different division of the same retail company.
+  They share common business concepts but store different operational data.
+
 # Database connections (SQLAlchemy URIs)
 databases:
   - name: sales_db
     uri: postgresql://${DB_USER}:${DB_PASS}@localhost:5432/sales
+    description: Customer transactions, orders, and revenue data
 
   - name: inventory_db
     uri: mysql+pymysql://${DB_USER}:${DB_PASS}@localhost:3306/inventory
+    description: Warehouse stock levels, shipments, and product catalog
 
   - name: analytics_db
     uri: sqlite:///./data/analytics.db
+    description: Aggregated metrics and historical trend data
 
 # Domain context for the LLM (included in system prompt)
 system_prompt: |
@@ -210,6 +218,7 @@ from typing import Optional
 class DatabaseConfig(BaseSettings):
     name: str
     uri: str  # SQLAlchemy URI with env var substitution
+    description: str = ""  # What this database contains/represents
 
 class LLMConfig(BaseSettings):
     provider: str = "anthropic"
@@ -225,6 +234,7 @@ class ExecutionConfig(BaseSettings):
 class Config(BaseSettings):
     llm: LLMConfig
     databases: list[DatabaseConfig]
+    databases_description: str = ""  # Global context for all databases
     system_prompt: str = ""
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
@@ -1134,6 +1144,818 @@ async def stream(websocket: WebSocket, session_id: str):
 - Loops back to execution phase
 - Exit with `quit` or `exit` command
 
+### 13. User Session Credentials (`auth.py`)
+
+**Purpose**: Support per-user database credentials for multi-tenant deployments where different users have different access levels.
+
+**Credential hierarchy:**
+
+| Level | Scope | Use Case |
+|-------|-------|----------|
+| **Engine-level** | All sessions | Service account for shared access |
+| **Database-level** | Per database in config | Different credentials per database |
+| **User-level** | Per end-user session | User-specific access (row-level security, etc.) |
+
+**Configuration:**
+
+```yaml
+# config.yaml - Engine/database level credentials
+databases:
+  - name: sales_db
+    uri: postgresql://${DB_USER}:${DB_PASS}@localhost:5432/sales
+    # OR use a credential reference
+    credentials: ${SALES_DB_CREDS}  # Resolves to connection string
+
+  - name: analytics_db
+    uri: postgresql://localhost:5432/analytics
+    # Credentials provided at runtime by user session
+    requires_user_credentials: true
+```
+
+**Runtime credential injection:**
+
+```python
+# API endpoint accepts user credentials
+POST /sessions
+{
+  "config": "path/to/config.yaml",
+  "user_credentials": {
+    "analytics_db": {
+      "username": "alice",
+      "password": "..."
+    }
+  }
+}
+```
+
+**Session-level credential handling:**
+
+```python
+class SessionCredentials:
+    """Manages credentials for a session."""
+
+    def __init__(self, config: Config, user_creds: Optional[dict] = None):
+        self.config = config
+        self.user_creds = user_creds or {}
+
+    def get_connection_string(self, db_name: str) -> str:
+        """Get connection string for a database, applying user credentials if needed."""
+        db_config = self._get_db_config(db_name)
+
+        if db_config.requires_user_credentials:
+            if db_name not in self.user_creds:
+                raise AuthenticationError(f"User credentials required for {db_name}")
+            creds = self.user_creds[db_name]
+            return self._inject_credentials(db_config.uri, creds)
+
+        return db_config.uri
+```
+
+**Security considerations:**
+- Credentials never logged or persisted in session history
+- Connection strings sanitized before storage (password masked)
+- Support for credential rotation via refresh tokens
+- Optional: OAuth2/OIDC integration for SSO
+
+### 14. GraphQL Endpoint (`graphql.py`)
+
+**Purpose**: Provide a GraphQL API for flexible querying and integration with GraphQL-native clients.
+
+**Schema:**
+
+```graphql
+type Query {
+  # Session management
+  session(id: ID!): Session
+  sessions(limit: Int = 20): [SessionSummary!]!
+
+  # Query execution
+  solve(problem: String!, config: String): SolveResult!
+
+  # Schema exploration
+  databases: [Database!]!
+  table(name: String!): TableSchema
+  searchTables(query: String!, topK: Int = 5): [TableMatch!]!
+}
+
+type Mutation {
+  # Session lifecycle
+  createSession(config: String): Session!
+  deleteSession(id: ID!): Boolean!
+
+  # Execution control
+  interruptSession(id: ID!, action: InterruptAction!, feedback: String): Session!
+}
+
+type Subscription {
+  # Real-time execution events
+  sessionEvents(id: ID!): SessionEvent!
+}
+
+type Session {
+  id: ID!
+  status: SessionStatus!
+  plan: Plan
+  currentStep: Int
+  completedSteps: [Int!]!
+  scratchpad: String
+  artifacts: [Artifact!]!
+}
+
+type Plan {
+  problem: String!
+  steps: [Step!]!
+  createdAt: String!
+}
+
+type Step {
+  number: Int!
+  goal: String!
+  status: StepStatus!
+  code: String
+  result: StepResult
+}
+
+type SolveResult {
+  success: Boolean!
+  sessionId: ID!
+  plan: Plan
+  output: String
+  error: String
+}
+
+enum SessionStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  INTERRUPTED
+}
+
+enum StepStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum InterruptAction {
+  CONTINUE
+  REVISE
+  SKIP
+  ABORT
+}
+```
+
+**Implementation:**
+
+```python
+from ariadne import make_executable_schema, QueryType, MutationType, SubscriptionType
+from ariadne.asgi import GraphQL
+
+query = QueryType()
+mutation = MutationType()
+subscription = SubscriptionType()
+
+@query.field("solve")
+async def resolve_solve(_, info, problem: str, config: str = None):
+    session = create_session(config)
+    result = await session.solve(problem)
+    return {
+        "success": result["success"],
+        "sessionId": session.session_id,
+        "plan": result["plan"],
+        "output": result.get("output"),
+        "error": result.get("error"),
+    }
+
+@subscription.source("sessionEvents")
+async def session_events_source(_, info, id: str):
+    session = get_session(id)
+    async for event in session.events():
+        yield event
+
+schema = make_executable_schema(type_defs, query, mutation, subscription)
+app = GraphQL(schema)
+```
+
+### 15. OpenAPI / REST Endpoints (`openapi.py`)
+
+**Purpose**: Provide a REST API with full OpenAPI specification for broad compatibility.
+
+**OpenAPI Specification:**
+
+```yaml
+openapi: 3.1.0
+info:
+  title: Constat API
+  version: 1.0.0
+  description: Multi-step AI reasoning engine API
+
+paths:
+  /api/v1/sessions:
+    post:
+      summary: Create a new session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+
+  /api/v1/sessions/{session_id}:
+    get:
+      summary: Get session details
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+
+  /api/v1/solve:
+    post:
+      summary: Solve a problem (synchronous)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [problem]
+              properties:
+                problem:
+                  type: string
+                  description: Natural language problem to solve
+                config:
+                  type: string
+                  description: Path to config file
+      responses:
+        '200':
+          description: Solution result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolveResult'
+
+  /api/v1/solve/stream:
+    post:
+      summary: Solve a problem (streaming)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [problem]
+              properties:
+                problem:
+                  type: string
+      responses:
+        '200':
+          description: Server-sent events stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SessionEvent'
+
+  /api/v1/schema/databases:
+    get:
+      summary: List available databases
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Database'
+
+  /api/v1/schema/tables/{table_name}:
+    get:
+      summary: Get table schema
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableSchema'
+
+  /api/v1/schema/search:
+    get:
+      summary: Search for relevant tables
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: top_k
+          in: query
+          schema:
+            type: integer
+            default: 5
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TableMatch'
+
+components:
+  schemas:
+    CreateSessionRequest:
+      type: object
+      properties:
+        config:
+          type: string
+        user_credentials:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Credentials'
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed, interrupted]
+        plan:
+          $ref: '#/components/schemas/Plan'
+        current_step:
+          type: integer
+        completed_steps:
+          type: array
+          items:
+            type: integer
+
+    Plan:
+      type: object
+      properties:
+        problem:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/Step'
+
+    Step:
+      type: object
+      properties:
+        number:
+          type: integer
+        goal:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+
+    SolveResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        session_id:
+          type: string
+        plan:
+          $ref: '#/components/schemas/Plan'
+        output:
+          type: string
+        error:
+          type: string
+```
+
+**FastAPI Implementation:**
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+app = FastAPI(
+    title="Constat API",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
+
+class SolveRequest(BaseModel):
+    problem: str
+    config: Optional[str] = None
+    user_credentials: Optional[dict] = None
+
+class SolveResponse(BaseModel):
+    success: bool
+    session_id: str
+    plan: Optional[Plan]
+    output: Optional[str]
+    error: Optional[str]
+
+@app.post("/api/v1/solve", response_model=SolveResponse)
+async def solve(request: SolveRequest):
+    """Solve a problem with multi-step planning."""
+    session = create_session(request.config, request.user_credentials)
+    result = session.solve(request.problem)
+    return SolveResponse(
+        success=result["success"],
+        session_id=session.session_id,
+        plan=result.get("plan"),
+        output=result.get("output"),
+        error=result.get("error"),
+    )
+
+@app.post("/api/v1/solve/stream")
+async def solve_stream(request: SolveRequest):
+    """Solve with server-sent events for real-time updates."""
+    from sse_starlette.sse import EventSourceResponse
+
+    async def event_generator():
+        session = create_session(request.config, request.user_credentials)
+
+        async for event in session.solve_async(request.problem):
+            yield {"event": event.type, "data": event.json()}
+
+    return EventSourceResponse(event_generator())
+```
+
+### 16. Rich Artifact Types (`artifacts.py`)
+
+**Purpose**: Support diverse output types beyond plain text and DataFrames. The artifact database must handle different artifact types for flexible output generation.
+
+**Supported artifact types:**
+
+| Type | Description | Storage | Rendering |
+|------|-------------|---------|-----------|
+| `table` | DataFrame/tabular data | DuckDB table | Data grid |
+| `json` | Structured JSON data | JSON text in artifacts table | JSON viewer |
+| `html` | HTML content | Text blob | Rendered HTML |
+| `javascript` | Executable JS code | Text blob | Code block + optional sandbox |
+| `python` | Python code snippet | Text blob | Syntax-highlighted code |
+| `react` | React component | JSX text | Rendered component |
+| `markdown` | Markdown text | Text blob | Rendered markdown |
+| `chart` | Chart specification | JSON (Vega-Lite or similar) | Interactive chart |
+| `svg` | Vector graphics | SVG XML text | Rendered SVG |
+| `png` | Raster image | Base64 or file path | Image display |
+| `diagram` | Flowcharts, architecture | Mermaid/Graphviz text | Rendered diagram |
+
+**Recommended libraries for artifact generation:**
+
+**Interactive Charts & Dashboards (HTML/React output):**
+
+| Library | Output | Use Case | Install |
+|---------|--------|----------|---------|
+| **Plotly** | HTML, JSON | Interactive charts, 3D plots | `pip install plotly` |
+| **Altair** | Vega-Lite JSON | Declarative statistical charts | `pip install altair` |
+| **Bokeh** | HTML | Interactive dashboards | `pip install bokeh` |
+| **ECharts (pyecharts)** | HTML | Rich interactive charts | `pip install pyecharts` |
+| **Panel** | HTML/React | Full dashboards | `pip install panel` |
+
+**Static Graphics (SVG/PNG output):**
+
+| Library | Output | Use Case | Install |
+|---------|--------|----------|---------|
+| **Matplotlib** | SVG, PNG | Standard plots | `pip install matplotlib` |
+| **Seaborn** | SVG, PNG | Statistical visualization | `pip install seaborn` |
+| **Graphviz** | SVG, PNG | Flowcharts, graphs | `pip install graphviz` |
+| **diagrams** | PNG | Cloud architecture diagrams | `pip install diagrams` |
+| **NetworkX** | SVG, PNG | Network/graph visualization | `pip install networkx` |
+| **svgwrite** | SVG | Programmatic SVG creation | `pip install svgwrite` |
+| **Pillow** | PNG, JPEG | Image manipulation | `pip install pillow` |
+
+**Diagram-as-Code (Text to Visual):**
+
+| Library | Output | Use Case | Install |
+|---------|--------|----------|---------|
+| **Mermaid** | SVG | Flowcharts, sequence diagrams | JS library (render in frontend) |
+| **PlantUML** | SVG, PNG | UML diagrams | `pip install plantuml` |
+| **D2** | SVG | Modern diagram language | External binary |
+| **Kroki** | SVG, PNG | Universal diagram API | API service |
+
+**Example usage in step code:**
+
+```python
+# Interactive Plotly chart -> HTML artifact
+import plotly.express as px
+fig = px.bar(df, x='region', y='revenue', title='Revenue by Region')
+store.save_artifact('revenue_chart', {
+    'type': 'html',
+    'content': fig.to_html(include_plotlyjs='cdn'),
+    'title': 'Revenue by Region'
+}, step_number=3)
+
+# Altair chart -> Vega-Lite JSON
+import altair as alt
+chart = alt.Chart(df).mark_bar().encode(x='region', y='revenue')
+store.save_artifact('revenue_vega', {
+    'type': 'chart',
+    'spec': chart.to_dict(),
+    'title': 'Revenue by Region'
+}, step_number=3)
+
+# Matplotlib -> PNG
+import matplotlib.pyplot as plt
+import io, base64
+fig, ax = plt.subplots()
+ax.bar(df['region'], df['revenue'])
+buf = io.BytesIO()
+fig.savefig(buf, format='png')
+store.save_artifact('revenue_png', {
+    'type': 'png',
+    'content': base64.b64encode(buf.getvalue()).decode(),
+    'title': 'Revenue by Region'
+}, step_number=3)
+
+# Graphviz diagram -> SVG
+from graphviz import Digraph
+dot = Digraph()
+dot.node('A', 'Customer')
+dot.node('B', 'Order')
+dot.edge('A', 'B', 'places')
+store.save_artifact('er_diagram', {
+    'type': 'svg',
+    'content': dot.pipe(format='svg').decode(),
+    'title': 'Entity Relationship'
+}, step_number=4)
+
+# Mermaid diagram (text, rendered by frontend)
+mermaid_code = """
+flowchart LR
+    A[Customer] --> B[Order]
+    B --> C[Invoice]
+"""
+store.save_artifact('flow_diagram', {
+    'type': 'diagram',
+    'format': 'mermaid',
+    'content': mermaid_code,
+    'title': 'Order Flow'
+}, step_number=5)
+```
+
+**Recommended additions to `allowed_imports` in config:**
+
+```yaml
+execution:
+  allowed_imports:
+    - pandas
+    - numpy
+    - plotly
+    - altair
+    - matplotlib
+    - seaborn
+    - graphviz
+    - networkx
+    - svgwrite
+    - pillow
+```
+
+**Artifact schema extension:**
+
+```sql
+CREATE TABLE _constat_artifacts (
+    id INTEGER PRIMARY KEY,
+    step_number INTEGER,
+    attempt INTEGER,
+    artifact_type VARCHAR,         -- 'code', 'output', 'error', 'table', 'json', 'html', etc.
+    content_type VARCHAR,          -- MIME type: 'text/html', 'application/json', 'text/jsx', etc.
+    content TEXT,                  -- The artifact content
+    metadata JSON,                 -- Additional metadata (e.g., chart config, React props)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Artifact generation in step code:**
+
+```python
+# Step code can produce various artifact types
+store.save_artifact('summary_chart', {
+    'type': 'chart',
+    'spec': vega_lite_spec,
+    'title': 'Revenue by Region'
+}, step_number=3)
+
+store.save_artifact('customer_report', {
+    'type': 'html',
+    'content': html_string,
+    'title': 'Customer Analysis Report'
+}, step_number=4)
+
+store.save_artifact('dashboard', {
+    'type': 'react',
+    'component': jsx_string,
+    'props': {'data': summary_data}
+}, step_number=5)
+```
+
+**UI rendering:**
+
+The React UI inspects `artifact_type` and renders appropriately:
+- `table` → AG Grid or similar data table
+- `json` → Collapsible JSON tree
+- `html` → Sandboxed iframe
+- `react` → Dynamic component loading
+- `chart` → Vega-Lite or Chart.js renderer
+- `markdown` → Rendered markdown
+
+### 17. ProbLog Rule Generation and Caching (`rule_cache.py`)
+
+**Purpose**: Enable LLM to generate new rules on-demand (not just execute pre-defined rules) and cache rules for reuse across sessions.
+
+**Key insight**: The LLM is not limited to executing known rules. When fact resolution fails or a query requires novel reasoning, the LLM can:
+1. Generate a new rule to derive the required fact
+2. Cache the rule for future reuse
+3. Execute the generated rule
+
+**Fact resolution hierarchy (extended):**
+
+```
+Prolog needs fact: customer_lifetime_value(acme, X)
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────┐
+│  1. Check system prompt / config (known facts)                │
+│     → Not found                                               │
+│                                                               │
+│  2. Check rule cache (previously generated rules)             │
+│     → Found rule? Execute it                                  │
+│     → Not found? Continue                                     │
+│                                                               │
+│  3. Try database query                                        │
+│     → LLM: "Can I derive this from a query?"                 │
+│     → If yes: Execute SQL, return fact with confidence 1.0   │
+│     → If no: Continue                                        │
+│                                                               │
+│  4. Try LLM foundational knowledge                            │
+│     → LLM: "Do you know this fact?"                          │
+│     → If yes: Return with confidence 0.6-0.8                 │
+│     → If no: Continue                                        │
+│                                                               │
+│  5. Generate new rule (recursive)                             │
+│     → LLM: "Can you write a rule to derive this?"            │
+│     → Generate rule, cache it, execute it                    │
+│     → May trigger more fact resolutions (recursion)          │
+│                                                               │
+│  6. Fail with "fact cannot be resolved"                       │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Rule cache structure:**
+
+```python
+class RuleCache:
+    """Persistent cache of generated rules for reuse."""
+
+    def __init__(self, db_path: Path):
+        self.conn = duckdb.connect(str(db_path))
+        self._init_tables()
+
+    def _init_tables(self):
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS _rule_cache (
+                rule_id VARCHAR PRIMARY KEY,
+                predicate VARCHAR,           -- e.g., 'customer_lifetime_value/2'
+                rule_text TEXT,              -- The ProbLog rule
+                description TEXT,            -- Natural language description
+                confidence FLOAT,            -- How confident we are in this rule
+                source VARCHAR,              -- 'llm_generated', 'user_provided', 'imported'
+                usage_count INTEGER DEFAULT 0,
+                success_rate FLOAT DEFAULT 1.0,
+                created_at TIMESTAMP,
+                last_used_at TIMESTAMP,
+                session_id VARCHAR           -- Which session created it
+            )
+        """)
+
+    def find_rule(self, predicate: str) -> Optional[Rule]:
+        """Find a cached rule for a predicate."""
+        ...
+
+    def add_rule(self, predicate: str, rule_text: str,
+                 description: str, confidence: float, source: str) -> str:
+        """Add a new rule to the cache."""
+        ...
+
+    def record_usage(self, rule_id: str, success: bool):
+        """Record rule usage and update success rate."""
+        ...
+
+    def get_relevant_rules(self, context: str, top_k: int = 5) -> list[Rule]:
+        """Vector search for rules relevant to a context."""
+        ...
+```
+
+**Rule generation workflow:**
+
+```python
+def resolve_with_rule_generation(goal: str, context: dict) -> Fact:
+    """Try to resolve a fact, generating rules if needed."""
+
+    # 1. Check if we have a cached rule
+    predicate = extract_predicate(goal)
+    cached_rule = rule_cache.find_rule(predicate)
+
+    if cached_rule:
+        # Execute cached rule
+        result = prolog.query(goal)
+        if result:
+            rule_cache.record_usage(cached_rule.id, success=True)
+            return Fact(goal, result, confidence=cached_rule.confidence)
+
+    # 2. Ask LLM to generate a rule
+    prompt = f"""
+    I need to derive: {goal}
+
+    Available predicates: {available_predicates}
+    Database schema: {schema_summary}
+
+    Can you write a ProbLog rule to derive this fact?
+    The rule can call other predicates (which may trigger their own resolution).
+
+    Format:
+    ```prolog
+    {predicate}(...) :- <body>.
+    ```
+
+    Also provide:
+    - Description: <what this rule does>
+    - Confidence: <0.0-1.0, how confident are you this rule is correct>
+    """
+
+    response = llm.query(prompt)
+
+    if response.rule:
+        # Cache the new rule
+        rule_id = rule_cache.add_rule(
+            predicate=predicate,
+            rule_text=response.rule,
+            description=response.description,
+            confidence=response.confidence,
+            source='llm_generated'
+        )
+
+        # Load and execute
+        prolog.consult_string(response.rule)
+        result = prolog.query(goal)
+
+        if result:
+            rule_cache.record_usage(rule_id, success=True)
+            return Fact(goal, result, confidence=response.confidence)
+        else:
+            rule_cache.record_usage(rule_id, success=False)
+
+    return Fact(goal, None, confidence=0.0, source='unresolved')
+```
+
+**Rule quality tracking:**
+
+Over time, track which rules work well:
+- `usage_count`: How often the rule is invoked
+- `success_rate`: Percentage of times it returns valid results
+- `last_used_at`: For cache eviction
+
+**Rule library:**
+
+For common domains, pre-populate with known-good rules:
+
+```yaml
+# rules/financial.yaml
+rules:
+  - predicate: customer_lifetime_value/2
+    rule: |
+      customer_lifetime_value(Customer, LTV) :-
+        findall(Amount, transaction(Customer, _, Amount), Amounts),
+        sum_list(Amounts, LTV).
+    description: "Calculate customer LTV as sum of all transactions"
+    confidence: 0.95
+
+  - predicate: high_value_customer/1
+    rule: |
+      high_value_customer(Customer) :-
+        customer_lifetime_value(Customer, LTV),
+        LTV > 10000.
+    description: "Customer with LTV > $10,000"
+    confidence: 0.9
+```
+
+**Benefits:**
+- Rules improve over time as good ones are reused
+- Domain expertise accumulates in the cache
+- New problems can leverage previously generated rules
+- Audit trail of rule provenance
+
 ## File Structure
 
 ```
@@ -1271,6 +2093,130 @@ Plan (continued):
 - `scikit-learn` - ML algorithms, vectorization, clustering
 - `sentence-transformers` - Text embeddings
 - `requests` - HTTP client
+
+## Implementation Status
+
+This section tracks the implementation progress of the system.
+
+### Completed Features
+
+**Core Infrastructure:**
+- [x] Config loading with Pydantic models (`constat/core/config.py`)
+- [x] Environment variable substitution (`${VAR_NAME}` syntax)
+- [x] Database credentials (embedded, separate fields, runtime-provided)
+- [x] StorageConfig with artifact_store_uri option
+- [x] LLM provider interface (`constat/providers/`)
+
+**Session & Execution (`constat/session.py`):**
+- [x] Multi-step planner with English steps (`constat/execution/planner.py`)
+- [x] Python code generation with retry on errors
+- [x] Python code execution with timeout and sandbox (`constat/execution/executor.py`)
+- [x] Session orchestration (solve, resume, follow_up)
+- [x] Scratchpad for context between steps (`constat/execution/scratchpad.py`)
+- [x] Event system for monitoring (StepEvent callbacks)
+- [x] Auto-save of DataFrames and state between steps
+
+**Data Store Integration:**
+- [x] SQLAlchemy-based artifact store with multi-backend support
+  - SQLite (default, always available)
+  - PostgreSQL (production, multi-user)
+  - DuckDB (optional via duckdb-engine package)
+- [x] Schema introspection for SQL databases (`constat/catalog/schema_manager.py`)
+- [x] Schema tools for LLM (get_table_schema, find_relevant_tables)
+- [x] Session history and artifact persistence (`constat/storage/history.py`)
+
+**NoSQL Connectors** (`constat/catalog/nosql/`):
+- [x] Base connector class with unified interface
+- [x] MongoDB connector (document store)
+- [x] Cassandra connector (wide-column store)
+- [x] Elasticsearch connector (search engine)
+- [x] DynamoDB connector (AWS key-value)
+- [x] Cosmos DB connector (Azure multi-model)
+- [x] Firestore connector (Google Cloud)
+- [x] Schema inference from document samples
+- [x] Embedding text generation for vector search
+
+**Execution Modes:**
+- [x] ExecutionMode enum (exploratory, auditable)
+- [x] FactResolver for auditable mode
+  - Lazy fact resolution
+  - Automatic LLM-generated derivation logic
+  - Full provenance tracking
+  - User-provided facts with source tracking
+  - Intent classification for follow-up messages
+
+**External API Support:**
+- [x] APIConfig model for GraphQL/REST endpoints
+- [x] Config merging for APIs (same pattern as databases)
+- [x] Countries GraphQL API configured as example
+
+**API:**
+- [x] GraphQL API with Strawberry (`constat/api/graphql/`)
+  - createSession mutation
+  - solve query
+  - resolveFact query
+  - sessionEvents subscription
+
+**Documentation:**
+- [x] README.md with comprehensive documentation
+- [x] LICENSE (PolyForm Small Business License 1.0.0)
+
+**Tests:**
+- [x] NoSQL connector tests (`tests/test_nosql_connectors.py`)
+- [x] Datastore tests with SQLAlchemy backend
+
+**CLI & User Interface:**
+- [x] Live feedback system with `rich` (`constat/feedback.py`)
+- [x] Interactive REPL for refinement loop (`constat/repl.py`)
+- [x] CLI with Click (`constat/cli.py`)
+  - `constat solve` - Solve a problem
+  - `constat repl` - Interactive session
+  - `constat history` - List sessions
+  - `constat resume` - Resume session
+  - `constat validate` - Validate config
+  - `constat schema` - Show database schema
+  - `constat init` - Generate sample config
+
+### Phase 1 Complete
+
+All Phase 1 features have been implemented. The system can:
+- Parse YAML configuration with environment variable substitution
+- Connect to SQL and NoSQL databases
+- Generate multi-step plans from natural language
+- Execute Python code with retry on errors
+- Persist state between steps via DataStore
+- Provide real-time terminal feedback
+- Support interactive refinement via REPL
+- Record session history for resumption
+
+### Planned (Phase 2)
+
+**Auditable Mode Enhancements:**
+- [x] Interactive fact resolution - when unresolved, explain missing facts
+- [x] Natural language fact input - user provides missing facts in NL
+- [x] Fact retry/restart - add user-provided facts and re-run resolution
+- [x] Example: "There were 1 million people at the march" → adds fact → re-resolves
+- [x] Intent classification for follow-up messages (PROVIDE_FACTS, REVISE, NEW_REQUEST, MIXED)
+- [x] REPL commands: /unresolved to view missing facts, /facts to provide them
+
+**Prolog/ProbLog Integration:**
+- [ ] ProbLog engine wrapper
+- [ ] Fact provenance and confidence scoring
+- [ ] On-demand fact resolution (Prolog → Python → LLM/DB)
+- [ ] Derivation trace capture
+- [ ] Hybrid Python/Prolog execution
+
+### Architecture Change Notes
+
+The original plan specified ProbLog for probabilistic logic programming. The current implementation uses a Python-based FactResolver that:
+1. Analyzes the question to identify required facts
+2. Determines how to derive each fact from data sources (LLM-generated derivation logic)
+3. Executes queries and combines results
+4. Returns answers with full provenance
+
+This approach provides the same auditability benefits while avoiding the complexity of embedding a Prolog engine.
+
+---
 
 ## Implementation Phases
 

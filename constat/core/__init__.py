@@ -1,13 +1,13 @@
 """Core models and configuration."""
 
 from .config import (
+    APIConfig,
     Config,
     DatabaseConfig,
     DatabaseCredentials,
     ExecutionConfig,
     LLMConfig,
     LLMTiersConfig,
-    UserConfig,
 )
 from .models import (
     Artifact,
@@ -24,13 +24,13 @@ from .models import (
 
 __all__ = [
     # Config
+    "APIConfig",
     "Config",
     "DatabaseConfig",
     "DatabaseCredentials",
     "ExecutionConfig",
     "LLMConfig",
     "LLMTiersConfig",
-    "UserConfig",
     # Models
     "Artifact",
     "ArtifactType",

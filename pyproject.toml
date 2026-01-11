@@ -14,10 +14,56 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Database backends
+postgresql = ["psycopg2-binary>=2.9"]
+mysql = ["pymysql>=1.0"]
+duckdb = ["duckdb>=0.9", "duckdb-engine>=0.10"]
+
+# NoSQL connectors
+mongodb = ["pymongo>=4.0"]
+cassandra = ["cassandra-driver>=3.28"]
+elasticsearch = ["elasticsearch>=8.0"]
+dynamodb = ["boto3>=1.28"]
+cosmosdb = ["azure-cosmos>=4.5"]
+firestore = ["google-cloud-firestore>=2.11"]
+
+# LLM providers
+openai = ["openai>=1.0"]
+ollama = ["ollama>=0.1"]
+
+# API
+graphql = ["strawberry-graphql>=0.200", "fastapi>=0.100", "uvicorn>=0.23"]
+
+# Visualization
+viz = [
+    "plotly>=5.0",
+    "altair>=5.0",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+    "graphviz>=0.20",
+]
+
+# CLI
+cli = ["rich>=13.0", "click>=8.0"]
+
+# Development
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1",
 ]
+
+# All optional dependencies
+all = [
+    "constat[postgresql,mysql,duckdb]",
+    "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore]",
+    "constat[openai,ollama]",
+    "constat[graphql,viz,cli]",
+]
+
+[project.scripts]
+constat = "constat.cli:main"
 
 [build-system]
 requires = ["hatchling"]

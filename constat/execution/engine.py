@@ -168,9 +168,9 @@ class QueryEngine:
         # Provide all database connections
         # - Individual connections as db_<name> (e.g., db_chinook, db_northwind)
         # - Also 'db' as alias to first database for backwards compatibility
-        for i, db_config in enumerate(self.config.databases):
-            conn = self.schema_manager.get_connection(db_config.name)
-            globals_dict[f"db_{db_config.name}"] = conn
+        for i, (db_name, db_config) in enumerate(self.config.databases.items()):
+            conn = self.schema_manager.get_connection(db_name)
+            globals_dict[f"db_{db_name}"] = conn
             if i == 0:
                 globals_dict["db"] = conn  # backwards compat
 

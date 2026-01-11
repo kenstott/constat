@@ -162,18 +162,15 @@ class SchemaManager:
 
     def _connect_all(self) -> None:
         """Establish connections to all configured databases."""
-        for db_config in self.config.databases:
-            # Get credentials from config (user credentials take priority)
-            user_creds = self.config.get_database_credentials(db_config.name)
-
+        for db_name, db_config in self.config.databases.items():
             # Get connection URI with credentials applied
-            connection_uri = db_config.get_connection_uri(user_credentials=user_creds)
+            connection_uri = db_config.get_connection_uri()
 
             engine = create_engine(connection_uri)
             # Test connection
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            self.connections[db_config.name] = engine
+            self.connections[db_name] = engine
 
     def _introspect_all(self) -> None:
         """Introspect all tables in all databases."""
@@ -321,9 +318,9 @@ class SchemaManager:
 
         # Build a lookup for database descriptions
         db_descriptions = {
-            db.name: db.description
-            for db in self.config.databases
-            if db.description
+            db_name: db_config.description
+            for db_name, db_config in self.config.databases.items()
+            if db_config.description
         }
 
         # Group tables by database

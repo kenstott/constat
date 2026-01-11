@@ -18,9 +18,9 @@ def config() -> Config:
     """Load test config - skip env var substitution for API key."""
     # Create a test config without requiring ANTHROPIC_API_KEY
     return Config(
-        databases=[
-            {"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"}
-        ],
+        databases={
+            "chinook": {"uri": f"sqlite:///{CHINOOK_DB}"}
+        },
         system_prompt="Test system prompt",
     )
 
@@ -39,10 +39,10 @@ class TestConfig:
     def test_config_from_dict(self):
         """Config can be created from dict."""
         config = Config(
-            databases=[{"name": "test", "uri": "sqlite:///test.db"}],
+            databases={"test": {"uri": "sqlite:///test.db"}},
             system_prompt="Test prompt",
         )
-        assert config.databases[0].name == "test"
+        assert "test" in config.databases
         assert config.system_prompt == "Test prompt"
 
     def test_config_defaults(self):
@@ -50,7 +50,7 @@ class TestConfig:
         config = Config()
         assert config.llm.provider == "anthropic"
         assert config.execution.timeout_seconds == 60
-        assert config.databases == []
+        assert config.databases == {}
 
 
 class TestSchemaManagerIntrospection:

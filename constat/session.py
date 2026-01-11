@@ -12,6 +12,7 @@ from constat.storage.history import SessionHistory
 from constat.execution.executor import ExecutionResult, PythonExecutor, format_error_for_retry
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
+from constat.execution.fact_resolver import FactResolver, FactSource
 from constat.providers.anthropic import AnthropicProvider
 from constat.catalog.schema_manager import SchemaManager
 
@@ -178,6 +179,13 @@ class Session:
         self.scratchpad = Scratchpad()
         self.datastore: Optional[DataStore] = None  # Persistent storage (only shared state between steps)
 
+        # Fact resolver for auditable mode
+        self.fact_resolver = FactResolver(
+            llm=self.llm,
+            schema_manager=self.schema_manager,
+            config=self.config,
+        )
+
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
 
@@ -269,9 +277,9 @@ class Session:
         }
 
         # Provide database connections
-        for i, db_config in enumerate(self.config.databases):
-            conn = self.schema_manager.get_connection(db_config.name)
-            globals_dict[f"db_{db_config.name}"] = conn
+        for i, (db_name, db_config) in enumerate(self.config.databases.items()):
+            conn = self.schema_manager.get_connection(db_name)
+            globals_dict[f"db_{db_name}"] = conn
             if i == 0:
                 globals_dict["db"] = conn
 
@@ -447,7 +455,7 @@ class Session:
             Dict with plan, results, and summary
         """
         # Create session
-        db_names = [db.name for db in self.config.databases]
+        db_names = list(self.config.databases.keys())
         self.session_id = self.history.create_session(
             config_dict=self.config.model_dump(),
             databases=db_names,
@@ -626,14 +634,107 @@ class Session:
 
         return True
 
-    def follow_up(self, question: str) -> dict:
+    def classify_follow_up_intent(self, user_text: str) -> dict:
+        """
+        Classify the intent of a follow-up message.
+
+        This helps determine how to handle user input that could be:
+        - Providing facts (e.g., "There were 1 million people")
+        - Revising the request (e.g., "Use $50k threshold instead")
+        - Making a new request (e.g., "Show me sales by region")
+        - A combination of the above
+
+        Args:
+            user_text: The user's follow-up message
+
+        Returns:
+            Dict with:
+                - intent: PRIMARY intent (PROVIDE_FACTS, REVISE, NEW_REQUEST, MIXED)
+                - facts: List of any facts detected
+                - revision: Description of any revision detected
+                - new_request: The new request if detected
+        """
+        # Check for unresolved facts
+        unresolved = self.fact_resolver.get_unresolved_facts()
+        unresolved_names = [f.name for f in unresolved]
+
+        prompt = f"""Analyze this user follow-up message and classify its intent.
+
+User message: "{user_text}"
+
+Context:
+- There are {len(unresolved)} unresolved facts: {unresolved_names if unresolved else 'none'}
+
+Classify the PRIMARY intent as one of:
+- PROVIDE_FACTS: User is providing factual information (numbers, values, definitions)
+- REVISE: User wants to modify/refine the previous request
+- NEW_REQUEST: User is making an unrelated new request
+- MIXED: Combination of the above
+
+Also extract any facts, revisions, or new requests detected.
+
+Respond in this exact format:
+INTENT: <one of PROVIDE_FACTS, REVISE, NEW_REQUEST, MIXED>
+FACTS: <comma-separated list of fact=value pairs, or NONE>
+REVISION: <description of revision, or NONE>
+NEW_REQUEST: <the new request, or NONE>
+"""
+
+        try:
+            response = self.llm.generate(
+                system="You are an intent classifier. Analyze user messages precisely.",
+                user_message=prompt,
+                max_tokens=300,
+            )
+
+            result = {
+                "intent": "NEW_REQUEST",  # Default
+                "facts": [],
+                "revision": None,
+                "new_request": None,
+            }
+
+            for line in response.split("\n"):
+                line = line.strip()
+                if line.startswith("INTENT:"):
+                    intent = line.split(":", 1)[1].strip().upper()
+                    if intent in ("PROVIDE_FACTS", "REVISE", "NEW_REQUEST", "MIXED"):
+                        result["intent"] = intent
+                elif line.startswith("FACTS:"):
+                    facts_str = line.split(":", 1)[1].strip()
+                    if facts_str != "NONE":
+                        result["facts"] = [f.strip() for f in facts_str.split(",")]
+                elif line.startswith("REVISION:"):
+                    rev = line.split(":", 1)[1].strip()
+                    if rev != "NONE":
+                        result["revision"] = rev
+                elif line.startswith("NEW_REQUEST:"):
+                    req = line.split(":", 1)[1].strip()
+                    if req != "NONE":
+                        result["new_request"] = req
+
+            return result
+
+        except Exception:
+            # Default to treating as new request
+            return {
+                "intent": "NEW_REQUEST",
+                "facts": [],
+                "revision": None,
+                "new_request": user_text,
+            }
+
+    def follow_up(self, question: str, auto_classify: bool = True) -> dict:
         """
         Ask a follow-up question that builds on the current session's context.
 
         The follow-up has access to all tables and state from previous steps.
+        If there are unresolved facts, the system will first try to extract
+        facts from the user's message.
 
         Args:
             question: The follow-up question
+            auto_classify: If True, classify intent and handle accordingly
 
         Returns:
             Dict with plan, results, and summary (same format as solve())
@@ -643,6 +744,18 @@ class Session:
 
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
+
+        # Check for unresolved facts and try to extract facts from user message
+        unresolved = self.fact_resolver.get_unresolved_facts()
+        extracted_facts = []
+
+        if auto_classify and (unresolved or "=" in question or any(c.isdigit() for c in question)):
+            # Try to extract facts from the message
+            extracted_facts = self.fact_resolver.add_user_facts_from_text(question)
+
+            if extracted_facts:
+                # Clear unresolved status to allow re-resolution
+                self.fact_resolver.clear_unresolved()
 
         # Get context from previous work
         existing_tables = self.datastore.list_tables()
@@ -752,6 +865,69 @@ Follow-up question: {question}
             "completed_steps": self.plan.completed_steps if self.plan else [],
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
         }
+
+    def get_unresolved_facts(self) -> list[dict]:
+        """Get list of facts that could not be resolved."""
+        return [f.to_dict() for f in self.fact_resolver.get_unresolved_facts()]
+
+    def get_unresolved_summary(self) -> str:
+        """Get human-readable summary of unresolved facts."""
+        return self.fact_resolver.get_unresolved_summary()
+
+    def provide_facts(self, user_text: str) -> dict:
+        """
+        Extract facts from user text and add to resolver cache.
+
+        This is used in auditable mode when facts could not be resolved.
+        The user provides facts in natural language, and the LLM extracts
+        them into structured facts that can be used for re-resolution.
+
+        Example:
+            session.provide_facts("There were 1 million people at the march")
+            # Extracts: march_attendance = 1000000
+
+        Args:
+            user_text: Natural language text containing facts
+
+        Returns:
+            Dict with:
+                - extracted_facts: List of facts extracted and added
+                - unresolved_remaining: List of still-unresolved facts
+        """
+        # Extract facts from user text
+        extracted = self.fact_resolver.add_user_facts_from_text(user_text)
+
+        # Clear unresolved facts to allow re-resolution
+        self.fact_resolver.clear_unresolved()
+
+        return {
+            "extracted_facts": [f.to_dict() for f in extracted],
+            "unresolved_remaining": [f.to_dict() for f in self.fact_resolver.get_unresolved_facts()],
+        }
+
+    def add_fact(self, fact_name: str, value, reasoning: str = None, **params) -> dict:
+        """
+        Explicitly add a fact to the resolver cache.
+
+        This is a more direct way to provide facts than provide_facts(),
+        useful when you know the exact fact name and value.
+
+        Args:
+            fact_name: Name of the fact (e.g., "march_attendance")
+            value: The value to set
+            reasoning: Optional explanation
+            **params: Additional parameters for the fact
+
+        Returns:
+            Dict with the created fact
+        """
+        fact = self.fact_resolver.add_user_fact(
+            fact_name=fact_name,
+            value=value,
+            reasoning=reasoning,
+            **params,
+        )
+        return fact.to_dict()
 
 
 def create_session(config_path: str) -> Session:
