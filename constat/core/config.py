@@ -231,6 +231,94 @@ class StorageConfig(BaseModel):
     artifact_store_uri: Optional[str] = None
 
 
+class DocumentConfig(BaseModel):
+    """Reference document configuration for inclusion in reasoning.
+
+    Documents provide domain knowledge, business rules, API documentation,
+    or any reference material the LLM should consider during analysis.
+
+    File Example:
+        documents:
+          business_rules:
+            type: file
+            path: ./docs/business-rules.md
+            description: "Revenue calculation rules and thresholds"
+
+    HTTP Example (works for wiki pages, GitHub raw files, etc.):
+        documents:
+          wiki_page:
+            type: http
+            url: https://wiki.example.com/api/v2/pages/12345/export/view
+            headers:
+              Authorization: Bearer ${WIKI_TOKEN}
+            description: "Data dictionary from wiki"
+
+    Confluence Example:
+        documents:
+          confluence:
+            type: confluence
+            url: https://mycompany.atlassian.net
+            space_key: ANALYTICS
+            page_title: "Business Rules"
+            username: ${CONFLUENCE_USER}
+            api_token: ${CONFLUENCE_TOKEN}
+
+    Inline Example:
+        documents:
+          glossary:
+            type: inline
+            content: |
+              ## Key Terms
+              - VIP: Customer with lifetime value > $100k
+              - Churn: Customer inactive for 90+ days
+            description: "Business glossary"
+    """
+    # Acquisition type: file | http | inline | confluence | notion
+    type: str = "file"
+
+    # For type=file
+    path: Optional[str] = None  # Local file path (supports glob: ./docs/*.md)
+
+    # For type=http
+    url: Optional[str] = None  # URL to fetch
+    headers: dict[str, str] = Field(default_factory=dict)  # HTTP headers
+
+    # For type=confluence
+    space_key: Optional[str] = None  # Confluence space key
+    page_title: Optional[str] = None  # Page title to fetch
+    page_id: Optional[str] = None  # Or page ID directly
+    username: Optional[str] = None  # Confluence username
+    api_token: Optional[str] = None  # Confluence API token
+
+    # For type=notion
+    page_url: Optional[str] = None  # Notion page URL
+    notion_token: Optional[str] = None  # Notion integration token
+
+    # For type=inline
+    content: Optional[str] = None  # Inline content
+
+    # Metadata
+    description: str = ""  # What this document contains
+    format: str = "auto"  # auto | markdown | text | html | pdf | docx | xlsx | pptx
+    tags: list[str] = Field(default_factory=list)  # For categorization/search
+
+    # PDF/Office extraction options
+    extract_tables: bool = True  # Extract tables from PDFs/docs as markdown
+    extract_images: bool = False  # Extract and describe images (requires vision model)
+    page_range: Optional[str] = None  # e.g., "1-5" or "1,3,5-10" for PDFs
+
+    # Loading behavior
+    cache: bool = True  # Cache fetched content
+    cache_ttl: Optional[int] = None  # Cache TTL in seconds (None = forever)
+
+    # Link following (build corpus from linked documents)
+    follow_links: bool = False  # Follow links in document to build corpus
+    max_depth: int = 2  # Max link depth to follow (1 = direct links only)
+    max_documents: int = 20  # Max documents to fetch via link following
+    link_pattern: Optional[str] = None  # Regex to filter which links to follow
+    same_domain_only: bool = True  # Only follow links to same domain
+
+
 class APIConfig(BaseModel):
     """External API configuration (GraphQL or OpenAPI).
 
@@ -324,6 +412,10 @@ class Config(BaseModel):
     # YAML format: apis: {countries: {url: ..., type: graphql}}
     apis: dict[str, APIConfig] = Field(default_factory=dict)
 
+    # Reference documents keyed by name
+    # YAML format: documents: {rules: {type: file, path: ./docs/rules.md}}
+    documents: dict[str, DocumentConfig] = Field(default_factory=dict)
+
     databases_description: str = ""  # Global context for all databases
     system_prompt: str = ""
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
@@ -395,7 +487,8 @@ class Config(BaseModel):
         """
         Merge user config into engine config.
 
-        User values override engine values. Databases and APIs (dicts) are deep-merged by key.
+        User values override engine values. Databases, APIs, and documents (dicts)
+        are deep-merged by key.
 
         Args:
             engine: Engine config dict
@@ -406,35 +499,26 @@ class Config(BaseModel):
         """
         merged = dict(engine)
 
-        # Merge databases (dict keyed by name)
-        if "databases" in user:
-            engine_dbs = dict(merged.get("databases", {}))
+        # Dict-keyed sections to deep merge
+        dict_sections = ["databases", "apis", "documents"]
 
-            for db_name, user_db in user["databases"].items():
-                if db_name in engine_dbs:
-                    # Merge: user values override engine values
-                    engine_dbs[db_name] = {**engine_dbs[db_name], **user_db}
-                else:
-                    # Add new database from user config
-                    engine_dbs[db_name] = user_db
+        for section in dict_sections:
+            if section in user:
+                engine_items = dict(merged.get(section, {}))
 
-            merged["databases"] = engine_dbs
+                for name, user_item in user[section].items():
+                    if name in engine_items:
+                        # Merge: user values override engine values
+                        engine_items[name] = {**engine_items[name], **user_item}
+                    else:
+                        # Add new item from user config
+                        engine_items[name] = user_item
 
-        # Merge APIs (dict keyed by name)
-        if "apis" in user:
-            engine_apis = dict(merged.get("apis", {}))
-
-            for api_name, user_api in user["apis"].items():
-                if api_name in engine_apis:
-                    engine_apis[api_name] = {**engine_apis[api_name], **user_api}
-                else:
-                    engine_apis[api_name] = user_api
-
-            merged["apis"] = engine_apis
+                merged[section] = engine_items
 
         # Merge other top-level keys (user overrides engine)
         for key in user:
-            if key not in ("databases", "apis"):
+            if key not in dict_sections:
                 if key in merged and isinstance(merged[key], dict) and isinstance(user[key], dict):
                     # Deep merge dicts
                     merged[key] = {**merged[key], **user[key]}

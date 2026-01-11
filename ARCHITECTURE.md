@@ -376,7 +376,7 @@ Persistent storage for session state.
 
 ### SchemaManager (`catalog/schema_manager.py`)
 
-Provides schema information to the LLM.
+Provides schema information to the LLM for both SQL and NoSQL databases.
 
 **Three-Tier Strategy:**
 
@@ -390,24 +390,114 @@ Provides schema information to the LLM.
 - `get_table_schema(table)` - Full schema for one table
 - `find_relevant_tables(query)` - Semantic search for tables
 
+**NoSQL Support:**
+
+The SchemaManager handles both SQL and NoSQL databases transparently:
+
+```yaml
+databases:
+  # SQL (default)
+  sales:
+    uri: postgresql://localhost/sales
+
+  # MongoDB
+  documents:
+    type: mongodb
+    uri: mongodb://localhost:27017
+    database: myapp
+
+  # DynamoDB
+  events:
+    type: dynamodb
+    region: us-east-1
+```
+
+NoSQL databases are introspected by sampling documents to infer schema.
+All databases appear uniformly in the schema overview and vector search.
+
+### APICatalog (`catalog/api_catalog.py`)
+
+Provides API operation metadata for external services.
+
+**Supported API Types:**
+
+| Type | Discovery | Example |
+|------|-----------|---------|
+| GraphQL | Auto-introspection | Countries API |
+| OpenAPI | Spec parsing (URL, file, inline) | Petstore API |
+
+**Configuration:**
+
+```yaml
+apis:
+  # GraphQL - auto-introspects schema
+  countries:
+    type: graphql
+    url: https://countries.trevorblades.com/graphql
+
+  # OpenAPI - parses spec to discover endpoints
+  petstore:
+    type: openapi
+    spec_url: https://petstore.swagger.io/v2/swagger.json
+
+  # OpenAPI inline - for simple APIs without a spec file
+  weather:
+    type: openapi
+    url: https://api.weather.gov
+    spec_inline:
+      openapi: "3.0.0"
+      paths:
+        /points/{lat},{lon}:
+          get:
+            operationId: getPoint
+            parameters:
+              - name: lat
+                in: path
+                required: true
+```
+
+**LLM Tools:**
+- `find_api_operations(query)` - Semantic search for relevant operations
+- `get_api_operation(name)` - Full metadata for an operation
+
 ### FactResolver (`execution/fact_resolver.py`)
 
 Resolves facts with full provenance for auditable mode.
 
-**Fact Sources:**
+**Fact Sources and Confidence:**
+
 | Source | Confidence | Example |
 |--------|------------|---------|
-| DATABASE | 1.0 | Query result |
+| CACHE | Preserved | Previously resolved fact |
 | CONFIG | 1.0 | Config value |
-| DERIVED | Computed | Rule application |
-| LLM_KNOWLEDGE | 0.6-0.8 | World knowledge |
+| DATABASE | 1.0 | Query result |
+| LLM_KNOWLEDGE | Parsed (default 0.6) | World knowledge |
+| LLM_HEURISTIC | Parsed (default 0.6) | Industry standard |
+| SUB_PLAN | min(dependencies) | Computed from other facts |
+| USER_PROVIDED | 1.0 | User stated in follow-up |
+| UNRESOLVED | 0.0 | Could not resolve |
 
 **Resolution Strategy:**
-1. Check cache
+1. Check cache (includes user-provided facts from prior turns)
 2. Check config
-3. Query database
-4. Ask LLM
-5. Generate sub-plan
+3. Query database (LLM generates SQL)
+4. Ask LLM for knowledge/heuristics
+5. Generate sub-plan for complex derivations
+6. Return UNRESOLVED (user can provide via follow-up)
+
+**User-Provided Facts:**
+
+When facts are unresolved, users can provide them in natural language:
+
+```python
+# User provides missing fact
+session.provide_facts("There were 1 million people at the march")
+# → Extracts: march_attendance = 1000000
+# → Added to cache with source: USER_PROVIDED
+# → Resolution re-attempted
+```
+
+REPL commands: `/unresolved` to view missing facts, `/facts <text>` to provide them.
 
 ### FeedbackDisplay (`feedback.py`)
 

@@ -441,6 +441,50 @@ apis:
     #   Authorization: Bearer ${TOKEN}
 
 #==============================================================================
+# REFERENCE DOCUMENTS
+#==============================================================================
+
+# Optional: Documents to include in reasoning (keyed by name)
+documents:
+  # From local file
+  business_rules:
+    type: file
+    path: ./docs/business-rules.md
+    description: "Revenue calculation rules and thresholds"
+    tags: [rules, revenue]
+
+  # From HTTP (works for wikis, GitHub raw files, etc.)
+  wiki_data_dictionary:
+    type: http
+    url: https://wiki.example.com/api/v2/pages/12345/export/view
+    headers:
+      Authorization: Bearer ${WIKI_TOKEN}
+    description: "Data dictionary from internal wiki"
+    cache_ttl: 3600                         # Refresh every hour
+
+  # From Confluence
+  analytics_guide:
+    type: confluence
+    url: https://mycompany.atlassian.net
+    space_key: ANALYTICS
+    page_title: "Metrics Definitions"
+    username: ${CONFLUENCE_USER}
+    api_token: ${CONFLUENCE_TOKEN}
+    follow_links: true                      # Build corpus from linked pages
+    max_depth: 2                            # Follow 2 levels deep
+    max_documents: 10                       # Limit to 10 documents
+
+  # Inline content
+  glossary:
+    type: inline
+    content: |
+      ## Key Terms
+      - VIP: Customer with lifetime value > $100k
+      - Churn: Customer inactive for 90+ days
+      - MRR: Monthly Recurring Revenue
+    description: "Business glossary"
+
+#==============================================================================
 # DOMAIN CONTEXT (SYSTEM PROMPT)
 #==============================================================================
 

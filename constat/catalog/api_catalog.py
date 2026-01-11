@@ -126,6 +126,9 @@ class OperationMetadata:
     return_type: str = ""
     return_fields: list[OperationField] = field(default_factory=list)
 
+    # Response schema for interpreting results (OpenAPI)
+    response_schema: Optional[dict] = None  # Full JSON schema of response
+
     # Rich metadata for semantic search
     use_cases: list[str] = field(default_factory=list)  # When to use this
     examples: list[str] = field(default_factory=list)   # Example queries
@@ -143,7 +146,7 @@ class OperationMetadata:
 
     def to_dict(self) -> dict:
         """Convert to dict for LLM tool response."""
-        return {
+        result = {
             "name": self.name,
             "type": self.operation_type.value,
             "description": self.description,
@@ -160,6 +163,10 @@ class OperationMetadata:
             "use_cases": self.use_cases,
             "tags": self.tags,
         }
+        # Include response schema if available (for interpreting API results)
+        if self.response_schema:
+            result["response_schema"] = self.response_schema
+        return result
 
     def to_embedding_text(self) -> str:
         """
@@ -849,9 +856,10 @@ def introspect_openapi_spec(
                     ))
                     break  # Just use first content type
 
-            # Parse response type
+            # Parse response type and schema
             responses = operation_data.get("responses", {})
             return_type = "void"
+            response_schema = None
             for status_code in ["200", "201", "default"]:
                 if status_code in responses:
                     response = responses[status_code]
@@ -860,10 +868,13 @@ def introspect_openapi_spec(
                         for content_type, media_type in content.items():
                             schema = media_type.get("schema", {})
                             return_type = _openapi_type_to_string(schema)
+                            # Capture full schema for response interpretation
+                            response_schema = _resolve_schema_refs(spec, schema)
                             break
                     else:
                         schema = response.get("schema", {})
                         return_type = _openapi_type_to_string(schema)
+                        response_schema = _resolve_schema_refs(spec, schema)
                     break
 
             # Build description
@@ -884,6 +895,7 @@ def introspect_openapi_spec(
                 description=full_description,
                 arguments=arguments,
                 return_type=return_type,
+                response_schema=response_schema,
                 use_cases=_generate_use_cases(operation_id, description),
                 tags=all_tags,
                 deprecated=operation_data.get("deprecated", False),
@@ -904,6 +916,58 @@ def _resolve_openapi_ref(spec: dict, ref: str) -> dict:
     result = spec
     for part in parts:
         result = result.get(part, {})
+    return result
+
+
+def _resolve_schema_refs(spec: dict, schema: dict, depth: int = 0) -> dict:
+    """
+    Recursively resolve $ref pointers in a schema to create a fully expanded schema.
+
+    This is used to provide the LLM with complete response structure for interpreting
+    API results.
+
+    Args:
+        spec: The full OpenAPI spec (for resolving refs)
+        schema: The schema to resolve
+        depth: Current recursion depth (to prevent infinite loops)
+
+    Returns:
+        Fully resolved schema dict
+    """
+    if depth > 10:  # Prevent infinite recursion
+        return schema
+
+    if not schema:
+        return {}
+
+    # Handle $ref
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        resolved = _resolve_openapi_ref(spec, ref)
+        return _resolve_schema_refs(spec, resolved, depth + 1)
+
+    result = dict(schema)
+
+    # Resolve nested schemas
+    if "properties" in result:
+        resolved_props = {}
+        for prop_name, prop_schema in result["properties"].items():
+            resolved_props[prop_name] = _resolve_schema_refs(spec, prop_schema, depth + 1)
+        result["properties"] = resolved_props
+
+    # Resolve array items
+    if "items" in result:
+        result["items"] = _resolve_schema_refs(spec, result["items"], depth + 1)
+
+    # Resolve allOf, oneOf, anyOf
+    for key in ["allOf", "oneOf", "anyOf"]:
+        if key in result:
+            result[key] = [_resolve_schema_refs(spec, s, depth + 1) for s in result[key]]
+
+    # Resolve additionalProperties
+    if "additionalProperties" in result and isinstance(result["additionalProperties"], dict):
+        result["additionalProperties"] = _resolve_schema_refs(spec, result["additionalProperties"], depth + 1)
+
     return result
 
 
