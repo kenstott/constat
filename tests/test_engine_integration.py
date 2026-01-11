@@ -27,7 +27,7 @@ CHINOOK_DB = FIXTURES_DIR / "data" / "chinook.db"
 def engine() -> QueryEngine:
     """Create query engine with Chinook database."""
     config = Config(
-        databases=[{"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"}],
+        databases={"chinook": {"uri": f"sqlite:///{CHINOOK_DB}"}},
         system_prompt="""You are analyzing data for a digital music store.
 
 Key concepts:

@@ -42,10 +42,10 @@ def fresh_history_dir():
 def session(temp_history_dir) -> Session:
     """Create a session with both databases."""
     config = Config(
-        databases=[
-            {"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"},
-            {"name": "northwind", "uri": f"sqlite:///{NORTHWIND_DB}"},
-        ],
+        databases={
+            "chinook": {"uri": f"sqlite:///{CHINOOK_DB}"},
+            "northwind": {"uri": f"sqlite:///{NORTHWIND_DB}"},
+        },
         system_prompt="""You are analyzing data across two business databases.
 
 ## Chinook (Digital Music Store)
@@ -216,9 +216,9 @@ class TestSessionResumption:
         """
         # Create initial session
         config = Config(
-            databases=[
-                {"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"},
-            ],
+            databases={
+                "chinook": {"uri": f"sqlite:///{CHINOOK_DB}"},
+            },
             system_prompt="You are analyzing a music store database.",
             execution={"allowed_imports": ["pandas", "numpy", "json", "datetime"]},
         )
@@ -290,7 +290,7 @@ class TestSessionResumption:
     def test_resume_nonexistent_session(self, fresh_history_dir):
         """Test that resuming a non-existent session returns False."""
         config = Config(
-            databases=[{"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"}],
+            databases={"chinook": {"uri": f"sqlite:///{CHINOOK_DB}"}},
         )
         history = SessionHistory(storage_dir=fresh_history_dir)
         session = Session(config, history=history)
@@ -301,7 +301,7 @@ class TestSessionResumption:
     def test_follow_up_without_active_session_raises(self, fresh_history_dir):
         """Test that follow_up without an active session raises an error."""
         config = Config(
-            databases=[{"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"}],
+            databases={"chinook": {"uri": f"sqlite:///{CHINOOK_DB}"}},
         )
         history = SessionHistory(storage_dir=fresh_history_dir)
         session = Session(config, history=history)

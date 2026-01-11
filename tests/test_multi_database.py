@@ -30,10 +30,10 @@ NORTHWIND_DB = FIXTURES_DIR / "data" / "northwind.db"
 def engine() -> QueryEngine:
     """Create query engine with both databases."""
     config = Config(
-        databases=[
-            {"name": "chinook", "uri": f"sqlite:///{CHINOOK_DB}"},
-            {"name": "northwind", "uri": f"sqlite:///{NORTHWIND_DB}"},
-        ],
+        databases={
+            "chinook": {"uri": f"sqlite:///{CHINOOK_DB}"},
+            "northwind": {"uri": f"sqlite:///{NORTHWIND_DB}"},
+        },
         system_prompt="""You are analyzing data across two business databases.
 
 ## Chinook (Digital Music Store)
