@@ -94,36 +94,54 @@ Supported: PostgreSQL, MySQL, SQLite, Oracle, SQL Server, BigQuery, Snowflake, a
 
 ### NoSQL Databases
 
-Native connectors for popular NoSQL stores:
+Configure NoSQL databases in YAML with type-specific options:
 
-```python
-from constat.catalog.nosql import (
-    MongoDBConnector,
-    CassandraConnector,
-    ElasticsearchConnector,
-    DynamoDBConnector,
-    CosmosDBConnector,
-    FirestoreConnector,
-)
+```yaml
+# config.yaml
+databases:
+  # MongoDB
+  mongo:
+    type: mongodb
+    uri: mongodb://localhost:27017
+    database: mydb
+    description: "Document store"
 
-# MongoDB
-mongo = MongoDBConnector(
-    uri="mongodb://localhost:27017",
-    database="mydb",
-)
+  # Cassandra
+  cassandra:
+    type: cassandra
+    keyspace: my_keyspace
+    hosts: [node1, node2, node3]
+    port: 9042
+    username: ${CASSANDRA_USER}
+    password: ${CASSANDRA_PASS}
 
-# AWS DynamoDB
-dynamo = DynamoDBConnector(region="us-east-1")
+  # Elasticsearch
+  elastic:
+    type: elasticsearch
+    hosts: [http://localhost:9200]
+    api_key: ${ES_API_KEY}
+    description: "Search index"
 
-# Azure Cosmos DB
-cosmos = CosmosDBConnector(
-    endpoint="https://account.documents.azure.com:443/",
-    key="...",
-    database="mydb",
-)
+  # AWS DynamoDB
+  dynamo:
+    type: dynamodb
+    region: us-east-1
+    profile_name: myprofile  # or use aws_access_key_id/aws_secret_access_key
 
-# Google Firestore
-firestore = FirestoreConnector(project="my-gcp-project")
+  # Azure Cosmos DB
+  cosmos:
+    type: cosmosdb
+    endpoint: https://account.documents.azure.com:443/
+    key: ${COSMOS_KEY}
+    database: mydb
+    container: mycontainer
+
+  # Google Firestore
+  firestore:
+    type: firestore
+    project: my-gcp-project
+    collection: users
+    credentials_path: /path/to/credentials.json
 ```
 
 All connectors provide:
@@ -292,6 +310,79 @@ databases:
   warehouse:
     uri: bigquery://my-project/dataset
     description: "Data warehouse"
+
+  #----------------------------------------------------------------------------
+  # NoSQL Databases - use 'type' to specify the database type
+  #----------------------------------------------------------------------------
+
+  # MongoDB
+  documents:
+    type: mongodb
+    uri: mongodb://localhost:27017          # MongoDB connection URI
+    database: myapp                         # Database name
+    sample_size: 100                        # Docs to sample for schema inference
+    description: "Document store"
+
+  # Cassandra / DataStax Astra
+  cassandra:
+    type: cassandra
+    keyspace: my_keyspace                   # Required
+    hosts: [node1, node2, node3]            # Contact points (or use cloud_config)
+    port: 9042                              # CQL port (default: 9042)
+    username: ${CASSANDRA_USER}             # Optional auth
+    password: ${CASSANDRA_PASS}
+    # cloud_config:                         # For DataStax Astra
+    #   secure_connect_bundle: /path/to/bundle.zip
+    description: "Wide-column store"
+
+  # Elasticsearch
+  search:
+    type: elasticsearch
+    hosts: [http://localhost:9200]          # One or more hosts
+    api_key: ${ES_API_KEY}                  # API key auth (or use username/password)
+    # username: elastic
+    # password: ${ES_PASSWORD}
+    description: "Search and analytics"
+
+  # AWS DynamoDB
+  dynamo:
+    type: dynamodb
+    region: us-east-1                       # AWS region
+    profile_name: myprofile                 # AWS profile (or use access keys)
+    # aws_access_key_id: ${AWS_KEY}
+    # aws_secret_access_key: ${AWS_SECRET}
+    # endpoint_url: http://localhost:8000   # For local DynamoDB
+    description: "Serverless key-value"
+
+  # Azure Cosmos DB
+  cosmos:
+    type: cosmosdb
+    endpoint: https://account.documents.azure.com:443/
+    key: ${COSMOS_KEY}                      # Primary or secondary key
+    database: mydb                          # Database name
+    container: mycontainer                  # Container name
+    description: "Globally distributed DB"
+
+  # Google Firestore
+  firestore:
+    type: firestore
+    project: my-gcp-project                 # GCP project ID
+    collection: users                       # Collection to introspect
+    credentials_path: /path/to/creds.json   # Service account credentials
+    description: "Real-time document DB"
+
+#==============================================================================
+# EXTERNAL APIs
+#==============================================================================
+
+# Optional: External APIs (GraphQL/REST) keyed by name
+apis:
+  countries:
+    url: https://countries.trevorblades.com/graphql
+    type: graphql                           # graphql | rest
+    description: "Country data for geographic enrichment"
+    # headers:                              # Optional auth headers
+    #   Authorization: Bearer ${API_TOKEN}
 
 #==============================================================================
 # DOMAIN CONTEXT (SYSTEM PROMPT)

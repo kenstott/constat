@@ -1,7 +1,7 @@
 """Database schema introspection, caching, and vector search."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 from constat.core.config import Config, DatabaseConfig, DatabaseCredentials
+from constat.catalog.nosql.base import NoSQLConnector
 
 
 @dataclass
@@ -129,6 +130,9 @@ class SchemaManager:
     """
     Manages database connections, schema introspection, and vector search.
 
+    Supports both SQL databases (via SQLAlchemy) and NoSQL databases
+    (MongoDB, Cassandra, Elasticsearch, DynamoDB, CosmosDB, Firestore).
+
     On initialization:
     1. Connects to all configured databases
     2. Introspects schemas and caches metadata
@@ -141,7 +145,8 @@ class SchemaManager:
 
     def __init__(self, config: Config):
         self.config = config
-        self.connections: dict[str, Engine] = {}
+        self.connections: dict[str, Engine] = {}  # SQL connections
+        self.nosql_connections: dict[str, NoSQLConnector] = {}  # NoSQL connections
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
 
         # Vector index components
@@ -163,23 +168,151 @@ class SchemaManager:
     def _connect_all(self) -> None:
         """Establish connections to all configured databases."""
         for db_name, db_config in self.config.databases.items():
-            # Get connection URI with credentials applied
-            connection_uri = db_config.get_connection_uri()
+            if db_config.is_nosql():
+                self._connect_nosql(db_name, db_config)
+            else:
+                self._connect_sql(db_name, db_config)
 
-            engine = create_engine(connection_uri)
-            # Test connection
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            self.connections[db_name] = engine
+    def _connect_sql(self, db_name: str, db_config: DatabaseConfig) -> None:
+        """Connect to a SQL database via SQLAlchemy."""
+        connection_uri = db_config.get_connection_uri()
+        engine = create_engine(connection_uri)
+        # Test connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        self.connections[db_name] = engine
+
+    def _connect_nosql(self, db_name: str, db_config: DatabaseConfig) -> None:
+        """Connect to a NoSQL database using the appropriate connector."""
+        connector = self._create_nosql_connector(db_name, db_config)
+        if connector:
+            connector.connect()
+            self.nosql_connections[db_name] = connector
+
+    def _create_nosql_connector(self, db_name: str, db_config: DatabaseConfig) -> Optional[NoSQLConnector]:
+        """Create the appropriate NoSQL connector based on database type."""
+        db_type = db_config.type
+
+        if db_type == "mongodb":
+            from constat.catalog.nosql.mongodb import MongoDBConnector
+            return MongoDBConnector(
+                uri=db_config.uri or "mongodb://localhost:27017",
+                database=db_config.database or db_name,
+                name=db_name,
+                description=db_config.description,
+                sample_size=db_config.sample_size,
+            )
+
+        elif db_type == "cassandra":
+            from constat.catalog.nosql.cassandra import CassandraConnector
+            auth_provider = None
+            if db_config.username and db_config.password:
+                auth_provider = (db_config.username, db_config.password)
+            return CassandraConnector(
+                keyspace=db_config.keyspace or db_name,
+                hosts=db_config.hosts,
+                port=db_config.port or 9042,
+                name=db_name,
+                description=db_config.description,
+                cloud_config=db_config.cloud_config,
+                auth_provider=auth_provider,
+                sample_size=db_config.sample_size,
+            )
+
+        elif db_type == "elasticsearch":
+            from constat.catalog.nosql.elasticsearch import ElasticsearchConnector
+            return ElasticsearchConnector(
+                hosts=db_config.hosts or ["http://localhost:9200"],
+                name=db_name,
+                description=db_config.description,
+                api_key=db_config.api_key,
+                username=db_config.username,
+                password=db_config.password,
+                sample_size=db_config.sample_size,
+            )
+
+        elif db_type == "dynamodb":
+            from constat.catalog.nosql.dynamodb import DynamoDBConnector
+            return DynamoDBConnector(
+                region=db_config.region,
+                name=db_name,
+                description=db_config.description,
+                endpoint_url=db_config.endpoint_url,
+                aws_access_key_id=db_config.aws_access_key_id,
+                aws_secret_access_key=db_config.aws_secret_access_key,
+                aws_session_token=db_config.aws_session_token,
+                profile_name=db_config.profile_name,
+                sample_size=db_config.sample_size,
+            )
+
+        elif db_type == "cosmosdb":
+            from constat.catalog.nosql.cosmosdb import CosmosDBConnector
+            return CosmosDBConnector(
+                endpoint=db_config.endpoint or "",
+                key=db_config.key or "",
+                database=db_config.database or db_name,
+                container=db_config.container or "",
+                name=db_name,
+                description=db_config.description,
+                sample_size=db_config.sample_size,
+            )
+
+        elif db_type == "firestore":
+            from constat.catalog.nosql.firestore import FirestoreConnector
+            return FirestoreConnector(
+                project=db_config.project or "",
+                collection=db_config.collection or "",
+                name=db_name,
+                description=db_config.description,
+                credentials_path=db_config.credentials_path,
+                sample_size=db_config.sample_size,
+            )
+
+        return None
 
     def _introspect_all(self) -> None:
-        """Introspect all tables in all databases."""
+        """Introspect all tables/collections in all databases."""
+        # Introspect SQL databases
         for db_name, engine in self.connections.items():
             inspector = inspect(engine)
 
             for table_name in inspector.get_table_names():
                 table_meta = self._introspect_table(db_name, engine, inspector, table_name)
                 self.metadata_cache[table_meta.full_name] = table_meta
+
+        # Introspect NoSQL databases
+        for db_name, connector in self.nosql_connections.items():
+            for collection_meta in connector.get_collections():
+                # Convert NoSQL CollectionMetadata to TableMetadata
+                table_meta = self._convert_nosql_metadata(db_name, connector, collection_meta)
+                self.metadata_cache[table_meta.full_name] = table_meta
+
+    def _convert_nosql_metadata(self, db_name: str, connector: NoSQLConnector, collection_meta) -> TableMetadata:
+        """Convert NoSQL CollectionMetadata to TableMetadata for unified handling."""
+        # Get schema for this collection
+        schema = connector.get_collection_schema(collection_meta.name)
+
+        # Convert fields to columns
+        columns = []
+        for field_info in schema.fields:
+            columns.append(ColumnMetadata(
+                name=field_info.name,
+                type=field_info.type,
+                nullable=not field_info.required,
+                primary_key=field_info.name in schema.key_fields,
+                comment=field_info.description if hasattr(field_info, 'description') else None,
+            ))
+
+        return TableMetadata(
+            database=db_name,
+            name=collection_meta.name,
+            comment=collection_meta.description,
+            columns=columns,
+            primary_keys=schema.key_fields,
+            foreign_keys=[],  # NoSQL typically doesn't have FK constraints
+            row_count=collection_meta.document_count,
+            referenced_by=[],
+        )
 
     def _introspect_table(
         self, db_name: str, engine: Engine, inspector, table_name: str
@@ -438,8 +571,26 @@ class SchemaManager:
         """Return list of all table full names."""
         return list(self.metadata_cache.keys())
 
-    def get_connection(self, database: str) -> Engine:
-        """Get SQLAlchemy engine for a database."""
+    def get_connection(self, database: str) -> Union[Engine, NoSQLConnector]:
+        """Get connection for a database (SQL Engine or NoSQL Connector)."""
+        if database in self.connections:
+            return self.connections[database]
+        if database in self.nosql_connections:
+            return self.nosql_connections[database]
+        raise KeyError(f"Database not found: {database}")
+
+    def get_sql_connection(self, database: str) -> Engine:
+        """Get SQLAlchemy engine for a SQL database."""
         if database not in self.connections:
-            raise KeyError(f"Database not found: {database}")
+            raise KeyError(f"SQL database not found: {database}")
         return self.connections[database]
+
+    def get_nosql_connection(self, database: str) -> NoSQLConnector:
+        """Get NoSQL connector for a database."""
+        if database not in self.nosql_connections:
+            raise KeyError(f"NoSQL database not found: {database}")
+        return self.nosql_connections[database]
+
+    def is_nosql(self, database: str) -> bool:
+        """Check if a database is NoSQL."""
+        return database in self.nosql_connections

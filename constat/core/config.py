@@ -20,26 +20,128 @@ class DatabaseCredentials(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    """Database connection configuration."""
-    # Note: 'name' is the dict key, not stored in the model
-    uri: str  # SQLAlchemy URI (env vars already substituted)
-    description: str = ""  # What this database contains/represents
+    """Database connection configuration.
 
-    # Optional credentials (alternative to embedding in URI)
-    # These can be provided in engine config or merged in from user config
+    Supports SQL databases (via SQLAlchemy URI) and NoSQL databases
+    (via type-specific options).
+
+    SQL Example:
+        databases:
+          main:
+            uri: postgresql://localhost/mydb
+            description: Main application database
+
+    MongoDB Example:
+        databases:
+          mongo:
+            type: mongodb
+            uri: mongodb://localhost:27017
+            database: mydb
+            description: Document store
+
+    Cassandra Example:
+        databases:
+          cassandra:
+            type: cassandra
+            keyspace: my_keyspace
+            hosts: [node1, node2]
+            username: ${CASSANDRA_USER}
+            password: ${CASSANDRA_PASS}
+
+    DynamoDB Example:
+        databases:
+          dynamo:
+            type: dynamodb
+            region: us-east-1
+            profile_name: myprofile
+
+    Elasticsearch Example:
+        databases:
+          elastic:
+            type: elasticsearch
+            hosts: [http://localhost:9200]
+            api_key: ${ES_API_KEY}
+
+    CosmosDB Example:
+        databases:
+          cosmos:
+            type: cosmosdb
+            endpoint: https://myaccount.documents.azure.com
+            key: ${COSMOS_KEY}
+            database: mydb
+            container: mycontainer
+
+    Firestore Example:
+        databases:
+          firestore:
+            type: firestore
+            project: my-gcp-project
+            collection: users
+            credentials_path: /path/to/credentials.json
+    """
+    model_config = {"extra": "allow"}  # Allow type-specific fields
+
+    # Database type: sql (default), mongodb, cassandra, elasticsearch, dynamodb, cosmosdb, firestore
+    type: str = "sql"
+
+    # Common fields
+    description: str = ""
+
+    # SQL databases (SQLAlchemy)
+    uri: Optional[str] = None
+
+    # Credentials (used by SQL and some NoSQL)
     username: Optional[str] = None
     password: Optional[str] = None
+
+    # MongoDB
+    database: Optional[str] = None  # Also used by CosmosDB
+    sample_size: int = 100  # For schema inference
+
+    # Cassandra
+    keyspace: Optional[str] = None
+    hosts: Optional[list[str]] = None
+    port: Optional[int] = None
+    cloud_config: Optional[dict] = None  # For DataStax Astra
+
+    # DynamoDB
+    region: Optional[str] = None
+    endpoint_url: Optional[str] = None  # For local DynamoDB
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_session_token: Optional[str] = None
+    profile_name: Optional[str] = None
+
+    # Elasticsearch
+    api_key: Optional[str] = None
+    # hosts: already defined above
+
+    # CosmosDB
+    endpoint: Optional[str] = None
+    key: Optional[str] = None
+    container: Optional[str] = None
+    # database: already defined above
+
+    # Firestore
+    project: Optional[str] = None
+    collection: Optional[str] = None
+    credentials_path: Optional[str] = None
 
     def get_connection_uri(self) -> str:
         """
         Get the connection URI with credentials applied.
 
-        If username/password are set (from engine config or merged user config),
-        they are injected into the URI. Otherwise returns URI as-is.
+        Only valid for SQL and MongoDB databases.
 
         Returns:
             Connection URI with credentials applied
         """
+        if self.type not in ("sql", "mongodb"):
+            raise ValueError(f"get_connection_uri() not supported for type: {self.type}")
+
+        if not self.uri:
+            raise ValueError("URI not configured")
+
         # Use credentials if provided
         if self.username and self.password:
             return self._inject_credentials(self.username, self.password)
@@ -75,6 +177,10 @@ class DatabaseConfig(BaseModel):
         # Reconstruct URI
         new_parsed = parsed._replace(netloc=new_netloc)
         return urllib.parse.urlunparse(new_parsed)
+
+    def is_nosql(self) -> bool:
+        """Check if this is a NoSQL database."""
+        return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore")
 
 
 class LLMTiersConfig(BaseModel):
