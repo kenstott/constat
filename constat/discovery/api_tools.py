@@ -1,0 +1,245 @@
+"""API discovery tools for GraphQL and REST endpoints.
+
+These tools allow the LLM to discover API operations on-demand
+rather than loading everything into the system prompt upfront.
+"""
+
+from typing import Optional
+
+from constat.catalog.api_catalog import APICatalog, OperationType
+from constat.core.config import Config
+
+
+class APIDiscoveryTools:
+    """Tools for discovering API operations on-demand."""
+
+    def __init__(self, api_catalog: APICatalog, config: Optional[Config] = None):
+        self.api_catalog = api_catalog
+        self.config = config
+
+    def list_apis(self) -> list[dict]:
+        """
+        List all available APIs with their types and descriptions.
+
+        Returns:
+            List of API info dicts with name, type, description, operation_count
+        """
+        results = []
+
+        if self.config:
+            # Get API info from config
+            for api_name, api_config in self.config.apis.items():
+                # Count operations for this API
+                operation_count = sum(
+                    1 for op in self.api_catalog.operations.values()
+                    if api_name in op.tags or api_name.lower() in op.full_name.lower()
+                )
+
+                results.append({
+                    "name": api_name,
+                    "type": api_config.type,
+                    "url": api_config.url or api_config.spec_url or "",
+                    "description": api_config.description or f"API: {api_name}",
+                    "operation_count": operation_count,
+                })
+        else:
+            # Derive from operations if no config
+            # Group operations by first tag or infer from structure
+            api_names = set()
+            for op in self.api_catalog.operations.values():
+                if op.tags:
+                    api_names.add(op.tags[0])
+
+            for api_name in api_names:
+                operations = [
+                    op for op in self.api_catalog.operations.values()
+                    if api_name in op.tags
+                ]
+                if operations:
+                    # Infer type from operations
+                    op_type = "graphql" if any(
+                        op.operation_type in [OperationType.QUERY, OperationType.MUTATION, OperationType.SUBSCRIPTION]
+                        for op in operations
+                    ) else "openapi"
+
+                    results.append({
+                        "name": api_name,
+                        "type": op_type,
+                        "description": f"API with {len(operations)} operations",
+                        "operation_count": len(operations),
+                    })
+
+        return results
+
+    def list_operations(self, api: Optional[str] = None) -> list[dict]:
+        """
+        List operations, optionally filtered by API name.
+
+        Args:
+            api: Optional API name to filter by
+
+        Returns:
+            List of operation info dicts with name, type, description
+        """
+        results = []
+
+        for op in self.api_catalog.operations.values():
+            # Filter by API if specified
+            if api:
+                if api not in op.tags and api.lower() not in op.full_name.lower():
+                    continue
+
+            results.append({
+                "name": op.name,
+                "full_name": op.full_name,
+                "type": op.operation_type.value,
+                "description": op.description or "",
+                "return_type": op.return_type,
+                "argument_count": len(op.arguments),
+            })
+
+        # Sort by type then name
+        results.sort(key=lambda x: (x["type"], x["name"]))
+        return results
+
+    def get_operation_details(self, operation: str) -> dict:
+        """
+        Get detailed schema for an API operation.
+
+        Args:
+            operation: Operation name (with or without type prefix)
+
+        Returns:
+            Dict with full operation details including arguments, return type, examples
+        """
+        op = self.api_catalog.get_operation(operation)
+
+        if not op:
+            return {"error": f"Operation not found: {operation}"}
+
+        return {
+            "name": op.name,
+            "full_name": op.full_name,
+            "type": op.operation_type.value,
+            "description": op.description,
+            "arguments": [
+                {
+                    "name": arg.name,
+                    "type": arg.type,
+                    "required": arg.required,
+                    "description": arg.description or "",
+                    **({"default": arg.default} if arg.default is not None else {}),
+                }
+                for arg in op.arguments
+            ],
+            "return_type": op.return_type,
+            "return_fields": op.return_fields,
+            "response_schema": op.response_schema,
+            "use_cases": op.use_cases,
+            "tags": op.tags,
+        }
+
+    def search_operations(self, query: str, limit: int = 5, operation_type: Optional[str] = None) -> list[dict]:
+        """
+        Find operations relevant to a natural language query using vector search.
+
+        Args:
+            query: Natural language description (e.g., "get user by ID", "create new order")
+            limit: Maximum number of results
+            operation_type: Optional filter: "query", "mutation", or "subscription"
+
+        Returns:
+            List of relevant operations with relevance scores
+        """
+        # Convert string type to enum
+        op_type_enum = None
+        if operation_type:
+            type_map = {
+                "query": OperationType.QUERY,
+                "mutation": OperationType.MUTATION,
+                "subscription": OperationType.SUBSCRIPTION,
+            }
+            op_type_enum = type_map.get(operation_type.lower())
+
+        matches = self.api_catalog.find_relevant_operations(
+            query=query,
+            top_k=limit,
+            operation_type=op_type_enum,
+        )
+
+        return [
+            {
+                "name": m.operation,
+                "type": m.operation_type.value,
+                "relevance": m.relevance,
+                "summary": m.summary,
+                "use_cases": m.use_cases,
+            }
+            for m in matches
+        ]
+
+
+# Tool schemas for LLM
+API_TOOL_SCHEMAS = [
+    {
+        "name": "list_apis",
+        "description": "List all available APIs with their types and descriptions. Use this first to see what APIs are configured.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "list_api_operations",
+        "description": "List all operations available in an API. Use after list_apis to explore a specific API.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "api": {
+                    "type": "string",
+                    "description": "Name of the API to list operations from. Omit to list all operations.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_operation_details",
+        "description": "Get detailed schema for an API operation including arguments, return type, and usage examples. Use this before calling an API.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "Name of the operation (e.g., 'countries', 'getPetById')",
+                },
+            },
+            "required": ["operation"],
+        },
+    },
+    {
+        "name": "search_operations",
+        "description": "Find API operations relevant to a natural language query using semantic search. Use this when you're not sure which operation to use.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language description of what you want to do (e.g., 'get user by ID', 'list all products')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return",
+                    "default": 5,
+                },
+                "operation_type": {
+                    "type": "string",
+                    "enum": ["query", "mutation", "subscription"],
+                    "description": "Filter by operation type (optional)",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+]
