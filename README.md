@@ -174,14 +174,37 @@ All connectors provide:
            |                                 |
            +----------------+----------------+
                             |
-                    +-------v-------+
-                    | Schema Manager |
-                    +-------+-------+
+              +-------------v-------------+
+              |     Discovery Tools       |
+              | (automatic mode selection)|
+              +-------------+-------------+
                             |
     +-------+-------+-------+-------+-------+
     |       |       |       |       |       |
    SQL   MongoDB Cassandra DynamoDB CosmosDB Firestore
 ```
+
+### Discovery Mode (Automatic)
+
+Constat automatically detects whether the LLM model supports tool calling:
+
+| Model | Tool Calling | Prompt Mode |
+|-------|-------------|-------------|
+| Claude 3+ (Opus, Sonnet, Haiku) | Yes | Minimal prompt + discovery tools |
+| GPT-4, GPT-3.5-turbo | Yes | Minimal prompt + discovery tools |
+| Gemini | Yes | Minimal prompt + discovery tools |
+| Claude 2, Claude Instant | No | Full schema/API/docs in prompt |
+| GPT-3 Instruct | No | Full schema/API/docs in prompt |
+
+**Tool-based discovery** (modern models):
+- Minimal system prompt (~500 tokens)
+- LLM uses tools to discover relevant tables, APIs, documents
+- On-demand loading reduces token usage by 80-95%
+
+**Full prompt mode** (legacy models):
+- Comprehensive system prompt with all metadata
+- Complete schema, API docs, and document content embedded
+- No tool calling required
 
 ## CLI Usage
 
@@ -631,55 +654,44 @@ The configs are deep-merged by database name:
 - Users can add entirely new databases
 - User values override engine values where both exist
 
-### NoSQL Database Configuration
+## Discovery Tools
 
-NoSQL databases are configured programmatically (not in YAML) because they have diverse connection options:
+The discovery module provides on-demand access to schema, API, and document information.
+
+### Available Tools
+
+| Category | Tools |
+|----------|-------|
+| **Schema** | `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values` |
+| **API** | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
+| **Documents** | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
+| **Facts** | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts` |
+
+### Usage
 
 ```python
-from constat.catalog.nosql import (
-    MongoDBConnector,
-    DynamoDBConnector,
-    CosmosDBConnector,
-    FirestoreConnector,
+from constat.discovery import DiscoveryTools, PromptBuilder
+
+# Create discovery tools
+tools = DiscoveryTools(
+    schema_manager=schema_manager,
+    api_catalog=api_catalog,
+    config=config,
 )
 
-# MongoDB
-mongo = MongoDBConnector(
-    uri="mongodb://${MONGO_HOST}:27017",
-    database="mydb",
-    name="mongo_main",
-)
+# Build prompt automatically based on model capabilities
+builder = PromptBuilder(tools)
+prompt, use_tools = builder.build_prompt("claude-sonnet-4-20250514")
+# → use_tools=True for modern models (minimal prompt)
+# → use_tools=False for legacy models (full metadata in prompt)
 
-# MongoDB with authentication
-mongo = MongoDBConnector(
-    uri="mongodb://username:password@cluster.mongodb.net/mydb?retryWrites=true",
-    database="mydb",
-)
+# Execute discovery tools directly
+databases = tools.execute("list_databases", {})
+relevant = tools.execute("search_tables", {"query": "customer purchases"})
 
-# AWS DynamoDB (uses AWS credentials from environment/IAM)
-dynamo = DynamoDBConnector(
-    region="us-east-1",
-    # Optional: explicit credentials
-    aws_access_key_id="${AWS_ACCESS_KEY_ID}",
-    aws_secret_access_key="${AWS_SECRET_ACCESS_KEY}",
-)
-
-# Azure Cosmos DB
-cosmos = CosmosDBConnector(
-    endpoint="https://myaccount.documents.azure.com:443/",
-    key="${COSMOS_KEY}",
-    database="mydb",
-)
-
-# Google Firestore (uses ADC or service account)
-firestore = FirestoreConnector(
-    project="my-gcp-project",
-    credentials_path="/path/to/service-account.json",  # Optional
-)
-
-# Register with schema manager
-schema_manager.register_nosql(mongo)
-schema_manager.register_nosql(dynamo)
+# Check token savings
+estimate = builder.estimate_tokens("claude-sonnet-4-20250514")
+print(f"Savings: {estimate['savings_percent']}%")
 ```
 
 ### Artifact Store Configuration

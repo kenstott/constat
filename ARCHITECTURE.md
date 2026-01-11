@@ -378,18 +378,6 @@ Persistent storage for session state.
 
 Provides schema information to the LLM for both SQL and NoSQL databases.
 
-**Three-Tier Strategy:**
-
-| Tier | When | Token Cost |
-|------|------|------------|
-| Overview | Always in prompt | ~200-500 |
-| On-demand | LLM requests via tool | ~50-100 per table |
-| Vector search | Complex queries | ~100-200 |
-
-**LLM Tools:**
-- `get_table_schema(table)` - Full schema for one table
-- `find_relevant_tables(query)` - Semantic search for tables
-
 **NoSQL Support:**
 
 The SchemaManager handles both SQL and NoSQL databases transparently:
@@ -414,6 +402,56 @@ databases:
 
 NoSQL databases are introspected by sampling documents to infer schema.
 All databases appear uniformly in the schema overview and vector search.
+
+### DiscoveryTools (`discovery/tools.py`)
+
+Provides on-demand schema, API, and document discovery via tool calling.
+
+**Automatic Mode Selection:**
+
+The system automatically detects whether the LLM supports tool calling:
+
+| Model Type | Tool Support | Prompt Mode |
+|------------|--------------|-------------|
+| Claude 3+, GPT-4, Gemini | Yes | Minimal (~500 tokens) + discovery tools |
+| Claude 2, GPT-3 Instruct | No | Full metadata in prompt |
+
+**Discovery Tools:**
+
+| Category | Tools |
+|----------|-------|
+| Schema | `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values` |
+| API | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
+| Documents | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
+| Facts | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts`, `get_unresolved_facts` |
+
+**Token Savings:**
+
+| Scenario | Current (full prompt) | With Tools | Savings |
+|----------|----------------------|------------|---------|
+| 5 DBs, 50 tables | ~8,000 tokens | ~500 + ~800 discovered | 84% |
+| 10 APIs, 100 ops | ~12,000 tokens | ~500 + ~600 discovered | 91% |
+| 20 documents | ~15,000 tokens | ~500 + ~400 discovered | 94% |
+
+**PromptBuilder Usage:**
+
+```python
+from constat.discovery import DiscoveryTools, PromptBuilder
+
+tools = DiscoveryTools(schema_manager, api_catalog, config)
+builder = PromptBuilder(tools)
+
+# Automatic mode selection based on model
+prompt, use_tools = builder.build_prompt("claude-sonnet-4-20250514")
+# → use_tools=True, minimal prompt
+
+prompt, use_tools = builder.build_prompt("claude-2")
+# → use_tools=False, full metadata embedded
+
+# Check token estimates
+estimate = builder.estimate_tokens("claude-sonnet-4-20250514")
+# → {"mode": "tool_discovery", "savings_percent": 85, ...}
+```
 
 ### APICatalog (`catalog/api_catalog.py`)
 

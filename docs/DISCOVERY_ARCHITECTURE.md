@@ -29,7 +29,7 @@ Replace upfront schema/API loading in the system prompt with on-demand discovery
 - Doesn't scale to 50+ databases or 100+ APIs
 - Documents loaded fully upfront
 
-### Proposed Architecture
+### Implemented Architecture (Phase 1 Complete)
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                 Minimal System Prompt                    │
@@ -39,16 +39,27 @@ Replace upfront schema/API loading in the system prompt with on-demand discovery
                           │
                           ▼
               ┌───────────────────────┐
-              │       Planner         │
-              │   (with tool access)  │
+              │     PromptBuilder     │
+              │ (auto mode detection) │
               └───────────┬───────────┘
                           │
-        ┌─────────────────┼─────────────────┐
-        ▼                 ▼                 ▼
-┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-│Schema Discovery│ │ API Discovery │ │ Doc Discovery │
-│    Tools      │ │    Tools      │ │    Tools      │
-└───────────────┘ └───────────────┘ └───────────────┘
+        ┌─────────────────┴─────────────────┐
+        │                                   │
+        ▼                                   ▼
+┌───────────────────────┐     ┌───────────────────────────────┐
+│  Tool-Capable Models  │     │    Legacy Models              │
+│  (Claude 3+, GPT-4)   │     │    (Claude 2, GPT-3 Instruct) │
+│                       │     │                               │
+│  Minimal prompt +     │     │  Full metadata embedded       │
+│  discovery tools      │     │  in system prompt             │
+└───────────┬───────────┘     └───────────────────────────────┘
+            │
+  ┌─────────┼─────────┬─────────────┐
+  ▼         ▼         ▼             ▼
+┌──────┐ ┌──────┐ ┌──────┐ ┌──────────┐
+│Schema│ │ API  │ │ Doc  │ │   Fact   │
+│Tools │ │Tools │ │Tools │ │  Tools   │
+└──────┘ └──────┘ └──────┘ └──────────┘
 ```
 
 **Benefits:**
@@ -56,6 +67,36 @@ Replace upfront schema/API loading in the system prompt with on-demand discovery
 - Only loads what's relevant to the query
 - Scales to unlimited databases/APIs/documents
 - Dynamic fact resolution from documents
+- **Automatic mode selection** - no configuration needed
+
+### Automatic Model Detection
+
+The `PromptBuilder` class automatically detects whether a model supports tool calling. This is **NOT** a configuration option - it's determined by the model being used.
+
+**Tool-Capable Models (minimal prompt + tools):**
+- Claude 3+ (Opus, Sonnet, Haiku)
+- GPT-4, GPT-3.5-turbo
+- Gemini
+
+**Legacy Models (full metadata in prompt):**
+- Claude 2, Claude Instant
+- GPT-3.5-turbo-instruct
+- Text-davinci, text-curie, etc.
+
+```python
+from constat.discovery import DiscoveryTools, PromptBuilder
+
+tools = DiscoveryTools(schema_manager, api_catalog, config)
+builder = PromptBuilder(tools)
+
+# Automatic - detects Claude 3 supports tools
+prompt, use_tools = builder.build_prompt("claude-sonnet-4-20250514")
+# → use_tools=True, minimal prompt (~500 tokens)
+
+# Automatic - detects Claude 2 doesn't support tools
+prompt, use_tools = builder.build_prompt("claude-2")
+# → use_tools=False, full metadata embedded
+```
 
 ---
 
@@ -501,50 +542,37 @@ Only include resources you've verified exist via discovery tools.
 
 ---
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 1: Discovery Tool Infrastructure
+### Phase 1: Discovery Tool Infrastructure - COMPLETE
 
-1. **Create `constat/discovery/` module**
-   ```
-   constat/discovery/
-   ├── __init__.py
-   ├── tools.py          # Tool definitions
-   ├── schema_tools.py   # Database/table discovery
-   ├── api_tools.py      # API discovery
-   ├── doc_tools.py      # Document discovery
-   └── fact_tools.py     # Fact resolution
-   ```
+**Implemented Files:**
+```
+constat/discovery/
+├── __init__.py           # Module exports
+├── tools.py              # DiscoveryTools registry + PromptBuilder
+├── schema_tools.py       # Database/table discovery (6 tools)
+├── api_tools.py          # API operation discovery (4 tools)
+├── doc_tools.py          # Document discovery with loading (4 tools)
+└── fact_tools.py         # Fact resolution wrapper (5 tools)
 
-2. **Define tool schemas for LLM**
-   ```python
-   DISCOVERY_TOOLS = [
-       {
-           "name": "list_databases",
-           "description": "List all available databases with their types and descriptions",
-           "input_schema": {"type": "object", "properties": {}, "required": []}
-       },
-       {
-           "name": "search_tables",
-           "description": "Find tables relevant to a natural language query",
-           "input_schema": {
-               "type": "object",
-               "properties": {
-                   "query": {"type": "string", "description": "What you're looking for"},
-                   "limit": {"type": "integer", "default": 5}
-               },
-               "required": ["query"]
-           }
-       },
-       # ... etc
-   ]
-   ```
+tests/
+└── test_discovery_tools.py  # 28 tests covering all tools
+```
 
-3. **Implement tool handlers**
-   - Wire to existing SchemaManager, APICatalog
-   - Add DocumentLoader for document tools
+**21 Discovery Tools Implemented:**
+- Schema: `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values`
+- API: `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations`
+- Documents: `list_documents`, `get_document`, `search_documents`, `get_document_section`
+- Facts: `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts`, `get_unresolved_facts`
 
-### Phase 2: Planner Integration
+**PromptBuilder - Automatic Mode Detection:**
+- Detects tool support based on model name
+- Tool-capable models: minimal prompt (~500 tokens) + discovery tools
+- Legacy models: full metadata embedded in prompt
+- NOT configurable - automatic based on model
+
+### Phase 2: Planner Integration - PLANNED
 
 1. **Update Planner to use tools**
    - Add tool definitions to planner API call
@@ -578,24 +606,17 @@ Only include resources you've verified exist via discovery tools.
                messages.append({"role": "user", "content": tool_results})
    ```
 
-### Phase 3: Document Loader
+### Phase 3: Document Loader - PARTIAL (inline/file supported)
 
-1. **Implement DocumentLoader class**
-   ```python
-   class DocumentLoader:
-       def load(self, config: DocumentConfig) -> Document
-       def load_file(self, path: str) -> str
-       def load_http(self, url: str, headers: dict) -> str
-       def load_confluence(self, config: DocumentConfig) -> str
-       def extract_pdf(self, path: str) -> str
-       def extract_office(self, path: str) -> str
-   ```
+Document loading for `inline`, `file`, and `http` types is implemented in `doc_tools.py`.
 
-2. **Add document indexing for search**
-   - Chunk documents for embedding
-   - Store in vector index alongside schema/API embeddings
+**TODO:**
+- Confluence integration
+- PDF extraction
+- Office document extraction
+- Document chunking for vector search
 
-### Phase 4: Caching & Optimization
+### Phase 4: Caching & Optimization - PLANNED
 
 1. **Cache discovery results per session**
    - Don't re-discover same tables
