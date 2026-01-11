@@ -9,6 +9,9 @@ Available providers:
 - TogetherProvider: Hosted Llama models via Together AI
 - GroqProvider: Fast Llama inference via Groq
 - LlamaProvider: Alias for OllamaProvider (default local option)
+
+Factory:
+- ProviderFactory: Creates and caches provider instances by name
 """
 
 from .base import BaseLLMProvider, GenerationResult, ToolResult
@@ -17,12 +20,15 @@ from .openai import OpenAIProvider
 from .gemini import GeminiProvider
 from .grok import GrokProvider
 from .llama import LlamaProvider, OllamaProvider, TogetherProvider, GroqProvider
+from .factory import ProviderFactory
 
 __all__ = [
     # Base
     "BaseLLMProvider",
     "GenerationResult",
     "ToolResult",
+    # Factory
+    "ProviderFactory",
     # Providers
     "AnthropicProvider",
     "OpenAIProvider",

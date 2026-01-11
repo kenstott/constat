@@ -13,7 +13,7 @@ from constat.execution.executor import ExecutionResult, PythonExecutor, format_e
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
 from constat.execution.fact_resolver import FactResolver, FactSource
-from constat.providers.anthropic import AnthropicProvider
+from constat.providers import ProviderFactory
 from constat.catalog.schema_manager import SchemaManager
 
 
@@ -159,12 +159,13 @@ class Session:
         self.schema_manager = SchemaManager(config)
         self.schema_manager.initialize()
 
-        self.llm = AnthropicProvider(
-            api_key=config.llm.api_key,
-            model=config.llm.model,
-        )
+        # Provider factory for multi-provider support
+        self.provider_factory = ProviderFactory(config.llm)
 
-        self.planner = Planner(config, self.schema_manager, self.llm)
+        # Default provider (for backward compatibility and general use)
+        self.llm = self.provider_factory.get_default_provider()
+
+        self.planner = Planner(config, self.schema_manager, self.provider_factory)
 
         self.executor = PythonExecutor(
             timeout_seconds=config.execution.timeout_seconds,
@@ -349,12 +350,12 @@ class Session:
                 data={"attempt": attempt}
             ))
 
-            # Generate code (use codegen tier model if configured)
-            codegen_model = self.config.llm.get_model("codegen")
+            # Get provider and model for codegen tier (may be different provider)
+            codegen_provider, codegen_model = self.provider_factory.get_provider_for_tier("codegen")
 
             if attempt == 1:
                 prompt = self._build_step_prompt(step)
-                code = self.llm.generate_code(
+                code = codegen_provider.generate_code(
                     system=STEP_SYSTEM_PROMPT,
                     user_message=prompt,
                     tools=self._get_schema_tools(),
@@ -366,7 +367,7 @@ class Session:
                     error_details=last_error,
                     previous_code=last_code,
                 )
-                code = self.llm.generate_code(
+                code = codegen_provider.generate_code(
                     system=STEP_SYSTEM_PROMPT,
                     user_message=retry_prompt,
                     tools=self._get_schema_tools(),

@@ -5,9 +5,12 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+from typing import Union
+
 from constat.core.config import Config
 from constat.core.models import Plan, PlannerResponse, Step, StepType
-from constat.providers.anthropic import AnthropicProvider
+from constat.providers import ProviderFactory
+from constat.providers.base import BaseLLMProvider
 from constat.catalog.schema_manager import SchemaManager
 
 
@@ -82,14 +85,22 @@ class Planner:
         self,
         config: Config,
         schema_manager: SchemaManager,
-        llm: Optional[AnthropicProvider] = None,
+        llm_or_factory: Optional[Union[BaseLLMProvider, ProviderFactory]] = None,
     ):
         self.config = config
         self.schema_manager = schema_manager
-        self.llm = llm or AnthropicProvider(
-            api_key=config.llm.api_key,
-            model=config.llm.model,
-        )
+
+        # Support both direct provider (backward compat) and factory (new)
+        if isinstance(llm_or_factory, ProviderFactory):
+            self.provider_factory = llm_or_factory
+            self.llm = None  # Will use factory for each call
+        elif isinstance(llm_or_factory, BaseLLMProvider):
+            self.provider_factory = None
+            self.llm = llm_or_factory
+        else:
+            # Create a factory from config
+            self.provider_factory = ProviderFactory(config.llm)
+            self.llm = None
 
     def _build_system_prompt(self) -> str:
         """Build the full system prompt for planning."""
@@ -170,10 +181,14 @@ class Planner:
 
         system_prompt = self._build_system_prompt()
 
-        # Generate plan (use planning tier model if configured)
-        planning_model = self.config.llm.get_model("planning")
+        # Get provider and model for planning tier (may be different provider)
+        if self.provider_factory:
+            planning_provider, planning_model = self.provider_factory.get_provider_for_tier("planning")
+        else:
+            planning_provider = self.llm
+            planning_model = self.config.llm.get_model("planning")
 
-        response = self.llm.generate(
+        response = planning_provider.generate(
             system=system_prompt,
             user_message=f"Create a plan to answer this question:\n\n{problem}",
             tools=schema_tools,
@@ -247,10 +262,14 @@ Return the plan in JSON format."""
 
         system_prompt = self._build_system_prompt()
 
-        # Use planning tier model if configured
-        planning_model = self.config.llm.get_model("planning")
+        # Get provider and model for planning tier (may be different provider)
+        if self.provider_factory:
+            planning_provider, planning_model = self.provider_factory.get_provider_for_tier("planning")
+        else:
+            planning_provider = self.llm
+            planning_model = self.config.llm.get_model("planning")
 
-        response = self.llm.generate(
+        response = planning_provider.generate(
             system=system_prompt,
             user_message=prompt,
             tools=[

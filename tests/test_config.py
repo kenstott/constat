@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from constat.core.config import (
-    Config, LLMConfig, LLMTiersConfig, DatabaseConfig,
+    Config, LLMConfig, LLMTiersConfig, TierConfig, DatabaseConfig,
     DatabaseCredentials
 )
 
@@ -75,6 +75,110 @@ class TestLLMTiersConfig:
         assert tiers.codegen == "model-b"
         assert tiers.simple == "model-c"
 
+    def test_tier_with_provider_override(self):
+        """Test tier with provider override."""
+        tiers = LLMTiersConfig(
+            planning="claude-opus-4-20250514",
+            codegen="claude-sonnet-4-20250514",
+            simple=TierConfig(provider="ollama", model="llama3.2:3b"),
+        )
+
+        # String tiers should be normalized to TierConfig
+        planning_config = tiers.get_tier_config("planning")
+        assert planning_config.provider is None  # Uses default
+        assert planning_config.model == "claude-opus-4-20250514"
+
+        # TierConfig tier should have provider override
+        simple_config = tiers.get_tier_config("simple")
+        assert simple_config.provider == "ollama"
+        assert simple_config.model == "llama3.2:3b"
+
+    def test_get_tier_config_normalizes_strings(self):
+        """Test that get_tier_config normalizes string to TierConfig."""
+        tiers = LLMTiersConfig(
+            planning="my-model",
+        )
+
+        tier_config = tiers.get_tier_config("planning")
+        assert isinstance(tier_config, TierConfig)
+        assert tier_config.model == "my-model"
+        assert tier_config.provider is None
+
+
+class TestTierConfig:
+    """Tests for TierConfig model."""
+
+    def test_tier_config_model_only(self):
+        """TierConfig with just model."""
+        config = TierConfig(model="gpt-4")
+        assert config.model == "gpt-4"
+        assert config.provider is None
+        assert config.base_url is None
+
+    def test_tier_config_with_provider(self):
+        """TierConfig with provider override."""
+        config = TierConfig(provider="ollama", model="llama3.2:3b")
+        assert config.provider == "ollama"
+        assert config.model == "llama3.2:3b"
+
+    def test_tier_config_with_base_url(self):
+        """TierConfig with custom base URL."""
+        config = TierConfig(
+            provider="ollama",
+            model="llama3.2:3b",
+            base_url="http://192.168.1.100:11434/v1",
+        )
+        assert config.base_url == "http://192.168.1.100:11434/v1"
+
+
+class TestLLMConfigTierConfig:
+    """Tests for LLMConfig.get_tier_config method."""
+
+    def test_get_tier_config_default(self):
+        """get_tier_config returns default when no tiers configured."""
+        config = LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+        )
+
+        tier_config = config.get_tier_config("planning")
+        assert tier_config.provider is None
+        assert tier_config.model == "claude-sonnet-4-20250514"
+
+    def test_get_tier_config_with_tiers(self):
+        """get_tier_config returns correct config for each tier."""
+        tiers = LLMTiersConfig(
+            planning="claude-opus-4-20250514",
+            codegen="claude-sonnet-4-20250514",
+            simple=TierConfig(provider="ollama", model="llama3.2:3b"),
+        )
+        config = LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            tiers=tiers,
+        )
+
+        planning = config.get_tier_config("planning")
+        assert planning.provider is None
+        assert planning.model == "claude-opus-4-20250514"
+
+        simple = config.get_tier_config("simple")
+        assert simple.provider == "ollama"
+        assert simple.model == "llama3.2:3b"
+
+    def test_get_tier_config_unknown_tier_returns_default(self):
+        """Unknown tier returns default config."""
+        tiers = LLMTiersConfig()
+        config = LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            tiers=tiers,
+        )
+
+        tier_config = config.get_tier_config("unknown")
+        assert tier_config.provider is None
+        assert tier_config.model == "claude-sonnet-4-20250514"
+
 
 class TestDatabaseConfig:
     """Tests for database configuration."""
@@ -126,6 +230,74 @@ databases:
                 assert config.llm.get_model("planning") == "claude-opus-4-20250514"
                 assert config.llm.get_model("codegen") == "claude-sonnet-4-20250514"
                 assert config.llm.get_model("simple") == "claude-3-5-haiku-20241022"
+            finally:
+                os.unlink(f.name)
+
+    def test_load_config_with_provider_override_tiers(self):
+        """Test loading config with provider override in tiers from YAML."""
+        yaml_content = """
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: test-key
+  tiers:
+    planning: claude-opus-4-20250514
+    codegen: claude-sonnet-4-20250514
+    simple:
+      provider: ollama
+      model: llama3.2:3b
+
+databases:
+  test_db:
+    uri: sqlite:///test.db
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+
+            try:
+                config = Config.from_yaml(f.name)
+
+                assert config.llm.tiers is not None
+
+                # Model tiers (string format)
+                assert config.llm.get_model("planning") == "claude-opus-4-20250514"
+                assert config.llm.get_model("codegen") == "claude-sonnet-4-20250514"
+
+                # Provider override tier
+                simple_config = config.llm.get_tier_config("simple")
+                assert simple_config.provider == "ollama"
+                assert simple_config.model == "llama3.2:3b"
+            finally:
+                os.unlink(f.name)
+
+    def test_load_config_with_base_url_in_tier(self):
+        """Test loading config with base_url in tier config from YAML."""
+        yaml_content = """
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: test-key
+  tiers:
+    planning: claude-opus-4-20250514
+    simple:
+      provider: ollama
+      model: llama3.2:3b
+      base_url: http://192.168.1.100:11434/v1
+
+databases: {}
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+
+            try:
+                config = Config.from_yaml(f.name)
+
+                simple_config = config.llm.get_tier_config("simple")
+                assert simple_config.provider == "ollama"
+                assert simple_config.model == "llama3.2:3b"
+                assert simple_config.base_url == "http://192.168.1.100:11434/v1"
             finally:
                 os.unlink(f.name)
 

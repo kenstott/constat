@@ -183,11 +183,55 @@ class DatabaseConfig(BaseModel):
         return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore")
 
 
+class TierConfig(BaseModel):
+    """Configuration for a single tier (provider + model).
+
+    Can be specified as just a model string (uses default provider)
+    or as a full config with provider override.
+
+    Examples:
+        # Just model (uses default provider)
+        planning: "claude-opus-4-20250514"
+
+        # Full config with provider override
+        simple:
+          provider: ollama
+          model: llama3.2:3b
+    """
+    provider: Optional[str] = None  # None means use default provider
+    model: str
+
+    # Provider-specific options (e.g., base_url for Ollama)
+    base_url: Optional[str] = None
+
+
 class LLMTiersConfig(BaseModel):
-    """Model tiering for cost optimization."""
-    planning: str = "claude-sonnet-4-20250514"
-    codegen: str = "claude-sonnet-4-20250514"
-    simple: str = "claude-3-5-haiku-20241022"
+    """Model tiering for cost optimization.
+
+    Each tier can be:
+    - A model string (uses default provider)
+    - A TierConfig object with provider override
+
+    Examples:
+        tiers:
+          planning: claude-opus-4-20250514  # Just model
+          codegen: claude-sonnet-4-20250514
+          simple:
+            provider: ollama  # Provider override
+            model: llama3.2:3b
+    """
+    planning: str | TierConfig = "claude-sonnet-4-20250514"
+    codegen: str | TierConfig = "claude-sonnet-4-20250514"
+    simple: str | TierConfig = "claude-3-5-haiku-20241022"
+
+    def get_tier_config(self, tier: str) -> TierConfig:
+        """Get the TierConfig for a tier, normalizing string to TierConfig."""
+        value = getattr(self, tier, None)
+        if value is None:
+            raise ValueError(f"Unknown tier: {tier}")
+        if isinstance(value, str):
+            return TierConfig(model=value)
+        return value
 
 
 class LLMConfig(BaseModel):
@@ -196,6 +240,9 @@ class LLMConfig(BaseModel):
     model: str = "claude-sonnet-4-20250514"
     api_key: Optional[str] = None
     tiers: Optional[LLMTiersConfig] = None
+
+    # Provider-specific options
+    base_url: Optional[str] = None  # For Ollama or custom endpoints
 
     def get_model(self, tier: str = "default") -> str:
         """
@@ -211,13 +258,36 @@ class LLMConfig(BaseModel):
             return self.model
 
         if tier == "planning":
-            return self.tiers.planning
+            tier_config = self.tiers.get_tier_config("planning")
+            return tier_config.model
         elif tier == "codegen":
-            return self.tiers.codegen
+            tier_config = self.tiers.get_tier_config("codegen")
+            return tier_config.model
         elif tier == "simple":
-            return self.tiers.simple
+            tier_config = self.tiers.get_tier_config("simple")
+            return tier_config.model
         else:
             return self.model
+
+    def get_tier_config(self, tier: str = "default") -> TierConfig:
+        """
+        Get the full tier configuration (provider + model) for a tier.
+
+        Args:
+            tier: One of "planning", "codegen", "simple", or "default"
+
+        Returns:
+            TierConfig with provider (or None for default) and model
+        """
+        if tier == "default" or self.tiers is None:
+            return TierConfig(provider=None, model=self.model, base_url=self.base_url)
+
+        if tier in ("planning", "codegen", "simple"):
+            tier_config = self.tiers.get_tier_config(tier)
+            # If tier doesn't override provider, it uses None (meaning default)
+            return tier_config
+        else:
+            return TierConfig(provider=None, model=self.model, base_url=self.base_url)
 
 
 class StorageConfig(BaseModel):

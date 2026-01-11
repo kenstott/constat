@@ -287,6 +287,7 @@ llm:
   api_key: ${ANTHROPIC_API_KEY}
 
   # Optional: Use different models for different tasks (cost optimization)
+  # Each tier can be a model name (uses default provider) or a full config with provider override
   tiers:
     planning: claude-sonnet-4-20250514   # Complex reasoning for plan generation
     codegen: claude-sonnet-4-20250514    # Accurate code generation
@@ -295,6 +296,15 @@ llm:
   # Optional: Provider-specific settings
   # base_url: https://api.anthropic.com  # Custom API endpoint
   # max_tokens: 4096                     # Max output tokens
+
+  # Advanced: Use different providers for different tiers (hybrid cloud/local)
+  # tiers:
+  #   planning: claude-opus-4-20250514           # Anthropic for complex planning
+  #   codegen: claude-sonnet-4-20250514          # Anthropic for code generation
+  #   simple:
+  #     provider: ollama                         # Local Ollama for simple tasks
+  #     model: llama3.2:3b
+  #     base_url: http://localhost:11434/v1      # Optional: custom endpoint
 
 #==============================================================================
 # DATABASE CONFIGURATION
@@ -743,6 +753,7 @@ from constat.providers import (
     GeminiProvider,
     GrokProvider,
     OllamaProvider,  # Local models
+    ProviderFactory,  # Multi-provider management
 )
 
 # Anthropic (default)
@@ -752,8 +763,44 @@ provider = AnthropicProvider(model="claude-sonnet-4-20250514")
 provider = OpenAIProvider(model="gpt-4o")
 
 # Local Ollama
-provider = OllamaProvider(model="llama3.2", host="http://localhost:11434")
+provider = OllamaProvider(model="llama3.2:3b", base_url="http://localhost:11434/v1")
 ```
+
+### Multi-Provider Tiering
+
+Use different providers for different task types (e.g., local Ollama for simple tasks, cloud for complex planning):
+
+```yaml
+# config.yaml
+llm:
+  provider: anthropic              # Default provider
+  model: claude-sonnet-4-20250514
+  api_key: ${ANTHROPIC_API_KEY}
+  tiers:
+    planning: claude-opus-4-20250514        # Anthropic for complex planning
+    codegen: claude-sonnet-4-20250514       # Anthropic for code generation
+    simple:
+      provider: ollama                      # Local Ollama for simple tasks
+      model: llama3.2:3b
+      base_url: http://localhost:11434/v1   # Optional: custom endpoint
+```
+
+**Benefits:**
+- **Cost optimization**: Use cheaper/local models for simple tasks
+- **Latency optimization**: Use fast local models for quick responses
+- **Privacy**: Route sensitive data through local models
+- **Fallback**: Mix cloud and local providers for resilience
+
+**Supported Providers:**
+| Provider | Name | Tool Support |
+|----------|------|--------------|
+| Anthropic | `anthropic` | Yes |
+| OpenAI | `openai` | Yes |
+| Google Gemini | `gemini` | Yes |
+| xAI Grok | `grok` | Yes |
+| Ollama (local) | `ollama` | Yes (llama3.2+) |
+| Together AI | `together` | Yes |
+| Groq | `groq` | Yes |
 
 ## Key Concepts
 

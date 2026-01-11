@@ -37,8 +37,8 @@ Technical documentation of the system architecture and logic flow.
 │ │(planner.py) │ │    │ │(fact_       │ │    │ │ (schema_manager.py)     │ │
 │ └──────┬──────┘ │    │ │ resolver.py)│ │    │ └─────────────────────────┘ │
 │        │        │    │ └──────┬──────┘ │    │ ┌─────────────────────────┐ │
-│        ▼        │    │        │        │    │ │    LLM Provider         │ │
-│ ┌─────────────┐ │    │        ▼        │    │ │ (providers/)            │ │
+│        ▼        │    │        │        │    │ │  ProviderFactory        │ │
+│ ┌─────────────┐ │    │        ▼        │    │ │ (providers/factory.py)  │ │
 │ │  Executor   │ │    │ ┌─────────────┐ │    │ └─────────────────────────┘ │
 │ │(executor.py)│ │    │ │ Derivation  │ │    │ ┌─────────────────────────┐ │
 │ └─────────────┘ │    │ │   Trace     │ │    │ │    DataStore            │ │
@@ -317,7 +317,8 @@ Follow-up: "Now compare this to last year"
 The central orchestrator that manages the execution lifecycle.
 
 **Responsibilities:**
-- Initialize components (SchemaManager, LLM, Planner, Executor)
+- Initialize components (SchemaManager, ProviderFactory, Planner, Executor)
+- Route LLM requests to appropriate provider based on tier (planning, codegen, simple)
 - Manage session state (datastore, scratchpad)
 - Execute plans step-by-step
 - Handle retries and errors
@@ -699,5 +700,63 @@ Code Execution
 1. **Schema Caching** - Introspect once, cache for session
 2. **Fact Caching** - Never resolve same fact twice
 3. **Model Tiering** - Use cheaper models for simple tasks
-4. **Batch Resolution** - Resolve multiple facts in one LLM call
-5. **Context Truncation** - Summarize old scratchpad entries
+4. **Multi-Provider Tiering** - Use different providers per tier (e.g., local Ollama for simple tasks)
+5. **Batch Resolution** - Resolve multiple facts in one LLM call
+6. **Context Truncation** - Summarize old scratchpad entries
+
+### ProviderFactory (`providers/factory.py`)
+
+Manages multiple LLM providers for different execution tiers.
+
+**Purpose:**
+- Creates and caches provider instances by name
+- Routes requests to appropriate provider based on tier
+- Enables hybrid cloud/local deployments
+
+**Configuration:**
+
+```yaml
+llm:
+  provider: anthropic              # Default provider
+  model: claude-sonnet-4-20250514
+  tiers:
+    planning: claude-opus-4-20250514      # Uses default provider
+    codegen: claude-sonnet-4-20250514     # Uses default provider
+    simple:
+      provider: ollama                    # Override provider
+      model: llama3.2:3b
+      base_url: http://localhost:11434/v1
+```
+
+**Usage:**
+
+```python
+from constat.providers import ProviderFactory
+from constat.core.config import LLMConfig
+
+factory = ProviderFactory(llm_config)
+
+# Get provider for a specific tier
+provider, model = factory.get_provider_for_tier("planning")
+response = provider.generate(..., model=model)
+
+# Get default provider
+default = factory.get_default_provider()
+```
+
+**Provider Routing:**
+
+| Tier | Config | Result |
+|------|--------|--------|
+| `planning` | `"claude-opus-4-20250514"` | Default provider + model |
+| `simple` | `{provider: ollama, model: llama3.2:3b}` | Ollama provider + model |
+| `default` | N/A | Default provider + default model |
+
+**Supported Providers:**
+- `anthropic` - Anthropic Claude
+- `openai` - OpenAI GPT
+- `gemini` - Google Gemini
+- `grok` - xAI Grok
+- `ollama` - Local Ollama
+- `together` - Together AI
+- `groq` - Groq
