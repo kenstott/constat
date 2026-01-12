@@ -6,20 +6,9 @@ llm:
   model: claude-sonnet-4-20250514
   api_key: ${ANTHROPIC_API_KEY}
 
-  # Optional: Task-type routing with automatic model escalation
-  # Uncomment to try local-first with cloud fallback:
-  # task_routing:
-  #   sql_generation:
-  #     models:
-  #       - provider: ollama              # Try local SQLCoder first
-  #         model: sqlcoder:7b
-  #       - model: claude-sonnet-4-20250514  # Escalate on failure
-  #   summarization:
-  #     models:
-  #       - model: claude-3-5-haiku-20241022  # Fast/cheap for summaries
-
 # SQL Databases and File-based Data Sources
 databases:
+  # SQL Databases (SQLite)
   sales:
     uri: sqlite:///demo/data/sales.db
     description: |
@@ -84,6 +73,10 @@ system_prompt: |
   - employees.manager_id is self-referential for org hierarchy
   - orders.customer_id -> customers.customer_id
   - order_items.product_id -> products.product_id
+
+  FILE ACCESS:
+  - For CSV files: pd.read_csv(file_web_metrics)
+  - For JSON files: pd.read_json(file_events)
 
 # External APIs (examples - these are public demo APIs)
 apis:

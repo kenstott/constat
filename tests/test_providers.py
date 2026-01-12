@@ -1230,14 +1230,17 @@ class TestMultiProviderIntegration:
 
 
 # =============================================================================
-# Task Routing E2E Tests with NLQ
+# Task Routing Integration Tests
 # =============================================================================
 
 
-class TestTaskRoutingE2E:
+class TestTaskRoutingIntegration:
     """
-    E2E tests verifying that task-type routing works correctly when running
-    natural language queries through the complete pipeline.
+    Integration tests verifying that task-type routing works correctly
+    between Planner and TaskRouter components.
+
+    Note: These are integration tests, not true E2E tests. They test
+    Planner + mock Router, not the full Session.solve() pipeline.
 
     These tests verify that:
     1. Planning phase uses the PLANNING task type routing
@@ -1247,7 +1250,7 @@ class TestTaskRoutingE2E:
 
     def test_routing_tracks_models_used_at_each_phase(self):
         """
-        E2E: Track which models are called at each phase of NLQ processing.
+        Integration: Track which models are called at each phase of NLQ processing.
 
         Uses a mock router to verify correct task type routing.
         """
@@ -1332,7 +1335,7 @@ class TestTaskRoutingE2E:
 
     def test_routing_different_providers_per_task(self):
         """
-        E2E: Verify different providers can be used for different task types.
+        Integration: Verify different providers can be used for different task types.
 
         Configures Anthropic for planning and Ollama for SQL generation.
         """
@@ -1371,7 +1374,7 @@ class TestTaskRoutingE2E:
 
     def test_routing_with_escalation_chain(self):
         """
-        E2E: Verify escalation chain configuration works.
+        Integration: Verify escalation chain configuration works.
 
         Configures multiple models per task type for fallback behavior.
         """
@@ -1407,7 +1410,7 @@ class TestTaskRoutingE2E:
 
     def test_routing_falls_back_to_defaults(self):
         """
-        E2E: Verify that unconfigured task types fall back to defaults.
+        Integration: Verify that unconfigured task types fall back to defaults.
         """
         from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
         from constat.providers import TaskRouter

@@ -904,16 +904,16 @@ class TestPlanDependencies:
 
 
 # =============================================================================
-# PARALLEL STEP SCHEDULER E2E TESTS
+# PARALLEL STEP SCHEDULER COMPONENT TESTS
 # =============================================================================
 
 
-class TestParallelStepSchedulerE2E:
-    """E2E tests for parallel step execution in exploratory mode."""
+class TestParallelStepSchedulerComponent:
+    """Component tests for ParallelStepScheduler execution."""
 
     @pytest.mark.asyncio
     async def test_parallel_execution_timing_proves_concurrency(self):
-        """E2E: Verify parallel execution by measuring actual timing."""
+        """Component: Verify parallel execution by measuring actual timing."""
         import time
         import asyncio
         from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
@@ -981,7 +981,7 @@ class TestParallelStepSchedulerE2E:
 
     @pytest.mark.asyncio
     async def test_dependency_ordering_enforced(self):
-        """E2E: Verify dependent steps wait for prerequisites."""
+        """Component: Verify dependent steps wait for prerequisites."""
         import time
         from constat.execution.parallel_scheduler import ParallelStepScheduler
 
@@ -1018,7 +1018,7 @@ class TestParallelStepSchedulerE2E:
 
     @pytest.mark.asyncio
     async def test_namespace_flows_between_steps(self):
-        """E2E: Verify step outputs are available to dependent steps."""
+        """Component: Verify step outputs are available to dependent steps."""
         from constat.execution.parallel_scheduler import ParallelStepScheduler
 
         received_values = {}
@@ -1075,7 +1075,7 @@ class TestParallelStepSchedulerE2E:
 
     @pytest.mark.asyncio
     async def test_fail_fast_stops_execution(self):
-        """E2E: Verify fail_fast stops on first failure."""
+        """Component: Verify fail_fast stops on first failure."""
         from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
 
         executed_steps = []
@@ -1108,7 +1108,7 @@ class TestParallelStepSchedulerE2E:
 
     @pytest.mark.asyncio
     async def test_employee_count_scenario(self):
-        """E2E: Test the employee count across companies scenario."""
+        """Component: Test the employee count across companies scenario."""
         import time
         from constat.execution.parallel_scheduler import ParallelStepScheduler
 

@@ -20,8 +20,29 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
+from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
+
+
+# Meta-questions that don't require data queries
+META_QUESTION_PATTERNS = [
+    "what questions",
+    "what can you",
+    "help me",
+    "capabilities",
+    "what do you know",
+    "describe yourself",
+    "what data",
+    "what databases",
+    "what tables",
+]
+
+
+def is_meta_question(query: str) -> bool:
+    """Check if query is a meta-question about capabilities."""
+    query_lower = query.lower()
+    return any(pattern in query_lower for pattern in META_QUESTION_PATTERNS)
 
 
 # System prompt for step code generation
@@ -533,6 +554,46 @@ class Session:
 
         return self._approval_callback(request)
 
+    def _answer_meta_question(self, problem: str) -> dict:
+        """
+        Answer meta-questions about capabilities without planning/execution.
+
+        Uses schema overview and domain context to answer questions like
+        "what questions can you answer" directly.
+        """
+        schema_overview = self.schema_manager.get_overview()
+        domain_context = self.config.system_prompt or ""
+
+        prompt = f"""The user is asking about your capabilities. Answer based on the available data.
+
+User question: {problem}
+
+Available databases and tables:
+{schema_overview}
+
+Domain context:
+{domain_context}
+
+Provide a helpful summary of:
+1. What data sources are available
+2. What types of questions can be answered
+3. Example questions the user could ask
+
+Keep it concise and actionable."""
+
+        result = self.router.execute(
+            task_type=TaskType.SUMMARIZATION,
+            system="You are a helpful assistant explaining data analysis capabilities.",
+            user_message=prompt,
+        )
+
+        return {
+            "success": True,
+            "meta_response": True,
+            "output": result.content,
+            "plan": None,
+        }
+
     def _replan_with_feedback(self, problem: str, feedback: str) -> PlannerResponse:
         """
         Generate a new plan incorporating user feedback.
@@ -558,13 +619,14 @@ Please create a revised plan that addresses this feedback."""
         Solve a problem with multi-step planning and execution.
 
         Workflow:
-        1. Determine execution mode (exploratory vs auditable)
-        2. Generate plan
-        3. Request user approval (if require_approval is True)
+        1. Check for meta-questions (capability queries)
+        2. Determine execution mode (exploratory vs auditable)
+        3. Generate plan
+        4. Request user approval (if require_approval is True)
            - If approved: execute
            - If rejected: return without executing
            - If suggestions: replan and ask again
-        4. Execute each step
+        5. Execute steps in parallel waves
 
         Args:
             problem: Natural language problem to solve
@@ -572,6 +634,10 @@ Please create a revised plan that addresses this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
+        # Handle meta-questions without planning
+        if is_meta_question(problem):
+            return self._answer_meta_question(problem)
+
         # Create session
         db_names = list(self.config.databases.keys())
         self.session_id = self.history.create_session(
@@ -663,69 +729,101 @@ Please create a revised plan that addresses this feedback."""
                 status="pending",
             )
 
-        # Execute each step
+        # Execute steps in parallel waves based on dependencies
         all_results = []
-        for step in self.plan.steps:
-            step.status = StepStatus.RUNNING
-            self.datastore.update_plan_step(step.number, status="running")
+        execution_waves = self.plan.get_execution_order()
 
-            result = self._execute_step(step)
+        for wave_num, wave_step_nums in enumerate(execution_waves):
+            # Get steps for this wave
+            wave_steps = [self.plan.get_step(num) for num in wave_step_nums]
+            wave_steps = [s for s in wave_steps if s is not None]
 
-            if result.success:
-                self.plan.mark_step_completed(step.number, result)
-                # Update both scratchpad (in-memory) and datastore (persistent)
-                self.scratchpad.add_step_result(
-                    step_number=step.number,
-                    goal=step.goal,
-                    result=result.stdout,
-                    tables_created=result.tables_created,
-                )
-                if self.datastore:
-                    self.datastore.add_scratchpad_entry(
+            # Execute all steps in this wave in parallel
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave_steps)) as executor:
+                # Submit all steps in wave
+                future_to_step = {}
+                for step in wave_steps:
+                    step.status = StepStatus.RUNNING
+                    self.datastore.update_plan_step(step.number, status="running")
+                    self._emit_event(StepEvent(
+                        event_type="wave_step_start",
                         step_number=step.number,
-                        goal=step.goal,
-                        narrative=result.stdout,
-                        tables_created=result.tables_created,
-                    )
-                    # Update plan step in datastore (for UI restoration)
-                    self.datastore.update_plan_step(
-                        step.number,
-                        status="completed",
-                        code=step.code,
-                        attempts=result.attempts,
-                        duration_ms=result.duration_ms,
-                    )
-            else:
-                self.plan.mark_step_failed(step.number, result)
-                # Update plan step in datastore (for UI restoration)
-                if self.datastore:
-                    self.datastore.update_plan_step(
-                        step.number,
-                        status="failed",
-                        code=step.code,
-                        error=result.error,
-                        attempts=result.attempts,
-                        duration_ms=result.duration_ms,
-                    )
-                    self.datastore.set_session_meta("status", "failed")
-                # Record and stop on failure
-                self.history.record_query(
-                    session_id=self.session_id,
-                    question=problem,
-                    success=False,
-                    attempts=result.attempts,
-                    duration_ms=result.duration_ms,
-                    error=result.error,
-                )
-                self.history.complete_session(self.session_id, status="failed")
-                return {
-                    "success": False,
-                    "plan": self.plan,
-                    "error": result.error,
-                    "completed_steps": self.plan.completed_steps,
-                }
+                        data={"wave": wave_num + 1, "goal": step.goal}
+                    ))
+                    future = executor.submit(self._execute_step, step)
+                    future_to_step[future] = step
 
-            all_results.append(result)
+                # Collect results as they complete
+                wave_failed = False
+                for future in concurrent.futures.as_completed(future_to_step):
+                    step = future_to_step[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        result = StepResult(
+                            success=False,
+                            stdout="",
+                            error=str(e),
+                            attempts=1,
+                        )
+
+                    if result.success:
+                        self.plan.mark_step_completed(step.number, result)
+                        self.scratchpad.add_step_result(
+                            step_number=step.number,
+                            goal=step.goal,
+                            result=result.stdout,
+                            tables_created=result.tables_created,
+                        )
+                        if self.datastore:
+                            self.datastore.add_scratchpad_entry(
+                                step_number=step.number,
+                                goal=step.goal,
+                                narrative=result.stdout,
+                                tables_created=result.tables_created,
+                            )
+                            self.datastore.update_plan_step(
+                                step.number,
+                                status="completed",
+                                code=step.code,
+                                attempts=result.attempts,
+                                duration_ms=result.duration_ms,
+                            )
+                        all_results.append(result)
+                    else:
+                        self.plan.mark_step_failed(step.number, result)
+                        if self.datastore:
+                            self.datastore.update_plan_step(
+                                step.number,
+                                status="failed",
+                                code=step.code,
+                                error=result.error,
+                                attempts=result.attempts,
+                                duration_ms=result.duration_ms,
+                            )
+                        wave_failed = True
+                        all_results.append(result)
+
+                # If any step in wave failed, stop execution
+                if wave_failed:
+                    self.datastore.set_session_meta("status", "failed")
+                    failed_result = next(r for r in all_results if not r.success)
+                    self.history.record_query(
+                        session_id=self.session_id,
+                        question=problem,
+                        success=False,
+                        attempts=failed_result.attempts,
+                        duration_ms=failed_result.duration_ms,
+                        error=failed_result.error,
+                    )
+                    self.history.complete_session(self.session_id, status="failed")
+                    return {
+                        "success": False,
+                        "plan": self.plan,
+                        "error": failed_result.error,
+                        "completed_steps": self.plan.completed_steps,
+                    }
 
         # Record successful completion
         total_duration = sum(r.duration_ms for r in all_results)

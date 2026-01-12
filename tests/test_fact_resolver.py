@@ -1595,14 +1595,14 @@ class TestClearUnresolved:
 
 
 # =============================================================================
-# E2E PARALLELIZATION VERIFICATION TESTS
+# PARALLELIZATION COMPONENT TESTS
 # =============================================================================
 
 
-class TestParallelizationE2E:
+class TestParallelizationComponent:
     """
-    End-to-end tests verifying that fact resolution parallelization is
-    actually wired up and working correctly.
+    Component tests verifying that fact resolution parallelization works
+    correctly within the AsyncFactResolver class.
 
     These tests use timing measurements to prove that:
     1. Multiple facts are resolved concurrently (not sequentially)
@@ -1613,7 +1613,7 @@ class TestParallelizationE2E:
     @pytest.mark.asyncio
     async def test_parallel_resolution_timing_proves_concurrency(self):
         """
-        E2E test: Verify parallelization by measuring actual execution time.
+        Component test: Verify parallelization by measuring actual execution time.
 
         If 3 facts each take 100ms to resolve:
         - Sequential: ~300ms
@@ -1675,7 +1675,7 @@ class TestParallelizationE2E:
     @pytest.mark.asyncio
     async def test_parallel_vs_sequential_speedup_ratio(self):
         """
-        E2E test: Measure actual speedup ratio between parallel and sequential.
+        Component test: Measure actual speedup ratio between parallel and sequential.
 
         Expected: parallel should be at least 2x faster than sequential for 3 facts.
         """
@@ -1727,7 +1727,7 @@ class TestParallelizationE2E:
     @pytest.mark.asyncio
     async def test_parallel_resolution_with_async_io_simulation(self):
         """
-        E2E test: Simulate actual async I/O operations (like DB/LLM calls).
+        Component test: Simulate actual async I/O operations (like DB/LLM calls).
 
         Uses asyncio.sleep instead of time.sleep to properly test async behavior.
         """
@@ -1796,7 +1796,7 @@ class TestParallelizationE2E:
     @pytest.mark.asyncio
     async def test_resolve_many_sync_wrapper_parallelizes(self):
         """
-        E2E test: Verify that resolve_many_sync (the sync wrapper) also parallelizes.
+        Component test: Verify that resolve_many_sync (the sync wrapper) also parallelizes.
         """
         import time
 
