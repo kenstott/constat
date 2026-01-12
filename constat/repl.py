@@ -29,18 +29,24 @@ class InteractiveREPL:
         config: Config,
         verbose: bool = False,
         console: Optional[Console] = None,
+        progress_callback: Optional[callable] = None,
     ):
         self.config = config
         self.verbose = verbose
         self.console = console or Console()
         self.display = FeedbackDisplay(console=self.console, verbose=verbose)
+        self.progress_callback = progress_callback
 
         self.session: Optional[Session] = None
         self.session_config = SessionConfig(verbose=verbose)
 
     def _create_session(self) -> Session:
         """Create a new session with feedback handler."""
-        session = Session(self.config, session_config=self.session_config)
+        session = Session(
+            self.config,
+            session_config=self.session_config,
+            progress_callback=self.progress_callback,
+        )
 
         # Wire up feedback display
         handler = SessionFeedbackHandler(self.display)

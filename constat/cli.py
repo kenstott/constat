@@ -6,6 +6,7 @@ from typing import Optional
 
 import click
 from rich.console import Console
+from rich.status import Status
 
 from constat.core.config import Config, DatabaseCredentials
 from constat.session import Session, SessionConfig
@@ -14,6 +15,24 @@ from constat.repl import InteractiveREPL
 
 
 console = Console()
+
+
+def create_progress_callback(status: Status):
+    """Create a progress callback that updates a Rich Status."""
+    stage_messages = {
+        "connecting": "Connecting to data sources",
+        "introspecting": "Introspecting schemas",
+        "indexing": "Building search index",
+    }
+
+    def callback(stage: str, current: int, total: int, detail: str):
+        base_msg = stage_messages.get(stage, stage)
+        if total > 1:
+            status.update(f"{base_msg} ({current}/{total}): [dim]{detail}[/dim]")
+        else:
+            status.update(f"{base_msg}: [dim]{detail}[/dim]")
+
+    return callback
 
 
 @click.group()
@@ -65,7 +84,12 @@ def solve(problem: str, config: str, verbose: bool, output: Optional[str]):
 
     display = FeedbackDisplay(console=console, verbose=verbose)
     session_config = SessionConfig(verbose=verbose)
-    session = Session(cfg, session_config=session_config)
+
+    # Initialize session with progress feedback
+    with console.status("[bold]Initializing...", spinner="dots") as status:
+        progress_cb = create_progress_callback(status)
+        session = Session(cfg, session_config=session_config, progress_callback=progress_cb)
+    console.print("[green]Ready[/green]")
 
     # Wire up feedback
     handler = SessionFeedbackHandler(display)
@@ -145,7 +169,11 @@ def repl(config: str, verbose: bool, problem: Optional[str]):
         console.print(f"[red]Config error:[/red] {e}")
         sys.exit(1)
 
-    interactive = InteractiveREPL(cfg, verbose=verbose)
+    # Initialize REPL with progress feedback
+    with console.status("[bold]Initializing...", spinner="dots") as status:
+        progress_cb = create_progress_callback(status)
+        interactive = InteractiveREPL(cfg, verbose=verbose, progress_callback=progress_cb)
+    console.print("[green]Ready[/green]\n")
 
     try:
         interactive.run(initial_problem=problem)
@@ -319,10 +347,10 @@ def schema(config: str):
 
     from constat.catalog.schema_manager import SchemaManager
 
-    console.print("Loading schema...")
-
-    schema_manager = SchemaManager(cfg)
-    schema_manager.initialize()
+    with console.status("[bold]Loading schema...", spinner="dots") as status:
+        progress_cb = create_progress_callback(status)
+        schema_manager = SchemaManager(cfg)
+        schema_manager.initialize(progress_callback=progress_cb)
 
     overview = schema_manager.get_overview()
     console.print("\n" + overview)

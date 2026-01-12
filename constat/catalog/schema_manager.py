@@ -1,7 +1,7 @@
 """Database schema introspection, caching, and vector search."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -161,17 +161,40 @@ class SchemaManager:
         # Cached overview string
         self._overview: Optional[str] = None
 
-    def initialize(self) -> None:
-        """Connect to databases, introspect schemas, build vector index."""
+        # Progress callback (set during initialize)
+        self._progress_callback: Optional[Callable[[str, int, int, str], None]] = None
+
+    def initialize(self, progress_callback: Optional[Callable[[str, int, int, str], None]] = None) -> None:
+        """Connect to databases, introspect schemas, build vector index.
+
+        Args:
+            progress_callback: Optional callback for progress updates.
+                Called with (stage, current, total, detail) where:
+                - stage: 'connecting', 'introspecting', 'indexing', 'done'
+                - current: current item number (1-based)
+                - total: total items in this stage
+                - detail: description of current item
+        """
+        self._progress_callback = progress_callback
         self._connect_all()
         self._introspect_all()
         self._resolve_reverse_references()
         self._build_vector_index()
         self._generate_overview()
+        self._progress_callback = None
+
+    def _emit_progress(self, stage: str, current: int, total: int, detail: str) -> None:
+        """Emit progress update if callback is registered."""
+        if self._progress_callback:
+            self._progress_callback(stage, current, total, detail)
 
     def _connect_all(self) -> None:
         """Establish connections to all configured databases."""
-        for db_name, db_config in self.config.databases.items():
+        db_items = list(self.config.databases.items())
+        total = len(db_items)
+        for i, (db_name, db_config) in enumerate(db_items, 1):
+            source_type = db_config.type or "sql"
+            self._emit_progress("connecting", i, total, f"{db_name} ({source_type})")
             if db_config.is_file_source():
                 self._connect_file(db_name, db_config)
             elif db_config.is_nosql():
@@ -283,17 +306,31 @@ class SchemaManager:
 
     def _introspect_all(self) -> None:
         """Introspect all tables/collections in all databases."""
+        # Count total items for progress
+        total_items = len(self.file_connections)  # Files are 1:1
+        for db_name, engine in self.connections.items():
+            inspector = inspect(engine)
+            total_items += len(inspector.get_table_names())
+        for db_name, connector in self.nosql_connections.items():
+            total_items += len(connector.get_collections())
+
+        current = 0
+
         # Introspect SQL databases
         for db_name, engine in self.connections.items():
             inspector = inspect(engine)
 
             for table_name in inspector.get_table_names():
+                current += 1
+                self._emit_progress("introspecting", current, total_items, f"{db_name}.{table_name}")
                 table_meta = self._introspect_table(db_name, engine, inspector, table_name)
                 self.metadata_cache[table_meta.full_name] = table_meta
 
         # Introspect NoSQL databases
         for db_name, connector in self.nosql_connections.items():
             for collection_name in connector.get_collections():
+                current += 1
+                self._emit_progress("introspecting", current, total_items, f"{db_name}.{collection_name}")
                 # Get schema for the collection
                 collection_meta = connector.get_collection_schema(collection_name)
                 # Convert NoSQL CollectionMetadata to TableMetadata
@@ -302,6 +339,8 @@ class SchemaManager:
 
         # Introspect file-based data sources
         for db_name, connector in self.file_connections.items():
+            current += 1
+            self._emit_progress("introspecting", current, total_items, f"{db_name} (file)")
             file_meta = connector.get_metadata()
             table_meta = self._convert_file_metadata(db_name, connector, file_meta)
             self.metadata_cache[table_meta.full_name] = table_meta
@@ -489,6 +528,7 @@ class SchemaManager:
             return
 
         # Load embedding model
+        self._emit_progress("indexing", 1, 2, "loading embedding model")
         self._model = SentenceTransformer(self.EMBEDDING_MODEL)
 
         # Generate texts for embedding
@@ -500,6 +540,7 @@ class SchemaManager:
             self._embedding_keys.append(full_name)
 
         # Generate embeddings
+        self._emit_progress("indexing", 2, 2, f"vectorizing {len(texts)} tables")
         self._embeddings = self._model.encode(texts, convert_to_numpy=True)
 
     def _generate_overview(self) -> None:

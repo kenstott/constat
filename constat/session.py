@@ -167,13 +167,14 @@ class Session:
         config: Config,
         session_config: Optional[SessionConfig] = None,
         history: Optional[SessionHistory] = None,
+        progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
     ):
         self.config = config
         self.session_config = session_config or SessionConfig()
 
         # Initialize components
         self.schema_manager = SchemaManager(config)
-        self.schema_manager.initialize()
+        self.schema_manager.initialize(progress_callback=progress_callback)
 
         # Provider factory for multi-provider support
         self.provider_factory = ProviderFactory(config.llm)
