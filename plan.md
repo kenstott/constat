@@ -2199,6 +2199,17 @@ All Phase 1 features have been implemented. The system can:
 - [x] Intent classification for follow-up messages (PROVIDE_FACTS, REVISE, NEW_REQUEST, MIXED)
 - [x] REPL commands: /unresolved to view missing facts, /facts to provide them
 
+**Fact Resolver Parallelization:**
+- [ ] Async LLM provider interface (`generate_async()` for all providers)
+- [ ] Parallel fact resolution (`resolve_all()` with asyncio.gather)
+- [ ] Rate limiting for concurrent API calls (semaphore + RPM tracking)
+- [ ] Recursive sub-proof resolution for derived facts
+- [ ] Live CLI progress display during parallel resolution
+- [ ] Event-driven architecture for UI updates
+- [ ] Layman's English initial proof generation (user confirms before execution)
+
+See [docs/plans/fact-resolver-parallelization.md](docs/plans/fact-resolver-parallelization.md) for detailed implementation plan.
+
 **Prolog/ProbLog Integration:**
 - [ ] ProbLog engine wrapper
 - [ ] Fact provenance and confidence scoring
@@ -2443,11 +2454,12 @@ Plus DB queries, code execution: **~30 seconds**
      - customer_tier(X, _) -> likely needs revenue(X, _) too
    ```
 
-5. **Parallel resolution**
+5. **Parallel resolution** (3-5x speedup for multiple LLM facts)
    ```python
    # Resolve independent facts concurrently
    facts = await asyncio.gather(*[resolve(f) for f in missing])
    ```
+   See [docs/plans/fact-resolver-parallelization.md](docs/plans/fact-resolver-parallelization.md) for implementation plan.
 
 6. **Truncate context aggressively**
    - Old scratchpad sections: summarize or drop

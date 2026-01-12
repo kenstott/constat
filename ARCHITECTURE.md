@@ -529,6 +529,39 @@ Resolves facts with full provenance for auditable mode.
 5. Generate sub-plan for complex derivations
 6. Return UNRESOLVED (user can provide via follow-up)
 
+**Parallel Fact Resolution (Planned):**
+
+Top-level assumed facts are independent and can be resolved in parallel:
+
+```
+User Question
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│  LLM: Identify Required Facts           │
+│  Returns: [fact_a, fact_b, fact_c, ...] │
+└─────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│  Parallel Fact Resolution               │
+│                                         │
+│  asyncio.gather(                        │
+│      resolve(fact_a),  ─┐               │
+│      resolve(fact_b),  ─┼─► ~2 sec      │
+│      resolve(fact_c),  ─┤   (parallel)  │
+│      resolve(fact_d),  ─┘               │
+│  )                                      │
+└─────────────────────────────────────────┘
+     │
+     ▼
+     Execute Computation → Answer + Proof
+```
+
+For derived facts requiring multi-step calculations, the system generates **sub-proofs** recursively, with the sub-facts at each level also resolved in parallel.
+
+See [docs/plans/fact-resolver-parallelization.md](docs/plans/fact-resolver-parallelization.md) for detailed implementation plan.
+
 **User-Provided Facts:**
 
 When facts are unresolved, users can provide them in natural language:
@@ -703,6 +736,10 @@ Code Execution
 4. **Multi-Provider Tiering** - Use different providers per tier (e.g., local Ollama for simple tasks)
 5. **Batch Resolution** - Resolve multiple facts in one LLM call
 6. **Context Truncation** - Summarize old scratchpad entries
+7. **Parallel Fact Resolution** - Resolve independent facts concurrently (3-5x speedup)
+   - Top-level assumed facts have no dependencies → resolve in parallel
+   - Rate-limited to avoid API throttling (semaphore + RPM tracking)
+   - Sub-proofs resolved recursively with parallelization at each level
 
 ### ProviderFactory (`providers/factory.py`)
 
