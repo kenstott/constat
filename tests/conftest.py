@@ -6,6 +6,21 @@ import time
 import pytest
 from typing import Generator
 
+# Generate a unique session ID for this pytest run to allow parallel execution
+# Each pytest process gets its own containers and ports
+_SESSION_ID = os.getpid()
+_PORT_OFFSET = _SESSION_ID % 1000  # Use PID mod 1000 for port offset
+
+
+def _get_unique_port(base_port: int) -> int:
+    """Get a unique port for this session based on base port."""
+    return base_port + _PORT_OFFSET
+
+
+def _get_unique_container_name(base_name: str) -> str:
+    """Get a unique container name for this session."""
+    return f"{base_name}_{_SESSION_ID}"
+
 
 def is_docker_available() -> bool:
     """Check if Docker is available and running."""
@@ -125,12 +140,14 @@ def mongodb_container(docker_available) -> Generator[dict, None, None]:
     """Start MongoDB container for the test session.
 
     Yields connection info dict with keys: host, port, uri
+
+    Uses unique container name and port per pytest session to allow parallel runs.
     """
     if not docker_available:
         pytest.skip("Docker not available")
 
-    container_name = "constat_test_mongodb"
-    port = 27017
+    container_name = _get_unique_container_name("constat_test_mongodb")
+    port = _get_unique_port(27017)
 
     if not start_container(
         name=container_name,
@@ -156,12 +173,14 @@ def postgresql_container(docker_available) -> Generator[dict, None, None]:
     """Start PostgreSQL container for the test session.
 
     Yields connection info dict with keys: host, port, user, password, database, dsn
+
+    Uses unique container name and port per pytest session to allow parallel runs.
     """
     if not docker_available:
         pytest.skip("Docker not available")
 
-    container_name = "constat_test_postgresql"
-    port = 5432
+    container_name = _get_unique_container_name("constat_test_postgresql")
+    port = _get_unique_port(5432)
     password = "testpassword"
     user = "postgres"
     database = "postgres"
@@ -377,12 +396,15 @@ def ollama_container(docker_available) -> Generator[dict, None, None]:
     Yields connection info dict with keys: host, port, base_url
 
     Note: The first run will pull the test model which can take several minutes.
+
+    Uses unique container name and port per pytest session to allow parallel runs.
+    The model volume is shared across sessions for faster subsequent runs.
     """
     if not docker_available:
         pytest.skip("Docker not available")
 
-    container_name = "constat_test_ollama"
-    port = 11434
+    container_name = _get_unique_container_name("constat_test_ollama")
+    port = _get_unique_port(11434)
     test_model = "llama3.2:1b"  # Small model for faster testing
 
     # Check if container already running
@@ -395,6 +417,7 @@ def ollama_container(docker_available) -> Generator[dict, None, None]:
         )
 
         # Start Ollama container
+        # Note: Volume is shared across sessions for model persistence
         cmd = [
             "docker", "run", "-d",
             "--name", container_name,
@@ -446,9 +469,7 @@ def ollama_container(docker_available) -> Generator[dict, None, None]:
     }
 
     # Cleanup: stop container after all tests
-    # Note: We don't stop by default to speed up subsequent test runs
-    # Uncomment the next line to always cleanup:
-    # stop_container(container_name)
+    stop_container(container_name)
 
 
 @pytest.fixture
