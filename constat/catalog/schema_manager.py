@@ -544,7 +544,10 @@ class SchemaManager:
         self._embeddings = self._model.encode(texts, convert_to_numpy=True)
 
     def _generate_overview(self) -> None:
-        """Generate token-optimized overview for system prompt."""
+        """Generate token-optimized overview for system prompt.
+
+        Includes column names to reduce LLM tool calls for schema exploration.
+        """
         lines = []
 
         # Add global databases description if provided
@@ -567,15 +570,22 @@ class SchemaManager:
             by_db.setdefault(table_meta.database, []).append(table_meta)
 
         for db_name, tables in sorted(by_db.items()):
-            table_names = ", ".join(t.name for t in sorted(tables, key=lambda t: t.name))
             total_rows = sum(t.row_count for t in tables)
 
             # Include database description if available
             if db_name in db_descriptions:
                 lines.append(f"  {db_name}: {db_descriptions[db_name]}")
-                lines.append(f"    Tables: {table_names} ({len(tables)} tables, ~{total_rows:,} rows)")
             else:
-                lines.append(f"  {db_name}: {table_names} ({len(tables)} tables, ~{total_rows:,} rows)")
+                lines.append(f"  {db_name}: ({len(tables)} tables, ~{total_rows:,} rows)")
+
+            # Include compact schema for each table (table_name(col1, col2, ...))
+            for table in sorted(tables, key=lambda t: t.name):
+                col_names = ", ".join(c.name for c in table.columns[:15])  # Limit columns shown
+                if len(table.columns) > 15:
+                    col_names += f", ... (+{len(table.columns) - 15} more)"
+                pk_cols = [c.name for c in table.columns if c.primary_key]
+                pk_info = f" [PK: {', '.join(pk_cols)}]" if pk_cols else ""
+                lines.append(f"    {table.name}({col_names}){pk_info} ~{table.row_count} rows")
 
         # Add key relationships
         all_fks = []
