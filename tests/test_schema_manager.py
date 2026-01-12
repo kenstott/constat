@@ -263,3 +263,90 @@ class TestSchemaManagerEdgeCases:
         """Getting nonexistent connection raises KeyError."""
         with pytest.raises(KeyError, match="not found"):
             schema_manager.get_connection("nonexistent_db")
+
+
+class TestProgressCallback:
+    """Test initialization progress callback."""
+
+    def test_progress_callback_called(self, config: Config):
+        """Progress callback is called during initialization."""
+        progress_events = []
+
+        def callback(stage: str, current: int, total: int, detail: str):
+            progress_events.append((stage, current, total, detail))
+
+        manager = SchemaManager(config)
+        manager.initialize(progress_callback=callback)
+
+        # Should have received progress events
+        assert len(progress_events) > 0
+
+        # Should have connecting stage
+        connecting_events = [e for e in progress_events if e[0] == "connecting"]
+        assert len(connecting_events) > 0
+
+        # Should have introspecting stage
+        introspecting_events = [e for e in progress_events if e[0] == "introspecting"]
+        assert len(introspecting_events) > 0
+
+        # Should have indexing stage
+        indexing_events = [e for e in progress_events if e[0] == "indexing"]
+        assert len(indexing_events) > 0
+
+    def test_progress_callback_stages_in_order(self, config: Config):
+        """Progress stages occur in correct order."""
+        stages = []
+
+        def callback(stage: str, current: int, total: int, detail: str):
+            if stage not in stages:
+                stages.append(stage)
+
+        manager = SchemaManager(config)
+        manager.initialize(progress_callback=callback)
+
+        # Stages should be in order: connecting -> introspecting -> indexing
+        assert stages.index("connecting") < stages.index("introspecting")
+        assert stages.index("introspecting") < stages.index("indexing")
+
+    def test_progress_callback_current_increments(self, config: Config):
+        """Current value increments within each stage."""
+        introspect_currents = []
+
+        def callback(stage: str, current: int, total: int, detail: str):
+            if stage == "introspecting":
+                introspect_currents.append(current)
+
+        manager = SchemaManager(config)
+        manager.initialize(progress_callback=callback)
+
+        # Currents should increment
+        if len(introspect_currents) > 1:
+            for i in range(1, len(introspect_currents)):
+                assert introspect_currents[i] >= introspect_currents[i - 1]
+
+    def test_no_callback_works(self, config: Config):
+        """Initialize works without callback."""
+        manager = SchemaManager(config)
+        manager.initialize()  # Should not raise
+
+        # Manager should be functional
+        tables = manager.list_tables()
+        assert len(tables) > 0
+
+    def test_callback_receives_detail_info(self, config: Config):
+        """Callback receives meaningful detail strings."""
+        details = []
+
+        def callback(stage: str, current: int, total: int, detail: str):
+            details.append(detail)
+
+        manager = SchemaManager(config)
+        manager.initialize(progress_callback=callback)
+
+        # Should have non-empty details
+        non_empty_details = [d for d in details if d]
+        assert len(non_empty_details) > 0
+
+        # Should mention database/table names or stages
+        all_details = " ".join(details)
+        assert "chinook" in all_details.lower() or "table" in all_details.lower() or "model" in all_details.lower()

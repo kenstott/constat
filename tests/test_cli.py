@@ -715,6 +715,78 @@ class TestEdgeCases:
         mock_session.solve.assert_called_once_with(unicode_problem)
 
 
+class TestStartupProgress:
+    """Test startup progress feedback."""
+
+    @patch("constat.cli.Session")
+    @patch("constat.cli.Config.from_yaml")
+    def test_solve_shows_ready_message(self, mock_config, mock_session_class, runner, tmp_path):
+        """solve command shows Ready message after initialization."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
+
+        mock_cfg = Mock()
+        mock_config.return_value = mock_cfg
+
+        mock_session = Mock()
+        mock_session.solve.return_value = {
+            "success": True,
+            "plan": Mock(steps=[]),
+            "results": [],
+            "output": "",
+            "datastore_tables": [],
+        }
+        mock_session_class.return_value = mock_session
+
+        result = runner.invoke(cli, ["solve", "test", "-c", str(config_path)])
+
+        assert "Ready" in result.output
+
+    @patch("constat.cli.InteractiveREPL")
+    @patch("constat.cli.Config.from_yaml")
+    def test_repl_shows_ready_message(self, mock_config, mock_repl_class, runner, tmp_path):
+        """repl command shows Ready message after initialization."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
+
+        mock_cfg = Mock()
+        mock_config.return_value = mock_cfg
+
+        mock_repl = Mock()
+        mock_repl_class.return_value = mock_repl
+
+        result = runner.invoke(cli, ["repl", "-c", str(config_path)])
+
+        assert "Ready" in result.output
+
+    @patch("constat.cli.Session")
+    @patch("constat.cli.Config.from_yaml")
+    def test_session_receives_progress_callback(self, mock_config, mock_session_class, runner, tmp_path):
+        """Session is initialized with progress_callback parameter."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
+
+        mock_cfg = Mock()
+        mock_config.return_value = mock_cfg
+
+        mock_session = Mock()
+        mock_session.solve.return_value = {
+            "success": True,
+            "plan": Mock(steps=[]),
+            "results": [],
+            "output": "",
+            "datastore_tables": [],
+        }
+        mock_session_class.return_value = mock_session
+
+        result = runner.invoke(cli, ["solve", "test", "-c", str(config_path)])
+
+        # Session should be called with progress_callback
+        call_kwargs = mock_session_class.call_args.kwargs
+        assert "progress_callback" in call_kwargs
+        assert call_kwargs["progress_callback"] is not None
+
+
 class TestVerboseMode:
     """Test verbose mode behavior."""
 
