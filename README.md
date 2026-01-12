@@ -9,6 +9,29 @@ Constat enables LLM-powered data analysis with two key principles:
 1. **Verifiable, Auditable Logic**: Every conclusion can be traced back to its source data and reasoning steps
 2. **Universal Data Integration**: Connect to SQL databases, NoSQL stores, and cloud data services through a unified interface
 
+## Quick Start
+
+Try the included demo environment:
+
+```bash
+# Setup demo data (SQLite databases, CSV, JSON files)
+python demo/setup_demo.py
+
+# Set your API key
+export ANTHROPIC_API_KEY=your_key_here
+
+# View available data sources
+constat schema -c demo/config.yaml
+
+# Start interactive session
+constat repl -c demo/config.yaml
+```
+
+Example queries to try:
+- "Top 5 customers by total order value"
+- "Which pages have the highest bounce rate?"
+- "Average performance rating by department"
+
 ## Execution Modes
 
 Constat supports two execution modes to balance flexibility with auditability:

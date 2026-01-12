@@ -529,8 +529,9 @@ llm:
   model: claude-sonnet-4-20250514
   api_key: ${ANTHROPIC_API_KEY}
 
-# SQL Databases (SQLite)
+# SQL Databases and File-based Data Sources
 databases:
+  # SQL Databases (SQLite)
   sales:
     uri: sqlite:///demo/data/sales.db
     description: |
@@ -551,32 +552,35 @@ databases:
       HR data with departments (budget, headcount_limit), employees (salary, title,
       manager_id for hierarchy), and performance_reviews (1-5 rating scale).
 
-databases_description: |
-  Three interconnected business databases for a B2B company:
-  - sales: CRM and order management (customers.tier determines discount)
-  - inventory: Multi-warehouse stock management (reorder_level triggers alerts)
-  - hr: Employee and performance tracking (ratings affect compensation)
-
-# Reference Documents and Data Files
-documents:
-  business_rules:
-    type: file
-    path: demo/docs/business_rules.md
-    description: Business policies for customer tiers, inventory reorder, and performance reviews
-
-  website_metrics:
-    type: file
+  # File-based data sources (CSV, JSON, Parquet, Arrow)
+  web_metrics:
+    type: csv
     path: demo/data/website_metrics.csv
     description: |
       Daily web analytics by page (90 days). Columns: date, page, visitors,
       page_views, bounce_rate, avg_session_duration
 
   events:
-    type: file
+    type: json
     path: demo/data/events.json
     description: |
       Clickstream events (500 records). Fields: event_id, timestamp, event_type
       (page_view/click/form_submit/purchase/signup/error), source, user_id, properties
+
+databases_description: |
+  Three interconnected business databases and two file-based data sources:
+  - sales: CRM and order management (customers.tier determines discount)
+  - inventory: Multi-warehouse stock management (reorder_level triggers alerts)
+  - hr: Employee and performance tracking (ratings affect compensation)
+  - web_metrics: Daily web analytics CSV (use file_web_metrics path)
+  - events: Clickstream events JSON (use file_events path)
+
+# Reference Documents (unstructured files - markdown, text, PDFs)
+documents:
+  business_rules:
+    type: file
+    path: demo/docs/business_rules.md
+    description: Business policies for customer tiers, inventory reorder, and performance reviews
 
 system_prompt: |
   You are a business analyst assistant analyzing company data.
@@ -592,6 +596,10 @@ system_prompt: |
   - employees.manager_id is self-referential for org hierarchy
   - orders.customer_id -> customers.customer_id
   - order_items.product_id -> products.product_id
+
+  FILE ACCESS:
+  - For CSV files: pd.read_csv(file_web_metrics)
+  - For JSON files: pd.read_json(file_events)
 
 # External APIs (examples - these are public demo APIs)
 apis:
@@ -650,20 +658,25 @@ def main():
     print("""
 DATA SOURCES CREATED:
 
-  SQLite Databases:
-    - sales.db: customers, products, orders, order_items (200 orders)
-    - inventory.db: warehouses, inventory, shipments (4 warehouses)
-    - hr.db: departments, employees, performance_reviews (15 employees)
+  Databases (databases section):
+    SQL:
+      - sales.db: customers, products, orders, order_items (200 orders)
+      - inventory.db: warehouses, inventory, shipments (4 warehouses)
+      - hr.db: departments, employees, performance_reviews (15 employees)
+    Files:
+      - web_metrics (CSV): 90 days of web analytics by page
+      - events (JSON): 500 clickstream events with properties
 
-  File Data:
-    - website_metrics.csv: 90 days of web analytics by page
-    - events.json: 500 clickstream events with properties
-
-  Documents:
+  Documents (unstructured reference):
     - business_rules.md: Tier discounts, inventory policies, review guidelines
 
   APIs:
     - countries (GraphQL): Public API for country/continent data
+
+GENERATED CODE ACCESS:
+  - SQL databases: pd.read_sql("...", db_sales)
+  - CSV files: pd.read_csv(file_web_metrics)
+  - JSON files: pd.read_json(file_events)
 
 TO USE THE DEMO:
 
@@ -671,14 +684,13 @@ TO USE THE DEMO:
      export ANTHROPIC_API_KEY=your_key_here
 
   2. Run from project root:
-     constat validate -c demo/config.yaml
-     constat repl -c demo/config.yaml
+     constat schema -c demo/config.yaml    # View schema
+     constat repl -c demo/config.yaml      # Interactive mode
 
   3. Example queries:
      - "Top 5 customers by total order value"
      - "Products with low inventory across warehouses"
      - "Average performance rating by department"
-     - "Revenue trend by month for the past year"
      - "Which pages have the highest bounce rate?"
      - "Count events by type from the events data"
 """)
