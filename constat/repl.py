@@ -240,8 +240,12 @@ class InteractiveREPL:
                 steps = [{"number": s.number, "goal": s.goal} for s in plan.steps]
                 self.display.show_plan(steps)
 
-            # Summary is shown via events, but show tables
-            if result.get("success"):
+            # Handle meta-response (direct answer without planning)
+            if result.get("meta_response"):
+                self.display.show_output(result.get("output", ""))
+                self.display.show_summary(success=True, total_steps=0, duration_ms=0)
+            elif result.get("success"):
+                # Show tables from execution
                 tables = result.get("datastore_tables", [])
                 if tables:
                     self.display.show_tables(tables)
