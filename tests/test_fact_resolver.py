@@ -1832,3 +1832,191 @@ class TestParallelizationE2E:
             f"Sync wrapper took {elapsed:.1f}ms, expected <{sequential_expected * 0.7:.1f}ms. "
             f"The sync wrapper may not be properly invoking async parallelization."
         )
+
+
+# =============================================================================
+# RATE LIMITER TESTS
+# =============================================================================
+
+
+class TestRateLimiter:
+    """Tests for the RateLimiter class."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_basic_execution(self):
+        """Test basic execution through rate limiter."""
+        from constat.execution.fact_resolver import RateLimiter
+
+        limiter = RateLimiter()
+
+        async def success_task():
+            return "success"
+
+        result = await limiter.execute(success_task)
+
+        assert result == "success"
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_concurrency_control(self):
+        """Test that rate limiter limits concurrency."""
+        import time
+        from constat.execution.fact_resolver import RateLimiter, RateLimiterConfig
+
+        config = RateLimiterConfig(max_concurrent=2)
+        limiter = RateLimiter(config)
+
+        call_times = []
+
+        async def slow_task(task_id):
+            call_times.append(("start", task_id, time.time()))
+            await asyncio.sleep(0.1)
+            call_times.append(("end", task_id, time.time()))
+            return task_id
+
+        # Launch 4 tasks with max_concurrent=2
+        # Use coroutines directly (no retry needed for this test)
+        tasks = [limiter.execute(slow_task(i)) for i in range(4)]
+        start = time.time()
+        results = await asyncio.gather(*tasks)
+        elapsed = time.time() - start
+
+        assert results == [0, 1, 2, 3]
+
+        # With max_concurrent=2 and 4 tasks taking 100ms each:
+        # - Wave 1: tasks 0, 1 run in parallel (100ms)
+        # - Wave 2: tasks 2, 3 run in parallel (100ms)
+        # Total ~200ms (not 400ms if sequential, not 100ms if no limit)
+        assert 0.15 < elapsed < 0.35, f"Expected ~200ms, got {elapsed*1000:.0f}ms"
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_exponential_backoff(self):
+        """Test exponential backoff on rate limit errors."""
+        import time
+        from constat.execution.fact_resolver import RateLimiter, RateLimiterConfig
+
+        config = RateLimiterConfig(
+            max_concurrent=5,
+            max_retries=3,
+            base_delay=0.05,  # 50ms base delay for fast test
+            jitter=0.0,  # No jitter for predictable timing
+        )
+        limiter = RateLimiter(config)
+
+        attempt_count = 0
+        attempt_times = []
+
+        async def rate_limited_task():
+            nonlocal attempt_count
+            attempt_count += 1
+            attempt_times.append(time.time())
+
+            if attempt_count < 3:
+                raise Exception("Rate limit exceeded: 429")
+            return "success"
+
+        start = time.time()
+        # Pass the async function itself (not called) so it can be retried
+        result = await limiter.execute(rate_limited_task)
+        elapsed = time.time() - start
+
+        assert result == "success"
+        assert attempt_count == 3
+
+        # Check exponential delays:
+        # - Attempt 1: immediate
+        # - Attempt 2: after 50ms (2^0 * 50ms)
+        # - Attempt 3: after 100ms (2^1 * 50ms)
+        # Total: ~150ms
+        assert 0.1 < elapsed < 0.3, f"Expected ~150ms, got {elapsed*1000:.0f}ms"
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_exhausted_error(self):
+        """Test RateLimitExhaustedError after max retries."""
+        from constat.execution.fact_resolver import (
+            RateLimiter,
+            RateLimiterConfig,
+            RateLimitExhaustedError,
+        )
+
+        config = RateLimiterConfig(
+            max_retries=2,
+            base_delay=0.01,
+            jitter=0.0,
+        )
+        limiter = RateLimiter(config)
+
+        async def always_rate_limited():
+            raise Exception("429 Too Many Requests")
+
+        with pytest.raises(RateLimitExhaustedError, match="Rate limit exceeded after 2 retries"):
+            # Pass the async function itself for retry support
+            await limiter.execute(always_rate_limited)
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_non_rate_limit_errors_not_retried(self):
+        """Test that non-rate-limit errors are not retried."""
+        from constat.execution.fact_resolver import RateLimiter, RateLimiterConfig
+
+        config = RateLimiterConfig(max_retries=3)
+        limiter = RateLimiter(config)
+
+        attempt_count = 0
+
+        async def regular_error():
+            nonlocal attempt_count
+            attempt_count += 1
+            raise ValueError("Database connection failed")
+
+        with pytest.raises(ValueError, match="Database connection failed"):
+            # Pass the async function itself
+            await limiter.execute(regular_error)
+
+        # Should only attempt once - not retried
+        assert attempt_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rate_limiter_stats(self):
+        """Test rate limiter statistics."""
+        from constat.execution.fact_resolver import RateLimiter, RateLimiterConfig
+
+        config = RateLimiterConfig(max_concurrent=5, max_retries=3, base_delay=0.01, jitter=0.0)
+        limiter = RateLimiter(config)
+
+        # Track rate limit hits
+        call_count = 0
+
+        async def sometimes_rate_limited():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("Rate limit 429")
+            return "ok"
+
+        # Pass the async function itself for retry support
+        await limiter.execute(sometimes_rate_limited)
+
+        stats = limiter.stats
+        assert stats["total_requests"] == 1
+        assert stats["rate_limit_hits"] == 1
+        assert stats["max_concurrent"] == 5
+
+    def test_async_resolver_has_rate_limiter(self):
+        """Test that AsyncFactResolver has a rate limiter."""
+        resolver = AsyncFactResolver()
+
+        assert hasattr(resolver, "_rate_limiter")
+        assert hasattr(resolver, "rate_limiter_stats")
+
+        stats = resolver.rate_limiter_stats
+        assert "total_requests" in stats
+        assert "max_concurrent" in stats
+
+    def test_async_resolver_custom_rate_limiter_config(self):
+        """Test AsyncFactResolver with custom rate limiter config."""
+        from constat.execution.fact_resolver import RateLimiterConfig
+
+        config = RateLimiterConfig(max_concurrent=10, max_retries=5)
+        resolver = AsyncFactResolver(rate_limiter_config=config)
+
+        assert resolver._rate_limiter.config.max_concurrent == 10
+        assert resolver._rate_limiter.config.max_retries == 5

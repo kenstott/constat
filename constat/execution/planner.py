@@ -15,13 +15,14 @@ from constat.catalog.schema_manager import SchemaManager
 
 
 # System prompt for planning
-PLANNER_SYSTEM_PROMPT = """You are a data analysis planner. Given a user problem, break it down into a clear, sequential plan of steps.
+PLANNER_SYSTEM_PROMPT = """You are a data analysis planner. Given a user problem, break it down into a clear plan of steps.
 
 ## Your Task
 Analyze the user's question and create a step-by-step plan to answer it. Each step should be:
 1. A single, focused action
 2. Clear about what data it needs (inputs)
 3. Clear about what it produces (outputs)
+4. Clear about dependencies on other steps
 
 ## Available Resources
 You have access to these tools to explore the database schema:
@@ -33,7 +34,8 @@ You have access to these tools to explore the database schema:
 2. Break complex questions into smaller queries
 3. Each step should produce data that later steps can use
 4. Keep steps atomic - one main action per step
-5. End with a step that synthesizes the final answer
+5. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
+6. End with a step that synthesizes the final answer
 
 ## Output Format
 Return your plan as a JSON object with this structure:
@@ -45,13 +47,22 @@ Return your plan as a JSON object with this structure:
       "number": 1,
       "goal": "Load customer data from the sales database",
       "inputs": [],
-      "outputs": ["customers_df"]
+      "outputs": ["customers_df"],
+      "depends_on": []
     },
     {
       "number": 2,
-      "goal": "Calculate total revenue per customer",
-      "inputs": ["customers_df"],
-      "outputs": ["customer_revenue"]
+      "goal": "Load product data from the inventory database",
+      "inputs": [],
+      "outputs": ["products_df"],
+      "depends_on": []
+    },
+    {
+      "number": 3,
+      "goal": "Join customer and product data",
+      "inputs": ["customers_df", "products_df"],
+      "outputs": ["combined_df"],
+      "depends_on": [1, 2]
     }
   ]
 }
@@ -61,6 +72,8 @@ Important:
 - Return ONLY the JSON object, no additional text
 - Goals should be natural language descriptions
 - Inputs/outputs are variable or table names for data flow
+- depends_on lists step numbers that must complete before this step can start
+- Steps with empty depends_on (or depends_on: []) can run in parallel with other independent steps
 """
 
 
@@ -207,6 +220,7 @@ class Planner:
                 goal=step_data.get("goal", ""),
                 expected_inputs=step_data.get("inputs", []),
                 expected_outputs=step_data.get("outputs", []),
+                depends_on=step_data.get("depends_on", []),
                 step_type=StepType.PYTHON,  # Phase 1: Python only
             ))
 
@@ -215,6 +229,10 @@ class Planner:
             steps=steps,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
+
+        # If LLM didn't provide depends_on, infer from inputs/outputs
+        if all(not step.depends_on for step in steps):
+            plan.infer_dependencies()
 
         return PlannerResponse(
             plan=plan,

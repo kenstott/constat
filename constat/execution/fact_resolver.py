@@ -25,6 +25,7 @@ which provides:
 """
 
 import asyncio
+import random
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -664,6 +665,121 @@ REASONING: User specified revenue threshold should be $50,000
 _DEFAULT_EXECUTOR = ThreadPoolExecutor(max_workers=10)
 
 
+class RateLimitError(Exception):
+    """Raised when an API rate limit is hit."""
+    pass
+
+
+class RateLimitExhaustedError(Exception):
+    """Raised when max retries exceeded for rate limiting."""
+    pass
+
+
+@dataclass
+class RateLimiterConfig:
+    """Configuration for rate limiting."""
+    max_concurrent: int = 5  # Max concurrent LLM calls
+    max_retries: int = 3  # Max retry attempts on rate limit
+    base_delay: float = 1.0  # Base delay in seconds
+    max_delay: float = 60.0  # Maximum delay in seconds
+    jitter: float = 0.5  # Random jitter factor (0-1)
+
+
+class RateLimiter:
+    """
+    Rate limiter with semaphore for concurrency control and exponential backoff.
+
+    Prevents overwhelming LLM APIs with too many concurrent requests and
+    handles rate limit errors gracefully with retries.
+
+    Usage:
+        limiter = RateLimiter(max_concurrent=5)
+
+        async def call_llm():
+            return await llm.generate(...)
+
+        result = await limiter.execute(call_llm())
+    """
+
+    def __init__(self, config: Optional[RateLimiterConfig] = None):
+        self.config = config or RateLimiterConfig()
+        self._semaphore = asyncio.Semaphore(self.config.max_concurrent)
+        self._request_count = 0
+        self._rate_limit_hits = 0
+
+    async def execute(self, coro_or_func):
+        """
+        Execute a coroutine or async function with rate limiting and exponential backoff.
+
+        Args:
+            coro_or_func: Either a coroutine to execute, or an async callable that
+                         creates a new coroutine (for retry support)
+
+        Returns:
+            Result of the coroutine
+
+        Raises:
+            RateLimitExhaustedError: If max retries exceeded
+        """
+        # Determine if we got a callable (can retry) or a coroutine (single use)
+        is_callable = callable(coro_or_func) and not asyncio.iscoroutine(coro_or_func)
+
+        async with self._semaphore:
+            self._request_count += 1
+
+            for attempt in range(self.config.max_retries):
+                try:
+                    if is_callable:
+                        return await coro_or_func()
+                    else:
+                        return await coro_or_func
+                except Exception as e:
+                    # Check if this is a rate limit error
+                    error_str = str(e).lower()
+                    is_rate_limit = any(
+                        indicator in error_str
+                        for indicator in ["rate limit", "ratelimit", "429", "too many requests"]
+                    )
+
+                    if not is_rate_limit:
+                        raise  # Re-raise non-rate-limit errors
+
+                    if not is_callable:
+                        # Can't retry a single coroutine
+                        raise
+
+                    self._rate_limit_hits += 1
+
+                    if attempt == self.config.max_retries - 1:
+                        raise RateLimitExhaustedError(
+                            f"Rate limit exceeded after {self.config.max_retries} retries"
+                        ) from e
+
+                    # Calculate backoff delay with exponential increase and jitter
+                    delay = min(
+                        self.config.base_delay * (2 ** attempt),
+                        self.config.max_delay
+                    )
+                    jitter = random.uniform(0, self.config.jitter * delay)
+                    total_delay = delay + jitter
+
+                    await asyncio.sleep(total_delay)
+
+    @property
+    def stats(self) -> dict:
+        """Get rate limiter statistics."""
+        return {
+            "total_requests": self._request_count,
+            "rate_limit_hits": self._rate_limit_hits,
+            "max_concurrent": self.config.max_concurrent,
+        }
+
+    def reset_stats(self):
+        """Reset statistics counters."""
+        self._request_count = 0
+        self._rate_limit_hits = 0
+
+
 class AsyncFactResolver(FactResolver):
     """
     Async-enabled fact resolver with parallel resolution support.
@@ -695,6 +811,8 @@ class AsyncFactResolver(FactResolver):
         strategy: Optional[ResolutionStrategy] = None,
         executor: Optional[ThreadPoolExecutor] = None,
         parallel_sources: bool = False,
+        rate_limiter: Optional[RateLimiter] = None,
+        rate_limiter_config: Optional[RateLimiterConfig] = None,
     ):
         """
         Initialize AsyncFactResolver.
@@ -707,10 +825,65 @@ class AsyncFactResolver(FactResolver):
             executor: Custom thread pool executor (uses shared default if not provided)
             parallel_sources: If True, try DATABASE + LLM_KNOWLEDGE + SUB_PLAN
                             concurrently instead of sequentially
+            rate_limiter: Custom rate limiter instance (for shared limiting across resolvers)
+            rate_limiter_config: Config for creating a new rate limiter
         """
         super().__init__(llm, schema_manager, config, strategy)
         self._executor = executor or _DEFAULT_EXECUTOR
         self._parallel_sources = parallel_sources
+
+        # Rate limiting for LLM calls
+        if rate_limiter:
+            self._rate_limiter = rate_limiter
+        elif rate_limiter_config:
+            self._rate_limiter = RateLimiter(rate_limiter_config)
+        else:
+            # Default rate limiter
+            self._rate_limiter = RateLimiter()
+
+    @property
+    def rate_limiter_stats(self) -> dict:
+        """Get rate limiter statistics."""
+        return self._rate_limiter.stats
+
+    async def _call_llm_with_rate_limit(
+        self,
+        system: str,
+        user_message: str,
+        max_tokens: int = 500,
+    ) -> str:
+        """
+        Call LLM with rate limiting and exponential backoff.
+
+        Args:
+            system: System prompt
+            user_message: User message
+            max_tokens: Maximum tokens in response
+
+        Returns:
+            LLM response string
+        """
+        async def _make_call():
+            if hasattr(self.llm, 'async_generate'):
+                return await self.llm.async_generate(
+                    system=system,
+                    user_message=user_message,
+                    max_tokens=max_tokens,
+                    executor=self._executor,
+                )
+            else:
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    self._executor,
+                    lambda: self.llm.generate(
+                        system=system,
+                        user_message=user_message,
+                        max_tokens=max_tokens,
+                    )
+                )
+
+        # Pass async function (not called) so it can be retried on rate limit
+        return await self._rate_limiter.execute(_make_call)
 
     async def resolve_async(self, fact_name: str, **params) -> Fact:
         """
@@ -917,24 +1090,12 @@ NOT_POSSIBLE: <reason>
 """
 
         try:
-            # Use async_generate if available, otherwise run sync in executor
-            if hasattr(self.llm, 'async_generate'):
-                response = await self.llm.async_generate(
-                    system="You are a SQL expert. Generate precise queries to resolve facts.",
-                    user_message=prompt,
-                    max_tokens=500,
-                    executor=self._executor,
-                )
-            else:
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    self._executor,
-                    lambda: self.llm.generate(
-                        system="You are a SQL expert. Generate precise queries to resolve facts.",
-                        user_message=prompt,
-                        max_tokens=500,
-                    )
-                )
+            # Use rate-limited LLM call
+            response = await self._call_llm_with_rate_limit(
+                system="You are a SQL expert. Generate precise queries to resolve facts.",
+                user_message=prompt,
+                max_tokens=500,
+            )
 
             if "NOT_POSSIBLE" in response:
                 return None
@@ -1002,23 +1163,12 @@ UNKNOWN
 """
 
         try:
-            if hasattr(self.llm, 'async_generate'):
-                response = await self.llm.async_generate(
-                    system="You are a knowledgeable assistant. Provide facts you're confident about.",
-                    user_message=prompt,
-                    max_tokens=300,
-                    executor=self._executor,
-                )
-            else:
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    self._executor,
-                    lambda: self.llm.generate(
-                        system="You are a knowledgeable assistant. Provide facts you're confident about.",
-                        user_message=prompt,
-                        max_tokens=300,
-                    )
-                )
+            # Use rate-limited LLM call
+            response = await self._call_llm_with_rate_limit(
+                system="You are a knowledgeable assistant. Provide facts you're confident about.",
+                user_message=prompt,
+                max_tokens=300,
+            )
 
             if "UNKNOWN" in response:
                 return None
@@ -1105,23 +1255,12 @@ Generate the derivation function for {fact_name}:
 """
 
         try:
-            if hasattr(self.llm, 'async_generate'):
-                response = await self.llm.async_generate(
-                    system="You are a Python expert. Generate fact derivation functions.",
-                    user_message=prompt,
-                    max_tokens=500,
-                    executor=self._executor,
-                )
-            else:
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    self._executor,
-                    lambda: self.llm.generate(
-                        system="You are a Python expert. Generate fact derivation functions.",
-                        user_message=prompt,
-                        max_tokens=500,
-                    )
-                )
+            # Use rate-limited LLM call
+            response = await self._call_llm_with_rate_limit(
+                system="You are a Python expert. Generate fact derivation functions.",
+                user_message=prompt,
+                max_tokens=500,
+            )
 
             code = response
             if "```python" in code:

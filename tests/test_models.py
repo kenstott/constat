@@ -698,3 +698,508 @@ Line 3
         assert artifact.metadata == nested_metadata
         result = artifact.to_dict()
         assert result["metadata"]["dimensions"]["width"] == 800
+
+
+class TestPlanDependencies:
+    """Tests for Plan dependency analysis and parallel execution support."""
+
+    def test_step_depends_on_field(self):
+        """Test that Step has depends_on field."""
+        step = Step(
+            number=1,
+            goal="Test step",
+            depends_on=[2, 3],
+        )
+        assert step.depends_on == [2, 3]
+
+    def test_step_depends_on_defaults_empty(self):
+        """Test depends_on defaults to empty list."""
+        step = Step(number=1, goal="Test step")
+        assert step.depends_on == []
+
+    def test_infer_dependencies_from_inputs_outputs(self):
+        """Test inferring dependencies from input/output overlap."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="Load A", expected_outputs=["data_a"]),
+                Step(number=2, goal="Load B", expected_outputs=["data_b"]),
+                Step(number=3, goal="Combine", expected_inputs=["data_a", "data_b"], expected_outputs=["combined"]),
+                Step(number=4, goal="Report", expected_inputs=["combined"]),
+            ],
+        )
+
+        plan.infer_dependencies()
+
+        # Step 3 should depend on steps 1 and 2
+        step3 = plan.get_step(3)
+        assert 1 in step3.depends_on
+        assert 2 in step3.depends_on
+
+        # Step 4 should depend on step 3
+        step4 = plan.get_step(4)
+        assert 3 in step4.depends_on
+
+        # Steps 1 and 2 have no dependencies
+        assert plan.get_step(1).depends_on == []
+        assert plan.get_step(2).depends_on == []
+
+    def test_get_dependency_graph(self):
+        """Test getting dependency graph as adjacency list."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[1, 2]),
+            ],
+        )
+
+        graph = plan.get_dependency_graph()
+
+        assert graph == {1: [], 2: [], 3: [1, 2]}
+
+    def test_get_runnable_steps_initial(self):
+        """Test getting runnable steps when none are completed."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[1, 2]),
+            ],
+        )
+
+        runnable = plan.get_runnable_steps()
+
+        # Steps 1 and 2 should be runnable (no dependencies)
+        runnable_numbers = [s.number for s in runnable]
+        assert 1 in runnable_numbers
+        assert 2 in runnable_numbers
+        assert 3 not in runnable_numbers
+
+    def test_get_runnable_steps_after_completion(self):
+        """Test getting runnable steps after some are completed."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[1, 2]),
+            ],
+        )
+
+        result = StepResult(success=True, stdout="Done", attempts=1, duration_ms=100)
+        plan.mark_step_completed(1, result)
+        plan.mark_step_completed(2, result)
+
+        runnable = plan.get_runnable_steps()
+
+        # Step 3 should now be runnable
+        runnable_numbers = [s.number for s in runnable]
+        assert 3 in runnable_numbers
+        assert 1 not in runnable_numbers  # Already completed
+        assert 2 not in runnable_numbers  # Already completed
+
+    def test_get_runnable_steps_partial_completion(self):
+        """Test getting runnable steps with partial completion."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[1, 2]),
+            ],
+        )
+
+        result = StepResult(success=True, stdout="Done", attempts=1, duration_ms=100)
+        plan.mark_step_completed(1, result)  # Only 1 completed, not 2
+
+        runnable = plan.get_runnable_steps()
+
+        # Step 3 should NOT be runnable (step 2 not complete)
+        runnable_numbers = [s.number for s in runnable]
+        assert 2 in runnable_numbers  # Still pending
+        assert 3 not in runnable_numbers  # Dependencies not satisfied
+
+    def test_get_execution_order_waves(self):
+        """Test getting execution order as waves."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[1]),
+                Step(number=4, goal="D", depends_on=[2]),
+                Step(number=5, goal="E", depends_on=[3, 4]),
+            ],
+        )
+
+        waves = plan.get_execution_order()
+
+        # Wave 1: steps 1, 2 (no dependencies)
+        # Wave 2: steps 3, 4 (depend on wave 1)
+        # Wave 3: step 5 (depends on wave 2)
+        assert len(waves) == 3
+        assert set(waves[0]) == {1, 2}
+        assert set(waves[1]) == {3, 4}
+        assert set(waves[2]) == {5}
+
+    def test_get_execution_order_sequential(self):
+        """Test execution order for fully sequential plan."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[1]),
+                Step(number=3, goal="C", depends_on=[2]),
+            ],
+        )
+
+        waves = plan.get_execution_order()
+
+        # Each step in its own wave
+        assert waves == [[1], [2], [3]]
+
+    def test_get_execution_order_fully_parallel(self):
+        """Test execution order for fully parallel plan."""
+        plan = Plan(
+            problem="Test",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[]),
+                Step(number=4, goal="D", depends_on=[]),
+            ],
+        )
+
+        waves = plan.get_execution_order()
+
+        # All steps in one wave
+        assert len(waves) == 1
+        assert set(waves[0]) == {1, 2, 3, 4}
+
+    def test_employee_count_example(self):
+        """Test the employee count across companies example from requirements."""
+        # 5 companies, get employee count for each, then sum
+        plan = Plan(
+            problem="Get total employees across all companies",
+            steps=[
+                Step(number=1, goal="Get employee count from Company A", depends_on=[], expected_outputs=["count_a"]),
+                Step(number=2, goal="Get employee count from Company B", depends_on=[], expected_outputs=["count_b"]),
+                Step(number=3, goal="Get employee count from Company C", depends_on=[], expected_outputs=["count_c"]),
+                Step(number=4, goal="Get employee count from Company D", depends_on=[], expected_outputs=["count_d"]),
+                Step(number=5, goal="Get employee count from Company E", depends_on=[], expected_outputs=["count_e"]),
+                Step(number=6, goal="Compute total sum", depends_on=[1, 2, 3, 4, 5], expected_inputs=["count_a", "count_b", "count_c", "count_d", "count_e"]),
+            ],
+        )
+
+        waves = plan.get_execution_order()
+
+        # Wave 1: All 5 company queries in parallel
+        # Wave 2: Sum step
+        assert len(waves) == 2
+        assert set(waves[0]) == {1, 2, 3, 4, 5}
+        assert waves[1] == [6]
+
+
+# =============================================================================
+# PARALLEL STEP SCHEDULER E2E TESTS
+# =============================================================================
+
+
+class TestParallelStepSchedulerE2E:
+    """E2E tests for parallel step execution in exploratory mode."""
+
+    @pytest.mark.asyncio
+    async def test_parallel_execution_timing_proves_concurrency(self):
+        """E2E: Verify parallel execution by measuring actual timing."""
+        import time
+        import asyncio
+        from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
+
+        DELAY_MS = 100
+        NUM_PARALLEL_STEPS = 3
+
+        # Track execution times
+        execution_log = []
+
+        def slow_step_executor(step: Step, namespace: dict) -> StepResult:
+            """Step executor that takes DELAY_MS to complete."""
+            execution_log.append(("start", step.number, time.time()))
+            time.sleep(DELAY_MS / 1000)
+            execution_log.append(("end", step.number, time.time()))
+            return StepResult(
+                success=True,
+                stdout=f"Step {step.number} done",
+                variables={f"result_{step.number}": step.number * 10},
+                duration_ms=DELAY_MS,
+            )
+
+        # Create plan with 3 parallel steps + 1 dependent step
+        plan = Plan(
+            problem="Test parallel execution",
+            steps=[
+                Step(number=1, goal="Task A", depends_on=[]),
+                Step(number=2, goal="Task B", depends_on=[]),
+                Step(number=3, goal="Task C", depends_on=[]),
+                Step(number=4, goal="Aggregate", depends_on=[1, 2, 3]),
+            ],
+        )
+
+        scheduler = ParallelStepScheduler(
+            step_executor=slow_step_executor,
+            config=SchedulerConfig(max_concurrent_steps=10),
+        )
+
+        start = time.time()
+        result = await scheduler.execute_plan(plan)
+        total_time = (time.time() - start) * 1000
+
+        # Verify success
+        assert result.success
+        assert len(result.completed_steps) == 4
+
+        # Verify wave structure
+        assert len(result.execution_waves) == 2
+        assert set(result.execution_waves[0]) == {1, 2, 3}
+        assert result.execution_waves[1] == [4]
+
+        # CRITICAL: If parallel, steps 1-3 should complete in ~100ms (not 300ms)
+        # Total should be ~200ms (wave 1: 100ms, wave 2: 100ms)
+        expected_sequential = NUM_PARALLEL_STEPS * DELAY_MS + DELAY_MS  # 400ms
+        expected_parallel = 2 * DELAY_MS + 50  # ~250ms with overhead
+
+        print(f"\nTotal time: {total_time:.0f}ms")
+        print(f"Expected sequential: {expected_sequential}ms")
+        print(f"Expected parallel: ~{expected_parallel}ms")
+
+        assert total_time < expected_sequential * 0.7, (
+            f"Parallel execution took {total_time:.0f}ms, expected <{expected_sequential * 0.7:.0f}ms. "
+            f"Steps may not be running in parallel!"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dependency_ordering_enforced(self):
+        """E2E: Verify dependent steps wait for prerequisites."""
+        import time
+        from constat.execution.parallel_scheduler import ParallelStepScheduler
+
+        completion_order = []
+
+        def tracking_executor(step: Step, namespace: dict) -> StepResult:
+            """Track when each step completes."""
+            time.sleep(0.05)  # Small delay
+            completion_order.append(step.number)
+            return StepResult(
+                success=True,
+                stdout=f"Step {step.number}",
+                variables={f"out_{step.number}": True},
+            )
+
+        # Chain: 1 -> 2 -> 3 (fully sequential)
+        plan = Plan(
+            problem="Test dependency ordering",
+            steps=[
+                Step(number=1, goal="First", depends_on=[]),
+                Step(number=2, goal="Second", depends_on=[1]),
+                Step(number=3, goal="Third", depends_on=[2]),
+            ],
+        )
+
+        scheduler = ParallelStepScheduler(step_executor=tracking_executor)
+        result = await scheduler.execute_plan(plan)
+
+        assert result.success
+        # Steps must complete in order due to dependencies
+        assert completion_order == [1, 2, 3]
+        # Each step in its own wave
+        assert result.execution_waves == [[1], [2], [3]]
+
+    @pytest.mark.asyncio
+    async def test_namespace_flows_between_steps(self):
+        """E2E: Verify step outputs are available to dependent steps."""
+        from constat.execution.parallel_scheduler import ParallelStepScheduler
+
+        received_values = {}
+
+        def namespace_checking_executor(step: Step, namespace: dict) -> StepResult:
+            """Check namespace and produce output."""
+            received_values[step.number] = dict(namespace)
+
+            if step.number == 1:
+                return StepResult(
+                    success=True,
+                    stdout="Step 1",
+                    variables={"value_a": 100},
+                )
+            elif step.number == 2:
+                return StepResult(
+                    success=True,
+                    stdout="Step 2",
+                    variables={"value_b": 200},
+                )
+            elif step.number == 3:
+                # Should see both value_a and value_b
+                total = namespace.get("value_a", 0) + namespace.get("value_b", 0)
+                return StepResult(
+                    success=True,
+                    stdout=f"Total: {total}",
+                    variables={"total": total},
+                )
+
+            return StepResult(success=True, stdout="")
+
+        plan = Plan(
+            problem="Test namespace flow",
+            steps=[
+                Step(number=1, goal="Produce A", depends_on=[]),
+                Step(number=2, goal="Produce B", depends_on=[]),
+                Step(number=3, goal="Sum A+B", depends_on=[1, 2]),
+            ],
+        )
+
+        scheduler = ParallelStepScheduler(step_executor=namespace_checking_executor)
+        result = await scheduler.execute_plan(plan)
+
+        assert result.success
+
+        # Step 3 should have received both values
+        assert "value_a" in received_values[3]
+        assert "value_b" in received_values[3]
+        assert received_values[3]["value_a"] == 100
+        assert received_values[3]["value_b"] == 200
+
+        # Final result should have computed total
+        assert result.step_results[3].variables.get("total") == 300
+
+    @pytest.mark.asyncio
+    async def test_fail_fast_stops_execution(self):
+        """E2E: Verify fail_fast stops on first failure."""
+        from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
+
+        executed_steps = []
+
+        def failing_executor(step: Step, namespace: dict) -> StepResult:
+            executed_steps.append(step.number)
+            if step.number == 2:
+                return StepResult(success=False, stdout="", error="Step 2 failed")
+            return StepResult(success=True, stdout=f"Step {step.number}")
+
+        plan = Plan(
+            problem="Test fail fast",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B (fails)", depends_on=[]),
+                Step(number=3, goal="C", depends_on=[1, 2]),
+            ],
+        )
+
+        scheduler = ParallelStepScheduler(
+            step_executor=failing_executor,
+            config=SchedulerConfig(fail_fast=True),
+        )
+        result = await scheduler.execute_plan(plan)
+
+        assert not result.success
+        assert 2 in result.failed_steps
+        # Step 3 should not execute (fail_fast + dependency on failed step)
+        assert 3 not in executed_steps
+
+    @pytest.mark.asyncio
+    async def test_employee_count_scenario(self):
+        """E2E: Test the employee count across companies scenario."""
+        import time
+        from constat.execution.parallel_scheduler import ParallelStepScheduler
+
+        DELAY_MS = 50
+        step_start_times = {}
+
+        def company_count_executor(step: Step, namespace: dict) -> StepResult:
+            step_start_times[step.number] = time.time()
+            time.sleep(DELAY_MS / 1000)
+
+            if step.number <= 5:
+                # Company queries - return employee count
+                return StepResult(
+                    success=True,
+                    stdout=f"Company {step.number}: 100 employees",
+                    variables={f"count_{step.number}": 100},
+                )
+            else:
+                # Sum step
+                total = sum(
+                    namespace.get(f"count_{i}", 0)
+                    for i in range(1, 6)
+                )
+                return StepResult(
+                    success=True,
+                    stdout=f"Total: {total} employees",
+                    variables={"total": total},
+                )
+
+        plan = Plan(
+            problem="Get total employees across all companies",
+            steps=[
+                Step(number=1, goal="Get count from Company A", depends_on=[]),
+                Step(number=2, goal="Get count from Company B", depends_on=[]),
+                Step(number=3, goal="Get count from Company C", depends_on=[]),
+                Step(number=4, goal="Get count from Company D", depends_on=[]),
+                Step(number=5, goal="Get count from Company E", depends_on=[]),
+                Step(number=6, goal="Compute total", depends_on=[1, 2, 3, 4, 5]),
+            ],
+        )
+
+        scheduler = ParallelStepScheduler(step_executor=company_count_executor)
+
+        start = time.time()
+        result = await scheduler.execute_plan(plan)
+        total_time = (time.time() - start) * 1000
+
+        assert result.success
+        assert len(result.completed_steps) == 6
+
+        # Verify waves: 5 parallel, then 1
+        assert len(result.execution_waves) == 2
+        assert set(result.execution_waves[0]) == {1, 2, 3, 4, 5}
+        assert result.execution_waves[1] == [6]
+
+        # Verify total was computed correctly
+        assert result.step_results[6].variables.get("total") == 500
+
+        # Verify parallel execution timing
+        # Sequential: 6 * 50ms = 300ms
+        # Parallel: 2 * 50ms = 100ms (+ overhead)
+        print(f"\nEmployee count scenario: {total_time:.0f}ms")
+        assert total_time < 200, f"Expected <200ms, got {total_time:.0f}ms"
+
+        # Verify steps 1-5 started nearly simultaneously
+        start_times = [step_start_times[i] for i in range(1, 6)]
+        start_spread = max(start_times) - min(start_times)
+        print(f"Start time spread for parallel steps: {start_spread*1000:.0f}ms")
+        assert start_spread < 0.05, "Parallel steps should start within 50ms of each other"
+
+    def test_sync_wrapper_works(self):
+        """Test synchronous wrapper for execute_plan."""
+        from constat.execution.parallel_scheduler import ParallelStepScheduler
+
+        def simple_executor(step: Step, namespace: dict) -> StepResult:
+            return StepResult(
+                success=True,
+                stdout=f"Step {step.number}",
+                variables={f"v{step.number}": step.number},
+            )
+
+        plan = Plan(
+            problem="Test sync",
+            steps=[
+                Step(number=1, goal="A", depends_on=[]),
+                Step(number=2, goal="B", depends_on=[1]),
+            ],
+        )
+
+        scheduler = ParallelStepScheduler(step_executor=simple_executor)
+        result = scheduler.execute_plan_sync(plan)
+
+        assert result.success
+        assert len(result.completed_steps) == 2

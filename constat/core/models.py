@@ -85,11 +85,16 @@ class Step:
 
     Each step has a goal described in natural language,
     and will be translated into executable code.
+
+    Dependencies can be declared explicitly via `depends_on` (list of step numbers),
+    or inferred from expected_inputs/expected_outputs overlap.
+    Steps without dependencies can execute in parallel.
     """
     number: int
     goal: str  # Natural language description
     expected_inputs: list[str] = field(default_factory=list)
     expected_outputs: list[str] = field(default_factory=list)
+    depends_on: list[int] = field(default_factory=list)  # Explicit step dependencies
     step_type: StepType = StepType.PYTHON
 
     # Populated during execution
@@ -173,6 +178,95 @@ class Plan:
             step.result = result
             if number not in self.failed_steps:
                 self.failed_steps.append(number)
+
+    def infer_dependencies(self) -> None:
+        """
+        Infer step dependencies from expected_inputs/expected_outputs.
+
+        If a step's expected_inputs includes something from an earlier step's
+        expected_outputs, add that step to depends_on.
+        """
+        # Build output -> step mapping
+        output_providers: dict[str, int] = {}
+        for step in self.steps:
+            for output in step.expected_outputs:
+                output_providers[output] = step.number
+
+        # Infer dependencies
+        for step in self.steps:
+            for input_name in step.expected_inputs:
+                if input_name in output_providers:
+                    provider_step = output_providers[input_name]
+                    if provider_step != step.number and provider_step not in step.depends_on:
+                        step.depends_on.append(provider_step)
+
+    def get_dependency_graph(self) -> dict[int, list[int]]:
+        """
+        Get the dependency graph as adjacency list.
+
+        Returns dict mapping step number -> list of step numbers it depends on.
+        """
+        return {step.number: list(step.depends_on) for step in self.steps}
+
+    def get_runnable_steps(self) -> list[Step]:
+        """
+        Get steps that can run now (pending with all dependencies satisfied).
+
+        A step is runnable if:
+        1. Status is PENDING
+        2. All steps in depends_on are COMPLETED
+        """
+        runnable = []
+        for step in self.steps:
+            if step.status != StepStatus.PENDING:
+                continue
+
+            # Check all dependencies are completed
+            deps_satisfied = True
+            for dep_num in step.depends_on:
+                dep_step = self.get_step(dep_num)
+                if dep_step and dep_step.status != StepStatus.COMPLETED:
+                    deps_satisfied = False
+                    break
+
+            if deps_satisfied:
+                runnable.append(step)
+
+        return runnable
+
+    def get_execution_order(self) -> list[list[int]]:
+        """
+        Get steps grouped by execution wave (parallel batches).
+
+        Returns list of lists, where each inner list contains step numbers
+        that can execute in parallel. Waves execute sequentially.
+
+        Example: [[1, 2], [3, 4], [5]] means:
+        - Steps 1 and 2 can run in parallel (wave 1)
+        - Steps 3 and 4 can run in parallel after wave 1 (wave 2)
+        - Step 5 runs after wave 2 (wave 3)
+        """
+        waves = []
+        completed = set()
+        remaining = {step.number for step in self.steps}
+
+        while remaining:
+            # Find steps whose dependencies are all in completed
+            wave = []
+            for step_num in remaining:
+                step = self.get_step(step_num)
+                if step and all(dep in completed for dep in step.depends_on):
+                    wave.append(step_num)
+
+            if not wave:
+                # Circular dependency or bug - break to avoid infinite loop
+                break
+
+            waves.append(sorted(wave))
+            completed.update(wave)
+            remaining -= set(wave)
+
+        return waves
 
 
 @dataclass
