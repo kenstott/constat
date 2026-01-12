@@ -105,6 +105,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_ollama: mark test as requiring Ollama"
     )
+    config.addinivalue_line(
+        "markers", "integration: mark test as an integration test"
+    )
 
 
 # Docker availability check

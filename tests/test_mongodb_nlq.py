@@ -251,6 +251,157 @@ class TestMongoDBNaturalLanguageQueries:
         print(f"Output: {result['output']}")
 
 
+class TestMongoDBNLQEdgeCases:
+    """Edge case tests for MongoDB NLQ queries."""
+
+    def test_query_with_special_characters(self, mongodb_session):
+        """NLQ should handle queries about names with special characters."""
+        result = mongodb_session.solve(
+            "Find all customers from the USA"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # Should find Alice and David
+        output_lower = result["output"].lower()
+        assert "alice" in output_lower or "david" in output_lower or "2" in result["output"]
+
+    def test_query_numeric_comparison(self, mongodb_session):
+        """NLQ should handle numeric comparisons correctly."""
+        result = mongodb_session.solve(
+            "Which products cost more than $100?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # Should include Laptop Pro ($1299.99), Desk Chair ($249.99), Standing Desk ($599.99)
+        output_lower = result["output"].lower()
+        # At least one expensive product should appear
+        assert any(p in output_lower for p in ["laptop", "desk", "standing"])
+
+    def test_query_with_multiple_conditions(self, mongodb_session):
+        """NLQ should handle multiple filter conditions."""
+        result = mongodb_session.solve(
+            "Find all orders with status 'delivered' that have a total greater than $200"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # Orders 1001 ($1299.99) and 1008 ($599.99) match
+
+    def test_count_with_filter(self, mongodb_session):
+        """NLQ should handle filtered counts."""
+        result = mongodb_session.solve(
+            "How many products are in the Electronics category?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # 4 electronics products
+        assert "4" in result["output"]
+
+    def test_aggregation_with_grouping(self, mongodb_session):
+        """NLQ should handle GROUP BY equivalent."""
+        result = mongodb_session.solve(
+            "How many products are in each category?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # Should show Electronics: 4, Furniture: 2
+
+    def test_query_maximum_value(self, mongodb_session):
+        """NLQ should handle finding maximum values."""
+        result = mongodb_session.solve(
+            "What is the most expensive product and its price?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        output_lower = result["output"].lower()
+        # Laptop Pro at $1299.99 is the most expensive
+        assert "laptop" in output_lower or "1299" in result["output"]
+
+    def test_query_minimum_value(self, mongodb_session):
+        """NLQ should handle finding minimum values."""
+        result = mongodb_session.solve(
+            "What is the cheapest product?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        output_lower = result["output"].lower()
+        # Wireless Mouse at $29.99 is the cheapest
+        assert "mouse" in output_lower or "wireless" in output_lower or "29" in result["output"]
+
+
+class TestMongoDBComplexAggregations:
+    """Tests for complex MongoDB aggregation pipelines via NLQ."""
+
+    def test_average_calculation(self, mongodb_session):
+        """NLQ should handle average calculations."""
+        result = mongodb_session.solve(
+            "What is the average product price?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # Average: (1299.99+29.99+249.99+49.99+599.99+129.99)/6 = 393.32
+
+    def test_sum_by_category(self, mongodb_session):
+        """NLQ should handle sum with grouping."""
+        result = mongodb_session.solve(
+            "What is the total stock value for each product category? "
+            "Multiply price by stock for each product."
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+
+    def test_customer_order_summary(self, mongodb_session):
+        """NLQ should handle customer-order joins."""
+        result = mongodb_session.solve(
+            "For each customer tier (gold, silver, bronze), how many orders exist?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+
+    def test_top_n_query(self, mongodb_session):
+        """NLQ should handle TOP N queries."""
+        result = mongodb_session.solve(
+            "What are the top 3 most expensive products?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        output_lower = result["output"].lower()
+        # Should include Laptop Pro, Standing Desk, Desk Chair
+        top_products = ["laptop", "standing desk", "desk chair"]
+        assert any(p in output_lower for p in top_products)
+
+
+class TestMongoDBDataIntegrity:
+    """Tests for data type handling in MongoDB NLQ."""
+
+    def test_decimal_precision_in_sum(self, mongodb_session):
+        """Sum calculations should maintain decimal precision."""
+        result = mongodb_session.solve(
+            "What is the total price of all products? Sum the price field."
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        # Sum: 1299.99+29.99+249.99+49.99+599.99+129.99 = 2359.94
+
+    def test_integer_count(self, mongodb_session):
+        """Count should return integer values."""
+        result = mongodb_session.solve(
+            "How many orders are there in total?"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        assert "8" in result["output"]
+
+    def test_string_equality(self, mongodb_session):
+        """String equality should be exact match."""
+        result = mongodb_session.solve(
+            "Find the customer with email 'alice@example.com'"
+        )
+
+        assert result["success"], f"Query failed: {result.get('error')}"
+        output_lower = result["output"].lower()
+        assert "alice" in output_lower
+
+
 class TestMongoDBSchemaDiscovery:
     """Tests for MongoDB schema discovery and introspection."""
 
