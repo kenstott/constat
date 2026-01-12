@@ -232,3 +232,69 @@ DOMAIN_PRESETS = {
 def get_domain_preset(domain: str) -> ExecutionConfig:
     """Get execution config for a domain preset."""
     return DOMAIN_PRESETS.get(domain, ExecutionConfig())
+
+
+class PlanApproval(Enum):
+    """User response to plan approval request."""
+
+    APPROVE = "approve"
+    """Execute the plan as-is."""
+
+    REJECT = "reject"
+    """Cancel execution, do not proceed."""
+
+    SUGGEST = "suggest"
+    """User wants to suggest changes before execution."""
+
+
+@dataclass
+class PlanApprovalRequest:
+    """Request for user approval of a generated plan.
+
+    This is sent to the approval callback with all context needed
+    for the user to make an informed decision.
+    """
+    problem: str
+    mode: ExecutionMode
+    mode_reasoning: str
+    steps: list[dict]  # List of step dicts with number, goal, inputs, outputs
+    reasoning: str  # Planner's reasoning for this approach
+
+    def format_for_display(self) -> str:
+        """Format the approval request for display."""
+        lines = [
+            f"Mode: {self.mode.value.upper()}",
+            f"  {self.mode_reasoning}",
+            "",
+            "Plan:",
+        ]
+        for step in self.steps:
+            lines.append(f"  {step.get('number', '?')}. {step.get('goal', 'Unknown')}")
+
+        if self.reasoning:
+            lines.extend(["", "Reasoning:", f"  {self.reasoning}"])
+
+        return "\n".join(lines)
+
+
+@dataclass
+class PlanApprovalResponse:
+    """User's response to plan approval request."""
+    decision: PlanApproval
+    suggestion: Optional[str] = None  # Feedback if decision is SUGGEST
+    reason: Optional[str] = None  # Optional explanation for rejection
+
+    @classmethod
+    def approve(cls) -> "PlanApprovalResponse":
+        """Create an approval response."""
+        return cls(decision=PlanApproval.APPROVE)
+
+    @classmethod
+    def reject(cls, reason: Optional[str] = None) -> "PlanApprovalResponse":
+        """Create a rejection response."""
+        return cls(decision=PlanApproval.REJECT, reason=reason)
+
+    @classmethod
+    def suggest(cls, suggestion: str) -> "PlanApprovalResponse":
+        """Create a suggestion response."""
+        return cls(decision=PlanApproval.SUGGEST, suggestion=suggestion)

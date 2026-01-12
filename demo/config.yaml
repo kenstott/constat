@@ -1,0 +1,94 @@
+# Constat Demo Configuration
+# Run from project root: constat repl -c demo/config.yaml
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key: ${ANTHROPIC_API_KEY}
+
+# SQL Databases and File-based Data Sources
+databases:
+  sales:
+    uri: sqlite:///demo/data/sales.db
+    description: |
+      Sales data with customers (name, email, tier, region), products (name, category,
+      price, cost), orders (date, status, total), and order_items (quantity, unit_price).
+      Customer tiers: bronze/silver/gold/platinum. Order status: pending/shipped/delivered/cancelled.
+
+  inventory:
+    uri: sqlite:///demo/data/inventory.db
+    description: |
+      Warehouse inventory with warehouses (location, capacity, manager), inventory
+      (sku, quantity, reorder_level), and shipments (direction, carrier, date).
+      SKUs link to sales.products via naming convention.
+
+  hr:
+    uri: sqlite:///demo/data/hr.db
+    description: |
+      HR data with departments (budget, headcount_limit), employees (salary, title,
+      manager_id for hierarchy), and performance_reviews (1-5 rating scale).
+
+  # File-based data sources (CSV, JSON, Parquet, Arrow)
+  web_metrics:
+    type: csv
+    path: demo/data/website_metrics.csv
+    description: |
+      Daily web analytics by page (90 days). Columns: date, page, visitors,
+      page_views, bounce_rate, avg_session_duration
+
+  events:
+    type: json
+    path: demo/data/events.json
+    description: |
+      Clickstream events (500 records). Fields: event_id, timestamp, event_type
+      (page_view/click/form_submit/purchase/signup/error), source, user_id, properties
+
+databases_description: |
+  Three interconnected business databases and two file-based data sources:
+  - sales: CRM and order management (customers.tier determines discount)
+  - inventory: Multi-warehouse stock management (reorder_level triggers alerts)
+  - hr: Employee and performance tracking (ratings affect compensation)
+  - web_metrics: Daily web analytics CSV (use file_web_metrics path)
+  - events: Clickstream events JSON (use file_events path)
+
+# Reference Documents (unstructured files - markdown, text, PDFs)
+documents:
+  business_rules:
+    type: file
+    path: demo/docs/business_rules.md
+    description: Business policies for customer tiers, inventory reorder, and performance reviews
+
+system_prompt: |
+  You are a business analyst assistant analyzing company data.
+
+  DOMAIN KNOWLEDGE:
+  - Customer tiers: platinum (15% discount), gold (10%), silver (5%), bronze (0%)
+  - Revenue recognition: Only count orders with status='delivered'
+  - Inventory alerts: quantity < reorder_level triggers restock
+  - Performance ratings: 5=exceptional, 4=exceeds, 3=meets, 2=needs improvement, 1=unsatisfactory
+
+  DATA RELATIONSHIPS:
+  - inventory.sku links to products by name pattern (e.g., SKU-001 = Widget Pro)
+  - employees.manager_id is self-referential for org hierarchy
+  - orders.customer_id -> customers.customer_id
+  - order_items.product_id -> products.product_id
+
+# External APIs (examples - these are public demo APIs)
+apis:
+  countries:
+    type: graphql
+    url: https://countries.trevorblades.com/graphql
+    description: |
+      Public GraphQL API for country data. Query countries by code,
+      get continents, languages, currencies. Useful for geo-enrichment.
+
+execution:
+  timeout_seconds: 120
+  max_retries: 5
+  allowed_imports:
+    - pandas
+    - numpy
+    - json
+    - datetime
+    - statistics
+    - polars

@@ -127,6 +127,10 @@ class DatabaseConfig(BaseModel):
     collection: Optional[str] = None
     credentials_path: Optional[str] = None
 
+    # File-based data sources (csv, json, jsonl, parquet, arrow)
+    # Supports local paths, s3://, https://, etc.
+    path: Optional[str] = None
+
     def get_connection_uri(self) -> str:
         """
         Get the connection URI with credentials applied.
@@ -188,6 +192,10 @@ class DatabaseConfig(BaseModel):
     def is_nosql(self) -> bool:
         """Check if this is a NoSQL database."""
         return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore")
+
+    def is_file_source(self) -> bool:
+        """Check if this is a file-based data source."""
+        return self.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather")
 
 
 class TierConfig(BaseModel):

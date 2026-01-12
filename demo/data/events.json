@@ -1,0 +1,5666 @@
+[
+  {
+    "event_id": "evt_000000",
+    "timestamp": "2026-01-10T17:36:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0020",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 348
+    }
+  },
+  {
+    "event_id": "evt_000001",
+    "timestamp": "2025-12-16T01:51:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4423
+    }
+  },
+  {
+    "event_id": "evt_000002",
+    "timestamp": "2025-12-24T14:10:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0062",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1378
+    }
+  },
+  {
+    "event_id": "evt_000003",
+    "timestamp": "2025-12-29T06:04:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0070",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3644
+    }
+  },
+  {
+    "event_id": "evt_000004",
+    "timestamp": "2025-12-21T01:43:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 665,
+      "amount": 308.48
+    }
+  },
+  {
+    "event_id": "evt_000005",
+    "timestamp": "2025-12-28T03:22:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0100",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1040,
+      "amount": 295.81
+    }
+  },
+  {
+    "event_id": "evt_000006",
+    "timestamp": "2026-01-02T13:56:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1048,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000007",
+    "timestamp": "2025-12-30T20:34:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0025",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3330
+    }
+  },
+  {
+    "event_id": "evt_000008",
+    "timestamp": "2025-12-17T15:05:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2564
+    }
+  },
+  {
+    "event_id": "evt_000009",
+    "timestamp": "2025-12-26T09:53:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3094
+    }
+  },
+  {
+    "event_id": "evt_000010",
+    "timestamp": "2026-01-12T17:15:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0018",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4541,
+      "amount": 392.48
+    }
+  },
+  {
+    "event_id": "evt_000011",
+    "timestamp": "2026-01-08T23:57:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0020",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2652,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000012",
+    "timestamp": "2025-12-18T03:13:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3193
+    }
+  },
+  {
+    "event_id": "evt_000013",
+    "timestamp": "2026-01-09T01:28:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2330,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000014",
+    "timestamp": "2025-12-29T00:29:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0079",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3300
+    }
+  },
+  {
+    "event_id": "evt_000015",
+    "timestamp": "2025-12-22T14:14:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0091",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2505
+    }
+  },
+  {
+    "event_id": "evt_000016",
+    "timestamp": "2026-01-03T04:46:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 231
+    }
+  },
+  {
+    "event_id": "evt_000017",
+    "timestamp": "2025-12-25T00:21:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 821,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000018",
+    "timestamp": "2025-12-21T08:18:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0002",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1306
+    }
+  },
+  {
+    "event_id": "evt_000019",
+    "timestamp": "2025-12-19T16:32:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0033",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1385
+    }
+  },
+  {
+    "event_id": "evt_000020",
+    "timestamp": "2025-12-22T18:22:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0038",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3031
+    }
+  },
+  {
+    "event_id": "evt_000021",
+    "timestamp": "2026-01-01T15:06:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0061",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4945
+    }
+  },
+  {
+    "event_id": "evt_000022",
+    "timestamp": "2025-12-21T11:09:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0055",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1574,
+      "amount": 434.62
+    }
+  },
+  {
+    "event_id": "evt_000023",
+    "timestamp": "2025-12-31T18:10:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3586
+    }
+  },
+  {
+    "event_id": "evt_000024",
+    "timestamp": "2025-12-15T02:02:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 971
+    }
+  },
+  {
+    "event_id": "evt_000025",
+    "timestamp": "2026-01-10T07:13:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3624
+    }
+  },
+  {
+    "event_id": "evt_000026",
+    "timestamp": "2026-01-08T06:07:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0054",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2894
+    }
+  },
+  {
+    "event_id": "evt_000027",
+    "timestamp": "2025-12-24T21:21:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0088",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 493
+    }
+  },
+  {
+    "event_id": "evt_000028",
+    "timestamp": "2025-12-18T02:09:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0072",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2031
+    }
+  },
+  {
+    "event_id": "evt_000029",
+    "timestamp": "2025-12-13T20:09:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3075
+    }
+  },
+  {
+    "event_id": "evt_000030",
+    "timestamp": "2025-12-16T15:26:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4234
+    }
+  },
+  {
+    "event_id": "evt_000031",
+    "timestamp": "2026-01-03T00:36:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0014",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3102
+    }
+  },
+  {
+    "event_id": "evt_000032",
+    "timestamp": "2025-12-15T23:10:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1868,
+      "amount": 25.89
+    }
+  },
+  {
+    "event_id": "evt_000033",
+    "timestamp": "2026-01-10T13:10:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0094",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 620
+    }
+  },
+  {
+    "event_id": "evt_000034",
+    "timestamp": "2025-12-15T14:19:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4487
+    }
+  },
+  {
+    "event_id": "evt_000035",
+    "timestamp": "2025-12-19T23:43:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0066",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2545,
+      "amount": 246.32
+    }
+  },
+  {
+    "event_id": "evt_000036",
+    "timestamp": "2025-12-23T00:08:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0014",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2730
+    }
+  },
+  {
+    "event_id": "evt_000037",
+    "timestamp": "2026-01-09T16:22:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3121
+    }
+  },
+  {
+    "event_id": "evt_000038",
+    "timestamp": "2025-12-26T21:49:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0042",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4865,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000039",
+    "timestamp": "2026-01-10T11:53:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0023",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4555,
+      "amount": 261.69
+    }
+  },
+  {
+    "event_id": "evt_000040",
+    "timestamp": "2025-12-19T12:26:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0043",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2746,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000041",
+    "timestamp": "2026-01-06T10:22:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0045",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4503
+    }
+  },
+  {
+    "event_id": "evt_000042",
+    "timestamp": "2025-12-31T06:59:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2125
+    }
+  },
+  {
+    "event_id": "evt_000043",
+    "timestamp": "2025-12-31T16:57:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0047",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4680,
+      "amount": 499.71
+    }
+  },
+  {
+    "event_id": "evt_000044",
+    "timestamp": "2025-12-17T00:47:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0046",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 971,
+      "amount": 289.54
+    }
+  },
+  {
+    "event_id": "evt_000045",
+    "timestamp": "2026-01-07T07:09:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3991
+    }
+  },
+  {
+    "event_id": "evt_000046",
+    "timestamp": "2026-01-01T07:37:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0064",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1916
+    }
+  },
+  {
+    "event_id": "evt_000047",
+    "timestamp": "2025-12-19T09:34:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0099",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1415
+    }
+  },
+  {
+    "event_id": "evt_000048",
+    "timestamp": "2025-12-27T18:46:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0051",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4790
+    }
+  },
+  {
+    "event_id": "evt_000049",
+    "timestamp": "2025-12-26T23:23:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0092",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1941,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000050",
+    "timestamp": "2026-01-10T08:01:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0020",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4086
+    }
+  },
+  {
+    "event_id": "evt_000051",
+    "timestamp": "2026-01-10T22:00:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0041",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3503,
+      "amount": 179.69
+    }
+  },
+  {
+    "event_id": "evt_000052",
+    "timestamp": "2025-12-23T21:59:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0023",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3969
+    }
+  },
+  {
+    "event_id": "evt_000053",
+    "timestamp": "2025-12-31T17:07:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4167
+    }
+  },
+  {
+    "event_id": "evt_000054",
+    "timestamp": "2025-12-18T22:08:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3064
+    }
+  },
+  {
+    "event_id": "evt_000055",
+    "timestamp": "2026-01-07T00:02:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0038",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4538
+    }
+  },
+  {
+    "event_id": "evt_000056",
+    "timestamp": "2025-12-22T04:14:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4602
+    }
+  },
+  {
+    "event_id": "evt_000057",
+    "timestamp": "2025-12-20T14:36:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0004",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4250,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000058",
+    "timestamp": "2025-12-17T23:02:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1435,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000059",
+    "timestamp": "2026-01-01T16:52:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0078",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4229,
+      "amount": 215.77
+    }
+  },
+  {
+    "event_id": "evt_000060",
+    "timestamp": "2026-01-02T22:03:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0041",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3409,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000061",
+    "timestamp": "2026-01-02T18:16:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0007",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 667,
+      "amount": 272.17
+    }
+  },
+  {
+    "event_id": "evt_000062",
+    "timestamp": "2026-01-11T03:50:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0008",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1835,
+      "amount": 23.55
+    }
+  },
+  {
+    "event_id": "evt_000063",
+    "timestamp": "2025-12-18T04:19:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0006",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1372
+    }
+  },
+  {
+    "event_id": "evt_000064",
+    "timestamp": "2025-12-27T07:58:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0027",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3436
+    }
+  },
+  {
+    "event_id": "evt_000065",
+    "timestamp": "2026-01-09T14:22:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0049",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3002,
+      "amount": 469.91
+    }
+  },
+  {
+    "event_id": "evt_000066",
+    "timestamp": "2025-12-19T04:09:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0027",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3495,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000067",
+    "timestamp": "2025-12-17T18:37:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0011",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3541
+    }
+  },
+  {
+    "event_id": "evt_000068",
+    "timestamp": "2025-12-24T08:19:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0027",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3365
+    }
+  },
+  {
+    "event_id": "evt_000069",
+    "timestamp": "2025-12-24T12:33:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 583
+    }
+  },
+  {
+    "event_id": "evt_000070",
+    "timestamp": "2025-12-27T16:33:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0066",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2685,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000071",
+    "timestamp": "2025-12-21T16:56:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0042",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2734,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000072",
+    "timestamp": "2026-01-01T04:07:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0022",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3902
+    }
+  },
+  {
+    "event_id": "evt_000073",
+    "timestamp": "2025-12-21T06:03:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0099",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1730
+    }
+  },
+  {
+    "event_id": "evt_000074",
+    "timestamp": "2025-12-24T06:18:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0008",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 768
+    }
+  },
+  {
+    "event_id": "evt_000075",
+    "timestamp": "2025-12-31T19:23:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0045",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4975
+    }
+  },
+  {
+    "event_id": "evt_000076",
+    "timestamp": "2026-01-10T07:46:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0099",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1376,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000077",
+    "timestamp": "2025-12-24T23:21:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0093",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2059,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000078",
+    "timestamp": "2025-12-19T13:06:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2633
+    }
+  },
+  {
+    "event_id": "evt_000079",
+    "timestamp": "2025-12-30T15:23:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0049",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 589
+    }
+  },
+  {
+    "event_id": "evt_000080",
+    "timestamp": "2025-12-25T08:31:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 858
+    }
+  },
+  {
+    "event_id": "evt_000081",
+    "timestamp": "2025-12-20T01:58:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0048",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4523
+    }
+  },
+  {
+    "event_id": "evt_000082",
+    "timestamp": "2025-12-18T13:01:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0026",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 205
+    }
+  },
+  {
+    "event_id": "evt_000083",
+    "timestamp": "2025-12-25T19:32:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0042",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 954,
+      "amount": 225.43
+    }
+  },
+  {
+    "event_id": "evt_000084",
+    "timestamp": "2026-01-09T05:52:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0068",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2455
+    }
+  },
+  {
+    "event_id": "evt_000085",
+    "timestamp": "2025-12-18T08:17:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3181
+    }
+  },
+  {
+    "event_id": "evt_000086",
+    "timestamp": "2025-12-28T01:31:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0020",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1288
+    }
+  },
+  {
+    "event_id": "evt_000087",
+    "timestamp": "2025-12-15T18:49:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0033",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 252,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000088",
+    "timestamp": "2026-01-08T08:49:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0003",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1473,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000089",
+    "timestamp": "2025-12-15T21:14:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0098",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3779,
+      "amount": 12.27
+    }
+  },
+  {
+    "event_id": "evt_000090",
+    "timestamp": "2026-01-13T10:59:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0034",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1875
+    }
+  },
+  {
+    "event_id": "evt_000091",
+    "timestamp": "2026-01-02T00:43:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0061",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1366
+    }
+  },
+  {
+    "event_id": "evt_000092",
+    "timestamp": "2026-01-10T23:38:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3870
+    }
+  },
+  {
+    "event_id": "evt_000093",
+    "timestamp": "2025-12-26T06:37:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0096",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3914
+    }
+  },
+  {
+    "event_id": "evt_000094",
+    "timestamp": "2025-12-23T08:27:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4718
+    }
+  },
+  {
+    "event_id": "evt_000095",
+    "timestamp": "2026-01-07T01:40:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0055",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 934,
+      "amount": 56.95
+    }
+  },
+  {
+    "event_id": "evt_000096",
+    "timestamp": "2026-01-06T23:02:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0022",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1467
+    }
+  },
+  {
+    "event_id": "evt_000097",
+    "timestamp": "2025-12-21T17:37:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0026",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3674
+    }
+  },
+  {
+    "event_id": "evt_000098",
+    "timestamp": "2026-01-02T16:49:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0026",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1993,
+      "amount": 306.39
+    }
+  },
+  {
+    "event_id": "evt_000099",
+    "timestamp": "2025-12-18T23:55:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0096",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 689
+    }
+  },
+  {
+    "event_id": "evt_000100",
+    "timestamp": "2025-12-17T18:33:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0019",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4756,
+      "amount": 235.1
+    }
+  },
+  {
+    "event_id": "evt_000101",
+    "timestamp": "2025-12-23T18:48:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0100",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 145
+    }
+  },
+  {
+    "event_id": "evt_000102",
+    "timestamp": "2026-01-10T01:50:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0090",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4045,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000103",
+    "timestamp": "2026-01-13T11:37:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1193
+    }
+  },
+  {
+    "event_id": "evt_000104",
+    "timestamp": "2026-01-12T23:04:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0053",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3120
+    }
+  },
+  {
+    "event_id": "evt_000105",
+    "timestamp": "2026-01-07T02:22:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0080",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 140
+    }
+  },
+  {
+    "event_id": "evt_000106",
+    "timestamp": "2026-01-02T10:37:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0018",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 585,
+      "amount": 99.41
+    }
+  },
+  {
+    "event_id": "evt_000107",
+    "timestamp": "2025-12-18T07:55:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0025",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2998,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000108",
+    "timestamp": "2026-01-06T22:57:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0037",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2223
+    }
+  },
+  {
+    "event_id": "evt_000109",
+    "timestamp": "2026-01-05T10:42:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2104,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000110",
+    "timestamp": "2025-12-14T15:20:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1991
+    }
+  },
+  {
+    "event_id": "evt_000111",
+    "timestamp": "2025-12-28T03:22:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0065",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2188
+    }
+  },
+  {
+    "event_id": "evt_000112",
+    "timestamp": "2025-12-18T22:02:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2902
+    }
+  },
+  {
+    "event_id": "evt_000113",
+    "timestamp": "2025-12-18T08:18:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0070",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4016
+    }
+  },
+  {
+    "event_id": "evt_000114",
+    "timestamp": "2025-12-29T13:51:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0057",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 359
+    }
+  },
+  {
+    "event_id": "evt_000115",
+    "timestamp": "2025-12-16T00:24:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0047",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1471
+    }
+  },
+  {
+    "event_id": "evt_000116",
+    "timestamp": "2026-01-04T08:33:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0068",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2317,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000117",
+    "timestamp": "2025-12-25T19:55:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0062",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1115
+    }
+  },
+  {
+    "event_id": "evt_000118",
+    "timestamp": "2025-12-28T15:29:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0035",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1274
+    }
+  },
+  {
+    "event_id": "evt_000119",
+    "timestamp": "2026-01-12T05:42:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0065",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1472,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000120",
+    "timestamp": "2025-12-18T08:35:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2550
+    }
+  },
+  {
+    "event_id": "evt_000121",
+    "timestamp": "2026-01-11T04:31:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0023",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 178,
+      "amount": 243.29
+    }
+  },
+  {
+    "event_id": "evt_000122",
+    "timestamp": "2025-12-30T11:04:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2032
+    }
+  },
+  {
+    "event_id": "evt_000123",
+    "timestamp": "2025-12-31T14:21:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0059",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1714
+    }
+  },
+  {
+    "event_id": "evt_000124",
+    "timestamp": "2025-12-28T12:19:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0093",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1440
+    }
+  },
+  {
+    "event_id": "evt_000125",
+    "timestamp": "2025-12-20T07:39:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0021",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2146,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000126",
+    "timestamp": "2025-12-24T09:13:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0093",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 796,
+      "amount": 36.43
+    }
+  },
+  {
+    "event_id": "evt_000127",
+    "timestamp": "2025-12-16T16:14:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0054",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3195
+    }
+  },
+  {
+    "event_id": "evt_000128",
+    "timestamp": "2025-12-23T01:34:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1956,
+      "amount": 98.62
+    }
+  },
+  {
+    "event_id": "evt_000129",
+    "timestamp": "2025-12-25T04:53:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0055",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2208
+    }
+  },
+  {
+    "event_id": "evt_000130",
+    "timestamp": "2026-01-07T20:25:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0045",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3910,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000131",
+    "timestamp": "2026-01-04T10:56:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0006",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2662
+    }
+  },
+  {
+    "event_id": "evt_000132",
+    "timestamp": "2025-12-25T18:44:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0080",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4261
+    }
+  },
+  {
+    "event_id": "evt_000133",
+    "timestamp": "2026-01-10T13:19:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0064",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3952
+    }
+  },
+  {
+    "event_id": "evt_000134",
+    "timestamp": "2025-12-20T14:58:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0078",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 482,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000135",
+    "timestamp": "2026-01-07T19:54:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0053",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1713
+    }
+  },
+  {
+    "event_id": "evt_000136",
+    "timestamp": "2026-01-10T02:16:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2484
+    }
+  },
+  {
+    "event_id": "evt_000137",
+    "timestamp": "2025-12-21T09:00:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0080",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2428
+    }
+  },
+  {
+    "event_id": "evt_000138",
+    "timestamp": "2025-12-13T22:50:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0032",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2363
+    }
+  },
+  {
+    "event_id": "evt_000139",
+    "timestamp": "2025-12-25T19:54:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0023",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1579
+    }
+  },
+  {
+    "event_id": "evt_000140",
+    "timestamp": "2025-12-30T01:38:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0074",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 194
+    }
+  },
+  {
+    "event_id": "evt_000141",
+    "timestamp": "2026-01-07T22:11:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2155,
+      "amount": 268.58
+    }
+  },
+  {
+    "event_id": "evt_000142",
+    "timestamp": "2026-01-03T00:14:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0011",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4879
+    }
+  },
+  {
+    "event_id": "evt_000143",
+    "timestamp": "2026-01-04T23:16:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4378,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000144",
+    "timestamp": "2026-01-02T12:25:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0058",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 524,
+      "amount": 210.74
+    }
+  },
+  {
+    "event_id": "evt_000145",
+    "timestamp": "2026-01-12T06:18:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3328
+    }
+  },
+  {
+    "event_id": "evt_000146",
+    "timestamp": "2026-01-10T16:32:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0025",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4204
+    }
+  },
+  {
+    "event_id": "evt_000147",
+    "timestamp": "2026-01-08T16:00:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4150
+    }
+  },
+  {
+    "event_id": "evt_000148",
+    "timestamp": "2026-01-13T07:22:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0075",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3978
+    }
+  },
+  {
+    "event_id": "evt_000149",
+    "timestamp": "2026-01-10T08:53:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0083",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2989,
+      "amount": 213.41
+    }
+  },
+  {
+    "event_id": "evt_000150",
+    "timestamp": "2026-01-01T08:55:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0058",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4843
+    }
+  },
+  {
+    "event_id": "evt_000151",
+    "timestamp": "2025-12-22T14:56:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4447,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000152",
+    "timestamp": "2025-12-15T17:29:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1228
+    }
+  },
+  {
+    "event_id": "evt_000153",
+    "timestamp": "2025-12-31T07:45:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1219,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000154",
+    "timestamp": "2025-12-15T00:33:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0024",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2951,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000155",
+    "timestamp": "2026-01-03T08:47:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0011",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2104
+    }
+  },
+  {
+    "event_id": "evt_000156",
+    "timestamp": "2025-12-19T04:03:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0077",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1267
+    }
+  },
+  {
+    "event_id": "evt_000157",
+    "timestamp": "2025-12-25T03:16:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0056",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1278
+    }
+  },
+  {
+    "event_id": "evt_000158",
+    "timestamp": "2025-12-29T04:37:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0024",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2890
+    }
+  },
+  {
+    "event_id": "evt_000159",
+    "timestamp": "2025-12-20T05:06:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0070",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2365
+    }
+  },
+  {
+    "event_id": "evt_000160",
+    "timestamp": "2026-01-07T00:28:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2985,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000161",
+    "timestamp": "2026-01-05T15:53:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0016",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4131,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000162",
+    "timestamp": "2025-12-15T20:33:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0038",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1492,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000163",
+    "timestamp": "2026-01-01T11:31:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 249
+    }
+  },
+  {
+    "event_id": "evt_000164",
+    "timestamp": "2026-01-02T15:17:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0046",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4383
+    }
+  },
+  {
+    "event_id": "evt_000165",
+    "timestamp": "2025-12-28T21:11:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0053",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1207
+    }
+  },
+  {
+    "event_id": "evt_000166",
+    "timestamp": "2025-12-21T02:11:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1435
+    }
+  },
+  {
+    "event_id": "evt_000167",
+    "timestamp": "2025-12-25T16:02:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0011",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3733
+    }
+  },
+  {
+    "event_id": "evt_000168",
+    "timestamp": "2026-01-10T06:27:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0068",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4001
+    }
+  },
+  {
+    "event_id": "evt_000169",
+    "timestamp": "2025-12-26T13:50:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4925,
+      "amount": 177.53
+    }
+  },
+  {
+    "event_id": "evt_000170",
+    "timestamp": "2026-01-12T22:12:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0032",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2919
+    }
+  },
+  {
+    "event_id": "evt_000171",
+    "timestamp": "2025-12-27T20:57:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0020",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3360
+    }
+  },
+  {
+    "event_id": "evt_000172",
+    "timestamp": "2026-01-11T23:41:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0036",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 816,
+      "amount": 230.44
+    }
+  },
+  {
+    "event_id": "evt_000173",
+    "timestamp": "2025-12-27T07:43:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0030",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1265,
+      "amount": 391.42
+    }
+  },
+  {
+    "event_id": "evt_000174",
+    "timestamp": "2026-01-10T01:05:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 939
+    }
+  },
+  {
+    "event_id": "evt_000175",
+    "timestamp": "2026-01-01T14:32:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1322
+    }
+  },
+  {
+    "event_id": "evt_000176",
+    "timestamp": "2025-12-31T08:00:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0050",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 466
+    }
+  },
+  {
+    "event_id": "evt_000177",
+    "timestamp": "2026-01-02T23:50:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0026",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2204
+    }
+  },
+  {
+    "event_id": "evt_000178",
+    "timestamp": "2026-01-01T18:12:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0099",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2291
+    }
+  },
+  {
+    "event_id": "evt_000179",
+    "timestamp": "2025-12-25T20:11:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4966
+    }
+  },
+  {
+    "event_id": "evt_000180",
+    "timestamp": "2026-01-04T06:15:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1036,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000181",
+    "timestamp": "2025-12-17T12:28:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0064",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2571
+    }
+  },
+  {
+    "event_id": "evt_000182",
+    "timestamp": "2025-12-30T22:47:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0036",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2107
+    }
+  },
+  {
+    "event_id": "evt_000183",
+    "timestamp": "2025-12-25T03:49:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0021",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4036
+    }
+  },
+  {
+    "event_id": "evt_000184",
+    "timestamp": "2025-12-29T17:53:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3538
+    }
+  },
+  {
+    "event_id": "evt_000185",
+    "timestamp": "2026-01-13T03:04:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0078",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3094
+    }
+  },
+  {
+    "event_id": "evt_000186",
+    "timestamp": "2025-12-25T17:01:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3528,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000187",
+    "timestamp": "2025-12-16T17:46:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 248
+    }
+  },
+  {
+    "event_id": "evt_000188",
+    "timestamp": "2025-12-25T06:01:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0044",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2769,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000189",
+    "timestamp": "2025-12-14T20:38:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0090",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 580
+    }
+  },
+  {
+    "event_id": "evt_000190",
+    "timestamp": "2025-12-16T10:04:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 316
+    }
+  },
+  {
+    "event_id": "evt_000191",
+    "timestamp": "2025-12-18T05:10:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0092",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3861
+    }
+  },
+  {
+    "event_id": "evt_000192",
+    "timestamp": "2025-12-16T16:36:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0032",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1237,
+      "amount": 357.46
+    }
+  },
+  {
+    "event_id": "evt_000193",
+    "timestamp": "2026-01-10T11:33:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0047",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 206
+    }
+  },
+  {
+    "event_id": "evt_000194",
+    "timestamp": "2026-01-03T09:20:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4689,
+      "amount": 233.59
+    }
+  },
+  {
+    "event_id": "evt_000195",
+    "timestamp": "2025-12-16T21:08:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1368
+    }
+  },
+  {
+    "event_id": "evt_000196",
+    "timestamp": "2026-01-10T04:45:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0068",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2123
+    }
+  },
+  {
+    "event_id": "evt_000197",
+    "timestamp": "2026-01-13T14:21:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0030",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 781,
+      "amount": 59.83
+    }
+  },
+  {
+    "event_id": "evt_000198",
+    "timestamp": "2025-12-18T14:11:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 191,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000199",
+    "timestamp": "2025-12-18T18:30:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1918
+    }
+  },
+  {
+    "event_id": "evt_000200",
+    "timestamp": "2025-12-13T18:18:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0003",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 818
+    }
+  },
+  {
+    "event_id": "evt_000201",
+    "timestamp": "2026-01-02T03:55:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0049",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2740
+    }
+  },
+  {
+    "event_id": "evt_000202",
+    "timestamp": "2025-12-15T12:12:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2365,
+      "amount": 282.57
+    }
+  },
+  {
+    "event_id": "evt_000203",
+    "timestamp": "2025-12-29T19:15:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0088",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4806
+    }
+  },
+  {
+    "event_id": "evt_000204",
+    "timestamp": "2026-01-02T17:37:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2481,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000205",
+    "timestamp": "2026-01-05T14:33:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4527
+    }
+  },
+  {
+    "event_id": "evt_000206",
+    "timestamp": "2025-12-31T08:20:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2689
+    }
+  },
+  {
+    "event_id": "evt_000207",
+    "timestamp": "2025-12-23T19:59:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0021",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1949
+    }
+  },
+  {
+    "event_id": "evt_000208",
+    "timestamp": "2026-01-02T10:41:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4781
+    }
+  },
+  {
+    "event_id": "evt_000209",
+    "timestamp": "2025-12-30T10:52:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0050",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 664
+    }
+  },
+  {
+    "event_id": "evt_000210",
+    "timestamp": "2026-01-10T03:18:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 681
+    }
+  },
+  {
+    "event_id": "evt_000211",
+    "timestamp": "2025-12-27T16:46:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0036",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 364,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000212",
+    "timestamp": "2025-12-13T19:41:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3870,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000213",
+    "timestamp": "2025-12-28T01:41:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0096",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2830,
+      "amount": 200.41
+    }
+  },
+  {
+    "event_id": "evt_000214",
+    "timestamp": "2025-12-16T09:04:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0037",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2131
+    }
+  },
+  {
+    "event_id": "evt_000215",
+    "timestamp": "2025-12-27T15:49:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2564
+    }
+  },
+  {
+    "event_id": "evt_000216",
+    "timestamp": "2026-01-10T12:14:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3027
+    }
+  },
+  {
+    "event_id": "evt_000217",
+    "timestamp": "2025-12-26T21:32:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3523
+    }
+  },
+  {
+    "event_id": "evt_000218",
+    "timestamp": "2025-12-24T15:20:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4642
+    }
+  },
+  {
+    "event_id": "evt_000219",
+    "timestamp": "2026-01-09T15:18:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0036",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2979
+    }
+  },
+  {
+    "event_id": "evt_000220",
+    "timestamp": "2025-12-24T07:56:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4365
+    }
+  },
+  {
+    "event_id": "evt_000221",
+    "timestamp": "2025-12-25T01:44:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 317
+    }
+  },
+  {
+    "event_id": "evt_000222",
+    "timestamp": "2026-01-13T04:19:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0039",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3315
+    }
+  },
+  {
+    "event_id": "evt_000223",
+    "timestamp": "2025-12-16T02:05:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0016",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3783
+    }
+  },
+  {
+    "event_id": "evt_000224",
+    "timestamp": "2025-12-18T13:25:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0051",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 372
+    }
+  },
+  {
+    "event_id": "evt_000225",
+    "timestamp": "2025-12-14T10:21:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0079",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2455
+    }
+  },
+  {
+    "event_id": "evt_000226",
+    "timestamp": "2026-01-11T16:51:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0066",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 818
+    }
+  },
+  {
+    "event_id": "evt_000227",
+    "timestamp": "2025-12-14T21:24:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2764
+    }
+  },
+  {
+    "event_id": "evt_000228",
+    "timestamp": "2025-12-17T05:47:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3857
+    }
+  },
+  {
+    "event_id": "evt_000229",
+    "timestamp": "2025-12-24T08:24:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1493
+    }
+  },
+  {
+    "event_id": "evt_000230",
+    "timestamp": "2025-12-30T11:53:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2673
+    }
+  },
+  {
+    "event_id": "evt_000231",
+    "timestamp": "2025-12-24T18:41:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4463
+    }
+  },
+  {
+    "event_id": "evt_000232",
+    "timestamp": "2025-12-20T09:45:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1659,
+      "amount": 23.24
+    }
+  },
+  {
+    "event_id": "evt_000233",
+    "timestamp": "2026-01-10T12:06:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4620
+    }
+  },
+  {
+    "event_id": "evt_000234",
+    "timestamp": "2026-01-02T09:52:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0099",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 584,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000235",
+    "timestamp": "2026-01-06T12:52:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0051",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 450,
+      "amount": 355.75
+    }
+  },
+  {
+    "event_id": "evt_000236",
+    "timestamp": "2026-01-08T14:33:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0086",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1580,
+      "amount": 64.73
+    }
+  },
+  {
+    "event_id": "evt_000237",
+    "timestamp": "2025-12-30T05:42:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1285
+    }
+  },
+  {
+    "event_id": "evt_000238",
+    "timestamp": "2026-01-12T15:29:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 242
+    }
+  },
+  {
+    "event_id": "evt_000239",
+    "timestamp": "2026-01-12T18:55:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0086",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3113
+    }
+  },
+  {
+    "event_id": "evt_000240",
+    "timestamp": "2026-01-03T10:56:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1162
+    }
+  },
+  {
+    "event_id": "evt_000241",
+    "timestamp": "2025-12-21T20:00:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1844,
+      "amount": 75.36
+    }
+  },
+  {
+    "event_id": "evt_000242",
+    "timestamp": "2025-12-25T23:02:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0004",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1877
+    }
+  },
+  {
+    "event_id": "evt_000243",
+    "timestamp": "2025-12-22T06:11:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0066",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3507,
+      "amount": 58.57
+    }
+  },
+  {
+    "event_id": "evt_000244",
+    "timestamp": "2025-12-26T01:00:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3640
+    }
+  },
+  {
+    "event_id": "evt_000245",
+    "timestamp": "2025-12-20T21:17:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0015",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4467,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000246",
+    "timestamp": "2026-01-02T14:18:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 722,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000247",
+    "timestamp": "2026-01-07T05:46:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0052",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2331
+    }
+  },
+  {
+    "event_id": "evt_000248",
+    "timestamp": "2025-12-22T07:25:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0074",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 275
+    }
+  },
+  {
+    "event_id": "evt_000249",
+    "timestamp": "2025-12-17T17:02:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4332,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000250",
+    "timestamp": "2025-12-21T14:34:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0058",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3278
+    }
+  },
+  {
+    "event_id": "evt_000251",
+    "timestamp": "2026-01-13T07:05:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 256,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000252",
+    "timestamp": "2026-01-06T06:10:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0037",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2318,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000253",
+    "timestamp": "2026-01-04T13:01:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 923
+    }
+  },
+  {
+    "event_id": "evt_000254",
+    "timestamp": "2026-01-10T11:17:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0078",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1579
+    }
+  },
+  {
+    "event_id": "evt_000255",
+    "timestamp": "2025-12-20T01:07:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0089",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 627
+    }
+  },
+  {
+    "event_id": "evt_000256",
+    "timestamp": "2026-01-04T13:52:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0027",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1298,
+      "amount": 296.83
+    }
+  },
+  {
+    "event_id": "evt_000257",
+    "timestamp": "2026-01-08T05:43:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2372
+    }
+  },
+  {
+    "event_id": "evt_000258",
+    "timestamp": "2025-12-30T19:36:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3896,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000259",
+    "timestamp": "2025-12-14T08:05:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4539,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000260",
+    "timestamp": "2025-12-31T07:24:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0073",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2901
+    }
+  },
+  {
+    "event_id": "evt_000261",
+    "timestamp": "2025-12-27T03:49:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0062",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4803
+    }
+  },
+  {
+    "event_id": "evt_000262",
+    "timestamp": "2026-01-10T11:18:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1428
+    }
+  },
+  {
+    "event_id": "evt_000263",
+    "timestamp": "2025-12-30T12:43:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0065",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2411,
+      "amount": 485.32
+    }
+  },
+  {
+    "event_id": "evt_000264",
+    "timestamp": "2025-12-28T17:57:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0004",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 108
+    }
+  },
+  {
+    "event_id": "evt_000265",
+    "timestamp": "2025-12-15T18:59:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0016",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2739
+    }
+  },
+  {
+    "event_id": "evt_000266",
+    "timestamp": "2026-01-07T06:26:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0078",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4104
+    }
+  },
+  {
+    "event_id": "evt_000267",
+    "timestamp": "2025-12-21T10:10:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1356
+    }
+  },
+  {
+    "event_id": "evt_000268",
+    "timestamp": "2026-01-06T13:51:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0043",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3216,
+      "amount": 240.39
+    }
+  },
+  {
+    "event_id": "evt_000269",
+    "timestamp": "2026-01-07T16:52:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0007",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2207
+    }
+  },
+  {
+    "event_id": "evt_000270",
+    "timestamp": "2025-12-27T07:25:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1978
+    }
+  },
+  {
+    "event_id": "evt_000271",
+    "timestamp": "2025-12-31T17:02:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0084",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3637
+    }
+  },
+  {
+    "event_id": "evt_000272",
+    "timestamp": "2025-12-22T17:12:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1639,
+      "amount": 15.37
+    }
+  },
+  {
+    "event_id": "evt_000273",
+    "timestamp": "2025-12-24T10:24:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0031",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1102,
+      "amount": 322.04
+    }
+  },
+  {
+    "event_id": "evt_000274",
+    "timestamp": "2026-01-08T10:47:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3882,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000275",
+    "timestamp": "2025-12-13T20:26:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0085",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 880
+    }
+  },
+  {
+    "event_id": "evt_000276",
+    "timestamp": "2025-12-24T09:56:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0059",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3570,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000277",
+    "timestamp": "2025-12-21T04:46:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0049",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3069
+    }
+  },
+  {
+    "event_id": "evt_000278",
+    "timestamp": "2025-12-30T04:17:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0025",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2177,
+      "amount": 373.23
+    }
+  },
+  {
+    "event_id": "evt_000279",
+    "timestamp": "2026-01-11T02:48:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0012",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 717
+    }
+  },
+  {
+    "event_id": "evt_000280",
+    "timestamp": "2025-12-16T13:25:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0082",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 578
+    }
+  },
+  {
+    "event_id": "evt_000281",
+    "timestamp": "2025-12-14T05:29:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0067",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4540,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000282",
+    "timestamp": "2025-12-29T00:30:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1263
+    }
+  },
+  {
+    "event_id": "evt_000283",
+    "timestamp": "2025-12-18T11:09:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0034",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3053
+    }
+  },
+  {
+    "event_id": "evt_000284",
+    "timestamp": "2025-12-30T20:33:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0038",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 140
+    }
+  },
+  {
+    "event_id": "evt_000285",
+    "timestamp": "2026-01-01T10:46:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 469
+    }
+  },
+  {
+    "event_id": "evt_000286",
+    "timestamp": "2025-12-25T15:47:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0060",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1067,
+      "amount": 381.47
+    }
+  },
+  {
+    "event_id": "evt_000287",
+    "timestamp": "2025-12-21T08:32:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0054",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3877
+    }
+  },
+  {
+    "event_id": "evt_000288",
+    "timestamp": "2025-12-22T12:51:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0058",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1204,
+      "amount": 388.32
+    }
+  },
+  {
+    "event_id": "evt_000289",
+    "timestamp": "2026-01-02T10:23:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0073",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1009
+    }
+  },
+  {
+    "event_id": "evt_000290",
+    "timestamp": "2026-01-09T13:22:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0017",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2696
+    }
+  },
+  {
+    "event_id": "evt_000291",
+    "timestamp": "2025-12-18T01:23:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0093",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3175
+    }
+  },
+  {
+    "event_id": "evt_000292",
+    "timestamp": "2026-01-04T09:43:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4813
+    }
+  },
+  {
+    "event_id": "evt_000293",
+    "timestamp": "2026-01-08T23:34:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0017",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 627
+    }
+  },
+  {
+    "event_id": "evt_000294",
+    "timestamp": "2026-01-11T03:43:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0051",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 683,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000295",
+    "timestamp": "2026-01-11T19:03:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0030",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1710
+    }
+  },
+  {
+    "event_id": "evt_000296",
+    "timestamp": "2025-12-22T02:10:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4698,
+      "amount": 55.45
+    }
+  },
+  {
+    "event_id": "evt_000297",
+    "timestamp": "2025-12-19T22:38:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0028",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2116
+    }
+  },
+  {
+    "event_id": "evt_000298",
+    "timestamp": "2026-01-06T20:09:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0054",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3223,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000299",
+    "timestamp": "2025-12-17T08:20:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0090",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 326,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000300",
+    "timestamp": "2026-01-11T05:18:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2448
+    }
+  },
+  {
+    "event_id": "evt_000301",
+    "timestamp": "2025-12-16T13:16:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2385
+    }
+  },
+  {
+    "event_id": "evt_000302",
+    "timestamp": "2025-12-24T23:32:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0026",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4683,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000303",
+    "timestamp": "2026-01-04T14:27:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0014",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1596
+    }
+  },
+  {
+    "event_id": "evt_000304",
+    "timestamp": "2025-12-19T04:08:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0019",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 163
+    }
+  },
+  {
+    "event_id": "evt_000305",
+    "timestamp": "2025-12-30T09:23:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0032",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1923
+    }
+  },
+  {
+    "event_id": "evt_000306",
+    "timestamp": "2026-01-09T05:51:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0051",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4855,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000307",
+    "timestamp": "2025-12-16T15:11:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3548,
+      "amount": 64.26
+    }
+  },
+  {
+    "event_id": "evt_000308",
+    "timestamp": "2026-01-12T12:30:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0049",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2965
+    }
+  },
+  {
+    "event_id": "evt_000309",
+    "timestamp": "2025-12-20T00:56:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0093",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1824
+    }
+  },
+  {
+    "event_id": "evt_000310",
+    "timestamp": "2026-01-08T16:48:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0093",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 835,
+      "amount": 27.05
+    }
+  },
+  {
+    "event_id": "evt_000311",
+    "timestamp": "2026-01-09T20:04:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0012",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4620
+    }
+  },
+  {
+    "event_id": "evt_000312",
+    "timestamp": "2026-01-06T09:31:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0048",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4969,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000313",
+    "timestamp": "2025-12-29T05:07:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0090",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 656,
+      "amount": 197.91
+    }
+  },
+  {
+    "event_id": "evt_000314",
+    "timestamp": "2025-12-18T15:22:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1821
+    }
+  },
+  {
+    "event_id": "evt_000315",
+    "timestamp": "2025-12-19T05:43:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0004",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3450
+    }
+  },
+  {
+    "event_id": "evt_000316",
+    "timestamp": "2025-12-21T08:21:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0075",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3589,
+      "amount": 340.3
+    }
+  },
+  {
+    "event_id": "evt_000317",
+    "timestamp": "2025-12-23T18:48:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0024",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3514
+    }
+  },
+  {
+    "event_id": "evt_000318",
+    "timestamp": "2026-01-10T07:11:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0047",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2589
+    }
+  },
+  {
+    "event_id": "evt_000319",
+    "timestamp": "2025-12-14T10:23:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 234
+    }
+  },
+  {
+    "event_id": "evt_000320",
+    "timestamp": "2025-12-31T09:31:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4627
+    }
+  },
+  {
+    "event_id": "evt_000321",
+    "timestamp": "2025-12-29T02:44:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0048",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3107
+    }
+  },
+  {
+    "event_id": "evt_000322",
+    "timestamp": "2026-01-06T03:46:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0077",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 970
+    }
+  },
+  {
+    "event_id": "evt_000323",
+    "timestamp": "2025-12-15T11:17:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0080",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4880,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000324",
+    "timestamp": "2026-01-10T16:21:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0034",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2464
+    }
+  },
+  {
+    "event_id": "evt_000325",
+    "timestamp": "2025-12-27T16:31:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0053",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1589,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000326",
+    "timestamp": "2026-01-12T19:01:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0011",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1968,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000327",
+    "timestamp": "2026-01-13T14:33:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1294,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000328",
+    "timestamp": "2025-12-17T20:50:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2956,
+      "amount": 453.8
+    }
+  },
+  {
+    "event_id": "evt_000329",
+    "timestamp": "2026-01-07T13:48:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0012",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3393
+    }
+  },
+  {
+    "event_id": "evt_000330",
+    "timestamp": "2026-01-01T03:14:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4199
+    }
+  },
+  {
+    "event_id": "evt_000331",
+    "timestamp": "2026-01-11T17:36:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3184
+    }
+  },
+  {
+    "event_id": "evt_000332",
+    "timestamp": "2026-01-06T10:01:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3286
+    }
+  },
+  {
+    "event_id": "evt_000333",
+    "timestamp": "2026-01-05T21:39:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0071",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2445
+    }
+  },
+  {
+    "event_id": "evt_000334",
+    "timestamp": "2025-12-29T09:35:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1214
+    }
+  },
+  {
+    "event_id": "evt_000335",
+    "timestamp": "2025-12-22T21:04:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 702
+    }
+  },
+  {
+    "event_id": "evt_000336",
+    "timestamp": "2025-12-31T23:00:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0046",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 136
+    }
+  },
+  {
+    "event_id": "evt_000337",
+    "timestamp": "2025-12-15T14:52:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0013",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1930
+    }
+  },
+  {
+    "event_id": "evt_000338",
+    "timestamp": "2025-12-30T22:17:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3008
+    }
+  },
+  {
+    "event_id": "evt_000339",
+    "timestamp": "2025-12-20T05:45:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0086",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2373
+    }
+  },
+  {
+    "event_id": "evt_000340",
+    "timestamp": "2026-01-02T23:06:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2885
+    }
+  },
+  {
+    "event_id": "evt_000341",
+    "timestamp": "2025-12-23T13:49:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0079",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2076,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000342",
+    "timestamp": "2026-01-09T18:47:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4766
+    }
+  },
+  {
+    "event_id": "evt_000343",
+    "timestamp": "2026-01-03T01:14:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0048",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 483,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000344",
+    "timestamp": "2025-12-19T14:45:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0080",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1444,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000345",
+    "timestamp": "2026-01-08T13:34:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2076
+    }
+  },
+  {
+    "event_id": "evt_000346",
+    "timestamp": "2026-01-01T09:26:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2493
+    }
+  },
+  {
+    "event_id": "evt_000347",
+    "timestamp": "2025-12-19T14:18:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0092",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 623
+    }
+  },
+  {
+    "event_id": "evt_000348",
+    "timestamp": "2026-01-10T00:15:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3940
+    }
+  },
+  {
+    "event_id": "evt_000349",
+    "timestamp": "2026-01-13T00:49:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0055",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2909
+    }
+  },
+  {
+    "event_id": "evt_000350",
+    "timestamp": "2025-12-30T20:20:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4396,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000351",
+    "timestamp": "2026-01-07T09:33:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0006",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4115,
+      "amount": 67.23
+    }
+  },
+  {
+    "event_id": "evt_000352",
+    "timestamp": "2025-12-21T18:18:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0007",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1500
+    }
+  },
+  {
+    "event_id": "evt_000353",
+    "timestamp": "2025-12-14T18:44:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1659
+    }
+  },
+  {
+    "event_id": "evt_000354",
+    "timestamp": "2025-12-21T11:07:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1185,
+      "amount": 273.68
+    }
+  },
+  {
+    "event_id": "evt_000355",
+    "timestamp": "2026-01-09T21:20:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0100",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1827
+    }
+  },
+  {
+    "event_id": "evt_000356",
+    "timestamp": "2026-01-09T14:09:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3222
+    }
+  },
+  {
+    "event_id": "evt_000357",
+    "timestamp": "2025-12-25T03:31:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0089",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3671
+    }
+  },
+  {
+    "event_id": "evt_000358",
+    "timestamp": "2025-12-31T03:50:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0019",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4244,
+      "amount": 451.17
+    }
+  },
+  {
+    "event_id": "evt_000359",
+    "timestamp": "2026-01-12T07:32:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0079",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4146,
+      "amount": 360.4
+    }
+  },
+  {
+    "event_id": "evt_000360",
+    "timestamp": "2025-12-15T17:31:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0075",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 616,
+      "amount": 144.54
+    }
+  },
+  {
+    "event_id": "evt_000361",
+    "timestamp": "2025-12-17T19:34:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0021",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1257
+    }
+  },
+  {
+    "event_id": "evt_000362",
+    "timestamp": "2026-01-03T19:05:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0008",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1941
+    }
+  },
+  {
+    "event_id": "evt_000363",
+    "timestamp": "2026-01-09T01:21:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3363,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000364",
+    "timestamp": "2025-12-26T13:16:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0094",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2002
+    }
+  },
+  {
+    "event_id": "evt_000365",
+    "timestamp": "2026-01-12T16:00:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 815,
+      "amount": 420.43
+    }
+  },
+  {
+    "event_id": "evt_000366",
+    "timestamp": "2025-12-16T19:34:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0035",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4389
+    }
+  },
+  {
+    "event_id": "evt_000367",
+    "timestamp": "2026-01-03T05:00:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0039",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3622
+    }
+  },
+  {
+    "event_id": "evt_000368",
+    "timestamp": "2026-01-11T08:04:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0033",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 470
+    }
+  },
+  {
+    "event_id": "evt_000369",
+    "timestamp": "2025-12-15T06:25:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0071",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4249,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000370",
+    "timestamp": "2026-01-08T09:51:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2362,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000371",
+    "timestamp": "2025-12-19T05:04:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0076",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4067
+    }
+  },
+  {
+    "event_id": "evt_000372",
+    "timestamp": "2026-01-07T14:57:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0059",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4027
+    }
+  },
+  {
+    "event_id": "evt_000373",
+    "timestamp": "2025-12-22T08:11:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2716
+    }
+  },
+  {
+    "event_id": "evt_000374",
+    "timestamp": "2026-01-05T15:21:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0004",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4883
+    }
+  },
+  {
+    "event_id": "evt_000375",
+    "timestamp": "2026-01-10T01:42:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2538,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000376",
+    "timestamp": "2025-12-18T13:03:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1057
+    }
+  },
+  {
+    "event_id": "evt_000377",
+    "timestamp": "2026-01-13T00:59:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0044",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2567,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000378",
+    "timestamp": "2025-12-31T15:06:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0065",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3744,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000379",
+    "timestamp": "2026-01-10T09:21:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0097",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3942
+    }
+  },
+  {
+    "event_id": "evt_000380",
+    "timestamp": "2026-01-07T00:07:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3205
+    }
+  },
+  {
+    "event_id": "evt_000381",
+    "timestamp": "2026-01-11T06:18:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0013",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3416
+    }
+  },
+  {
+    "event_id": "evt_000382",
+    "timestamp": "2025-12-19T08:24:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0023",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 350
+    }
+  },
+  {
+    "event_id": "evt_000383",
+    "timestamp": "2025-12-26T00:41:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0083",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4749
+    }
+  },
+  {
+    "event_id": "evt_000384",
+    "timestamp": "2025-12-27T06:16:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0039",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1632
+    }
+  },
+  {
+    "event_id": "evt_000385",
+    "timestamp": "2025-12-20T23:44:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 608,
+      "amount": 57.19
+    }
+  },
+  {
+    "event_id": "evt_000386",
+    "timestamp": "2025-12-27T05:37:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1390
+    }
+  },
+  {
+    "event_id": "evt_000387",
+    "timestamp": "2026-01-11T07:07:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3594
+    }
+  },
+  {
+    "event_id": "evt_000388",
+    "timestamp": "2025-12-17T07:55:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3984,
+      "amount": 467.85
+    }
+  },
+  {
+    "event_id": "evt_000389",
+    "timestamp": "2026-01-02T16:38:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0062",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2477,
+      "amount": 440.39
+    }
+  },
+  {
+    "event_id": "evt_000390",
+    "timestamp": "2025-12-31T06:10:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 193,
+      "amount": 59.99
+    }
+  },
+  {
+    "event_id": "evt_000391",
+    "timestamp": "2025-12-26T21:56:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0024",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2728,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000392",
+    "timestamp": "2026-01-13T11:59:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0027",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3084
+    }
+  },
+  {
+    "event_id": "evt_000393",
+    "timestamp": "2025-12-21T01:42:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4488
+    }
+  },
+  {
+    "event_id": "evt_000394",
+    "timestamp": "2026-01-05T00:16:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4830
+    }
+  },
+  {
+    "event_id": "evt_000395",
+    "timestamp": "2026-01-09T02:02:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0062",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4068
+    }
+  },
+  {
+    "event_id": "evt_000396",
+    "timestamp": "2026-01-04T07:47:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0015",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4598,
+      "amount": 260.4
+    }
+  },
+  {
+    "event_id": "evt_000397",
+    "timestamp": "2025-12-15T20:35:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 747,
+      "amount": 412.3
+    }
+  },
+  {
+    "event_id": "evt_000398",
+    "timestamp": "2026-01-05T11:36:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0098",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 420
+    }
+  },
+  {
+    "event_id": "evt_000399",
+    "timestamp": "2025-12-29T21:45:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1083
+    }
+  },
+  {
+    "event_id": "evt_000400",
+    "timestamp": "2026-01-06T23:55:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0050",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1396
+    }
+  },
+  {
+    "event_id": "evt_000401",
+    "timestamp": "2025-12-29T19:12:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0074",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3717,
+      "amount": 25.02
+    }
+  },
+  {
+    "event_id": "evt_000402",
+    "timestamp": "2025-12-22T05:34:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0043",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1428
+    }
+  },
+  {
+    "event_id": "evt_000403",
+    "timestamp": "2025-12-18T23:27:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0057",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3254
+    }
+  },
+  {
+    "event_id": "evt_000404",
+    "timestamp": "2026-01-07T05:59:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 814
+    }
+  },
+  {
+    "event_id": "evt_000405",
+    "timestamp": "2026-01-05T08:40:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3122
+    }
+  },
+  {
+    "event_id": "evt_000406",
+    "timestamp": "2025-12-28T20:51:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3916
+    }
+  },
+  {
+    "event_id": "evt_000407",
+    "timestamp": "2026-01-05T02:15:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2074
+    }
+  },
+  {
+    "event_id": "evt_000408",
+    "timestamp": "2025-12-31T02:01:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0022",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 607
+    }
+  },
+  {
+    "event_id": "evt_000409",
+    "timestamp": "2025-12-21T23:39:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": "user_0087",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4863,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000410",
+    "timestamp": "2026-01-04T19:02:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0086",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3044,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000411",
+    "timestamp": "2026-01-04T06:54:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0040",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 371
+    }
+  },
+  {
+    "event_id": "evt_000412",
+    "timestamp": "2025-12-27T21:48:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1819,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000413",
+    "timestamp": "2026-01-09T17:33:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0081",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2478
+    }
+  },
+  {
+    "event_id": "evt_000414",
+    "timestamp": "2025-12-26T13:40:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0055",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3795
+    }
+  },
+  {
+    "event_id": "evt_000415",
+    "timestamp": "2026-01-01T23:16:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0031",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3729
+    }
+  },
+  {
+    "event_id": "evt_000416",
+    "timestamp": "2026-01-08T21:41:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0082",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1108
+    }
+  },
+  {
+    "event_id": "evt_000417",
+    "timestamp": "2025-12-30T19:38:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0068",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4482,
+      "amount": 393.15
+    }
+  },
+  {
+    "event_id": "evt_000418",
+    "timestamp": "2025-12-19T22:36:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0069",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 971,
+      "amount": 134.89
+    }
+  },
+  {
+    "event_id": "evt_000419",
+    "timestamp": "2026-01-10T05:30:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0073",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2558
+    }
+  },
+  {
+    "event_id": "evt_000420",
+    "timestamp": "2026-01-12T15:27:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0015",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3088,
+      "amount": 247.36
+    }
+  },
+  {
+    "event_id": "evt_000421",
+    "timestamp": "2026-01-12T06:57:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": "user_0072",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 831
+    }
+  },
+  {
+    "event_id": "evt_000422",
+    "timestamp": "2025-12-18T13:12:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0069",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 779
+    }
+  },
+  {
+    "event_id": "evt_000423",
+    "timestamp": "2026-01-11T17:31:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0031",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4806,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000424",
+    "timestamp": "2026-01-11T09:26:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0008",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4200
+    }
+  },
+  {
+    "event_id": "evt_000425",
+    "timestamp": "2026-01-06T22:34:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0072",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 443
+    }
+  },
+  {
+    "event_id": "evt_000426",
+    "timestamp": "2025-12-30T05:14:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0019",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4068
+    }
+  },
+  {
+    "event_id": "evt_000427",
+    "timestamp": "2025-12-15T05:05:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0100",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3612
+    }
+  },
+  {
+    "event_id": "evt_000428",
+    "timestamp": "2026-01-01T00:30:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0053",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 664
+    }
+  },
+  {
+    "event_id": "evt_000429",
+    "timestamp": "2025-12-18T17:05:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0036",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4631
+    }
+  },
+  {
+    "event_id": "evt_000430",
+    "timestamp": "2025-12-24T20:44:23.573288",
+    "event_type": "error",
+    "source": "api",
+    "user_id": "user_0028",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3886,
+      "error_code": "E500"
+    }
+  },
+  {
+    "event_id": "evt_000431",
+    "timestamp": "2025-12-22T19:34:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 894,
+      "amount": 284.13
+    }
+  },
+  {
+    "event_id": "evt_000432",
+    "timestamp": "2025-12-23T22:09:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0048",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1452,
+      "amount": 45.77
+    }
+  },
+  {
+    "event_id": "evt_000433",
+    "timestamp": "2026-01-06T00:05:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0063",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3444
+    }
+  },
+  {
+    "event_id": "evt_000434",
+    "timestamp": "2025-12-19T19:10:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0048",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4982
+    }
+  },
+  {
+    "event_id": "evt_000435",
+    "timestamp": "2025-12-30T17:10:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4099,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000436",
+    "timestamp": "2025-12-20T03:05:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0056",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4808
+    }
+  },
+  {
+    "event_id": "evt_000437",
+    "timestamp": "2025-12-24T14:39:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0069",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1874
+    }
+  },
+  {
+    "event_id": "evt_000438",
+    "timestamp": "2026-01-08T02:41:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0008",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 354
+    }
+  },
+  {
+    "event_id": "evt_000439",
+    "timestamp": "2025-12-24T04:33:23.573288",
+    "event_type": "error",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3930,
+      "error_code": "E002"
+    }
+  },
+  {
+    "event_id": "evt_000440",
+    "timestamp": "2026-01-12T12:20:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4652
+    }
+  },
+  {
+    "event_id": "evt_000441",
+    "timestamp": "2025-12-30T15:22:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 177
+    }
+  },
+  {
+    "event_id": "evt_000442",
+    "timestamp": "2026-01-05T05:15:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0065",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 373
+    }
+  },
+  {
+    "event_id": "evt_000443",
+    "timestamp": "2025-12-16T14:25:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2062
+    }
+  },
+  {
+    "event_id": "evt_000444",
+    "timestamp": "2025-12-14T12:14:23.573288",
+    "event_type": "page_view",
+    "source": "web",
+    "user_id": "user_0012",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3346
+    }
+  },
+  {
+    "event_id": "evt_000445",
+    "timestamp": "2025-12-22T09:18:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0017",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3313
+    }
+  },
+  {
+    "event_id": "evt_000446",
+    "timestamp": "2026-01-06T09:24:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0029",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2448,
+      "amount": 271.33
+    }
+  },
+  {
+    "event_id": "evt_000447",
+    "timestamp": "2025-12-25T21:40:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4419
+    }
+  },
+  {
+    "event_id": "evt_000448",
+    "timestamp": "2025-12-21T10:05:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 990
+    }
+  },
+  {
+    "event_id": "evt_000449",
+    "timestamp": "2026-01-07T10:57:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0055",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 271
+    }
+  },
+  {
+    "event_id": "evt_000450",
+    "timestamp": "2026-01-02T14:24:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3788,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000451",
+    "timestamp": "2026-01-05T02:06:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0051",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1387,
+      "amount": 392.63
+    }
+  },
+  {
+    "event_id": "evt_000452",
+    "timestamp": "2025-12-24T12:38:23.573288",
+    "event_type": "form_submit",
+    "source": "web",
+    "user_id": "user_0035",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3420
+    }
+  },
+  {
+    "event_id": "evt_000453",
+    "timestamp": "2025-12-24T17:22:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0016",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2326
+    }
+  },
+  {
+    "event_id": "evt_000454",
+    "timestamp": "2025-12-15T07:50:23.573288",
+    "event_type": "error",
+    "source": "mobile_android",
+    "user_id": "user_0033",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2834,
+      "error_code": "E404"
+    }
+  },
+  {
+    "event_id": "evt_000455",
+    "timestamp": "2026-01-03T14:06:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0057",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 835
+    }
+  },
+  {
+    "event_id": "evt_000456",
+    "timestamp": "2026-01-12T05:33:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0008",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2875
+    }
+  },
+  {
+    "event_id": "evt_000457",
+    "timestamp": "2025-12-18T11:05:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0024",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4157
+    }
+  },
+  {
+    "event_id": "evt_000458",
+    "timestamp": "2026-01-06T00:03:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2482
+    }
+  },
+  {
+    "event_id": "evt_000459",
+    "timestamp": "2025-12-17T01:17:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2510
+    }
+  },
+  {
+    "event_id": "evt_000460",
+    "timestamp": "2025-12-13T23:21:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0098",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3820
+    }
+  },
+  {
+    "event_id": "evt_000461",
+    "timestamp": "2026-01-02T09:38:23.573288",
+    "event_type": "form_submit",
+    "source": "api",
+    "user_id": "user_0009",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2544
+    }
+  },
+  {
+    "event_id": "evt_000462",
+    "timestamp": "2025-12-18T11:30:23.573288",
+    "event_type": "click",
+    "source": "web",
+    "user_id": "user_0040",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1818
+    }
+  },
+  {
+    "event_id": "evt_000463",
+    "timestamp": "2025-12-20T17:22:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 865,
+      "amount": 346.5
+    }
+  },
+  {
+    "event_id": "evt_000464",
+    "timestamp": "2025-12-18T04:31:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0061",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1499
+    }
+  },
+  {
+    "event_id": "evt_000465",
+    "timestamp": "2025-12-17T02:56:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0033",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 436
+    }
+  },
+  {
+    "event_id": "evt_000466",
+    "timestamp": "2026-01-13T07:34:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0007",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1288
+    }
+  },
+  {
+    "event_id": "evt_000467",
+    "timestamp": "2025-12-31T20:43:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3703
+    }
+  },
+  {
+    "event_id": "evt_000468",
+    "timestamp": "2025-12-16T13:21:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0095",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3786,
+      "amount": 49.15
+    }
+  },
+  {
+    "event_id": "evt_000469",
+    "timestamp": "2025-12-21T18:28:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1988
+    }
+  },
+  {
+    "event_id": "evt_000470",
+    "timestamp": "2025-12-20T08:40:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1076
+    }
+  },
+  {
+    "event_id": "evt_000471",
+    "timestamp": "2026-01-03T09:58:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": "user_0043",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 1332
+    }
+  },
+  {
+    "event_id": "evt_000472",
+    "timestamp": "2026-01-08T15:53:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3811
+    }
+  },
+  {
+    "event_id": "evt_000473",
+    "timestamp": "2026-01-06T20:50:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0072",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3954
+    }
+  },
+  {
+    "event_id": "evt_000474",
+    "timestamp": "2025-12-16T19:59:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4333,
+      "amount": 462.54
+    }
+  },
+  {
+    "event_id": "evt_000475",
+    "timestamp": "2025-12-21T10:09:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0039",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4969
+    }
+  },
+  {
+    "event_id": "evt_000476",
+    "timestamp": "2025-12-28T23:47:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_android",
+    "user_id": "user_0091",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 4061
+    }
+  },
+  {
+    "event_id": "evt_000477",
+    "timestamp": "2026-01-03T11:55:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 941
+    }
+  },
+  {
+    "event_id": "evt_000478",
+    "timestamp": "2025-12-21T22:30:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0028",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2439,
+      "error_code": "E003"
+    }
+  },
+  {
+    "event_id": "evt_000479",
+    "timestamp": "2026-01-07T05:59:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": "user_0001",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3429
+    }
+  },
+  {
+    "event_id": "evt_000480",
+    "timestamp": "2025-12-23T05:19:23.573288",
+    "event_type": "click",
+    "source": "mobile_ios",
+    "user_id": "user_0036",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4420
+    }
+  },
+  {
+    "event_id": "evt_000481",
+    "timestamp": "2026-01-05T19:13:23.573288",
+    "event_type": "purchase",
+    "source": "web",
+    "user_id": "user_0064",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4780,
+      "amount": 459.25
+    }
+  },
+  {
+    "event_id": "evt_000482",
+    "timestamp": "2025-12-18T12:22:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_ios",
+    "user_id": "user_0010",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 1161
+    }
+  },
+  {
+    "event_id": "evt_000483",
+    "timestamp": "2025-12-30T15:57:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0056",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 3332
+    }
+  },
+  {
+    "event_id": "evt_000484",
+    "timestamp": "2025-12-19T17:00:23.573288",
+    "event_type": "signup",
+    "source": "mobile_ios",
+    "user_id": "user_0054",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 3412
+    }
+  },
+  {
+    "event_id": "evt_000485",
+    "timestamp": "2025-12-27T17:50:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0005",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 1481,
+      "amount": 414.77
+    }
+  },
+  {
+    "event_id": "evt_000486",
+    "timestamp": "2025-12-24T09:34:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_android",
+    "user_id": "user_0040",
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 4745,
+      "amount": 145.21
+    }
+  },
+  {
+    "event_id": "evt_000487",
+    "timestamp": "2026-01-13T02:22:23.573288",
+    "event_type": "signup",
+    "source": "mobile_android",
+    "user_id": "user_0031",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 2792
+    }
+  },
+  {
+    "event_id": "evt_000488",
+    "timestamp": "2025-12-23T23:10:23.573288",
+    "event_type": "signup",
+    "source": "web",
+    "user_id": null,
+    "properties": {
+      "page": "/products",
+      "duration_ms": 2182
+    }
+  },
+  {
+    "event_id": "evt_000489",
+    "timestamp": "2026-01-04T12:12:23.573288",
+    "event_type": "signup",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/home",
+      "duration_ms": 4842
+    }
+  },
+  {
+    "event_id": "evt_000490",
+    "timestamp": "2026-01-02T18:06:23.573288",
+    "event_type": "click",
+    "source": "mobile_android",
+    "user_id": "user_0094",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 3657
+    }
+  },
+  {
+    "event_id": "evt_000491",
+    "timestamp": "2026-01-12T22:31:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0080",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 2649,
+      "amount": 431.7
+    }
+  },
+  {
+    "event_id": "evt_000492",
+    "timestamp": "2025-12-21T03:46:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0018",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1611
+    }
+  },
+  {
+    "event_id": "evt_000493",
+    "timestamp": "2025-12-15T17:06:23.573288",
+    "event_type": "click",
+    "source": "api",
+    "user_id": "user_0057",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 1067
+    }
+  },
+  {
+    "event_id": "evt_000494",
+    "timestamp": "2025-12-14T14:02:23.573288",
+    "event_type": "page_view",
+    "source": "mobile_ios",
+    "user_id": "user_0024",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 3635
+    }
+  },
+  {
+    "event_id": "evt_000495",
+    "timestamp": "2026-01-12T01:07:23.573288",
+    "event_type": "purchase",
+    "source": "mobile_ios",
+    "user_id": "user_0032",
+    "properties": {
+      "page": "/products",
+      "duration_ms": 488,
+      "amount": 317.7
+    }
+  },
+  {
+    "event_id": "evt_000496",
+    "timestamp": "2026-01-02T01:14:23.573288",
+    "event_type": "page_view",
+    "source": "api",
+    "user_id": null,
+    "properties": {
+      "page": "/checkout",
+      "duration_ms": 2521
+    }
+  },
+  {
+    "event_id": "evt_000497",
+    "timestamp": "2025-12-30T13:25:23.573288",
+    "event_type": "error",
+    "source": "web",
+    "user_id": "user_0081",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 738,
+      "error_code": "E001"
+    }
+  },
+  {
+    "event_id": "evt_000498",
+    "timestamp": "2026-01-10T04:23:23.573288",
+    "event_type": "form_submit",
+    "source": "mobile_android",
+    "user_id": "user_0033",
+    "properties": {
+      "page": "/home",
+      "duration_ms": 529
+    }
+  },
+  {
+    "event_id": "evt_000499",
+    "timestamp": "2026-01-12T08:21:23.573288",
+    "event_type": "purchase",
+    "source": "api",
+    "user_id": "user_0090",
+    "properties": {
+      "page": "/account",
+      "duration_ms": 4001,
+      "amount": 100.64
+    }
+  }
+]

@@ -50,17 +50,17 @@ Technical documentation of the system architecture and logic flow.
                     │                   Data Sources                         │
                     │  (All external systems that Constat queries)           │
                     │                                                        │
-                    │  ┌──────────┐  ┌──────────┐  ┌────────────────────┐   │
-                    │  │   SQL    │  │  NoSQL   │  │   External APIs    │   │
-                    │  │Databases │  │Databases │  │  (GraphQL, REST)   │   │
-                    │  │(SQLAlch.)│  │Connectors│  │  (API Executor)    │   │
-                    │  └──────────┘  └──────────┘  └────────────────────┘   │
+                    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
+                    │  │   SQL    │ │  NoSQL   │ │  Files   │ │ External │  │
+                    │  │Databases │ │Databases │ │(CSV/JSON/│ │   APIs   │  │
+                    │  │(SQLAlch.)│ │Connectors│ │ Parquet) │ │(GraphQL) │  │
+                    │  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
                     └────────────────────────────────────────────────────────┘
 ```
 
 **Key distinction:**
 - **Client Access Layer**: Ways to USE Constat (CLI, REPL, Python SDK)
-- **Data Sources**: External systems Constat QUERIES (SQL databases, NoSQL databases, external GraphQL/REST APIs via API Executor)
+- **Data Sources**: External systems Constat QUERIES (SQL databases, NoSQL databases, file-based sources like CSV/JSON/Parquet, and external GraphQL/REST APIs via API Executor)
 
 ## Request Processing Flow
 
@@ -360,7 +360,8 @@ Runs generated Python code in a sandboxed environment.
 - No filesystem access outside designated paths
 
 **Available to Code:**
-- `db`, `db_<name>` - Database connections
+- `db`, `db_<name>` - SQL database connections (SQLAlchemy engines)
+- `file_<name>` - File source paths (for pandas read functions)
 - `store` - DataStore for persistence
 - `pd`, `np` - pandas, numpy
 
@@ -382,11 +383,11 @@ Persistent storage for session state.
 
 ### SchemaManager (`catalog/schema_manager.py`)
 
-Provides schema information to the LLM for both SQL and NoSQL databases.
+Provides schema information to the LLM for SQL databases, NoSQL databases, and file-based data sources.
 
-**NoSQL Support:**
+**Unified Data Source Support:**
 
-The SchemaManager handles both SQL and NoSQL databases transparently:
+The SchemaManager handles SQL, NoSQL, and file-based sources transparently:
 
 ```yaml
 databases:
@@ -404,10 +405,37 @@ databases:
   events:
     type: dynamodb
     region: us-east-1
+
+  # CSV file
+  web_metrics:
+    type: csv
+    path: data/metrics.csv
+
+  # JSON file
+  clickstream:
+    type: json
+    path: data/events.json
+
+  # Parquet file (supports s3://, https://)
+  transactions:
+    type: parquet
+    path: s3://bucket/data/transactions.parquet
 ```
 
-NoSQL databases are introspected by sampling documents to infer schema.
-All databases appear uniformly in the schema overview and vector search.
+**Schema introspection by type:**
+- SQL: Uses SQLAlchemy inspector for table/column metadata
+- NoSQL: Samples documents to infer schema
+- Files: Reads sample rows to infer column names, types, and sample values
+
+All data sources appear uniformly in the schema overview and vector search.
+
+**FileConnector (`catalog/file/connector.py`):**
+
+Handles CSV, JSON, JSONL, Parquet, and Arrow/Feather files:
+- Schema inference from file samples
+- Row count estimation
+- Metadata generation for vector embeddings
+- Support for local and remote paths (s3://, https://, etc.)
 
 ### DiscoveryTools (`discovery/tools.py`)
 

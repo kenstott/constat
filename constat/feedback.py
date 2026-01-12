@@ -6,11 +6,19 @@ from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
+from rich.prompt import Prompt
 from rich.table import Table
 from rich.syntax import Syntax
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
+
+from constat.execution.mode import (
+    ExecutionMode,
+    PlanApproval,
+    PlanApprovalRequest,
+    PlanApprovalResponse,
+)
 
 
 @dataclass
@@ -82,6 +90,83 @@ class FeedbackDisplay:
 
         self.console.print(table)
         self.console.print()
+
+    def show_mode_selection(self, mode: ExecutionMode, reasoning: str) -> None:
+        """Display the selected execution mode."""
+        mode_style = "cyan" if mode == ExecutionMode.EXPLORATORY else "yellow"
+        self.console.print(
+            f"[bold]Mode:[/bold] [{mode_style}]{mode.value.upper()}[/{mode_style}]"
+        )
+        self.console.print(f"  [dim]{reasoning}[/dim]")
+        self.console.print()
+
+    def request_plan_approval(self, request: PlanApprovalRequest) -> PlanApprovalResponse:
+        """
+        Request user approval for a generated plan.
+
+        Displays the plan with mode selection and prompts for approval.
+        Returns user's decision with optional feedback.
+
+        Args:
+            request: PlanApprovalRequest with full context
+
+        Returns:
+            PlanApprovalResponse with user's decision
+        """
+        # Show mode selection
+        self.show_mode_selection(request.mode, request.mode_reasoning)
+
+        # Show the plan
+        self.show_plan(request.steps)
+
+        # Show reasoning if available
+        if request.reasoning:
+            self.console.print("[bold]Reasoning:[/bold]")
+            self.console.print(Panel(request.reasoning, border_style="dim"))
+
+        # Prompt for approval
+        self.console.print(Rule("[bold]Approval Required[/bold]"))
+        self.console.print(
+            "[bold green][Y][/bold green]es - Execute this plan\n"
+            "[bold red][N][/bold red]o  - Cancel and do not execute\n"
+            "[bold yellow][S][/bold yellow]uggest - Provide feedback to improve the plan"
+        )
+        self.console.print()
+
+        while True:
+            choice = Prompt.ask(
+                "Execute this plan?",
+                choices=["y", "n", "s", "yes", "no", "suggest"],
+                default="y",
+            ).lower()
+
+            if choice in ("y", "yes"):
+                self.console.print("[green]Plan approved. Executing...[/green]\n")
+                return PlanApprovalResponse.approve()
+
+            elif choice in ("n", "no"):
+                reason = Prompt.ask(
+                    "[dim]Reason for rejection (optional)[/dim]",
+                    default="",
+                )
+                self.console.print("[red]Plan rejected.[/red]\n")
+                return PlanApprovalResponse.reject(reason if reason else None)
+
+            elif choice in ("s", "suggest"):
+                suggestion = Prompt.ask(
+                    "[yellow]What changes would you suggest?[/yellow]"
+                )
+                if suggestion.strip():
+                    self.console.print("[yellow]Incorporating feedback and replanning...[/yellow]\n")
+                    return PlanApprovalResponse.suggest(suggestion)
+                else:
+                    self.console.print("[dim]No suggestion provided. Please try again.[/dim]")
+
+    def show_replan_notice(self, attempt: int, max_attempts: int) -> None:
+        """Show notice that we're replanning based on feedback."""
+        self.console.print(
+            f"[yellow]Replanning (attempt {attempt}/{max_attempts})...[/yellow]"
+        )
 
     def step_start(self, step_number: int, goal: str) -> None:
         """Mark a step as starting."""

@@ -7,6 +7,7 @@ from constat.core.config import Config
 from .executor import ExecutionResult, PythonExecutor, format_error_for_retry
 from constat.providers.anthropic import AnthropicProvider
 from constat.catalog.schema_manager import SchemaManager
+from constat.discovery.doc_tools import DocumentDiscoveryTools, DOC_TOOL_SCHEMAS
 
 
 @dataclass
@@ -21,7 +22,7 @@ class QueryResult:
     attempt_history: list[dict] = field(default_factory=list)
 
 
-# Tool definitions for Anthropic API
+# Tool definitions for Anthropic API - schema discovery
 SCHEMA_TOOLS = [
     {
         "name": "get_table_schema",
@@ -58,31 +59,67 @@ SCHEMA_TOOLS = [
     }
 ]
 
+# Combined tools: schema + documents
+ENGINE_TOOLS = SCHEMA_TOOLS + DOC_TOOL_SCHEMAS
+
 
 # Engine system prompt (constat-owned) - controls code generation behavior
-ENGINE_SYSTEM_PROMPT = """You are a data analyst assistant. Answer questions by writing Python code that queries databases and prints the answer.
+ENGINE_SYSTEM_PROMPT = """You are a data analyst assistant. Answer questions by writing Python code that queries data sources and prints the answer.
 
-## Tools
-You have access to these tools to explore the database schema:
-- get_table_schema(table): Get detailed column info for a specific table (e.g., "chinook.Track")
-- find_relevant_tables(query): Semantic search for tables relevant to your query
+## Discovery Tools
+Use these tools to explore available data sources BEFORE writing code:
 
-IMPORTANT: Use these tools FIRST to understand the schema before writing code.
+- get_table_schema(table): Get column info for a table (e.g., "sales.customers", "metrics.web_metrics")
+- find_relevant_tables(query): Semantic search for relevant tables
+
+IMPORTANT: Use discovery tools FIRST to understand what data is available.
 
 ## Code Environment
-Your code will have access to:
-- Database connections: `db_<name>` for each database (e.g., `db_chinook`, `db_northwind`)
-- `db`: alias for the first database (for simple single-db queries)
-- `pd`: pandas (imported as pd)
-- `np`: numpy (imported as np)
+Your code has access to:
+- `pd`: pandas (pre-imported)
+- `np`: numpy (pre-imported)
+- SQL database connections: `db_<name>` (e.g., `db_sales`)
+- File data source paths: `file_<name>` (e.g., `file_web_metrics`)
+
+## Data Source Types
+
+Data sources appear in schema discovery. Check the `database_type` field:
+- `postgresql`, `mysql`, `sqlite`: SQL databases → use `pd.read_sql()`
+- `mongodb`, `elasticsearch`, etc.: NoSQL → use connector methods
+- `csv`: CSV files → use `pd.read_csv(file_<name>)`
+- `json`: JSON files → use `pd.read_json(file_<name>)`
+- `jsonl`: JSON Lines → use `pd.read_json(file_<name>, lines=True)`
+- `parquet`: Parquet files → use `pd.read_parquet(file_<name>)`
+- `arrow`, `feather`: Arrow files → use `pd.read_feather(file_<name>)`
+
+## Data Loading Examples
+
+**SQL Databases:**
+```python
+df = pd.read_sql("SELECT * FROM customers", db_sales)
+```
+
+**CSV Files:**
+```python
+df = pd.read_csv(file_web_metrics)  # file_<name> contains the path
+```
+
+**JSON Files:**
+```python
+df = pd.read_json(file_events)
+```
+
+**Parquet Files:**
+```python
+df = pd.read_parquet(file_transactions)
+```
 
 ## Code Generation Rules
-1. ALWAYS use the tools first to discover relevant tables and their exact column names
-2. Use pandas `pd.read_sql(query, db_<name>)` to query databases
-3. For cross-database queries, load from each DB separately and join in pandas
-4. Print a clear, formatted answer at the end
-5. Keep code simple and focused - no unnecessary complexity
-6. Handle potential NULL values appropriately
+1. Use discovery tools to find relevant data sources and their types
+2. Check the database_type to determine how to load the data
+3. For SQL: use pd.read_sql() with db_<name> connection
+4. For files: use pd.read_csv/json/parquet() with file_<name> path
+5. Print a clear, formatted answer at the end
 
 ## Output Format
 Return ONLY the Python code wrapped in ```python ... ``` markers.
@@ -139,6 +176,8 @@ class QueryEngine:
             timeout_seconds=config.execution.timeout_seconds,
             allowed_imports=config.execution.allowed_imports or None,
         )
+        # Initialize document discovery tools
+        self.doc_tools = DocumentDiscoveryTools(config) if config.documents else None
 
     def _build_system_prompt(self) -> str:
         """Build the full system prompt.
@@ -156,23 +195,48 @@ class QueryEngine:
 
     def _get_tool_handlers(self) -> dict:
         """Get tool handler functions."""
-        return {
+        handlers = {
             "get_table_schema": lambda table: self.schema_manager.get_table_schema(table),
             "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(query, top_k),
         }
+
+        # Add document tools if available
+        if self.doc_tools:
+            handlers.update({
+                "list_documents": self.doc_tools.list_documents,
+                "get_document": lambda name: self.doc_tools.get_document(name),
+                "search_documents": lambda query, limit=5: self.doc_tools.search_documents(query, limit),
+                "get_document_section": lambda name, section: self.doc_tools.get_document_section(name, section),
+            })
+
+        return handlers
+
+    def _get_tools(self) -> list:
+        """Get tool schemas based on available tools."""
+        if self.doc_tools:
+            return ENGINE_TOOLS
+        return SCHEMA_TOOLS
 
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution."""
         globals_dict = {}
 
-        # Provide all database connections
-        # - Individual connections as db_<name> (e.g., db_chinook, db_northwind)
-        # - Also 'db' as alias to first database for backwards compatibility
-        for i, (db_name, db_config) in enumerate(self.config.databases.items()):
-            conn = self.schema_manager.get_connection(db_name)
-            globals_dict[f"db_{db_name}"] = conn
-            if i == 0:
-                globals_dict["db"] = conn  # backwards compat
+        # Provide all database connections and file paths
+        first_sql_db = None
+        for db_name, db_config in self.config.databases.items():
+            if db_config.is_file_source():
+                # For file sources, provide the path as file_<name>
+                globals_dict[f"file_{db_name}"] = db_config.path
+            else:
+                # For SQL/NoSQL, provide connection as db_<name>
+                conn = self.schema_manager.get_connection(db_name)
+                globals_dict[f"db_{db_name}"] = conn
+                if first_sql_db is None:
+                    first_sql_db = conn
+
+        # Backwards compat: 'db' alias for first SQL database
+        if first_sql_db is not None:
+            globals_dict["db"] = first_sql_db
 
         return globals_dict
 
@@ -201,7 +265,7 @@ class QueryEngine:
                 code = self.llm.generate_code(
                     system=system_prompt,
                     user_message=current_prompt,
-                    tools=SCHEMA_TOOLS,
+                    tools=self._get_tools(),
                     tool_handlers=tool_handlers,
                 )
             else:
@@ -213,7 +277,7 @@ class QueryEngine:
                 code = self.llm.generate_code(
                     system=system_prompt,
                     user_message=retry_message,
-                    tools=SCHEMA_TOOLS,
+                    tools=self._get_tools(),
                     tool_handlers=tool_handlers,
                 )
 

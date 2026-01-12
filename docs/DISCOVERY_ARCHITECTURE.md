@@ -105,7 +105,7 @@ prompt, use_tools = builder.build_prompt("claude-2")
 ### 1. Schema Discovery Tools
 
 #### `list_databases`
-Returns available databases with descriptions.
+Returns available databases with descriptions (includes SQL, NoSQL, and file-based sources).
 
 ```python
 def list_databases() -> list[dict]:
@@ -124,6 +124,16 @@ def list_databases() -> list[dict]:
                 "name": "mongodb_logs",
                 "type": "mongodb",
                 "description": "Application event logs"
+            },
+            {
+                "name": "web_metrics",
+                "type": "csv",
+                "description": "Web analytics data"
+            },
+            {
+                "name": "events",
+                "type": "json",
+                "description": "Clickstream events"
             }
         ]
     """
@@ -565,6 +575,13 @@ tests/
 - API: `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations`
 - Documents: `list_documents`, `get_document`, `search_documents`, `get_document_section`
 - Facts: `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts`, `get_unresolved_facts`
+
+**Data Source Types in Schema Discovery:**
+- SQL databases (PostgreSQL, MySQL, SQLite, BigQuery, etc.)
+- NoSQL databases (MongoDB, DynamoDB, Cassandra, Elasticsearch, etc.)
+- File-based sources (CSV, JSON, JSONL, Parquet, Arrow/Feather)
+
+All appear uniformly in `list_databases`, `search_tables`, and `get_table_schema` - the LLM doesn't need to know the underlying type to discover and use them.
 
 **PromptBuilder - Automatic Mode Detection:**
 - Detects tool support based on model name

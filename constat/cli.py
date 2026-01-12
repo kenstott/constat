@@ -7,7 +7,7 @@ from typing import Optional
 import click
 from rich.console import Console
 
-from constat.core.config import Config, UserConfig, DatabaseCredentials
+from constat.core.config import Config, DatabaseCredentials
 from constat.session import Session, SessionConfig
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.repl import InteractiveREPL

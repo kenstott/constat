@@ -13,6 +13,13 @@ from constat.execution.executor import ExecutionResult, PythonExecutor, format_e
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
 from constat.execution.fact_resolver import FactResolver, FactSource
+from constat.execution.mode import (
+    ExecutionMode,
+    suggest_mode,
+    PlanApproval,
+    PlanApprovalRequest,
+    PlanApprovalResponse,
+)
 from constat.providers import ProviderFactory
 from constat.catalog.schema_manager import SchemaManager
 
@@ -113,11 +120,20 @@ Previous code:
 Please fix the code and try again. Return ONLY the corrected Python code wrapped in ```python ... ``` markers."""
 
 
+# Type for approval callback: (request) -> response
+ApprovalCallback = Callable[[PlanApprovalRequest], PlanApprovalResponse]
+
+
 @dataclass
 class SessionConfig:
     """Configuration for a session."""
     max_retries_per_step: int = 10
     verbose: bool = False
+
+    # Plan approval settings
+    require_approval: bool = True  # If True, require approval before execution
+    max_replan_attempts: int = 3  # Max attempts to replan with user feedback
+    auto_approve: bool = False  # If True, auto-approve plans (for testing/scripts)
 
 
 @dataclass
@@ -189,6 +205,20 @@ class Session:
 
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
+
+        # Approval callback (set via set_approval_callback)
+        self._approval_callback: Optional[ApprovalCallback] = None
+
+    def set_approval_callback(self, callback: ApprovalCallback) -> None:
+        """
+        Set the callback for plan approval.
+
+        The callback receives a PlanApprovalRequest and must return a PlanApprovalResponse.
+
+        Args:
+            callback: Function that handles approval requests
+        """
+        self._approval_callback = callback
 
     def on_event(self, handler: Callable[[StepEvent], None]) -> None:
         """Register an event handler for step events."""
@@ -445,9 +475,87 @@ class Session:
             duration_ms=duration_ms,
         )
 
+    def _request_approval(
+        self,
+        problem: str,
+        planner_response: PlannerResponse,
+        mode_selection,
+    ) -> PlanApprovalResponse:
+        """
+        Request approval for a plan.
+
+        If auto_approve is set or no callback is registered, auto-approves.
+        Otherwise calls the registered callback.
+
+        Args:
+            problem: The original problem
+            planner_response: The planner's response with plan and reasoning
+            mode_selection: The selected execution mode
+
+        Returns:
+            PlanApprovalResponse with user's decision
+        """
+        # Auto-approve if configured
+        if self.session_config.auto_approve:
+            return PlanApprovalResponse.approve()
+
+        # No callback registered - auto-approve
+        if not self._approval_callback:
+            return PlanApprovalResponse.approve()
+
+        # Build approval request
+        steps = [
+            {
+                "number": step.number,
+                "goal": step.goal,
+                "inputs": step.expected_inputs,
+                "outputs": step.expected_outputs,
+            }
+            for step in planner_response.plan.steps
+        ]
+
+        request = PlanApprovalRequest(
+            problem=problem,
+            mode=mode_selection.mode,
+            mode_reasoning=mode_selection.reasoning,
+            steps=steps,
+            reasoning=planner_response.reasoning,
+        )
+
+        return self._approval_callback(request)
+
+    def _replan_with_feedback(self, problem: str, feedback: str) -> PlannerResponse:
+        """
+        Generate a new plan incorporating user feedback.
+
+        Args:
+            problem: Original problem
+            feedback: User's suggested changes
+
+        Returns:
+            New PlannerResponse with updated plan
+        """
+        enhanced_problem = f"""{problem}
+
+User feedback on previous plan:
+{feedback}
+
+Please create a revised plan that addresses this feedback."""
+
+        return self.planner.plan(enhanced_problem)
+
     def solve(self, problem: str) -> dict:
         """
         Solve a problem with multi-step planning and execution.
+
+        Workflow:
+        1. Determine execution mode (exploratory vs auditable)
+        2. Generate plan
+        3. Request user approval (if require_approval is True)
+           - If approved: execute
+           - If rejected: return without executing
+           - If suggestions: replan and ask again
+        4. Execute each step
 
         Args:
             problem: Natural language problem to solve
@@ -474,12 +582,69 @@ class Session:
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
 
-        # Generate plan
-        planner_response = self.planner.plan(problem)
-        self.plan = planner_response.plan
+        # Determine execution mode
+        mode_selection = suggest_mode(problem)
+
+        # Generate plan with approval loop
+        current_problem = problem
+        replan_attempt = 0
+
+        while replan_attempt <= self.session_config.max_replan_attempts:
+            # Generate plan
+            planner_response = self.planner.plan(current_problem)
+            self.plan = planner_response.plan
+
+            # Request approval if required
+            if self.session_config.require_approval:
+                approval = self._request_approval(problem, planner_response, mode_selection)
+
+                if approval.decision == PlanApproval.REJECT:
+                    # User rejected the plan
+                    self.datastore.set_session_meta("status", "rejected")
+                    self.history.complete_session(self.session_id, status="rejected")
+                    return {
+                        "success": False,
+                        "rejected": True,
+                        "plan": self.plan,
+                        "reason": approval.reason,
+                        "message": "Plan was rejected by user.",
+                    }
+
+                elif approval.decision == PlanApproval.SUGGEST:
+                    # User wants changes - replan with feedback
+                    replan_attempt += 1
+                    if replan_attempt > self.session_config.max_replan_attempts:
+                        self.datastore.set_session_meta("status", "max_replans_exceeded")
+                        self.history.complete_session(self.session_id, status="failed")
+                        return {
+                            "success": False,
+                            "plan": self.plan,
+                            "error": f"Maximum replan attempts ({self.session_config.max_replan_attempts}) exceeded.",
+                        }
+
+                    # Emit replan event
+                    self._emit_event(StepEvent(
+                        event_type="replanning",
+                        step_number=0,
+                        data={
+                            "attempt": replan_attempt,
+                            "feedback": approval.suggestion,
+                        }
+                    ))
+
+                    # Replan with feedback
+                    current_problem = f"{problem}\n\nUser feedback: {approval.suggestion}"
+                    continue  # Go back to planning
+
+                # APPROVE - proceed with execution
+                break
+            else:
+                # No approval required - proceed
+                break
 
         # Save plan to datastore (for UI restoration)
         self.datastore.set_session_meta("status", "executing")
+        self.datastore.set_session_meta("mode", mode_selection.mode.value)
         for step in self.plan.steps:
             self.datastore.save_plan_step(
                 step_number=step.number,

@@ -4,7 +4,9 @@ These tools allow the LLM to discover and search reference documents
 on-demand rather than loading everything into the system prompt.
 """
 
+import glob as glob_module
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 import hashlib
 
@@ -12,6 +14,342 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from constat.core.config import Config, DocumentConfig
+
+
+def _is_glob_pattern(path: str) -> bool:
+    """Check if a path contains glob pattern characters."""
+    return any(c in path for c in ["*", "?", "[", "]"])
+
+
+def _expand_file_paths(path: str) -> list[tuple[str, Path]]:
+    """
+    Expand a path that may be a glob pattern, directory, or single file.
+
+    Args:
+        path: File path, glob pattern, or directory path
+
+    Returns:
+        List of (display_name, resolved_path) tuples
+    """
+    p = Path(path)
+
+    # Case 1: Glob pattern
+    if _is_glob_pattern(path):
+        matches = sorted(glob_module.glob(path, recursive=True))
+        return [(Path(m).name, Path(m)) for m in matches if Path(m).is_file()]
+
+    # Case 2: Directory - list all files
+    if p.is_dir():
+        files = []
+        for f in sorted(p.iterdir()):
+            if f.is_file() and not f.name.startswith("."):
+                files.append((f.name, f))
+        return files
+
+    # Case 3: Single file
+    if p.exists():
+        return [(p.name, p)]
+
+    # Path doesn't exist yet - return as-is for later error handling
+    return [(p.name, p)]
+
+
+@dataclass
+class StructuredFileSchema:
+    """Inferred schema for a structured data file."""
+    filename: str
+    filepath: str
+    file_format: str  # csv, json, jsonl, parquet
+    row_count: Optional[int] = None
+    columns: list[dict] = field(default_factory=list)  # [{name, type, sample_values}]
+    description: Optional[str] = None
+
+    def to_metadata_doc(self) -> str:
+        """Generate a metadata document for indexing."""
+        lines = [
+            f"Structured Data File: {self.filename}",
+            f"Path: {self.filepath}",
+            f"Format: {self.file_format}",
+        ]
+        if self.description:
+            lines.append(f"Description: {self.description}")
+        if self.row_count is not None:
+            lines.append(f"Row count: {self.row_count}")
+
+        if self.columns:
+            lines.append("\nColumns:")
+            for col in self.columns:
+                col_line = f"  - {col['name']} ({col.get('type', 'unknown')})"
+                if col.get('sample_values'):
+                    samples = col['sample_values'][:5]  # Limit samples
+                    col_line += f": {samples}"
+                lines.append(col_line)
+
+        return "\n".join(lines)
+
+
+def _infer_csv_schema(filepath: Path, sample_rows: int = 100) -> StructuredFileSchema:
+    """Infer schema from a CSV file."""
+    import csv
+
+    columns = []
+    row_count = 0
+
+    with open(filepath, 'r', newline='', encoding='utf-8', errors='replace') as f:
+        reader = csv.reader(f)
+        try:
+            headers = next(reader)
+        except StopIteration:
+            return StructuredFileSchema(
+                filename=filepath.name,
+                filepath=str(filepath),
+                file_format="csv",
+                row_count=0,
+                columns=[],
+            )
+
+        # Initialize column info
+        col_data = {h: {'name': h, 'values': []} for h in headers}
+
+        # Sample rows to infer types and collect sample values
+        for i, row in enumerate(reader):
+            row_count += 1
+            if i < sample_rows:
+                for j, val in enumerate(row):
+                    if j < len(headers):
+                        col_data[headers[j]]['values'].append(val)
+
+        # Count remaining rows
+        for _ in reader:
+            row_count += 1
+
+    # Infer types and get sample values
+    for header in headers:
+        values = col_data[header]['values']
+        col_type = _infer_column_type(values)
+        unique_values = list(set(v for v in values if v))[:10]
+
+        columns.append({
+            'name': header,
+            'type': col_type,
+            'sample_values': unique_values,
+        })
+
+    return StructuredFileSchema(
+        filename=filepath.name,
+        filepath=str(filepath),
+        file_format="csv",
+        row_count=row_count,
+        columns=columns,
+    )
+
+
+def _infer_json_schema(filepath: Path, sample_docs: int = 100) -> StructuredFileSchema:
+    """Infer schema from a JSON file (array of objects or single object)."""
+    import json
+
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            return StructuredFileSchema(
+                filename=filepath.name,
+                filepath=str(filepath),
+                file_format="json",
+                row_count=0,
+                columns=[],
+            )
+
+    # Handle array of objects vs single object
+    if isinstance(data, list):
+        docs = data[:sample_docs]
+        row_count = len(data)
+    elif isinstance(data, dict):
+        docs = [data]
+        row_count = 1
+    else:
+        return StructuredFileSchema(
+            filename=filepath.name,
+            filepath=str(filepath),
+            file_format="json",
+            row_count=1,
+            columns=[],
+        )
+
+    # Collect all keys and their values
+    key_values: dict[str, list] = {}
+    for doc in docs:
+        if isinstance(doc, dict):
+            for key, val in doc.items():
+                if key not in key_values:
+                    key_values[key] = []
+                key_values[key].append(val)
+
+    # Build column info
+    columns = []
+    for key, values in key_values.items():
+        col_type = _infer_json_value_type(values)
+        # Get sample values (only for simple types)
+        sample_values = []
+        for v in values[:10]:
+            if isinstance(v, (str, int, float, bool)) and v is not None:
+                sample_values.append(str(v) if not isinstance(v, str) else v)
+        unique_samples = list(set(sample_values))[:10]
+
+        columns.append({
+            'name': key,
+            'type': col_type,
+            'sample_values': unique_samples,
+        })
+
+    return StructuredFileSchema(
+        filename=filepath.name,
+        filepath=str(filepath),
+        file_format="json",
+        row_count=row_count,
+        columns=columns,
+    )
+
+
+def _infer_column_type(values: list[str]) -> str:
+    """Infer column type from string values."""
+    if not values:
+        return "unknown"
+
+    # Check for numeric types
+    int_count = 0
+    float_count = 0
+    date_count = 0
+
+    for v in values:
+        if not v:
+            continue
+        try:
+            int(v)
+            int_count += 1
+            continue
+        except ValueError:
+            pass
+        try:
+            float(v)
+            float_count += 1
+            continue
+        except ValueError:
+            pass
+        # Simple date check
+        if len(v) == 10 and v[4:5] == '-' and v[7:8] == '-':
+            date_count += 1
+
+    non_empty = len([v for v in values if v])
+    if non_empty == 0:
+        return "unknown"
+
+    if int_count == non_empty:
+        return "integer"
+    if int_count + float_count == non_empty:
+        return "float"
+    if date_count > non_empty * 0.8:
+        return "date"
+    return "string"
+
+
+def _infer_json_value_type(values: list) -> str:
+    """Infer type from JSON values."""
+    if not values:
+        return "unknown"
+
+    types = set()
+    for v in values:
+        if v is None:
+            continue
+        elif isinstance(v, bool):
+            types.add("boolean")
+        elif isinstance(v, int):
+            types.add("integer")
+        elif isinstance(v, float):
+            types.add("float")
+        elif isinstance(v, str):
+            types.add("string")
+        elif isinstance(v, list):
+            types.add("array")
+        elif isinstance(v, dict):
+            types.add("object")
+
+    if len(types) == 0:
+        return "null"
+    if len(types) == 1:
+        return types.pop()
+    if types == {"integer", "float"}:
+        return "float"
+    return "mixed"
+
+
+def _infer_structured_schema(filepath: Path, description: Optional[str] = None) -> Optional[StructuredFileSchema]:
+    """Infer schema for a structured file based on its extension."""
+    suffix = filepath.suffix.lower()
+
+    if suffix == ".csv":
+        schema = _infer_csv_schema(filepath)
+    elif suffix == ".json":
+        schema = _infer_json_schema(filepath)
+    elif suffix == ".jsonl":
+        # JSON Lines - read first N lines as separate JSON objects
+        schema = _infer_jsonl_schema(filepath)
+    else:
+        return None
+
+    schema.description = description
+    return schema
+
+
+def _infer_jsonl_schema(filepath: Path, sample_lines: int = 100) -> StructuredFileSchema:
+    """Infer schema from a JSON Lines file."""
+    import json
+
+    docs = []
+    row_count = 0
+
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        for i, line in enumerate(f):
+            row_count += 1
+            if i < sample_lines and line.strip():
+                try:
+                    docs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    # Collect all keys and their values
+    key_values: dict[str, list] = {}
+    for doc in docs:
+        if isinstance(doc, dict):
+            for key, val in doc.items():
+                if key not in key_values:
+                    key_values[key] = []
+                key_values[key].append(val)
+
+    # Build column info
+    columns = []
+    for key, values in key_values.items():
+        col_type = _infer_json_value_type(values)
+        sample_values = []
+        for v in values[:10]:
+            if isinstance(v, (str, int, float, bool)) and v is not None:
+                sample_values.append(str(v) if not isinstance(v, str) else v)
+        unique_samples = list(set(sample_values))[:10]
+
+        columns.append({
+            'name': key,
+            'type': col_type,
+            'sample_values': unique_samples,
+        })
+
+    return StructuredFileSchema(
+        filename=filepath.name,
+        filepath=str(filepath),
+        file_format="jsonl",
+        row_count=row_count,
+        columns=columns,
+    )
 
 
 @dataclass
@@ -51,20 +389,74 @@ class DocumentDiscoveryTools:
         """
         List all configured reference documents with descriptions.
 
+        For file-type documents with glob patterns or directory paths,
+        expands to show each individual file.
+
         Returns:
-            List of document info dicts with name, type, description, tags
+            List of document info dicts with name, type, description, tags, path
         """
         results = []
 
         for doc_name, doc_config in self.config.documents.items():
-            results.append({
-                "name": doc_name,
-                "type": doc_config.type,
-                "description": doc_config.description or f"Document: {doc_name}",
-                "format": doc_config.format,
-                "tags": doc_config.tags,
-                "loaded": doc_name in self._loaded_documents,
-            })
+            # For file types, check if it's a glob/directory that needs expansion
+            if doc_config.type == "file" and doc_config.path:
+                expanded = _expand_file_paths(doc_config.path)
+
+                if len(expanded) > 1:
+                    # Multiple files - list each one with collection context
+                    collection_desc = doc_config.description or f"Collection: {doc_name}"
+                    for filename, filepath in expanded:
+                        full_name = f"{doc_name}:{filename}"
+                        results.append({
+                            "name": full_name,
+                            "type": doc_config.type,
+                            "description": f"File in collection. Collection description: {collection_desc}",
+                            "format": doc_config.format or self._detect_format(filepath.suffix),
+                            "tags": doc_config.tags,
+                            "path": str(filepath),
+                            "collection": doc_name,
+                            "collection_description": collection_desc,
+                            "loaded": full_name in self._loaded_documents,
+                        })
+                elif len(expanded) == 1:
+                    # Single file
+                    filename, filepath = expanded[0]
+                    results.append({
+                        "name": doc_name,
+                        "type": doc_config.type,
+                        "description": doc_config.description or f"File: {filename}",
+                        "format": doc_config.format or self._detect_format(filepath.suffix),
+                        "tags": doc_config.tags,
+                        "path": str(filepath),
+                        "loaded": doc_name in self._loaded_documents,
+                    })
+                else:
+                    # No files matched - still list it (will error on load)
+                    results.append({
+                        "name": doc_name,
+                        "type": doc_config.type,
+                        "description": doc_config.description or f"Document: {doc_name}",
+                        "format": doc_config.format,
+                        "tags": doc_config.tags,
+                        "path": doc_config.path,
+                        "loaded": doc_name in self._loaded_documents,
+                    })
+            else:
+                # Non-file types (inline, http, etc.)
+                entry = {
+                    "name": doc_name,
+                    "type": doc_config.type,
+                    "description": doc_config.description or f"Document: {doc_name}",
+                    "format": doc_config.format,
+                    "tags": doc_config.tags,
+                    "loaded": doc_name in self._loaded_documents,
+                }
+                # Include source location where applicable
+                if doc_config.type == "http" and doc_config.url:
+                    entry["url"] = doc_config.url
+                elif doc_config.type == "inline":
+                    entry["source"] = "inline content"
+                results.append(entry)
 
         return results
 
@@ -73,32 +465,66 @@ class DocumentDiscoveryTools:
         Get the full content of a document.
 
         Args:
-            name: Document name
+            name: Document name. For expanded glob/directory entries,
+                  use format "config_name:filename" (e.g., "data_files:sales.csv")
 
         Returns:
             Dict with document content and metadata
         """
-        if name not in self.config.documents:
-            return {"error": f"Document not found: {name}"}
+        # Handle expanded names from glob/directory (format: "parent:filename")
+        if ":" in name:
+            parent_name, filename = name.split(":", 1)
+            if parent_name not in self.config.documents:
+                return {"error": f"Document config not found: {parent_name}"}
 
-        # Load if not cached
-        if name not in self._loaded_documents:
-            try:
-                self._load_document(name)
-            except Exception as e:
-                return {"error": f"Failed to load document: {str(e)}"}
+            doc_config = self.config.documents[parent_name]
+            if doc_config.type != "file" or not doc_config.path:
+                return {"error": f"Document {parent_name} is not a file type"}
+
+            # Find the specific file in the expanded paths
+            expanded = _expand_file_paths(doc_config.path)
+            matching = [(fn, fp) for fn, fp in expanded if fn == filename]
+
+            if not matching:
+                return {"error": f"File '{filename}' not found in {parent_name}"}
+
+            _, filepath = matching[0]
+
+            # Load this specific file if not cached
+            if name not in self._loaded_documents:
+                try:
+                    self._load_file_directly(name, filepath, doc_config)
+                except Exception as e:
+                    return {"error": f"Failed to load file: {str(e)}"}
+        else:
+            # Standard document name
+            if name not in self.config.documents:
+                return {"error": f"Document not found: {name}"}
+
+            # Load if not cached
+            if name not in self._loaded_documents:
+                try:
+                    self._load_document(name)
+                except Exception as e:
+                    return {"error": f"Failed to load document: {str(e)}"}
 
         doc = self._loaded_documents.get(name)
         if not doc:
             return {"error": f"Document not loaded: {name}"}
 
-        return {
+        result = {
             "name": doc.name,
             "content": doc.content,
             "format": doc.format,
             "sections": doc.sections,
             "loaded_at": doc.loaded_at,
         }
+
+        # Include path for file-based documents
+        if hasattr(doc.config, 'path') and doc.config.path:
+            result["path"] = doc.config.path
+
+        return result
 
     def search_documents(self, query: str, limit: int = 5) -> list[dict]:
         """
@@ -210,12 +636,32 @@ class DocumentDiscoveryTools:
 
         elif doc_config.type == "file":
             if doc_config.path:
-                from pathlib import Path
                 path = Path(doc_config.path)
                 if path.exists():
-                    content = path.read_text()
-                    if doc_format == "auto":
-                        doc_format = self._detect_format(path.suffix)
+                    suffix = path.suffix.lower()
+
+                    # Check for structured data files - use schema metadata
+                    schema = _infer_structured_schema(path, doc_config.description)
+                    if schema:
+                        content = schema.to_metadata_doc()
+                        doc_format = schema.file_format
+                    # Handle binary document formats
+                    elif suffix == ".pdf":
+                        content = self._extract_pdf_text(path)
+                        doc_format = "text"
+                    elif suffix == ".docx":
+                        content = self._extract_docx_text(path)
+                        doc_format = "text"
+                    elif suffix == ".xlsx":
+                        content = self._extract_xlsx_text(path)
+                        doc_format = "text"
+                    elif suffix == ".pptx":
+                        content = self._extract_pptx_text(path)
+                        doc_format = "text"
+                    else:
+                        content = path.read_text()
+                        if doc_format == "auto":
+                            doc_format = self._detect_format(suffix)
                 else:
                     raise FileNotFoundError(f"Document file not found: {doc_config.path}")
 
@@ -225,12 +671,97 @@ class DocumentDiscoveryTools:
                 headers = doc_config.headers or {}
                 response = requests.get(doc_config.url, headers=headers, timeout=30)
                 response.raise_for_status()
-                content = response.text
-                if doc_format == "auto":
-                    content_type = response.headers.get("content-type", "")
-                    doc_format = self._detect_format_from_content_type(content_type)
 
-        # TODO: Implement confluence, notion, pdf, office loaders
+                # Check content type and URL extension for binary formats
+                content_type = response.headers.get("content-type", "")
+                url_lower = doc_config.url.lower() if doc_config.url else ""
+
+                if "pdf" in content_type or url_lower.endswith(".pdf"):
+                    content = self._extract_pdf_text_from_bytes(response.content)
+                    doc_format = "text"
+                elif "wordprocessingml" in content_type or url_lower.endswith(".docx"):
+                    content = self._extract_docx_text_from_bytes(response.content)
+                    doc_format = "text"
+                elif "spreadsheetml" in content_type or url_lower.endswith(".xlsx"):
+                    content = self._extract_xlsx_text_from_bytes(response.content)
+                    doc_format = "text"
+                elif "presentationml" in content_type or url_lower.endswith(".pptx"):
+                    content = self._extract_pptx_text_from_bytes(response.content)
+                    doc_format = "text"
+                else:
+                    content = response.text
+                    if doc_format == "auto":
+                        doc_format = self._detect_format_from_content_type(content_type)
+
+        elif doc_config.type == "pdf":
+            # Direct PDF type - load from path or url
+            if doc_config.path:
+                path = Path(doc_config.path)
+                if path.exists():
+                    content = self._extract_pdf_text(path)
+                    doc_format = "text"
+                else:
+                    raise FileNotFoundError(f"PDF file not found: {doc_config.path}")
+            elif doc_config.url:
+                import requests
+                headers = doc_config.headers or {}
+                response = requests.get(doc_config.url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = self._extract_pdf_text_from_bytes(response.content)
+                doc_format = "text"
+
+        elif doc_config.type == "docx":
+            # Word document - load from path or url
+            if doc_config.path:
+                path = Path(doc_config.path)
+                if path.exists():
+                    content = self._extract_docx_text(path)
+                    doc_format = "text"
+                else:
+                    raise FileNotFoundError(f"Word document not found: {doc_config.path}")
+            elif doc_config.url:
+                import requests
+                headers = doc_config.headers or {}
+                response = requests.get(doc_config.url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = self._extract_docx_text_from_bytes(response.content)
+                doc_format = "text"
+
+        elif doc_config.type == "xlsx":
+            # Excel spreadsheet - load from path or url
+            if doc_config.path:
+                path = Path(doc_config.path)
+                if path.exists():
+                    content = self._extract_xlsx_text(path)
+                    doc_format = "text"
+                else:
+                    raise FileNotFoundError(f"Excel file not found: {doc_config.path}")
+            elif doc_config.url:
+                import requests
+                headers = doc_config.headers or {}
+                response = requests.get(doc_config.url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = self._extract_xlsx_text_from_bytes(response.content)
+                doc_format = "text"
+
+        elif doc_config.type == "pptx":
+            # PowerPoint presentation - load from path or url
+            if doc_config.path:
+                path = Path(doc_config.path)
+                if path.exists():
+                    content = self._extract_pptx_text(path)
+                    doc_format = "text"
+                else:
+                    raise FileNotFoundError(f"PowerPoint file not found: {doc_config.path}")
+            elif doc_config.url:
+                import requests
+                headers = doc_config.headers or {}
+                response = requests.get(doc_config.url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = self._extract_pptx_text_from_bytes(response.content)
+                doc_format = "text"
+
+        # TODO: Implement confluence, notion loaders
         else:
             raise NotImplementedError(f"Document type not yet implemented: {doc_config.type}")
 
@@ -250,8 +781,355 @@ class DocumentDiscoveryTools:
             loaded_at=datetime.now().isoformat(),
         )
 
+        # Invalidate index (unless it's a structured data file)
+        if not self._is_structured_data_format(doc_format):
+            self._embeddings = None
+
+    def _load_file_directly(self, name: str, filepath: Path, doc_config: DocumentConfig) -> None:
+        """Load a file directly from a path (for expanded glob/directory entries)."""
+        from datetime import datetime
+
+        suffix = filepath.suffix.lower()
+        doc_format = doc_config.format
+
+        # Check if it's a structured data file - use schema metadata instead of raw content
+        schema = _infer_structured_schema(filepath, doc_config.description)
+        if schema:
+            # For structured files, index the metadata, not the raw data
+            content = schema.to_metadata_doc()
+            doc_format = schema.file_format
+            sections = ["Schema", "Columns"]
+
+            # Store schema for later reference
+            file_config = DocumentConfig(
+                type="file",
+                path=str(filepath),
+                description=doc_config.description,
+                format=doc_format,
+                tags=doc_config.tags,
+            )
+
+            self._loaded_documents[name] = LoadedDocument(
+                name=name,
+                config=file_config,
+                content=content,
+                format=doc_format,
+                sections=sections,
+                loaded_at=datetime.now().isoformat(),
+            )
+            # Structured files DO get indexed (via their metadata)
+            self._embeddings = None
+            return
+
+        # Handle other file types
+        if suffix == ".pdf":
+            content = self._extract_pdf_text(filepath)
+            doc_format = "text"
+        elif suffix == ".docx":
+            content = self._extract_docx_text(filepath)
+            doc_format = "text"
+        elif suffix == ".xlsx":
+            content = self._extract_xlsx_text(filepath)
+            doc_format = "text"
+        elif suffix == ".pptx":
+            content = self._extract_pptx_text(filepath)
+            doc_format = "text"
+        else:
+            content = filepath.read_text()
+            if doc_format == "auto" or not doc_format:
+                doc_format = self._detect_format(suffix)
+
+        # Extract sections for markdown
+        sections = []
+        if doc_format in ("markdown", "md"):
+            for line in content.split("\n"):
+                if line.startswith("#"):
+                    sections.append(line.lstrip("#").strip())
+
+        # Create a modified config with the actual path
+        file_config = DocumentConfig(
+            type="file",
+            path=str(filepath),
+            description=doc_config.description,
+            format=doc_format,
+            tags=doc_config.tags,
+        )
+
+        self._loaded_documents[name] = LoadedDocument(
+            name=name,
+            config=file_config,
+            content=content,
+            format=doc_format,
+            sections=sections,
+            loaded_at=datetime.now().isoformat(),
+        )
+
         # Invalidate index
         self._embeddings = None
+
+    def _is_structured_data_format(self, doc_format: str) -> bool:
+        """Check if format is structured data that shouldn't be semantically indexed."""
+        # These formats are data to be queried, not text to be searched
+        structured_formats = {"csv", "json", "jsonl", "parquet", "xml", "yaml", "yml"}
+        return doc_format.lower() in structured_formats
+
+    def _extract_pdf_text(self, path) -> str:
+        """Extract text content from a PDF file.
+
+        Args:
+            path: Path to the PDF file
+
+        Returns:
+            Extracted text content with page markers
+        """
+        from pypdf import PdfReader
+
+        reader = PdfReader(path)
+        pages = []
+
+        for i, page in enumerate(reader.pages, 1):
+            text = page.extract_text()
+            if text and text.strip():
+                pages.append(f"[Page {i}]\n{text.strip()}")
+
+        return "\n\n".join(pages)
+
+    def _extract_pdf_text_from_bytes(self, pdf_bytes: bytes) -> str:
+        """Extract text content from PDF bytes.
+
+        Args:
+            pdf_bytes: Raw PDF file content
+
+        Returns:
+            Extracted text content with page markers
+        """
+        from io import BytesIO
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(pdf_bytes))
+        pages = []
+
+        for i, page in enumerate(reader.pages, 1):
+            text = page.extract_text()
+            if text and text.strip():
+                pages.append(f"[Page {i}]\n{text.strip()}")
+
+        return "\n\n".join(pages)
+
+    def _extract_docx_text(self, path) -> str:
+        """Extract text content from a Word document.
+
+        Args:
+            path: Path to the .docx file
+
+        Returns:
+            Extracted text content with paragraph separation
+        """
+        from docx import Document
+
+        doc = Document(path)
+        paragraphs = []
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text:
+                # Check if it's a heading
+                if para.style and para.style.name.startswith("Heading"):
+                    level = para.style.name.replace("Heading ", "")
+                    try:
+                        level_num = int(level)
+                        paragraphs.append(f"{'#' * level_num} {text}")
+                    except ValueError:
+                        paragraphs.append(text)
+                else:
+                    paragraphs.append(text)
+
+        # Also extract text from tables
+        for table in doc.tables:
+            table_rows = []
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                table_rows.append(" | ".join(cells))
+            if table_rows:
+                paragraphs.append("\n".join(table_rows))
+
+        return "\n\n".join(paragraphs)
+
+    def _extract_docx_text_from_bytes(self, docx_bytes: bytes) -> str:
+        """Extract text content from Word document bytes.
+
+        Args:
+            docx_bytes: Raw .docx file content
+
+        Returns:
+            Extracted text content
+        """
+        from io import BytesIO
+        from docx import Document
+
+        doc = Document(BytesIO(docx_bytes))
+        paragraphs = []
+
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text:
+                if para.style and para.style.name.startswith("Heading"):
+                    level = para.style.name.replace("Heading ", "")
+                    try:
+                        level_num = int(level)
+                        paragraphs.append(f"{'#' * level_num} {text}")
+                    except ValueError:
+                        paragraphs.append(text)
+                else:
+                    paragraphs.append(text)
+
+        for table in doc.tables:
+            table_rows = []
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                table_rows.append(" | ".join(cells))
+            if table_rows:
+                paragraphs.append("\n".join(table_rows))
+
+        return "\n\n".join(paragraphs)
+
+    def _extract_xlsx_text(self, path) -> str:
+        """Extract text content from an Excel spreadsheet.
+
+        Args:
+            path: Path to the .xlsx file
+
+        Returns:
+            Extracted text content with sheet and cell markers
+        """
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, data_only=True)
+        sheets = []
+
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            rows = []
+
+            for row in sheet.iter_rows():
+                cells = []
+                for cell in row:
+                    if cell.value is not None:
+                        cells.append(str(cell.value))
+                    else:
+                        cells.append("")
+                # Only include rows that have some content
+                if any(c.strip() for c in cells):
+                    rows.append(" | ".join(cells))
+
+            if rows:
+                sheets.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+
+        return "\n\n".join(sheets)
+
+    def _extract_xlsx_text_from_bytes(self, xlsx_bytes: bytes) -> str:
+        """Extract text content from Excel spreadsheet bytes.
+
+        Args:
+            xlsx_bytes: Raw .xlsx file content
+
+        Returns:
+            Extracted text content
+        """
+        from io import BytesIO
+        from openpyxl import load_workbook
+
+        wb = load_workbook(BytesIO(xlsx_bytes), data_only=True)
+        sheets = []
+
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            rows = []
+
+            for row in sheet.iter_rows():
+                cells = []
+                for cell in row:
+                    if cell.value is not None:
+                        cells.append(str(cell.value))
+                    else:
+                        cells.append("")
+                if any(c.strip() for c in cells):
+                    rows.append(" | ".join(cells))
+
+            if rows:
+                sheets.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+
+        return "\n\n".join(sheets)
+
+    def _extract_pptx_text(self, path) -> str:
+        """Extract text content from a PowerPoint presentation.
+
+        Args:
+            path: Path to the .pptx file
+
+        Returns:
+            Extracted text content with slide markers
+        """
+        from pptx import Presentation
+
+        prs = Presentation(path)
+        slides = []
+
+        for i, slide in enumerate(prs.slides, 1):
+            slide_text = []
+
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_text.append(shape.text.strip())
+
+                # Handle tables in slides
+                if shape.has_table:
+                    table_rows = []
+                    for row in shape.table.rows:
+                        cells = [cell.text.strip() for cell in row.cells]
+                        table_rows.append(" | ".join(cells))
+                    if table_rows:
+                        slide_text.append("\n".join(table_rows))
+
+            if slide_text:
+                slides.append(f"[Slide {i}]\n" + "\n".join(slide_text))
+
+        return "\n\n".join(slides)
+
+    def _extract_pptx_text_from_bytes(self, pptx_bytes: bytes) -> str:
+        """Extract text content from PowerPoint presentation bytes.
+
+        Args:
+            pptx_bytes: Raw .pptx file content
+
+        Returns:
+            Extracted text content
+        """
+        from io import BytesIO
+        from pptx import Presentation
+
+        prs = Presentation(BytesIO(pptx_bytes))
+        slides = []
+
+        for i, slide in enumerate(prs.slides, 1):
+            slide_text = []
+
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_text.append(shape.text.strip())
+
+                if shape.has_table:
+                    table_rows = []
+                    for row in shape.table.rows:
+                        cells = [cell.text.strip() for cell in row.cells]
+                        table_rows.append(" | ".join(cells))
+                    if table_rows:
+                        slide_text.append("\n".join(table_rows))
+
+            if slide_text:
+                slides.append(f"[Slide {i}]\n" + "\n".join(slide_text))
+
+        return "\n\n".join(slides)
 
     def _detect_format(self, suffix: str) -> str:
         """Detect document format from file extension."""
@@ -294,11 +1172,15 @@ class DocumentDiscoveryTools:
             self._build_index()
 
     def _build_index(self) -> None:
-        """Build vector embeddings for document chunks."""
+        """Build vector embeddings for document chunks.
+
+        Note: Structured data files (CSV, JSON) are indexed via their
+        schema metadata, not raw data rows.
+        """
         self._chunks = []
 
         for name, doc in self._loaded_documents.items():
-            # Chunk the document
+            # Chunk the document (structured files have metadata content)
             chunks = self._chunk_document(name, doc.content)
             self._chunks.extend(chunks)
 

@@ -149,6 +149,73 @@ All connectors provide:
 - Unified query interface
 - Embedding text generation for vector search
 
+### File-Based Data Sources
+
+CSV, JSON, Parquet, and Arrow files can be configured as queryable data sources alongside SQL and NoSQL databases. They appear uniformly in schema discovery and semantic search.
+
+```yaml
+# config.yaml
+databases:
+  # CSV file
+  web_metrics:
+    type: csv
+    path: data/website_metrics.csv
+    description: "Daily web analytics with page views and bounce rates"
+
+  # JSON file
+  events:
+    type: json
+    path: data/events.json
+    description: "Clickstream events with user actions"
+
+  # JSON Lines (newline-delimited JSON)
+  logs:
+    type: jsonl
+    path: data/application.jsonl
+    description: "Application log entries"
+
+  # Parquet file
+  transactions:
+    type: parquet
+    path: data/transactions.parquet
+    description: "Historical transaction records"
+
+  # Arrow/Feather file
+  features:
+    type: arrow  # or 'feather'
+    path: data/ml_features.arrow
+    description: "ML feature vectors"
+```
+
+**Remote file support:** Paths can be local or remote URLs (s3://, https://, etc.):
+
+```yaml
+databases:
+  remote_data:
+    type: parquet
+    path: s3://my-bucket/data/sales.parquet
+    description: "Sales data from S3"
+```
+
+**Generated code access:**
+- SQL databases: `db_<name>` (SQLAlchemy connection)
+- File sources: `file_<name>` (path string for pandas)
+
+```python
+# Generated code for SQL
+df = pd.read_sql("SELECT * FROM customers", db_sales)
+
+# Generated code for files
+df = pd.read_csv(file_web_metrics)
+df = pd.read_json(file_events)
+df = pd.read_parquet(file_transactions)
+```
+
+**Schema introspection:** File sources are automatically sampled to infer:
+- Column names and types
+- Row counts
+- Sample values (for semantic search)
+
 ## Architecture
 
 ```
@@ -179,9 +246,11 @@ All connectors provide:
               | (automatic mode selection)|
               +-------------+-------------+
                             |
-    +-------+-------+-------+-------+-------+
-    |       |       |       |       |       |
-   SQL   MongoDB Cassandra DynamoDB CosmosDB Firestore
+    +-------+-------+-------+-------+-------+-------+
+    |       |       |       |       |       |       |
+   SQL   MongoDB Cassandra DynamoDB  Files  CosmosDB
+                                  (CSV/JSON/
+                                   Parquet)
 ```
 
 ### Discovery Mode (Automatic)
@@ -343,6 +412,39 @@ databases:
   warehouse:
     uri: bigquery://my-project/dataset
     description: "Data warehouse"
+
+  #----------------------------------------------------------------------------
+  # File-Based Data Sources - CSV, JSON, Parquet, Arrow
+  #----------------------------------------------------------------------------
+
+  # CSV file
+  web_metrics:
+    type: csv
+    path: data/website_metrics.csv          # Local path or remote URL
+    description: "Web analytics data"
+    sample_size: 100                        # Rows to sample for schema inference
+
+  # JSON file
+  events:
+    type: json
+    path: data/events.json
+    description: "Event tracking data"
+
+  # JSON Lines (newline-delimited JSON)
+  logs:
+    type: jsonl
+    path: data/application.jsonl
+
+  # Parquet file (supports s3://, https://, etc.)
+  transactions:
+    type: parquet
+    path: s3://bucket/data/transactions.parquet
+    description: "Transaction records"
+
+  # Arrow/Feather file
+  features:
+    type: arrow                             # or 'feather'
+    path: data/ml_features.arrow
 
   #----------------------------------------------------------------------------
   # NoSQL Databases - use 'type' to specify the database type

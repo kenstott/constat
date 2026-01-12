@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 
 from constat.core.config import Config, DatabaseConfig, DatabaseCredentials
 from constat.catalog.nosql.base import NoSQLConnector
+from constat.catalog.file.connector import FileConnector, FileType
 
 
 @dataclass
@@ -149,6 +150,7 @@ class SchemaManager:
         self.config = config
         self.connections: dict[str, Engine] = {}  # SQL connections
         self.nosql_connections: dict[str, NoSQLConnector] = {}  # NoSQL connections
+        self.file_connections: dict[str, FileConnector] = {}  # File data sources
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
 
         # Vector index components
@@ -170,10 +172,17 @@ class SchemaManager:
     def _connect_all(self) -> None:
         """Establish connections to all configured databases."""
         for db_name, db_config in self.config.databases.items():
-            if db_config.is_nosql():
+            if db_config.is_file_source():
+                self._connect_file(db_name, db_config)
+            elif db_config.is_nosql():
                 self._connect_nosql(db_name, db_config)
             else:
                 self._connect_sql(db_name, db_config)
+
+    def _connect_file(self, db_name: str, db_config: DatabaseConfig) -> None:
+        """Connect to a file-based data source."""
+        connector = FileConnector.from_config(db_name, db_config)
+        self.file_connections[db_name] = connector
 
     def _connect_sql(self, db_name: str, db_config: DatabaseConfig) -> None:
         """Connect to a SQL database via SQLAlchemy."""
@@ -291,6 +300,12 @@ class SchemaManager:
                 table_meta = self._convert_nosql_metadata(db_name, connector, collection_meta)
                 self.metadata_cache[table_meta.full_name] = table_meta
 
+        # Introspect file-based data sources
+        for db_name, connector in self.file_connections.items():
+            file_meta = connector.get_metadata()
+            table_meta = self._convert_file_metadata(db_name, connector, file_meta)
+            self.metadata_cache[table_meta.full_name] = table_meta
+
     def _convert_nosql_metadata(self, db_name: str, connector: NoSQLConnector, collection_meta) -> TableMetadata:
         """Convert NoSQL CollectionMetadata to TableMetadata for unified handling."""
         # collection_meta is already the schema from get_collection_schema()
@@ -324,6 +339,37 @@ class SchemaManager:
             row_count=collection_meta.document_count,
             referenced_by=[],
             database_type=db_type,
+        )
+
+    def _convert_file_metadata(self, db_name: str, connector: FileConnector, file_meta) -> TableMetadata:
+        """Convert FileMetadata to TableMetadata for unified handling."""
+        # Convert columns
+        columns = []
+        for col_info in file_meta.columns:
+            columns.append(ColumnMetadata(
+                name=col_info.name,
+                type=col_info.data_type,
+                nullable=col_info.nullable,
+                primary_key=False,
+                comment=col_info.description,
+                sample_values=col_info.sample_values[:5] if col_info.sample_values else None,
+            ))
+
+        # Include file path in the comment for LLM awareness
+        comment = file_meta.description or ""
+        if file_meta.path:
+            comment = f"{comment}\nPath: {file_meta.path}" if comment else f"Path: {file_meta.path}"
+
+        return TableMetadata(
+            database=db_name,
+            name=file_meta.name,  # Use logical name
+            comment=comment,
+            columns=columns,
+            primary_keys=[],
+            foreign_keys=[],
+            row_count=file_meta.row_count,
+            referenced_by=[],
+            database_type=file_meta.file_type.value,  # e.g., "csv", "parquet"
         )
 
     def _introspect_table(
@@ -592,12 +638,14 @@ class SchemaManager:
         """Return list of all table full names."""
         return list(self.metadata_cache.keys())
 
-    def get_connection(self, database: str) -> Union[Engine, NoSQLConnector]:
-        """Get connection for a database (SQL Engine or NoSQL Connector)."""
+    def get_connection(self, database: str) -> Union[Engine, NoSQLConnector, FileConnector]:
+        """Get connection for a database (SQL Engine, NoSQL Connector, or File Connector)."""
         if database in self.connections:
             return self.connections[database]
         if database in self.nosql_connections:
             return self.nosql_connections[database]
+        if database in self.file_connections:
+            return self.file_connections[database]
         raise KeyError(f"Database not found: {database}")
 
     def get_sql_connection(self, database: str) -> Engine:
@@ -615,3 +663,13 @@ class SchemaManager:
     def is_nosql(self, database: str) -> bool:
         """Check if a database is NoSQL."""
         return database in self.nosql_connections
+
+    def is_file_source(self, database: str) -> bool:
+        """Check if a database is a file-based data source."""
+        return database in self.file_connections
+
+    def get_file_connection(self, database: str) -> FileConnector:
+        """Get FileConnector for a file-based data source."""
+        if database not in self.file_connections:
+            raise KeyError(f"File data source not found: {database}")
+        return self.file_connections[database]
