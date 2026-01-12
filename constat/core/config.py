@@ -15,8 +15,8 @@ class DatabaseCredentials(BaseModel):
     password: Optional[str] = None
 
     def is_complete(self) -> bool:
-        """Check if both username and password are provided."""
-        return self.username is not None and self.password is not None
+        """Check if both username and password are provided and non-empty."""
+        return bool(self.username) and bool(self.password)
 
 
 class DatabaseConfig(BaseModel):
@@ -157,6 +157,7 @@ class DatabaseConfig(BaseModel):
         - postgresql://localhost/db -> postgresql://user:pass@localhost/db
         - postgresql://@localhost/db -> postgresql://user:pass@localhost/db
         - postgresql://old:creds@localhost/db -> postgresql://user:pass@localhost/db
+        - mongodb://host1:27017,host2:27017/db -> mongodb://user:pass@host1:27017,host2:27017/db
         """
         import urllib.parse
         from urllib.parse import quote_plus
@@ -169,10 +170,16 @@ class DatabaseConfig(BaseModel):
         safe_user = quote_plus(username)
         safe_pass = quote_plus(password)
 
-        if parsed.port:
-            new_netloc = f"{safe_user}:{safe_pass}@{parsed.hostname}:{parsed.port}"
+        # Extract the host portion from netloc (strip any existing credentials)
+        netloc = parsed.netloc
+        if "@" in netloc:
+            # Remove existing credentials (everything before @)
+            host_part = netloc.split("@", 1)[1]
         else:
-            new_netloc = f"{safe_user}:{safe_pass}@{parsed.hostname}"
+            host_part = netloc
+
+        # Build new netloc with credentials and host
+        new_netloc = f"{safe_user}:{safe_pass}@{host_part}"
 
         # Reconstruct URI
         new_parsed = parsed._replace(netloc=new_netloc)
@@ -560,6 +567,9 @@ class Config(BaseModel):
         User values override engine values. Databases, APIs, and documents (dicts)
         are deep-merged by key.
 
+        Security: Certain fields in database/api configs are protected and cannot
+        be overwritten by user config (e.g., 'uri' to prevent connection hijacking).
+
         Args:
             engine: Engine config dict
             user: User config dict
@@ -572,14 +582,21 @@ class Config(BaseModel):
         # Dict-keyed sections to deep merge
         dict_sections = ["databases", "apis", "documents"]
 
+        # Fields that user config cannot override (security protection)
+        protected_fields = {"uri", "hosts", "endpoint", "endpoint_url"}
+
         for section in dict_sections:
             if section in user:
                 engine_items = dict(merged.get(section, {}))
 
                 for name, user_item in user[section].items():
                     if name in engine_items:
-                        # Merge: user values override engine values
-                        engine_items[name] = {**engine_items[name], **user_item}
+                        # Merge: user values override engine values, except protected fields
+                        merged_item = dict(engine_items[name])
+                        for key, value in user_item.items():
+                            if key not in protected_fields:
+                                merged_item[key] = value
+                        engine_items[name] = merged_item
                     else:
                         # Add new item from user config
                         engine_items[name] = user_item
