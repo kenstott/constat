@@ -742,9 +742,9 @@ class AsyncFactResolver(FactResolver):
                 self.resolution_log.append(config_fact)
                 return config_fact
 
-        # Check rules (sync, usually fast)
+        # Check rules - run in executor to allow true parallelism
         if FactSource.RULE in self.strategy.source_priority:
-            rule_fact = self._resolve_from_rule(fact_name, params)
+            rule_fact = await self._resolve_from_rule_async(fact_name, params)
             if rule_fact and rule_fact.is_resolved:
                 self._cache[cache_key] = rule_fact
                 self.resolution_log.append(rule_fact)
@@ -848,6 +848,47 @@ class AsyncFactResolver(FactResolver):
         elif source == FactSource.SUB_PLAN:
             return await self._resolve_from_sub_plan_async(fact_name, params)
         return None
+
+    async def _resolve_from_rule_async(
+        self,
+        fact_name: str,
+        params: dict,
+    ) -> Optional[Fact]:
+        """
+        Async rule resolution that runs sync rules in executor.
+
+        This enables true parallelism for rule-based facts by running
+        blocking rule functions in a thread pool instead of on the event loop.
+
+        After execution, checks cache again - if another concurrent request
+        already cached a result for this fact, we discard ours and return
+        the cached one. This ensures consistent values for concurrent requests.
+        """
+        rule = self._rules.get(fact_name)
+        if not rule:
+            return None
+
+        cache_key = self._cache_key(fact_name, params)
+
+        try:
+            loop = asyncio.get_event_loop()
+            # Run the sync rule function in the thread pool executor
+            # This allows multiple rules to execute truly in parallel
+            result = await loop.run_in_executor(
+                self._executor,
+                lambda: rule(self, params)
+            )
+
+            # After execution, check if another concurrent request already cached
+            # a result for this fact. If so, discard ours and return cached.
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+            return result
+        except Exception:
+            # Rule failed - log but don't crash
+            return None
 
     async def _resolve_from_database_async(
         self,
@@ -1147,6 +1188,8 @@ Generate the derivation function for {fact_name}:
         Synchronous wrapper for resolve_many_async.
 
         Useful when calling from sync code that wants parallel resolution.
+        Handles both cases: when called from sync context (no event loop)
+        and when called from async context (running event loop).
 
         Args:
             fact_requests: List of (fact_name, params) tuples
@@ -1154,4 +1197,19 @@ Generate the derivation function for {fact_name}:
         Returns:
             List of resolved Facts in same order as requests
         """
-        return asyncio.run(self.resolve_many_async(fact_requests))
+        try:
+            # Check if we're already in an async context
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop - we're in sync context, safe to use asyncio.run()
+            return asyncio.run(self.resolve_many_async(fact_requests))
+
+        # We're in an async context - need to run in a separate thread
+        # to avoid "asyncio.run() cannot be called from a running event loop"
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                asyncio.run,
+                self.resolve_many_async(fact_requests)
+            )
+            return future.result()

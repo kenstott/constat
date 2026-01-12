@@ -731,7 +731,13 @@ class TestAsyncFactResolverIntegration:
 
     @pytest.mark.asyncio
     async def test_concurrent_resolution_same_fact(self):
-        """Test concurrent resolution of the same fact."""
+        """Test concurrent resolution of the same fact.
+
+        With parallel execution, concurrent calls may all execute before any
+        can cache. However, after execution, each checks the cache - if another
+        request already cached a result, it returns the cached value instead.
+        This ensures all concurrent requests return consistent values.
+        """
         resolver = AsyncFactResolver()
         call_count = 0
 
@@ -749,10 +755,12 @@ class TestAsyncFactResolverIntegration:
         tasks = [resolver.resolve_async("concurrent_fact") for _ in range(5)]
         results = await asyncio.gather(*tasks)
 
-        # All should get same value due to caching
-        # (First one resolves, others get cached value)
+        # All concurrent requests should return the same value
+        # (first to cache wins, others discard their results)
         values = [r.value for r in results]
-        assert all(v == 1 for v in values)  # All should be 1 (cached)
+        assert all(v == values[0] for v in values)  # All same value
+        assert len(results) == 5
+        assert all(r.source == FactSource.RULE for r in results)
 
     @pytest.mark.asyncio
     async def test_inheritance_from_fact_resolver(self):
@@ -1584,3 +1592,243 @@ class TestClearUnresolved:
 
         assert result.is_resolved
         assert result.value == 42
+
+
+# =============================================================================
+# E2E PARALLELIZATION VERIFICATION TESTS
+# =============================================================================
+
+
+class TestParallelizationE2E:
+    """
+    End-to-end tests verifying that fact resolution parallelization is
+    actually wired up and working correctly.
+
+    These tests use timing measurements to prove that:
+    1. Multiple facts are resolved concurrently (not sequentially)
+    2. The asyncio.gather approach provides real speedup
+    3. resolve_many_async is properly integrated
+    """
+
+    @pytest.mark.asyncio
+    async def test_parallel_resolution_timing_proves_concurrency(self):
+        """
+        E2E test: Verify parallelization by measuring actual execution time.
+
+        If 3 facts each take 100ms to resolve:
+        - Sequential: ~300ms
+        - Parallel: ~100ms
+
+        This test will FAIL if parallelization isn't wired up correctly.
+        """
+        import time
+
+        DELAY_MS = 100
+        NUM_FACTS = 3
+
+        resolver = AsyncFactResolver()
+        resolution_times = []
+
+        @resolver.rule("slow_fact")
+        def slow_rule(res, params):
+            """Rule that takes DELAY_MS to execute (simulates I/O)."""
+            fact_id = params.get("id", 0)
+            start = time.time()
+            time.sleep(DELAY_MS / 1000)  # Simulate I/O delay
+            elapsed = (time.time() - start) * 1000
+            resolution_times.append((fact_id, elapsed))
+            return Fact(
+                name=f"slow_fact_{fact_id}",
+                value=f"result_{fact_id}",
+                source=FactSource.RULE,
+            )
+
+        # Build fact requests
+        requests = [("slow_fact", {"id": i}) for i in range(NUM_FACTS)]
+
+        # Measure parallel resolution time
+        start = time.time()
+        results = await resolver.resolve_many_async(requests)
+        parallel_time = (time.time() - start) * 1000
+
+        # Verify results
+        assert len(results) == NUM_FACTS
+        for i, result in enumerate(results):
+            assert result.value == f"result_{i}"
+
+        # CRITICAL ASSERTION: If parallel, total time should be close to single delay
+        # Not NUM_FACTS * DELAY_MS (which would indicate sequential execution)
+        expected_sequential_time = NUM_FACTS * DELAY_MS
+        expected_parallel_time = DELAY_MS * 1.5  # Allow some overhead
+
+        print(f"\nParallel time: {parallel_time:.1f}ms")
+        print(f"Expected sequential: {expected_sequential_time}ms")
+        print(f"Expected parallel (max): {expected_parallel_time}ms")
+
+        # This assertion will FAIL if parallelization isn't working
+        assert parallel_time < expected_sequential_time * 0.7, (
+            f"Parallel resolution took {parallel_time:.1f}ms but should be under "
+            f"{expected_sequential_time * 0.7:.1f}ms if truly parallel. "
+            f"This suggests parallelization is NOT wired up correctly!"
+        )
+
+    @pytest.mark.asyncio
+    async def test_parallel_vs_sequential_speedup_ratio(self):
+        """
+        E2E test: Measure actual speedup ratio between parallel and sequential.
+
+        Expected: parallel should be at least 2x faster than sequential for 3 facts.
+        """
+        import time
+
+        DELAY_MS = 50
+        NUM_FACTS = 4
+
+        # Create resolver with slow rule
+        resolver = AsyncFactResolver()
+
+        @resolver.rule("timed_fact")
+        def timed_rule(res, params):
+            time.sleep(DELAY_MS / 1000)
+            return Fact(
+                name=f"timed_{params['id']}",
+                value=params["id"],
+                source=FactSource.RULE,
+            )
+
+        requests = [("timed_fact", {"id": i}) for i in range(NUM_FACTS)]
+
+        # Measure sequential time (resolve one at a time)
+        resolver.clear_cache()
+        start = time.time()
+        for name, params in requests:
+            await resolver.resolve_async(name, **params)
+            resolver.clear_cache()  # Clear cache to force re-resolution
+        sequential_time = time.time() - start
+
+        # Measure parallel time
+        resolver.clear_cache()
+        start = time.time()
+        await resolver.resolve_many_async(requests)
+        parallel_time = time.time() - start
+
+        speedup = sequential_time / parallel_time
+
+        print(f"\nSequential: {sequential_time*1000:.1f}ms")
+        print(f"Parallel: {parallel_time*1000:.1f}ms")
+        print(f"Speedup: {speedup:.2f}x")
+
+        # Parallel should be significantly faster
+        assert speedup > 1.5, (
+            f"Speedup ratio is only {speedup:.2f}x (expected >1.5x). "
+            f"This suggests parallelization may not be working correctly."
+        )
+
+    @pytest.mark.asyncio
+    async def test_parallel_resolution_with_async_io_simulation(self):
+        """
+        E2E test: Simulate actual async I/O operations (like DB/LLM calls).
+
+        Uses asyncio.sleep instead of time.sleep to properly test async behavior.
+        """
+        import time
+
+        DELAY_MS = 100
+        NUM_FACTS = 5
+
+        resolver = AsyncFactResolver()
+        call_timestamps = []
+
+        # Register an async-aware rule
+        original_resolve = resolver.resolve_async
+
+        async def tracked_resolve(name, **params):
+            if name == "async_io_fact":
+                call_timestamps.append(("start", params.get("id"), time.time()))
+                await asyncio.sleep(DELAY_MS / 1000)  # Async I/O simulation
+                call_timestamps.append(("end", params.get("id"), time.time()))
+                return Fact(
+                    name=f"async_io_{params['id']}",
+                    value=params["id"],
+                    source=FactSource.RULE,
+                )
+            return await original_resolve(name, **params)
+
+        # Monkey-patch for this test
+        resolver.resolve_async = tracked_resolve
+
+        requests = [("async_io_fact", {"id": i}) for i in range(NUM_FACTS)]
+
+        start = time.time()
+        results = await resolver.resolve_many_async(requests)
+        total_time = (time.time() - start) * 1000
+
+        # Verify all facts resolved
+        assert len(results) == NUM_FACTS
+
+        # Analyze timestamps to verify concurrent execution
+        starts = [t for t in call_timestamps if t[0] == "start"]
+        ends = [t for t in call_timestamps if t[0] == "end"]
+
+        # All starts should happen before all ends (concurrent execution)
+        start_times = [t[2] for t in starts]
+        end_times = [t[2] for t in ends]
+
+        # Time window for all starts should be small (< half the delay)
+        start_window = max(start_times) - min(start_times)
+        print(f"\nStart window: {start_window*1000:.1f}ms")
+        print(f"Total time: {total_time:.1f}ms")
+        print(f"Expected if parallel: ~{DELAY_MS}ms")
+        print(f"Expected if sequential: ~{NUM_FACTS * DELAY_MS}ms")
+
+        # If parallel, all facts start nearly simultaneously
+        assert start_window < DELAY_MS / 2, (
+            f"Facts started with {start_window*1000:.1f}ms spread. "
+            f"Should be <{DELAY_MS/2}ms if truly parallel."
+        )
+
+        # Total time should be close to single delay, not N * delay
+        assert total_time < DELAY_MS * 2, (
+            f"Total time {total_time:.1f}ms exceeds {DELAY_MS * 2}ms. "
+            f"This suggests sequential execution, not parallel."
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_many_sync_wrapper_parallelizes(self):
+        """
+        E2E test: Verify that resolve_many_sync (the sync wrapper) also parallelizes.
+        """
+        import time
+
+        DELAY_MS = 50
+        NUM_FACTS = 3
+
+        resolver = AsyncFactResolver()
+
+        @resolver.rule("sync_wrapper_test")
+        def slow_rule(res, params):
+            time.sleep(DELAY_MS / 1000)
+            return Fact(
+                name=f"sync_wrapped_{params['id']}",
+                value=params["id"],
+                source=FactSource.RULE,
+            )
+
+        requests = [("sync_wrapper_test", {"id": i}) for i in range(NUM_FACTS)]
+
+        # Use the synchronous wrapper
+        start = time.time()
+        results = resolver.resolve_many_sync(requests)
+        elapsed = (time.time() - start) * 1000
+
+        assert len(results) == NUM_FACTS
+
+        # Should still be parallel (not sequential)
+        sequential_expected = NUM_FACTS * DELAY_MS
+        print(f"\nSync wrapper time: {elapsed:.1f}ms")
+        print(f"Sequential expected: {sequential_expected}ms")
+
+        assert elapsed < sequential_expected * 0.7, (
+            f"Sync wrapper took {elapsed:.1f}ms, expected <{sequential_expected * 0.7:.1f}ms. "
+            f"The sync wrapper may not be properly invoking async parallelization."
+        )
