@@ -116,9 +116,9 @@ class TestMongoDBConnector:
     @patch("pymongo.MongoClient")
     def test_connect(self, mock_client_class):
         """Test MongoDB connection."""
-        mock_client = Mock()
-        mock_db = Mock()
-        mock_client.__getitem__ = Mock(return_value=mock_db)
+        mock_client = MagicMock()
+        mock_db = MagicMock()
+        mock_client.__getitem__.return_value = mock_db
         mock_client_class.return_value = mock_client
 
         connector = MongoDBConnector(
@@ -134,9 +134,9 @@ class TestMongoDBConnector:
     @patch("pymongo.MongoClient")
     def test_disconnect(self, mock_client_class):
         """Test MongoDB disconnection."""
-        mock_client = Mock()
-        mock_db = Mock()
-        mock_client.__getitem__ = Mock(return_value=mock_db)
+        mock_client = MagicMock()
+        mock_db = MagicMock()
+        mock_client.__getitem__.return_value = mock_db
         mock_client_class.return_value = mock_client
 
         connector = MongoDBConnector(
@@ -153,10 +153,10 @@ class TestMongoDBConnector:
     @patch("pymongo.MongoClient")
     def test_get_collections(self, mock_client_class):
         """Test listing collections."""
-        mock_client = Mock()
-        mock_db = Mock()
+        mock_client = MagicMock()
+        mock_db = MagicMock()
         mock_db.list_collection_names.return_value = ["users", "orders"]
-        mock_client.__getitem__ = Mock(return_value=mock_db)
+        mock_client.__getitem__.return_value = mock_db
         mock_client_class.return_value = mock_client
 
         connector = MongoDBConnector(
