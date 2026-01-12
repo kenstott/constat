@@ -44,7 +44,7 @@ apis:
       Provides CRUD operations for pets, orders, and users.
 
 system_prompt: |
-  You are analyzing data across two different business databases and a countries API.
+  You are analyzing data across two different business databases, a different business API endpoint, and a countries API.
 
   ## Database 1: Chinook (Digital Music Store)
   - Artists create Albums, which contain Tracks
@@ -67,7 +67,7 @@ system_prompt: |
   - Get continent, capital, currency, languages
   - Useful for geographic analysis across both databases
 
-  ## API: Petstore (OpenAPI Test Endpoint)
+  ## API: Petstore (Pet Products Company)
   - Sample REST API for testing OpenAPI integration
   - Operations: findPetsByStatus, getPetById, addPet, placeOrder, etc.
   - Use httpx to call endpoints

@@ -177,16 +177,24 @@ class APIDiscoveryTools:
             operation_type=op_type_enum,
         )
 
-        return [
-            {
+        results = []
+        for m in matches:
+            result = {
                 "name": m.operation,
                 "type": m.operation_type.value,
                 "relevance": m.relevance,
                 "summary": m.summary,
                 "use_cases": m.use_cases,
+                # Protocol identification - tells LLM how to call this operation
+                "protocol": m.protocol.value,  # "graphql" or "rest"
+                "api_name": m.api_name,  # Which API this operation belongs to
             }
-            for m in matches
-        ]
+            # Add REST-specific fields only for REST operations
+            if m.protocol.value == "rest":
+                result["http_method"] = m.http_method  # GET, POST, PUT, PATCH, DELETE
+                result["path"] = m.path  # URL path template, e.g., "/users/{userId}"
+            results.append(result)
+        return results
 
     def execute_graphql(
         self,

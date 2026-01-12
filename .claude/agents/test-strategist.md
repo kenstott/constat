@@ -66,7 +66,7 @@ Categorize test cases:
 
 | Priority | Description | Example |
 |----------|-------------|---------|
-| **P0 - Critical** | Data corruption, security holes, crashes | SQL injection, null pointer in happy path |
+| **P0 - Critical** | Data corruption, security holes, crashes | SQL injection, unhandled None in happy path |
 | **P1 - High** | Incorrect results, silent failures | Wrong aggregation, swallowed exceptions |
 | **P2 - Medium** | Edge cases in uncommon paths | Empty input handling, timeout behavior |
 | **P3 - Low** | Polish, defensive coding | Helpful error messages, logging |
@@ -77,13 +77,13 @@ Organize tests by:
 ```
 tests/
 ├── unit/                    # Fast, isolated, no I/O
-│   ├── ComponentATest.java
-│   └── ComponentBTest.java
+│   ├── test_component_a.py
+│   └── test_component_b.py
 ├── integration/             # Tests component interactions
-│   ├── AdapterIntegrationTest.java
-│   └── PlannerIntegrationTest.java
+│   ├── test_database.py
+│   └── test_api.py
 └── performance/             # Regression tests for speed
-    └── QueryBenchmarkTest.java
+    └── test_benchmarks.py
 ```
 
 ### Step 5: Identify Coverage Gaps
@@ -107,13 +107,27 @@ For any range or limit, test:
 - Maximum value
 - Just above maximum (invalid)
 
-```java
-// For a function accepting 1-100 items:
-@Test void rejectsZeroItems() { ... }
-@Test void acceptsOneItem() { ... }      // boundary
-@Test void acceptsFiftyItems() { ... }   // nominal
-@Test void acceptsHundredItems() { ... } // boundary
-@Test void rejectsHundredOneItems() { ... }
+```python
+# For a function accepting 1-100 items:
+def test_rejects_zero_items():
+    with pytest.raises(ValueError):
+        process_items([])
+
+def test_accepts_one_item():  # boundary
+    result = process_items([item])
+    assert result is not None
+
+def test_accepts_fifty_items():  # nominal
+    result = process_items([item] * 50)
+    assert len(result) == 50
+
+def test_accepts_hundred_items():  # boundary
+    result = process_items([item] * 100)
+    assert len(result) == 100
+
+def test_rejects_hundred_one_items():
+    with pytest.raises(ValueError):
+        process_items([item] * 101)
 ```
 
 ### Equivalence Partitioning
@@ -122,12 +136,18 @@ Divide inputs into classes that should behave the same:
 - Test one value from each partition
 - Don't test multiple values from same partition
 
-```java
-// For age validation (0-17: minor, 18-64: adult, 65+: senior)
-@Test void classifiesMinor() { assertThat(classify(10), is(MINOR)); }
-@Test void classifiesAdult() { assertThat(classify(30), is(ADULT)); }
-@Test void classifiesSenior() { assertThat(classify(70), is(SENIOR)); }
-// Plus boundary tests at 0, 17, 18, 64, 65
+```python
+# For age validation (0-17: minor, 18-64: adult, 65+: senior)
+def test_classifies_minor():
+    assert classify(10) == Category.MINOR
+
+def test_classifies_adult():
+    assert classify(30) == Category.ADULT
+
+def test_classifies_senior():
+    assert classify(70) == Category.SENIOR
+
+# Plus boundary tests at 0, 17, 18, 64, 65
 ```
 
 ### Error Path Testing
@@ -138,124 +158,130 @@ For every operation that can fail:
 - Is state left consistent after error?
 - Are resources cleaned up?
 
-```java
-@Test void reportsErrorOnInvalidInput() {
-  Exception e = assertThrows(ValidationException.class,
-    () -> parser.parse(invalidInput));
-  assertThat(e.getMessage(), containsString("expected format"));
-}
+```python
+def test_reports_error_on_invalid_input():
+    with pytest.raises(ValidationError) as exc_info:
+        parser.parse(invalid_input)
+    assert "expected format" in str(exc_info.value)
 
-@Test void cleanupOnFailure() {
-  // Force failure mid-operation
-  // Verify no resource leaks, no partial state
-}
+def test_cleanup_on_failure():
+    # Force failure mid-operation
+    # Verify no resource leaks, no partial state
+    pass
 ```
 
-## Domain-Specific Testing: Query Planners
+## Domain-Specific Testing: Data Pipelines
 
-### Malformed Input Testing
+### DataFrame Edge Cases
 
-```java
-// SQL parsing edge cases
-@Test void handlesMissingSemicolon() { ... }
-@Test void handlesUnterminatedString() { ... }
-@Test void handlesNestedComments() { ... }
-@Test void rejectsInvalidUnicode() { ... }
+```python
+# Empty DataFrame handling
+def test_handles_empty_dataframe():
+    df = pl.DataFrame({"a": [], "b": []})
+    result = transform(df)
+    assert len(result) == 0
 
-// Schema edge cases
-@Test void handlesTableWithNoColumns() { ... }
-@Test void handlesColumnNameWithSpecialChars() { ... }
-@Test void handlesDuplicateColumnNames() { ... }
+# Single row handling
+def test_handles_single_row():
+    df = pl.DataFrame({"a": [1], "b": [2]})
+    result = transform(df)
+    assert len(result) == 1
+
+# Null handling
+def test_handles_null_in_column():
+    df = pl.DataFrame({"a": [1, None, 3], "b": [4, 5, 6]})
+    result = transform(df)
+    assert result["a"].null_count() == 1
+
+def test_handles_all_nulls_in_column():
+    df = pl.DataFrame({"a": [None, None], "b": [1, 2]})
+    result = transform(df)
+    # Verify expected behavior
 ```
 
-### Degenerate Plan Testing
+### Schema Edge Cases
 
-```java
-// Plans that stress the optimizer
-@Test void handlesEmptyTable() { ... }
-@Test void handlesSingleRowTable() { ... }
-@Test void handlesCartesianProduct() { ... }
-@Test void handlesDeepNesting() { ... }
-@Test void handlesCyclicViewDefinitions() { ... }
+```python
+def test_handles_missing_column():
+    df = pl.DataFrame({"a": [1, 2]})  # Missing 'b' column
+    with pytest.raises(ColumnNotFoundError):
+        transform(df)
 
-// Optimizer edge cases
-@Test void avoidsInfiniteRuleApplication() { ... }
-@Test void handlesNoApplicableRules() { ... }
-@Test void handlesConflictingRules() { ... }
+def test_handles_extra_column():
+    df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})  # Extra 'c'
+    result = transform(df)
+    assert "c" not in result.columns
+
+def test_handles_type_mismatch():
+    df = pl.DataFrame({"a": ["1", "2"]})  # String instead of int
+    with pytest.raises(TypeError):
+        transform(df)
 ```
 
-### Plan Equivalence Testing
+### SQL/Query Testing
 
-```java
-// Verify optimization preserves semantics
-@Test void optimizedPlanProducesSameResults() {
-  RelNode unoptimized = parse(sql);
-  RelNode optimized = optimize(unoptimized);
+```python
+def test_handles_sql_injection():
+    """Ensure parameterized queries prevent injection."""
+    malicious_input = "'; DROP TABLE users; --"
+    # Should not raise, should safely query
+    result = query_users(name=malicious_input)
+    assert len(result) == 0  # No match, but no error
 
-  List<Row> expected = execute(unoptimized);
-  List<Row> actual = execute(optimized);
+def test_handles_unicode_in_query():
+    result = query_users(name="José García")
+    # Should handle correctly
 
-  assertThat(actual, containsInAnyOrder(expected.toArray()));
-}
+def test_handles_empty_result_set():
+    result = query_users(name="nonexistent")
+    assert len(result) == 0
 ```
 
-## Domain-Specific Testing: Data Edge Cases
+### Parquet Edge Cases
 
-### Null Handling
+```python
+@pytest.fixture
+def temp_parquet(tmp_path):
+    """Create test Parquet file."""
+    df = pl.DataFrame({"id": [1, 2, 3], "value": [10, 20, 30]})
+    path = tmp_path / "test.parquet"
+    df.write_parquet(path)
+    return path
 
-```java
-// Nulls are evil. Test them everywhere.
-@Test void handlesNullInColumn() { ... }
-@Test void handlesAllNullsInColumn() { ... }
-@Test void handlesNullInJoinKey() { ... }
-@Test void handlesNullInGroupByKey() { ... }
-@Test void handlesNullInOrderByKey() { ... }
-@Test void handlesNullInPredicate() { ... }
-@Test void handlesNullInAggregation() { ... }
+def test_reads_valid_parquet(temp_parquet):
+    result = read_data(temp_parquet)
+    assert len(result) == 3
+
+def test_handles_missing_parquet_file():
+    with pytest.raises(FileNotFoundError):
+        read_data(Path("/nonexistent/file.parquet"))
+
+def test_handles_corrupted_parquet(tmp_path):
+    corrupt_file = tmp_path / "corrupt.parquet"
+    corrupt_file.write_bytes(b"not a parquet file")
+    with pytest.raises(Exception):  # Specific exception depends on library
+        read_data(corrupt_file)
 ```
 
-### Empty Sets
+## Domain-Specific Testing: Null Handling
 
-```java
-@Test void handlesEmptyResultSet() { ... }
-@Test void handlesEmptyInputTable() { ... }
-@Test void handlesJoinWithEmptySide() { ... }
-@Test void handlesEmptyGroupBy() { ... }
-@Test void handlesEmptyUnion() { ... }
-```
+```python
+# Nulls are tricky. Test them everywhere.
+def test_handles_null_in_join_key():
+    left = pl.DataFrame({"key": [1, None, 3], "val": ["a", "b", "c"]})
+    right = pl.DataFrame({"key": [1, 2, None], "val": ["x", "y", "z"]})
+    result = join_data(left, right)
+    # Verify null key handling
 
-### Schema Mismatches
+def test_handles_null_in_group_by_key():
+    df = pl.DataFrame({"group": [1, None, 1, None], "value": [10, 20, 30, 40]})
+    result = group_and_sum(df)
+    # Verify null group handling
 
-```java
-@Test void handlesMissingColumn() { ... }
-@Test void handlesExtraColumn() { ... }
-@Test void handlesTypeWidening() { ... }  // INT32 -> INT64
-@Test void handlesTypeNarrowing() { ... } // INT64 -> INT32
-@Test void handlesNullabilityChange() { ... }
-@Test void handlesColumnReordering() { ... }
-```
-
-### Encoding Issues
-
-```java
-@Test void handlesUtf8Strings() { ... }
-@Test void handlesEmoji() { ... }          // 4-byte UTF-8
-@Test void handlesNullCharInString() { ... }
-@Test void handlesMaxLengthString() { ... }
-@Test void handlesBinaryData() { ... }
-@Test void handlesInvalidUtf8() { ... }
-```
-
-### Numeric Edge Cases
-
-```java
-@Test void handlesIntegerOverflow() { ... }
-@Test void handlesIntegerUnderflow() { ... }
-@Test void handlesDecimalPrecisionLoss() { ... }
-@Test void handlesFloatNaN() { ... }
-@Test void handlesFloatInfinity() { ... }
-@Test void handlesNegativeZero() { ... }
-@Test void handlesDivisionByZero() { ... }
+def test_handles_null_in_aggregation():
+    df = pl.DataFrame({"value": [1, None, 3, None, 5]})
+    result = df["value"].sum()
+    assert result == 9  # Nulls typically ignored in sum
 ```
 
 ## Property-Based Testing
@@ -264,139 +290,140 @@ For data transformations, define properties that must hold:
 
 ### Invariant Properties
 
-```java
-// Row count invariants
-@Property void filterNeverAddsRows(List<Row> input, Predicate pred) {
-  List<Row> output = filter(input, pred);
-  assertThat(output.size(), lessThanOrEqualTo(input.size()));
-}
+```python
+from hypothesis import given, strategies as st
 
-// Idempotence
-@Property void distinctIsIdempotent(List<Row> input) {
-  List<Row> once = distinct(input);
-  List<Row> twice = distinct(once);
-  assertThat(twice, equalTo(once));
-}
+@given(st.lists(st.integers()))
+def test_filter_never_adds_rows(input_list):
+    df = pl.DataFrame({"value": input_list})
+    result = filter_positive(df)
+    assert len(result) <= len(df)
+
+@given(st.lists(st.integers()))
+def test_distinct_is_idempotent(input_list):
+    df = pl.DataFrame({"value": input_list})
+    once = df.unique()
+    twice = once.unique()
+    assert once.equals(twice)
 ```
 
 ### Roundtrip Properties
 
-```java
-// Serialization roundtrip
-@Property void schemaRoundtrips(Schema original) {
-  Schema restored = deserialize(serialize(original));
-  assertThat(restored, equalTo(original));
-}
+```python
+@given(st.builds(Schema, ...))  # Generate random schemas
+def test_schema_roundtrips(original):
+    serialized = serialize_schema(original)
+    restored = deserialize_schema(serialized)
+    assert restored == original
 
-// Parse/print roundtrip
-@Property void sqlRoundtrips(SqlNode original) {
-  String sql = original.toSqlString();
-  SqlNode reparsed = parse(sql);
-  assertThat(reparsed, semanticallyEquivalent(original));
-}
-```
-
-### Relational Properties
-
-```java
-// Commutativity
-@Property void innerJoinIsCommutative(Table a, Table b) {
-  assertThat(join(a, b), equalTo(join(b, a)));
-}
-
-// Associativity
-@Property void unionIsAssociative(Table a, Table b, Table c) {
-  assertThat(union(union(a, b), c), equalTo(union(a, union(b, c))));
-}
+@given(st.text())
+def test_json_roundtrips(original):
+    serialized = json.dumps(original)
+    restored = json.loads(serialized)
+    assert restored == original
 ```
 
 ## Integration Test Design
 
-### Calcite Adapter Tests
-
-```java
-@Tag("integration")
-class MyAdapterIntegrationTest {
-
-  @BeforeAll static void setupSchema() {
-    // Register adapter schema
-  }
-
-  @Test void selectAllFromTable() {
-    // Basic connectivity test
-  }
-
-  @Test void filterPushDown() {
-    // Verify predicate reaches adapter
-  }
-
-  @Test void projectionPushDown() {
-    // Verify only requested columns read
-  }
-
-  @Test void joinAcrossTables() {
-    // Multi-table query
-  }
-
-  @Test void aggregationHandling() {
-    // GROUP BY, aggregates
-  }
-
-  @Test void handlesAdapterError() {
-    // Backend failure handling
-  }
-}
-```
-
-### DuckDB Extension Tests
+### Database Integration Tests
 
 ```python
-def test_extension_loads():
-    """Extension loads without error."""
-    conn = duckdb.connect()
-    conn.execute("LOAD my_extension")
+import pytest
+import duckdb
 
-def test_custom_function():
-    """Custom function produces expected results."""
-    result = conn.execute("SELECT my_func(42)").fetchone()
-    assert result[0] == expected
+@pytest.fixture
+def db_connection():
+    """Create test database connection."""
+    conn = duckdb.connect(":memory:")
+    yield conn
+    conn.close()
 
-def test_handles_null_input():
-    """Custom function handles NULL gracefully."""
-    result = conn.execute("SELECT my_func(NULL)").fetchone()
-    assert result[0] is None
+@pytest.fixture
+def populated_db(db_connection):
+    """Create database with test data."""
+    db_connection.execute("""
+        CREATE TABLE users (id INT, name VARCHAR, active BOOLEAN)
+    """)
+    db_connection.execute("""
+        INSERT INTO users VALUES
+        (1, 'Alice', true),
+        (2, 'Bob', false),
+        (3, 'Charlie', true)
+    """)
+    return db_connection
 
-def test_large_input():
-    """Function handles large inputs without OOM."""
-    large_data = generate_large_input()
-    conn.execute("SELECT my_func(?)", [large_data])
+def test_select_all_from_table(populated_db):
+    result = populated_db.execute("SELECT * FROM users").fetchdf()
+    assert len(result) == 3
+
+def test_filter_pushdown(populated_db):
+    result = populated_db.execute(
+        "SELECT * FROM users WHERE active = true"
+    ).fetchdf()
+    assert len(result) == 2
+
+def test_handles_database_error(db_connection):
+    with pytest.raises(Exception):
+        db_connection.execute("SELECT * FROM nonexistent_table")
+```
+
+### API Integration Tests
+
+```python
+@pytest.fixture
+def api_client():
+    """Create test API client."""
+    from myapp import create_app
+    app = create_app(testing=True)
+    with app.test_client() as client:
+        yield client
+
+def test_get_users_returns_list(api_client):
+    response = api_client.get("/api/users")
+    assert response.status_code == 200
+    assert isinstance(response.json, list)
+
+def test_create_user_validates_input(api_client):
+    response = api_client.post("/api/users", json={"invalid": "data"})
+    assert response.status_code == 400
+
+def test_handles_server_error(api_client, mocker):
+    mocker.patch("myapp.db.get_users", side_effect=Exception("DB down"))
+    response = api_client.get("/api/users")
+    assert response.status_code == 500
 ```
 
 ## Performance Regression Tests
 
 ### Approach
 
-```java
-@Tag("performance")
-class QueryPerformanceTest {
+```python
+import pytest
+import time
 
-  @Test void baselineSelectPerformance() {
-    long start = System.nanoTime();
-    execute("SELECT * FROM large_table WHERE id < 1000");
-    long duration = System.nanoTime() - start;
+@pytest.mark.performance
+def test_baseline_select_performance(populated_db):
+    start = time.perf_counter()
+    populated_db.execute("SELECT * FROM large_table WHERE id < 1000").fetchall()
+    duration = time.perf_counter() - start
 
-    // Assert against baseline (with margin)
-    assertThat(duration, lessThan(BASELINE_MS * 1.2 * 1_000_000));
-  }
+    # Assert against baseline (with margin)
+    assert duration < 0.5  # Should complete in under 500ms
 
-  @Test void pushDownImprovesPerfOverFullScan() {
-    long fullScan = time(() -> executeWithoutPushDown(query));
-    long pushDown = time(() -> executeWithPushDown(query));
+@pytest.mark.performance
+def test_pushdown_improves_perf_over_full_scan(populated_db):
+    # Without filter pushdown (simulated)
+    start = time.perf_counter()
+    populated_db.execute("SELECT * FROM large_table").fetchall()
+    full_scan_time = time.perf_counter() - start
 
-    // Push-down should be significantly faster
-    assertThat(pushDown, lessThan(fullScan / 2));
-  }
-}
+    # With filter pushdown
+    start = time.perf_counter()
+    populated_db.execute("SELECT * FROM large_table WHERE id < 100").fetchall()
+    pushdown_time = time.perf_counter() - start
+
+    # Pushdown should be significantly faster
+    assert pushdown_time < full_scan_time / 2
 ```
 
 ### What to Measure
@@ -414,7 +441,7 @@ class QueryPerformanceTest {
 When reviewing existing tests, check for:
 
 ### Structural Coverage
-- Are all public methods tested?
+- Are all public functions tested?
 - Are all branches exercised?
 - Are all exception paths tested?
 
@@ -454,14 +481,14 @@ When providing test recommendations:
 ### Recommended Test Cases
 
 #### P0 - Critical
-- [ ] `testXxx`: [Why this matters]
-- [ ] `testYyy`: [Why this matters]
+- [ ] `test_xxx`: [Why this matters]
+- [ ] `test_yyy`: [Why this matters]
 
 #### P1 - High
-- [ ] `testAaa`: [Why this matters]
+- [ ] `test_aaa`: [Why this matters]
 
 #### P2 - Medium
-- [ ] `testBbb`: [Why this matters]
+- [ ] `test_bbb`: [Why this matters]
 
 ### Coverage Gaps Identified
 - [Gap description and risk]
@@ -471,4 +498,55 @@ When providing test recommendations:
 
 ### Property-Based Test Candidates
 - [Property that should hold]
+```
+
+## Pytest Best Practices
+
+### Use Fixtures for Setup
+
+```python
+@pytest.fixture
+def sample_data():
+    return pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+
+def test_transform(sample_data):
+    result = transform(sample_data)
+    assert len(result) == 3
+```
+
+### Use Parametrize for Multiple Cases
+
+```python
+@pytest.mark.parametrize("input,expected", [
+    ([], 0),
+    ([1], 1),
+    ([1, 2, 3], 6),
+])
+def test_sum(input, expected):
+    assert sum_values(input) == expected
+```
+
+### Use Markers for Test Categories
+
+```python
+@pytest.mark.slow
+def test_large_dataset():
+    ...
+
+@pytest.mark.integration
+def test_database_connection():
+    ...
+
+# Run specific categories:
+# pytest -m "not slow"
+# pytest -m integration
+```
+
+### Use tmp_path for Temporary Files
+
+```python
+def test_writes_output(tmp_path):
+    output_file = tmp_path / "output.parquet"
+    write_data(data, output_file)
+    assert output_file.exists()
 ```

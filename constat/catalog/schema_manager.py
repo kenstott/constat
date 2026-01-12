@@ -46,6 +46,8 @@ class TableMetadata:
     row_count: int = 0
     # Tables that reference this table
     referenced_by: list[str] = field(default_factory=list)
+     # Database type - critical for LLM to know query semantics (sql vs nosql)
+    database_type: str = ""  # e.g., "postgresql", "mysql", "mongodb", "elasticsearch"
 
     @property
     def full_name(self) -> str:
@@ -282,36 +284,46 @@ class SchemaManager:
 
         # Introspect NoSQL databases
         for db_name, connector in self.nosql_connections.items():
-            for collection_meta in connector.get_collections():
+            for collection_name in connector.get_collections():
+                # Get schema for the collection
+                collection_meta = connector.get_collection_schema(collection_name)
                 # Convert NoSQL CollectionMetadata to TableMetadata
                 table_meta = self._convert_nosql_metadata(db_name, connector, collection_meta)
                 self.metadata_cache[table_meta.full_name] = table_meta
 
     def _convert_nosql_metadata(self, db_name: str, connector: NoSQLConnector, collection_meta) -> TableMetadata:
         """Convert NoSQL CollectionMetadata to TableMetadata for unified handling."""
-        # Get schema for this collection
-        schema = connector.get_collection_schema(collection_meta.name)
+        # collection_meta is already the schema from get_collection_schema()
 
         # Convert fields to columns
         columns = []
-        for field_info in schema.fields:
+        for field_info in collection_meta.fields:
             columns.append(ColumnMetadata(
                 name=field_info.name,
-                type=field_info.type,
-                nullable=not field_info.required,
-                primary_key=field_info.name in schema.key_fields,
+                type=field_info.data_type,  # FieldInfo uses data_type not type
+                nullable=field_info.nullable,
+                primary_key=field_info.is_indexed and field_info.is_unique,
                 comment=field_info.description if hasattr(field_info, 'description') else None,
             ))
+
+        # Get the database type from config
+        db_type = ""
+        if db_name in self.config.databases:
+            db_type = self.config.databases[db_name].type
+
+        # Get key fields (fields that are indexed and unique)
+        key_fields = [f.name for f in collection_meta.fields if f.is_indexed and f.is_unique]
 
         return TableMetadata(
             database=db_name,
             name=collection_meta.name,
             comment=collection_meta.description,
             columns=columns,
-            primary_keys=schema.key_fields,
+            primary_keys=key_fields,
             foreign_keys=[],  # NoSQL typically doesn't have FK constraints
             row_count=collection_meta.document_count,
             referenced_by=[],
+            database_type=db_type,
         )
 
     def _introspect_table(
@@ -372,6 +384,11 @@ class SchemaManager:
         except Exception:
             pass  # Skip if count fails
 
+        # Get the database type from config
+        db_type = ""
+        if db_name in self.config.databases:
+            db_type = self.config.databases[db_name].type
+
         return TableMetadata(
             database=db_name,
             name=table_name,
@@ -380,6 +397,7 @@ class SchemaManager:
             primary_keys=primary_keys,
             foreign_keys=foreign_keys,
             row_count=row_count,
+            database_type=db_type,
         )
 
     def _simplify_type(self, type_str: str) -> str:
@@ -563,6 +581,9 @@ class SchemaManager:
                 "full_name": full_name,
                 "relevance": round(relevance, 3),
                 "summary": summary,
+                # Database type - tells LLM what query semantics to use
+                "database_type": table_meta.database_type,  # e.g., "postgresql", "mongodb"
+                "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra"),
             })
 
         return results

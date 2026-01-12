@@ -55,6 +55,17 @@ class MongoDBConnector(NoSQLConnector):
     def nosql_type(self) -> NoSQLType:
         return NoSQLType.DOCUMENT
 
+    @property
+    def db(self):
+        """Get the underlying pymongo database object for direct access."""
+        if self._db is None:
+            raise RuntimeError("Not connected to MongoDB")
+        return self._db
+
+    def __getitem__(self, collection_name: str):
+        """Allow subscript access like db_ecommerce['customers']."""
+        return self.db[collection_name]
+
     def connect(self) -> None:
         """Connect to MongoDB."""
         try:
@@ -79,7 +90,7 @@ class MongoDBConnector(NoSQLConnector):
 
     def get_collections(self) -> list[str]:
         """List all collections in the database."""
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
         return self._db.list_collection_names()
 
@@ -88,7 +99,7 @@ class MongoDBConnector(NoSQLConnector):
         if collection in self._metadata_cache:
             return self._metadata_cache[collection]
 
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
 
         coll = self._db[collection]
@@ -140,7 +151,7 @@ class MongoDBConnector(NoSQLConnector):
         Returns:
             List of documents (as dicts)
         """
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
 
         coll = self._db[collection]
@@ -166,7 +177,7 @@ class MongoDBConnector(NoSQLConnector):
         Returns:
             Aggregation results
         """
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
 
         coll = self._db[collection]
@@ -190,7 +201,7 @@ class MongoDBConnector(NoSQLConnector):
         Returns:
             List of inserted document IDs
         """
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
 
         coll = self._db[collection]
@@ -220,7 +231,7 @@ class MongoDBConnector(NoSQLConnector):
         Returns:
             Number of modified documents
         """
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
 
         coll = self._db[collection]
@@ -237,7 +248,7 @@ class MongoDBConnector(NoSQLConnector):
         Returns:
             Number of deleted documents
         """
-        if not self._db:
+        if self._db is None:
             raise RuntimeError("Not connected to MongoDB")
 
         coll = self._db[collection]

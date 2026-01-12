@@ -84,6 +84,12 @@ class OperationType(Enum):
     SUBSCRIPTION = "subscription"  # Real-time updates
 
 
+class Protocol(Enum):
+    """API protocol type - determines how to call the operation."""
+    GRAPHQL = "graphql"
+    REST = "rest"
+
+
 class ArgumentType(Enum):
     """Argument requirement level."""
     REQUIRED = "required"
@@ -125,6 +131,14 @@ class OperationMetadata:
     arguments: list[OperationArgument] = field(default_factory=list)
     return_type: str = ""
     return_fields: list[OperationField] = field(default_factory=list)
+
+    # Protocol identification - critical for LLM to know how to call this operation
+    protocol: Protocol = Protocol.GRAPHQL  # graphql or rest
+    api_name: str = ""  # Which API this operation belongs to
+
+    # REST-specific fields (only populated for REST operations)
+    http_method: str = ""  # GET, POST, PUT, PATCH, DELETE
+    path: str = ""  # URL path template, e.g., "/users/{userId}"
 
     # Response schema for interpreting results (OpenAPI)
     response_schema: Optional[dict] = None  # Full JSON schema of response
@@ -218,12 +232,20 @@ class OperationMetadata:
 
 @dataclass
 class OperationMatch:
-    """Result from vector search."""
+    """Result from vector search with explicit protocol semantics for LLM."""
     operation: str
     operation_type: OperationType
     relevance: float
     summary: str
     use_cases: list[str]
+
+    # Protocol identification - tells LLM how to call this operation
+    protocol: Protocol = Protocol.GRAPHQL
+    api_name: str = ""
+
+    # REST-specific (only set when protocol=REST)
+    http_method: str = ""  # GET, POST, PUT, PATCH, DELETE
+    path: str = ""  # URL path template, e.g., "/users/{userId}"
 
 
 class APICatalog:
@@ -347,6 +369,11 @@ class APICatalog:
                 relevance=round(relevance, 3),
                 summary=summary,
                 use_cases=operation.use_cases[:2],  # Top 2 use cases
+                # Protocol info for LLM to know how to call this
+                protocol=operation.protocol,
+                api_name=operation.api_name,
+                http_method=operation.http_method,
+                path=operation.path,
             ))
 
         return results
@@ -510,6 +537,7 @@ def introspect_graphql_endpoint(
     url: str,
     headers: Optional[dict[str, str]] = None,
     timeout: float = 30.0,
+    api_name: str = "",
 ) -> APICatalog:
     """
     Introspect a GraphQL endpoint and create an APICatalog.
@@ -518,12 +546,16 @@ def introspect_graphql_endpoint(
         url: GraphQL endpoint URL
         headers: Optional headers (e.g., for authentication)
         timeout: Request timeout in seconds
+        api_name: Name to identify this API in search results
 
     Returns:
         APICatalog populated with operations from the schema
 
     Example:
-        catalog = introspect_graphql_endpoint("https://countries.trevorblades.com/graphql")
+        catalog = introspect_graphql_endpoint(
+            "https://countries.trevorblades.com/graphql",
+            api_name="countries"
+        )
         results = catalog.find_relevant_operations("find countries in Europe")
     """
     # Run introspection query
@@ -614,6 +646,12 @@ def introspect_graphql_endpoint(
                 use_cases=_generate_use_cases(field_data["name"], field_data.get("description")),
                 # Add tags based on operation characteristics
                 tags=_generate_tags(field_data["name"], return_type, arguments),
+                # Protocol info for LLM to know how to call this
+                protocol=Protocol.GRAPHQL,
+                api_name=api_name,
+                # REST-specific fields not used for GraphQL
+                http_method="",
+                path="",
             ))
 
         return operations
@@ -692,6 +730,7 @@ def introspect_openapi_spec(
     base_url: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
     timeout: float = 30.0,
+    api_name: str = "",
 ) -> APICatalog:
     """
     Parse an OpenAPI/Swagger spec and create an APICatalog.
@@ -899,6 +938,12 @@ def introspect_openapi_spec(
                 use_cases=_generate_use_cases(operation_id, description),
                 tags=all_tags,
                 deprecated=operation_data.get("deprecated", False),
+                # Protocol info for LLM to know how to call this
+                protocol=Protocol.REST,
+                api_name=api_name,
+                # REST-specific fields - critical for LLM to construct the request
+                http_method=method.upper(),
+                path=path,
             ))
 
     catalog.register_operations(operations)
