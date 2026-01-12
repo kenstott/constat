@@ -102,6 +102,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_docker: mark test as requiring Docker"
     )
+    config.addinivalue_line(
+        "markers", "requires_ollama: mark test as requiring Ollama"
+    )
 
 
 # Docker availability check
@@ -309,6 +312,154 @@ def postgresql_with_sample_data(postgresql_container) -> Generator[dict, None, N
     yield postgresql_container
 
 
+# =============================================================================
+# Ollama Fixtures
+# =============================================================================
+
+def is_ollama_running(port: int = 11434) -> bool:
+    """Check if Ollama server is responding."""
+    try:
+        import httpx
+        response = httpx.get(f"http://localhost:{port}/api/tags", timeout=5.0)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def get_ollama_models(port: int = 11434) -> list[str]:
+    """Get list of available Ollama models."""
+    try:
+        import httpx
+        response = httpx.get(f"http://localhost:{port}/api/tags", timeout=5.0)
+        if response.status_code == 200:
+            data = response.json()
+            return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        pass
+    return []
+
+
+def pull_ollama_model(model: str, port: int = 11434, timeout: int = 600) -> bool:
+    """Pull an Ollama model. This can take several minutes for large models."""
+    try:
+        import httpx
+        # Use streaming to handle long downloads
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                f"http://localhost:{port}/api/pull",
+                json={"name": model, "stream": False},
+                timeout=timeout,
+            )
+            return response.status_code == 200
+    except Exception as e:
+        print(f"Failed to pull model {model}: {e}")
+        return False
+
+
+def wait_for_ollama(port: int = 11434, timeout: int = 60) -> bool:
+    """Wait for Ollama server to be ready."""
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        if is_ollama_running(port):
+            return True
+        time.sleep(2)
+    return False
+
+
+@pytest.fixture(scope="session")
+def ollama_container(docker_available) -> Generator[dict, None, None]:
+    """Start Ollama container for the test session.
+
+    Yields connection info dict with keys: host, port, base_url
+
+    Note: The first run will pull the test model which can take several minutes.
+    """
+    if not docker_available:
+        pytest.skip("Docker not available")
+
+    container_name = "constat_test_ollama"
+    port = 11434
+    test_model = "llama3.2:1b"  # Small model for faster testing
+
+    # Check if container already running
+    if not is_container_running(container_name):
+        # Remove any stopped container with same name
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+            timeout=30,
+        )
+
+        # Start Ollama container
+        cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "-p", f"{port}:11434",
+            "-v", "ollama_test_data:/root/.ollama",  # Persist models between runs
+            "ollama/ollama"
+        ]
+
+        try:
+            # Longer timeout for first run (image pull can take several minutes)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                pytest.skip(f"Failed to start Ollama container: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            pytest.skip("Ollama container start timed out - image may need to be pulled manually: docker pull ollama/ollama")
+        except FileNotFoundError as e:
+            pytest.skip(f"Error starting Ollama container: {e}")
+
+    # Wait for Ollama to be ready
+    if not wait_for_ollama(port, timeout=60):
+        stop_container(container_name)
+        pytest.skip("Ollama container failed to start")
+
+    # Check if test model is available, pull if needed
+    models = get_ollama_models(port)
+    if test_model not in models and not any(m.startswith(test_model.split(":")[0]) for m in models):
+        print(f"Pulling Ollama model {test_model}... (this may take a few minutes)")
+        if not pull_ollama_model(test_model, port, timeout=600):
+            stop_container(container_name)
+            pytest.skip(f"Failed to pull Ollama model: {test_model}")
+
+    # Refresh model list after pull
+    models = get_ollama_models(port)
+
+    # Find the actual model name (might have different tag)
+    actual_model = test_model
+    for m in models:
+        if m.startswith(test_model.split(":")[0]):
+            actual_model = m
+            break
+
+    yield {
+        "host": "localhost",
+        "port": port,
+        "base_url": f"http://localhost:{port}/v1",
+        "model": actual_model,
+        "models": models,
+        "container_name": container_name,
+    }
+
+    # Cleanup: stop container after all tests
+    # Note: We don't stop by default to speed up subsequent test runs
+    # Uncomment the next line to always cleanup:
+    # stop_container(container_name)
+
+
+@pytest.fixture
+def ollama_model(ollama_container) -> str:
+    """Get the test model name from Ollama container."""
+    return ollama_container["model"]
+
+
+@pytest.fixture
+def ollama_base_url(ollama_container) -> str:
+    """Get Ollama base URL."""
+    return ollama_container["base_url"]
+
+
 # Auto-skip tests based on markers
 def pytest_collection_modifyitems(config, items):
     """Skip tests that require Docker if it's not available."""
@@ -318,6 +469,7 @@ def pytest_collection_modifyitems(config, items):
     skip_docker = pytest.mark.skip(reason="Docker not available")
     skip_mongodb = pytest.mark.skip(reason="MongoDB requires Docker")
     skip_postgresql = pytest.mark.skip(reason="PostgreSQL requires Docker")
+    skip_ollama = pytest.mark.skip(reason="Ollama requires Docker")
 
     for item in items:
         if "requires_docker" in item.keywords:
@@ -326,3 +478,5 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_mongodb)
         if "requires_postgresql" in item.keywords:
             item.add_marker(skip_postgresql)
+        if "requires_ollama" in item.keywords:
+            item.add_marker(skip_ollama)

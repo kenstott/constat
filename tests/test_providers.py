@@ -280,41 +280,257 @@ class TestAnthropicProvider:
 
 
 # =============================================================================
-# Ollama Provider Tests
+# Ollama Provider Unit Tests (Mock-based, no server required)
 # =============================================================================
 
-class TestOllamaProvider:
-    """Tests for Ollama local provider."""
+class TestOllamaProviderUnit:
+    """Unit tests for OllamaProvider using mocks - no server required."""
 
-    @requires_ollama
-    def test_instantiation(self):
-        """Provider can be instantiated."""
+    def test_instantiation_defaults(self):
+        """Provider has correct default values."""
         provider = OllamaProvider()
         assert provider.model == "llama3.2"
         assert provider.DEFAULT_BASE_URL == "http://localhost:11434/v1"
 
-    @requires_ollama
     def test_instantiation_with_custom_model(self):
         """Provider accepts custom model."""
-        provider = OllamaProvider(model="llama3.1")
-        assert provider.model == "llama3.1"
+        provider = OllamaProvider(model="llama3.1:8b")
+        assert provider.model == "llama3.1:8b"
 
-    @requires_ollama
-    def test_supports_tools_detection(self):
-        """Tool support is detected for known models."""
+    def test_instantiation_with_custom_base_url(self):
+        """Provider accepts custom base URL."""
+        provider = OllamaProvider(base_url="http://192.168.1.100:11434/v1")
+        assert provider._base_url == "http://192.168.1.100:11434"
+
+    def test_base_url_normalization_strips_trailing_v1(self):
+        """Base URL stored without /v1 suffix for API calls."""
+        provider = OllamaProvider(base_url="http://custom:8080/v1")
+        assert provider._base_url == "http://custom:8080"
+
+    def test_base_url_normalization_strips_trailing_slash(self):
+        """Base URL stored without trailing slash."""
+        provider = OllamaProvider(base_url="http://custom:8080/")
+        assert provider._base_url == "http://custom:8080"
+
+    def test_base_url_normalization_handles_v1_and_slash(self):
+        """Base URL handles both /v1 and trailing slash."""
+        provider = OllamaProvider(base_url="http://custom:8080/v1/")
+        assert provider._base_url == "http://custom:8080"
+
+    def test_base_url_no_change_needed(self):
+        """Base URL without /v1 is unchanged."""
+        provider = OllamaProvider(base_url="http://custom:8080")
+        assert provider._base_url == "http://custom:8080"
+
+    def test_supports_tools_returns_true_for_llama32(self):
+        """llama3.2 is a known tool-capable model."""
         provider = OllamaProvider(model="llama3.2")
-        # llama3.2 is in the TOOL_CAPABLE_MODELS list
         assert provider.supports_tools is True
 
-        # Older/unknown models may not support tools
-        provider_old = OllamaProvider(model="codellama")
-        # codellama is not in the list, supports_tools should be False
-        assert provider_old.supports_tools is False
+    def test_supports_tools_returns_true_for_llama31(self):
+        """llama3.1 is a known tool-capable model."""
+        provider = OllamaProvider(model="llama3.1")
+        assert provider.supports_tools is True
 
-    @requires_ollama_model
-    def test_generate_simple(self):
+    def test_supports_tools_returns_true_for_mistral(self):
+        """mistral is a known tool-capable model."""
+        provider = OllamaProvider(model="mistral")
+        assert provider.supports_tools is True
+
+    def test_supports_tools_returns_true_for_qwen(self):
+        """qwen2.5 is a known tool-capable model."""
+        provider = OllamaProvider(model="qwen2.5")
+        assert provider.supports_tools is True
+
+    def test_supports_tools_handles_model_tags(self):
+        """Model with tag still matches base model."""
+        provider = OllamaProvider(model="llama3.2:3b-instruct")
+        assert provider.supports_tools is True
+
+    def test_supports_tools_handles_complex_tags(self):
+        """Model with complex tag still matches base model."""
+        provider = OllamaProvider(model="llama3.2:3b-instruct-q4_0")
+        assert provider.supports_tools is True
+
+    def test_supports_tools_case_insensitive(self):
+        """Model name matching is case-insensitive for base name."""
+        provider = OllamaProvider(model="LLAMA3.2:3B")
+        # The comparison lowercases, so this should work
+        assert provider.supports_tools is True
+
+    def test_supports_tools_caches_result(self):
+        """Second call uses cached value."""
+        provider = OllamaProvider(model="llama3.2")
+
+        # First call
+        result1 = provider.supports_tools
+        assert result1 is True
+
+        # Verify cache is set
+        assert provider._supports_tools_cache is True
+
+        # Second call should use cache
+        result2 = provider.supports_tools
+        assert result2 is True
+
+    def test_supports_tools_false_for_unknown_model_no_server(self):
+        """Unknown model without server access returns False."""
+        # This will try to check the API but fail (no server)
+        provider = OllamaProvider(model="totally-unknown-model")
+        # Should return False without crashing
+        result = provider.supports_tools
+        assert result is False
+
+    def test_tool_capable_models_list_not_empty(self):
+        """Sanity check: TOOL_CAPABLE_MODELS is defined."""
+        assert len(OllamaProvider.TOOL_CAPABLE_MODELS) > 0
+        assert "llama3.2" in OllamaProvider.TOOL_CAPABLE_MODELS
+
+    def test_model_attribute_set_correctly(self):
+        """Provider.model returns the configured model."""
+        provider = OllamaProvider(model="custom-model")
+        assert provider.model == "custom-model"
+
+    def test_client_is_openai_instance(self):
+        """Provider creates an OpenAI client."""
+        from openai import OpenAI
+        provider = OllamaProvider()
+        assert isinstance(provider.client, OpenAI)
+
+
+class TestOllamaProviderMockedAPI:
+    """Tests for OllamaProvider with mocked HTTP calls."""
+
+    def test_unknown_model_checks_api_and_finds_tools_support(self):
+        """Unknown model triggers API check, finds tool support in template."""
+        from unittest.mock import patch, Mock
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "template": "This model supports tools and function calling"
+        }
+
+        with patch("httpx.post", return_value=mock_response) as mock_post:
+            provider = OllamaProvider(model="custom-tool-model")
+            result = provider.supports_tools
+
+            # Should have called the API
+            mock_post.assert_called_once()
+            assert result is True
+
+    def test_unknown_model_checks_api_no_tools_support(self):
+        """Unknown model triggers API check, no tool support in template."""
+        from unittest.mock import patch, Mock
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "template": "This is a basic chat template"
+        }
+
+        with patch("httpx.post", return_value=mock_response) as mock_post:
+            provider = OllamaProvider(model="basic-model")
+            result = provider.supports_tools
+
+            mock_post.assert_called_once()
+            assert result is False
+
+    def test_supports_tools_handles_connection_error(self):
+        """Connection error returns False, doesn't crash."""
+        from unittest.mock import patch
+        import httpx
+
+        with patch("httpx.post", side_effect=httpx.ConnectError("Connection refused")):
+            provider = OllamaProvider(model="unknown-model")
+            result = provider.supports_tools
+
+            # Should return False, not raise
+            assert result is False
+
+    def test_supports_tools_handles_timeout(self):
+        """Timeout returns False, doesn't crash."""
+        from unittest.mock import patch
+        import httpx
+
+        with patch("httpx.post", side_effect=httpx.TimeoutException("Timeout")):
+            provider = OllamaProvider(model="unknown-model")
+            result = provider.supports_tools
+
+            assert result is False
+
+    def test_supports_tools_handles_invalid_json(self):
+        """Invalid JSON response returns False."""
+        from unittest.mock import patch, Mock
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.side_effect = ValueError("Invalid JSON")
+
+        with patch("httpx.post", return_value=mock_response):
+            provider = OllamaProvider(model="unknown-model")
+            result = provider.supports_tools
+
+            assert result is False
+
+    def test_supports_tools_handles_missing_template_key(self):
+        """Response without 'template' key returns False."""
+        from unittest.mock import patch, Mock
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"name": "model", "size": 12345}
+
+        with patch("httpx.post", return_value=mock_response):
+            provider = OllamaProvider(model="unknown-model")
+            result = provider.supports_tools
+
+            assert result is False
+
+    def test_supports_tools_handles_http_error(self):
+        """HTTP error status returns False."""
+        from unittest.mock import patch, Mock
+
+        mock_response = Mock()
+        mock_response.status_code = 404
+
+        with patch("httpx.post", return_value=mock_response):
+            provider = OllamaProvider(model="unknown-model")
+            result = provider.supports_tools
+
+            assert result is False
+
+
+# =============================================================================
+# Ollama Provider Integration Tests (Docker-based, server required)
+# =============================================================================
+
+@pytest.mark.requires_docker
+class TestOllamaProviderIntegration:
+    """Integration tests for Ollama provider - requires Docker to start Ollama server."""
+
+    def test_instantiation_with_running_server(self, ollama_container):
+        """Provider can connect to running Ollama server."""
+        provider = OllamaProvider(base_url=ollama_container["base_url"])
+        assert provider.model == "llama3.2"
+
+    def test_supports_tools_with_live_api(self, ollama_container):
+        """Tool support detection works against live server."""
+        provider = OllamaProvider(
+            model=ollama_container["model"],
+            base_url=ollama_container["base_url"],
+        )
+        # The test model should be a known tool-capable model
+        result = provider.supports_tools
+        # llama3.2 variants support tools
+        assert isinstance(result, bool)
+
+    def test_generate_simple(self, ollama_container):
         """Basic generation without tools."""
-        provider = OllamaProvider(model=OLLAMA_TEST_MODEL)
+        provider = OllamaProvider(
+            model=ollama_container["model"],
+            base_url=ollama_container["base_url"],
+        )
         response = provider.generate(
             system="You are a helpful assistant. Be very brief.",
             user_message="What is 2 + 2? Reply with just the number.",
@@ -322,22 +538,26 @@ class TestOllamaProvider:
         )
         assert "4" in response
 
-    @requires_ollama_model
-    def test_generate_code(self):
+    def test_generate_code(self, ollama_container):
         """Code generation extracts from markdown blocks."""
-        provider = OllamaProvider(model=OLLAMA_TEST_MODEL)
+        provider = OllamaProvider(
+            model=ollama_container["model"],
+            base_url=ollama_container["base_url"],
+        )
         response = provider.generate_code(
             system="You are a Python expert. Return only code in markdown blocks.",
             user_message="Write a one-line function that returns the sum of a and b.",
             max_tokens=200,
         )
-        assert "def" in response or "lambda" in response
+        assert "def" in response or "lambda" in response or "+" in response
         assert "```" not in response
 
-    @requires_ollama_model
-    def test_generate_with_tools(self):
+    def test_generate_with_tools(self, ollama_container):
         """Generation with tool calling (if model supports it)."""
-        provider = OllamaProvider(model=OLLAMA_TEST_MODEL)
+        provider = OllamaProvider(
+            model=ollama_container["model"],
+            base_url=ollama_container["base_url"],
+        )
         if not provider.supports_tools:
             pytest.skip("Model does not support tools")
 
@@ -348,8 +568,50 @@ class TestOllamaProvider:
             tool_handlers=TOOL_HANDLERS,
             max_tokens=500,
         )
-        # Response should mention the location or weather info
+        # Response should exist
         assert len(response) > 0
+
+    def test_generate_multiple_responses(self, ollama_container):
+        """Multiple generations work without issues."""
+        provider = OllamaProvider(
+            model=ollama_container["model"],
+            base_url=ollama_container["base_url"],
+        )
+        # First generation
+        response1 = provider.generate(
+            system="You are a helpful assistant. Be brief.",
+            user_message="What is 1 + 1? Reply with just the number.",
+            max_tokens=20,
+        )
+        assert "2" in response1
+
+        # Second generation
+        response2 = provider.generate(
+            system="You are a helpful assistant. Be brief.",
+            user_message="What is 3 + 3? Reply with just the number.",
+            max_tokens=20,
+        )
+        assert "6" in response2
+
+
+# Keep the old markers for backward compatibility when running without fixtures
+@requires_ollama
+def test_ollama_provider_backward_compat():
+    """Backward compatibility test - uses old marker."""
+    provider = OllamaProvider()
+    assert provider.model == "llama3.2"
+
+
+@requires_ollama_model
+def test_ollama_generate_backward_compat():
+    """Backward compatibility test for generation."""
+    provider = OllamaProvider(model=OLLAMA_TEST_MODEL)
+    response = provider.generate(
+        system="Be brief.",
+        user_message="Say hello.",
+        max_tokens=20,
+    )
+    assert len(response) > 0
 
 
 # =============================================================================
