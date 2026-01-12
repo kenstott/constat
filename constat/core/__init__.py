@@ -8,7 +8,9 @@ from .config import (
     DocumentConfig,
     ExecutionConfig,
     LLMConfig,
-    LLMTiersConfig,
+    ModelSpec,
+    TaskRoutingConfig,
+    TaskRoutingEntry,
 )
 from .models import (
     Artifact,
@@ -21,6 +23,7 @@ from .models import (
     StepResult,
     StepStatus,
     StepType,
+    TaskType,
 )
 
 __all__ = [
@@ -32,7 +35,9 @@ __all__ = [
     "DocumentConfig",
     "ExecutionConfig",
     "LLMConfig",
-    "LLMTiersConfig",
+    "ModelSpec",
+    "TaskRoutingConfig",
+    "TaskRoutingEntry",
     # Models
     "Artifact",
     "ArtifactType",
@@ -44,4 +49,5 @@ __all__ = [
     "StepResult",
     "StepStatus",
     "StepType",
+    "TaskType",
 ]

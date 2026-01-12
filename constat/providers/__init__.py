@@ -10,8 +10,8 @@ Available providers:
 - GroqProvider: Fast Llama inference via Groq
 - LlamaProvider: Alias for OllamaProvider (default local option)
 
-Factory:
-- ProviderFactory: Creates and caches provider instances by name
+Routing:
+- TaskRouter: Routes tasks to models with automatic escalation
 """
 
 from .base import BaseLLMProvider, GenerationResult, ToolResult
@@ -20,15 +20,15 @@ from .openai import OpenAIProvider
 from .gemini import GeminiProvider
 from .grok import GrokProvider
 from .llama import LlamaProvider, OllamaProvider, TogetherProvider, GroqProvider
-from .factory import ProviderFactory
+from .router import TaskRouter
 
 __all__ = [
     # Base
     "BaseLLMProvider",
     "GenerationResult",
     "ToolResult",
-    # Factory
-    "ProviderFactory",
+    # Router
+    "TaskRouter",
     # Providers
     "AnthropicProvider",
     "OpenAIProvider",

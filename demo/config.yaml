@@ -6,6 +6,18 @@ llm:
   model: claude-sonnet-4-20250514
   api_key: ${ANTHROPIC_API_KEY}
 
+  # Optional: Task-type routing with automatic model escalation
+  # Uncomment to try local-first with cloud fallback:
+  # task_routing:
+  #   sql_generation:
+  #     models:
+  #       - provider: ollama              # Try local SQLCoder first
+  #         model: sqlcoder:7b
+  #       - model: claude-sonnet-4-20250514  # Escalate on failure
+  #   summarization:
+  #     models:
+  #       - model: claude-3-5-haiku-20241022  # Fast/cheap for summaries
+
 # SQL Databases and File-based Data Sources
 databases:
   sales:

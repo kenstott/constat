@@ -403,44 +403,67 @@ def ollama_container(docker_available) -> Generator[dict, None, None]:
 
     Note: The first run will pull the test model which can take several minutes.
 
-    Uses unique container name and port per pytest session to allow parallel runs.
-    The model volume is shared across sessions for faster subsequent runs.
+    Uses a SHARED container that persists across test runs:
+    - Container name: constat_ollama_shared
+    - Port: 11434 (default)
+    - Volume: ollama_test_data (persists models)
+
+    The container is NOT stopped after tests - it can be reused by subsequent runs.
+    Ollama handles multiple concurrent connections fine.
     """
     if not docker_available:
         pytest.skip("Docker not available")
 
-    container_name = _get_unique_container_name("constat_test_ollama")
-    port = _get_unique_port(11434)
+    # Use fixed name/port for shared instance
+    container_name = "constat_ollama_shared"
+    port = 11434
     test_model = "llama3.2:1b"  # Small model for faster testing
 
-    # Check if container already running
-    if not is_container_running(container_name):
-        # Remove any stopped container with same name
-        subprocess.run(
-            ["docker", "rm", "-f", container_name],
-            capture_output=True,
-            timeout=30,
-        )
+    # Check if container already running on the expected port
+    if is_ollama_running(port):
+        # Already running - just use it
+        models = get_ollama_models(port)
+        actual_model = test_model
+        for m in models:
+            if m.startswith(test_model.split(":")[0]):
+                actual_model = m
+                break
 
-        # Start Ollama container
-        # Note: Volume is shared across sessions for model persistence
-        cmd = [
-            "docker", "run", "-d",
-            "--name", container_name,
-            "-p", f"{port}:11434",
-            "-v", "ollama_test_data:/root/.ollama",  # Persist models between runs
-            "ollama/ollama"
-        ]
+        yield {
+            "host": "localhost",
+            "port": port,
+            "base_url": f"http://localhost:{port}/v1",
+            "model": actual_model,
+            "models": models,
+            "container_name": container_name,
+        }
+        return  # Don't stop - leave running for future tests
 
-        try:
-            # Longer timeout for first run (image pull can take several minutes)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                pytest.skip(f"Failed to start Ollama container: {result.stderr}")
-        except subprocess.TimeoutExpired:
-            pytest.skip("Ollama container start timed out - image may need to be pulled manually: docker pull ollama/ollama")
-        except FileNotFoundError as e:
-            pytest.skip(f"Error starting Ollama container: {e}")
+    # Not running - start it
+    # Remove any stopped container with same name
+    subprocess.run(
+        ["docker", "rm", "-f", container_name],
+        capture_output=True,
+        timeout=30,
+    )
+
+    # Start Ollama container
+    cmd = [
+        "docker", "run", "-d",
+        "--name", container_name,
+        "-p", f"{port}:11434",
+        "-v", "ollama_test_data:/root/.ollama",  # Persist models between runs
+        "ollama/ollama"
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            pytest.skip(f"Failed to start Ollama container: {result.stderr}")
+    except subprocess.TimeoutExpired:
+        pytest.skip("Ollama container start timed out - image may need to be pulled manually: docker pull ollama/ollama")
+    except FileNotFoundError as e:
+        pytest.skip(f"Error starting Ollama container: {e}")
 
     # Wait for Ollama to be ready
     if not wait_for_ollama(port, timeout=60):
@@ -474,8 +497,9 @@ def ollama_container(docker_available) -> Generator[dict, None, None]:
         "container_name": container_name,
     }
 
-    # Cleanup: stop container after all tests
-    stop_container(container_name)
+    # NOTE: Do NOT stop container - leave it running for future test runs
+    # Ollama handles concurrent connections fine and reusing the container
+    # avoids the overhead of restarting and re-pulling models
 
 
 @pytest.fixture

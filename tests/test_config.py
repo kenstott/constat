@@ -1,4 +1,4 @@
-"""Tests for configuration loading and model tiering."""
+"""Tests for configuration loading and task-type routing."""
 
 import os
 import tempfile
@@ -7,177 +7,189 @@ from pathlib import Path
 import pytest
 
 from constat.core.config import (
-    Config, LLMConfig, LLMTiersConfig, TierConfig, DatabaseConfig,
-    DatabaseCredentials
+    Config, LLMConfig, ModelSpec, TaskRoutingEntry, TaskRoutingConfig,
+    DatabaseConfig, DatabaseCredentials, DEFAULT_TASK_ROUTING
 )
+from constat.core.models import TaskType
 
 
 class TestLLMConfig:
     """Tests for LLM configuration."""
 
     def test_default_model(self):
-        """Test default model when no tiers configured."""
+        """Test default model in LLMConfig."""
         config = LLMConfig(model="claude-sonnet-4-20250514")
+        assert config.model == "claude-sonnet-4-20250514"
+        assert config.provider == "anthropic"
 
-        assert config.get_model("default") == "claude-sonnet-4-20250514"
-        assert config.get_model("planning") == "claude-sonnet-4-20250514"
-        assert config.get_model("codegen") == "claude-sonnet-4-20250514"
-        assert config.get_model("simple") == "claude-sonnet-4-20250514"
-        assert config.get_model("unknown") == "claude-sonnet-4-20250514"
+    def test_task_routing_not_configured(self):
+        """Test get_task_routing returns defaults when not configured."""
+        config = LLMConfig(model="claude-sonnet-4-20250514")
+        routing = config.get_task_routing()
 
-    def test_tiered_models(self):
-        """Test model selection with tiers configured."""
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple="claude-3-5-haiku-20241022",
+        # Should have default routes for all standard task types
+        assert "planning" in routing.routes
+        assert "sql_generation" in routing.routes
+        assert "python_analysis" in routing.routes
+
+    def test_task_routing_uses_default_model_when_not_configured(self):
+        """Test that default routing uses the config's model."""
+        config = LLMConfig(model="my-custom-model")
+        routing = config.get_task_routing()
+
+        # All tasks should use the default model
+        for task_type in routing.routes:
+            models = routing.get_models_for_task(task_type)
+            assert len(models) >= 1
+            assert models[0].model == "my-custom-model"
+
+    def test_custom_task_routing(self):
+        """Test custom task routing configuration."""
+        routing_config = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[
+                    ModelSpec(provider="ollama", model="sqlcoder:7b"),
+                    ModelSpec(model="claude-sonnet-4-20250514"),
+                ]
+            )
+        })
+        config = LLMConfig(
+            model="claude-sonnet-4-20250514",
+            task_routing=routing_config,
         )
-        config = LLMConfig(model="claude-sonnet-4-20250514", tiers=tiers)
+        routing = config.get_task_routing()
 
-        assert config.get_model("default") == "claude-sonnet-4-20250514"
-        assert config.get_model("planning") == "claude-opus-4-20250514"
-        assert config.get_model("codegen") == "claude-sonnet-4-20250514"
-        assert config.get_model("simple") == "claude-3-5-haiku-20241022"
+        # Custom route should be used
+        sql_models = routing.get_models_for_task("sql_generation")
+        assert len(sql_models) == 2
+        assert sql_models[0].provider == "ollama"
+        assert sql_models[0].model == "sqlcoder:7b"
 
-    def test_unknown_tier_returns_default(self):
-        """Test that unknown tier falls back to default model."""
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple="claude-3-5-haiku-20241022",
-        )
-        config = LLMConfig(model="claude-sonnet-4-20250514", tiers=tiers)
-
-        assert config.get_model("unknown_tier") == "claude-sonnet-4-20250514"
-        assert config.get_model("invalid") == "claude-sonnet-4-20250514"
+        # Default routes should still exist for other task types
+        assert "planning" in routing.routes
 
 
-class TestLLMTiersConfig:
-    """Tests for LLM tiers configuration."""
+class TestModelSpec:
+    """Tests for ModelSpec model."""
 
-    def test_tier_defaults(self):
-        """Test tier default values."""
-        tiers = LLMTiersConfig()
+    def test_model_spec_minimal(self):
+        """ModelSpec with just model."""
+        spec = ModelSpec(model="gpt-4")
+        assert spec.model == "gpt-4"
+        assert spec.provider is None
+        assert spec.base_url is None
 
-        assert tiers.planning == "claude-sonnet-4-20250514"
-        assert tiers.codegen == "claude-sonnet-4-20250514"
-        assert tiers.simple == "claude-3-5-haiku-20241022"
+    def test_model_spec_with_provider(self):
+        """ModelSpec with provider override."""
+        spec = ModelSpec(provider="ollama", model="llama3.2:3b")
+        assert spec.provider == "ollama"
+        assert spec.model == "llama3.2:3b"
 
-    def test_custom_tier_values(self):
-        """Test custom tier configuration."""
-        tiers = LLMTiersConfig(
-            planning="model-a",
-            codegen="model-b",
-            simple="model-c",
-        )
-
-        assert tiers.planning == "model-a"
-        assert tiers.codegen == "model-b"
-        assert tiers.simple == "model-c"
-
-    def test_tier_with_provider_override(self):
-        """Test tier with provider override."""
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple=TierConfig(provider="ollama", model="llama3.2:3b"),
-        )
-
-        # String tiers should be normalized to TierConfig
-        planning_config = tiers.get_tier_config("planning")
-        assert planning_config.provider is None  # Uses default
-        assert planning_config.model == "claude-opus-4-20250514"
-
-        # TierConfig tier should have provider override
-        simple_config = tiers.get_tier_config("simple")
-        assert simple_config.provider == "ollama"
-        assert simple_config.model == "llama3.2:3b"
-
-    def test_get_tier_config_normalizes_strings(self):
-        """Test that get_tier_config normalizes string to TierConfig."""
-        tiers = LLMTiersConfig(
-            planning="my-model",
-        )
-
-        tier_config = tiers.get_tier_config("planning")
-        assert isinstance(tier_config, TierConfig)
-        assert tier_config.model == "my-model"
-        assert tier_config.provider is None
-
-
-class TestTierConfig:
-    """Tests for TierConfig model."""
-
-    def test_tier_config_model_only(self):
-        """TierConfig with just model."""
-        config = TierConfig(model="gpt-4")
-        assert config.model == "gpt-4"
-        assert config.provider is None
-        assert config.base_url is None
-
-    def test_tier_config_with_provider(self):
-        """TierConfig with provider override."""
-        config = TierConfig(provider="ollama", model="llama3.2:3b")
-        assert config.provider == "ollama"
-        assert config.model == "llama3.2:3b"
-
-    def test_tier_config_with_base_url(self):
-        """TierConfig with custom base URL."""
-        config = TierConfig(
+    def test_model_spec_with_base_url(self):
+        """ModelSpec with custom base URL."""
+        spec = ModelSpec(
             provider="ollama",
             model="llama3.2:3b",
             base_url="http://192.168.1.100:11434/v1",
         )
-        assert config.base_url == "http://192.168.1.100:11434/v1"
+        assert spec.base_url == "http://192.168.1.100:11434/v1"
 
 
-class TestLLMConfigTierConfig:
-    """Tests for LLMConfig.get_tier_config method."""
+class TestTaskRoutingEntry:
+    """Tests for TaskRoutingEntry model."""
 
-    def test_get_tier_config_default(self):
-        """get_tier_config returns default when no tiers configured."""
-        config = LLMConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
+    def test_routing_entry_single_model(self):
+        """TaskRoutingEntry with single model."""
+        entry = TaskRoutingEntry(
+            models=[ModelSpec(model="claude-sonnet-4-20250514")]
         )
+        assert len(entry.models) == 1
+        assert entry.models[0].model == "claude-sonnet-4-20250514"
 
-        tier_config = config.get_tier_config("planning")
-        assert tier_config.provider is None
-        assert tier_config.model == "claude-sonnet-4-20250514"
-
-    def test_get_tier_config_with_tiers(self):
-        """get_tier_config returns correct config for each tier."""
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple=TierConfig(provider="ollama", model="llama3.2:3b"),
+    def test_routing_entry_escalation_chain(self):
+        """TaskRoutingEntry with escalation chain."""
+        entry = TaskRoutingEntry(
+            models=[
+                ModelSpec(provider="ollama", model="sqlcoder:7b"),
+                ModelSpec(model="claude-3-5-haiku-20241022"),
+                ModelSpec(model="claude-sonnet-4-20250514"),
+            ]
         )
-        config = LLMConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            tiers=tiers,
+        assert len(entry.models) == 3
+        assert entry.models[0].provider == "ollama"
+        assert entry.models[1].model == "claude-3-5-haiku-20241022"
+
+    def test_routing_entry_high_complexity_models(self):
+        """TaskRoutingEntry with high complexity override."""
+        entry = TaskRoutingEntry(
+            models=[ModelSpec(model="claude-3-5-haiku-20241022")],
+            high_complexity_models=[ModelSpec(model="claude-sonnet-4-20250514")],
         )
+        assert len(entry.models) == 1
+        assert len(entry.high_complexity_models) == 1
 
-        planning = config.get_tier_config("planning")
-        assert planning.provider is None
-        assert planning.model == "claude-opus-4-20250514"
 
-        simple = config.get_tier_config("simple")
-        assert simple.provider == "ollama"
-        assert simple.model == "llama3.2:3b"
+class TestTaskRoutingConfig:
+    """Tests for TaskRoutingConfig."""
 
-    def test_get_tier_config_unknown_tier_returns_default(self):
-        """Unknown tier returns default config."""
-        tiers = LLMTiersConfig()
-        config = LLMConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            tiers=tiers,
-        )
+    def test_get_models_for_task_medium_complexity(self):
+        """Get models for medium complexity uses standard models."""
+        config = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="standard-model")],
+                high_complexity_models=[ModelSpec(model="advanced-model")],
+            )
+        })
+        models = config.get_models_for_task("sql_generation", complexity="medium")
+        assert len(models) == 1
+        assert models[0].model == "standard-model"
 
-        tier_config = config.get_tier_config("unknown")
-        assert tier_config.provider is None
-        assert tier_config.model == "claude-sonnet-4-20250514"
+    def test_get_models_for_task_high_complexity(self):
+        """Get models for high complexity uses high_complexity_models."""
+        config = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="standard-model")],
+                high_complexity_models=[ModelSpec(model="advanced-model")],
+            )
+        })
+        models = config.get_models_for_task("sql_generation", complexity="high")
+        assert len(models) == 1
+        assert models[0].model == "advanced-model"
+
+    def test_get_models_for_task_high_complexity_fallback(self):
+        """High complexity falls back to standard if no high_complexity_models."""
+        config = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="standard-model")],
+            )
+        })
+        models = config.get_models_for_task("sql_generation", complexity="high")
+        assert len(models) == 1
+        assert models[0].model == "standard-model"
+
+    def test_get_models_for_unknown_task(self):
+        """Unknown task returns empty list."""
+        config = TaskRoutingConfig(routes={})
+        models = config.get_models_for_task("unknown_task")
+        assert models == []
+
+
+class TestDefaultTaskRouting:
+    """Tests for default task routing configuration."""
+
+    def test_default_routing_has_all_task_types(self):
+        """Default routing has entries for all expected task types."""
+        expected_tasks = [
+            "planning", "replanning", "sql_generation", "python_analysis",
+            "intent_classification", "summarization", "fact_resolution", "general"
+        ]
+        for task in expected_tasks:
+            assert task in DEFAULT_TASK_ROUTING, f"Missing default route for {task}"
+
+    def test_default_routing_entries_have_models(self):
+        """Each default routing entry has at least one model."""
+        for task_type, entry in DEFAULT_TASK_ROUTING.items():
+            assert len(entry.models) >= 1, f"Task {task_type} has no models"
 
 
 class TestDatabaseConfig:
@@ -202,17 +214,20 @@ class TestDatabaseConfig:
 class TestConfigFromYaml:
     """Tests for loading config from YAML files."""
 
-    def test_load_config_with_tiers(self):
-        """Test loading config with model tiers from YAML."""
+    def test_load_config_with_task_routing(self):
+        """Test loading config with task routing from YAML."""
         yaml_content = """
 llm:
   provider: anthropic
   model: claude-sonnet-4-20250514
   api_key: test-key
-  tiers:
-    planning: claude-opus-4-20250514
-    codegen: claude-sonnet-4-20250514
-    simple: claude-3-5-haiku-20241022
+  task_routing:
+    routes:
+      sql_generation:
+        models:
+          - provider: ollama
+            model: sqlcoder:7b
+          - model: claude-sonnet-4-20250514
 
 databases:
   test_db:
@@ -226,64 +241,31 @@ databases:
             try:
                 config = Config.from_yaml(f.name)
 
-                assert config.llm.tiers is not None
-                assert config.llm.get_model("planning") == "claude-opus-4-20250514"
-                assert config.llm.get_model("codegen") == "claude-sonnet-4-20250514"
-                assert config.llm.get_model("simple") == "claude-3-5-haiku-20241022"
+                assert config.llm.task_routing is not None
+                routing = config.llm.get_task_routing()
+
+                # Custom SQL generation route should be used
+                sql_models = routing.get_models_for_task("sql_generation")
+                assert len(sql_models) == 2
+                assert sql_models[0].provider == "ollama"
+                assert sql_models[0].model == "sqlcoder:7b"
             finally:
                 os.unlink(f.name)
 
-    def test_load_config_with_provider_override_tiers(self):
-        """Test loading config with provider override in tiers from YAML."""
+    def test_load_config_with_high_complexity_models(self):
+        """Test loading config with high complexity models from YAML."""
         yaml_content = """
 llm:
   provider: anthropic
   model: claude-sonnet-4-20250514
   api_key: test-key
-  tiers:
-    planning: claude-opus-4-20250514
-    codegen: claude-sonnet-4-20250514
-    simple:
-      provider: ollama
-      model: llama3.2:3b
-
-databases:
-  test_db:
-    uri: sqlite:///test.db
-"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            f.write(yaml_content)
-            f.flush()
-
-            try:
-                config = Config.from_yaml(f.name)
-
-                assert config.llm.tiers is not None
-
-                # Model tiers (string format)
-                assert config.llm.get_model("planning") == "claude-opus-4-20250514"
-                assert config.llm.get_model("codegen") == "claude-sonnet-4-20250514"
-
-                # Provider override tier
-                simple_config = config.llm.get_tier_config("simple")
-                assert simple_config.provider == "ollama"
-                assert simple_config.model == "llama3.2:3b"
-            finally:
-                os.unlink(f.name)
-
-    def test_load_config_with_base_url_in_tier(self):
-        """Test loading config with base_url in tier config from YAML."""
-        yaml_content = """
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  api_key: test-key
-  tiers:
-    planning: claude-opus-4-20250514
-    simple:
-      provider: ollama
-      model: llama3.2:3b
-      base_url: http://192.168.1.100:11434/v1
+  task_routing:
+    routes:
+      python_analysis:
+        models:
+          - model: claude-3-5-haiku-20241022
+        high_complexity_models:
+          - model: claude-sonnet-4-20250514
 
 databases: {}
 """
@@ -293,16 +275,20 @@ databases: {}
 
             try:
                 config = Config.from_yaml(f.name)
+                routing = config.llm.get_task_routing()
 
-                simple_config = config.llm.get_tier_config("simple")
-                assert simple_config.provider == "ollama"
-                assert simple_config.model == "llama3.2:3b"
-                assert simple_config.base_url == "http://192.168.1.100:11434/v1"
+                # Medium complexity should use haiku
+                medium_models = routing.get_models_for_task("python_analysis", "medium")
+                assert medium_models[0].model == "claude-3-5-haiku-20241022"
+
+                # High complexity should use sonnet
+                high_models = routing.get_models_for_task("python_analysis", "high")
+                assert high_models[0].model == "claude-sonnet-4-20250514"
             finally:
                 os.unlink(f.name)
 
-    def test_load_config_without_tiers(self):
-        """Test loading config without model tiers defaults correctly."""
+    def test_load_config_without_task_routing(self):
+        """Test loading config without task routing defaults correctly."""
         yaml_content = """
 llm:
   provider: anthropic
@@ -320,11 +306,10 @@ databases:
             try:
                 config = Config.from_yaml(f.name)
 
-                assert config.llm.tiers is None
-                # All tiers should return default model when tiers not configured
-                assert config.llm.get_model("planning") == "claude-sonnet-4-20250514"
-                assert config.llm.get_model("codegen") == "claude-sonnet-4-20250514"
-                assert config.llm.get_model("simple") == "claude-sonnet-4-20250514"
+                assert config.llm.task_routing is None
+                # get_task_routing should still work and return defaults
+                routing = config.llm.get_task_routing()
+                assert "planning" in routing.routes
             finally:
                 os.unlink(f.name)
 

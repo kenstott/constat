@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from constat.core.config import Config
-from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType
+from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType, TaskType
 from constat.storage.datastore import DataStore
 from constat.storage.history import SessionHistory
 from constat.execution.executor import ExecutionResult, PythonExecutor, format_error_for_retry
@@ -20,7 +20,7 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
-from constat.providers import ProviderFactory
+from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
 
 
@@ -176,13 +176,15 @@ class Session:
         self.schema_manager = SchemaManager(config)
         self.schema_manager.initialize(progress_callback=progress_callback)
 
-        # Provider factory for multi-provider support
-        self.provider_factory = ProviderFactory(config.llm)
+        # Task router for model routing with escalation
+        self.router = TaskRouter(config.llm)
 
-        # Default provider (for backward compatibility and general use)
-        self.llm = self.provider_factory.get_default_provider()
+        # Default provider (for backward compatibility - e.g., fact resolver)
+        self.llm = self.router._get_provider(
+            self.router.routing_config.get_models_for_task("general")[0]
+        )
 
-        self.planner = Planner(config, self.schema_manager, self.provider_factory)
+        self.planner = Planner(config, self.schema_manager, self.router)
 
         self.executor = PythonExecutor(
             timeout_seconds=config.execution.timeout_seconds,
@@ -381,30 +383,36 @@ class Session:
                 data={"attempt": attempt}
             ))
 
-            # Get provider and model for codegen tier (may be different provider)
-            codegen_provider, codegen_model = self.provider_factory.get_provider_for_tier("codegen")
-
+            # Use router with step's task_type for automatic model selection/escalation
             if attempt == 1:
                 prompt = self._build_step_prompt(step)
-                code = codegen_provider.generate_code(
+                result = self.router.execute_code(
+                    task_type=step.task_type,
                     system=STEP_SYSTEM_PROMPT,
                     user_message=prompt,
                     tools=self._get_schema_tools(),
                     tool_handlers=self._get_tool_handlers(),
-                    model=codegen_model,
+                    complexity=step.complexity,
                 )
             else:
                 retry_prompt = RETRY_PROMPT_TEMPLATE.format(
                     error_details=last_error,
                     previous_code=last_code,
                 )
-                code = codegen_provider.generate_code(
+                result = self.router.execute_code(
+                    task_type=step.task_type,
                     system=STEP_SYSTEM_PROMPT,
                     user_message=retry_prompt,
                     tools=self._get_schema_tools(),
                     tool_handlers=self._get_tool_handlers(),
-                    model=codegen_model,
+                    complexity=step.complexity,
                 )
+
+            if not result.success:
+                # Router exhausted all models
+                raise RuntimeError(f"Code generation failed: {result.content}")
+
+            code = result.content
 
             step.code = code
 

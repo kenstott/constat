@@ -37,8 +37,8 @@ Technical documentation of the system architecture and logic flow.
 │ │(planner.py) │ │    │ │(fact_       │ │    │ │ (schema_manager.py)     │ │
 │ └──────┬──────┘ │    │ │ resolver.py)│ │    │ └─────────────────────────┘ │
 │        │        │    │ └──────┬──────┘ │    │ ┌─────────────────────────┐ │
-│        ▼        │    │        │        │    │ │  ProviderFactory        │ │
-│ ┌─────────────┐ │    │        ▼        │    │ │ (providers/factory.py)  │ │
+│        ▼        │    │        │        │    │ │     TaskRouter          │ │
+│ ┌─────────────┐ │    │        ▼        │    │ │ (providers/router.py)   │ │
 │ │  Executor   │ │    │ ┌─────────────┐ │    │ └─────────────────────────┘ │
 │ │(executor.py)│ │    │ │ Derivation  │ │    │ ┌─────────────────────────┐ │
 │ └─────────────┘ │    │ │   Trace     │ │    │ │    DataStore            │ │
@@ -317,8 +317,8 @@ Follow-up: "Now compare this to last year"
 The central orchestrator that manages the execution lifecycle.
 
 **Responsibilities:**
-- Initialize components (SchemaManager, ProviderFactory, Planner, Executor)
-- Route LLM requests to appropriate provider based on tier (planning, codegen, simple)
+- Initialize components (SchemaManager, TaskRouter, Planner, Executor)
+- Route LLM requests via TaskRouter based on task type with automatic escalation
 - Manage session state (datastore, scratchpad)
 - Execute plans step-by-step
 - Handle retries and errors
@@ -760,8 +760,8 @@ Code Execution
 
 1. **Schema Caching** - Introspect once, cache for session
 2. **Fact Caching** - Never resolve same fact twice
-3. **Model Tiering** - Use cheaper models for simple tasks
-4. **Multi-Provider Tiering** - Use different providers per tier (e.g., local Ollama for simple tasks)
+3. **Task-Type Routing** - Route tasks to specialized models (SQLCoder for SQL, haiku for summaries)
+4. **Automatic Escalation** - Try local/cheap models first, escalate to cloud on failure
 5. **Batch Resolution** - Resolve multiple facts in one LLM call
 6. **Context Truncation** - Summarize old scratchpad entries
 7. **Parallel Fact Resolution** - Resolve independent facts concurrently (3-5x speedup)
@@ -769,14 +769,15 @@ Code Execution
    - Rate-limited to avoid API throttling (semaphore + RPM tracking)
    - Sub-proofs resolved recursively with parallelization at each level
 
-### ProviderFactory (`providers/factory.py`)
+### TaskRouter (`providers/router.py`)
 
-Manages multiple LLM providers for different execution tiers.
+Routes tasks to appropriate models with automatic escalation on failure.
 
 **Purpose:**
-- Creates and caches provider instances by name
-- Routes requests to appropriate provider based on tier
-- Enables hybrid cloud/local deployments
+- Maps task types to ordered lists of models (escalation chains)
+- Tries each model in order until success
+- Tracks escalation statistics for observability
+- Enables local-first with cloud fallback pattern
 
 **Configuration:**
 
@@ -784,38 +785,86 @@ Manages multiple LLM providers for different execution tiers.
 llm:
   provider: anthropic              # Default provider
   model: claude-sonnet-4-20250514
-  tiers:
-    planning: claude-opus-4-20250514      # Uses default provider
-    codegen: claude-sonnet-4-20250514     # Uses default provider
-    simple:
-      provider: ollama                    # Override provider
-      model: llama3.2:3b
-      base_url: http://localhost:11434/v1
+
+  task_routing:
+    sql_generation:
+      models:
+        - provider: ollama           # Try local first
+          model: sqlcoder:7b
+        - model: claude-sonnet-4-20250514  # Escalate on failure
+
+    python_analysis:
+      models:
+        - model: claude-sonnet-4-20250514
+      high_complexity_models:        # Use for complex tasks
+        - model: claude-opus-4-20250514
+
+    planning:
+      models:
+        - model: claude-sonnet-4-20250514
 ```
 
 **Usage:**
 
 ```python
-from constat.providers import ProviderFactory
+from constat.providers import TaskRouter
 from constat.core.config import LLMConfig
+from constat.core.models import TaskType
 
-factory = ProviderFactory(llm_config)
+router = TaskRouter(llm_config)
 
-# Get provider for a specific tier
-provider, model = factory.get_provider_for_tier("planning")
-response = provider.generate(..., model=model)
+# Execute with automatic model selection and escalation
+result = router.execute(
+    task_type=TaskType.SQL_GENERATION,
+    system="Generate SQL...",
+    user_message="Get top 5 customers",
+    complexity="medium",  # or "high" for complex tasks
+)
 
-# Get default provider
-default = factory.get_default_provider()
+if result.escalations:
+    print(f"Escalated: {result.escalations}")
+
+# Get escalation statistics
+stats = router.get_escalation_stats()
 ```
 
-**Provider Routing:**
+**Task Type Routing:**
 
-| Tier | Config | Result |
-|------|--------|--------|
-| `planning` | `"claude-opus-4-20250514"` | Default provider + model |
-| `simple` | `{provider: ollama, model: llama3.2:3b}` | Ollama provider + model |
-| `default` | N/A | Default provider + default model |
+| Task Type | Description | Typical Models |
+|-----------|-------------|----------------|
+| `planning` | Multi-step plan generation | claude-sonnet, claude-opus |
+| `sql_generation` | Text-to-SQL queries | sqlcoder, claude-sonnet |
+| `python_analysis` | DataFrame transformations | codellama, claude-sonnet |
+| `summarization` | Result synthesis | claude-haiku, llama3.2 |
+| `fact_resolution` | Auditable fact derivation | claude-sonnet |
+
+**Escalation Flow:**
+
+```
+Task Request
+     │
+     ▼
+┌─────────────────────────────────────┐
+│  Try Model 1 (e.g., ollama/sqlcoder)│
+└─────────────────┬───────────────────┘
+                  │
+          Success? ──Yes──▶ Return result
+                  │
+                 No
+                  │
+                  ▼
+┌─────────────────────────────────────┐
+│  Log escalation event               │
+│  Try Model 2 (e.g., claude-sonnet)  │
+└─────────────────┬───────────────────┘
+                  │
+          Success? ──Yes──▶ Return result
+                  │
+                 No (all models exhausted)
+                  │
+                  ▼
+            Return failure
+```
 
 **Supported Providers:**
 - `anthropic` - Anthropic Claude

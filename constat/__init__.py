@@ -25,7 +25,9 @@ from constat.core.config import (
     DatabaseCredentials,
     ExecutionConfig,
     LLMConfig,
-    LLMTiersConfig,
+    ModelSpec,
+    TaskRoutingConfig,
+    TaskRoutingEntry,
 )
 from constat.core.models import (
     Artifact,
@@ -38,6 +40,7 @@ from constat.core.models import (
     StepResult,
     StepStatus,
     StepType,
+    TaskType,
 )
 
 # Storage
@@ -57,6 +60,7 @@ from constat.catalog.api_catalog import APICatalog, OperationType
 # Providers
 from constat.providers import (
     BaseLLMProvider,
+    TaskRouter,
     AnthropicProvider,
     OpenAIProvider,
     GeminiProvider,
@@ -80,7 +84,10 @@ __all__ = [
     "DatabaseCredentials",
     "ExecutionConfig",
     "LLMConfig",
-    "LLMTiersConfig",
+    "ModelSpec",
+    "TaskRoutingConfig",
+    "TaskRoutingEntry",
+    "TaskType",
     "Artifact",
     "ArtifactType",
     "ARTIFACT_MIME_TYPES",
@@ -107,6 +114,7 @@ __all__ = [
     "OperationType",
     # Providers
     "BaseLLMProvider",
+    "TaskRouter",
     "AnthropicProvider",
     "OpenAIProvider",
     "GeminiProvider",

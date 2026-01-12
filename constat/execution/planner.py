@@ -3,13 +3,11 @@
 import json
 import re
 from datetime import datetime, timezone
-from typing import Optional
-
-from typing import Union
+from typing import Optional, Union
 
 from constat.core.config import Config
-from constat.core.models import Plan, PlannerResponse, Step, StepType
-from constat.providers import ProviderFactory
+from constat.core.models import Plan, PlannerResponse, Step, StepType, TaskType
+from constat.providers import TaskRouter
 from constat.providers.base import BaseLLMProvider
 from constat.catalog.schema_manager import SchemaManager
 
@@ -23,6 +21,7 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 2. Clear about what data it needs (inputs)
 3. Clear about what it produces (outputs)
 4. Clear about dependencies on other steps
+5. Classified by task type for optimal model routing
 
 ## Available Resources
 You have access to these tools to explore the database schema:
@@ -48,25 +47,41 @@ Return your plan as a JSON object with this structure:
       "goal": "Load customer data from the sales database",
       "inputs": [],
       "outputs": ["customers_df"],
-      "depends_on": []
+      "depends_on": [],
+      "task_type": "sql_generation",
+      "complexity": "low"
     },
     {
       "number": 2,
       "goal": "Load product data from the inventory database",
       "inputs": [],
       "outputs": ["products_df"],
-      "depends_on": []
+      "depends_on": [],
+      "task_type": "sql_generation",
+      "complexity": "low"
     },
     {
       "number": 3,
-      "goal": "Join customer and product data",
+      "goal": "Join and analyze customer-product relationships",
       "inputs": ["customers_df", "products_df"],
       "outputs": ["combined_df"],
-      "depends_on": [1, 2]
+      "depends_on": [1, 2],
+      "task_type": "python_analysis",
+      "complexity": "medium"
     }
   ]
 }
 ```
+
+## Task Types
+- **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
+- **python_analysis**: Steps that transform, analyze, or compute on DataFrames
+- **summarization**: Steps that synthesize or explain results in natural language
+
+## Complexity Levels
+- **low**: Simple single-table queries, basic transformations
+- **medium**: Multi-table joins, moderate aggregations, standard analysis
+- **high**: Complex multi-way joins, window functions, sophisticated analysis
 
 Important:
 - Return ONLY the JSON object, no additional text
@@ -98,21 +113,21 @@ class Planner:
         self,
         config: Config,
         schema_manager: SchemaManager,
-        llm_or_factory: Optional[Union[BaseLLMProvider, ProviderFactory]] = None,
+        router_or_provider: Optional[Union[BaseLLMProvider, TaskRouter]] = None,
     ):
         self.config = config
         self.schema_manager = schema_manager
 
-        # Support both direct provider (backward compat) and factory (new)
-        if isinstance(llm_or_factory, ProviderFactory):
-            self.provider_factory = llm_or_factory
-            self.llm = None  # Will use factory for each call
-        elif isinstance(llm_or_factory, BaseLLMProvider):
-            self.provider_factory = None
-            self.llm = llm_or_factory
+        # Support both direct provider (backward compat) and router (new)
+        if isinstance(router_or_provider, TaskRouter):
+            self.router = router_or_provider
+            self.llm = None
+        elif isinstance(router_or_provider, BaseLLMProvider):
+            self.router = None
+            self.llm = router_or_provider
         else:
-            # Create a factory from config
-            self.provider_factory = ProviderFactory(config.llm)
+            # Create a router from config
+            self.router = TaskRouter(config.llm)
             self.llm = None
 
     def _build_system_prompt(self) -> str:
@@ -194,20 +209,26 @@ class Planner:
 
         system_prompt = self._build_system_prompt()
 
-        # Get provider and model for planning tier (may be different provider)
-        if self.provider_factory:
-            planning_provider, planning_model = self.provider_factory.get_provider_for_tier("planning")
+        # Use router for planning task
+        if self.router:
+            result = self.router.execute(
+                task_type=TaskType.PLANNING,
+                system=system_prompt,
+                user_message=f"Create a plan to answer this question:\n\n{problem}",
+                tools=schema_tools,
+                tool_handlers=self._get_tool_handlers(),
+            )
+            if not result.success:
+                raise ValueError(f"Planning failed: {result.content}")
+            response = result.content
         else:
-            planning_provider = self.llm
-            planning_model = self.config.llm.get_model("planning")
-
-        response = planning_provider.generate(
-            system=system_prompt,
-            user_message=f"Create a plan to answer this question:\n\n{problem}",
-            tools=schema_tools,
-            tool_handlers=self._get_tool_handlers(),
-            model=planning_model,
-        )
+            # Fallback to direct provider
+            response = self.llm.generate(
+                system=system_prompt,
+                user_message=f"Create a plan to answer this question:\n\n{problem}",
+                tools=schema_tools,
+                tool_handlers=self._get_tool_handlers(),
+            )
 
         # Parse the response
         plan_data = self._parse_plan_response(response)
@@ -215,6 +236,13 @@ class Planner:
         # Build Step objects
         steps = []
         for step_data in plan_data.get("steps", []):
+            # Parse task_type from response
+            task_type_str = step_data.get("task_type", "python_analysis")
+            try:
+                task_type = TaskType(task_type_str)
+            except ValueError:
+                task_type = TaskType.PYTHON_ANALYSIS
+
             steps.append(Step(
                 number=step_data.get("number", len(steps) + 1),
                 goal=step_data.get("goal", ""),
@@ -222,6 +250,8 @@ class Planner:
                 expected_outputs=step_data.get("outputs", []),
                 depends_on=step_data.get("depends_on", []),
                 step_type=StepType.PYTHON,  # Phase 1: Python only
+                task_type=task_type,
+                complexity=step_data.get("complexity", "medium"),
             ))
 
         plan = Plan(
@@ -280,55 +310,74 @@ Return the plan in JSON format."""
 
         system_prompt = self._build_system_prompt()
 
-        # Get provider and model for planning tier (may be different provider)
-        if self.provider_factory:
-            planning_provider, planning_model = self.provider_factory.get_provider_for_tier("planning")
-        else:
-            planning_provider = self.llm
-            planning_model = self.config.llm.get_model("planning")
-
-        response = planning_provider.generate(
-            system=system_prompt,
-            user_message=prompt,
-            tools=[
-                {
-                    "name": "get_table_schema",
-                    "description": "Get detailed schema for a specific table.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "table": {"type": "string", "description": "Table name"}
-                        },
-                        "required": ["table"]
-                    }
-                },
-                {
-                    "name": "find_relevant_tables",
-                    "description": "Search for tables relevant to a query.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search query"},
-                            "top_k": {"type": "integer", "default": 5}
-                        },
-                        "required": ["query"]
-                    }
+        # Schema tools for replanning
+        schema_tools = [
+            {
+                "name": "get_table_schema",
+                "description": "Get detailed schema for a specific table.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "table": {"type": "string", "description": "Table name"}
+                    },
+                    "required": ["table"]
                 }
-            ],
-            tool_handlers=self._get_tool_handlers(),
-            model=planning_model,
-        )
+            },
+            {
+                "name": "find_relevant_tables",
+                "description": "Search for tables relevant to a query.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "top_k": {"type": "integer", "default": 5}
+                    },
+                    "required": ["query"]
+                }
+            }
+        ]
+
+        # Use router for replanning task
+        if self.router:
+            result = self.router.execute(
+                task_type=TaskType.REPLANNING,
+                system=system_prompt,
+                user_message=prompt,
+                tools=schema_tools,
+                tool_handlers=self._get_tool_handlers(),
+            )
+            if not result.success:
+                raise ValueError(f"Replanning failed: {result.content}")
+            response = result.content
+        else:
+            # Fallback to direct provider
+            response = self.llm.generate(
+                system=system_prompt,
+                user_message=prompt,
+                tools=schema_tools,
+                tool_handlers=self._get_tool_handlers(),
+            )
 
         plan_data = self._parse_plan_response(response)
 
         steps = []
         for step_data in plan_data.get("steps", []):
+            # Parse task_type from response
+            task_type_str = step_data.get("task_type", "python_analysis")
+            try:
+                task_type = TaskType(task_type_str)
+            except ValueError:
+                task_type = TaskType.PYTHON_ANALYSIS
+
             steps.append(Step(
                 number=step_data.get("number", len(steps) + 1),
                 goal=step_data.get("goal", ""),
                 expected_inputs=step_data.get("inputs", []),
                 expected_outputs=step_data.get("outputs", []),
+                depends_on=step_data.get("depends_on", []),
                 step_type=StepType.PYTHON,
+                task_type=task_type,
+                complexity=step_data.get("complexity", "medium"),
             ))
 
         # Mark completed steps

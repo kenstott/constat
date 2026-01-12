@@ -198,55 +198,131 @@ class DatabaseConfig(BaseModel):
         return self.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather")
 
 
-class TierConfig(BaseModel):
-    """Configuration for a single tier (provider + model).
-
-    Can be specified as just a model string (uses default provider)
-    or as a full config with provider override.
+class ModelSpec(BaseModel):
+    """Specification for a model in a routing chain.
 
     Examples:
-        # Just model (uses default provider)
-        planning: "claude-opus-4-20250514"
+        # Full spec
+        - provider: ollama
+          model: sqlcoder:7b
+          base_url: http://localhost:11434
 
-        # Full config with provider override
-        simple:
-          provider: ollama
-          model: llama3.2:3b
+        # Minimal (uses default provider)
+        - model: claude-sonnet-4-20250514
     """
     provider: Optional[str] = None  # None means use default provider
     model: str
 
-    # Provider-specific options (e.g., base_url for Ollama)
+    # Provider-specific options
     base_url: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    max_tokens: Optional[int] = None
 
 
-class LLMTiersConfig(BaseModel):
-    """Model tiering for cost optimization.
+class TaskRoutingEntry(BaseModel):
+    """Routing configuration for a single task type.
 
-    Each tier can be:
-    - A model string (uses default provider)
-    - A TierConfig object with provider override
+    Defines an ordered list of models to try for a task type.
+    The router tries each model in order until success (escalation pattern).
 
     Examples:
-        tiers:
-          planning: claude-opus-4-20250514  # Just model
-          codegen: claude-sonnet-4-20250514
-          simple:
-            provider: ollama  # Provider override
-            model: llama3.2:3b
+        sql_generation:
+          models:
+            - provider: ollama
+              model: sqlcoder:7b
+            - provider: anthropic
+              model: claude-3-5-haiku-20241022
     """
-    planning: str | TierConfig = "claude-sonnet-4-20250514"
-    codegen: str | TierConfig = "claude-sonnet-4-20250514"
-    simple: str | TierConfig = "claude-3-5-haiku-20241022"
+    # Ordered list of models to try (first = preferred, subsequent = fallback)
+    models: list[ModelSpec]
 
-    def get_tier_config(self, tier: str) -> TierConfig:
-        """Get the TierConfig for a tier, normalizing string to TierConfig."""
-        value = getattr(self, tier, None)
-        if value is None:
-            raise ValueError(f"Unknown tier: {tier}")
-        if isinstance(value, str):
-            return TierConfig(model=value)
-        return value
+    # Optional: models to use for high-complexity tasks
+    high_complexity_models: Optional[list[ModelSpec]] = None
+
+
+class TaskRoutingConfig(BaseModel):
+    """Task-type to model chain mapping.
+
+    Maps task types to ordered lists of models. The router tries each model
+    in order until success (local-first with cloud fallback pattern).
+
+    Example YAML:
+        task_routing:
+          sql_generation:
+            models:
+              - provider: ollama
+                model: sqlcoder:7b
+              - provider: anthropic
+                model: claude-3-5-haiku-20241022
+          planning:
+            models:
+              - provider: anthropic
+                model: claude-sonnet-4-20250514
+          python_analysis:
+            models:
+              - provider: ollama
+                model: codellama:13b
+              - provider: anthropic
+                model: claude-sonnet-4-20250514
+            high_complexity_models:
+              - provider: anthropic
+                model: claude-sonnet-4-20250514
+    """
+    # Dict of task_type name -> routing entry
+    routes: dict[str, TaskRoutingEntry] = Field(default_factory=dict)
+
+    def get_models_for_task(
+        self,
+        task_type: str,
+        complexity: str = "medium",
+    ) -> list[ModelSpec]:
+        """
+        Get ordered model list for a task type.
+
+        Args:
+            task_type: The task type name (e.g., "sql_generation")
+            complexity: Complexity level ("low", "medium", "high")
+
+        Returns:
+            Ordered list of ModelSpecs to try
+        """
+        entry = self.routes.get(task_type)
+        if not entry:
+            return []
+
+        if complexity == "high" and entry.high_complexity_models:
+            return entry.high_complexity_models
+
+        return entry.models
+
+
+# Default task routing configuration
+DEFAULT_TASK_ROUTING = {
+    "planning": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "replanning": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "sql_generation": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "python_analysis": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "intent_classification": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+    ),
+    "summarization": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+    ),
+    "fact_resolution": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "general": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+}
 
 
 class LLMConfig(BaseModel):
@@ -254,55 +330,38 @@ class LLMConfig(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
     api_key: Optional[str] = None
-    tiers: Optional[LLMTiersConfig] = None
+
+    # Task-type routing configuration
+    task_routing: Optional[TaskRoutingConfig] = None
 
     # Provider-specific options
     base_url: Optional[str] = None  # For Ollama or custom endpoints
 
-    def get_model(self, tier: str = "default") -> str:
+    def get_task_routing(self) -> TaskRoutingConfig:
         """
-        Get the model for a specific tier.
-
-        Args:
-            tier: One of "planning", "codegen", "simple", or "default"
+        Get the task routing config, with defaults applied.
 
         Returns:
-            Model name to use
+            TaskRoutingConfig with all task types having at least default routing
         """
-        if tier == "default" or self.tiers is None:
-            return self.model
+        if self.task_routing:
+            # Merge user config with defaults
+            merged_routes = dict(DEFAULT_TASK_ROUTING)
+            merged_routes.update(self.task_routing.routes)
+            return TaskRoutingConfig(routes=merged_routes)
 
-        if tier == "planning":
-            tier_config = self.tiers.get_tier_config("planning")
-            return tier_config.model
-        elif tier == "codegen":
-            tier_config = self.tiers.get_tier_config("codegen")
-            return tier_config.model
-        elif tier == "simple":
-            tier_config = self.tiers.get_tier_config("simple")
-            return tier_config.model
-        else:
-            return self.model
-
-    def get_tier_config(self, tier: str = "default") -> TierConfig:
-        """
-        Get the full tier configuration (provider + model) for a tier.
-
-        Args:
-            tier: One of "planning", "codegen", "simple", or "default"
-
-        Returns:
-            TierConfig with provider (or None for default) and model
-        """
-        if tier == "default" or self.tiers is None:
-            return TierConfig(provider=None, model=self.model, base_url=self.base_url)
-
-        if tier in ("planning", "codegen", "simple"):
-            tier_config = self.tiers.get_tier_config(tier)
-            # If tier doesn't override provider, it uses None (meaning default)
-            return tier_config
-        else:
-            return TierConfig(provider=None, model=self.model, base_url=self.base_url)
+        # Use defaults, but set provider/model from main config
+        default_model = ModelSpec(
+            provider=self.provider if self.provider != "anthropic" else None,
+            model=self.model,
+            base_url=self.base_url,
+        )
+        return TaskRoutingConfig(
+            routes={
+                task_type: TaskRoutingEntry(models=[default_model])
+                for task_type in DEFAULT_TASK_ROUTING
+            }
+        )
 
 
 class StorageConfig(BaseModel):

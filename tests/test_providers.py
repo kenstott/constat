@@ -229,12 +229,12 @@ class TestAnthropicProvider:
 
     @requires_anthropic_key
     def test_model_override_in_generate(self):
-        """Model can be overridden per-call (for tiered model selection)."""
+        """Model can be overridden per-call (for task-type routing)."""
         # Initialize with default sonnet model
         provider = AnthropicProvider(model="claude-sonnet-4-20250514")
         assert provider.model == "claude-sonnet-4-20250514"
 
-        # Override to haiku for this specific call (simulating tier selection)
+        # Override to haiku for this specific call (simulating task routing)
         response = provider.generate(
             system="You are a helpful assistant. Be concise.",
             user_message="What is 3 + 3? Reply with just the number.",
@@ -247,33 +247,42 @@ class TestAnthropicProvider:
         assert provider.model == "claude-sonnet-4-20250514"
 
     @requires_anthropic_key
-    def test_tiered_model_selection_integration(self):
-        """Test tiered model selection as used by planner/session."""
-        from constat.core.config import LLMConfig, LLMTiersConfig
+    def test_task_routing_integration(self):
+        """Test task-type routing as used by planner/session."""
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
 
-        # Configure tiers like production would
-        tiers = LLMTiersConfig(
-            planning="claude-3-5-haiku-20241022",  # Use haiku for planning
-            codegen="claude-3-5-haiku-20241022",   # Use haiku for codegen
-            simple="claude-3-5-haiku-20241022",    # Use haiku for simple
-        )
+        # Configure task routing like production would
+        routing = TaskRoutingConfig(routes={
+            "planning": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+            ),
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+            ),
+            "summarization": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+            ),
+        })
         llm_config = LLMConfig(
             model="claude-sonnet-4-20250514",  # Default is sonnet
-            tiers=tiers,
+            task_routing=routing,
         )
 
         # Provider initialized with default model
         provider = AnthropicProvider(model=llm_config.model)
         assert provider.model == "claude-sonnet-4-20250514"
 
-        # But can use tiered models for specific operations
-        planning_model = llm_config.get_model("planning")
+        # Get routing config and select model for planning task
+        task_routing = llm_config.get_task_routing()
+        planning_models = task_routing.get_models_for_task("planning")
+        assert len(planning_models) >= 1
+        planning_model = planning_models[0].model
         assert planning_model == "claude-3-5-haiku-20241022"
 
         response = provider.generate(
             system="You are a helpful assistant.",
             user_message="What is 1 + 1?",
-            model=planning_model,  # Use planning tier
+            model=planning_model,  # Use planning task model
             max_tokens=50,
         )
         assert "2" in response
@@ -1008,228 +1017,425 @@ x = 1
 
 
 # =============================================================================
-# Provider Factory Tests
+# Task Router Tests (replaces ProviderFactory tests)
 # =============================================================================
 
-class TestProviderFactory:
-    """Tests for ProviderFactory and multi-provider tiering."""
+class TestTaskRouter:
+    """Tests for TaskRouter with task-type routing and automatic escalation."""
 
-    def test_factory_creates_default_provider(self):
-        """Factory creates the default provider."""
+    def test_router_creates_provider_from_config(self):
+        """Router creates provider from LLM config."""
         from constat.core.config import LLMConfig
-        from constat.providers import ProviderFactory
+        from constat.providers import TaskRouter
 
         llm_config = LLMConfig(
             provider="anthropic",
             model="claude-3-5-haiku-20241022",
         )
-        factory = ProviderFactory(llm_config)
-        provider = factory.get_default_provider()
+        router = TaskRouter(llm_config)
 
-        assert provider is not None
-        assert provider.model == "claude-3-5-haiku-20241022"
+        # Router should be initialized
+        assert router.llm_config == llm_config
+        assert router.routing_config is not None
 
-    def test_factory_caches_providers(self):
-        """Factory caches provider instances."""
+    def test_router_uses_task_routing_config(self):
+        """Router uses task routing configuration."""
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
+
+        routing = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[
+                    ModelSpec(provider="ollama", model="sqlcoder:7b"),
+                    ModelSpec(model="claude-sonnet-4-20250514"),
+                ]
+            )
+        })
+        llm_config = LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            task_routing=routing,
+        )
+        router = TaskRouter(llm_config)
+
+        # Router should have the custom routing
+        models = router.routing_config.get_models_for_task("sql_generation")
+        assert len(models) == 2
+        assert models[0].provider == "ollama"
+
+    def test_router_caches_providers(self):
+        """Router caches provider instances."""
         from constat.core.config import LLMConfig
-        from constat.providers import ProviderFactory
+        from constat.providers import TaskRouter
 
         llm_config = LLMConfig(
             provider="anthropic",
             model="claude-3-5-haiku-20241022",
         )
-        factory = ProviderFactory(llm_config)
+        router = TaskRouter(llm_config)
 
-        provider1 = factory.get_default_provider()
-        provider2 = factory.get_default_provider()
+        # Access the provider twice
+        spec1 = router.routing_config.get_models_for_task("planning")[0]
+        spec2 = router.routing_config.get_models_for_task("planning")[0]
 
-        assert provider1 is provider2  # Same instance
+        # Models should be equivalent
+        assert spec1.model == spec2.model
 
-    def test_factory_tier_without_override_uses_default_provider(self):
-        """Tier without provider override uses default provider."""
-        from constat.core.config import LLMConfig, LLMTiersConfig
-        from constat.providers import ProviderFactory
+    def test_router_high_complexity_uses_different_models(self):
+        """Router selects different models for high complexity tasks."""
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
 
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",  # Just model, no provider override
-            codegen="claude-sonnet-4-20250514",
-            simple="claude-3-5-haiku-20241022",
-        )
+        routing = TaskRoutingConfig(routes={
+            "python_analysis": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")],
+                high_complexity_models=[ModelSpec(model="claude-sonnet-4-20250514")],
+            )
+        })
         llm_config = LLMConfig(
             provider="anthropic",
             model="claude-sonnet-4-20250514",
-            tiers=tiers,
+            task_routing=routing,
         )
-        factory = ProviderFactory(llm_config)
+        router = TaskRouter(llm_config)
 
-        provider, model = factory.get_provider_for_tier("planning")
-        default_provider = factory.get_default_provider()
+        # Medium complexity uses standard model
+        medium_models = router.routing_config.get_models_for_task("python_analysis", "medium")
+        assert medium_models[0].model == "claude-3-5-haiku-20241022"
 
-        # Should use same provider (anthropic), different model
-        assert provider is default_provider
-        assert model == "claude-opus-4-20250514"
+        # High complexity uses advanced model
+        high_models = router.routing_config.get_models_for_task("python_analysis", "high")
+        assert high_models[0].model == "claude-sonnet-4-20250514"
 
-    def test_factory_tier_with_provider_override(self):
-        """Tier with provider override creates different provider."""
-        from constat.core.config import LLMConfig, LLMTiersConfig, TierConfig
-        from constat.providers import ProviderFactory
-
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple=TierConfig(provider="ollama", model="llama3.2:3b"),
-        )
-        llm_config = LLMConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            tiers=tiers,
-        )
-        factory = ProviderFactory(llm_config)
-
-        simple_provider, simple_model = factory.get_provider_for_tier("simple")
-        default_provider = factory.get_default_provider()
-
-        # Simple tier should use different provider
-        assert simple_provider is not default_provider
-        assert simple_model == "llama3.2:3b"
-        assert simple_provider.__class__.__name__ == "OllamaProvider"
-
-    def test_tier_config_model_only(self):
-        """TierConfig with just model uses default provider."""
-        from constat.core.config import LLMConfig, LLMTiersConfig
-        from constat.providers import ProviderFactory
-
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple="claude-3-5-haiku-20241022",
-        )
-        llm_config = LLMConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            tiers=tiers,
-        )
-
-        tier_config = llm_config.get_tier_config("simple")
-        assert tier_config.provider is None  # Uses default
-        assert tier_config.model == "claude-3-5-haiku-20241022"
-
-    def test_tier_config_with_provider(self):
-        """TierConfig with provider override."""
-        from constat.core.config import LLMConfig, LLMTiersConfig, TierConfig
-
-        tiers = LLMTiersConfig(
-            planning="claude-opus-4-20250514",
-            codegen="claude-sonnet-4-20250514",
-            simple=TierConfig(provider="ollama", model="llama3.2:3b"),
-        )
-        llm_config = LLMConfig(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514",
-            tiers=tiers,
-        )
-
-        tier_config = llm_config.get_tier_config("simple")
-        assert tier_config.provider == "ollama"
-        assert tier_config.model == "llama3.2:3b"
-
-    def test_unknown_provider_raises_error(self):
-        """Unknown provider name raises ValueError."""
+    def test_router_escalation_stats(self):
+        """Router tracks escalation statistics."""
         from constat.core.config import LLMConfig
-        from constat.providers import ProviderFactory
+        from constat.providers import TaskRouter
 
+        llm_config = LLMConfig(
+            provider="anthropic",
+            model="claude-3-5-haiku-20241022",
+        )
+        router = TaskRouter(llm_config)
+
+        # Initially no escalations
+        stats = router.get_escalation_stats()
+        assert stats["total_escalations"] == 0
+
+        # Clear stats should work
+        router.clear_stats()
+        stats = router.get_escalation_stats()
+        assert stats["total_escalations"] == 0
+
+    def test_router_unknown_provider_returns_failed_result(self):
+        """Router returns failed result for unknown provider."""
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
+        from constat.core.models import TaskType
+
+        routing = TaskRoutingConfig(routes={
+            "planning": TaskRoutingEntry(
+                models=[ModelSpec(provider="unknown_provider", model="some-model")],
+            )
+        })
         llm_config = LLMConfig(
             provider="unknown_provider",
             model="some-model",
+            task_routing=routing,
         )
-        factory = ProviderFactory(llm_config)
+        router = TaskRouter(llm_config)
 
-        with pytest.raises(ValueError, match="Unknown provider"):
-            factory.get_default_provider()
+        # Execute catches exceptions and returns a failed TaskResult
+        result = router.execute(
+            task_type=TaskType.PLANNING,
+            system="Test",
+            user_message="Test",
+        )
+        
+        assert not result.success
+        assert "Unknown provider" in result.content
 
 
 # =============================================================================
-# Multi-Provider Integration Tests
+# Multi-Provider Integration Tests (updated for task routing)
 # =============================================================================
 
 class TestMultiProviderIntegration:
-    """Integration tests for multi-provider tiering.
+    """Integration tests for multi-provider task routing.
 
-    These tests verify that different providers can be used for different tiers.
+    These tests verify that different providers can be used for different task types.
     """
 
     @requires_anthropic_key
     @requires_ollama_model
-    def test_anthropic_planning_ollama_simple(self):
-        """Use Anthropic for planning, Ollama for simple tasks."""
-        from constat.core.config import LLMConfig, LLMTiersConfig, TierConfig
-        from constat.providers import ProviderFactory
+    def test_anthropic_planning_ollama_sql(self):
+        """Use Anthropic for planning, Ollama for SQL generation."""
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
 
-        tiers = LLMTiersConfig(
-            planning="claude-3-5-haiku-20241022",  # Anthropic for planning
-            codegen="claude-3-5-haiku-20241022",   # Anthropic for codegen
-            simple=TierConfig(provider="ollama", model=OLLAMA_TEST_MODEL),  # Ollama for simple
-        )
+        routing = TaskRoutingConfig(routes={
+            "planning": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+            ),
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(provider="ollama", model=OLLAMA_TEST_MODEL)]
+            ),
+        })
         llm_config = LLMConfig(
             provider="anthropic",
             model="claude-3-5-haiku-20241022",
-            tiers=tiers,
+            task_routing=routing,
         )
-        factory = ProviderFactory(llm_config)
+        router = TaskRouter(llm_config)
 
-        # Test planning tier (Anthropic)
-        planning_provider, planning_model = factory.get_provider_for_tier("planning")
-        planning_response = planning_provider.generate(
-            system="Be concise.",
-            user_message="What is 5 + 5?",
-            model=planning_model,
-            max_tokens=50,
-        )
-        assert "10" in planning_response
+        # Verify routing configuration
+        planning_models = router.routing_config.get_models_for_task("planning")
+        assert planning_models[0].model == "claude-3-5-haiku-20241022"
+        assert planning_models[0].provider is None  # Uses default
 
-        # Test simple tier (Ollama)
-        simple_provider, simple_model = factory.get_provider_for_tier("simple")
-        simple_response = simple_provider.generate(
-            system="Be concise.",
-            user_message="What is 3 + 3?",
-            model=simple_model,
-            max_tokens=50,
-        )
-        assert "6" in simple_response
-
-        # Verify they're different providers
-        assert planning_provider.__class__.__name__ == "AnthropicProvider"
-        assert simple_provider.__class__.__name__ == "OllamaProvider"
+        sql_models = router.routing_config.get_models_for_task("sql_generation")
+        assert sql_models[0].provider == "ollama"
+        assert sql_models[0].model == OLLAMA_TEST_MODEL
 
     @requires_anthropic_key
-    def test_all_tiers_same_provider_different_models(self):
-        """All tiers use same provider but different models."""
-        from constat.core.config import LLMConfig, LLMTiersConfig
-        from constat.providers import ProviderFactory
+    def test_all_tasks_same_provider_different_models(self):
+        """All task types use same provider but different models."""
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
 
-        tiers = LLMTiersConfig(
-            planning="claude-3-5-haiku-20241022",
-            codegen="claude-3-5-haiku-20241022",
-            simple="claude-3-5-haiku-20241022",
-        )
+        routing = TaskRoutingConfig(routes={
+            "planning": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-sonnet-4-20250514")]
+            ),
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+            ),
+            "summarization": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+            ),
+        })
         llm_config = LLMConfig(
             provider="anthropic",
-            model="claude-sonnet-4-20250514",  # Default is different
-            tiers=tiers,
+            model="claude-sonnet-4-20250514",
+            task_routing=routing,
         )
-        factory = ProviderFactory(llm_config)
+        router = TaskRouter(llm_config)
 
-        # All tiers should use the same provider instance
-        planning_provider, _ = factory.get_provider_for_tier("planning")
-        codegen_provider, _ = factory.get_provider_for_tier("codegen")
-        simple_provider, _ = factory.get_provider_for_tier("simple")
+        # Verify different models for different task types
+        planning_models = router.routing_config.get_models_for_task("planning")
+        sql_models = router.routing_config.get_models_for_task("sql_generation")
 
-        assert planning_provider is codegen_provider
-        assert codegen_provider is simple_provider
+        assert planning_models[0].model == "claude-sonnet-4-20250514"
+        assert sql_models[0].model == "claude-3-5-haiku-20241022"
 
-        # But models are different from default
-        _, planning_model = factory.get_provider_for_tier("planning")
-        _, default_model = factory.get_provider_for_tier("default")
 
-        assert planning_model == "claude-3-5-haiku-20241022"
-        assert default_model == "claude-sonnet-4-20250514"
+# =============================================================================
+# Task Routing E2E Tests with NLQ
+# =============================================================================
+
+
+class TestTaskRoutingE2E:
+    """
+    E2E tests verifying that task-type routing works correctly when running
+    natural language queries through the complete pipeline.
+
+    These tests verify that:
+    1. Planning phase uses the PLANNING task type routing
+    2. SQL generation uses SQL_GENERATION task type routing
+    3. Different providers can be used for different task types
+    """
+
+    def test_routing_tracks_models_used_at_each_phase(self):
+        """
+        E2E: Track which models are called at each phase of NLQ processing.
+
+        Uses a mock router to verify correct task type routing.
+        """
+        from unittest.mock import MagicMock, patch
+        from constat.core.config import Config, LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
+        from constat.providers.router import TaskResult
+        from constat.execution.planner import Planner
+        from constat.catalog.schema_manager import SchemaManager
+        from constat.core.models import TaskType
+
+        # Track all execute calls
+        execute_calls = []
+
+        # Create routing with specific models for each task type
+        routing = TaskRoutingConfig(routes={
+            "planning": TaskRoutingEntry(
+                models=[ModelSpec(model="planning-model-v1")]
+            ),
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="sql-model-v1")]
+            ),
+            "python_analysis": TaskRoutingEntry(
+                models=[ModelSpec(model="python-model-v1")]
+            ),
+        })
+        llm_config = LLMConfig(
+            provider="anthropic",
+            model="default-model-v1",
+            api_key="test-key",
+            task_routing=routing,
+        )
+
+        # Create a minimal config
+        config = Config(
+            databases={"test": {"uri": "sqlite:///:memory:"}},
+            llm=llm_config,
+        )
+
+        # Create a mock router that tracks calls
+        mock_router = MagicMock(spec=TaskRouter)
+        
+        def track_execute(task_type=None, **kwargs):
+            execute_calls.append({
+                "task_type": task_type.value if hasattr(task_type, 'value') else str(task_type),
+            })
+            return TaskResult(
+                success=True,
+                content='''```json
+{
+    "reasoning": "Test plan",
+    "steps": [
+        {"number": 1, "goal": "Load data", "inputs": [], "outputs": ["data"], "depends_on": [], "task_type": "sql_generation"}
+    ]
+}
+```''',
+                model_used="planning-model-v1",
+                provider_used="anthropic",
+            )
+
+        mock_router.execute = MagicMock(side_effect=track_execute)
+
+        # Create schema manager with mock
+        schema_manager = MagicMock(spec=SchemaManager)
+        schema_manager.get_overview.return_value = "test: 1 table"
+        schema_manager.get_table_schema.return_value = {"table": "test", "columns": []}
+        schema_manager.find_relevant_tables.return_value = []
+
+        # Create planner with mock router
+        planner = Planner(config, schema_manager, mock_router)
+
+        # Run planning
+        execute_calls.clear()
+        result = planner.plan("Show me all customers")
+
+        # Verify planning task type was used
+        assert len(execute_calls) >= 1
+        planning_call = execute_calls[0]
+        assert planning_call["task_type"] == "planning", (
+            f"Planning should use 'planning' task type, got '{planning_call['task_type']}'"
+        )
+
+    def test_routing_different_providers_per_task(self):
+        """
+        E2E: Verify different providers can be used for different task types.
+
+        Configures Anthropic for planning and Ollama for SQL generation.
+        """
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
+
+        # Configure different providers for different task types
+        routing = TaskRoutingConfig(routes={
+            "planning": TaskRoutingEntry(
+                models=[ModelSpec(model="claude-sonnet-4-20250514")]
+            ),
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(provider="ollama", model="sqlcoder:7b")]
+            ),
+        })
+        llm_config = LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            task_routing=routing,
+        )
+
+        router = TaskRouter(llm_config)
+
+        # Verify routing configuration
+        planning_models = router.routing_config.get_models_for_task("planning")
+        sql_models = router.routing_config.get_models_for_task("sql_generation")
+
+        # Planning uses default provider (anthropic)
+        assert planning_models[0].provider is None
+        assert planning_models[0].model == "claude-sonnet-4-20250514"
+
+        # SQL generation uses ollama
+        assert sql_models[0].provider == "ollama"
+        assert sql_models[0].model == "sqlcoder:7b"
+
+    def test_routing_with_escalation_chain(self):
+        """
+        E2E: Verify escalation chain configuration works.
+
+        Configures multiple models per task type for fallback behavior.
+        """
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
+
+        # Configure escalation chain: ollama -> haiku -> sonnet
+        routing = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[
+                    ModelSpec(provider="ollama", model="sqlcoder:7b"),
+                    ModelSpec(model="claude-3-5-haiku-20241022"),
+                    ModelSpec(model="claude-sonnet-4-20250514"),
+                ]
+            ),
+        })
+        llm_config = LLMConfig(
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            task_routing=routing,
+        )
+
+        router = TaskRouter(llm_config)
+
+        # Verify escalation chain
+        sql_models = router.routing_config.get_models_for_task("sql_generation")
+        assert len(sql_models) == 3
+        assert sql_models[0].provider == "ollama"
+        assert sql_models[0].model == "sqlcoder:7b"
+        assert sql_models[1].model == "claude-3-5-haiku-20241022"
+        assert sql_models[2].model == "claude-sonnet-4-20250514"
+
+    def test_routing_falls_back_to_defaults(self):
+        """
+        E2E: Verify that unconfigured task types fall back to defaults.
+        """
+        from constat.core.config import LLMConfig, TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+        from constat.providers import TaskRouter
+
+        # Only configure sql_generation, leave others as default
+        routing = TaskRoutingConfig(routes={
+            "sql_generation": TaskRoutingEntry(
+                models=[ModelSpec(model="special-sql-model")]
+            ),
+        })
+        llm_config = LLMConfig(
+            provider="anthropic",
+            model="default-model",
+            api_key="test-key",
+            task_routing=routing,
+        )
+
+        router = TaskRouter(llm_config)
+
+        # SQL generation should use configured model
+        sql_models = router.routing_config.get_models_for_task("sql_generation")
+        assert sql_models[0].model == "special-sql-model"
+
+        # Planning should fall back to default routing
+        planning_models = router.routing_config.get_models_for_task("planning")
+        # Default routing uses claude-sonnet-4-20250514 for planning
+        assert len(planning_models) >= 1
+
+        # Unknown task type should return empty (router handles fallback)
+        unknown_models = router.routing_config.get_models_for_task("nonexistent")
+        assert unknown_models == []

@@ -11,6 +11,39 @@ class StepType(Enum):
     # Phase 2: PROLOG = "prolog"
 
 
+class TaskType(Enum):
+    """Type of LLM task for model routing.
+
+    Each task type maps to an ordered list of models to try.
+    The router will try each model in order until success.
+    """
+    # Planning and orchestration
+    PLANNING = "planning"              # Multi-step plan generation
+    REPLANNING = "replanning"          # Plan revision with feedback
+
+    # Code generation
+    SQL_GENERATION = "sql_generation"  # Generate SQL queries
+    PYTHON_ANALYSIS = "python_analysis"  # Generate Python code
+
+    # Classification and routing
+    INTENT_CLASSIFICATION = "intent_classification"  # User intent
+    MODE_SELECTION = "mode_selection"  # Exploratory vs auditable
+
+    # Fact resolution (auditable mode)
+    FACT_RESOLUTION = "fact_resolution"
+    DERIVATION_LOGIC = "derivation_logic"
+
+    # Schema exploration
+    SCHEMA_DISCOVERY = "schema_discovery"
+
+    # Text processing
+    SUMMARIZATION = "summarization"
+    ERROR_ANALYSIS = "error_analysis"  # Analyzing execution errors for retry
+
+    # Default fallback
+    GENERAL = "general"
+
+
 class StepStatus(Enum):
     """Execution status of a step."""
     PENDING = "pending"
@@ -96,6 +129,13 @@ class Step:
     expected_outputs: list[str] = field(default_factory=list)
     depends_on: list[int] = field(default_factory=list)  # Explicit step dependencies
     step_type: StepType = StepType.PYTHON
+
+    # Task type for model routing (determines which models to try)
+    task_type: TaskType = TaskType.PYTHON_ANALYSIS
+
+    # Complexity hint for model selection within a task type
+    # low = simple query/transform, medium = moderate logic, high = complex operations
+    complexity: str = "medium"
 
     # Populated during execution
     status: StepStatus = StepStatus.PENDING

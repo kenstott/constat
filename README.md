@@ -378,25 +378,28 @@ llm:
   # Required: API key (use env var for security)
   api_key: ${ANTHROPIC_API_KEY}
 
-  # Optional: Use different models for different tasks (cost optimization)
-  # Each tier can be a model name (uses default provider) or a full config with provider override
-  tiers:
-    planning: claude-sonnet-4-20250514   # Complex reasoning for plan generation
-    codegen: claude-sonnet-4-20250514    # Accurate code generation
-    simple: claude-3-5-haiku-20241022    # Fast, cheap for simple tasks
+  # Optional: Task-type routing with automatic model escalation
+  # Each task type maps to an ordered list of models to try (local-first with cloud fallback)
+  task_routing:
+    sql_generation:
+      models:
+        - provider: ollama                       # Try local SQLCoder first
+          model: sqlcoder:7b
+        - model: claude-sonnet-4-20250514        # Escalate to cloud on failure
+    python_analysis:
+      models:
+        - model: claude-sonnet-4-20250514
+      high_complexity_models:                    # Use for complex analysis
+        - model: claude-opus-4-20250514
+    planning:
+      models:
+        - model: claude-sonnet-4-20250514
+    summarization:
+      models:
+        - model: claude-3-5-haiku-20241022       # Fast, cheap for summaries
 
   # Optional: Provider-specific settings
   # base_url: https://api.anthropic.com  # Custom API endpoint
-  # max_tokens: 4096                     # Max output tokens
-
-  # Advanced: Use different providers for different tiers (hybrid cloud/local)
-  # tiers:
-  #   planning: claude-opus-4-20250514           # Anthropic for complex planning
-  #   codegen: claude-sonnet-4-20250514          # Anthropic for code generation
-  #   simple:
-  #     provider: ollama                         # Local Ollama for simple tasks
-  #     model: llama3.2:3b
-  #     base_url: http://localhost:11434/v1      # Optional: custom endpoint
 
 #==============================================================================
 # DATABASE CONFIGURATION
@@ -878,22 +881,25 @@ from constat.providers import (
     GeminiProvider,
     GrokProvider,
     OllamaProvider,  # Local models
-    ProviderFactory,  # Multi-provider management
+    TaskRouter,      # Task-type routing with automatic escalation
 )
 
-# Anthropic (default)
+# Direct provider usage
 provider = AnthropicProvider(model="claude-sonnet-4-20250514")
 
-# OpenAI
-provider = OpenAIProvider(model="gpt-4o")
-
-# Local Ollama
-provider = OllamaProvider(model="llama3.2:3b", base_url="http://localhost:11434/v1")
+# Task-type routing (recommended for production)
+from constat.core.config import LLMConfig
+router = TaskRouter(llm_config)
+result = router.execute(
+    task_type=TaskType.SQL_GENERATION,
+    system="Generate SQL...",
+    user_message="Get top 5 customers",
+)
 ```
 
-### Multi-Provider Tiering
+### Task-Type Routing
 
-Use different providers for different task types (e.g., local Ollama for simple tasks, cloud for complex planning):
+Route tasks to the most appropriate model with automatic escalation on failure:
 
 ```yaml
 # config.yaml
@@ -901,20 +907,49 @@ llm:
   provider: anthropic              # Default provider
   model: claude-sonnet-4-20250514
   api_key: ${ANTHROPIC_API_KEY}
-  tiers:
-    planning: claude-opus-4-20250514        # Anthropic for complex planning
-    codegen: claude-sonnet-4-20250514       # Anthropic for code generation
-    simple:
-      provider: ollama                      # Local Ollama for simple tasks
-      model: llama3.2:3b
-      base_url: http://localhost:11434/v1   # Optional: custom endpoint
+
+  task_routing:
+    # SQL generation: try local SQLCoder first, escalate to cloud on failure
+    sql_generation:
+      models:
+        - provider: ollama
+          model: sqlcoder:7b
+        - model: claude-sonnet-4-20250514
+
+    # Python analysis: use sonnet, escalate to opus for complex tasks
+    python_analysis:
+      models:
+        - model: claude-sonnet-4-20250514
+      high_complexity_models:
+        - model: claude-opus-4-20250514
+
+    # Planning: always use cloud (no local fallback)
+    planning:
+      models:
+        - model: claude-sonnet-4-20250514
+
+    # Summarization: use fast/cheap model
+    summarization:
+      models:
+        - model: claude-3-5-haiku-20241022
 ```
 
+**Task Types:**
+| Task Type | Description | Typical Models |
+|-----------|-------------|----------------|
+| `planning` | Multi-step plan generation | claude-sonnet, claude-opus |
+| `sql_generation` | Text-to-SQL queries | sqlcoder, claude-sonnet |
+| `python_analysis` | DataFrame transformations | codellama, claude-sonnet |
+| `summarization` | Result synthesis | claude-haiku, llama3.2 |
+| `intent_classification` | User intent detection | phi3, claude-haiku |
+| `fact_resolution` | Auditable fact derivation | claude-sonnet |
+
 **Benefits:**
-- **Cost optimization**: Use cheaper/local models for simple tasks
-- **Latency optimization**: Use fast local models for quick responses
-- **Privacy**: Route sensitive data through local models
-- **Fallback**: Mix cloud and local providers for resilience
+- **Automatic escalation**: Local model fails → cloud model tries automatically
+- **Cost optimization**: Use cheaper/local models when they succeed
+- **Latency optimization**: Fast local models for quick tasks
+- **Privacy**: Route sensitive data through local models first
+- **Observability**: Track escalation rates per task type
 
 **Supported Providers:**
 | Provider | Name | Tool Support |
