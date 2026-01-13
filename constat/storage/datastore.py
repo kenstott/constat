@@ -244,6 +244,20 @@ class DataStore:
                     data
                 )
 
+    def _serialize_complex_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Serialize dict/list columns to JSON strings for SQLite compatibility."""
+        df = df.copy()
+        for col in df.columns:
+            # Check if any value in the column is a dict or list
+            sample = df[col].dropna().head(1)
+            if len(sample) > 0:
+                val = sample.iloc[0]
+                if isinstance(val, (dict, list)):
+                    df[col] = df[col].apply(
+                        lambda x: json.dumps(x) if isinstance(x, (dict, list)) else x
+                    )
+        return df
+
     def save_dataframe(
         self,
         name: str,
@@ -260,6 +274,9 @@ class DataStore:
             step_number: Which step created this table
             description: Human-readable description
         """
+        # Serialize dict/list columns to JSON for SQLite compatibility
+        df = self._serialize_complex_columns(df)
+
         # Use pandas to_sql for cross-database compatibility
         df.to_sql(name, self.engine, if_exists="replace", index=False)
 
