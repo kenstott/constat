@@ -1063,6 +1063,23 @@ Please create a revised plan that addresses this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
+        # Extract facts from the question FIRST, before any classification
+        # This ensures user context like "my role as CFO" is captured even for meta-questions
+        try:
+            extracted_facts = self.fact_resolver.add_user_facts_from_text(problem)
+            if extracted_facts:
+                self._emit_event(StepEvent(
+                    event_type="facts_extracted",
+                    step_number=0,
+                    data={
+                        "facts": [f.to_dict() for f in extracted_facts],
+                        "source": "question",
+                    }
+                ))
+        except Exception:
+            # Fact extraction is optional, don't fail if it errors
+            pass
+
         # Check if question can be answered from cached facts
         # (e.g., "what is my role" when user_role=CFO is cached)
         cached_answer = self._answer_from_cached_facts(problem)
@@ -1102,23 +1119,6 @@ Please create a revised plan that addresses this feedback."""
         # Save problem statement to datastore (for UI restoration)
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
-
-        # Extract facts from the initial question (e.g., "my role as CFO")
-        # This ensures user context is captured before planning
-        try:
-            extracted_facts = self.fact_resolver.add_user_facts_from_text(problem)
-            if extracted_facts:
-                self._emit_event(StepEvent(
-                    event_type="facts_extracted",
-                    step_number=0,
-                    data={
-                        "facts": [f.to_dict() for f in extracted_facts],
-                        "source": "initial_question",
-                    }
-                ))
-        except Exception:
-            # Fact extraction is optional, don't fail if it errors
-            pass
 
         # Determine execution mode
         mode_selection = suggest_mode(problem)

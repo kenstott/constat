@@ -453,6 +453,7 @@ class FeedbackDisplay:
         Request clarification from user for ambiguous questions.
 
         Displays the reason for clarification and prompts for answers.
+        Users can skip individual questions (press Enter or type 'skip').
 
         Args:
             request: ClarificationRequest with questions
@@ -467,27 +468,50 @@ class FeedbackDisplay:
             self.console.print(f"[dim]{request.ambiguity_reason}[/dim]")
             self.console.print()
 
-        self.console.print("[bold]Please clarify:[/bold]")
+        self.console.print("[bold]Please clarify[/bold] [dim](press Enter to skip a question):[/dim]")
 
         answers = {}
         for i, question in enumerate(request.questions, 1):
             self.console.print(f"  [cyan]{i}.[/cyan] {question}")
             answer = Prompt.ask(f"     [dim]Answer[/dim]", default="")
-            answers[question] = answer.strip()
+            answer = answer.strip()
 
-        # Check if user wants to skip
+            # Treat "skip" or empty as no answer
+            if answer.lower() == "skip" or not answer:
+                answers[question] = ""
+            else:
+                answers[question] = answer
+
+        # Check if any answers were provided
+        has_answers = any(a for a in answers.values())
+
+        # Check if user wants to skip all clarifications
         self.console.print()
-        skip = Prompt.ask(
-            "[dim]Press Enter to continue with clarifications, or 's' to skip[/dim]",
-            default=""
-        ).lower()
+        if has_answers:
+            skip = Prompt.ask(
+                "[dim]Press Enter to continue, or 's' to skip all clarifications[/dim]",
+                default=""
+            ).lower()
+        else:
+            # If no answers provided, ask if they want to continue without clarification
+            skip = Prompt.ask(
+                "[dim]No clarifications provided. Press Enter to proceed anyway, or 's' to cancel[/dim]",
+                default=""
+            ).lower()
 
         if skip == "s":
             self.console.print("[dim]Skipping clarification, proceeding with original question...[/dim]")
             return ClarificationResponse(answers={}, skip=True)
 
-        self.console.print("[green]Proceeding with clarified question...[/green]\n")
-        return ClarificationResponse(answers=answers, skip=False)
+        # Filter out empty answers
+        non_empty_answers = {q: a for q, a in answers.items() if a}
+
+        if non_empty_answers:
+            self.console.print("[green]Proceeding with clarified question...[/green]\n")
+        else:
+            self.console.print("[dim]Proceeding with original question...[/dim]\n")
+
+        return ClarificationResponse(answers=non_empty_answers, skip=False)
 
     def show_replan_notice(self, attempt: int, max_attempts: int) -> None:
         """Show notice that we're replanning based on feedback."""
