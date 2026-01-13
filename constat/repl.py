@@ -119,8 +119,10 @@ try:
             """Suggest command completions."""
             commands = [
                 "/help", "/tables", "/show ", "/query ", "/code", "/state",
-                "/update", "/user ", "/save ", "/share ", "/sharewith ",
-                "/plans", "/replay ", "/history", "/resume ", "/verbose", "/quit"
+                "/update", "/reset", "/user ", "/save ", "/share ", "/sharewith ",
+                "/plans", "/replay ", "/history", "/resume ",
+                "/context", "/compact", "/facts", "/remember ", "/forget ",
+                "/verbose", "/quit"
             ]
             text_lower = text.lower()
             for cmd in commands:
@@ -228,6 +230,9 @@ class InteractiveREPL:
             ("/resume <id>", "Resume a previous session"),
             ("/context", "Show context size and token usage"),
             ("/compact", "Compact context to reduce token usage"),
+            ("/facts", "Show cached facts from this session"),
+            ("/remember <fact>", "Remember a fact (e.g., /remember my role is CFO)"),
+            ("/forget <name>", "Forget a remembered fact by name"),
             ("/verbose", "Toggle verbose mode"),
             ("/quit, /q", "Exit"),
         ]
@@ -366,6 +371,77 @@ class InteractiveREPL:
         except Exception as e:
             self.display.stop_spinner()
             self.console.print(f"[red]Error during compaction:[/red] {e}")
+
+    def _show_facts(self) -> None:
+        """Show cached facts from the current session."""
+        if not self.session:
+            self.console.print("[yellow]No active session.[/yellow]")
+            return
+
+        facts = self.session.fact_resolver.get_all_facts()
+        if not facts:
+            self.console.print("[dim]No facts cached.[/dim]")
+            return
+
+        table = Table(title="Cached Facts", show_header=True, box=None)
+        table.add_column("Name", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_column("Source", style="dim")
+
+        for name, fact in facts.items():
+            table.add_row(name, str(fact.value), fact.source.value)
+
+        self.console.print(table)
+
+    def _remember_fact(self, fact_text: str) -> None:
+        """Remember a fact from user input (e.g., 'my role is CFO')."""
+        if not self.session:
+            self.console.print("[yellow]No active session.[/yellow]")
+            return
+
+        if not fact_text.strip():
+            self.console.print("[yellow]Usage: /remember <fact>[/yellow]")
+            self.console.print("[dim]Example: /remember my role is CFO[/dim]")
+            return
+
+        # Use fact extraction to parse and store the fact
+        self.display.start_spinner("Extracting fact...")
+        try:
+            extracted = self.session.fact_resolver.add_user_facts_from_text(fact_text)
+            self.display.stop_spinner()
+
+            if extracted:
+                for fact in extracted:
+                    self.console.print(f"[green]Remembered:[/green] {fact.name} = {fact.value}")
+            else:
+                self.console.print("[yellow]Could not extract a fact from that text.[/yellow]")
+                self.console.print("[dim]Try being more explicit, e.g., 'my role is CFO'[/dim]")
+
+        except Exception as e:
+            self.display.stop_spinner()
+            self.console.print(f"[red]Error:[/red] {e}")
+
+    def _forget_fact(self, fact_name: str) -> None:
+        """Forget a cached fact by name."""
+        if not self.session:
+            self.console.print("[yellow]No active session.[/yellow]")
+            return
+
+        if not fact_name.strip():
+            self.console.print("[yellow]Usage: /forget <fact_name>[/yellow]")
+            self.console.print("[dim]Use /facts to see fact names[/dim]")
+            return
+
+        # Check if fact exists
+        facts = self.session.fact_resolver.get_all_facts()
+        if fact_name not in facts:
+            self.console.print(f"[yellow]Fact '{fact_name}' not found.[/yellow]")
+            self.console.print("[dim]Use /facts to see available facts[/dim]")
+            return
+
+        # Remove from cache
+        self.session.fact_resolver._cache.pop(fact_name, None)
+        self.console.print(f"[green]Forgot:[/green] {fact_name}")
 
     def _show_code(self, step_arg: str = "") -> None:
         """Show generated code for steps."""
@@ -683,6 +759,12 @@ class InteractiveREPL:
                         self._show_context()
                     elif cmd == "/compact":
                         self._compact_context()
+                    elif cmd == "/facts":
+                        self._show_facts()
+                    elif cmd == "/remember" and arg:
+                        self._remember_fact(arg)
+                    elif cmd == "/forget" and arg:
+                        self._forget_fact(arg)
                     elif cmd == "/verbose":
                         self.verbose = not self.verbose
                         self.display.verbose = self.verbose

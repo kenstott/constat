@@ -833,6 +833,73 @@ Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analys
             "plan": None,
         }
 
+    def _answer_from_cached_facts(self, problem: str) -> Optional[dict]:
+        """
+        Try to answer a question from cached facts.
+
+        Checks if the question references a fact already in the cache
+        (e.g., "what is my role" -> user_role fact).
+
+        Returns:
+            Answer dict if fact found, None otherwise
+        """
+        cached_facts = self.fact_resolver.get_all_facts()
+        if not cached_facts:
+            return None
+
+        # Create context about available facts
+        fact_context = "\n".join(
+            f"- {name}: {fact.value}" for name, fact in cached_facts.items()
+        )
+
+        prompt = f"""Check if this question can be answered from these known facts:
+
+Known facts:
+{fact_context}
+
+User question: {problem}
+
+If the question asks about one of these facts, respond with:
+FACT_MATCH: <fact_name>
+ANSWER: <direct answer using the fact value>
+
+If the question cannot be answered from these facts, respond with:
+NO_MATCH
+
+Examples:
+- "what is my role" + fact user_role=CFO -> FACT_MATCH: user_role, ANSWER: Your role is CFO.
+- "what's the target region" + fact target_region=US -> FACT_MATCH: target_region, ANSWER: The target region is US.
+- "how many customers" + no matching fact -> NO_MATCH
+"""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.GENERAL,
+                system="You are a helpful assistant matching questions to known facts.",
+                user_message=prompt,
+                max_tokens=200,
+            )
+
+            response = result.content.strip()
+            if "NO_MATCH" in response:
+                return None
+
+            # Extract the answer
+            if "ANSWER:" in response:
+                answer_start = response.index("ANSWER:") + 7
+                answer = response[answer_start:].strip()
+
+                return {
+                    "success": True,
+                    "meta_response": True,
+                    "output": answer,
+                    "plan": None,
+                }
+        except Exception:
+            pass
+
+        return None
+
     def _answer_meta_question(self, problem: str) -> dict:
         """
         Answer meta-questions about capabilities without planning/execution.
@@ -996,6 +1063,12 @@ Please create a revised plan that addresses this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
+        # Check if question can be answered from cached facts
+        # (e.g., "what is my role" when user_role=CFO is cached)
+        cached_answer = self._answer_from_cached_facts(problem)
+        if cached_answer:
+            return cached_answer
+
         # Classify question and handle non-data-analysis questions directly
         question_type = self._classify_question(problem)
         if question_type == QuestionType.META_QUESTION:

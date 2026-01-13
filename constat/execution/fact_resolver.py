@@ -229,6 +229,15 @@ class FactResolver:
         param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
         return f"{fact_name}({param_str})"
 
+    def get_all_facts(self) -> dict[str, Fact]:
+        """
+        Get all cached facts.
+
+        Returns:
+            Dictionary mapping fact names/keys to Fact objects
+        """
+        return dict(self._cache)
+
     def _try_resolve(
         self,
         source: FactSource,
