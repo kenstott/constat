@@ -95,8 +95,11 @@ install_system_deps() {
             if ! has_command dot; then
                 if has_command brew; then
                     info "Installing graphviz via Homebrew..."
-                    brew install graphviz
-                    success "graphviz installed"
+                    if brew install graphviz; then
+                        success "graphviz installed"
+                    else
+                        warn "graphviz install had warnings, but may still work"
+                    fi
                 else
                     warn "Homebrew not found. Install graphviz manually:"
                     echo "  brew install graphviz"
