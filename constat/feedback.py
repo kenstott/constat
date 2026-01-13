@@ -1,5 +1,6 @@
 """Live feedback system for terminal output using rich."""
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 from rich.console import Console, Group
@@ -13,6 +14,13 @@ from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
 import threading
+
+
+def _left_align_markdown(text: str) -> str:
+    """Convert Markdown headers to bold text to avoid Rich's centering."""
+    # Convert ## Header to **Header**
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'**\1**', text, flags=re.MULTILINE)
+    return text
 
 from constat.execution.mode import (
     ExecutionMode,
@@ -459,13 +467,13 @@ class FeedbackDisplay:
     def show_output(self, output: str) -> None:
         """Show final output."""
         self.console.print("\n[bold]Output:[/bold]")
-        self.console.print(Markdown(output, justify="left"))
+        self.console.print(Markdown(_left_align_markdown(output)))
 
     def show_final_answer(self, answer: str) -> None:
         """Show the final synthesized answer prominently."""
         self.console.print()
         self.console.print(Rule("[bold green]ANSWER[/bold green]", align="left"))
-        self.console.print(Markdown(answer, justify="left"))
+        self.console.print(Markdown(_left_align_markdown(answer)))
         self.console.print()
 
 
