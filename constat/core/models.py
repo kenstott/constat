@@ -163,6 +163,9 @@ class StepResult:
     # For downstream access
     variables: dict[str, Any] = field(default_factory=dict)
 
+    # Generated code (for replay)
+    code: str = ""
+
 
 @dataclass
 class Plan:

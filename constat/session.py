@@ -1,5 +1,6 @@
 """Session orchestration for multi-step plan execution."""
 
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,8 @@ from constat.execution.mode import (
 from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
+from constat.email import create_send_email
+from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 
 
 # Meta-questions that don't require data queries
@@ -66,6 +69,7 @@ Your code has access to:
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask`: a function to query the LLM for general knowledge
+- `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
 
 ## LLM Knowledge (via llm_ask)
 Use `llm_ask(question)` to get general knowledge not available in databases:
@@ -168,6 +172,25 @@ ApprovalCallback = Callable[[PlanApprovalRequest], PlanApprovalResponse]
 
 
 @dataclass
+class ClarificationRequest:
+    """Request for clarification before planning."""
+    original_question: str
+    ambiguity_reason: str  # Why clarification is needed
+    questions: list[str]  # Specific questions to ask
+
+
+@dataclass
+class ClarificationResponse:
+    """User's response to clarification request."""
+    answers: dict[str, str]  # question -> answer mapping
+    skip: bool = False  # If True, proceed without clarification
+
+
+# Type for clarification callback: (request) -> response
+ClarificationCallback = Callable[[ClarificationRequest], ClarificationResponse]
+
+
+@dataclass
 class SessionConfig:
     """Configuration for a session."""
     max_retries_per_step: int = 10
@@ -177,6 +200,10 @@ class SessionConfig:
     require_approval: bool = True  # If True, require approval before execution
     max_replan_attempts: int = 3  # Max attempts to replan with user feedback
     auto_approve: bool = False  # If True, auto-approve plans (for testing/scripts)
+
+    # Clarification settings
+    ask_clarifications: bool = True  # If True, ask for clarification on ambiguous requests
+    skip_clarification: bool = False  # If True, skip clarification (for testing/scripts)
 
 
 @dataclass
@@ -255,6 +282,9 @@ class Session:
         # Approval callback (set via set_approval_callback)
         self._approval_callback: Optional[ApprovalCallback] = None
 
+        # Clarification callback (set via set_clarification_callback)
+        self._clarification_callback: Optional[ClarificationCallback] = None
+
         # Tool response cache for schema tools (cleared on refresh)
         self._tool_cache: dict[str, any] = {}
 
@@ -268,6 +298,17 @@ class Session:
             callback: Function that handles approval requests
         """
         self._approval_callback = callback
+
+    def set_clarification_callback(self, callback: ClarificationCallback) -> None:
+        """
+        Set the callback for requesting clarification on ambiguous questions.
+
+        The callback receives a ClarificationRequest and must return a ClarificationResponse.
+
+        Args:
+            callback: Function that handles clarification requests
+        """
+        self._clarification_callback = callback
 
     def on_event(self, handler: Callable[[StepEvent], None]) -> None:
         """Register an event handler for step events."""
@@ -401,6 +442,7 @@ class Session:
         globals_dict = {
             "store": self.datastore,  # Persistent datastore - only shared state between steps
             "llm_ask": self._create_llm_ask_helper(),  # LLM query helper for general knowledge
+            "send_email": create_send_email(self.config.email),  # Email function
         }
 
         # Provide database connections
@@ -422,7 +464,7 @@ class Session:
         import pandas as pd
 
         # Skip internal/injected variables
-        skip_vars = {"store", "db", "pd", "np", "llm_ask", "__builtins__"}
+        skip_vars = {"store", "db", "pd", "np", "llm_ask", "send_email", "__builtins__"}
         skip_prefixes = ("db_", "_")
 
         # Already-saved tables (don't duplicate)
@@ -551,6 +593,7 @@ class Session:
                     attempts=attempt,
                     duration_ms=duration_ms,
                     tables_created=tables_created,
+                    code=code,
                 )
 
             # Prepare for retry
@@ -628,43 +671,150 @@ class Session:
 
     def _classify_question(self, problem: str) -> str:
         """
-        Classify whether a question requires data analysis or can be answered directly.
+        Classify whether a question requires code execution or is a meta-question.
 
         Returns:
-            QuestionType.DATA_ANALYSIS - needs database queries
-            QuestionType.GENERAL_KNOWLEDGE - LLM can answer directly
-            QuestionType.META_QUESTION - about system capabilities
+            QuestionType.DATA_ANALYSIS - needs code execution (queries, computation, actions)
+            QuestionType.META_QUESTION - about system capabilities (what can you do?)
+
+        Note: We route almost everything through code execution because:
+        - Data questions need database queries
+        - General knowledge questions can use llm_ask() + computation
+        - Action requests (email, export) need code
+        - Even "What is sqrt(8)?" benefits from actual computation
         """
-        # Fast path for meta-questions
+        # Only meta-questions about the system bypass code execution
         if is_meta_question(problem):
             return QuestionType.META_QUESTION
 
+        # Everything else goes through code execution
+        # The generated code can use llm_ask() for general knowledge
+        # and then compute/transform/act on the results
+        return QuestionType.DATA_ANALYSIS
+
+    def _detect_ambiguity(self, problem: str) -> Optional[ClarificationRequest]:
+        """
+        Detect if a question is ambiguous and needs clarification before planning.
+
+        Checks for missing parameters like:
+        - Geographic scope ("how many bears" - where?)
+        - Time period ("what were sales" - when?)
+        - Threshold values ("top customers" - top how many?)
+        - Category/segment ("product performance" - which products?)
+
+        Returns:
+            ClarificationRequest if clarification needed, None otherwise
+        """
         schema_overview = self.schema_manager.get_overview()
 
-        prompt = f"""Classify this question into one of these categories:
+        prompt = f"""Analyze this question for ambiguity. Determine if critical parameters are missing that would significantly change the analysis.
 
 Question: "{problem}"
 
-Available data sources:
+Available data:
 {schema_overview}
 
-Categories:
-1. DATA_ANALYSIS - The question requires querying the available databases/data sources to answer
-2. GENERAL_KNOWLEDGE - The question is about general facts, concepts, or information that doesn't require the data sources
+Check for missing:
+1. Geographic scope (country, region, state, etc.)
+2. Time period (date range, year, quarter, etc.)
+3. Quantity limits (top N, threshold values)
+4. Category/segment filters (which products, customer types, etc.)
+5. Comparison basis (compared to what baseline?)
 
-Respond with just the category name: DATA_ANALYSIS or GENERAL_KNOWLEDGE"""
+If the question is CLEAR ENOUGH to proceed (even with reasonable defaults), respond:
+CLEAR
 
-        result = self.router.execute(
-            task_type=TaskType.INTENT_CLASSIFICATION,
-            system="You are a question classifier. Be brief.",
-            user_message=prompt,
-            max_tokens=50,
-        )
+If critical parameters are missing that would significantly change results, respond:
+AMBIGUOUS
+REASON: <brief explanation of what's unclear>
+QUESTIONS:
+- <specific clarifying question 1>
+- <specific clarifying question 2>
+(max 3 questions)
 
-        response = result.content.strip().upper()
-        if "GENERAL" in response:
-            return QuestionType.GENERAL_KNOWLEDGE
-        return QuestionType.DATA_ANALYSIS
+Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach."""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.INTENT_CLASSIFICATION,
+                system="You detect ambiguity in data analysis requests. Be practical - only flag truly ambiguous requests.",
+                user_message=prompt,
+                max_tokens=300,
+            )
+
+            response = result.content.strip()
+
+            if response.startswith("CLEAR"):
+                return None
+
+            # Parse ambiguous response
+            if "AMBIGUOUS" in response:
+                lines = response.split("\n")
+                reason = ""
+                questions = []
+
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("REASON:"):
+                        reason = line[7:].strip()
+                    elif line.startswith("- "):
+                        questions.append(line[2:].strip())
+
+                if questions:
+                    return ClarificationRequest(
+                        original_question=problem,
+                        ambiguity_reason=reason,
+                        questions=questions[:3],  # Max 3 questions
+                    )
+
+            return None
+
+        except Exception:
+            # On error, proceed without clarification
+            return None
+
+    def _request_clarification(self, request: ClarificationRequest) -> Optional[str]:
+        """
+        Request clarification from the user.
+
+        Args:
+            request: The clarification request
+
+        Returns:
+            Enhanced question with clarification, or None to skip
+        """
+        # Skip if disabled or no callback
+        if self.session_config.skip_clarification:
+            return None
+
+        if not self._clarification_callback:
+            return None
+
+        # Emit event for UI
+        self._emit_event(StepEvent(
+            event_type="clarification_needed",
+            step_number=0,
+            data={
+                "reason": request.ambiguity_reason,
+                "questions": request.questions,
+            }
+        ))
+
+        response = self._clarification_callback(request)
+
+        if response.skip:
+            return None
+
+        # Build enhanced question with clarifications
+        clarifications = []
+        for question, answer in response.answers.items():
+            if answer:
+                clarifications.append(f"{question}: {answer}")
+
+        if clarifications:
+            return f"{request.original_question}\n\nClarifications:\n" + "\n".join(clarifications)
+
+        return None
 
     def _answer_general_question(self, problem: str) -> dict:
         """
@@ -753,6 +903,57 @@ Format the answer for readability with markdown. Be concise but complete."""
 
         return result.content
 
+    def _generate_suggestions(self, problem: str, answer: str, tables: list[dict]) -> list[str]:
+        """
+        Generate contextual follow-up suggestions based on the answer and available data.
+
+        Args:
+            problem: The original question
+            answer: The synthesized answer
+            tables: Available tables in the datastore
+
+        Returns:
+            List of 1-3 suggested follow-up questions
+        """
+        table_info = ", ".join(t["name"] for t in tables) if tables else "none"
+
+        prompt = f"""Based on this completed analysis, suggest 1-3 actionable follow-up requests the user could make.
+
+Original question: {problem}
+
+Answer provided:
+{answer}
+
+Available data tables: {table_info}
+
+Guidelines:
+- Suggest ACTIONABLE REQUESTS that extend or build on the analysis (e.g., "Show a breakdown by region", "Compare this to last quarter")
+- DO NOT ask clarifying questions back to the user (e.g., "Why did you need this?" or "What will you use this for?")
+- Each suggestion should be something the system can execute
+- Keep suggestions concise (under 12 words each)
+- Consider: breakdowns, comparisons, visualizations, exports, time periods, rankings
+- If the analysis seems complete, return just 1 suggestion or nothing
+
+Return ONLY the suggestions, one per line, no numbering or bullets."""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.SUMMARIZATION,
+                system="You suggest actionable follow-up analysis requests. Never ask clarifying questions.",
+                user_message=prompt,
+                max_tokens=200,
+            )
+
+            # Parse suggestions (one per line)
+            suggestions = [
+                s.strip().lstrip("0123456789.-) ")
+                for s in result.content.strip().split("\n")
+                if s.strip() and len(s.strip()) > 5
+            ]
+            return suggestions[:3]  # Max 3 suggestions
+        except Exception:
+            return []  # Fail silently - suggestions are optional
+
     def _replan_with_feedback(self, problem: str, feedback: str) -> PlannerResponse:
         """
         Generate a new plan incorporating user feedback.
@@ -778,14 +979,16 @@ Please create a revised plan that addresses this feedback."""
         Solve a problem with multi-step planning and execution.
 
         Workflow:
-        1. Check for meta-questions (capability queries)
-        2. Determine execution mode (exploratory vs auditable)
-        3. Generate plan
-        4. Request user approval (if require_approval is True)
+        1. Classify question (meta-question, general knowledge, or data analysis)
+        2. Check for ambiguity and request clarification if needed
+        3. Determine execution mode (exploratory vs auditable)
+        4. Generate plan
+        5. Request user approval (if require_approval is True)
            - If approved: execute
            - If rejected: return without executing
            - If suggestions: replan and ask again
-        5. Execute steps in parallel waves
+        6. Execute steps in parallel waves
+        7. Synthesize answer and generate follow-up suggestions
 
         Args:
             problem: Natural language problem to solve
@@ -799,6 +1002,14 @@ Please create a revised plan that addresses this feedback."""
             return self._answer_meta_question(problem)
         elif question_type == QuestionType.GENERAL_KNOWLEDGE:
             return self._answer_general_question(problem)
+
+        # Check for ambiguity and request clarification if needed
+        if self.session_config.ask_clarifications and self._clarification_callback:
+            clarification_request = self._detect_ambiguity(problem)
+            if clarification_request:
+                enhanced_problem = self._request_clarification(clarification_request)
+                if enhanced_problem:
+                    problem = enhanced_problem
 
         # Create session
         db_names = list(self.config.databases.keys())
@@ -818,6 +1029,23 @@ Please create a revised plan that addresses this feedback."""
         # Save problem statement to datastore (for UI restoration)
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
+
+        # Extract facts from the initial question (e.g., "my role as CFO")
+        # This ensures user context is captured before planning
+        try:
+            extracted_facts = self.fact_resolver.add_user_facts_from_text(problem)
+            if extracted_facts:
+                self._emit_event(StepEvent(
+                    event_type="facts_extracted",
+                    step_number=0,
+                    data={
+                        "facts": [f.to_dict() for f in extracted_facts],
+                        "source": "initial_question",
+                    }
+                ))
+        except Exception:
+            # Fact extraction is optional, don't fail if it errors
+            pass
 
         # Determine execution mode
         mode_selection = suggest_mode(problem)
@@ -915,6 +1143,7 @@ Please create a revised plan that addresses this feedback."""
                     for s in self.plan.steps
                 ],
                 "reasoning": planner_response.reasoning,
+                "is_followup": False,
             }
         ))
 
@@ -971,6 +1200,7 @@ Please create a revised plan that addresses this feedback."""
                                 goal=step.goal,
                                 narrative=result.stdout,
                                 tables_created=result.tables_created,
+                                code=result.code,
                             )
                             self.datastore.update_plan_step(
                                 step.number,
@@ -1039,6 +1269,16 @@ Please create a revised plan that addresses this feedback."""
             data={"answer": final_answer}
         ))
 
+        # Generate follow-up suggestions
+        tables = self.datastore.list_tables() if self.datastore else []
+        suggestions = self._generate_suggestions(problem, final_answer, tables)
+        if suggestions:
+            self._emit_event(StepEvent(
+                event_type="suggestions_ready",
+                step_number=0,
+                data={"suggestions": suggestions}
+            ))
+
         self.history.record_query(
             session_id=self.session_id,
             question=problem,
@@ -1059,6 +1299,7 @@ Please create a revised plan that addresses this feedback."""
             "results": all_results,
             "output": combined_output,
             "final_answer": final_answer,
+            "suggestions": suggestions,
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
             "datastore_path": str(self.datastore.db_path) if self.datastore and self.datastore.db_path else None,
@@ -1289,6 +1530,7 @@ Follow-up question: {question}
                     for s in follow_up_plan.steps
                 ],
                 "reasoning": planner_response.reasoning,
+                "is_followup": True,
             }
         ))
 
@@ -1313,6 +1555,7 @@ Follow-up question: {question}
                         goal=step.goal,
                         narrative=result.stdout,
                         tables_created=result.tables_created,
+                        code=result.code,
                     )
             else:
                 follow_up_plan.mark_step_failed(step.number, result)
@@ -1342,13 +1585,38 @@ Follow-up question: {question}
             for step, r in zip(follow_up_plan.steps, all_results)
         ])
 
+        # Synthesize final answer
+        self._emit_event(StepEvent(
+            event_type="synthesizing",
+            step_number=0,
+            data={"message": "Synthesizing final answer..."}
+        ))
+
+        final_answer = self._synthesize_answer(question, combined_output)
+
+        self._emit_event(StepEvent(
+            event_type="answer_ready",
+            step_number=0,
+            data={"answer": final_answer}
+        ))
+
+        # Generate follow-up suggestions
+        tables = self.datastore.list_tables() if self.datastore else []
+        suggestions = self._generate_suggestions(question, final_answer, tables)
+        if suggestions:
+            self._emit_event(StepEvent(
+                event_type="suggestions_ready",
+                step_number=0,
+                data={"suggestions": suggestions}
+            ))
+
         self.history.record_query(
             session_id=self.session_id,
             question=question,
             success=True,
             attempts=total_attempts,
             duration_ms=total_duration,
-            answer=combined_output,
+            answer=final_answer,
         )
 
         return {
@@ -1356,8 +1624,144 @@ Follow-up question: {question}
             "plan": follow_up_plan,
             "results": all_results,
             "output": combined_output,
+            "final_answer": final_answer,
+            "suggestions": suggestions,
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
+        }
+
+    def replay(self, problem: str) -> dict:
+        """
+        Replay a previous session by re-executing stored code without LLM codegen.
+
+        This loads the stored code from the scratchpad and re-executes it,
+        then synthesizes a new answer (which still uses the LLM).
+
+        Useful for demos, debugging, or re-running with modified data.
+
+        Args:
+            problem: The original problem (used for answer synthesis)
+
+        Returns:
+            Dict with results (same format as solve())
+        """
+        if not self.datastore:
+            raise ValueError("No datastore available for replay")
+
+        # Load stored scratchpad entries
+        entries = self.datastore.get_scratchpad()
+        if not entries:
+            raise ValueError("No stored steps to replay")
+
+        # Emit planning complete (we're using stored plan)
+        self._emit_event(StepEvent(
+            event_type="plan_ready",
+            step_number=0,
+            data={
+                "steps": [
+                    {"number": e["step_number"], "goal": e["goal"], "depends_on": []}
+                    for e in entries
+                ],
+                "reasoning": "Replaying stored execution",
+                "is_followup": False,
+            }
+        ))
+
+        all_results = []
+        for entry in entries:
+            step_number = entry["step_number"]
+            goal = entry["goal"]
+            code = entry["code"]
+
+            if not code:
+                raise ValueError(f"Step {step_number} has no stored code to replay")
+
+            self._emit_event(StepEvent(
+                event_type="step_start",
+                step_number=step_number,
+                data={"goal": goal}
+            ))
+
+            self._emit_event(StepEvent(
+                event_type="executing",
+                step_number=step_number,
+                data={"attempt": 1, "code": code}
+            ))
+
+            start_time = time.time()
+
+            # Track tables before execution
+            tables_before = set(t['name'] for t in self.datastore.list_tables())
+
+            # Execute stored code
+            exec_globals = self._get_execution_globals()
+            result = self.executor.execute(code, exec_globals)
+
+            # Auto-save any DataFrames
+            if result.success:
+                self._auto_save_results(result.namespace, step_number)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            tables_after = set(t['name'] for t in self.datastore.list_tables())
+            tables_created = list(tables_after - tables_before)
+
+            if result.success:
+                self._emit_event(StepEvent(
+                    event_type="step_complete",
+                    step_number=step_number,
+                    data={"stdout": result.stdout, "attempts": 1, "duration_ms": duration_ms, "tables_created": tables_created}
+                ))
+
+                all_results.append(StepResult(
+                    success=True,
+                    stdout=result.stdout,
+                    attempts=1,
+                    duration_ms=duration_ms,
+                    tables_created=tables_created,
+                    code=code,
+                ))
+            else:
+                self._emit_event(StepEvent(
+                    event_type="step_error",
+                    step_number=step_number,
+                    data={"error": result.stderr or "Execution failed", "attempt": 1}
+                ))
+                return {
+                    "success": False,
+                    "error": result.stderr or "Replay execution failed",
+                    "step_number": step_number,
+                }
+
+        # Synthesize final answer (still uses LLM)
+        combined_output = "\n\n".join([
+            f"Step {entry['step_number']}: {entry['goal']}\n{r.stdout}"
+            for entry, r in zip(entries, all_results)
+        ])
+
+        self._emit_event(StepEvent(
+            event_type="synthesizing",
+            step_number=0,
+            data={"message": "Synthesizing final answer..."}
+        ))
+
+        final_answer = self._synthesize_answer(problem, combined_output)
+
+        self._emit_event(StepEvent(
+            event_type="answer_ready",
+            step_number=0,
+            data={"answer": final_answer}
+        ))
+
+        total_duration = sum(r.duration_ms for r in all_results)
+
+        return {
+            "success": True,
+            "results": all_results,
+            "output": combined_output,
+            "final_answer": final_answer,
+            "datastore_tables": self.datastore.list_tables(),
+            "duration_ms": total_duration,
+            "replay": True,
         }
 
     def get_state(self) -> dict:
@@ -1369,6 +1773,400 @@ Follow-up question: {question}
             "state": self.datastore.get_all_state() if self.datastore else {},
             "completed_steps": self.plan.completed_steps if self.plan else [],
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
+        }
+
+    # --- Context Management ---
+
+    def get_context_stats(self) -> Optional[ContextStats]:
+        """
+        Get statistics about context size.
+
+        Returns:
+            ContextStats with token estimates and breakdown, or None if no datastore
+        """
+        if not self.datastore:
+            return None
+
+        estimator = ContextEstimator(self.datastore)
+        return estimator.estimate()
+
+    def compact_context(
+        self,
+        summarize_scratchpad: bool = True,
+        sample_tables: bool = True,
+        clear_old_state: bool = False,
+        keep_recent_steps: int = 3,
+    ) -> Optional[CompactionResult]:
+        """
+        Compact session context to reduce token usage.
+
+        This is useful for long-running sessions where context grows too large.
+
+        Args:
+            summarize_scratchpad: Truncate old scratchpad narratives
+            sample_tables: Sample large tables down to max rows
+            clear_old_state: Clear state variables from old steps
+            keep_recent_steps: Number of recent steps to preserve intact
+
+        Returns:
+            CompactionResult with details, or None if no datastore
+        """
+        if not self.datastore:
+            return None
+
+        compactor = ContextCompactor(self.datastore)
+        return compactor.compact(
+            summarize_scratchpad=summarize_scratchpad,
+            sample_tables=sample_tables,
+            clear_old_state=clear_old_state,
+            keep_recent_steps=keep_recent_steps,
+        )
+
+    def reset_context(self) -> Optional[CompactionResult]:
+        """
+        Fully reset session context (clear all state).
+
+        WARNING: This clears all scratchpad entries, tables, state variables,
+        and artifacts. Use with caution.
+
+        Returns:
+            CompactionResult with details, or None if no datastore
+        """
+        if not self.datastore:
+            return None
+
+        compactor = ContextCompactor(self.datastore)
+        result = compactor.clear_all()
+
+        # Also reset in-memory scratchpad
+        self.scratchpad = Scratchpad()
+        self.plan = None
+
+        return result
+
+    # --- Saved Plans ---
+
+    SAVED_PLANS_FILE = Path(".constat/saved_plans.json")
+    DEFAULT_USER_ID = "root"
+
+    def save_plan(self, name: str, problem: str, user_id: Optional[str] = None, shared: bool = False) -> None:
+        """
+        Save the current session's plan and code for future replay.
+
+        Args:
+            name: Name for the saved plan
+            problem: The original problem (for replay context)
+            user_id: User ID (defaults to DEFAULT_USER_ID)
+            shared: If True, save as shared plan accessible to all users
+        """
+        if not self.datastore:
+            raise ValueError("No datastore available")
+
+        entries = self.datastore.get_scratchpad()
+        if not entries:
+            raise ValueError("No steps to save")
+
+        user_id = user_id or self.DEFAULT_USER_ID
+
+        plan_data = {
+            "problem": problem,
+            "created_by": user_id,
+            "steps": [
+                {
+                    "step_number": e["step_number"],
+                    "goal": e["goal"],
+                    "code": e["code"],
+                }
+                for e in entries
+            ],
+        }
+
+        # Load existing saved plans
+        all_plans = self._load_all_plans()
+
+        if shared:
+            if "shared" not in all_plans:
+                all_plans["shared"] = {}
+            all_plans["shared"][name] = plan_data
+        else:
+            if "users" not in all_plans:
+                all_plans["users"] = {}
+            if user_id not in all_plans["users"]:
+                all_plans["users"][user_id] = {}
+            all_plans["users"][user_id][name] = plan_data
+
+        self._save_all_plans(all_plans)
+
+    @classmethod
+    def load_saved_plan(cls, name: str, user_id: Optional[str] = None) -> dict:
+        """
+        Load a saved plan by name.
+
+        Searches user's plans first, then shared plans.
+
+        Args:
+            name: Name of the saved plan
+            user_id: User ID (defaults to DEFAULT_USER_ID)
+
+        Returns:
+            Dict with problem and steps
+        """
+        user_id = user_id or cls.DEFAULT_USER_ID
+        all_plans = cls._load_all_plans()
+
+        # Check user's plans first
+        user_plans = all_plans.get("users", {}).get(user_id, {})
+        if name in user_plans:
+            return user_plans[name]
+
+        # Check shared plans
+        shared_plans = all_plans.get("shared", {})
+        if name in shared_plans:
+            return shared_plans[name]
+
+        raise ValueError(f"No saved plan named '{name}'")
+
+    @classmethod
+    def list_saved_plans(cls, user_id: Optional[str] = None, include_shared: bool = True) -> list[dict]:
+        """
+        List saved plans accessible to the user.
+
+        Args:
+            user_id: User ID (defaults to DEFAULT_USER_ID)
+            include_shared: Include shared plans in the list
+
+        Returns:
+            List of dicts with name, problem, shared flag
+        """
+        user_id = user_id or cls.DEFAULT_USER_ID
+        all_plans = cls._load_all_plans()
+        result = []
+
+        # User's plans
+        user_plans = all_plans.get("users", {}).get(user_id, {})
+        for name, data in user_plans.items():
+            result.append({
+                "name": name,
+                "problem": data.get("problem", ""),
+                "shared": False,
+                "steps": len(data.get("steps", [])),
+            })
+
+        # Shared plans
+        if include_shared:
+            shared_plans = all_plans.get("shared", {})
+            for name, data in shared_plans.items():
+                result.append({
+                    "name": name,
+                    "problem": data.get("problem", ""),
+                    "shared": True,
+                    "created_by": data.get("created_by", "unknown"),
+                    "steps": len(data.get("steps", [])),
+                })
+
+        return result
+
+    @classmethod
+    def delete_saved_plan(cls, name: str, user_id: Optional[str] = None) -> bool:
+        """Delete a saved plan by name (only user's own plans)."""
+        user_id = user_id or cls.DEFAULT_USER_ID
+        all_plans = cls._load_all_plans()
+
+        user_plans = all_plans.get("users", {}).get(user_id, {})
+        if name not in user_plans:
+            return False
+
+        del all_plans["users"][user_id][name]
+        cls._save_all_plans(all_plans)
+        return True
+
+    @classmethod
+    def share_plan_with(cls, name: str, target_user: str, from_user: Optional[str] = None) -> bool:
+        """
+        Share a plan with a specific user (copy to their plans).
+
+        Args:
+            name: Name of the plan to share
+            target_user: User ID to share with
+            from_user: Source user ID (defaults to DEFAULT_USER_ID)
+
+        Returns:
+            True if shared successfully
+        """
+        from_user = from_user or cls.DEFAULT_USER_ID
+        all_plans = cls._load_all_plans()
+
+        # Find the plan (check user's plans first, then shared)
+        source_plans = all_plans.get("users", {}).get(from_user, {})
+        if name in source_plans:
+            plan_data = source_plans[name].copy()
+        else:
+            shared_plans = all_plans.get("shared", {})
+            if name in shared_plans:
+                plan_data = shared_plans[name].copy()
+            else:
+                return False
+
+        # Copy to target user's plans
+        if "users" not in all_plans:
+            all_plans["users"] = {}
+        if target_user not in all_plans["users"]:
+            all_plans["users"][target_user] = {}
+
+        plan_data["shared_by"] = from_user
+        all_plans["users"][target_user][name] = plan_data
+        cls._save_all_plans(all_plans)
+        return True
+
+    @classmethod
+    def _load_all_plans(cls) -> dict:
+        """Load all saved plans from file."""
+        if not cls.SAVED_PLANS_FILE.exists():
+            return {"users": {}, "shared": {}}
+        try:
+            data = json.loads(cls.SAVED_PLANS_FILE.read_text())
+            # Ensure structure
+            if "users" not in data:
+                data["users"] = {}
+            if "shared" not in data:
+                data["shared"] = {}
+            return data
+        except (json.JSONDecodeError, OSError):
+            return {"users": {}, "shared": {}}
+
+    @classmethod
+    def _save_all_plans(cls, plans: dict) -> None:
+        """Save plans to file."""
+        cls.SAVED_PLANS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cls.SAVED_PLANS_FILE.write_text(json.dumps(plans, indent=2))
+
+    def replay_saved(self, name: str, user_id: Optional[str] = None) -> dict:
+        """
+        Replay a saved plan by name.
+
+        Args:
+            name: Name of the saved plan
+            user_id: User ID for plan lookup (defaults to DEFAULT_USER_ID)
+
+        Returns:
+            Dict with results (same format as solve())
+        """
+        plan_data = self.load_saved_plan(name, user_id=user_id)
+
+        if not self.datastore:
+            raise ValueError("No datastore available for replay")
+
+        # Clear existing scratchpad and load saved steps
+        # (We'll execute fresh but use stored code)
+        problem = plan_data["problem"]
+        steps = plan_data["steps"]
+
+        # Emit plan ready
+        self._emit_event(StepEvent(
+            event_type="plan_ready",
+            step_number=0,
+            data={
+                "steps": [
+                    {"number": s["step_number"], "goal": s["goal"], "depends_on": []}
+                    for s in steps
+                ],
+                "reasoning": f"Replaying saved plan: {name}",
+                "is_followup": False,
+            }
+        ))
+
+        all_results = []
+        for step_data in steps:
+            step_number = step_data["step_number"]
+            goal = step_data["goal"]
+            code = step_data["code"]
+
+            if not code:
+                raise ValueError(f"Step {step_number} has no stored code")
+
+            self._emit_event(StepEvent(
+                event_type="step_start",
+                step_number=step_number,
+                data={"goal": goal}
+            ))
+
+            self._emit_event(StepEvent(
+                event_type="executing",
+                step_number=step_number,
+                data={"attempt": 1, "code": code}
+            ))
+
+            start_time = time.time()
+            tables_before = set(t['name'] for t in self.datastore.list_tables())
+
+            exec_globals = self._get_execution_globals()
+            result = self.executor.execute(code, exec_globals)
+
+            if result.success:
+                self._auto_save_results(result.namespace, step_number)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            tables_after = set(t['name'] for t in self.datastore.list_tables())
+            tables_created = list(tables_after - tables_before)
+
+            if result.success:
+                self._emit_event(StepEvent(
+                    event_type="step_complete",
+                    step_number=step_number,
+                    data={"stdout": result.stdout, "attempts": 1, "duration_ms": duration_ms, "tables_created": tables_created}
+                ))
+
+                all_results.append(StepResult(
+                    success=True,
+                    stdout=result.stdout,
+                    attempts=1,
+                    duration_ms=duration_ms,
+                    tables_created=tables_created,
+                    code=code,
+                ))
+            else:
+                self._emit_event(StepEvent(
+                    event_type="step_error",
+                    step_number=step_number,
+                    data={"error": result.stderr or "Execution failed", "attempt": 1}
+                ))
+                return {
+                    "success": False,
+                    "error": result.stderr or "Replay execution failed",
+                    "step_number": step_number,
+                }
+
+        # Synthesize answer
+        combined_output = "\n\n".join([
+            f"Step {s['step_number']}: {s['goal']}\n{r.stdout}"
+            for s, r in zip(steps, all_results)
+        ])
+
+        self._emit_event(StepEvent(
+            event_type="synthesizing",
+            step_number=0,
+            data={"message": "Synthesizing final answer..."}
+        ))
+
+        final_answer = self._synthesize_answer(problem, combined_output)
+
+        self._emit_event(StepEvent(
+            event_type="answer_ready",
+            step_number=0,
+            data={"answer": final_answer}
+        ))
+
+        total_duration = sum(r.duration_ms for r in all_results)
+
+        return {
+            "success": True,
+            "results": all_results,
+            "output": combined_output,
+            "final_answer": final_answer,
+            "datastore_tables": self.datastore.list_tables(),
+            "duration_ms": total_duration,
+            "replay": True,
+            "plan_name": name,
         }
 
     def get_unresolved_facts(self) -> list[dict]:

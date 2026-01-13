@@ -97,7 +97,15 @@ class BaseLLMProvider(ABC):
         return self._extract_code(response)
 
     def _extract_code(self, text: str) -> str:
-        """Extract Python code from markdown code blocks."""
+        """Extract Python code from markdown code blocks.
+
+        Handles various cases:
+        - Complete markdown blocks: ```python ... ```
+        - Incomplete blocks (no closing fence from truncated responses)
+        - Generic ``` ... ``` blocks
+        """
+        text = text.strip()
+
         # Try to find ```python ... ``` block
         pattern = r"```python\s*(.*?)\s*```"
         match = re.search(pattern, text, re.DOTALL)
@@ -110,8 +118,19 @@ class BaseLLMProvider(ABC):
         if match:
             return match.group(1).strip()
 
+        # Handle incomplete code blocks (truncated response without closing fence)
+        if text.startswith("```"):
+            lines = text.split("\n", 1)
+            if len(lines) > 1:
+                # Skip the first line (```python or ```)
+                code = lines[1]
+                # Remove trailing ``` if present at the end
+                if code.rstrip().endswith("```"):
+                    code = code.rstrip()[:-3]
+                return code.strip()
+
         # No code block found, return as-is
-        return text.strip()
+        return text
 
     async def async_generate(
         self,

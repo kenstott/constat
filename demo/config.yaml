@@ -6,6 +6,16 @@ llm:
   model: claude-sonnet-4-20250514
   api_key: ${ANTHROPIC_API_KEY}
 
+# Email configuration for send_email() in generated code
+email:
+  smtp_host: ${SMTP_HOST}
+  smtp_port: ${SMTP_PORT}
+  smtp_user: ${SMTP_USER}
+  smtp_password: ${SMTP_PASSWORD}
+  from_address: ${SMTP_FROM}
+  from_name: Constat Demo
+  tls: true
+
 # SQL Databases and File-based Data Sources
 databases:
   # SQL Databases (SQLite)

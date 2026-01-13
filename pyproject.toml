@@ -12,6 +12,7 @@ dependencies = [
     "anthropic>=0.30",
     "pandas>=2.0",
     "httpx>=0.24",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

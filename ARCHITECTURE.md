@@ -73,6 +73,29 @@ User Question: "What are the top 5 customers by revenue this quarter?"
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
+│  0. CLARIFICATION PHASE (if needed)                                         │
+│                                                                             │
+│  System detects ambiguous requests that need clarification before planning: │
+│    - Geographic scope: "how many bears?" → "In what region?"                │
+│    - Time period: "show sales" → "For what date range?"                     │
+│    - Threshold values: "top customers" → "How many - top 5, 10, 20?"        │
+│    - Category filters: "product analysis" → "Which product categories?"     │
+│                                                                             │
+│  If ambiguity detected:                                                     │
+│    1. Present clarifying questions to user                                  │
+│    2. User provides answers (or skips to proceed anyway)                    │
+│    3. Enhanced question passed to planning phase                            │
+│                                                                             │
+│  Example:                                                                   │
+│    User: "How many bears are there?"                                        │
+│    System: "Please clarify:"                                                │
+│      1. In what geographic region? (US, global, specific state?)            │
+│    User: "In Yellowstone National Park"                                     │
+│    → Enhanced: "How many bears are there? In Yellowstone National Park"     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
 │  1. PLANNING PHASE                                                          │
 │                                                                             │
 │  Input:                                                                     │
@@ -330,6 +353,8 @@ The central orchestrator that manages the execution lifecycle.
 - `follow_up(question)` - Continue with context preserved
 - `resume(session_id)` - Load and continue a previous session
 - `get_state()` - Inspect current session state
+- `set_clarification_callback(callback)` - Set handler for ambiguous questions
+- `set_approval_callback(callback)` - Set handler for plan approval
 
 ### Planner (`execution/planner.py`)
 
@@ -619,10 +644,23 @@ Rich-based terminal UI for real-time feedback.
 
 Interactive command loop for exploration.
 
+**Features:**
+- Automatic clarification prompts for ambiguous questions
+- Plan approval workflow with suggest/reject options
+- Follow-up suggestions after analysis completion
+- Schema-aware typeahead completions
+- Session history and resume capability
+
 **Commands:**
 - `/tables` - Show available tables
 - `/query <sql>` - Run SQL on datastore
+- `/code [step]` - Show generated code
 - `/state` - Inspect session state
+- `/user [name]` - Show/set current user
+- `/save <name>` - Save plan for replay
+- `/share <name>` - Save as shared plan
+- `/plans` - List saved plans
+- `/replay <name>` - Replay a saved plan
 - `/history` - List previous sessions
 - `/resume <id>` - Continue a session
 

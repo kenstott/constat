@@ -1,9 +1,10 @@
 """Live feedback system for terminal output using rich."""
 
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
@@ -13,6 +14,8 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
+from rich.layout import Layout
+from rich.columns import Columns
 import threading
 
 
@@ -28,6 +31,7 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
+from constat.session import ClarificationRequest, ClarificationResponse
 
 
 # Spinner frames for animation
@@ -55,11 +59,12 @@ class FeedbackDisplay:
     Rich-based terminal display for session execution.
 
     Provides real-time feedback including:
-    - Plan overview with step checklist
+    - Plan overview with step checklist (pinned at bottom)
     - Current step progress with spinner
+    - Output streaming above pinned plan
+    - Real-time elapsed timer
     - Code syntax highlighting
     - Error display with retry indication
-    - Timing information
     """
 
     def __init__(self, console: Optional[Console] = None, verbose: bool = False):
@@ -75,6 +80,14 @@ class FeedbackDisplay:
         self._spinner_progress: Optional[Progress] = None
         self._spinner_task: Optional[TaskID] = None
         self._spinner_frame: int = 0  # For step execution animation
+        self._step_number_map: dict[int, int] = {}  # Maps session step numbers to display numbers (1-indexed)
+
+        # Animated display state
+        self._start_time: Optional[float] = None
+        self._output_lines: list[str] = []  # Output buffer for streaming above plan
+        self._max_output_lines: int = 15  # Max lines to show above plan
+        self._current_step_output: str = ""  # Current step's streaming output
+        self._active_step_goal: str = ""  # Goal of currently executing step
 
     def start(self) -> None:
         """Start the live display."""
@@ -170,15 +183,112 @@ class FeedbackDisplay:
                 status_icon = "[dim]○[/dim]"
                 status_text = step.goal
 
-            renderables.append(Text.from_markup(f"  {status_icon} Step {step.number}: {status_text}"))
+            display_num = self._step_number_map.get(step.number, step.number)
+            renderables.append(Text.from_markup(f"  {status_icon} Step {display_num}: {status_text}"))
 
         return Group(*renderables)
+
+    def _format_elapsed(self) -> str:
+        """Format elapsed time as human-readable string."""
+        if not self._start_time:
+            return "0s"
+        elapsed = time.time() - self._start_time
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        return f"{minutes}m {seconds}s"
+
+    def _build_animated_display(self) -> RenderableType:
+        """Build the animated display with output above and plan pinned below.
+
+        Layout:
+        ┌─────────────────────────────────────────┐
+        │  Output from current step               │
+        │  (streaming text, code, results)        │
+        ├─────────────────────────────────────────┤
+        │  · Step 1: Goal here...     (elapsed)   │
+        │  ☐ Step 1: Goal description             │
+        │  ⋯ Step 2: Currently running...         │
+        │  ☐ Step 3: Pending...                   │
+        │  ☑ Step 4: Completed 2.3s               │
+        └─────────────────────────────────────────┘
+        """
+        # Advance spinner frame
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+        spinner_char = SPINNER_FRAMES[self._spinner_frame]
+
+        # Build output section (top)
+        output_parts = []
+
+        # Show current step's streaming output
+        if self._current_step_output:
+            # Truncate to max lines
+            lines = self._current_step_output.split('\n')
+            if len(lines) > self._max_output_lines:
+                lines = lines[-self._max_output_lines:]
+            output_text = '\n'.join(lines)
+            output_parts.append(Text(output_text, style="dim"))
+
+        # Build plan section (bottom) - todo-list style
+        plan_parts = []
+
+        # Header with elapsed time and active step
+        elapsed = self._format_elapsed()
+        if self._active_step_goal:
+            header_text = f"[dim]·[/dim] [cyan]{self._active_step_goal[:50]}{'...' if len(self._active_step_goal) > 50 else ''}[/cyan] [dim]({elapsed})[/dim]"
+        else:
+            header_text = f"[dim]({elapsed})[/dim]"
+        plan_parts.append(Text.from_markup(header_text))
+
+        # Steps as checklist
+        for step in self.plan_steps:
+            display_num = self._step_number_map.get(step.number, step.number)
+
+            if step.status == "pending":
+                marker = "[dim]☐[/dim]"
+                goal_style = "dim"
+                suffix = ""
+            elif step.status in ("running", "generating", "executing"):
+                marker = f"[yellow]{spinner_char}[/yellow]"
+                goal_style = "cyan"
+                suffix = f" [yellow]{step.status_message or 'working...'}[/yellow]"
+            elif step.status == "completed":
+                marker = "[green]☑[/green]"
+                goal_style = ""
+                time_str = f"{step.duration_ms/1000:.1f}s"
+                retry_str = f" ({step.attempts} tries)" if step.attempts > 1 else ""
+                suffix = f" [dim]{time_str}{retry_str}[/dim]"
+            elif step.status == "failed":
+                marker = "[red]☒[/red]"
+                goal_style = "red"
+                suffix = ""
+            else:
+                marker = "[dim]☐[/dim]"
+                goal_style = "dim"
+                suffix = ""
+
+            goal_text = step.goal[:60] + "..." if len(step.goal) > 60 else step.goal
+            if goal_style:
+                plan_parts.append(Text.from_markup(f"  {marker} [{goal_style}]{goal_text}[/{goal_style}]{suffix}"))
+            else:
+                plan_parts.append(Text.from_markup(f"  {marker} {goal_text}{suffix}"))
+
+        # Combine: output on top, then separator, then plan
+        all_parts = []
+        if output_parts:
+            all_parts.extend(output_parts)
+            all_parts.append(Text(""))  # Spacer
+
+        all_parts.extend(plan_parts)
+
+        return Group(*all_parts)
 
     def _update_live(self) -> None:
         """Update the live display with current step states."""
         if self._live and self._use_live_display:
             with self._lock:
-                self._live.update(self._build_steps_display())
+                self._live.update(self._build_animated_display())
 
     def _get_step(self, step_number: int) -> Optional[StepDisplay]:
         """Get a step by number."""
@@ -187,33 +297,72 @@ class FeedbackDisplay:
                 return step
         return None
 
+    def reset(self) -> None:
+        """Reset all display state for a fresh start."""
+        self.plan_steps = []
+        self.current_step = None
+        self.problem = ""
+        self._step_number_map = {}
+        self._execution_started = False
+        self._start_time = None
+        self._output_lines = []
+        self._current_step_output = ""
+        self._active_step_goal = ""
+        self.stop()
+
     def set_problem(self, problem: str) -> None:
         """Set the problem being solved."""
         self.problem = problem
         self.console.print(Rule("[bold blue]CONSTAT[/bold blue]", align="left"))
-        self.console.print(f"\n[bold]Problem:[/bold] {problem}\n")
+        self.console.print()  # Just a blank line before plan
 
-    def show_plan(self, steps: list[dict]) -> None:
-        """Display the execution plan."""
-        self.plan_steps = [
+    def show_plan(self, steps: list[dict], is_followup: bool = False) -> None:
+        """Display the execution plan.
+
+        Args:
+            steps: List of step dicts with number, goal, depends_on
+            is_followup: If True, continue step numbering from previous plan
+        """
+        # Determine starting step number
+        if is_followup and self.plan_steps:
+            # Continue from last step number
+            start_num = max(self._step_number_map.values()) + 1 if self._step_number_map else 1
+        else:
+            # New problem - start from 1
+            start_num = 1
+            self._step_number_map = {}
+            self.plan_steps = []
+
+        # Build mapping from session step numbers to display numbers
+        for i, s in enumerate(steps):
+            session_num = s.get("number", i + 1)
+            self._step_number_map[session_num] = start_num + i
+
+        # Append new steps (for follow-up) or replace (for new problem)
+        new_steps = [
             StepDisplay(number=s.get("number", i+1), goal=s.get("goal", ""))
             for i, s in enumerate(steps)
         ]
+        if is_followup:
+            self.plan_steps.extend(new_steps)
+        else:
+            self.plan_steps = new_steps
 
         # Always show the plan so user knows what's coming
         self.console.print(Rule("[bold cyan]PLAN[/bold cyan]", align="left"))
 
         for i, s in enumerate(steps):
-            step_num = s.get("number", i+1)
+            display_num = self._step_number_map.get(s.get("number", i + 1), start_num + i)
             goal = s.get("goal", "")
             depends_on = s.get("depends_on", [])
 
-            # Format dependency info
+            # Format dependency info with remapped step numbers
             dep_str = ""
             if depends_on:
-                dep_str = f" [dim](depends on {', '.join(str(d) for d in depends_on)})[/dim]"
+                remapped_deps = [str(self._step_number_map.get(d, d)) for d in depends_on]
+                dep_str = f" [dim](depends on {', '.join(remapped_deps)})[/dim]"
 
-            self.console.print(f"  [dim]{step_num}.[/dim] {goal}{dep_str}")
+            self.console.print(f"  [dim]{display_num}.[/dim] {goal}{dep_str}")
 
         self.console.print()
 
@@ -221,6 +370,9 @@ class FeedbackDisplay:
         """Start the live execution display."""
         self.console.print(Rule("[bold cyan]EXECUTING[/bold cyan]", align="left"))
         self._execution_started = True
+        self._start_time = time.time()  # Start timing
+        self._current_step_output = ""  # Clear output buffer
+        self._active_step_goal = ""
         if self._use_live_display:
             self.start()
             self._update_live()
@@ -296,6 +448,47 @@ class FeedbackDisplay:
                 else:
                     self.console.print("[dim]No suggestion provided. Please try again.[/dim]")
 
+    def request_clarification(self, request: ClarificationRequest) -> ClarificationResponse:
+        """
+        Request clarification from user for ambiguous questions.
+
+        Displays the reason for clarification and prompts for answers.
+
+        Args:
+            request: ClarificationRequest with questions
+
+        Returns:
+            ClarificationResponse with user's answers
+        """
+        self.console.print()
+        self.console.print(Rule("[bold cyan]Clarification Needed[/bold cyan]", align="left"))
+
+        if request.ambiguity_reason:
+            self.console.print(f"[dim]{request.ambiguity_reason}[/dim]")
+            self.console.print()
+
+        self.console.print("[bold]Please clarify:[/bold]")
+
+        answers = {}
+        for i, question in enumerate(request.questions, 1):
+            self.console.print(f"  [cyan]{i}.[/cyan] {question}")
+            answer = Prompt.ask(f"     [dim]Answer[/dim]", default="")
+            answers[question] = answer.strip()
+
+        # Check if user wants to skip
+        self.console.print()
+        skip = Prompt.ask(
+            "[dim]Press Enter to continue with clarifications, or 's' to skip[/dim]",
+            default=""
+        ).lower()
+
+        if skip == "s":
+            self.console.print("[dim]Skipping clarification, proceeding with original question...[/dim]")
+            return ClarificationResponse(answers={}, skip=True)
+
+        self.console.print("[green]Proceeding with clarified question...[/green]\n")
+        return ClarificationResponse(answers=answers, skip=False)
+
     def show_replan_notice(self, attempt: int, max_attempts: int) -> None:
         """Show notice that we're replanning based on feedback."""
         self.console.print(
@@ -305,6 +498,8 @@ class FeedbackDisplay:
     def step_start(self, step_number: int, goal: str) -> None:
         """Mark a step as starting."""
         self.current_step = step_number
+        self._active_step_goal = goal  # For animated header
+        self._current_step_output = ""  # Clear previous step output
 
         # Update step status
         step = self._get_step(step_number)
@@ -317,7 +512,8 @@ class FeedbackDisplay:
         else:
             # Fallback to direct printing
             total = len(self.plan_steps) if self.plan_steps else "?"
-            self.console.print(f"\n[bold]Step {step_number}/{total}:[/bold] {goal}")
+            display_num = self._step_number_map.get(step_number, step_number)
+            self.console.print(f"\n[bold]Step {display_num}/{total}:[/bold] {goal}")
 
     def step_generating(self, step_number: int, attempt: int) -> None:
         """Show code generation in progress."""
@@ -358,6 +554,10 @@ class FeedbackDisplay:
         tables_created: Optional[list[str]] = None,
     ) -> None:
         """Mark a step as completed successfully."""
+        # Update streaming output for animated display
+        if output:
+            self._current_step_output = output
+
         # Build output summary
         output_summary = ""
         if output:
@@ -377,6 +577,9 @@ class FeedbackDisplay:
             step.attempts = attempts
             step.duration_ms = duration_ms
             step.tables_created = tables_created or []
+
+        # Clear active step goal after completion
+        self._active_step_goal = ""
 
         if self._live and self._use_live_display:
             self._update_live()
@@ -486,6 +689,18 @@ class FeedbackDisplay:
         self.console.print(Markdown(_left_align_markdown(answer)))
         self.console.print()
 
+    def show_suggestions(self, suggestions: list[str]) -> None:
+        """Show follow-up suggestions."""
+        if not suggestions:
+            return
+
+        if len(suggestions) == 1:
+            self.console.print(f"[dim]Suggestion:[/dim] [cyan]{suggestions[0]}[/cyan]")
+        else:
+            self.console.print("[dim]Suggestions:[/dim]")
+            for i, s in enumerate(suggestions, 1):
+                self.console.print(f"  [dim]{i}.[/dim] [cyan]{s}[/cyan]")
+
 
 class SessionFeedbackHandler:
     """
@@ -529,7 +744,8 @@ class SessionFeedbackHandler:
 
         elif event_type == "plan_ready":
             # Show plan BEFORE execution starts
-            self.display.show_plan(data.get("steps", []))
+            is_followup = data.get("is_followup", False)
+            self.display.show_plan(data.get("steps", []), is_followup=is_followup)
             if data.get("reasoning") and self.display.verbose:
                 self.display.console.print(f"[dim]Reasoning: {data['reasoning']}[/dim]\n")
 
@@ -573,3 +789,6 @@ class SessionFeedbackHandler:
 
         elif event_type == "answer_ready":
             self.display.show_final_answer(data.get("answer", ""))
+
+        elif event_type == "suggestions_ready":
+            self.display.show_suggestions(data.get("suggestions", []))

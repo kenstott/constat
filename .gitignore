@@ -42,3 +42,4 @@ htmlcov/
 
 # Constat session data
 .constat/
+.env

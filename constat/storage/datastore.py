@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional, Union
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import (
     create_engine,
@@ -151,6 +152,7 @@ class DataStore:
                     goal TEXT,
                     narrative TEXT,
                     tables_created TEXT,
+                    code TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
@@ -217,6 +219,23 @@ class DataStore:
             named_sql = named_sql.replace("?", f":p{i}", 1)
             param_dict[f"p{i}"] = param
         return param_dict
+
+    @staticmethod
+    def _json_serializer(obj: Any) -> Any:
+        """Custom JSON serializer for numpy types and other non-standard types."""
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, pd.Timestamp):
+            return obj.isoformat()
+        elif hasattr(obj, 'to_dict'):
+            return obj.to_dict()
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
     def _upsert(self, table: str, key_col: str, key_val: Any, data: dict) -> None:
         """Insert or update a row."""
@@ -328,7 +347,7 @@ class DataStore:
             value: Value (must be JSON-serializable)
             step_number: Which step set this variable
         """
-        value_json = json.dumps(value)
+        value_json = json.dumps(value, default=self._json_serializer)
         self._upsert(
             "_constat_state",
             "key",
@@ -480,6 +499,7 @@ class DataStore:
         goal: str,
         narrative: str,
         tables_created: Optional[list[str]] = None,
+        code: Optional[str] = None,
     ) -> None:
         """
         Add or update a scratchpad entry for a step.
@@ -489,20 +509,21 @@ class DataStore:
             goal: Goal of the step
             narrative: Step result narrative (printed output)
             tables_created: List of table names created by this step
+            code: Generated Python code for this step (for replay)
         """
         tables_str = ",".join(tables_created) if tables_created else ""
         self._upsert(
             "_constat_scratchpad",
             "step_number",
             step_number,
-            {"goal": goal, "narrative": narrative, "tables_created": tables_str}
+            {"goal": goal, "narrative": narrative, "tables_created": tables_str, "code": code or ""}
         )
 
     def get_scratchpad_entry(self, step_number: int) -> Optional[dict]:
         """Get scratchpad entry for a step."""
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT goal, narrative, tables_created FROM _constat_scratchpad WHERE step_number = :step"),
+                text("SELECT goal, narrative, tables_created, code FROM _constat_scratchpad WHERE step_number = :step"),
                 {"step": step_number}
             ).fetchone()
 
@@ -512,6 +533,7 @@ class DataStore:
                 "goal": result[0],
                 "narrative": result[1],
                 "tables_created": result[2].split(",") if result[2] else [],
+                "code": result[3] or "",
             }
         return None
 
@@ -519,7 +541,7 @@ class DataStore:
         """Get all scratchpad entries in order."""
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT step_number, goal, narrative, tables_created
+                SELECT step_number, goal, narrative, tables_created, code
                 FROM _constat_scratchpad
                 ORDER BY step_number
             """)).fetchall()
@@ -530,6 +552,7 @@ class DataStore:
                 "goal": row[1],
                 "narrative": row[2],
                 "tables_created": row[3].split(",") if row[3] else [],
+                "code": row[4] or "",
             }
             for row in rows
         ]

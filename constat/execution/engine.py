@@ -8,6 +8,7 @@ from .executor import ExecutionResult, PythonExecutor, format_error_for_retry
 from constat.providers.anthropic import AnthropicProvider
 from constat.catalog.schema_manager import SchemaManager
 from constat.discovery.doc_tools import DocumentDiscoveryTools, DOC_TOOL_SCHEMAS
+from constat.email import create_send_email
 
 
 @dataclass
@@ -80,6 +81,7 @@ Your code has access to:
 - `np`: numpy (pre-imported)
 - SQL database connections: `db_<name>` (e.g., `db_sales`)
 - File data source paths: `file_<name>` (e.g., `file_web_metrics`)
+- `send_email(to, subject, body, df=None)`: Send email with optional DataFrame attachment
 
 ## Data Source Types
 
@@ -237,6 +239,9 @@ class QueryEngine:
         # Backwards compat: 'db' alias for first SQL database
         if first_sql_db is not None:
             globals_dict["db"] = first_sql_db
+
+        # Inject send_email function
+        globals_dict["send_email"] = create_send_email(self.config.email)
 
         return globals_dict
 

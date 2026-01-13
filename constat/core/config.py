@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
@@ -542,6 +543,31 @@ class ExecutionConfig(BaseModel):
     allowed_imports: list[str] = Field(default_factory=list)
 
 
+class EmailConfig(BaseModel):
+    """Email server configuration for sending results.
+
+    Example:
+        email:
+          smtp_host: smtp.gmail.com
+          smtp_port: 587
+          smtp_user: ${EMAIL_USER}
+          smtp_password: ${EMAIL_PASSWORD}
+          from_address: noreply@company.com
+          tls: true
+
+    For Gmail, you need to use an App Password:
+    https://support.google.com/accounts/answer/185833
+    """
+    smtp_host: str
+    smtp_port: int = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    from_address: str
+    from_name: str = "Constat"
+    tls: bool = True
+    timeout_seconds: int = 30
+
+
 class Config(BaseModel):
     """Root configuration model."""
     model_config = {"extra": "ignore"}
@@ -564,6 +590,7 @@ class Config(BaseModel):
     system_prompt: str = ""
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    email: Optional[EmailConfig] = None  # Email configuration for send_email
 
     @classmethod
     def from_yaml(
@@ -600,6 +627,15 @@ class Config(BaseModel):
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
+
+        # Load .env file from config directory or current directory
+        config_dir = path.parent
+        env_file = config_dir / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+        else:
+            # Try current directory
+            load_dotenv()
 
         with open(path) as f:
             raw_content = f.read()

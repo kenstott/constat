@@ -279,12 +279,34 @@ class TaskRouter:
         return result
 
     def _extract_code(self, text: str) -> str:
-        """Extract code from markdown code blocks."""
+        """Extract code from markdown code blocks.
+
+        Handles various cases:
+        - Complete markdown blocks: ```python ... ```
+        - Incomplete blocks (no closing fence)
+        - Nested or multiple code blocks
+        """
+        text = text.strip()
+
+        # Case 1: Complete markdown code block
         pattern = r"```(?:python|sql)?\s*(.*?)\s*```"
         match = re.search(pattern, text, re.DOTALL)
         if match:
             return match.group(1).strip()
-        return text.strip()
+
+        # Case 2: Opening fence without closing (truncated response)
+        # Matches: ```python\n... or ```\n...
+        if text.startswith("```"):
+            lines = text.split("\n", 1)
+            if len(lines) > 1:
+                # Skip the first line (```python or ```)
+                code = lines[1]
+                # Remove trailing ``` if present
+                if code.rstrip().endswith("```"):
+                    code = code.rstrip()[:-3]
+                return code.strip()
+
+        return text
 
     def get_escalation_stats(self) -> dict[str, Any]:
         """Get escalation statistics for observability."""

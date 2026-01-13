@@ -550,22 +550,32 @@ Generate the derivation function for {fact_name}:
 User input: {user_text}
 
 For each fact, provide:
-- FACT_NAME: A short identifier (e.g., "march_attendance", "revenue_threshold")
-- VALUE: The value (number, string, etc.)
+- FACT_NAME: A short identifier (e.g., "user_role", "revenue_threshold", "target_region")
+- VALUE: The value (string, number, etc.)
 - REASONING: Brief explanation
+
+Extract these types of facts:
+1. User context/persona (e.g., "my role as CFO" -> user_role: CFO)
+2. Numeric values (e.g., "threshold of $50,000" -> revenue_threshold: 50000)
+3. Preferences/constraints (e.g., "for the US region" -> target_region: US)
+4. Time periods (e.g., "last quarter" -> time_period: last_quarter)
 
 If the input contains multiple facts, list them all.
 If the input contains no extractable facts, respond with "NO_FACTS".
 
 Example format:
 ---
-FACT_NAME: march_attendance
-VALUE: 1000000
-REASONING: User stated there were 1 million people at the march
+FACT_NAME: user_role
+VALUE: CFO
+REASONING: User identified their role as CFO
 ---
 FACT_NAME: revenue_threshold
 VALUE: 50000
 REASONING: User specified revenue threshold should be $50,000
+---
+FACT_NAME: target_region
+VALUE: US
+REASONING: User is focused on US region analysis
 ---
 """
 
