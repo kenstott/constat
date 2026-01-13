@@ -138,7 +138,7 @@ class InteractiveREPL:
         if not tables:
             self.console.print("[dim]No tables yet.[/dim]")
             return
-        self.display.show_tables(tables)
+        self.display.show_tables(tables, force_show=True)
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""

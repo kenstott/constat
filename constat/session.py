@@ -805,9 +805,23 @@ Please create a revised plan that addresses this feedback."""
         replan_attempt = 0
 
         while replan_attempt <= self.session_config.max_replan_attempts:
+            # Emit planning start event
+            self._emit_event(StepEvent(
+                event_type="planning_start",
+                step_number=0,
+                data={"message": "Analyzing data sources and creating plan..."}
+            ))
+
             # Generate plan
             planner_response = self.planner.plan(current_problem)
             self.plan = planner_response.plan
+
+            # Emit planning complete event
+            self._emit_event(StepEvent(
+                event_type="planning_complete",
+                step_number=0,
+                data={"steps": len(self.plan.steps)}
+            ))
 
             # Request approval if required
             if self.session_config.require_approval:
@@ -1221,9 +1235,23 @@ Available state variables:
 
 Follow-up question: {question}
 """
+        # Emit planning start event
+        self._emit_event(StepEvent(
+            event_type="planning_start",
+            step_number=0,
+            data={"message": "Planning follow-up analysis..."}
+        ))
+
         # Generate plan for follow-up
         planner_response = self.planner.plan(context_prompt)
         follow_up_plan = planner_response.plan
+
+        # Emit planning complete event
+        self._emit_event(StepEvent(
+            event_type="planning_complete",
+            step_number=0,
+            data={"steps": len(follow_up_plan.steps)}
+        ))
 
         # Renumber steps to continue from where we left off
         for i, step in enumerate(follow_up_plan.steps):

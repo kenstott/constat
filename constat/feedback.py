@@ -439,14 +439,14 @@ class FeedbackDisplay:
             )
         # Success case: timing shown after tables hint
 
-    def show_tables(self, tables: list[dict], duration_ms: int = 0) -> None:
+    def show_tables(self, tables: list[dict], duration_ms: int = 0, force_show: bool = False) -> None:
         """Show available tables in the datastore."""
         if not tables:
             if duration_ms:
                 self.console.print(f"\n[dim]({duration_ms/1000:.1f}s total)[/dim]")
             return
 
-        if self.verbose:
+        if self.verbose or force_show:
             self.console.print("\n[bold]Available Tables:[/bold]")
             table = Table(show_header=True, box=None)
             table.add_column("Name", style="cyan")
