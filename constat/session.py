@@ -1065,6 +1065,11 @@ Please create a revised plan that addresses this feedback."""
         """
         # Extract facts from the question FIRST, before any classification
         # This ensures user context like "my role as CFO" is captured even for meta-questions
+        self._emit_event(StepEvent(
+            event_type="progress",
+            step_number=0,
+            data={"message": "Extracting context from your question..."}
+        ))
         try:
             extracted_facts = self.fact_resolver.add_user_facts_from_text(problem)
             if extracted_facts:
@@ -1082,19 +1087,47 @@ Please create a revised plan that addresses this feedback."""
 
         # Check if question can be answered from cached facts
         # (e.g., "what is my role" when user_role=CFO is cached)
-        cached_answer = self._answer_from_cached_facts(problem)
-        if cached_answer:
-            return cached_answer
+        cached_facts = self.fact_resolver.get_all_facts()
+        if cached_facts:
+            self._emit_event(StepEvent(
+                event_type="progress",
+                step_number=0,
+                data={"message": "Checking known facts..."}
+            ))
+            cached_answer = self._answer_from_cached_facts(problem)
+            if cached_answer:
+                return cached_answer
 
         # Classify question and handle non-data-analysis questions directly
+        self._emit_event(StepEvent(
+            event_type="progress",
+            step_number=0,
+            data={"message": "Analyzing your question..."}
+        ))
         question_type = self._classify_question(problem)
+
         if question_type == QuestionType.META_QUESTION:
+            self._emit_event(StepEvent(
+                event_type="progress",
+                step_number=0,
+                data={"message": "Reviewing available data sources..."}
+            ))
             return self._answer_meta_question(problem)
         elif question_type == QuestionType.GENERAL_KNOWLEDGE:
+            self._emit_event(StepEvent(
+                event_type="progress",
+                step_number=0,
+                data={"message": "Generating response..."}
+            ))
             return self._answer_general_question(problem)
 
         # Check for ambiguity and request clarification if needed
         if self.session_config.ask_clarifications and self._clarification_callback:
+            self._emit_event(StepEvent(
+                event_type="progress",
+                step_number=0,
+                data={"message": "Checking if clarification needed..."}
+            ))
             clarification_request = self._detect_ambiguity(problem)
             if clarification_request:
                 enhanced_problem = self._request_clarification(clarification_request)

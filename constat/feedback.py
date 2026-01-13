@@ -138,6 +138,15 @@ class FeedbackDisplay:
             self._spinner_progress = None
             self._spinner_task = None
 
+    def show_progress(self, message: str) -> None:
+        """Show a generic progress message with spinner."""
+        if self._spinner_progress:
+            # Update existing spinner
+            self.update_spinner(message)
+        else:
+            # Start new spinner
+            self.start_spinner(message)
+
     def show_discovery_start(self) -> None:
         """Show that schema/data discovery is starting."""
         self.start_spinner("Discovering available data sources...")
@@ -717,6 +726,8 @@ class FeedbackDisplay:
 
     def show_output(self, output: str) -> None:
         """Show final output."""
+        # Stop any running spinner first
+        self.stop_spinner()
         self.console.print("\n[bold]Output:[/bold]")
         self.console.print(Markdown(_left_align_markdown(output)))
 
@@ -760,8 +771,12 @@ class SessionFeedbackHandler:
         step_number = event.step_number
         data = event.data
 
+        # Generic progress events (used for early-stage operations)
+        if event_type == "progress":
+            self.display.show_progress(data.get("message", "Processing..."))
+
         # Discovery events
-        if event_type == "discovery_start":
+        elif event_type == "discovery_start":
             self.display.show_discovery_start()
 
         elif event_type == "discovery_progress":
