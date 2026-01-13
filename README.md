@@ -966,6 +966,8 @@ llm:
 
 Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context.
 
+This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
+
 ### Skill Structure
 
 Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:

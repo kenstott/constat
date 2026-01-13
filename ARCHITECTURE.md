@@ -515,7 +515,7 @@ estimate = builder.estimate_tokens("claude-sonnet-4-20250514")
 
 ### SkillManager (`discovery/skill_tools.py`)
 
-Manages discovery and loading of domain-specific skill modules.
+Manages discovery and loading of domain-specific skill modules. This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
 
 **Skill Structure:**
 

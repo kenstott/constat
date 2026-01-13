@@ -453,7 +453,7 @@ def resolve_fact(question: str) -> dict:
 
 ### 5. Skill Discovery Tools
 
-Skills are domain-specific knowledge modules that provide specialized context and analysis guidelines.
+Skills are domain-specific knowledge modules that provide specialized context and analysis guidelines. This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
 
 #### Skill Structure
 
