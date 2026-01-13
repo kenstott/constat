@@ -1029,11 +1029,32 @@ skills:
 
 Skills in config paths are searched after the default paths, so project and global skills take precedence.
 
+### Link Following
+
+Skills can reference additional files via markdown links. Links are parsed when the skill loads but content is fetched lazily (on-demand):
+
+```markdown
+# My Skill
+
+See the [indicator definitions](references/indicators.md) for details.
+For API docs, check [the official guide](https://example.com/docs.md).
+```
+
+**Supported link types:**
+- **Relative paths**: `[text](references/file.md)` - resolved relative to the skill folder
+- **URLs**: `[text](https://example.com/doc.md)` - fetched via HTTP
+
+**How it works:**
+1. When a skill loads, links are discovered and returned in the response
+2. Content is NOT fetched until explicitly requested via `resolve_skill_link`
+3. Fetched content is cached for subsequent calls
+
 ### Creating a Skill
 
 1. Create a directory: `.constat/skills/my-skill/`
 2. Add a `SKILL.md` file with YAML frontmatter
 3. Define the skill's context, guidelines, and examples
+4. Optionally add referenced files in subdirectories (e.g., `references/`)
 
 Skills are automatically discovered and can be loaded when relevant to a query.
 

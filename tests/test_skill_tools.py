@@ -2,12 +2,14 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
 from constat.discovery.skill_tools import (
     Skill,
     SkillDiscoveryTools,
+    SkillLink,
     SkillManager,
     SkillMetadata,
     SKILL_TOOL_SCHEMAS,
@@ -115,8 +117,10 @@ Here are examples...
         manager = SkillManager(additional_paths=[tmp_path])
         skills = manager.discover_skills()
 
-        assert len(skills) == 1
-        skill = skills[0]
+        # Filter to only test skill (default paths may have other skills)
+        test_skills = [s for s in skills if s.name == "test-skill"]
+        assert len(test_skills) == 1
+        skill = test_skills[0]
         assert skill.name == "test-skill"
         assert skill.description == "A test skill for unit testing"
         assert skill.metadata.allowed_tools == ["Read", "Grep"]
@@ -142,8 +146,10 @@ Content for skill {name}.
         manager = SkillManager(additional_paths=[tmp_path])
         skills = manager.discover_skills()
 
-        assert len(skills) == 2
-        names = {s.name for s in skills}
+        # Filter to only test skills (default paths may have other skills)
+        test_skills = [s for s in skills if s.name in {"skill-a", "skill-b"}]
+        assert len(test_skills) == 2
+        names = {s.name for s in test_skills}
         assert names == {"skill-a", "skill-b"}
 
     def test_discover_skills_skips_invalid(self, tmp_path):
@@ -174,8 +180,10 @@ No description field!
         manager = SkillManager(additional_paths=[tmp_path])
         skills = manager.discover_skills()
 
-        assert len(skills) == 1
-        assert skills[0].name == "valid-skill"
+        # Filter to only test skills (default paths may have other skills)
+        test_skills = [s for s in skills if s.name in {"valid-skill", "invalid-skill"}]
+        assert len(test_skills) == 1
+        assert test_skills[0].name == "valid-skill"
 
     def test_get_skill(self, tmp_path):
         """Test getting a skill by name."""
@@ -301,10 +309,12 @@ Content.
 
         skills = tools.list_skills()
 
-        assert len(skills) == 1
-        assert skills[0]["name"] == "list-skill"
-        assert skills[0]["description"] == "A skill for listing test"
-        assert skills[0]["allowed_tools"] == ["Read"]
+        # Filter to only the test skill (default paths may have other skills)
+        test_skills = [s for s in skills if s["name"] == "list-skill"]
+        assert len(test_skills) == 1
+        assert test_skills[0]["name"] == "list-skill"
+        assert test_skills[0]["description"] == "A skill for listing test"
+        assert test_skills[0]["allowed_tools"] == ["Read"]
 
     def test_list_skills_excludes_non_invocable(self, tmp_path):
         """Test that non-user-invocable skills are excluded from list."""
@@ -322,7 +332,10 @@ Content.
         tools = SkillDiscoveryTools(manager)
 
         skills = tools.list_skills()
-        assert len(skills) == 0
+
+        # The hidden skill should not be in the list
+        hidden_skills = [s for s in skills if s["name"] == "hidden-skill"]
+        assert len(hidden_skills) == 0
 
     def test_load_skill(self, tmp_path):
         """Test loading a skill via tool interface."""
@@ -410,10 +423,16 @@ class TestSkillToolSchemas:
 
     def test_schemas_exist(self):
         """Test that skill tool schemas are defined."""
-        assert len(SKILL_TOOL_SCHEMAS) == 3
+        assert len(SKILL_TOOL_SCHEMAS) == 5
 
         names = {s["name"] for s in SKILL_TOOL_SCHEMAS}
-        assert names == {"list_skills", "load_skill", "get_skill_file"}
+        assert names == {
+            "list_skills",
+            "load_skill",
+            "get_skill_file",
+            "list_skill_links",
+            "resolve_skill_link",
+        }
 
     def test_list_skills_schema(self):
         """Test list_skills schema structure."""
@@ -443,6 +462,25 @@ class TestSkillToolSchemas:
         assert "filename" in schema["input_schema"]["properties"]
         assert set(schema["input_schema"]["required"]) == {"name", "filename"}
 
+    def test_list_skill_links_schema(self):
+        """Test list_skill_links schema structure."""
+        schema = next(s for s in SKILL_TOOL_SCHEMAS if s["name"] == "list_skill_links")
+
+        assert "description" in schema
+        assert "input_schema" in schema
+        assert "name" in schema["input_schema"]["properties"]
+        assert "name" in schema["input_schema"]["required"]
+
+    def test_resolve_skill_link_schema(self):
+        """Test resolve_skill_link schema structure."""
+        schema = next(s for s in SKILL_TOOL_SCHEMAS if s["name"] == "resolve_skill_link")
+
+        assert "description" in schema
+        assert "input_schema" in schema
+        assert "name" in schema["input_schema"]["properties"]
+        assert "target" in schema["input_schema"]["properties"]
+        assert set(schema["input_schema"]["required"]) == {"name", "target"}
+
 
 class TestSkillIntegration:
     """Integration tests for skill system."""
@@ -470,3 +508,399 @@ Content.
         assert d["allowed_tools"] == ["Read"]
         assert d["model"] == "claude-sonnet"
         assert "path" in d
+
+
+class TestSkillLink:
+    """Tests for SkillLink dataclass."""
+
+    def test_skill_link_creation(self):
+        """Test creating a SkillLink."""
+        link = SkillLink(
+            text="indicators",
+            target="references/indicators.md",
+            is_url=False,
+            line_number=10,
+        )
+
+        assert link.text == "indicators"
+        assert link.target == "references/indicators.md"
+        assert link.is_url is False
+        assert link.line_number == 10
+
+    def test_skill_link_to_dict(self):
+        """Test SkillLink serialization."""
+        link = SkillLink(
+            text="API docs",
+            target="https://example.com/docs.md",
+            is_url=True,
+            line_number=5,
+        )
+
+        d = link.to_dict()
+        assert d["text"] == "API docs"
+        assert d["target"] == "https://example.com/docs.md"
+        assert d["is_url"] is True
+        assert d["line_number"] == 5
+
+
+class TestLinkParsing:
+    """Tests for link parsing functionality."""
+
+    def test_parse_links_relative(self):
+        """Test parsing relative links."""
+        manager = SkillManager()
+
+        content = """
+# My Skill
+
+See the [indicator definitions](references/indicators.md) for details.
+Also check [examples](examples/basic.md).
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 2
+        assert links[0].text == "indicator definitions"
+        assert links[0].target == "references/indicators.md"
+        assert links[0].is_url is False
+
+        assert links[1].text == "examples"
+        assert links[1].target == "examples/basic.md"
+        assert links[1].is_url is False
+
+    def test_parse_links_urls(self):
+        """Test parsing URL links."""
+        manager = SkillManager()
+
+        content = """
+# My Skill
+
+Check [the docs](https://example.com/docs.md) for more info.
+See [API reference](http://api.example.com/reference).
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 2
+        assert links[0].text == "the docs"
+        assert links[0].target == "https://example.com/docs.md"
+        assert links[0].is_url is True
+
+        assert links[1].text == "API reference"
+        assert links[1].target == "http://api.example.com/reference"
+        assert links[1].is_url is True
+
+    def test_parse_links_mixed(self):
+        """Test parsing mixed relative and URL links."""
+        manager = SkillManager()
+
+        content = """
+# My Skill
+
+See [local file](local/file.md) and [remote docs](https://example.com/docs).
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 2
+        assert links[0].is_url is False
+        assert links[1].is_url is True
+
+    def test_parse_links_skips_anchors(self):
+        """Test that anchor-only links are skipped."""
+        manager = SkillManager()
+
+        content = """
+# My Skill
+
+Jump to [section](#section-name).
+See [real link](file.md).
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 1
+        assert links[0].target == "file.md"
+
+    def test_parse_links_skips_images(self):
+        """Test that image links are skipped."""
+        manager = SkillManager()
+
+        content = """
+# My Skill
+
+![screenshot](images/screenshot.png)
+See [documentation](docs.md).
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 1
+        assert links[0].target == "docs.md"
+
+    def test_parse_links_skips_mailto(self):
+        """Test that mailto links are skipped."""
+        manager = SkillManager()
+
+        content = """
+# My Skill
+
+Contact [support](mailto:support@example.com).
+See [docs](docs.md).
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 1
+        assert links[0].target == "docs.md"
+
+    def test_parse_links_tracks_line_numbers(self):
+        """Test that line numbers are tracked correctly."""
+        manager = SkillManager()
+
+        content = """Line 1
+Line 2
+[link on line 3](file1.md)
+Line 4
+[link on line 5](file2.md)
+"""
+        links = manager._parse_links(content)
+
+        assert len(links) == 2
+        assert links[0].line_number == 3
+        assert links[1].line_number == 5
+
+    def test_skill_includes_parsed_links(self, tmp_path):
+        """Test that loaded skills include parsed links."""
+        skill_dir = tmp_path / "link-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("""---
+name: link-skill
+description: A skill with links
+---
+
+# Link Skill
+
+See [indicators](references/indicators.md) for details.
+Check [API docs](https://example.com/api).
+""")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        skill = manager.get_skill("link-skill")
+
+        assert len(skill.links) == 2
+        assert skill.links[0].target == "references/indicators.md"
+        assert skill.links[0].is_url is False
+        assert skill.links[1].target == "https://example.com/api"
+        assert skill.links[1].is_url is True
+
+
+class TestLinkResolution:
+    """Tests for lazy link resolution."""
+
+    def test_resolve_relative_link(self, tmp_path):
+        """Test resolving a relative link."""
+        skill_dir = tmp_path / "resolve-skill"
+        skill_dir.mkdir()
+        refs_dir = skill_dir / "references"
+        refs_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: resolve-skill
+description: A skill to test resolution
+---
+
+See [indicators](references/indicators.md).
+""")
+        (refs_dir / "indicators.md").write_text("# Indicators\n\nIndicator content here.")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        content = manager.resolve_skill_link("resolve-skill", "references/indicators.md")
+
+        assert content is not None
+        assert "# Indicators" in content
+        assert "Indicator content here." in content
+
+    def test_resolve_link_caching(self, tmp_path):
+        """Test that resolved links are cached."""
+        skill_dir = tmp_path / "cache-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: cache-skill
+description: A skill to test caching
+---
+
+See [file](file.md).
+""")
+        (skill_dir / "file.md").write_text("Original content.")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+
+        # First resolution
+        content1 = manager.resolve_skill_link("cache-skill", "file.md")
+        assert content1 == "Original content."
+
+        # Modify file
+        (skill_dir / "file.md").write_text("Modified content.")
+
+        # Second resolution should return cached value
+        content2 = manager.resolve_skill_link("cache-skill", "file.md")
+        assert content2 == "Original content."
+
+    def test_resolve_nonexistent_link(self, tmp_path):
+        """Test resolving a link to a nonexistent file."""
+        skill_dir = tmp_path / "missing-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: missing-skill
+description: A skill with missing link
+---
+
+See [missing](missing.md).
+""")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        content = manager.resolve_skill_link("missing-skill", "missing.md")
+
+        assert content is None
+
+    def test_list_skill_links_via_tools(self, tmp_path):
+        """Test listing skill links via tool interface."""
+        skill_dir = tmp_path / "list-links-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: list-links-skill
+description: A skill with multiple links
+---
+
+See [file1](file1.md) and [file2](file2.md).
+Also [external](https://example.com).
+""")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        tools = SkillDiscoveryTools(manager)
+
+        result = tools.list_skill_links("list-links-skill")
+
+        assert "error" not in result
+        assert result["skill"] == "list-links-skill"
+        assert len(result["links"]) == 3
+
+    def test_resolve_skill_link_via_tools(self, tmp_path):
+        """Test resolving skill link via tool interface."""
+        skill_dir = tmp_path / "tool-resolve-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: tool-resolve-skill
+description: A skill to test tool resolution
+---
+
+See [data](data.md).
+""")
+        (skill_dir / "data.md").write_text("Data content.")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        tools = SkillDiscoveryTools(manager)
+
+        result = tools.resolve_skill_link("tool-resolve-skill", "data.md")
+
+        assert "error" not in result
+        assert result["skill"] == "tool-resolve-skill"
+        assert result["target"] == "data.md"
+        assert "Data content." in result["content"]
+
+    def test_resolve_skill_link_error(self, tmp_path):
+        """Test error when resolving nonexistent link via tools."""
+        skill_dir = tmp_path / "error-skill"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: error-skill
+description: A skill to test error handling
+---
+
+See [missing](missing.md).
+""")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        tools = SkillDiscoveryTools(manager)
+
+        result = tools.resolve_skill_link("error-skill", "missing.md")
+
+        assert "error" in result
+
+    def test_load_skill_includes_links(self, tmp_path):
+        """Test that load_skill includes discovered links."""
+        skill_dir = tmp_path / "links-in-load"
+        skill_dir.mkdir()
+
+        (skill_dir / "SKILL.md").write_text("""---
+name: links-in-load
+description: A skill where load includes links
+---
+
+See [ref1](ref1.md) and [external](https://example.com).
+""")
+
+        manager = SkillManager(additional_paths=[tmp_path])
+        tools = SkillDiscoveryTools(manager)
+
+        result = tools.load_skill("links-in-load")
+
+        assert "links" in result
+        assert len(result["links"]) == 2
+        assert result["links"][0]["target"] == "ref1.md"
+        assert result["links"][0]["is_url"] is False
+        assert result["links"][1]["target"] == "https://example.com"
+        assert result["links"][1]["is_url"] is True
+
+
+class TestFromConfig:
+    """Tests for SkillManager.from_config factory method."""
+
+    def test_from_config_with_paths(self, tmp_path):
+        """Test creating SkillManager from config with paths."""
+        # Create a mock config object
+        config = MagicMock()
+        config.skills = MagicMock()
+        config.skills.paths = [str(tmp_path / "custom-skills"), "~/other-skills"]
+
+        manager = SkillManager.from_config(config)
+
+        # Check that paths were expanded and added
+        assert tmp_path / "custom-skills" in manager.search_paths
+        assert Path.home() / "other-skills" in manager.search_paths
+        # Default paths should still be there
+        assert Path(".constat/skills") in manager.search_paths
+
+    def test_from_config_no_skills_config(self):
+        """Test creating SkillManager from config without skills section."""
+        config = MagicMock()
+        config.skills = None
+
+        manager = SkillManager.from_config(config)
+
+        # Should just have default paths
+        assert Path(".constat/skills") in manager.search_paths
+        assert Path.home() / ".constat/skills" in manager.search_paths
+        assert len(manager.search_paths) == 2
+
+    def test_from_config_empty_paths(self):
+        """Test creating SkillManager from config with empty paths."""
+        config = MagicMock()
+        config.skills = MagicMock()
+        config.skills.paths = []
+
+        manager = SkillManager.from_config(config)
+
+        # Should just have default paths
+        assert len(manager.search_paths) == 2
+
+    def test_from_config_tilde_expansion(self, tmp_path):
+        """Test that ~ is expanded in config paths."""
+        config = MagicMock()
+        config.skills = MagicMock()
+        config.skills.paths = ["~/my-skills"]
+
+        manager = SkillManager.from_config(config)
+
+        # ~ should be expanded
+        assert Path.home() / "my-skills" in manager.search_paths

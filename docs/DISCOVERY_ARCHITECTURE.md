@@ -568,6 +568,50 @@ def search_skills(query: str, limit: int = 3) -> list[dict]:
     """
 ```
 
+#### `list_skill_links`
+List all links discovered in a skill's content. Links are parsed when the skill loads but content is NOT fetched until needed.
+
+```python
+def list_skill_links(name: str) -> dict:
+    """
+    List available links for lazy loading.
+
+    Args:
+        name: The skill name
+
+    Returns:
+        {
+            "skill": "financial-analysis",
+            "links": [
+                {"text": "indicators", "target": "references/indicators.md", "is_url": False, "line_number": 15},
+                {"text": "API docs", "target": "https://example.com/api", "is_url": True, "line_number": 23}
+            ]
+        }
+    """
+```
+
+#### `resolve_skill_link`
+Lazy load a link's content. For relative paths, loads from skill directory. For URLs, fetches via HTTP. Results are cached.
+
+```python
+def resolve_skill_link(name: str, target: str) -> dict:
+    """
+    Fetch linked content on-demand.
+
+    Args:
+        name: The skill name
+        target: The link target (relative path or URL)
+
+    Returns:
+        {
+            "skill": "financial-analysis",
+            "target": "references/indicators.md",
+            "content": "# Financial Indicators\n\n## Liquidity Ratios..."
+        }
+        # or {"error": "Failed to resolve..."} if not found
+    """
+```
+
 #### Discovery Paths
 
 Skills are discovered from multiple locations (in order of precedence):

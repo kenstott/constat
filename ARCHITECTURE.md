@@ -567,21 +567,37 @@ Parsed from YAML frontmatter:
 - `context` - Additional context for the LLM
 - `agent` - Optional agent type to use
 
+**Link Following (Lazy):**
+
+Skills can reference additional files via markdown links. Links are discovered when the skill loads but content is NOT fetched until needed:
+
+```markdown
+# In SKILL.md
+See [indicator definitions](references/indicators.md) for details.
+Check [API docs](https://example.com/docs.md) for integration.
+```
+
+- **Relative paths**: Resolved relative to the skill folder
+- **URLs**: Fetched via HTTP on-demand
+- **Caching**: Resolved content is cached for subsequent calls
+
 **Usage:**
 
 ```python
 from constat.discovery.skill_tools import SkillManager
 
-manager = SkillManager(project_path="/path/to/project")
+manager = SkillManager()
 
 # List all available skills
-skills = manager.list_skills()
+skills = manager.discover_skills()
 
-# Get a specific skill
+# Get a specific skill (includes discovered links)
 skill = manager.get_skill("financial-analysis")
+print(skill.links)  # [SkillLink(text="indicators", target="references/indicators.md", ...)]
 
-# Search for relevant skills
-matches = manager.search_skills("revenue calculation")
+# Lazy load a referenced file or URL
+content = manager.resolve_skill_link("financial-analysis", "references/indicators.md")
+content = manager.resolve_skill_link("financial-analysis", "https://example.com/docs.md")
 ```
 
 ### APICatalog (`catalog/api_catalog.py`)
