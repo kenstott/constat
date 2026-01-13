@@ -628,13 +628,29 @@ class Config(BaseModel):
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
 
-        # Load .env file from config directory or current directory
-        config_dir = path.parent
-        env_file = config_dir / ".env"
-        if env_file.exists():
-            load_dotenv(env_file)
-        else:
-            # Try current directory
+        # Load .env file - search from config directory up to root
+        config_dir = path.parent.resolve()
+        env_loaded = False
+
+        # Search up from config directory to find .env
+        search_dir = config_dir
+        while search_dir != search_dir.parent:  # Stop at filesystem root
+            env_file = search_dir / ".env"
+            if env_file.exists():
+                load_dotenv(env_file)
+                env_loaded = True
+                break
+            search_dir = search_dir.parent
+
+        # Also check filesystem root
+        if not env_loaded:
+            root_env = search_dir / ".env"
+            if root_env.exists():
+                load_dotenv(root_env)
+                env_loaded = True
+
+        # Final fallback - try current working directory
+        if not env_loaded:
             load_dotenv()
 
         with open(path) as f:
