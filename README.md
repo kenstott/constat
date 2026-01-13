@@ -962,6 +962,64 @@ llm:
 | Together AI | `together` | Yes |
 | Groq | `groq` | Yes |
 
+## Skills
+
+Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context.
+
+### Skill Structure
+
+Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
+
+```
+.constat/skills/
+└── financial-analysis/
+    └── SKILL.md
+```
+
+### SKILL.md Format
+
+Each skill is defined as a Markdown file with YAML frontmatter:
+
+```markdown
+---
+name: financial-analysis
+description: Specialized instructions for financial data analysis
+allowed-tools:
+  - Read
+  - Grep
+  - list_tables
+  - get_table_schema
+---
+
+# Financial Analysis Skill
+
+## Key Concepts
+- Revenue recognition principles
+- Common financial metrics (Gross Margin, EBITDA, etc.)
+- Time period handling (MTD, QTD, YTD)
+
+## Analysis Guidelines
+1. Start with data quality checks
+2. Use appropriate aggregations
+3. Present results clearly
+```
+
+### Skill Discovery Paths
+
+Skills are discovered from multiple locations (in order of precedence):
+
+1. **Project skills**: `.constat/skills/` in the project directory
+2. **Global skills**: `~/.constat/skills/` in the user's home directory
+3. **Config-specified paths**: Additional paths defined in `config.yaml`
+
+### Creating a Skill
+
+1. Create a directory: `.constat/skills/my-skill/`
+2. Add a `SKILL.md` file with YAML frontmatter
+3. Define the skill's context, guidelines, and examples
+
+Skills are automatically discovered and can be loaded when relevant to a query.
+
 ## Key Concepts
 
 ### Facts and Provenance

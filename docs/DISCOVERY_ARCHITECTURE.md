@@ -451,6 +451,131 @@ def resolve_fact(question: str) -> dict:
     """
 ```
 
+### 5. Skill Discovery Tools
+
+Skills are domain-specific knowledge modules that provide specialized context and analysis guidelines.
+
+#### Skill Structure
+
+Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
+
+```
+.constat/skills/
+├── financial-analysis/
+│   ├── SKILL.md
+│   └── references/
+│       └── indicators.md
+└── healthcare-compliance/
+    └── SKILL.md
+```
+
+#### SKILL.md Format
+
+Each skill is a Markdown file with YAML frontmatter:
+
+```markdown
+---
+name: financial-analysis
+description: Specialized instructions for financial data analysis
+allowed-tools:
+  - Read
+  - Grep
+  - list_tables
+  - get_table_schema
+---
+
+# Financial Analysis Skill
+
+## Analysis Process
+1. Validate data quality
+2. Check against each indicator category in [references/indicators.md](references/indicators.md)
+3. Calculate key metrics
+...
+```
+
+**Link Following:** SKILL.md files can contain relative links to other files within the skill directory (e.g., `[references/indicators.md](references/indicators.md)`). Links are always resolved relative to the `<skill-name>/` folder (the directory containing SKILL.md) and loaded as additional context.
+
+#### `list_skills`
+Returns available skills from all discovery paths.
+
+```python
+def list_skills() -> list[dict]:
+    """
+    List all available skills.
+
+    Returns:
+        [
+            {
+                "name": "financial-analysis",
+                "description": "Specialized instructions for financial data analysis",
+                "path": ".constat/skills/financial-analysis/SKILL.md",
+                "allowed_tools": ["Read", "Grep", "list_tables", "get_table_schema"]
+            },
+            {
+                "name": "healthcare-compliance",
+                "description": "HIPAA and healthcare regulatory compliance checks",
+                "path": "~/.constat/skills/healthcare-compliance/SKILL.md",
+                "allowed_tools": ["Read", "search_documents"]
+            }
+        ]
+    """
+```
+
+#### `get_skill`
+Returns the full content of a skill, including linked references.
+
+```python
+def get_skill(name: str) -> dict:
+    """
+    Get a skill's content with linked references resolved.
+
+    Args:
+        name: Skill name
+
+    Returns:
+        {
+            "name": "financial-analysis",
+            "description": "Specialized instructions for financial data analysis",
+            "content": "# Financial Analysis Skill\n\n## Analysis Process\n...",
+            "allowed_tools": ["Read", "Grep", "list_tables"],
+            "references": {
+                "references/indicators.md": "# Financial Indicators\n\n## Liquidity Ratios..."
+            }
+        }
+    """
+```
+
+#### `search_skills`
+Semantic search across skill descriptions and content.
+
+```python
+def search_skills(query: str, limit: int = 3) -> list[dict]:
+    """
+    Find skills relevant to a query.
+
+    Args:
+        query: Natural language description
+        limit: Max results
+
+    Returns:
+        [
+            {
+                "name": "financial-analysis",
+                "relevance": 0.92,
+                "description": "Specialized instructions for financial data analysis"
+            }
+        ]
+    """
+```
+
+#### Discovery Paths
+
+Skills are discovered from multiple locations (in order of precedence):
+
+1. **Project skills**: `.constat/skills/` in the project directory
+2. **Global skills**: `~/.constat/skills/` in the user's home directory
+3. **Config-specified paths**: Additional paths defined in `config.yaml`
+
 ---
 
 ## Integration with Planner
@@ -564,17 +689,20 @@ constat/discovery/
 ├── schema_tools.py       # Database/table discovery (6 tools)
 ├── api_tools.py          # API operation discovery (4 tools)
 ├── doc_tools.py          # Document discovery with loading (4 tools)
-└── fact_tools.py         # Fact resolution wrapper (5 tools)
+├── fact_tools.py         # Fact resolution wrapper (5 tools)
+└── skill_tools.py        # Skill discovery with link following (3 tools)
 
 tests/
-└── test_discovery_tools.py  # 28 tests covering all tools
+├── test_discovery_tools.py  # 28 tests covering all tools
+└── test_skill_tools.py      # Skill discovery tests
 ```
 
-**21 Discovery Tools Implemented:**
+**24 Discovery Tools Implemented:**
 - Schema: `list_databases`, `list_tables`, `get_table_schema`, `search_tables`, `get_table_relationships`, `get_sample_values`
 - API: `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations`
 - Documents: `list_documents`, `get_document`, `search_documents`, `get_document_section`
 - Facts: `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts`, `get_unresolved_facts`
+- Skills: `list_skills`, `get_skill`, `search_skills`
 
 **Data Source Types in Schema Discovery:**
 - SQL databases (PostgreSQL, MySQL, SQLite, BigQuery, etc.)

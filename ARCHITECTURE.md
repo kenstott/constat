@@ -483,6 +483,7 @@ The system automatically detects whether the LLM supports tool calling:
 | API | `list_apis`, `list_api_operations`, `get_operation_details`, `search_operations` |
 | Documents | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
 | Facts | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts`, `get_unresolved_facts` |
+| Skills | `list_skills`, `get_skill`, `search_skills` |
 
 **Token Savings:**
 
@@ -510,6 +511,77 @@ prompt, use_tools = builder.build_prompt("claude-2")
 # Check token estimates
 estimate = builder.estimate_tokens("claude-sonnet-4-20250514")
 # → {"mode": "tool_discovery", "savings_percent": 85, ...}
+```
+
+### SkillManager (`discovery/skill_tools.py`)
+
+Manages discovery and loading of domain-specific skill modules.
+
+**Skill Structure:**
+
+Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
+
+```
+.constat/skills/
+├── financial-analysis/
+│   └── SKILL.md
+└── healthcare-compliance/
+    └── SKILL.md
+```
+
+**SKILL.md Format:**
+
+Each skill is a Markdown file with YAML frontmatter:
+
+```markdown
+---
+name: financial-analysis
+description: Specialized instructions for financial data analysis
+allowed-tools:
+  - Read
+  - Grep
+  - list_tables
+  - get_table_schema
+---
+
+# Financial Analysis Skill
+
+## Key Concepts
+- Revenue recognition principles
+- Common financial metrics (Gross Margin, EBITDA, etc.)
+...
+```
+
+**Discovery Paths (in order of precedence):**
+
+1. **Project skills**: `.constat/skills/` in the project directory
+2. **Global skills**: `~/.constat/skills/` in the user's home directory
+3. **Config-specified paths**: Additional paths defined in `config.yaml`
+
+**SkillMetadata:**
+
+Parsed from YAML frontmatter:
+- `name` - Skill identifier
+- `description` - What the skill provides
+- `allowed-tools` - List of tools the skill can use
+- `context` - Additional context for the LLM
+- `agent` - Optional agent type to use
+
+**Usage:**
+
+```python
+from constat.discovery.skill_tools import SkillManager
+
+manager = SkillManager(project_path="/path/to/project")
+
+# List all available skills
+skills = manager.list_skills()
+
+# Get a specific skill
+skill = manager.get_skill("financial-analysis")
+
+# Search for relevant skills
+matches = manager.search_skills("revenue calculation")
 ```
 
 ### APICatalog (`catalog/api_catalog.py`)
