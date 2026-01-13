@@ -43,100 +43,31 @@ try:
     PROMPT_TOOLKIT_AVAILABLE = _is_compatible_terminal()
 
     class ConstatSuggester(AutoSuggest):
-        """Schema-aware auto-suggester for the Constat REPL."""
+        """Auto-suggester for commands and queries in the REPL."""
 
-        # Static suggestions for empty input
-        DEFAULT_SUGGESTIONS = [
-            "What questions can you answer for me?",
-            "What data sources are available?",
-            "Show me a summary of the data",
-        ]
-
-        # Question patterns that benefit from schema completion
-        PATTERNS = [
-            ("show me ", "the {table}"),
-            ("what is the ", "{column} in {table}"),
-            ("list all ", "{table}"),
-            ("how many ", "records in {table}"),
-            ("compare ", "{table} with "),
-            ("summarize ", "{table}"),
-            ("filter ", "{table} where "),
+        COMMANDS = [
+            "/help", "/tables", "/show", "/query", "/code", "/state",
+            "/update", "/reset", "/user", "/save", "/share", "/sharewith",
+            "/plans", "/replay", "/history", "/resume",
+            "/context", "/compact", "/facts", "/remember", "/forget",
+            "/verbose", "/quit"
         ]
 
         def __init__(self, context_provider=None):
-            """
-            Args:
-                context_provider: Callable that returns dict with 'tables', 'columns', 'plans'
-            """
             self._context_provider = context_provider
-            self._index = 0
-
-        def _get_context(self):
-            """Get current context from provider."""
-            if self._context_provider:
-                try:
-                    return self._context_provider()
-                except Exception:
-                    pass
-            return {"tables": [], "columns": [], "plans": []}
 
         def get_suggestion(self, buffer, document):
             text = document.text
-
-            # Only suggest when input is manageable
-            if len(text) > 50:
+            if not text or len(text) > 50:
                 return None
 
-            if not text:
-                # Empty input - show default suggestion
-                return Suggestion(self.DEFAULT_SUGGESTIONS[self._index % len(self.DEFAULT_SUGGESTIONS)])
-
-            text_lower = text.lower()
-
-            # Check for command completions
+            # Command completions
             if text.startswith("/"):
-                return self._suggest_command(text)
+                text_lower = text.lower()
+                for cmd in self.COMMANDS:
+                    if cmd.startswith(text_lower) and cmd != text_lower:
+                        return Suggestion(cmd[len(text):])
 
-            # Check pattern-based completions
-            context = self._get_context()
-            tables = context.get("tables", [])
-
-            # Try to complete based on patterns
-            for pattern, completion_template in self.PATTERNS:
-                if text_lower.startswith(pattern):
-                    remaining = text[len(pattern):]
-                    # Suggest table names
-                    for table in tables:
-                        if table.lower().startswith(remaining.lower()):
-                            return Suggestion(table[len(remaining):])
-
-            # Default: match against static suggestions
-            all_suggestions = self.DEFAULT_SUGGESTIONS[:]
-
-            # Add dynamic suggestions based on context
-            for table in tables[:3]:
-                all_suggestions.append(f"Show me the {table}")
-                all_suggestions.append(f"Summarize {table}")
-
-            for suggestion in all_suggestions:
-                if suggestion.lower().startswith(text_lower):
-                    return Suggestion(suggestion[len(text):])
-
-            return None
-
-        def _suggest_command(self, text):
-            """Suggest command completions."""
-            commands = [
-                "/help", "/tables", "/show ", "/query ", "/code", "/state",
-                "/update", "/reset", "/user ", "/save ", "/share ", "/sharewith ",
-                "/plans", "/replay ", "/history", "/resume ",
-                "/context", "/compact", "/facts", "/remember ", "/forget ",
-                "/verbose", "/quit"
-            ]
-            text_lower = text.lower()
-            for cmd in commands:
-                if cmd.startswith(text_lower) and cmd != text_lower:
-                    return Suggestion(cmd[len(text):])
             return None
 
     class ConstatCompleter(Completer):
@@ -228,12 +159,18 @@ class InteractiveREPL:
         # Setup prompt_toolkit with schema-aware suggestions and Tab completion
         self._prompt_session = None
         if PROMPT_TOOLKIT_AVAILABLE:
+            from prompt_toolkit.styles import Style
+            # Define style for auto-suggestions (grey/dim text)
+            style = Style.from_dict({
+                'auto-suggestion': 'fg:ansibrightblack',  # Grey text for suggestions
+            })
             self._prompt_session = PromptSession(
                 history=InMemoryHistory(),
                 auto_suggest=ConstatSuggester(context_provider=self._get_suggestion_context),
                 completer=ConstatCompleter(),
                 key_bindings=_create_key_bindings(),
                 complete_while_typing=False,  # Only complete on Tab
+                style=style,
             )
 
     def _get_suggestion_context(self) -> dict:
@@ -752,7 +689,10 @@ class InteractiveREPL:
     def run(self, initial_problem: Optional[str] = None) -> None:
         """Run the interactive REPL."""
         # Welcome banner
-        hints = "[dim]Tab[/dim] accepts suggestion | [dim]Ctrl+C[/dim] interrupts"
+        if self._prompt_session:
+            hints = "[dim]Tab[/dim] accepts suggestion | [dim]Ctrl+C[/dim] interrupts"
+        else:
+            hints = "[dim]Ctrl+C[/dim] interrupts | [yellow]Typeahead disabled (no TTY)[/yellow]"
         self.console.print(Panel.fit(
             "[bold blue]Constat[/bold blue] - Multi-Step AI Reasoning Engine\n"
             f"[dim]Type /help for commands, or ask a question.[/dim]\n{hints}",
