@@ -4,20 +4,21 @@
 # Installs system dependencies and Python package
 #
 # Usage:
-#   ./install.sh              # Interactive installation
+#   ./install.sh              # Interactive installation (creates .venv)
+#   ./install.sh --global     # Install to current Python (no venv)
 #   ./install.sh --yes        # Non-interactive, install all optional
 #   ./install.sh --minimal    # Non-interactive, skip all optional
 #
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# Colors for output (using ANSI-C quoting for proper escape interpretation)
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+NC=$'\033[0m' # No Color
 
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -28,6 +29,7 @@ header() { echo -e "\n${BOLD}${CYAN}$1${NC}\n"; }
 # Parse arguments
 INTERACTIVE=true
 INSTALL_ALL=false
+USE_VENV=true
 for arg in "$@"; do
     case $arg in
         --yes|-y)
@@ -37,6 +39,9 @@ for arg in "$@"; do
         --minimal|-m)
             INTERACTIVE=false
             INSTALL_ALL=false
+            ;;
+        --global|-g)
+            USE_VENV=false
             ;;
     esac
 done
@@ -184,19 +189,29 @@ check_python() {
     success "Python $version"
 }
 
-# Create virtual environment
-setup_venv() {
-    header "Virtual Environment"
+# Setup Python environment
+setup_python_env() {
+    header "Python Environment"
 
-    if [[ ! -d ".venv" ]]; then
-        info "Creating virtual environment..."
-        python3 -m venv .venv
-        success "Created .venv/"
+    if [[ "$USE_VENV" == "true" ]]; then
+        if [[ ! -d ".venv" ]]; then
+            info "Creating virtual environment..."
+            python3 -m venv .venv
+            success "Created .venv/"
+        else
+            success "Using existing .venv/"
+        fi
+        source .venv/bin/activate
     else
-        success "Using existing .venv/"
+        info "Installing globally (no virtual environment)"
+        warn "This will install packages to your current Python environment"
+        if [[ "$INTERACTIVE" == "true" ]]; then
+            if ! ask "Continue with global install?" "n"; then
+                error "Aborted. Run without --global to use a virtual environment."
+            fi
+        fi
     fi
 
-    source .venv/bin/activate
     pip install --upgrade pip -q
 }
 
@@ -206,33 +221,33 @@ show_included() {
 
     echo "These packages are installed automatically:"
     echo ""
-    echo "  ${GREEN}Core${NC}"
+    printf "  ${GREEN}Core${NC}\n"
     echo "    - pydantic, pyyaml, sqlalchemy, pandas, numpy"
     echo "    - anthropic (Claude LLM)"
     echo "    - sentence-transformers (embeddings)"
     echo ""
-    echo "  ${GREEN}CLI & REPL${NC}"
+    printf "  ${GREEN}CLI & REPL${NC}\n"
     echo "    - rich, click, prompt_toolkit"
     echo ""
-    echo "  ${GREEN}Visualization${NC}"
+    printf "  ${GREEN}Visualization${NC}\n"
     echo "    - plotly, altair, matplotlib, seaborn, graphviz"
     echo ""
-    echo "  ${GREEN}Documents${NC}"
+    printf "  ${GREEN}Documents${NC}\n"
     echo "    - pypdf (PDF files)"
     echo "    - python-docx (Word documents)"
     echo "    - openpyxl (Excel files)"
     echo "    - python-pptx (PowerPoint files)"
     echo ""
-    echo "  ${GREEN}Databases${NC}"
+    printf "  ${GREEN}Databases${NC}\n"
     echo "    - PostgreSQL (psycopg2)"
     echo "    - DuckDB"
     echo "    - SQLite (built into Python)"
     echo ""
-    echo "  ${GREEN}LLM Providers${NC}"
+    printf "  ${GREEN}LLM Providers${NC}\n"
     echo "    - Anthropic Claude (default)"
     echo "    - Ollama (local models)"
     echo ""
-    echo "  ${GREEN}API${NC}"
+    printf "  ${GREEN}API${NC}\n"
     echo "    - GraphQL server (strawberry-graphql, fastapi, uvicorn)"
 }
 
@@ -323,16 +338,26 @@ show_next_steps() {
 
     echo "To get started:"
     echo ""
-    echo "  ${CYAN}1. Activate the virtual environment:${NC}"
-    echo "     source .venv/bin/activate"
+
+    if [[ "$USE_VENV" == "true" ]]; then
+        echo "  ${CYAN}1. Activate the virtual environment:${NC}"
+        echo "     source .venv/bin/activate"
+        echo ""
+        echo "  ${CYAN}2. Set your API key:${NC}"
+        echo "     export ANTHROPIC_API_KEY=your-key-here"
+        echo ""
+        echo "  ${CYAN}3. Run the demo:${NC}"
+        echo "     constat repl -c demo/config.yaml"
+    else
+        echo "  ${CYAN}1. Set your API key:${NC}"
+        echo "     export ANTHROPIC_API_KEY=your-key-here"
+        echo ""
+        echo "  ${CYAN}2. Run the demo:${NC}"
+        echo "     constat repl -c demo/config.yaml"
+    fi
+
     echo ""
-    echo "  ${CYAN}2. Set your API key:${NC}"
-    echo "     export ANTHROPIC_API_KEY=your-key-here"
-    echo ""
-    echo "  ${CYAN}3. Run the demo:${NC}"
-    echo "     constat repl -c demo/config.yaml"
-    echo ""
-    echo "  ${CYAN}4. Or create your own config:${NC}"
+    echo "  ${CYAN}Or create your own config:${NC}"
     echo "     constat init my-config.yaml"
     echo ""
 
@@ -355,7 +380,7 @@ main() {
 
     check_python
     install_system_deps
-    setup_venv
+    setup_python_env
     show_included
     install_base
     install_optional
