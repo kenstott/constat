@@ -568,6 +568,26 @@ class EmailConfig(BaseModel):
     timeout_seconds: int = 30
 
 
+class SkillPathsConfig(BaseModel):
+    """Configuration for skill file search paths.
+
+    Skills are SKILL.md files following the Anthropic format that provide
+    reusable instructions and domain knowledge.
+
+    Default search paths (always included):
+        - .constat/skills/ (project-level)
+        - ~/.constat/skills/ (user-level)
+
+    Example:
+        skills:
+          paths:
+            - ./custom-skills
+            - /shared/team-skills
+    """
+    # Additional paths to search for skills (beyond defaults)
+    paths: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Root configuration model."""
     model_config = {"extra": "ignore"}
@@ -585,6 +605,9 @@ class Config(BaseModel):
     # Reference documents keyed by name
     # YAML format: documents: {rules: {type: file, path: ./docs/rules.md}}
     documents: dict[str, DocumentConfig] = Field(default_factory=dict)
+
+    # Skill search paths configuration
+    skills: SkillPathsConfig = Field(default_factory=SkillPathsConfig)
 
     databases_description: str = ""  # Global context for all databases
     system_prompt: str = ""

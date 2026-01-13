@@ -6,6 +6,8 @@ making it easy to integrate with the planner and executor.
 
 from typing import Any, Callable, Optional
 
+from pathlib import Path
+
 from constat.core.config import Config
 from constat.catalog.schema_manager import SchemaManager
 from constat.catalog.api_catalog import APICatalog
@@ -15,6 +17,7 @@ from .schema_tools import SchemaDiscoveryTools, SCHEMA_TOOL_SCHEMAS
 from .api_tools import APIDiscoveryTools, API_TOOL_SCHEMAS
 from .doc_tools import DocumentDiscoveryTools, DOC_TOOL_SCHEMAS
 from .fact_tools import FactResolutionTools, FACT_TOOL_SCHEMAS
+from .skill_tools import SkillDiscoveryTools, SkillManager, SKILL_TOOL_SCHEMAS
 
 
 # All discovery tool schemas combined
@@ -22,7 +25,8 @@ DISCOVERY_TOOL_SCHEMAS = (
     SCHEMA_TOOL_SCHEMAS +
     API_TOOL_SCHEMAS +
     DOC_TOOL_SCHEMAS +
-    FACT_TOOL_SCHEMAS
+    FACT_TOOL_SCHEMAS +
+    SKILL_TOOL_SCHEMAS
 )
 
 
@@ -61,6 +65,13 @@ class DiscoveryTools:
         self.api_tools = APIDiscoveryTools(api_catalog, config) if api_catalog else None
         self.doc_tools = DocumentDiscoveryTools(config) if config else None
         self.fact_tools = FactResolutionTools(fact_resolver, self.doc_tools)
+
+        # Initialize skill tools with configured paths
+        skill_paths = None
+        if config and config.skills and config.skills.paths:
+            skill_paths = [Path(p) for p in config.skills.paths]
+        skill_manager = SkillManager(additional_paths=skill_paths)
+        self.skill_tools = SkillDiscoveryTools(skill_manager)
 
         # Build tool handler map
         self._handlers: dict[str, Callable[..., Any]] = {}
@@ -106,6 +117,13 @@ class DiscoveryTools:
             "extract_facts_from_text": self.fact_tools.extract_facts_from_text,
             "list_known_facts": self.fact_tools.list_known_facts,
             "get_unresolved_facts": self.fact_tools.get_unresolved_facts,
+        })
+
+        # Skill tools (always available)
+        self._handlers.update({
+            "list_skills": self.skill_tools.list_skills,
+            "load_skill": self.skill_tools.load_skill,
+            "get_skill_file": self.skill_tools.get_skill_file,
         })
 
     def get_tool_schemas(self, include_disabled: bool = False) -> list[dict]:
@@ -159,7 +177,7 @@ class DiscoveryTools:
 
 
 # Minimal system prompt for discovery-based planning (tool calling mode)
-DISCOVERY_SYSTEM_PROMPT = """You are a data analysis assistant with access to databases, APIs, and reference documents.
+DISCOVERY_SYSTEM_PROMPT = """You are a data analysis assistant with access to databases, APIs, reference documents, and skills.
 
 IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tools to find what you need.
 
@@ -191,10 +209,19 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 - list_known_facts() - See cached facts
 - get_unresolved_facts() - See what couldn't be resolved
 
+### Skill Discovery
+- list_skills() - See available skills with descriptions
+- load_skill(name) - Load a skill's instructions into context
+- get_skill_file(name, filename) - Load additional files from a skill
+
+Skills are reusable instructions and domain knowledge (SKILL.md files).
+Use list_skills() to discover what's available, then load_skill() to add
+relevant skills to your context when they match the user's task.
+
 ## Planning Process
 
 1. UNDERSTAND the user's question
-2. DISCOVER relevant resources using tools
+2. DISCOVER relevant resources using tools (including skills)
 3. CLARIFY unclear terms with resolve_fact()
 4. PLAN the analysis steps
 5. OUTPUT a structured plan
