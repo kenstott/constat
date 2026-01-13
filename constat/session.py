@@ -94,24 +94,16 @@ Your code has access to:
 ## API Clients (api_<name>)
 For GraphQL APIs:
 ```python
-# Query a GraphQL API
-result = api_countries('''
-    query {
-        countries {
-            name
-            code
-            currency
-        }
-    }
-''')
-# result is a dict with the query response
-countries_df = pd.DataFrame(result['data']['countries'])
+# Query a GraphQL API - pass the GraphQL query string
+result = api_<name>('query { ... }')
+# result is a dict with the query response, typically result['data']['<field>']
+df = pd.DataFrame(result['data']['<field>'])
 ```
 
 For REST APIs:
 ```python
 # Call a REST endpoint
-result = api_myservice('GET /users', {'limit': 10})
+result = api_<name>('GET /endpoint', {'param': 'value'})
 # result is the parsed JSON response
 ```
 
