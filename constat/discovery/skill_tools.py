@@ -85,9 +85,15 @@ class SkillManager:
     Searches for skills in multiple locations:
     1. Project directory: .constat/skills/
     2. Global directory: ~/.constat/skills/
-    3. Config-specified paths
+    3. Config-specified paths (from config.yaml skills.paths)
 
     Each skill is a directory containing at minimum a SKILL.md file.
+
+    Example config.yaml:
+        skills:
+          paths:
+            - /shared/team-skills/
+            - /opt/constat/standard-skills/
     """
 
     # Default skill search paths
@@ -110,6 +116,38 @@ class SkillManager:
         # Cache loaded skills
         self._skills: dict[str, Skill] = {}
         self._loaded = False
+
+    @classmethod
+    def from_config(cls, config: Any) -> "SkillManager":
+        """
+        Create a SkillManager from a Config object.
+
+        Reads additional skill paths from config.skills.paths and adds them
+        to the default search paths.
+
+        Args:
+            config: Config object with skills.paths list
+
+        Returns:
+            SkillManager with config paths added
+
+        Example:
+            from constat.core.config import Config
+
+            config = Config.from_yaml("config.yaml")
+            manager = SkillManager.from_config(config)
+        """
+        additional_paths = []
+
+        # Get paths from config.skills.paths
+        if hasattr(config, "skills") and config.skills:
+            if hasattr(config.skills, "paths") and config.skills.paths:
+                for path_str in config.skills.paths:
+                    # Expand ~ and resolve path
+                    path = Path(path_str).expanduser()
+                    additional_paths.append(path)
+
+        return cls(additional_paths=additional_paths if additional_paths else None)
 
     def discover_skills(self) -> list[Skill]:
         """

@@ -1014,6 +1014,21 @@ Skills are discovered from multiple locations (in order of precedence):
 2. **Global skills**: `~/.constat/skills/` in the user's home directory
 3. **Config-specified paths**: Additional paths defined in `config.yaml`
 
+### Configuring Additional Skill Paths
+
+Add custom skill directories in your config file:
+
+```yaml
+# config.yaml
+skills:
+  paths:
+    - /shared/team-skills/           # Team shared skills
+    - /opt/constat/standard-skills/  # Standard library
+    - ~/my-custom-skills/            # Personal skills (~ expanded)
+```
+
+Skills in config paths are searched after the default paths, so project and global skills take precedence.
+
 ### Creating a Skill
 
 1. Create a directory: `.constat/skills/my-skill/`
