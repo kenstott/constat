@@ -10,6 +10,18 @@ from rich.syntax import Syntax
 from constat.session import Session, SessionConfig
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
+from constat.suggestions import (
+    SmartSuggester,
+    SuggestionConfig,
+    create_suggester,
+    PROMPT_TOOLKIT_AVAILABLE,
+)
+
+if PROMPT_TOOLKIT_AVAILABLE:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.styles import Style
+    from prompt_toolkit.formatted_text import HTML
 
 
 class InteractiveREPL:
@@ -30,6 +42,7 @@ class InteractiveREPL:
         verbose: bool = False,
         console: Optional[Console] = None,
         progress_callback: Optional[callable] = None,
+        suggestion_config: Optional[SuggestionConfig] = None,
     ):
         self.config = config
         self.verbose = verbose
@@ -39,6 +52,24 @@ class InteractiveREPL:
 
         self.session: Optional[Session] = None
         self.session_config = SessionConfig(verbose=verbose)
+
+        # Initialize smart suggestions
+        self.suggestion_config = suggestion_config or SuggestionConfig()
+        self.suggester = create_suggester(config=self.suggestion_config)
+        self._prompt_session: Optional["PromptSession"] = None
+
+        if PROMPT_TOOLKIT_AVAILABLE:
+            # Create prompt_toolkit session with suggestion support
+            # Note: 'auto-suggestion' is the correct style class name for prompt_toolkit
+            self._prompt_style = Style.from_dict({
+                'prompt': 'bold cyan',
+                'auto-suggestion': 'fg:ansibrightblack italic',
+            })
+            self._prompt_session = PromptSession(
+                history=InMemoryHistory(),
+                auto_suggest=self.suggester,
+                style=self._prompt_style,
+            )
 
     def _create_session(self) -> Session:
         """Create a new session with feedback handler."""
@@ -52,7 +83,36 @@ class InteractiveREPL:
         handler = SessionFeedbackHandler(self.display)
         session.on_event(handler.handle_event)
 
+        # Update suggester with session context
+        if self.suggester:
+            self.suggester.update_context(session)
+
         return session
+
+    def _get_input(self, has_session: bool = False) -> str:
+        """
+        Get user input with smart suggestions.
+
+        Uses prompt_toolkit if available, falls back to Rich Prompt.
+        Tab accepts the current suggestion, Enter submits.
+        """
+        prompt_marker = "> " if has_session else "> "
+
+        if self._prompt_session and PROMPT_TOOLKIT_AVAILABLE:
+            # Update suggester context before prompting
+            if self.suggester and self.session:
+                self.suggester.update_context(self.session)
+
+            # Use prompt_toolkit with suggestions
+            # The suggestion appears greyed out, Tab accepts it
+            prompt_html = HTML(
+                f'<style fg="{"cyan" if has_session else "blue"}" bg="" bold="true">{prompt_marker}</style>'
+            )
+            return self._prompt_session.prompt(prompt_html).strip()
+        else:
+            # Fallback to Rich prompt
+            prompt_text = f"[bold cyan]{prompt_marker}[/bold cyan]" if has_session else f"[bold blue]{prompt_marker}[/bold blue]"
+            return Prompt.ask(prompt_text).strip()
 
     def _show_help(self) -> None:
         """Show available commands."""
@@ -234,37 +294,37 @@ class InteractiveREPL:
                 # New session
                 result = self.session.solve(problem)
 
-            # Show plan
-            if result.get("plan"):
-                plan = result["plan"]
-                steps = [{"number": s.number, "goal": s.goal} for s in plan.steps]
-                self.display.show_plan(steps)
-
             # Handle meta-response (direct answer without planning)
             if result.get("meta_response"):
                 self.display.show_output(result.get("output", ""))
                 self.display.show_summary(success=True, total_steps=0, duration_ms=0)
             elif result.get("success"):
-                # Show tables from execution
+                # Final answer is shown via answer_ready event, tables shown for reference
                 tables = result.get("datastore_tables", [])
-                if tables:
-                    self.display.show_tables(tables)
+                total_duration = sum(r.duration_ms for r in result.get("results", []))
+                self.display.show_tables(tables, duration_ms=total_duration)
 
                 self.display.show_summary(
                     success=True,
                     total_steps=len(result.get("results", [])),
-                    duration_ms=sum(r.duration_ms for r in result.get("results", [])),
+                    duration_ms=total_duration,
                 )
+
+                # Update suggester with answer for follow-up suggestions
+                if self.suggester and result.get("final_answer"):
+                    self.suggester.set_last_answer(result["final_answer"])
             else:
+                plan = result.get("plan")
+                total_steps = len(plan.steps) if plan and hasattr(plan, 'steps') else 0
                 self.display.show_summary(
                     success=False,
-                    total_steps=len(result.get("plan", {}).get("steps", [])) if result.get("plan") else 0,
+                    total_steps=total_steps,
                     duration_ms=0,
                 )
                 self.console.print(f"\n[red]Error:[/red] {result.get('error', 'Unknown error')}")
 
         except KeyboardInterrupt:
-            self.console.print("\n[yellow]Interrupted.[/yellow]")
+            self.console.print("\n[yellow]Interrupted. (Ctrl+C)[/yellow]")
         except Exception as e:
             self.console.print(f"\n[red]Error:[/red] {e}")
 
@@ -275,9 +335,15 @@ class InteractiveREPL:
         Args:
             initial_problem: Optional problem to solve immediately
         """
+        # Show welcome banner with hints
+        hints = []
+        if PROMPT_TOOLKIT_AVAILABLE:
+            hints.append("[dim]Tab[/dim] accepts suggestion")
+        hints.append("[dim]Ctrl+C[/dim] interrupts")
+        hint_text = " | ".join(hints)
         self.console.print(Panel.fit(
             "[bold blue]Constat[/bold blue] - Multi-Step AI Reasoning Engine\n"
-            "[dim]Type /help for commands, or ask a question.[/dim]",
+            f"[dim]Type /help for commands, or ask a question.[/dim]\n{hint_text}",
             border_style="blue",
         ))
 
@@ -288,8 +354,8 @@ class InteractiveREPL:
         # Main REPL loop
         while True:
             try:
-                prompt_text = "[bold cyan]>[/bold cyan] " if self.session and self.session.session_id else "[bold blue]>[/bold blue] "
-                user_input = Prompt.ask(prompt_text).strip()
+                has_session = bool(self.session and self.session.session_id)
+                user_input = self._get_input(has_session)
 
                 if not user_input:
                     continue

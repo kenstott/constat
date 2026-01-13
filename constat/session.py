@@ -45,6 +45,13 @@ def is_meta_question(query: str) -> bool:
     return any(pattern in query_lower for pattern in META_QUESTION_PATTERNS)
 
 
+# Question classification types
+class QuestionType:
+    DATA_ANALYSIS = "data_analysis"  # Requires database queries
+    GENERAL_KNOWLEDGE = "general_knowledge"  # LLM can answer directly
+    META_QUESTION = "meta_question"  # About system capabilities
+
+
 # System prompt for step code generation
 STEP_SYSTEM_PROMPT = """You are a data analyst executing a step in a multi-step plan.
 
@@ -58,6 +65,21 @@ Your code has access to:
 - `pd`: pandas (imported as pd)
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
+- `llm_ask`: a function to query the LLM for general knowledge
+
+## LLM Knowledge (via llm_ask)
+Use `llm_ask(question)` to get general knowledge not available in databases:
+```python
+# Get industry benchmarks
+industry_avg = llm_ask("What is the average profit margin for retail companies?")
+
+# Get conversion factors
+exchange_rate = llm_ask("What is the current USD to EUR exchange rate?")
+
+# Get domain knowledge
+definition = llm_ask("What qualifies as a 'high-value customer' in e-commerce?")
+```
+Note: llm_ask returns a string. Parse numeric values if needed.
 
 ## State Management (via store)
 Each step runs in complete isolation. The ONLY way to share data between steps is through `store`.
@@ -322,6 +344,33 @@ class Session:
             }
         ]
 
+    def _create_llm_ask_helper(self) -> callable:
+        """Create a helper function for step code to query LLM for general knowledge."""
+        def llm_ask(question: str) -> str:
+            """
+            Ask the LLM a general knowledge question.
+
+            Use this for facts not available in the databases, such as:
+            - Industry benchmarks and averages
+            - General domain knowledge
+            - Conversion factors or standard values
+            - Definitions and explanations
+
+            Args:
+                question: The question to ask
+
+            Returns:
+                The LLM's response as a string
+            """
+            result = self.router.execute(
+                task_type=TaskType.GENERAL,
+                system="You are a helpful assistant. Provide factual, concise answers. If you're uncertain, say so.",
+                user_message=question,
+                max_tokens=500,
+            )
+            return result.content
+        return llm_ask
+
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution.
 
@@ -329,6 +378,7 @@ class Session:
         """
         globals_dict = {
             "store": self.datastore,  # Persistent datastore - only shared state between steps
+            "llm_ask": self._create_llm_ask_helper(),  # LLM query helper for general knowledge
         }
 
         # Provide database connections
@@ -350,7 +400,7 @@ class Session:
         import pandas as pd
 
         # Skip internal/injected variables
-        skip_vars = {"store", "db", "pd", "np", "__builtins__"}
+        skip_vars = {"store", "db", "pd", "np", "llm_ask", "__builtins__"}
         skip_prefixes = ("db_", "_")
 
         # Already-saved tables (don't duplicate)
@@ -554,6 +604,63 @@ class Session:
 
         return self._approval_callback(request)
 
+    def _classify_question(self, problem: str) -> str:
+        """
+        Classify whether a question requires data analysis or can be answered directly.
+
+        Returns:
+            QuestionType.DATA_ANALYSIS - needs database queries
+            QuestionType.GENERAL_KNOWLEDGE - LLM can answer directly
+            QuestionType.META_QUESTION - about system capabilities
+        """
+        # Fast path for meta-questions
+        if is_meta_question(problem):
+            return QuestionType.META_QUESTION
+
+        schema_overview = self.schema_manager.get_overview()
+
+        prompt = f"""Classify this question into one of these categories:
+
+Question: "{problem}"
+
+Available data sources:
+{schema_overview}
+
+Categories:
+1. DATA_ANALYSIS - The question requires querying the available databases/data sources to answer
+2. GENERAL_KNOWLEDGE - The question is about general facts, concepts, or information that doesn't require the data sources
+
+Respond with just the category name: DATA_ANALYSIS or GENERAL_KNOWLEDGE"""
+
+        result = self.router.execute(
+            task_type=TaskType.INTENT_CLASSIFICATION,
+            system="You are a question classifier. Be brief.",
+            user_message=prompt,
+            max_tokens=50,
+        )
+
+        response = result.content.strip().upper()
+        if "GENERAL" in response:
+            return QuestionType.GENERAL_KNOWLEDGE
+        return QuestionType.DATA_ANALYSIS
+
+    def _answer_general_question(self, problem: str) -> dict:
+        """
+        Answer a general knowledge question directly using LLM.
+        """
+        result = self.router.execute(
+            task_type=TaskType.GENERAL,
+            system="You are a helpful assistant. Answer the question directly and concisely.",
+            user_message=problem,
+        )
+
+        return {
+            "success": True,
+            "meta_response": True,  # Reuse this flag to skip planning display
+            "output": result.content,
+            "plan": None,
+        }
+
     def _answer_meta_question(self, problem: str) -> dict:
         """
         Answer meta-questions about capabilities without planning/execution.
@@ -593,6 +700,36 @@ Keep it concise and actionable."""
             "output": result.content,
             "plan": None,
         }
+
+    def _synthesize_answer(self, problem: str, step_outputs: str) -> str:
+        """
+        Synthesize a final user-facing answer from step execution outputs.
+
+        This takes the raw step outputs (which may be verbose technical details)
+        and creates a clear, direct answer to the user's original question.
+        """
+        prompt = f"""You are synthesizing results from a multi-step data analysis.
+
+Original question: {problem}
+
+Analysis results from each step:
+{step_outputs}
+
+Create a clear, direct answer to the user's question. Include:
+1. A direct answer to their question (the main finding)
+2. Key supporting data points or insights
+3. Any notable observations or caveats
+
+Format the answer for readability with markdown. Be concise but complete."""
+
+        result = self.router.execute(
+            task_type=TaskType.SUMMARIZATION,
+            system="You are a data analyst presenting findings. Be clear and direct.",
+            user_message=prompt,
+            max_tokens=1000,
+        )
+
+        return result.content
 
     def _replan_with_feedback(self, problem: str, feedback: str) -> PlannerResponse:
         """
@@ -634,9 +771,12 @@ Please create a revised plan that addresses this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
-        # Handle meta-questions without planning
-        if is_meta_question(problem):
+        # Classify question and handle non-data-analysis questions directly
+        question_type = self._classify_question(problem)
+        if question_type == QuestionType.META_QUESTION:
             return self._answer_meta_question(problem)
+        elif question_type == QuestionType.GENERAL_KNOWLEDGE:
+            return self._answer_general_question(problem)
 
         # Create session
         db_names = list(self.config.databases.keys())
@@ -728,6 +868,19 @@ Please create a revised plan that addresses this feedback."""
                 expected_outputs=step.expected_outputs,
                 status="pending",
             )
+
+        # Emit plan_ready event BEFORE execution starts
+        self._emit_event(StepEvent(
+            event_type="plan_ready",
+            step_number=0,
+            data={
+                "steps": [
+                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on}
+                    for s in self.plan.steps
+                ],
+                "reasoning": planner_response.reasoning,
+            }
+        ))
 
         # Execute steps in parallel waves based on dependencies
         all_results = []
@@ -835,13 +988,28 @@ Please create a revised plan that addresses this feedback."""
             for i, r in enumerate(all_results)
         ])
 
+        # Synthesize final answer from step results
+        self._emit_event(StepEvent(
+            event_type="synthesizing",
+            step_number=0,
+            data={"message": "Synthesizing final answer..."}
+        ))
+
+        final_answer = self._synthesize_answer(problem, combined_output)
+
+        self._emit_event(StepEvent(
+            event_type="answer_ready",
+            step_number=0,
+            data={"answer": final_answer}
+        ))
+
         self.history.record_query(
             session_id=self.session_id,
             question=problem,
             success=True,
             attempts=total_attempts,
             duration_ms=total_duration,
-            answer=combined_output,
+            answer=final_answer,
         )
         self.history.complete_session(self.session_id, status="completed")
 
@@ -854,6 +1022,7 @@ Please create a revised plan that addresses this feedback."""
             "plan": self.plan,
             "results": all_results,
             "output": combined_output,
+            "final_answer": final_answer,
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
             "datastore_path": str(self.datastore.db_path) if self.datastore and self.datastore.db_path else None,
@@ -1059,6 +1228,19 @@ Follow-up question: {question}
         # Renumber steps to continue from where we left off
         for i, step in enumerate(follow_up_plan.steps):
             step.number = next_step_number + i
+
+        # Emit plan_ready event for display
+        self._emit_event(StepEvent(
+            event_type="plan_ready",
+            step_number=0,
+            data={
+                "steps": [
+                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on}
+                    for s in follow_up_plan.steps
+                ],
+                "reasoning": planner_response.reasoning,
+            }
+        ))
 
         # Execute each step
         all_results = []

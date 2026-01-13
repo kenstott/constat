@@ -857,8 +857,8 @@ class TestDatastoreCleanup:
 class TestSuccessfulSolveOutput:
     """Tests for successful solve output display."""
 
-    def test_solve_shows_plan(self, repl, mock_console):
-        """Test successful solve shows plan."""
+    def test_solve_shows_summary_on_success(self, repl, mock_console):
+        """Test successful solve shows summary."""
         mock_session = Mock()
         mock_session.session_id = None
 
@@ -883,8 +883,9 @@ class TestSuccessfulSolveOutput:
 
         repl._solve("Analyze the data")
 
-        # Verify plan was shown
-        repl.display.show_plan.assert_called_once()
+        # Verify solve was called and summary shown (plan now shown via plan_ready event)
+        mock_session.solve.assert_called_once_with("Analyze the data")
+        repl.display.show_summary.assert_called_once()
 
     def test_solve_shows_tables(self, repl, mock_console):
         """Test successful solve shows created tables."""

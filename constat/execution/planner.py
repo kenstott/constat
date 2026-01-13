@@ -30,11 +30,16 @@ You have access to these tools to explore the database schema:
 
 ## Planning Guidelines
 1. Start by understanding what data is needed
-2. Break complex questions into smaller queries
+2. **PREFER SQL JOINs over separate queries** - when data from multiple related tables is needed, use a single SQL query with JOINs rather than multiple separate queries followed by Python merges. This is more efficient and reduces steps.
 3. Each step should produce data that later steps can use
 4. Keep steps atomic - one main action per step
 5. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
 6. End with a step that synthesizes the final answer
+
+## JOIN Optimization Guidelines
+- **Use JOINs when:** Tables share foreign key relationships (e.g., orders.customer_id -> customers.id), you need data from 2-3 related tables, the relationships are straightforward
+- **Use separate queries when:** Tables are in different databases, no clear relationship exists, more than 3 tables would need complex multi-way joins, you need to apply complex transformations before joining
+- **JOIN syntax tips:** Always qualify column names with table aliases (e.g., o.customer_id, c.name), use explicit JOIN syntax (INNER JOIN, LEFT JOIN) rather than comma-joins, keep JOINs simple - if it requires more than 3 tables, consider breaking it up
 
 ## Output Format
 Return your plan as a JSON object with this structure:
@@ -44,28 +49,19 @@ Return your plan as a JSON object with this structure:
   "steps": [
     {
       "number": 1,
-      "goal": "Load customer data from the sales database",
+      "goal": "Query orders with customer details using JOIN on customer_id",
       "inputs": [],
-      "outputs": ["customers_df"],
+      "outputs": ["orders_with_customers_df"],
       "depends_on": [],
       "task_type": "sql_generation",
-      "complexity": "low"
+      "complexity": "medium"
     },
     {
       "number": 2,
-      "goal": "Load product data from the inventory database",
-      "inputs": [],
-      "outputs": ["products_df"],
-      "depends_on": [],
-      "task_type": "sql_generation",
-      "complexity": "low"
-    },
-    {
-      "number": 3,
-      "goal": "Join and analyze customer-product relationships",
-      "inputs": ["customers_df", "products_df"],
-      "outputs": ["combined_df"],
-      "depends_on": [1, 2],
+      "goal": "Analyze and summarize order patterns by customer segment",
+      "inputs": ["orders_with_customers_df"],
+      "outputs": ["analysis_df"],
+      "depends_on": [1],
       "task_type": "python_analysis",
       "complexity": "medium"
     }
