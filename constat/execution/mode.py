@@ -47,26 +47,40 @@ class ExecutionMode(Enum):
 
 # Keywords that suggest auditable mode is needed
 AUDITABLE_KEYWORDS = [
-    "why",
+    # Verification keywords
+    "verify",
+    "validate",
+    "confirm",
+    "check",
     "prove",
     "justify",
+    # Explanation keywords
+    "why",
     "explain",
-    "compliance",
-    "audit",
-    "regulation",
-    "defensible",
     "because",
     "reasoning",
     "evidence",
+    # Decision/classification keywords
     "conclude",
     "determine",
     "classify",
     "approve",
     "reject",
     "flag",
-    "risk",
-    "eligibility",
     "qualify",
+    "eligibility",
+    # Compliance/audit keywords
+    "compliance",
+    "audit",
+    "regulation",
+    "defensible",
+    "risk",
+    # Certainty keywords
+    "certain",
+    "accurate",
+    "correct",
+    "true",
+    "false",
 ]
 
 # Keywords that suggest exploratory mode
@@ -246,6 +260,9 @@ class PlanApproval(Enum):
     SUGGEST = "suggest"
     """User wants to suggest changes before execution."""
 
+    COMMAND = "command"
+    """User entered a slash command - pass back to REPL for handling."""
+
 
 @dataclass
 class PlanApprovalRequest:
@@ -283,6 +300,7 @@ class PlanApprovalResponse:
     decision: PlanApproval
     suggestion: Optional[str] = None  # Feedback if decision is SUGGEST
     reason: Optional[str] = None  # Optional explanation for rejection
+    command: Optional[str] = None  # Slash command if decision is COMMAND
 
     @classmethod
     def approve(cls) -> "PlanApprovalResponse":
@@ -298,3 +316,8 @@ class PlanApprovalResponse:
     def suggest(cls, suggestion: str) -> "PlanApprovalResponse":
         """Create a suggestion response."""
         return cls(decision=PlanApproval.SUGGEST, suggestion=suggestion)
+
+    @classmethod
+    def pass_command(cls, command: str) -> "PlanApprovalResponse":
+        """Create a command pass-through response."""
+        return cls(decision=PlanApproval.COMMAND, command=command)

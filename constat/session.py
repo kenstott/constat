@@ -24,6 +24,8 @@ from constat.execution.mode import (
 from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
+from constat.catalog.preload_cache import MetadataPreloadCache
+from constat.discovery.doc_tools import DocumentDiscoveryTools
 from constat.email import create_send_email
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 
@@ -39,6 +41,15 @@ META_QUESTION_PATTERNS = [
     "what data",
     "what databases",
     "what tables",
+    # Asking for recommendations/suggestions (not asking to run them)
+    "recommend",
+    "suggested",
+    "suggestions",
+    "what should i",
+    "what could i",
+    "any analyses",
+    "ideas for",
+    "what would you",
 ]
 
 
@@ -261,6 +272,14 @@ class Session:
         self.schema_manager = SchemaManager(config)
         self.schema_manager.initialize(progress_callback=progress_callback)
 
+        # Metadata preload cache for faster context loading
+        self.preload_cache = MetadataPreloadCache(config)
+        self._preloaded_context: Optional[str] = None
+        self._load_preloaded_context()
+
+        # Document discovery tools (for reference documents)
+        self.doc_tools = DocumentDiscoveryTools(config) if config.documents else None
+
         # Task router for model routing with escalation
         self.router = TaskRouter(config.llm)
 
@@ -355,9 +374,14 @@ class Session:
         else:
             scratchpad_context = self.scratchpad.get_recent_context(max_steps=5)
 
+        # Build schema overview with preloaded context if available
+        schema_overview = self.schema_manager.get_overview()
+        if self._preloaded_context:
+            schema_overview = f"{self._preloaded_context}\n\n{schema_overview}"
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
-            schema_overview=self.schema_manager.get_overview(),
+            schema_overview=schema_overview,
             domain_context=self.config.system_prompt or "No additional context.",
             datastore_tables=datastore_info,
             scratchpad=scratchpad_context,
@@ -389,10 +413,45 @@ class Session:
             "find_relevant_tables": self._cached_find_relevant_tables,
         }
 
-    def refresh_metadata(self) -> None:
-        """Refresh schema metadata and clear tool cache."""
+    def refresh_metadata(self, force_full: bool = False) -> dict:
+        """Refresh all metadata: schema, documents, and preload cache.
+
+        Args:
+            force_full: If True, force full rebuild of all caches
+
+        Returns:
+            Dict with refresh statistics
+        """
         self._tool_cache.clear()
         self.schema_manager.refresh()
+
+        # Refresh document vector index (incremental by default)
+        doc_stats = {}
+        if self.doc_tools:
+            doc_stats = self.doc_tools.refresh(force_full=force_full)
+
+        # Rebuild preload cache with fresh metadata
+        self._rebuild_preload_cache()
+
+        return {
+            "preloaded_tables": self.get_preloaded_tables_count(),
+            "documents": doc_stats,
+        }
+
+    def _load_preloaded_context(self) -> None:
+        """Load preloaded metadata context from cache if available."""
+        if self.config.context_preload.seed_patterns:
+            self._preloaded_context = self.preload_cache.get_context_string()
+
+    def _rebuild_preload_cache(self) -> None:
+        """Rebuild the preload cache with current metadata."""
+        if self.config.context_preload.seed_patterns:
+            self.preload_cache.build(self.schema_manager)
+            self._preloaded_context = self.preload_cache.get_context_string()
+
+    def get_preloaded_tables_count(self) -> int:
+        """Get the number of tables in the preload cache."""
+        return len(self.preload_cache.get_cached_tables())
 
     def _get_schema_tools(self) -> list[dict]:
         """Get schema tool definitions."""
@@ -466,6 +525,20 @@ class Session:
             globals_dict[f"db_{db_name}"] = conn
             if i == 0:
                 globals_dict["db"] = conn
+
+        # Provide API clients for GraphQL/REST APIs
+        if self.config.apis:
+            from constat.catalog.api_executor import APIExecutor
+            api_executor = APIExecutor(self.config)
+            for api_name, api_config in self.config.apis.items():
+                if api_config.type == "graphql":
+                    # Create a GraphQL query function
+                    globals_dict[f"api_{api_name}"] = lambda query, variables=None, _name=api_name, _exec=api_executor: \
+                        _exec.execute_graphql(_name, query, variables)
+                else:
+                    # Create a REST call function
+                    globals_dict[f"api_{api_name}"] = lambda operation, params=None, _name=api_name, _exec=api_executor: \
+                        _exec.execute_rest(_name, operation, params or {})
 
         return globals_dict
 
@@ -757,7 +830,7 @@ Perform these analyses:
 Respond in this exact format:
 ---
 FACTS:
-(list each as FACT_NAME: VALUE, or NONE if no facts)
+(list each as FACT_NAME: VALUE | brief description, or NONE if no facts)
 ---
 QUESTION_TYPE: META_QUESTION | DATA_ANALYSIS
 ---
@@ -765,7 +838,7 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
 ---
 
 Examples:
-- "what questions can I ask as CFO" -> FACTS: user_role: CFO, QUESTION_TYPE: META_QUESTION
+- "what questions can I ask as CFO" -> FACTS: user_role: CFO | User's organizational role, QUESTION_TYPE: META_QUESTION
 - "show me revenue by region" -> FACTS: NONE, QUESTION_TYPE: DATA_ANALYSIS
 - "what is my role" (with known user_role=CFO) -> CACHED_ANSWER: Your role is CFO
 """
@@ -794,7 +867,17 @@ Examples:
                         if ":" in line and line.lower() != "none":
                             parts = line.split(":", 1)
                             fact_name = parts[0].strip()
-                            value_str = parts[1].strip()
+                            value_part = parts[1].strip()
+
+                            # Parse value and optional description (format: "value | description")
+                            description = None
+                            if "|" in value_part:
+                                value_str, description = value_part.split("|", 1)
+                                value_str = value_str.strip()
+                                description = description.strip()
+                            else:
+                                value_str = value_part
+
                             # Try to parse as number
                             try:
                                 value = float(value_str)
@@ -808,6 +891,7 @@ Examples:
                                 fact_name=fact_name,
                                 value=value,
                                 reasoning=f"Extracted from question: {problem}",
+                                description=description,
                             )
                             extracted_facts.append(fact)
 
@@ -1087,6 +1171,143 @@ Examples:
 
         return None
 
+    def _explain_differentiators(self) -> dict:
+        """Explain what makes Constat different from other AI tools."""
+        explanation = """**What Makes Constat Different**
+
+Constat is designed for serious data analysis where accuracy, transparency, and collaboration matter.
+
+**1. Universal Data Connectivity**
+
+Connect almost any data source as a fact source:
+- **Databases**: PostgreSQL, MySQL, SQLite, DuckDB, and more
+- **Structured files**: CSV, Excel, Parquet, JSON
+- **Documents**: PDF, Word, PowerPoint for context
+- **APIs**: REST endpoints for live data
+
+All sources become queryable facts that ground your analysis.
+
+**2. Parallel Execution**
+
+Plans are directed acyclic graphs (DAGs), not linear scripts:
+- Independent steps execute in parallel automatically
+- Complex analyses complete faster
+- Dependencies are tracked and respected
+
+**3. Reproducibility**
+
+Plans are deterministic code, not chat transcripts:
+- Save any analysis as a replayable plan
+- Re-run against current data to see how results change
+- Version control your analytical workflows
+
+**4. Intelligent Caching**
+
+Extensive caching minimizes costs and latency:
+- Facts are cached and reused across steps
+- Database query results are stored
+- LLM calls are minimized through smart planning
+
+**5. Collaboration**
+
+Share your work with others:
+- Share plans with specific users or make them public
+- Resume sessions from where you left off
+- Teams can build on each other's analyses
+
+**6. Auditable Reasoning**
+
+Formal verification for high-stakes decisions:
+- Claims are recursively decomposed until grounded in verifiable facts
+- Full audit trail for compliance and review
+- Ask "How do you reason about problems?" for details
+
+**7. Breadth of Data**
+
+Handle large data estates without upfront metadata loading:
+- Progressive discovery drills into metadata only when needed for a specific question
+- Connect hundreds of tables without overwhelming context
+- Metadata is fetched on-demand, not preloaded
+
+**8. Extensible Skills**
+
+Extend reasoning capabilities using the familiar Skills pattern:
+- Add custom skills for domain-specific analyses
+- Reuse existing AI agent skills you've already built
+- Skills plug into the fact-gathering and reasoning pipeline"""
+
+        return {
+            "success": True,
+            "meta_response": True,
+            "output": explanation,
+            "suggestions": [
+                "What data is available?",
+                "How do you reason about problems?",
+            ],
+            "plan": None,
+        }
+
+    def _explain_reasoning_methodology(self) -> dict:
+        """Explain Constat's reasoning methodology."""
+        explanation = """**How Constat Reasons About Problems**
+
+Constat offers two complementary reasoning modes that make AI analysis transparent, verifiable, and trustworthy.
+
+**Exploratory Mode** (Default)
+
+For open-ended questions and discovery:
+- Breaks your question into analytical steps
+- Each step can gather facts from multiple sources:
+  - **Database queries** - retrieve and transform data
+  - **User input** - ask for clarification or missing information
+  - **LLM knowledge** - apply domain expertise and reasoning
+  - **Derivation** - calculate, analyze, or infer from existing facts
+- Creates intermediate result tables you can inspect
+- Suggests follow-up analyses based on findings
+
+Best for: "What drives revenue?", "Show me trends", "Help me understand..."
+
+**Audited Mode**
+
+For formal verification using an inverted proof structure:
+- Your question becomes a hypothesis to prove or disprove
+- Works backwards: recursively decomposes claims until grounded in verifiable facts
+- Each step must produce evidence supporting or refuting the claim
+- Domain rules and constraints are strictly enforced
+- Results include confidence levels and caveats
+- Full audit trail for compliance and review
+
+Best for: "Verify that...", "Prove whether...", "Is it true that..."
+
+**Why This Matters**
+
+- **Transparency**: Every step is visible - see exactly how conclusions are reached
+- **Auditability**: Data-backed claims can be verified against source queries
+- **Correctness**: Domain rules (like "only count delivered orders as revenue") are enforced
+- **Reproducibility**: The same question produces consistent, explainable results
+
+**In Practice**
+
+When you ask a question, Constat:
+1. Plans a series of analytical steps
+2. Executes each step - querying data, asking you, or reasoning
+3. Shows intermediate results and tables
+4. Synthesizes findings into a direct answer
+5. Suggests follow-up analyses
+
+Unlike pure LLMs that may hallucinate, Constat grounds all claims in actual data while using AI for reasoning and synthesis."""
+
+        return {
+            "success": True,
+            "meta_response": True,
+            "output": explanation,
+            "suggestions": [
+                "What data is available?",
+                "Show me an example analysis",
+            ],
+            "plan": None,
+        }
+
     def _answer_meta_question(self, problem: str) -> dict:
         """
         Answer meta-questions about capabilities without planning/execution.
@@ -1094,23 +1315,72 @@ Examples:
         Uses schema overview and domain context to answer questions like
         "what questions can you answer" directly.
         """
+        # Check if asking about reasoning methodology
+        problem_lower = problem.lower()
+        if any(phrase in problem_lower for phrase in [
+            "how do you reason", "how do you think", "how do you work",
+            "reasoning process", "methodology", "how does this work"
+        ]):
+            return self._explain_reasoning_methodology()
+
+        # Check if asking what makes Constat different
+        if any(phrase in problem_lower for phrase in [
+            "what makes", "what's different", "how is .* different",
+            "unique about", "special about", "why constat", "why use constat"
+        ]):
+            return self._explain_differentiators()
+
         schema_overview = self.schema_manager.get_overview()
         domain_context = self.config.system_prompt or ""
 
+        # Get user role if known
+        user_role = None
+        try:
+            role_fact = self.fact_resolver.get_fact("user_role")
+            if role_fact:
+                user_role = role_fact.value
+        except Exception:
+            pass
+
+        role_context = f"\nThe user's role is: {user_role}" if user_role else ""
+
+        # Build API overview if configured
+        api_overview = ""
+        if self.config.apis:
+            api_lines = ["Available APIs:"]
+            for name, api_config in self.config.apis.items():
+                api_type = api_config.type.upper()
+                desc = api_config.description or f"{api_type} endpoint"
+                api_lines.append(f"  - {name} ({api_type}): {desc}")
+            api_overview = "\n" + "\n".join(api_lines)
+
+        # Build document overview if configured
+        doc_overview = ""
+        if self.doc_tools and self.config.documents:
+            doc_lines = ["Reference Documents:"]
+            for name, doc_config in self.config.documents.items():
+                desc = doc_config.description or doc_config.type
+                doc_lines.append(f"  - {name}: {desc}")
+            doc_overview = "\n" + "\n".join(doc_lines)
+
         prompt = f"""The user is asking about your capabilities. Answer based on the available data.
 
-User question: {problem}
+User question: {problem}{role_context}
 
 Available databases and tables:
 {schema_overview}
+{api_overview}
+{doc_overview}
 
 Domain context:
 {domain_context}
 
-Provide a helpful summary of:
-1. What data sources are available
-2. What types of questions can be answered
-3. Example questions the user could ask
+Provide a helpful summary tailored to the user's role (if known):
+1. What data sources are relevant to their role (databases, APIs, and reference documents)
+2. What types of analyses would be most valuable
+
+Then provide 3-6 example questions the user could ask, each on its own line in quotes like:
+"What is the revenue by region?"
 
 Keep it concise and actionable."""
 
@@ -1120,12 +1390,65 @@ Keep it concise and actionable."""
             user_message=prompt,
         )
 
+        # Extract example questions from output to use as suggestions
+        # Don't emit event here - let REPL display after output
+        suggestions = self._extract_example_questions(result.content)
+
+        # Strip the example questions section from output to avoid duplication
+        output = self._strip_example_questions_section(result.content)
+
         return {
             "success": True,
             "meta_response": True,
-            "output": result.content,
+            "output": output,
+            "suggestions": suggestions,
             "plan": None,
         }
+
+    def _extract_example_questions(self, text: str) -> list[str]:
+        """
+        Extract example questions from meta-response text.
+
+        Looks for quoted questions in the text that the user could ask.
+        """
+        import re
+        questions = []
+
+        # Look for questions in quotes (single or double)
+        # Pattern: "question?" or 'question?'
+        quoted_pattern = r'["\u201c]([^"\u201d]+\?)["\u201d]'
+        matches = re.findall(quoted_pattern, text)
+        for match in matches:
+            q = match.strip()
+            if len(q) > 10 and q not in questions:  # Skip very short matches
+                questions.append(q)
+
+        # Limit to 6 suggestions
+        return questions[:6]
+
+    def _strip_example_questions_section(self, text: str) -> str:
+        """
+        Strip the example questions section from meta-response output.
+
+        This avoids duplicating questions that will be shown as suggestions.
+        """
+        import re
+
+        # Find where example questions section starts and remove from there
+        # Match various header formats
+        patterns = [
+            r'\n*Example Questions[^\n]*:\s*\n',  # "Example Questions You Could Ask:"
+            r'\n*#+\s*Example Questions?[^\n]*\n',  # Markdown header
+            r'\n*\*\*Example Questions?[^\n]*\*\*\s*\n',  # Bold header
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                # Remove from the start of the example section to the end
+                return text[:match.start()].rstrip()
+
+        return text.rstrip()
 
     def _synthesize_answer(self, problem: str, step_outputs: str) -> str:
         """
@@ -1185,7 +1508,13 @@ Extract facts like:
 Only extract concrete, specific values. Skip vague or uncertain statements.
 
 Format each fact as:
-FACT_NAME: value
+FACT_NAME: value | brief description
+---
+
+Example:
+total_revenue: 2400000 | Sum of all order amounts in the period
+customer_count: 150 | Number of unique customers who made purchases
+growth_rate: 0.15 | Year-over-year revenue growth percentage
 ---
 
 If no concrete facts to extract, respond with: NO_FACTS"""
@@ -1210,7 +1539,16 @@ If no concrete facts to extract, respond with: NO_FACTS"""
                 if ":" in line and not line.startswith("FACT"):
                     parts = line.split(":", 1)
                     fact_name = parts[0].strip().lower().replace(" ", "_")
-                    value_str = parts[1].strip()
+                    value_part = parts[1].strip()
+
+                    # Parse value and optional description (format: "value | description")
+                    description = None
+                    if "|" in value_part:
+                        value_str, description = value_part.split("|", 1)
+                        value_str = value_str.strip()
+                        description = description.strip()
+                    else:
+                        value_str = value_part
 
                     # Try to parse as number
                     try:
@@ -1224,11 +1562,13 @@ If no concrete facts to extract, respond with: NO_FACTS"""
                     except ValueError:
                         value = value_str
 
-                    # Add to fact resolver with source indicating it came from analysis
+                    # Add to fact resolver - source is DATABASE since derived from query results
                     fact = self.fact_resolver.add_user_fact(
                         fact_name=fact_name,
                         value=value,
                         reasoning=f"Derived from analysis of: {problem}",
+                        source=FactSource.DATABASE,
+                        description=description,
                     )
                     extracted_facts.append(fact)
 
@@ -1412,7 +1752,12 @@ Please create a revised plan that addresses this feedback."""
         # Determine execution mode
         mode_selection = suggest_mode(problem)
 
-        # Generate plan with approval loop
+        # Branch based on execution mode
+        if mode_selection.mode == ExecutionMode.AUDITABLE:
+            # Use fact-based derivation planning for auditable mode
+            return self._solve_auditable(problem, mode_selection)
+
+        # Generate plan with approval loop (EXPLORATORY mode)
         current_problem = problem
         replan_attempt = 0
 
@@ -1449,6 +1794,14 @@ Please create a revised plan that addresses this feedback."""
                         "plan": self.plan,
                         "reason": approval.reason,
                         "message": "Plan was rejected by user.",
+                    }
+
+                elif approval.decision == PlanApproval.COMMAND:
+                    # User entered a slash command - pass back to REPL
+                    return {
+                        "success": False,
+                        "command": approval.command,
+                        "message": "Slash command entered during approval.",
                     }
 
                 elif approval.decision == PlanApproval.SUGGEST:
@@ -1667,6 +2020,9 @@ Please create a revised plan that addresses this feedback."""
         if self.datastore:
             self.datastore.set_session_meta("status", "completed")
 
+        # Auto-compact if context is too large
+        self._auto_compact_if_needed()
+
         return {
             "success": True,
             "plan": self.plan,
@@ -1825,6 +2181,9 @@ NEW_REQUEST: <the new request, or NONE>
         If there are unresolved facts, the system will first try to extract
         facts from the user's message.
 
+        Automatically detects if the question suggests auditable mode (verify,
+        validate, etc.) and uses the fact resolver for formal verification.
+
         Args:
             question: The follow-up question
             auto_classify: If True, classify intent and handle accordingly
@@ -1837,6 +2196,12 @@ NEW_REQUEST: <the new request, or NONE>
 
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
+
+        # Check if this follow-up suggests auditable mode
+        mode_selection = suggest_mode(question)
+        if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
+            # Use fact resolver for verification questions
+            return self._follow_up_auditable(question, mode_selection)
 
         # Check for unresolved facts and try to extract facts from user message
         unresolved = self.fact_resolver.get_unresolved_facts()
@@ -1907,6 +2272,79 @@ Follow-up question: {question}
                 "is_followup": True,
             }
         ))
+
+        # Request approval if required (same as solve())
+        if self.session_config.require_approval:
+            mode_selection = suggest_mode(question)
+            approval = self._request_approval(question, planner_response, mode_selection)
+
+            if approval.decision == PlanApproval.REJECT:
+                return {
+                    "success": False,
+                    "rejected": True,
+                    "plan": follow_up_plan,
+                    "reason": approval.reason,
+                    "message": "Follow-up plan was rejected by user.",
+                }
+
+            elif approval.decision == PlanApproval.COMMAND:
+                # User entered a slash command - pass back to REPL
+                return {
+                    "success": False,
+                    "command": approval.command,
+                    "message": "Slash command entered during approval.",
+                }
+
+            elif approval.decision == PlanApproval.SUGGEST:
+                # For follow-ups, replan with feedback
+                context_prompt_with_feedback = f"""{context_prompt}
+
+User feedback: {approval.suggestion}
+"""
+                # Emit replanning event
+                self._emit_event(StepEvent(
+                    event_type="replanning",
+                    step_number=0,
+                    data={"feedback": approval.suggestion}
+                ))
+
+                planner_response = self.planner.plan(context_prompt_with_feedback)
+                follow_up_plan = planner_response.plan
+
+                # Renumber steps again
+                for i, step in enumerate(follow_up_plan.steps):
+                    step.number = next_step_number + i
+
+                # Emit updated plan
+                self._emit_event(StepEvent(
+                    event_type="plan_ready",
+                    step_number=0,
+                    data={
+                        "steps": [
+                            {"number": s.number, "goal": s.goal, "depends_on": s.depends_on}
+                            for s in follow_up_plan.steps
+                        ],
+                        "reasoning": planner_response.reasoning,
+                        "is_followup": True,
+                    }
+                ))
+
+                # Request approval again
+                approval = self._request_approval(question, planner_response, mode_selection)
+                if approval.decision == PlanApproval.REJECT:
+                    return {
+                        "success": False,
+                        "rejected": True,
+                        "plan": follow_up_plan,
+                        "reason": approval.reason,
+                        "message": "Follow-up plan was rejected by user.",
+                    }
+                elif approval.decision == PlanApproval.COMMAND:
+                    return {
+                        "success": False,
+                        "command": approval.command,
+                        "message": "Slash command entered during approval.",
+                    }
 
         # Execute each step
         all_results = []
@@ -2005,6 +2443,9 @@ Follow-up question: {question}
             answer=final_answer,
         )
 
+        # Auto-compact if context is too large
+        self._auto_compact_if_needed()
+
         return {
             "success": True,
             "plan": follow_up_plan,
@@ -2015,6 +2456,420 @@ Follow-up question: {question}
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
         }
+
+    def _solve_auditable(self, problem: str, mode_selection) -> dict:
+        """
+        Solve a problem in auditable mode using fact-based derivation.
+
+        Instead of generating a stepwise execution plan, this method:
+        1. Identifies the claim to verify
+        2. Decomposes into required facts
+        3. Shows a fact-based plan for approval
+        4. Resolves facts with provenance tracking
+        5. Generates a derivation trace
+
+        Args:
+            problem: The problem/question to solve
+            mode_selection: The mode selection result with reasoning
+
+        Returns:
+            Dict with derivation trace and verification result
+        """
+        import time
+        start_time = time.time()
+
+        # Emit mode selection event
+        self._emit_event(StepEvent(
+            event_type="mode_switch",
+            step_number=0,
+            data={
+                "mode": "auditable",
+                "reasoning": mode_selection.reasoning,
+                "matched_keywords": mode_selection.matched_keywords,
+            }
+        ))
+
+        # Step 1: Generate fact-based plan (identify required facts)
+        self._emit_event(StepEvent(
+            event_type="planning_start",
+            step_number=0,
+            data={"message": "Identifying required facts for verification..."}
+        ))
+
+        # Get schema context for the planner
+        schema_overview = self.schema_manager.get_overview()
+
+        # Build document list for source attribution
+        doc_list = ""
+        if self.doc_tools and self.config.documents:
+            doc_names = list(self.config.documents.keys())
+            doc_list = "\n\nAvailable reference documents:\n" + "\n".join(
+                f"- {name}: {self.config.documents[name].description or 'reference document'}"
+                for name in doc_names
+            )
+
+        # Build API list for source attribution
+        api_list = ""
+        if self.config.apis:
+            api_list = "\n\nAvailable APIs:\n" + "\n".join(
+                f"- {name} ({api.type}): {api.description or api.url or 'API endpoint'}"
+                for name, api in self.config.apis.items()
+            )
+
+        fact_plan_prompt = f"""Analyze this verification request and identify the specific facts needed.
+
+Problem: {problem}
+
+Available databases:
+{schema_overview}
+{doc_list}
+{api_list}
+
+Identify ALL facts needed to verify this claim. For each fact, specify:
+1. The fact name (short identifier)
+2. Description of what the fact represents
+3. Specific source - use one of these formats:
+   - database:<db_name> (for SQL queries)
+   - document:<doc_name> (for reference documents)
+   - api:<api_name>:<endpoint_uri> (for REST, include full URI with query params, e.g., "GET /api/v1/orders?status=completed")
+   - api:<api_name>:<query_name> (for GraphQL, include query/mutation name, e.g., "query GetOrdersByStatus")
+
+Format as:
+CLAIM: <the claim being verified>
+
+REQUIRED FACTS:
+- <fact_name>: <description> [source: <specific source>]
+- <fact_name>: <description> [source: <specific source>]
+...
+
+DERIVATION LOGIC:
+<How these facts combine to answer the verification question>
+"""
+
+        result = self.router.execute(
+            task_type=TaskType.INTENT_CLASSIFICATION,
+            system="You analyze verification requests and decompose them into required facts.",
+            user_message=fact_plan_prompt,
+            max_tokens=1500,
+        )
+        fact_plan_text = result.content
+
+        # Parse the fact plan
+        claim = ""
+        required_facts = []
+        derivation_logic = ""
+
+        lines = fact_plan_text.split("\n")
+        current_section = None
+        for line in lines:
+            line = line.strip()
+            if line.startswith("CLAIM:"):
+                claim = line.split("CLAIM:", 1)[1].strip()
+            elif line.startswith("REQUIRED FACTS:"):
+                current_section = "facts"
+            elif line.startswith("DERIVATION LOGIC:"):
+                current_section = "derivation"
+            elif current_section == "facts" and line.startswith("- "):
+                fact_part = line[2:].strip()
+                if ":" in fact_part:
+                    fact_name, rest = fact_part.split(":", 1)
+                    required_facts.append({
+                        "name": fact_name.strip(),
+                        "description": rest.strip(),
+                    })
+            elif current_section == "derivation" and line:
+                derivation_logic += line + "\n"
+
+        # Emit planning complete with fact-based plan
+        self._emit_event(StepEvent(
+            event_type="planning_complete",
+            step_number=0,
+            data={"steps": len(required_facts)}
+        ))
+
+        # Build approval request data
+        fact_steps = [
+            {"number": i+1, "goal": f"Resolve: {f['name']} - {f['description']}", "depends_on": []}
+            for i, f in enumerate(required_facts)
+        ]
+
+        # Emit plan_ready event with fact-based plan format
+        self._emit_event(StepEvent(
+            event_type="plan_ready",
+            step_number=0,
+            data={
+                "steps": fact_steps,
+                "reasoning": f"Claim: {claim}\n\nDerivation: {derivation_logic.strip()}",
+                "mode": "auditable",
+            }
+        ))
+
+        # Request approval if required
+        if self.session_config.require_approval:
+            # Create a pseudo planner response for approval
+            from constat.execution.planner import PlannerResponse, Plan, PlanStep
+            pseudo_steps = [
+                PlanStep(number=i+1, goal=f"Resolve: {f['name']} - {f['description']}")
+                for i, f in enumerate(required_facts)
+            ]
+            pseudo_plan = Plan(steps=pseudo_steps)
+            pseudo_response = PlannerResponse(
+                plan=pseudo_plan,
+                reasoning=f"Claim: {claim}\n\nDerivation: {derivation_logic.strip()}"
+            )
+
+            approval = self._request_approval(problem, pseudo_response, mode_selection)
+
+            if approval.decision == PlanApproval.REJECT:
+                self.datastore.set_session_meta("status", "rejected")
+                return {
+                    "success": False,
+                    "rejected": True,
+                    "reason": approval.reason,
+                    "message": "Verification plan was rejected by user.",
+                }
+
+            elif approval.decision == PlanApproval.COMMAND:
+                # User entered a slash command - pass back to REPL
+                return {
+                    "success": False,
+                    "command": approval.command,
+                    "message": "Slash command entered during approval.",
+                }
+
+            elif approval.decision == PlanApproval.SUGGEST:
+                # Replan with feedback - for now, just include feedback in context
+                problem = f"{problem}\n\nUser guidance: {approval.suggestion}"
+
+        # Step 2: Resolve facts using the fact resolver
+        self._emit_event(StepEvent(
+            event_type="verifying",
+            step_number=0,
+            data={"message": f"Verifying: {claim or problem}"}
+        ))
+
+        # Build context for fact resolver
+        context = f"""Verification request: {problem}
+
+Claim to verify: {claim}
+
+Available data sources:
+{schema_overview}
+"""
+
+        try:
+            # Use fact resolver to verify
+            verify_result = self.fact_resolver.resolve_question(context)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Format output
+            answer = verify_result.get("answer", "")
+            confidence = verify_result.get("confidence", 0.0)
+            derivation_trace = verify_result.get("derivation", "")
+            sources = verify_result.get("sources", [])
+
+            # Build final output
+            output_parts = [
+                f"**Verification Result** (confidence: {confidence:.0%})",
+                "",
+                answer,
+            ]
+
+            if derivation_trace:
+                output_parts.extend([
+                    "",
+                    derivation_trace,
+                ])
+
+            final_output = "\n".join(output_parts)
+
+            self._emit_event(StepEvent(
+                event_type="verification_complete",
+                step_number=0,
+                data={
+                    "answer": answer,
+                    "confidence": confidence,
+                    "has_derivation": bool(derivation_trace),
+                }
+            ))
+
+            # Record in history
+            self.history.record_query(
+                session_id=self.session_id,
+                question=problem,
+                success=True,
+                attempts=1,
+                duration_ms=duration_ms,
+                answer=final_output,
+            )
+
+            return {
+                "success": True,
+                "mode": "auditable",
+                "output": final_output,
+                "final_answer": answer,
+                "confidence": confidence,
+                "derivation": derivation_trace,
+                "sources": sources,
+                "suggestions": [
+                    "Show me the supporting data for this verification",
+                    "What assumptions were made in this analysis?",
+                ],
+                "datastore_tables": self.datastore.list_tables() if self.datastore else [],
+            }
+
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self._emit_event(StepEvent(
+                event_type="verification_error",
+                step_number=0,
+                data={"error": str(e)}
+            ))
+
+            return {
+                "success": False,
+                "mode": "auditable",
+                "error": str(e),
+                "output": f"Verification failed: {e}",
+            }
+
+    def _follow_up_auditable(self, question: str, mode_selection) -> dict:
+        """
+        Handle a follow-up question in auditable mode using the fact resolver.
+
+        This is called when the follow-up question suggests verification/validation
+        (e.g., "verify", "validate", "prove", "check").
+
+        Args:
+            question: The verification question
+            mode_selection: The mode selection result with reasoning
+
+        Returns:
+            Dict with verification result and derivation trace
+        """
+        import time
+        start_time = time.time()
+
+        # Emit event indicating mode switch
+        self._emit_event(StepEvent(
+            event_type="mode_switch",
+            step_number=0,
+            data={
+                "mode": "auditable",
+                "reasoning": mode_selection.reasoning,
+                "matched_keywords": mode_selection.matched_keywords,
+            }
+        ))
+
+        # Get context from previous work for the fact resolver
+        existing_tables = self.datastore.list_tables() if self.datastore else []
+        scratchpad_context = self.datastore.get_scratchpad_as_markdown() if self.datastore else ""
+
+        # Prepare context for fact resolver
+        context = f"""Previous analysis results:
+
+{scratchpad_context}
+
+Available tables: {', '.join(t['name'] for t in existing_tables) if existing_tables else '(none)'}
+
+Verification request: {question}
+"""
+
+        # Use fact resolver to verify the claim
+        self._emit_event(StepEvent(
+            event_type="verifying",
+            step_number=0,
+            data={"message": f"Verifying: {question}"}
+        ))
+
+        try:
+            # Resolve the question as a fact with full derivation
+            result = self.fact_resolver.resolve_question(context)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Format the derivation trace
+            derivation_trace = result.get("derivation", "")
+            answer = result.get("answer", "")
+            confidence = result.get("confidence", 0.0)
+            sources = result.get("sources", [])
+
+            # Build verification output
+            output_parts = [
+                f"**Verification Result** (confidence: {confidence:.0%})",
+                "",
+                answer,
+            ]
+
+            if derivation_trace:
+                output_parts.extend([
+                    "",
+                    "**Derivation Trace:**",
+                    derivation_trace,
+                ])
+
+            if sources:
+                output_parts.extend([
+                    "",
+                    "**Sources:**",
+                ])
+                for src in sources:
+                    output_parts.append(f"- {src.get('type', 'unknown')}: {src.get('description', '')}")
+
+            final_output = "\n".join(output_parts)
+
+            self._emit_event(StepEvent(
+                event_type="verification_complete",
+                step_number=0,
+                data={
+                    "answer": answer,
+                    "confidence": confidence,
+                    "has_derivation": bool(derivation_trace),
+                }
+            ))
+
+            # Record in history
+            self.history.record_query(
+                session_id=self.session_id,
+                question=question,
+                success=True,
+                attempts=1,
+                duration_ms=duration_ms,
+                answer=final_output,
+            )
+
+            return {
+                "success": True,
+                "mode": "auditable",
+                "output": final_output,
+                "final_answer": answer,
+                "confidence": confidence,
+                "derivation": derivation_trace,
+                "sources": sources,
+                "suggestions": [
+                    "Show me the supporting data for this verification",
+                    "What assumptions were made in this analysis?",
+                ],
+                "datastore_tables": existing_tables,
+            }
+
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self._emit_event(StepEvent(
+                event_type="verification_error",
+                step_number=0,
+                data={"error": str(e)}
+            ))
+
+            return {
+                "success": False,
+                "mode": "auditable",
+                "error": str(e),
+                "output": f"Verification failed: {e}",
+            }
 
     def replay(self, problem: str) -> dict:
         """
@@ -2207,6 +3062,46 @@ Follow-up question: {question}
             clear_old_state=clear_old_state,
             keep_recent_steps=keep_recent_steps,
         )
+
+    def _auto_compact_if_needed(self) -> Optional[CompactionResult]:
+        """
+        Automatically compact context if it exceeds critical threshold.
+
+        This is called after step execution to prevent context from growing
+        too large for the LLM context window.
+
+        Returns:
+            CompactionResult if compaction was performed, None otherwise
+        """
+        if not self.datastore:
+            return None
+
+        stats = self.get_context_stats()
+        if not stats or not stats.is_critical:
+            return None
+
+        # Context is critical - auto-compact
+        self._emit_event(StepEvent(
+            event_type="progress",
+            step_number=0,
+            data={"message": f"Auto-compacting context ({stats.total_tokens:,} tokens)..."}
+        ))
+
+        result = self.compact_context(
+            summarize_scratchpad=True,
+            sample_tables=True,
+            clear_old_state=False,  # Conservative - don't clear state
+            keep_recent_steps=5,    # Keep more steps for auto-compact
+        )
+
+        if result:
+            self._emit_event(StepEvent(
+                event_type="progress",
+                step_number=0,
+                data={"message": f"Context compacted: {result.tokens_before:,} → {result.tokens_after:,} tokens"}
+            ))
+
+        return result
 
     def reset_context(self) -> Optional[CompactionResult]:
         """

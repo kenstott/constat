@@ -85,9 +85,13 @@ class FeedbackDisplay:
         # Animated display state
         self._start_time: Optional[float] = None
         self._output_lines: list[str] = []  # Output buffer for streaming above plan
-        self._max_output_lines: int = 15  # Max lines to show above plan
-        self._current_step_output: str = ""  # Current step's streaming output
+        self._max_output_lines: int = 12  # Max lines to show above plan
+        self._completed_outputs: list[tuple[int, str]] = []  # (step_num, output) for completed steps
         self._active_step_goal: str = ""  # Goal of currently executing step
+
+        # Background animation thread
+        self._animation_thread: Optional[threading.Thread] = None
+        self._animation_running: bool = False
 
     def start(self) -> None:
         """Start the live display."""
@@ -103,16 +107,53 @@ class FeedbackDisplay:
         self._live = Live(
             self._display_wrapper,
             console=self.console,
-            refresh_per_second=10,  # Faster for smoother animation
+            refresh_per_second=8,  # Balanced refresh rate
             transient=False,
+            vertical_overflow="visible",
         )
         self._live.start()
 
     def stop(self) -> None:
         """Stop the live display."""
+        self._stop_animation_thread()
         if self._live:
             self._live.stop()
             self._live = None
+
+    def _start_animation_thread(self) -> None:
+        """Start background thread for smooth spinner animation."""
+        if self._animation_thread and self._animation_thread.is_alive():
+            return  # Already running
+
+        self._animation_running = True
+        self._animation_thread = threading.Thread(
+            target=self._animation_loop,
+            daemon=True,
+            name="FeedbackAnimation"
+        )
+        self._animation_thread.start()
+
+    def _stop_animation_thread(self) -> None:
+        """Stop the background animation thread."""
+        self._animation_running = False
+        if self._animation_thread:
+            self._animation_thread.join(timeout=0.5)
+            self._animation_thread = None
+
+    def _animation_loop(self) -> None:
+        """Background loop that advances spinner and triggers refresh."""
+        while self._animation_running:
+            with self._lock:
+                # Advance spinner frame
+                self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+                # Trigger Live refresh if active
+                if self._live:
+                    try:
+                        self._live.refresh()
+                    except Exception:
+                        pass  # Ignore refresh errors during shutdown
+            # ~10 FPS for smooth animation
+            time.sleep(0.1)
 
     def start_spinner(self, message: str) -> None:
         """Start an animated spinner with a message."""
@@ -176,8 +217,7 @@ class FeedbackDisplay:
         """Build a renderable showing all steps' current status."""
         renderables = []
 
-        # Advance spinner frame for animation
-        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+        # Use current spinner frame (advanced by background thread)
         spinner_char = SPINNER_FRAMES[self._spinner_frame]
 
         for step in self.plan_steps:
@@ -237,21 +277,30 @@ class FeedbackDisplay:
         │  ☑ Step 4: Completed 2.3s               │
         └─────────────────────────────────────────┘
         """
-        # Advance spinner frame
-        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+        # Use current spinner frame (advanced by background thread)
         spinner_char = SPINNER_FRAMES[self._spinner_frame]
 
-        # Build output section (top)
+        # Build output section (top) - show completed step outputs
         output_parts = []
 
-        # Show current step's streaming output
-        if self._current_step_output:
-            # Truncate to max lines
-            lines = self._current_step_output.split('\n')
-            if len(lines) > self._max_output_lines:
-                lines = lines[-self._max_output_lines:]
-            output_text = '\n'.join(lines)
-            output_parts.append(Text(output_text, style="dim"))
+        if self._completed_outputs:
+            # Collect all output lines with step prefixes
+            all_lines = []
+            for step_num, output in self._completed_outputs:
+                output_lines = output.split('\n')
+                # Add step header for each output
+                all_lines.append(f"[cyan]Step {step_num}:[/cyan]")
+                for line in output_lines[:3]:  # Max 3 lines per step
+                    all_lines.append(f"  {line}")
+                if len(output_lines) > 3:
+                    all_lines.append(f"  [dim]... ({len(output_lines) - 3} more lines)[/dim]")
+
+            # Truncate total to max lines
+            if len(all_lines) > self._max_output_lines:
+                all_lines = all_lines[-self._max_output_lines:]
+
+            for line in all_lines:
+                output_parts.append(Text.from_markup(line))
 
         # Build plan section (bottom) - todo-list style
         plan_parts = []
@@ -311,7 +360,8 @@ class FeedbackDisplay:
         """Update the live display with current step states."""
         if self._live and self._use_live_display:
             with self._lock:
-                self._live.update(self._build_animated_display())
+                # Force immediate refresh for smoother updates
+                self._live.refresh()
 
     def _get_step(self, step_number: int) -> Optional[StepDisplay]:
         """Get a step by number."""
@@ -329,15 +379,16 @@ class FeedbackDisplay:
         self._execution_started = False
         self._start_time = None
         self._output_lines = []
-        self._current_step_output = ""
+        self._completed_outputs = []
         self._active_step_goal = ""
         self.stop()
 
     def set_problem(self, problem: str) -> None:
         """Set the problem being solved."""
         self.problem = problem
+        self.console.print()  # Blank line before header
         self.console.print(Rule("[bold blue]CONSTAT[/bold blue]", align="left"))
-        self.console.print()  # Just a blank line before plan
+        self.console.print()  # Blank line before plan
 
     def show_plan(self, steps: list[dict], is_followup: bool = False) -> None:
         """Display the execution plan.
@@ -394,10 +445,11 @@ class FeedbackDisplay:
         self.console.print(Rule("[bold cyan]EXECUTING[/bold cyan]", align="left"))
         self._execution_started = True
         self._start_time = time.time()  # Start timing
-        self._current_step_output = ""  # Clear output buffer
+        self._completed_outputs = []  # Clear completed outputs buffer
         self._active_step_goal = ""
         if self._use_live_display:
             self.start()
+            self._start_animation_thread()  # Start background animation
             self._update_live()
 
     def show_mode_selection(self, mode: ExecutionMode, reasoning: str) -> None:
@@ -433,43 +485,35 @@ class FeedbackDisplay:
             self.console.print("[bold]Reasoning:[/bold]")
             self.console.print(Panel(request.reasoning, border_style="dim"))
 
-        # Prompt for approval
-        self.console.print(Rule("[bold]Approval Required[/bold]", align="left"))
-        self.console.print(
-            "[bold green][Y][/bold green]es - Execute this plan\n"
-            "[bold red][N][/bold red]o  - Cancel and do not execute\n"
-            "[bold yellow][S][/bold yellow]uggest - Provide feedback to improve the plan"
-        )
+        # Prompt for approval - allow direct steering input
         self.console.print()
+        self.console.print("[dim]Enter to execute, 'n' to cancel, or type changes to steer the plan[/dim]")
 
         while True:
-            choice = Prompt.ask(
-                "Execute this plan?",
-                choices=["y", "n", "s", "yes", "no", "suggest"],
-                default="y",
-            ).lower()
+            try:
+                response = self.console.input("[bold]> [/bold]").strip()
+            except (EOFError, KeyboardInterrupt):
+                self.console.print("\n[red]Cancelled.[/red]")
+                return PlanApprovalResponse.reject("User cancelled")
 
-            if choice in ("y", "yes"):
-                self.console.print("[green]Plan approved. Executing...[/green]\n")
+            # Empty or affirmative = approve
+            if not response or response.lower() in ("y", "yes", "ok", "go", "execute"):
+                self.console.print("[green]Executing...[/green]\n")
                 return PlanApprovalResponse.approve()
 
-            elif choice in ("n", "no"):
-                reason = Prompt.ask(
-                    "[dim]Reason for rejection (optional)[/dim]",
-                    default="",
-                )
+            # Reject
+            elif response.lower() in ("n", "no", "cancel", "stop"):
                 self.console.print("[red]Plan rejected.[/red]\n")
-                return PlanApprovalResponse.reject(reason if reason else None)
+                return PlanApprovalResponse.reject()
 
-            elif choice in ("s", "suggest"):
-                suggestion = Prompt.ask(
-                    "[yellow]What changes would you suggest?[/yellow]"
-                )
-                if suggestion.strip():
-                    self.console.print("[yellow]Incorporating feedback and replanning...[/yellow]\n")
-                    return PlanApprovalResponse.suggest(suggestion)
-                else:
-                    self.console.print("[dim]No suggestion provided. Please try again.[/dim]")
+            # Slash commands - pass through to REPL for global handling
+            elif response.startswith("/"):
+                return PlanApprovalResponse.pass_command(response)
+
+            # Anything else is steering feedback
+            else:
+                self.console.print("[yellow]Incorporating feedback and replanning...[/yellow]\n")
+                return PlanApprovalResponse.suggest(response)
 
     def request_clarification(self, request: ClarificationRequest) -> ClarificationResponse:
         """
@@ -547,36 +591,38 @@ class FeedbackDisplay:
 
             self.console.print()
 
-        # Check if any answers were provided
-        has_answers = any(a for a in answers.values())
-
-        # Check if user wants to skip all clarifications
-        if has_answers:
-            skip = Prompt.ask(
-                "[dim]Press Enter to continue, or 's' to skip all[/dim]",
-                default="",
-                show_default=False
-            ).lower()
-        else:
-            skip = Prompt.ask(
-                "[dim]No answers provided. Press Enter to proceed anyway, or 's' to cancel[/dim]",
-                default="",
-                show_default=False
-            ).lower()
-
-        if skip == "s":
-            self.console.print("[dim]Skipping, proceeding with original question...[/dim]")
-            return ClarificationResponse(answers={}, skip=True)
-
         # Filter out empty answers
         non_empty_answers = {q: a for q, a in answers.items() if a}
+        all_answered = len(non_empty_answers) == len(request.questions)
 
-        if non_empty_answers:
+        if all_answered:
+            # All questions answered - proceed automatically
             self.console.print("[green]Proceeding with clarified question...[/green]\n")
+            return ClarificationResponse(answers=non_empty_answers, skip=False)
+        elif non_empty_answers:
+            # Some questions skipped - ask if they want to continue
+            skip = Prompt.ask(
+                "[yellow]Some clarifications skipped.[/yellow] [dim]Press Enter to continue anyway, or 's' to cancel[/dim]",
+                default="",
+                show_default=False
+            ).lower()
+            if skip == "s":
+                self.console.print("[dim]Cancelled.[/dim]")
+                return ClarificationResponse(answers={}, skip=True)
+            self.console.print("[dim]Proceeding with partial clarification...[/dim]\n")
+            return ClarificationResponse(answers=non_empty_answers, skip=False)
         else:
+            # No answers provided at all
+            skip = Prompt.ask(
+                "[yellow]No clarifications provided.[/yellow] [dim]Press Enter to try anyway, or 's' to cancel[/dim]",
+                default="",
+                show_default=False
+            ).lower()
+            if skip == "s":
+                self.console.print("[dim]Cancelled.[/dim]")
+                return ClarificationResponse(answers={}, skip=True)
             self.console.print("[dim]Proceeding with original question...[/dim]\n")
-
-        return ClarificationResponse(answers=non_empty_answers, skip=False)
+            return ClarificationResponse(answers={}, skip=False)
 
     def show_replan_notice(self, attempt: int, max_attempts: int) -> None:
         """Show notice that we're replanning based on feedback."""
@@ -588,7 +634,6 @@ class FeedbackDisplay:
         """Mark a step as starting."""
         self.current_step = step_number
         self._active_step_goal = goal  # For animated header
-        self._current_step_output = ""  # Clear previous step output
 
         # Update step status
         step = self._get_step(step_number)
@@ -643,9 +688,10 @@ class FeedbackDisplay:
         tables_created: Optional[list[str]] = None,
     ) -> None:
         """Mark a step as completed successfully."""
-        # Update streaming output for animated display
+        # Accumulate completed step output for animated display
+        display_num = self._step_number_map.get(step_number, step_number)
         if output:
-            self._current_step_output = output
+            self._completed_outputs.append((display_num, output.strip()))
 
         # Build output summary
         output_summary = ""
@@ -770,8 +816,10 @@ class FeedbackDisplay:
         """Show final output."""
         # Stop any running spinner first
         self.stop_spinner()
-        self.console.print("\n[bold]Output:[/bold]")
-        self.console.print(Markdown(_left_align_markdown(output)))
+        # Clean up output: strip trailing whitespace and collapse multiple blank lines
+        cleaned = re.sub(r'\n{3,}', '\n\n', output.rstrip())
+        self.console.print()
+        self.console.print(Markdown(_left_align_markdown(cleaned)), end="")
 
     def show_final_answer(self, answer: str) -> None:
         """Show the final synthesized answer prominently."""
@@ -785,6 +833,8 @@ class FeedbackDisplay:
         if not suggestions:
             return
 
+        # One blank line before suggestions (note: Markdown output may already end with a blank line)
+        self.console.print()
         if len(suggestions) == 1:
             self.console.print(f"[dim]Suggestion:[/dim] [cyan]{suggestions[0]}[/cyan]")
         else:
@@ -806,6 +856,20 @@ class FeedbackDisplay:
         if source == "response":
             fact_strs = [f"[cyan]{f['name']}[/cyan]={f['value']}" for f in facts[:5]]
             self.console.print(f"[dim]Remembered: {', '.join(fact_strs)}[/dim]")
+
+    def show_mode_switch(self, mode: str, keywords: list[str]) -> None:
+        """Show that execution mode has been switched.
+
+        Args:
+            mode: The new execution mode
+            keywords: Keywords that triggered the switch
+        """
+        keyword_str = ", ".join(keywords) if keywords else "context"
+        self.console.print()
+        self.console.print(
+            f"[bold cyan]Switching to {mode.upper()} mode[/bold cyan] "
+            f"[dim](triggered by: {keyword_str})[/dim]"
+        )
 
 
 class SessionFeedbackHandler:
@@ -908,3 +972,24 @@ class SessionFeedbackHandler:
             source = data.get("source", "unknown")
             if facts:
                 self.display.show_facts_extracted(facts, source)
+
+        elif event_type == "mode_switch":
+            mode = data.get("mode", "")
+            keywords = data.get("matched_keywords", [])
+            self.display.show_mode_switch(mode, keywords)
+
+        elif event_type == "verifying":
+            message = data.get("message", "Verifying...")
+            self.display.start_spinner(message)
+
+        elif event_type == "verification_complete":
+            self.display.stop_spinner()
+            confidence = data.get("confidence", 0.0)
+            self.display.console.print(
+                f"[green]Verification complete[/green] [dim](confidence: {confidence:.0%})[/dim]"
+            )
+
+        elif event_type == "verification_error":
+            self.display.stop_spinner()
+            error = data.get("error", "Unknown error")
+            self.display.console.print(f"[red]Verification failed:[/red] {error}")

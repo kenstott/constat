@@ -1,7 +1,5 @@
 """Interactive REPL for refinement loop."""
 
-import os
-import sys
 from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
@@ -13,126 +11,49 @@ from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 
 
-def _is_compatible_terminal() -> bool:
-    """Check if terminal is compatible with prompt_toolkit.
+# Commands available in the REPL
+REPL_COMMANDS = [
+    "/help", "/h", "/tables", "/show", "/query", "/code", "/state",
+    "/update", "/refresh", "/reset", "/user", "/save", "/share", "/sharewith",
+    "/plans", "/replay", "/history", "/resume",
+    "/context", "/compact", "/facts", "/remember", "/forget",
+    "/verbose", "/quit", "/exit", "/q"
+]
 
-    Set CONSTAT_FORCE_PROMPT_TOOLKIT=1 to force enable in any terminal.
-    Set CONSTAT_NO_PROMPT_TOOLKIT=1 to force disable.
-    """
-    # Allow explicit override
-    if os.environ.get("CONSTAT_FORCE_PROMPT_TOOLKIT") == "1":
-        return True
-    if os.environ.get("CONSTAT_NO_PROMPT_TOOLKIT") == "1":
-        return False
+# Use readline for tab completion (works reliably across terminals)
+import os
+import sys
 
-    # Check if we have a TTY (required for interactive features)
-    if not sys.stdin.isatty():
-        return False
-
-    # Modern JetBrains terminals support prompt_toolkit reasonably well
-    # Only disable for very old versions or known problematic terminals
-    return True
-
-
+READLINE_AVAILABLE = False
 try:
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
-    from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.completion import Completer, Completion
-    from prompt_toolkit.key_binding import KeyBindings
-    PROMPT_TOOLKIT_AVAILABLE = _is_compatible_terminal()
-
-    class ConstatSuggester(AutoSuggest):
-        """Auto-suggester for commands and queries in the REPL."""
-
-        COMMANDS = [
-            "/help", "/tables", "/show", "/query", "/code", "/state",
-            "/update", "/reset", "/user", "/save", "/share", "/sharewith",
-            "/plans", "/replay", "/history", "/resume",
-            "/context", "/compact", "/facts", "/remember", "/forget",
-            "/verbose", "/quit"
-        ]
-
-        def __init__(self, context_provider=None):
-            self._context_provider = context_provider
-
-        def get_suggestion(self, buffer, document):
-            text = document.text
-            if not text or len(text) > 50:
-                return None
-
-            # Command completions
-            if text.startswith("/"):
-                text_lower = text.lower()
-                for cmd in self.COMMANDS:
-                    if cmd.startswith(text_lower) and cmd != text_lower:
-                        return Suggestion(cmd[len(text):])
-
-            return None
-
-    class ConstatCompleter(Completer):
-        """Tab-completion for commands in the REPL."""
-
-        COMMANDS = [
-            ("/help", "Show help message"),
-            ("/tables", "List available tables"),
-            ("/show ", "Show contents of a saved table"),
-            ("/query ", "Run SQL against saved tables"),
-            ("/code", "Show code from last step"),
-            ("/state", "Show current state variables"),
-            ("/update", "Update a state variable"),
-            ("/reset", "Clear session state"),
-            ("/user ", "Set user ID"),
-            ("/save ", "Save current plan"),
-            ("/share ", "Share plan globally"),
-            ("/sharewith ", "Share plan with user"),
-            ("/plans", "List saved plans"),
-            ("/replay ", "Replay a saved plan"),
-            ("/history", "Show session history"),
-            ("/resume ", "Resume a previous session"),
-            ("/context", "Show context usage stats"),
-            ("/compact", "Compact session context"),
-            ("/facts", "Show extracted facts"),
-            ("/remember ", "Remember a fact"),
-            ("/forget ", "Forget a fact"),
-            ("/verbose", "Toggle verbose mode"),
-            ("/quit", "Exit the REPL"),
-        ]
-
-        def get_completions(self, document, complete_event):
-            text = document.text_before_cursor
-            if text.startswith("/"):
-                text_lower = text.lower()
-                for cmd, description in self.COMMANDS:
-                    if cmd.lower().startswith(text_lower) and cmd.lower() != text_lower:
-                        yield Completion(
-                            cmd,
-                            start_position=-len(text),
-                            display_meta=description,
-                        )
-
-    def _create_key_bindings():
-        """Create key bindings for the REPL."""
-        bindings = KeyBindings()
-
-        @bindings.add('tab')
-        def _(event):
-            """Tab accepts auto-suggestion if available, otherwise inserts tab."""
-            buff = event.app.current_buffer
-            suggestion = buff.suggestion
-            if suggestion:
-                buff.insert_text(suggestion.text)
-            else:
-                # Try to complete, if no completer or completion, insert tab
-                if buff.completer:
-                    buff.start_completion(select_first=True)
-                else:
-                    buff.insert_text('    ')
-
-        return bindings
-
+    import gnureadline as readline
+    READLINE_AVAILABLE = True
 except ImportError:
-    PROMPT_TOOLKIT_AVAILABLE = False
+    try:
+        import readline
+        READLINE_AVAILABLE = True
+    except ImportError:
+        pass
+
+
+class REPLCompleter:
+    """Tab completer for readline fallback."""
+
+    def __init__(self, commands: list[str]):
+        self.commands = commands
+        self.matches: list[str] = []
+
+    def complete(self, text: str, state: int) -> Optional[str]:
+        if state == 0:
+            if text.startswith("/"):
+                self.matches = [cmd for cmd in self.commands
+                               if cmd.lower().startswith(text.lower())]
+            else:
+                self.matches = []
+
+        if state < len(self.matches):
+            return self.matches[state]
+        return None
 
 
 class InteractiveREPL:
@@ -156,20 +77,14 @@ class InteractiveREPL:
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
 
-        # Setup prompt_toolkit with command suggestions and Tab completion
-        self._prompt_session = None
-        if PROMPT_TOOLKIT_AVAILABLE:
-            try:
-                self._prompt_session = PromptSession(
-                    history=InMemoryHistory(),
-                    auto_suggest=ConstatSuggester(),
-                    completer=ConstatCompleter(),
-                    key_bindings=_create_key_bindings(),
-                    complete_while_typing=False,
-                )
-            except Exception:
-                # Fall back to basic input if prompt_toolkit fails
-                self._prompt_session = None
+        # Setup readline for tab completion
+        self._readline_available = False
+        if READLINE_AVAILABLE:
+            self._readline_available = True
+            self._completer = REPLCompleter(REPL_COMMANDS)
+            readline.set_completer(self._completer.complete)
+            readline.parse_and_bind("tab: complete")
+            readline.set_completer_delims(' \t\n')
 
     def _get_suggestion_context(self) -> dict:
         """Provide context for typeahead suggestions."""
@@ -208,11 +123,8 @@ class InteractiveREPL:
         return session
 
     def _get_input(self) -> str:
-        """Get user input."""
-        if self._prompt_session:
-            return self._prompt_session.prompt("> ").strip()
-        else:
-            return input("> ").strip()
+        """Get user input with tab completion (readline)."""
+        return input("> ").strip()
 
     def _show_help(self) -> None:
         """Show available commands."""
@@ -226,7 +138,7 @@ class InteractiveREPL:
             ("/query <sql>", "Run SQL query on datastore"),
             ("/code [step]", "Show generated code (all or specific step)"),
             ("/state", "Show session state"),
-            ("/update", "Refresh database metadata cache"),
+            ("/update, /refresh", "Refresh metadata and rebuild preload cache"),
             ("/reset", "Clear session state and start fresh"),
             ("/user [name]", "Show or set current user"),
             ("/save <name>", "Save current plan for replay"),
@@ -283,15 +195,38 @@ class InteractiveREPL:
                 self.console.print(f"  - {t['name']} ({t['row_count']} rows)")
 
     def _refresh_metadata(self) -> None:
-        """Refresh database metadata and clear caches."""
+        """Refresh database metadata, documents, and preload cache."""
         if not self.session:
             self.console.print("[yellow]No active session.[/yellow]")
             return
-        self.display.start_spinner("Refreshing metadata...")
+        self.display.start_spinner("Refreshing metadata and documents...")
         try:
-            self.session.refresh_metadata()
+            stats = self.session.refresh_metadata()
             self.display.stop_spinner()
-            self.console.print("[green]Metadata refreshed.[/green]")
+
+            # Build status message
+            parts = ["[green]Refreshed:[/green]"]
+
+            # Preloaded tables
+            if stats.get("preloaded_tables", 0) > 0:
+                parts.append(f"{stats['preloaded_tables']} tables preloaded")
+
+            # Document changes
+            doc_stats = stats.get("documents", {})
+            if doc_stats:
+                doc_parts = []
+                if doc_stats.get("added", 0) > 0:
+                    doc_parts.append(f"{doc_stats['added']} added")
+                if doc_stats.get("updated", 0) > 0:
+                    doc_parts.append(f"{doc_stats['updated']} updated")
+                if doc_stats.get("removed", 0) > 0:
+                    doc_parts.append(f"{doc_stats['removed']} removed")
+                if doc_stats.get("unchanged", 0) > 0:
+                    doc_parts.append(f"{doc_stats['unchanged']} unchanged")
+                if doc_parts:
+                    parts.append(f"docs: {', '.join(doc_parts)}")
+
+            self.console.print(" ".join(parts) if len(parts) > 1 else "[green]Metadata refreshed.[/green]")
         except Exception as e:
             self.display.stop_spinner()
             self.console.print(f"[red]Error refreshing metadata:[/red] {e}")
@@ -394,10 +329,34 @@ class InteractiveREPL:
         table = Table(title="Cached Facts", show_header=True, box=None)
         table.add_column("Name", style="cyan")
         table.add_column("Value", style="green")
+        table.add_column("Description", style="dim")
         table.add_column("Source", style="dim")
 
         for name, fact in facts.items():
-            table.add_row(name, str(fact.value), fact.source.value)
+            desc = fact.description or ""
+            # Build specific source info with source_name
+            if fact.source_name:
+                # Use specific source name (database name, document path, API name)
+                source_info = f"{fact.source.value}:{fact.source_name}"
+                # Add endpoint detail for APIs
+                if fact.api_endpoint:
+                    source_info += f" ({fact.api_endpoint})"
+            elif fact.api_endpoint:
+                # Show API endpoint
+                endpoint_preview = fact.api_endpoint[:50] + "..." if len(fact.api_endpoint) > 50 else fact.api_endpoint
+                source_info = f"api: {endpoint_preview}"
+            elif fact.query:
+                # Show SQL query preview
+                query_preview = fact.query[:50] + "..." if len(fact.query) > 50 else fact.query
+                source_info = f"SQL: {query_preview}"
+            elif fact.rule_name:
+                source_info = f"rule: {fact.rule_name}"
+            elif fact.reasoning and fact.source.value == "user_provided":
+                # Show first 40 chars of reasoning for user facts
+                source_info = fact.reasoning[:40] + "..." if len(fact.reasoning) > 40 else fact.reasoning
+            else:
+                source_info = fact.source.value
+            table.add_row(name, str(fact.value), desc, source_info)
 
         self.console.print(table)
 
@@ -645,8 +604,80 @@ class InteractiveREPL:
                 "Use [cyan]/context[/cyan] to view details."
             )
 
-    def _solve(self, problem: str) -> None:
-        """Solve a problem."""
+    def _handle_command(self, cmd_input: str) -> bool:
+        """Handle a slash command.
+
+        Args:
+            cmd_input: The full command string (e.g., "/tables" or "/show orders")
+
+        Returns:
+            True if the REPL should exit, False otherwise.
+        """
+        parts = cmd_input.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+
+        if cmd in ("/quit", "/exit", "/q"):
+            self.console.print("[dim]Goodbye![/dim]")
+            return True
+        elif cmd in ("/help", "/h"):
+            self._show_help()
+        elif cmd == "/tables":
+            self._show_tables()
+        elif cmd == "/show" and arg:
+            self._run_query(f"SELECT * FROM {arg}")
+        elif cmd == "/query" and arg:
+            self._run_query(arg)
+        elif cmd == "/code":
+            self._show_code(arg)
+        elif cmd == "/state":
+            self._show_state()
+        elif cmd in ("/update", "/refresh"):
+            self._refresh_metadata()
+        elif cmd == "/reset":
+            self._reset_session()
+        elif cmd == "/user":
+            self._show_user(arg)
+        elif cmd == "/save" and arg:
+            self._save_plan(arg, shared=False)
+        elif cmd == "/share" and arg:
+            self._save_plan(arg, shared=True)
+        elif cmd == "/sharewith" and arg:
+            self._share_with(arg)
+        elif cmd == "/plans":
+            self._list_plans()
+        elif cmd == "/replay" and arg:
+            self._replay_plan(arg)
+        elif cmd == "/history":
+            self._show_history()
+        elif cmd == "/resume" and arg:
+            self._resume_session(arg)
+        elif cmd == "/context":
+            self._show_context()
+        elif cmd == "/compact":
+            self._compact_context()
+        elif cmd == "/facts":
+            self._show_facts()
+        elif cmd == "/remember" and arg:
+            self._remember_fact(arg)
+        elif cmd == "/forget" and arg:
+            self._forget_fact(arg)
+        elif cmd == "/verbose":
+            self.verbose = not self.verbose
+            self.display.verbose = self.verbose
+            self.console.print(f"Verbose: [bold]{'on' if self.verbose else 'off'}[/bold]")
+        else:
+            self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
+
+        return False
+
+    def _solve(self, problem: str) -> Optional[str]:
+        """Solve a problem.
+
+        Returns:
+            Optional command string if user entered a slash command during approval,
+            None otherwise.
+        """
         if not self.session:
             self.session = self._create_session()
 
@@ -660,8 +691,16 @@ class InteractiveREPL:
             else:
                 result = self.session.solve(problem)
 
+            # Check if a slash command was entered during approval
+            if result.get("command"):
+                return result["command"]
+
             if result.get("meta_response"):
                 self.display.show_output(result.get("output", ""))
+                # Store and show suggestions from meta responses (example questions)
+                self.suggestions = result.get("suggestions", [])
+                if self.suggestions:
+                    self.display.show_suggestions(self.suggestions)
                 self.display.show_summary(success=True, total_steps=0, duration_ms=0)
             elif result.get("success"):
                 tables = result.get("datastore_tables", [])
@@ -684,22 +723,51 @@ class InteractiveREPL:
         except Exception as e:
             self.console.print(f"[red]Error:[/red] {e}")
 
+        return None
+
     def run(self, initial_problem: Optional[str] = None) -> None:
         """Run the interactive REPL."""
+        try:
+            self._run_repl_body(initial_problem)
+        finally:
+            if self.session and self.session.datastore:
+                self.session.datastore.close()
+
+    def _run_repl_body(self, initial_problem: Optional[str] = None) -> None:
+        """Run the REPL body (banner + loop)."""
         # Welcome banner
-        if self._prompt_session:
-            hints = "[dim]Tab[/dim] accepts suggestion | [dim]Ctrl+C[/dim] interrupts"
+        if self._readline_available:
+            hints = "[dim]Tab[/dim] completes commands | [dim]Ctrl+C[/dim] interrupts"
         else:
-            hints = "[dim]Ctrl+C[/dim] interrupts | [yellow]Typeahead disabled (no TTY)[/yellow]"
+            hints = "[dim]Ctrl+C[/dim] interrupts"
         self.console.print(Panel.fit(
             "[bold blue]Constat[/bold blue] - Multi-Step AI Reasoning Engine\n"
             f"[dim]Type /help for commands, or ask a question.[/dim]\n{hints}",
             border_style="blue",
         ))
 
+        # Show starter suggestions if no initial problem
+        if not initial_problem:
+            self.console.print()
+            self.console.print("[dim]Try asking:[/dim]")
+            starter_suggestions = [
+                "What data is available?",
+                "What can you help me with?",
+                "How do you reason about problems?",
+                "What makes Constat different?",
+            ]
+            for i, s in enumerate(starter_suggestions, 1):
+                self.console.print(f"  [dim]{i}.[/dim] [cyan]{s}[/cyan]")
+            self.suggestions = starter_suggestions
+            self.console.print()
+
         if initial_problem:
             self._solve(initial_problem)
 
+        self._loop_body()
+
+    def _loop_body(self) -> None:
+        """The actual REPL loop body."""
         while True:
             try:
                 user_input = self._get_input()
@@ -712,10 +780,10 @@ class InteractiveREPL:
                 lower_input = user_input.lower().strip()
 
                 if self.suggestions:
-                    # Number shortcuts: "1", "2", "3"
-                    if lower_input in ("1", "2", "3"):
+                    # Number shortcuts: "1", "2", "3", etc.
+                    if lower_input.isdigit():
                         idx = int(lower_input) - 1
-                        if idx < len(self.suggestions):
+                        if 0 <= idx < len(self.suggestions):
                             suggestion_to_run = self.suggestions[idx]
                         else:
                             self.console.print(f"[yellow]No suggestion #{lower_input}[/yellow]")
@@ -725,73 +793,21 @@ class InteractiveREPL:
                         suggestion_to_run = self.suggestions[0]
 
                 if suggestion_to_run:
-                    self._solve(suggestion_to_run)
-                elif user_input.startswith("/"):
-                    parts = user_input.split(maxsplit=1)
-                    cmd = parts[0].lower()
-                    arg = parts[1] if len(parts) > 1 else ""
-
-                    if cmd in ("/quit", "/exit", "/q"):
-                        self.console.print("[dim]Goodbye![/dim]")
+                    passthrough_cmd = self._solve(suggestion_to_run)
+                    if passthrough_cmd and self._handle_command(passthrough_cmd):
                         break
-                    elif cmd in ("/help", "/h"):
-                        self._show_help()
-                    elif cmd == "/tables":
-                        self._show_tables()
-                    elif cmd == "/show" and arg:
-                        self._run_query(f"SELECT * FROM {arg}")
-                    elif cmd == "/query" and arg:
-                        self._run_query(arg)
-                    elif cmd == "/code":
-                        self._show_code(arg)
-                    elif cmd == "/state":
-                        self._show_state()
-                    elif cmd == "/update":
-                        self._refresh_metadata()
-                    elif cmd == "/reset":
-                        self._reset_session()
-                    elif cmd == "/user":
-                        self._show_user(arg)
-                    elif cmd == "/save" and arg:
-                        self._save_plan(arg, shared=False)
-                    elif cmd == "/share" and arg:
-                        self._save_plan(arg, shared=True)
-                    elif cmd == "/sharewith" and arg:
-                        self._share_with(arg)
-                    elif cmd == "/plans":
-                        self._list_plans()
-                    elif cmd == "/replay" and arg:
-                        self._replay_plan(arg)
-                    elif cmd == "/history":
-                        self._show_history()
-                    elif cmd == "/resume" and arg:
-                        self._resume_session(arg)
-                    elif cmd == "/context":
-                        self._show_context()
-                    elif cmd == "/compact":
-                        self._compact_context()
-                    elif cmd == "/facts":
-                        self._show_facts()
-                    elif cmd == "/remember" and arg:
-                        self._remember_fact(arg)
-                    elif cmd == "/forget" and arg:
-                        self._forget_fact(arg)
-                    elif cmd == "/verbose":
-                        self.verbose = not self.verbose
-                        self.display.verbose = self.verbose
-                        self.console.print(f"Verbose: [bold]{'on' if self.verbose else 'off'}[/bold]")
-                    else:
-                        self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
+                elif user_input.startswith("/"):
+                    if self._handle_command(user_input):
+                        break
                 else:
-                    self._solve(user_input)
+                    passthrough_cmd = self._solve(user_input)
+                    if passthrough_cmd and self._handle_command(passthrough_cmd):
+                        break
 
             except KeyboardInterrupt:
                 self.console.print("\n[dim]Type /quit to exit.[/dim]")
             except EOFError:
                 break
-
-        if self.session and self.session.datastore:
-            self.session.datastore.close()
 
 
 def run_repl(config_path: str, verbose: bool = False, problem: Optional[str] = None) -> None:
