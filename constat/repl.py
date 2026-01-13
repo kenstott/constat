@@ -156,22 +156,20 @@ class InteractiveREPL:
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
 
-        # Setup prompt_toolkit with schema-aware suggestions and Tab completion
+        # Setup prompt_toolkit with command suggestions and Tab completion
         self._prompt_session = None
         if PROMPT_TOOLKIT_AVAILABLE:
-            from prompt_toolkit.styles import Style
-            # Define style for auto-suggestions (grey/dim text)
-            style = Style.from_dict({
-                'auto-suggestion': 'fg:ansibrightblack',  # Grey text for suggestions
-            })
-            self._prompt_session = PromptSession(
-                history=InMemoryHistory(),
-                auto_suggest=ConstatSuggester(context_provider=self._get_suggestion_context),
-                completer=ConstatCompleter(),
-                key_bindings=_create_key_bindings(),
-                complete_while_typing=False,  # Only complete on Tab
-                style=style,
-            )
+            try:
+                self._prompt_session = PromptSession(
+                    history=InMemoryHistory(),
+                    auto_suggest=ConstatSuggester(),
+                    completer=ConstatCompleter(),
+                    key_bindings=_create_key_bindings(),
+                    complete_while_typing=False,
+                )
+            except Exception:
+                # Fall back to basic input if prompt_toolkit fails
+                self._prompt_session = None
 
     def _get_suggestion_context(self) -> dict:
         """Provide context for typeahead suggestions."""
