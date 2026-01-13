@@ -1,5 +1,7 @@
 """Interactive REPL for refinement loop."""
 
+import os
+import sys
 from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
@@ -9,11 +11,26 @@ from constat.session import Session, SessionConfig
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 
+
+def _is_compatible_terminal() -> bool:
+    """Check if terminal is compatible with prompt_toolkit."""
+    # IntelliJ/PyCharm terminal sets TERMINAL_EMULATOR
+    if "TERMINAL_EMULATOR" in os.environ:
+        return False
+    # JetBrains IDEs also set this
+    if os.environ.get("TERM_PROGRAM") == "JetBrains-JediTerm":
+        return False
+    # Check if we have a real TTY
+    if not sys.stdin.isatty():
+        return False
+    return True
+
+
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
     from prompt_toolkit.history import InMemoryHistory
-    PROMPT_TOOLKIT_AVAILABLE = True
+    PROMPT_TOOLKIT_AVAILABLE = _is_compatible_terminal()
 except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
 
