@@ -24,13 +24,20 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 5. Classified by task type for optimal model routing
 
 ## Available Resources
-You have access to these tools to explore the database schema:
+You have access to these tools to explore schemas:
+
+**Database tools:**
 - get_table_schema(table): Get detailed column info for a specific table
 - find_relevant_tables(query): Semantic search for tables relevant to your query
+
+**API tools (if APIs configured):**
+- get_api_schema_overview(api_name): Get list of available queries/endpoints for an API
+- get_api_query_schema(api_name, query_name): Get detailed schema for a specific query including arguments, filters, and return types
 
 ## Code Environment Capabilities
 Generated code has access to:
 - Database connections (`db_<name>`) for SQL queries
+- API clients (`api_<name>`) for REST/GraphQL endpoints
 - `pd` (pandas) and `np` (numpy) for data manipulation
 - `store` for persisting data between steps
 - `llm_ask(question)` to get general knowledge from LLM (e.g., "How many planets are in our solar system?")
@@ -38,14 +45,31 @@ Generated code has access to:
 
 Use `llm_ask()` when the question requires general knowledge not in the databases.
 Use `send_email()` when the user wants to email results to someone.
+Use `api_<name>` to fetch data from configured APIs (GraphQL or REST endpoints).
+
+## Data Source Selection
+1. **Check configured sources first**: Look at Available Databases, APIs, and Documents below
+2. **Match request to available sources**: Use whichever configured source has the relevant data
+3. **Fall back to LLM knowledge**: If no configured source has the data, use `llm_ask()` for world knowledge
+4. **Use documents for policies/rules**: Search documents when questions involve thresholds, limits, or business rules
+
+## Data Enrichment Pattern
+When a data source provides partial information, use `llm_ask()` to fill gaps:
+1. Fetch primary data from the best available source (database, API, or document)
+2. **Filter/sample FIRST** - if user wants random/top-N/filtered results, do that before enrichment
+3. Use `llm_ask()` to enrich only the filtered rows with missing data
+Example: For "10 random items with extra field X":
+- Fetch data from source → sample 10 → THEN add field X via `llm_ask()` for just those 10
+- This is much cheaper than enriching all rows then sampling
 
 ## Planning Guidelines
 1. Start by understanding what data is needed
-2. **PREFER SQL JOINs over separate queries** - when data from multiple related tables is needed, use a single SQL query with JOINs rather than multiple separate queries followed by Python merges. This is more efficient and reduces steps.
-3. Each step should produce data that later steps can use
-4. Keep steps atomic - one main action per step
-5. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
-6. End with a step that synthesizes the final answer
+2. **Review available sources below** and pick the best match for the data needed
+3. **PREFER SQL JOINs over separate queries** - when data from multiple related tables is needed, use a single SQL query with JOINs rather than multiple separate queries followed by Python merges
+4. Each step should produce data that later steps can use
+5. Keep steps atomic - one main action per step
+6. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
+7. End with a step that synthesizes the final answer
 
 ## JOIN Optimization Guidelines
 - **Use JOINs when:** Tables share foreign key relationships (e.g., orders.customer_id -> customers.id), you need data from 2-3 related tables, the relationships are straightforward
@@ -103,7 +127,8 @@ PLANNER_PROMPT_TEMPLATE = """{system_prompt}
 
 ## Available Databases
 {schema_overview}
-
+{api_overview}
+{doc_overview}
 ## Domain Context
 {domain_context}"""
 
@@ -139,18 +164,51 @@ class Planner:
 
     def _build_system_prompt(self) -> str:
         """Build the full system prompt for planning."""
+        # Build API overview if configured
+        api_overview = ""
+        if self.config.apis:
+            api_lines = ["\n## Available APIs"]
+            for name, api_config in self.config.apis.items():
+                api_type = api_config.type.upper()
+                desc = api_config.description or f"{api_type} endpoint"
+                url = api_config.url or ""
+                api_lines.append(f"- **{name}** ({api_type}): {desc}")
+                if url:
+                    api_lines.append(f"  URL: {url}")
+            api_overview = "\n".join(api_lines)
+
+        # Build document overview if configured
+        doc_overview = ""
+        if self.config.documents:
+            doc_lines = ["\n## Reference Documents"]
+            for name, doc_config in self.config.documents.items():
+                desc = doc_config.description or doc_config.type
+                doc_lines.append(f"- **{name}**: {desc}")
+            doc_overview = "\n".join(doc_lines)
+
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             schema_overview=self.schema_manager.get_overview(),
+            api_overview=api_overview,
+            doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
         )
 
     def _get_tool_handlers(self) -> dict:
         """Get tool handler functions for schema exploration."""
-        return {
+        handlers = {
             "get_table_schema": lambda table: self.schema_manager.get_table_schema(table),
             "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(query, top_k),
         }
+
+        # Add API schema handlers if APIs are configured
+        if self.config.apis:
+            from constat.catalog.api_executor import APIExecutor
+            api_executor = APIExecutor(self.config)
+            handlers["get_api_schema_overview"] = lambda api_name: api_executor.get_schema_overview(api_name)
+            handlers["get_api_query_schema"] = lambda api_name, query_name: api_executor.get_query_schema(api_name, query_name)
+
+        return handlers
 
     def _parse_plan_response(self, response: str) -> dict:
         """Parse the LLM's plan response as JSON."""
@@ -213,6 +271,46 @@ class Planner:
                 }
             }
         ]
+
+        # Add API schema tools if APIs are configured
+        if self.config.apis:
+            api_names = list(self.config.apis.keys())
+            schema_tools.extend([
+                {
+                    "name": "get_api_schema_overview",
+                    "description": f"Get overview of an API's available queries/endpoints including names and descriptions. Available APIs: {api_names}",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "api_name": {
+                                "type": "string",
+                                "description": "Name of the API to introspect",
+                                "enum": api_names
+                            }
+                        },
+                        "required": ["api_name"]
+                    }
+                },
+                {
+                    "name": "get_api_query_schema",
+                    "description": "Get detailed schema for a specific API query/endpoint, including arguments, filters, and return types.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "api_name": {
+                                "type": "string",
+                                "description": "Name of the API",
+                                "enum": api_names
+                            },
+                            "query_name": {
+                                "type": "string",
+                                "description": "Name of the query or endpoint (e.g., 'countries', 'GET /users')"
+                            }
+                        },
+                        "required": ["api_name", "query_name"]
+                    }
+                }
+            ])
 
         system_prompt = self._build_system_prompt()
 

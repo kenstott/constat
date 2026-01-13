@@ -443,10 +443,35 @@ class Session:
 
     def _get_tool_handlers(self) -> dict:
         """Get schema tool handlers with caching."""
-        return {
+        handlers = {
             "get_table_schema": self._cached_get_table_schema,
             "find_relevant_tables": self._cached_find_relevant_tables,
         }
+
+        # Add API schema tools if APIs are configured
+        if self.config.apis:
+            handlers["get_api_schema_overview"] = self._get_api_schema_overview
+            handlers["get_api_query_schema"] = self._get_api_query_schema
+
+        return handlers
+
+    def _get_api_schema_overview(self, api_name: str) -> dict:
+        """Get overview of an API's schema (queries/endpoints)."""
+        cache_key = f"api_overview:{api_name}"
+        if cache_key not in self._tool_cache:
+            from constat.catalog.api_executor import APIExecutor
+            executor = APIExecutor(self.config)
+            self._tool_cache[cache_key] = executor.get_schema_overview(api_name)
+        return self._tool_cache[cache_key]
+
+    def _get_api_query_schema(self, api_name: str, query_name: str) -> dict:
+        """Get detailed schema for a specific API query/endpoint."""
+        cache_key = f"api_query:{api_name}:{query_name}"
+        if cache_key not in self._tool_cache:
+            from constat.catalog.api_executor import APIExecutor
+            executor = APIExecutor(self.config)
+            self._tool_cache[cache_key] = executor.get_query_schema(api_name, query_name)
+        return self._tool_cache[cache_key]
 
     def refresh_metadata(self, force_full: bool = False) -> dict:
         """Refresh all metadata: schema, documents, and preload cache.
@@ -490,7 +515,7 @@ class Session:
 
     def _get_schema_tools(self) -> list[dict]:
         """Get schema tool definitions."""
-        return [
+        tools = [
             {
                 "name": "get_table_schema",
                 "description": "Get detailed schema for a specific table.",
@@ -515,6 +540,48 @@ class Session:
                 }
             }
         ]
+
+        # Add API schema tools if APIs are configured
+        if self.config.apis:
+            api_names = list(self.config.apis.keys())
+            tools.extend([
+                {
+                    "name": "get_api_schema_overview",
+                    "description": f"Get overview of an API's available queries/endpoints. Available APIs: {api_names}",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "api_name": {
+                                "type": "string",
+                                "description": "Name of the API to introspect",
+                                "enum": api_names
+                            }
+                        },
+                        "required": ["api_name"]
+                    }
+                },
+                {
+                    "name": "get_api_query_schema",
+                    "description": "Get detailed schema for a specific API query/endpoint, including arguments, filters, and return types.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "api_name": {
+                                "type": "string",
+                                "description": "Name of the API",
+                                "enum": api_names
+                            },
+                            "query_name": {
+                                "type": "string",
+                                "description": "Name of the query or endpoint (e.g., 'countries', 'GET /users')"
+                            }
+                        },
+                        "required": ["api_name", "query_name"]
+                    }
+                }
+            ])
+
+        return tools
 
     def _create_llm_ask_helper(self) -> callable:
         """Create a helper function for step code to query LLM for general knowledge."""
@@ -2592,17 +2659,18 @@ Identify ALL facts needed to verify this claim. For each fact, specify:
    - document:<doc_name> (for reference documents)
    - api:<api_name>:<endpoint_uri> (for REST, include full URI with query params, e.g., "GET /api/v1/orders?status=completed")
    - api:<api_name>:<query_name> (for GraphQL, include query/mutation name, e.g., "query GetOrdersByStatus")
+4. Dependencies - list any other facts this depends on (leave empty if independent)
 
 Format as:
 CLAIM: <the claim being verified>
 
 REQUIRED FACTS:
-- <fact_name>: <description> [source: <specific source>]
-- <fact_name>: <description> [source: <specific source>]
+- <fact_name>: <description> [source: <specific source>] [depends_on: <comma-separated fact names or NONE>]
+- <fact_name>: <description> [source: <specific source>] [depends_on: <comma-separated fact names or NONE>]
 ...
 
 DERIVATION LOGIC:
-<How these facts combine to answer the verification question>
+<How these facts combine to answer the verification question - be specific about the calculation or comparison>
 """
 
         result = self.router.execute(
@@ -2632,25 +2700,66 @@ DERIVATION LOGIC:
                 fact_part = line[2:].strip()
                 if ":" in fact_part:
                     fact_name, rest = fact_part.split(":", 1)
+                    # Parse dependencies from the description
+                    # Format: description [source: xxx] [depends_on: a, b, c]
+                    depends_on = []
+                    description = rest.strip()
+                    if "[depends_on:" in description.lower():
+                        import re
+                        dep_match = re.search(r'\[depends_on:\s*([^\]]+)\]', description, re.IGNORECASE)
+                        if dep_match:
+                            dep_str = dep_match.group(1).strip()
+                            if dep_str.upper() != "NONE" and dep_str:
+                                depends_on = [d.strip() for d in dep_str.split(",") if d.strip()]
+                            # Remove the depends_on from description
+                            description = re.sub(r'\s*\[depends_on:\s*[^\]]+\]', '', description, flags=re.IGNORECASE).strip()
                     required_facts.append({
                         "name": fact_name.strip(),
-                        "description": rest.strip(),
+                        "description": description,
+                        "depends_on": depends_on,
                     })
             elif current_section == "derivation" and line:
                 derivation_logic += line + "\n"
+
+        # Build fact name to step number mapping for dependency resolution
+        fact_name_to_step = {f["name"]: i + 1 for i, f in enumerate(required_facts)}
 
         # Emit planning complete with fact-based plan
         self._emit_event(StepEvent(
             event_type="planning_complete",
             step_number=0,
-            data={"steps": len(required_facts)}
+            data={"steps": len(required_facts) + 1}  # +1 for derivation step
         ))
 
-        # Build approval request data
-        fact_steps = [
-            {"number": i+1, "goal": f"Resolve: {f['name']} - {f['description']}", "depends_on": []}
-            for i, f in enumerate(required_facts)
-        ]
+        # Build approval request data with resolved dependencies
+        fact_steps = []
+        for i, f in enumerate(required_facts):
+            # Resolve fact name dependencies to step numbers
+            step_deps = []
+            for dep_name in f.get("depends_on", []):
+                if dep_name in fact_name_to_step:
+                    step_deps.append(fact_name_to_step[dep_name])
+
+            # Build goal with dependency info if present
+            goal = f"Resolve: {f['name']} - {f['description']}"
+            if step_deps:
+                dep_names = [required_facts[d-1]["name"] for d in step_deps]
+                goal += f" (requires: {', '.join(dep_names)})"
+
+            fact_steps.append({
+                "number": i + 1,
+                "goal": goal,
+                "depends_on": step_deps
+            })
+
+        # Add final derivation step that depends on all fact steps
+        all_fact_step_nums = list(range(1, len(required_facts) + 1))
+        derivation_step = {
+            "number": len(required_facts) + 1,
+            "goal": f"Derive: {derivation_logic.strip() or 'Apply derivation logic to combine facts and reach conclusion'}",
+            "depends_on": all_fact_step_nums
+        }
+        fact_steps.append(derivation_step)
 
         # Emit plan_ready event with fact-based plan format
         self._emit_event(StepEvent(
@@ -2665,16 +2774,21 @@ DERIVATION LOGIC:
 
         # Request approval if required
         if self.session_config.require_approval:
-            # Create a pseudo planner response for approval
-            from constat.execution.planner import PlannerResponse, Plan, PlanStep
+            # Create a pseudo planner response for approval using fact_steps which includes
+            # dependencies and the final derivation step
+            from constat.core.models import PlannerResponse, Plan, Step
             pseudo_steps = [
-                PlanStep(number=i+1, goal=f"Resolve: {f['name']} - {f['description']}")
-                for i, f in enumerate(required_facts)
+                Step(
+                    number=fs["number"],
+                    goal=fs["goal"],
+                    depends_on=fs["depends_on"]
+                )
+                for fs in fact_steps
             ]
-            pseudo_plan = Plan(steps=pseudo_steps)
+            pseudo_plan = Plan(problem=problem, steps=pseudo_steps)
             pseudo_response = PlannerResponse(
                 plan=pseudo_plan,
-                reasoning=f"Claim: {claim}\n\nDerivation: {derivation_logic.strip()}"
+                reasoning=f"Claim: {claim}"  # Derivation is now in the final step
             )
 
             approval = self._request_approval(problem, pseudo_response, mode_selection)

@@ -535,6 +535,10 @@ class APIConfig(BaseModel):
     api_key: Optional[str] = None  # API key value
     api_key_header: str = "X-API-Key"  # Header name for API key
 
+    # Schema introspection (GraphQL introspection or OpenAPI spec parsing)
+    introspect: bool = True  # Fetch and cache schema at startup
+    _schema_cache: Optional[dict] = None  # Cached schema (internal, not serialized)
+
 
 class ExecutionConfig(BaseModel):
     """Execution settings for generated code."""
@@ -588,6 +592,45 @@ class SkillPathsConfig(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class ContextPreloadConfig(BaseModel):
+    """Configuration for preloading metadata into context.
+
+    Seed patterns are used (once, at setup time) to identify which tables/columns
+    should be cached and loaded into context at session start. This eliminates
+    discovery tool calls for common query patterns.
+
+    The cache is built once and persists until explicitly refreshed with /refresh.
+
+    Example:
+        context_preload:
+          seed_patterns:
+            - "sales"
+            - "customer"
+            - "revenue"
+            - "inventory levels"
+          similarity_threshold: 0.3
+
+    This would preload metadata for tables/columns matching those patterns,
+    so queries about sales, customers, etc. have schema info immediately available.
+    """
+    # Text patterns representing typical queries/domains
+    # Used to match against table names, column names, and descriptions
+    seed_patterns: list[str] = Field(default_factory=list)
+
+    # Minimum similarity score (0-1) for a table to be included
+    # Lower = more tables, higher = stricter matching
+    similarity_threshold: float = 0.3
+
+    # Maximum number of tables to preload (to avoid context overflow)
+    max_tables: int = 50
+
+    # Include column details for matched tables
+    include_columns: bool = True
+
+    # Maximum columns per table to include
+    max_columns_per_table: int = 30
+
+
 class Config(BaseModel):
     """Root configuration model."""
     model_config = {"extra": "ignore"}
@@ -608,6 +651,9 @@ class Config(BaseModel):
 
     # Skill search paths configuration
     skills: SkillPathsConfig = Field(default_factory=SkillPathsConfig)
+
+    # Context preload configuration (seed patterns for metadata caching)
+    context_preload: ContextPreloadConfig = Field(default_factory=ContextPreloadConfig)
 
     databases_description: str = ""  # Global context for all databases
     system_prompt: str = ""

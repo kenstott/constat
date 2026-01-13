@@ -355,6 +355,318 @@ class APIExecutor:
             })
         return result
 
+    def introspect_graphql(self, api_name: str) -> dict[str, Any]:
+        """
+        Introspect a GraphQL API to get its schema.
+
+        Returns a simplified schema with queries, mutations, and their types.
+        """
+        api_config = self._get_api_config(api_name)
+
+        if api_config.type != "graphql":
+            raise APIExecutionError(f"API '{api_name}' is not a GraphQL API")
+
+        # Check cache first
+        if api_config._schema_cache is not None:
+            return api_config._schema_cache
+
+        # Full introspection query
+        introspection_query = """
+        query IntrospectionQuery {
+          __schema {
+            queryType { name }
+            mutationType { name }
+            types {
+              name
+              kind
+              description
+              fields {
+                name
+                description
+                args {
+                  name
+                  description
+                  type {
+                    name
+                    kind
+                    ofType {
+                      name
+                      kind
+                      ofType {
+                        name
+                        kind
+                      }
+                    }
+                  }
+                  defaultValue
+                }
+                type {
+                  name
+                  kind
+                  ofType {
+                    name
+                    kind
+                    ofType {
+                      name
+                      kind
+                    }
+                  }
+                }
+              }
+              inputFields {
+                name
+                description
+                type {
+                  name
+                  kind
+                  ofType {
+                    name
+                    kind
+                  }
+                }
+                defaultValue
+              }
+              enumValues {
+                name
+                description
+              }
+            }
+          }
+        }
+        """
+
+        result = self.execute_graphql(api_name, introspection_query)
+        schema = result.get("__schema", {})
+
+        # Cache the result
+        api_config._schema_cache = schema
+        return schema
+
+    def get_schema_overview(self, api_name: str) -> dict[str, Any]:
+        """
+        Get a high-level overview of an API's schema.
+
+        For GraphQL: Lists queries and mutations with their descriptions.
+        For OpenAPI: Lists endpoints with their methods and descriptions.
+        """
+        api_config = self._get_api_config(api_name)
+
+        if api_config.type == "graphql":
+            schema = self.introspect_graphql(api_name)
+            return self._summarize_graphql_schema(schema)
+        else:
+            spec = self._get_openapi_spec(api_config)
+            return self._summarize_openapi_spec(spec) if spec else {}
+
+    def _summarize_graphql_schema(self, schema: dict) -> dict[str, Any]:
+        """Extract a summary of queries and mutations from GraphQL schema."""
+        result = {"queries": [], "mutations": [], "types": {}}
+
+        query_type_name = schema.get("queryType", {}).get("name", "Query")
+        mutation_type_name = schema.get("mutationType", {}).get("name")
+
+        types = {t["name"]: t for t in schema.get("types", []) if t.get("name")}
+
+        # Get queries
+        if query_type_name and query_type_name in types:
+            query_type = types[query_type_name]
+            for field in query_type.get("fields", []):
+                if not field["name"].startswith("_"):
+                    result["queries"].append({
+                        "name": field["name"],
+                        "description": field.get("description", ""),
+                        "args": [a["name"] for a in field.get("args", [])],
+                        "returns": self._format_type(field.get("type", {})),
+                    })
+
+        # Get mutations
+        if mutation_type_name and mutation_type_name in types:
+            mutation_type = types[mutation_type_name]
+            for field in mutation_type.get("fields", []):
+                if not field["name"].startswith("_"):
+                    result["mutations"].append({
+                        "name": field["name"],
+                        "description": field.get("description", ""),
+                        "args": [a["name"] for a in field.get("args", [])],
+                        "returns": self._format_type(field.get("type", {})),
+                    })
+
+        return result
+
+    def _summarize_openapi_spec(self, spec: dict) -> dict[str, Any]:
+        """Extract a summary of endpoints from OpenAPI spec."""
+        result = {"endpoints": [], "schemas": {}}
+
+        for path, path_item in spec.get("paths", {}).items():
+            for method, operation in path_item.items():
+                if method in ("get", "post", "put", "patch", "delete"):
+                    result["endpoints"].append({
+                        "path": path,
+                        "method": method.upper(),
+                        "operationId": operation.get("operationId", ""),
+                        "summary": operation.get("summary", ""),
+                        "parameters": [
+                            p.get("name") for p in operation.get("parameters", [])
+                        ],
+                    })
+
+        return result
+
+    def get_query_schema(self, api_name: str, query_name: str) -> dict[str, Any]:
+        """
+        Get detailed schema for a specific query/mutation (GraphQL) or endpoint (OpenAPI).
+
+        For GraphQL: Returns arguments with their types, and return type fields.
+        For OpenAPI: Returns parameters with their types, and response schema.
+        """
+        api_config = self._get_api_config(api_name)
+
+        if api_config.type == "graphql":
+            return self._get_graphql_query_detail(api_name, query_name)
+        else:
+            return self._get_openapi_endpoint_detail(api_config, query_name)
+
+    def _get_graphql_query_detail(self, api_name: str, query_name: str) -> dict[str, Any]:
+        """Get detailed schema for a GraphQL query or mutation."""
+        schema = self.introspect_graphql(api_name)
+
+        query_type_name = schema.get("queryType", {}).get("name", "Query")
+        mutation_type_name = schema.get("mutationType", {}).get("name")
+
+        types = {t["name"]: t for t in schema.get("types", []) if t.get("name")}
+
+        # Search in queries first, then mutations
+        for type_name in [query_type_name, mutation_type_name]:
+            if type_name and type_name in types:
+                for field in types[type_name].get("fields", []):
+                    if field["name"] == query_name:
+                        return self._build_query_detail(field, types)
+
+        raise APIExecutionError(f"Query/mutation '{query_name}' not found in schema")
+
+    def _build_query_detail(self, field: dict, types: dict) -> dict[str, Any]:
+        """Build detailed query info including argument types and return fields."""
+        result = {
+            "name": field["name"],
+            "description": field.get("description", ""),
+            "args": [],
+            "returns": self._format_type(field.get("type", {})),
+            "return_fields": [],
+        }
+
+        # Build detailed argument info
+        for arg in field.get("args", []):
+            arg_info = {
+                "name": arg["name"],
+                "description": arg.get("description", ""),
+                "type": self._format_type(arg.get("type", {})),
+                "required": self._is_required(arg.get("type", {})),
+                "default": arg.get("defaultValue"),
+            }
+
+            # If it's an input type, expand its fields
+            type_name = self._get_base_type_name(arg.get("type", {}))
+            if type_name and type_name in types:
+                input_type = types[type_name]
+                if input_type.get("kind") == "INPUT_OBJECT":
+                    arg_info["fields"] = [
+                        {
+                            "name": f["name"],
+                            "type": self._format_type(f.get("type", {})),
+                            "description": f.get("description", ""),
+                        }
+                        for f in input_type.get("inputFields", [])
+                    ]
+
+            result["args"].append(arg_info)
+
+        # Get return type fields
+        return_type_name = self._get_base_type_name(field.get("type", {}))
+        if return_type_name and return_type_name in types:
+            return_type = types[return_type_name]
+            if return_type.get("fields"):
+                result["return_fields"] = [
+                    {
+                        "name": f["name"],
+                        "type": self._format_type(f.get("type", {})),
+                        "description": f.get("description", ""),
+                    }
+                    for f in return_type.get("fields", [])
+                    if not f["name"].startswith("_")
+                ]
+
+        return result
+
+    def _get_openapi_endpoint_detail(self, api_config: APIConfig, operation: str) -> dict[str, Any]:
+        """Get detailed schema for an OpenAPI endpoint."""
+        spec = self._get_openapi_spec(api_config)
+        if not spec:
+            raise APIExecutionError("No OpenAPI spec available")
+
+        # Search by operationId or path
+        for path, path_item in spec.get("paths", {}).items():
+            for method, op in path_item.items():
+                if method in ("get", "post", "put", "patch", "delete"):
+                    if op.get("operationId") == operation or path == operation:
+                        return {
+                            "path": path,
+                            "method": method.upper(),
+                            "operationId": op.get("operationId", ""),
+                            "summary": op.get("summary", ""),
+                            "description": op.get("description", ""),
+                            "parameters": [
+                                {
+                                    "name": p.get("name"),
+                                    "in": p.get("in"),
+                                    "required": p.get("required", False),
+                                    "type": p.get("schema", {}).get("type", "string"),
+                                    "description": p.get("description", ""),
+                                }
+                                for p in op.get("parameters", [])
+                            ],
+                            "requestBody": op.get("requestBody", {}),
+                            "responses": op.get("responses", {}),
+                        }
+
+        raise APIExecutionError(f"Operation '{operation}' not found in OpenAPI spec")
+
+    def _format_type(self, type_info: dict) -> str:
+        """Format a GraphQL type as a string (e.g., '[Country!]!')."""
+        if not type_info:
+            return "unknown"
+
+        kind = type_info.get("kind")
+        name = type_info.get("name")
+        of_type = type_info.get("ofType")
+
+        if kind == "NON_NULL":
+            return f"{self._format_type(of_type)}!"
+        elif kind == "LIST":
+            return f"[{self._format_type(of_type)}]"
+        elif name:
+            return name
+        else:
+            return "unknown"
+
+    def _get_base_type_name(self, type_info: dict) -> Optional[str]:
+        """Get the base type name (unwrapping LIST and NON_NULL)."""
+        if not type_info:
+            return None
+
+        name = type_info.get("name")
+        if name:
+            return name
+
+        of_type = type_info.get("ofType")
+        if of_type:
+            return self._get_base_type_name(of_type)
+
+        return None
+
+    def _is_required(self, type_info: dict) -> bool:
+        """Check if a type is non-nullable (required)."""
+        return type_info.get("kind") == "NON_NULL"
+
     def execute(
         self,
         api_name: str,
