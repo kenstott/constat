@@ -30,6 +30,10 @@ from constat.execution.mode import (
 )
 
 
+# Spinner frames for animation
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
 @dataclass
 class StepDisplay:
     """Display state for a step."""
@@ -70,6 +74,7 @@ class FeedbackDisplay:
         self._use_live_display = True  # Enable in-place updates
         self._spinner_progress: Optional[Progress] = None
         self._spinner_task: Optional[TaskID] = None
+        self._spinner_frame: int = 0  # For step execution animation
 
     def start(self) -> None:
         """Start the live display."""
@@ -135,13 +140,18 @@ class FeedbackDisplay:
         """Build a renderable showing all steps' current status."""
         renderables = []
 
+        # Advance spinner frame for animation
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+        spinner_char = SPINNER_FRAMES[self._spinner_frame]
+
         for step in self.plan_steps:
             # Build status indicator and message
             if step.status == "pending":
                 status_icon = "[dim]○[/dim]"
                 status_text = f"[dim]{step.goal}[/dim]"
             elif step.status in ("running", "generating", "executing"):
-                status_icon = "[yellow]●[/yellow]"
+                # Animated spinner for running steps
+                status_icon = f"[yellow]{spinner_char}[/yellow]"
                 msg = step.status_message or "working..."
                 status_text = f"{step.goal}\n    [yellow]{msg}[/yellow]"
             elif step.status == "completed":

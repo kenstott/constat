@@ -183,6 +183,25 @@ class SchemaManager:
         self._generate_overview()
         self._progress_callback = None
 
+    def refresh(self, progress_callback: Optional[Callable[[str, int, int, str], None]] = None) -> None:
+        """Clear caches and re-introspect all schemas.
+
+        Use this when database schemas have changed and you need fresh metadata.
+        """
+        # Clear all caches
+        self.metadata_cache.clear()
+        self._embeddings = None
+        self._embedding_keys = []
+        self._overview = None
+
+        # Re-initialize (connections are preserved)
+        self._progress_callback = progress_callback
+        self._introspect_all()
+        self._resolve_reverse_references()
+        self._build_vector_index()
+        self._generate_overview()
+        self._progress_callback = None
+
     def _emit_progress(self, stage: str, current: int, total: int, detail: str) -> None:
         """Emit progress update if callback is registered."""
         if self._progress_callback:

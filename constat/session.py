@@ -255,6 +255,9 @@ class Session:
         # Approval callback (set via set_approval_callback)
         self._approval_callback: Optional[ApprovalCallback] = None
 
+        # Tool response cache for schema tools (cleared on refresh)
+        self._tool_cache: dict[str, any] = {}
+
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         """
         Set the callback for plan approval.
@@ -309,12 +312,31 @@ class Session:
             outputs=", ".join(step.expected_outputs) if step.expected_outputs else "(none)",
         )
 
+    def _cached_get_table_schema(self, table: str) -> dict:
+        """Get table schema with caching."""
+        cache_key = f"schema:{table}"
+        if cache_key not in self._tool_cache:
+            self._tool_cache[cache_key] = self.schema_manager.get_table_schema(table)
+        return self._tool_cache[cache_key]
+
+    def _cached_find_relevant_tables(self, query: str, top_k: int = 5) -> list[dict]:
+        """Find relevant tables with caching."""
+        cache_key = f"relevant:{query}:{top_k}"
+        if cache_key not in self._tool_cache:
+            self._tool_cache[cache_key] = self.schema_manager.find_relevant_tables(query, top_k)
+        return self._tool_cache[cache_key]
+
     def _get_tool_handlers(self) -> dict:
-        """Get schema tool handlers."""
+        """Get schema tool handlers with caching."""
         return {
-            "get_table_schema": lambda table: self.schema_manager.get_table_schema(table),
-            "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(query, top_k),
+            "get_table_schema": self._cached_get_table_schema,
+            "find_relevant_tables": self._cached_find_relevant_tables,
         }
+
+    def refresh_metadata(self) -> None:
+        """Refresh schema metadata and clear tool cache."""
+        self._tool_cache.clear()
+        self.schema_manager.refresh()
 
     def _get_schema_tools(self) -> list[dict]:
         """Get schema tool definitions."""

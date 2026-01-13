@@ -122,6 +122,7 @@ class InteractiveREPL:
             ("/tables", "List available tables"),
             ("/query <sql>", "Run SQL query on datastore"),
             ("/state", "Show session state"),
+            ("/update", "Refresh database metadata cache"),
             ("/verbose", "Toggle verbose mode"),
             ("/quit, /q", "Exit"),
         ]
@@ -162,6 +163,20 @@ class InteractiveREPL:
             self.console.print("[bold]Tables:[/bold]")
             for t in state['datastore_tables']:
                 self.console.print(f"  - {t['name']} ({t['row_count']} rows)")
+
+    def _refresh_metadata(self) -> None:
+        """Refresh database metadata and clear caches."""
+        if not self.session:
+            self.console.print("[yellow]No active session.[/yellow]")
+            return
+        self.display.start_spinner("Refreshing metadata...")
+        try:
+            self.session.refresh_metadata()
+            self.display.stop_spinner()
+            self.console.print("[green]Metadata refreshed.[/green]")
+        except Exception as e:
+            self.display.stop_spinner()
+            self.console.print(f"[red]Error refreshing metadata:[/red] {e}")
 
     def _solve(self, problem: str) -> None:
         """Solve a problem."""
@@ -231,6 +246,8 @@ class InteractiveREPL:
                         self._run_query(arg)
                     elif cmd == "/state":
                         self._show_state()
+                    elif cmd == "/update":
+                        self._refresh_metadata()
                     elif cmd == "/verbose":
                         self.verbose = not self.verbose
                         self.display.verbose = self.verbose
