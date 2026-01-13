@@ -84,11 +84,36 @@ Generate Python code to accomplish the current step's goal.
 Your code has access to:
 - Database connections: `db_<name>` for each database (e.g., `db_chinook`, `db_northwind`)
 - `db`: alias for the first database
+- API clients: `api_<name>` for configured APIs (GraphQL and REST)
 - `pd`: pandas (imported as pd)
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask`: a function to query the LLM for general knowledge
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
+
+## API Clients (api_<name>)
+For GraphQL APIs:
+```python
+# Query a GraphQL API
+result = api_countries('''
+    query {
+        countries {
+            name
+            code
+            currency
+        }
+    }
+''')
+# result is a dict with the query response
+countries_df = pd.DataFrame(result['data']['countries'])
+```
+
+For REST APIs:
+```python
+# Call a REST endpoint
+result = api_myservice('GET /users', {'limit': 10})
+# result is the parsed JSON response
+```
 
 ## LLM Knowledge (via llm_ask)
 Use `llm_ask(question)` to get general knowledge not available in databases:
@@ -155,7 +180,7 @@ STEP_PROMPT_TEMPLATE = """{system_prompt}
 
 ## Available Databases
 {schema_overview}
-
+{api_overview}
 ## Domain Context
 {domain_context}
 
@@ -379,9 +404,20 @@ class Session:
         if self._preloaded_context:
             schema_overview = f"{self._preloaded_context}\n\n{schema_overview}"
 
+        # Build API overview if configured
+        api_overview = ""
+        if self.config.apis:
+            api_lines = ["\n## Available APIs"]
+            for name, api_config in self.config.apis.items():
+                api_type = api_config.type.upper()
+                desc = api_config.description or f"{api_type} endpoint"
+                api_lines.append(f"- **api_{name}** ({api_type}): {desc}")
+            api_overview = "\n".join(api_lines)
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
             schema_overview=schema_overview,
+            api_overview=api_overview,
             domain_context=self.config.system_prompt or "No additional context.",
             datastore_tables=datastore_info,
             scratchpad=scratchpad_context,
