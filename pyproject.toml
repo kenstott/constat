@@ -29,13 +29,23 @@ dependencies = [
     "python-docx>=1.0",
     "openpyxl>=3.1",
     "python-pptx>=0.6",
+    # Database backends (SQLite is built-in)
+    "psycopg2-binary>=2.9",
+    "duckdb>=0.9",
+    "duckdb-engine>=0.10",
+    # LLM providers
+    "ollama>=0.1",
+    # GraphQL API server
+    "strawberry-graphql>=0.200",
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+    # Graph visualization (requires system graphviz)
+    "graphviz>=0.20",
 ]
 
 [project.optional-dependencies]
-# SQL Database backends (SQLite is built-in)
-postgresql = ["psycopg2-binary>=2.9"]
+# Additional SQL Database backends
 mysql = ["pymysql>=1.0"]
-duckdb = ["duckdb>=0.9", "duckdb-engine>=0.10"]
 
 # NoSQL connectors
 mongodb = ["pymongo>=4.0"]
@@ -45,15 +55,8 @@ dynamodb = ["boto3>=1.28"]
 cosmosdb = ["azure-cosmos>=4.5"]
 firestore = ["google-cloud-firestore>=2.11"]
 
-# Additional LLM providers (Anthropic is built-in)
+# Additional LLM providers
 openai = ["openai>=1.0"]
-ollama = ["ollama>=0.1"]
-
-# GraphQL API server
-graphql = ["strawberry-graphql>=0.200", "fastapi>=0.100", "uvicorn>=0.23"]
-
-# Graph visualization (requires system graphviz)
-graphviz = ["graphviz>=0.20"]
 
 # Development
 dev = [
@@ -67,10 +70,9 @@ dev = [
 
 # All optional dependencies
 all = [
-    "constat[postgresql,mysql,duckdb]",
+    "constat[mysql]",
     "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore]",
-    "constat[openai,ollama]",
-    "constat[graphql,graphviz]",
+    "constat[openai]",
 ]
 
 [project.scripts]
