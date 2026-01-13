@@ -55,6 +55,14 @@ class QuestionType:
     META_QUESTION = "meta_question"  # About system capabilities
 
 
+@dataclass
+class QuestionAnalysis:
+    """Combined result of question analysis (facts + classification)."""
+    question_type: str  # QuestionType value
+    extracted_facts: list = field(default_factory=list)  # List of Fact objects
+    cached_fact_answer: Optional[str] = None  # Answer from cached facts if applicable
+
+
 # System prompt for step code generation
 STEP_SYSTEM_PROMPT = """You are a data analyst executing a step in a multi-step plan.
 
@@ -172,11 +180,18 @@ ApprovalCallback = Callable[[PlanApprovalRequest], PlanApprovalResponse]
 
 
 @dataclass
+class ClarificationQuestion:
+    """A single clarification question with optional suggested answers."""
+    text: str  # The question text
+    suggestions: list[str] = field(default_factory=list)  # Suggested answers
+
+
+@dataclass
 class ClarificationRequest:
     """Request for clarification before planning."""
     original_question: str
     ambiguity_reason: str  # Why clarification is needed
-    questions: list[str]  # Specific questions to ask
+    questions: list[ClarificationQuestion]  # Questions with suggestions
 
 
 @dataclass
@@ -692,6 +707,137 @@ class Session:
         # and then compute/transform/act on the results
         return QuestionType.DATA_ANALYSIS
 
+    def _analyze_question(self, problem: str) -> QuestionAnalysis:
+        """
+        Analyze a question in a single LLM call: extract facts, classify type, check cached facts.
+
+        This combines what were previously separate operations into one call for efficiency:
+        1. Extract embedded facts (e.g., "my role as CFO" -> user_role: CFO)
+        2. Classify question type (meta-question vs data analysis)
+        3. Check if question can be answered from cached facts
+
+        Returns:
+            QuestionAnalysis with question_type, extracted_facts, and optional cached_fact_answer
+        """
+        # First, use fast regex-based classification for obvious meta-questions
+        # This avoids an LLM call for simple cases like "what can you do?"
+        if is_meta_question(problem):
+            # Even for meta-questions, we still want to extract facts
+            # e.g., "what questions can I ask as CFO" contains user_role=CFO
+            pass  # Fall through to combined LLM analysis
+
+        # Get cached facts for context
+        cached_facts = self.fact_resolver.get_all_facts()
+        fact_context = ""
+        if cached_facts:
+            fact_context = "Known facts:\n" + "\n".join(
+                f"- {name}: {fact.value}" for name, fact in cached_facts.items()
+            )
+
+        prompt = f"""Analyze this user question in one pass:
+
+Question: "{problem}"
+
+{fact_context}
+
+Perform these analyses:
+
+1. FACT EXTRACTION: Extract any facts from the question:
+   - User context/persona (e.g., "my role as CFO" -> user_role: CFO)
+   - Numeric values (e.g., "threshold of $50,000" -> revenue_threshold: 50000)
+   - Preferences/constraints (e.g., "for the US region" -> target_region: US)
+   - Time periods (e.g., "last quarter" -> time_period: last_quarter)
+
+2. QUESTION CLASSIFICATION: Classify the question type:
+   - META_QUESTION: About system capabilities ("what can you do?", "what data is available?")
+   - DATA_ANALYSIS: Requires database queries or computation
+
+3. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
+
+Respond in this exact format:
+---
+FACTS:
+(list each as FACT_NAME: VALUE, or NONE if no facts)
+---
+QUESTION_TYPE: META_QUESTION | DATA_ANALYSIS
+---
+CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
+---
+
+Examples:
+- "what questions can I ask as CFO" -> FACTS: user_role: CFO, QUESTION_TYPE: META_QUESTION
+- "show me revenue by region" -> FACTS: NONE, QUESTION_TYPE: DATA_ANALYSIS
+- "what is my role" (with known user_role=CFO) -> CACHED_ANSWER: Your role is CFO
+"""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.INTENT_CLASSIFICATION,
+                system="You analyze user questions efficiently. Be precise and concise.",
+                user_message=prompt,
+                max_tokens=400,
+            )
+
+            response = result.content.strip()
+
+            # Parse response
+            question_type = QuestionType.DATA_ANALYSIS
+            extracted_facts = []
+            cached_answer = None
+
+            # Parse FACTS section
+            if "FACTS:" in response:
+                facts_section = response.split("FACTS:", 1)[1].split("---")[0].strip()
+                if facts_section and facts_section != "NONE":
+                    for line in facts_section.split("\n"):
+                        line = line.strip().lstrip("-").strip()
+                        if ":" in line and line.lower() != "none":
+                            parts = line.split(":", 1)
+                            fact_name = parts[0].strip()
+                            value_str = parts[1].strip()
+                            # Try to parse as number
+                            try:
+                                value = float(value_str)
+                                if value == int(value):
+                                    value = int(value)
+                            except ValueError:
+                                value = value_str
+
+                            # Add to fact resolver
+                            fact = self.fact_resolver.add_user_fact(
+                                fact_name=fact_name,
+                                value=value,
+                                reasoning=f"Extracted from question: {problem}",
+                            )
+                            extracted_facts.append(fact)
+
+            # Parse QUESTION_TYPE
+            if "QUESTION_TYPE:" in response:
+                type_line = response.split("QUESTION_TYPE:", 1)[1].split("\n")[0].strip()
+                type_line = type_line.split("---")[0].strip()
+                if "META" in type_line.upper():
+                    question_type = QuestionType.META_QUESTION
+
+            # Parse CACHED_ANSWER
+            if "CACHED_ANSWER:" in response:
+                answer_section = response.split("CACHED_ANSWER:", 1)[1].split("---")[0].strip()
+                if answer_section and answer_section.upper() != "NONE":
+                    cached_answer = answer_section
+
+            return QuestionAnalysis(
+                question_type=question_type,
+                extracted_facts=extracted_facts,
+                cached_fact_answer=cached_answer,
+            )
+
+        except Exception:
+            # On error, fall back to regex-based classification
+            return QuestionAnalysis(
+                question_type=QuestionType.META_QUESTION if is_meta_question(problem) else QuestionType.DATA_ANALYSIS,
+                extracted_facts=[],
+                cached_fact_answer=None,
+            )
+
     def _detect_ambiguity(self, problem: str) -> Optional[ClarificationRequest]:
         """
         Detect if a question is ambiguous and needs clarification before planning.
@@ -728,18 +874,21 @@ If critical parameters are missing that would significantly change results, resp
 AMBIGUOUS
 REASON: <brief explanation of what's unclear>
 QUESTIONS:
-- <specific clarifying question 1>
-- <specific clarifying question 2>
-(max 3 questions)
+Q1: <specific clarifying question>
+SUGGESTIONS: <suggestion1> | <suggestion2> | <suggestion3>
+Q2: <specific clarifying question>
+SUGGESTIONS: <suggestion1> | <suggestion2>
+(max 3 questions, 2-4 suggestions per question)
 
-Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach."""
+Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach.
+Provide practical suggested answers based on what's in the data."""
 
         try:
             result = self.router.execute(
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system="You detect ambiguity in data analysis requests. Be practical - only flag truly ambiguous requests.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=500,
             )
 
             response = result.content.strip()
@@ -751,14 +900,52 @@ Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analys
             if "AMBIGUOUS" in response:
                 lines = response.split("\n")
                 reason = ""
-                questions = []
+                questions: list[ClarificationQuestion] = []
+                current_question = None
+                in_questions_section = False
 
                 for line in lines:
                     line = line.strip()
                     if line.startswith("REASON:"):
                         reason = line[7:].strip()
-                    elif line.startswith("- "):
-                        questions.append(line[2:].strip())
+                    elif line.upper().startswith("QUESTIONS"):
+                        in_questions_section = True
+                    elif line.startswith("SUGGESTIONS:") and current_question:
+                        # Parse suggestions for current question
+                        suggestions_text = line[12:].strip()
+                        suggestions = [s.strip() for s in suggestions_text.split("|") if s.strip()]
+                        current_question.suggestions = suggestions[:4]  # Max 4 suggestions
+                    elif in_questions_section and line:
+                        # Try to parse as a question in various formats:
+                        # Q1: question, - question, 1. question, 1) question
+                        question_text = None
+
+                        if line.startswith("Q") and ":" in line[:4]:
+                            # Format: Q1: question text
+                            question_text = line.split(":", 1)[1].strip()
+                        elif line.startswith("- "):
+                            # Format: - question text
+                            question_text = line[2:].strip()
+                        elif len(line) > 2 and line[0].isdigit() and line[1] in ".):":
+                            # Format: 1. question or 1) question or 1: question
+                            question_text = line[2:].strip()
+                        elif len(line) > 3 and line[:2].isdigit() and line[2] in ".):":
+                            # Format: 10. question (two digit number)
+                            question_text = line[3:].strip()
+                        elif not line.startswith("SUGGESTIONS") and not line.startswith("("):
+                            # Plain text line after QUESTIONS - treat as question
+                            # Skip hint lines like "(max 3 questions..."
+                            question_text = line
+
+                        if question_text and len(question_text) > 5:
+                            # Save previous question and start new one
+                            if current_question and current_question.text:
+                                questions.append(current_question)
+                            current_question = ClarificationQuestion(text=question_text)
+
+                # Don't forget the last question
+                if current_question and current_question.text:
+                    questions.append(current_question)
 
                 if questions:
                     return ClarificationRequest(
@@ -970,6 +1157,86 @@ Format the answer for readability with markdown. Be concise but complete."""
 
         return result.content
 
+    def _extract_facts_from_response(self, problem: str, answer: str) -> list:
+        """
+        Extract facts from the analysis response to cache for follow-up questions.
+
+        For example, if the answer says "Total revenue was $2.4M", we cache
+        the fact `total_revenue = 2400000` so follow-up questions like
+        "How does that compare to last year?" can reference it.
+
+        Returns:
+            List of extracted Fact objects
+        """
+        prompt = f"""Extract key facts/metrics from this analysis response that would be useful to remember.
+
+Question asked: {problem}
+
+Response:
+{answer}
+
+Extract facts like:
+- Numeric results (e.g., "total revenue was $2.4M" -> total_revenue: 2400000)
+- Counts (e.g., "found 150 customers" -> customer_count: 150)
+- Percentages (e.g., "growth rate of 15%" -> growth_rate: 0.15)
+- Key findings (e.g., "top product is Widget Pro" -> top_product: Widget Pro)
+- Time periods analyzed (e.g., "for Q4 2024" -> analysis_period: Q4 2024)
+
+Only extract concrete, specific values. Skip vague or uncertain statements.
+
+Format each fact as:
+FACT_NAME: value
+---
+
+If no concrete facts to extract, respond with: NO_FACTS"""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.INTENT_CLASSIFICATION,
+                system="You extract key facts and metrics from analysis results.",
+                user_message=prompt,
+                max_tokens=400,
+            )
+
+            response = result.content.strip()
+            if "NO_FACTS" in response:
+                return []
+
+            extracted_facts = []
+            for line in response.split("\n"):
+                line = line.strip()
+                if line == "---" or not line:
+                    continue
+                if ":" in line and not line.startswith("FACT"):
+                    parts = line.split(":", 1)
+                    fact_name = parts[0].strip().lower().replace(" ", "_")
+                    value_str = parts[1].strip()
+
+                    # Try to parse as number
+                    try:
+                        # Handle currency (remove $, commas)
+                        clean_value = value_str.replace("$", "").replace(",", "").replace("%", "")
+                        value = float(clean_value)
+                        if "%" in value_str:
+                            value = value / 100  # Convert percentage
+                        elif value == int(value):
+                            value = int(value)
+                    except ValueError:
+                        value = value_str
+
+                    # Add to fact resolver with source indicating it came from analysis
+                    fact = self.fact_resolver.add_user_fact(
+                        fact_name=fact_name,
+                        value=value,
+                        reasoning=f"Derived from analysis of: {problem}",
+                    )
+                    extracted_facts.append(fact)
+
+            return extracted_facts
+
+        except Exception:
+            return []
+
     def _generate_suggestions(self, problem: str, answer: str, tables: list[dict]) -> list[str]:
         """
         Generate contextual follow-up suggestions based on the answer and available data.
@@ -1063,48 +1330,37 @@ Please create a revised plan that addresses this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
-        # Extract facts from the question FIRST, before any classification
-        # This ensures user context like "my role as CFO" is captured even for meta-questions
-        self._emit_event(StepEvent(
-            event_type="progress",
-            step_number=0,
-            data={"message": "Extracting context from your question..."}
-        ))
-        try:
-            extracted_facts = self.fact_resolver.add_user_facts_from_text(problem)
-            if extracted_facts:
-                self._emit_event(StepEvent(
-                    event_type="facts_extracted",
-                    step_number=0,
-                    data={
-                        "facts": [f.to_dict() for f in extracted_facts],
-                        "source": "question",
-                    }
-                ))
-        except Exception:
-            # Fact extraction is optional, don't fail if it errors
-            pass
-
-        # Check if question can be answered from cached facts
-        # (e.g., "what is my role" when user_role=CFO is cached)
-        cached_facts = self.fact_resolver.get_all_facts()
-        if cached_facts:
-            self._emit_event(StepEvent(
-                event_type="progress",
-                step_number=0,
-                data={"message": "Checking known facts..."}
-            ))
-            cached_answer = self._answer_from_cached_facts(problem)
-            if cached_answer:
-                return cached_answer
-
-        # Classify question and handle non-data-analysis questions directly
+        # Combined analysis: extract facts, classify, check cached facts in ONE LLM call
+        # This is more efficient than separate calls for each operation
         self._emit_event(StepEvent(
             event_type="progress",
             step_number=0,
             data={"message": "Analyzing your question..."}
         ))
-        question_type = self._classify_question(problem)
+
+        analysis = self._analyze_question(problem)
+
+        # Emit facts if any were extracted
+        if analysis.extracted_facts:
+            self._emit_event(StepEvent(
+                event_type="facts_extracted",
+                step_number=0,
+                data={
+                    "facts": [f.to_dict() for f in analysis.extracted_facts],
+                    "source": "question",
+                }
+            ))
+
+        # Return cached fact answer if question was about a known fact
+        if analysis.cached_fact_answer:
+            return {
+                "success": True,
+                "meta_response": True,
+                "output": analysis.cached_fact_answer,
+                "plan": None,
+            }
+
+        question_type = analysis.question_type
 
         if question_type == QuestionType.META_QUESTION:
             self._emit_event(StepEvent(
@@ -1374,6 +1630,18 @@ Please create a revised plan that addresses this feedback."""
             step_number=0,
             data={"answer": final_answer}
         ))
+
+        # Extract facts from the response to cache for follow-up questions
+        response_facts = self._extract_facts_from_response(problem, final_answer)
+        if response_facts:
+            self._emit_event(StepEvent(
+                event_type="facts_extracted",
+                step_number=0,
+                data={
+                    "facts": [f.to_dict() for f in response_facts],
+                    "source": "response",
+                }
+            ))
 
         # Generate follow-up suggestions
         tables = self.datastore.list_tables() if self.datastore else []
@@ -1705,6 +1973,18 @@ Follow-up question: {question}
             step_number=0,
             data={"answer": final_answer}
         ))
+
+        # Extract facts from the response to cache for future follow-ups
+        response_facts = self._extract_facts_from_response(question, final_answer)
+        if response_facts:
+            self._emit_event(StepEvent(
+                event_type="facts_extracted",
+                step_number=0,
+                data={
+                    "facts": [f.to_dict() for f in response_facts],
+                    "source": "response",
+                }
+            ))
 
         # Generate follow-up suggestions
         tables = self.datastore.list_tables() if self.datastore else []

@@ -14,16 +14,23 @@ from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 
 
 def _is_compatible_terminal() -> bool:
-    """Check if terminal is compatible with prompt_toolkit."""
-    # IntelliJ/PyCharm terminal sets TERMINAL_EMULATOR
-    if "TERMINAL_EMULATOR" in os.environ:
+    """Check if terminal is compatible with prompt_toolkit.
+
+    Set CONSTAT_FORCE_PROMPT_TOOLKIT=1 to force enable in any terminal.
+    Set CONSTAT_NO_PROMPT_TOOLKIT=1 to force disable.
+    """
+    # Allow explicit override
+    if os.environ.get("CONSTAT_FORCE_PROMPT_TOOLKIT") == "1":
+        return True
+    if os.environ.get("CONSTAT_NO_PROMPT_TOOLKIT") == "1":
         return False
-    # JetBrains IDEs also set this
-    if os.environ.get("TERM_PROGRAM") == "JetBrains-JediTerm":
-        return False
-    # Check if we have a real TTY
+
+    # Check if we have a TTY (required for interactive features)
     if not sys.stdin.isatty():
         return False
+
+    # Modern JetBrains terminals support prompt_toolkit reasonably well
+    # Only disable for very old versions or known problematic terminals
     return True
 
 
@@ -31,6 +38,8 @@ try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
     from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.key_binding import KeyBindings
     PROMPT_TOOLKIT_AVAILABLE = _is_compatible_terminal()
 
     class ConstatSuggester(AutoSuggest):
@@ -130,6 +139,67 @@ try:
                     return Suggestion(cmd[len(text):])
             return None
 
+    class ConstatCompleter(Completer):
+        """Tab-completion for commands in the REPL."""
+
+        COMMANDS = [
+            ("/help", "Show help message"),
+            ("/tables", "List available tables"),
+            ("/show ", "Show contents of a saved table"),
+            ("/query ", "Run SQL against saved tables"),
+            ("/code", "Show code from last step"),
+            ("/state", "Show current state variables"),
+            ("/update", "Update a state variable"),
+            ("/reset", "Clear session state"),
+            ("/user ", "Set user ID"),
+            ("/save ", "Save current plan"),
+            ("/share ", "Share plan globally"),
+            ("/sharewith ", "Share plan with user"),
+            ("/plans", "List saved plans"),
+            ("/replay ", "Replay a saved plan"),
+            ("/history", "Show session history"),
+            ("/resume ", "Resume a previous session"),
+            ("/context", "Show context usage stats"),
+            ("/compact", "Compact session context"),
+            ("/facts", "Show extracted facts"),
+            ("/remember ", "Remember a fact"),
+            ("/forget ", "Forget a fact"),
+            ("/verbose", "Toggle verbose mode"),
+            ("/quit", "Exit the REPL"),
+        ]
+
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            if text.startswith("/"):
+                text_lower = text.lower()
+                for cmd, description in self.COMMANDS:
+                    if cmd.lower().startswith(text_lower) and cmd.lower() != text_lower:
+                        yield Completion(
+                            cmd,
+                            start_position=-len(text),
+                            display_meta=description,
+                        )
+
+    def _create_key_bindings():
+        """Create key bindings for the REPL."""
+        bindings = KeyBindings()
+
+        @bindings.add('tab')
+        def _(event):
+            """Tab accepts auto-suggestion if available, otherwise inserts tab."""
+            buff = event.app.current_buffer
+            suggestion = buff.suggestion
+            if suggestion:
+                buff.insert_text(suggestion.text)
+            else:
+                # Try to complete, if no completer or completion, insert tab
+                if buff.completer:
+                    buff.start_completion(select_first=True)
+                else:
+                    buff.insert_text('    ')
+
+        return bindings
+
 except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
 
@@ -155,12 +225,15 @@ class InteractiveREPL:
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
 
-        # Setup prompt_toolkit with schema-aware suggestions
+        # Setup prompt_toolkit with schema-aware suggestions and Tab completion
         self._prompt_session = None
         if PROMPT_TOOLKIT_AVAILABLE:
             self._prompt_session = PromptSession(
                 history=InMemoryHistory(),
                 auto_suggest=ConstatSuggester(context_provider=self._get_suggestion_context),
+                completer=ConstatCompleter(),
+                key_bindings=_create_key_bindings(),
+                complete_while_typing=False,  # Only complete on Tab
             )
 
     def _get_suggestion_context(self) -> dict:

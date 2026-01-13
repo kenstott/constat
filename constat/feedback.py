@@ -31,7 +31,7 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
-from constat.session import ClarificationRequest, ClarificationResponse
+from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
 
 
 # Spinner frames for animation
@@ -475,8 +475,10 @@ class FeedbackDisplay:
         """
         Request clarification from user for ambiguous questions.
 
-        Displays the reason for clarification and prompts for answers.
-        Users can skip individual questions (press Enter or type 'skip').
+        Displays questions with numbered suggestions. Users can:
+        - Enter a number to select a suggestion
+        - Type a custom answer
+        - Press Enter to skip
 
         Args:
             request: ClarificationRequest with questions
@@ -494,39 +496,76 @@ class FeedbackDisplay:
             self.console.print(f"[dim]{request.ambiguity_reason}[/dim]")
             self.console.print()
 
-        self.console.print("[bold]Please clarify[/bold] [dim](press Enter to skip a question):[/dim]")
+        self.console.print("[bold]Please clarify[/bold] [dim](enter number, custom text, or press Enter to skip):[/dim]")
+        self.console.print()
 
         answers = {}
         for i, question in enumerate(request.questions, 1):
-            self.console.print(f"  [cyan]{i}.[/cyan] {question}")
-            answer = Prompt.ask(f"     [dim]Answer[/dim]", default="")
+            # Handle both old format (str) and new format (ClarificationQuestion)
+            if isinstance(question, ClarificationQuestion):
+                question_text = question.text
+                suggestions = question.suggestions
+            else:
+                question_text = str(question)
+                suggestions = []
+
+            self.console.print(f"  [cyan]{i}.[/cyan] {question_text}")
+
+            # Show numbered suggestions if available
+            if suggestions:
+                for j, suggestion in enumerate(suggestions, 1):
+                    self.console.print(f"      [dim]{j})[/dim] [yellow]{suggestion}[/yellow]")
+
+            # Get answer - show first suggestion as default hint if available
+            if suggestions:
+                default_hint = suggestions[0]
+                answer = Prompt.ask(f"     [dim]>[/dim]", default=default_hint)
+            else:
+                answer = Prompt.ask("     [dim]>[/dim]", default="", show_default=False)
             answer = answer.strip()
 
-            # Treat "skip" or empty as no answer
+            # Process the answer
             if answer.lower() == "skip" or not answer:
-                answers[question] = ""
+                # When skipping with no suggestions, use empty
+                answers[question_text] = ""
+                self.console.print(f"     [dim]Skipped (will use defaults)[/dim]")
+            elif suggestions and answer == suggestions[0]:
+                # User accepted the default suggestion
+                answers[question_text] = answer
+                self.console.print(f"     [green]Using: {answer}[/green]")
+            elif answer.isdigit() and suggestions:
+                # User selected a suggestion by number
+                idx = int(answer) - 1
+                if 0 <= idx < len(suggestions):
+                    answers[question_text] = suggestions[idx]
+                    self.console.print(f"     [green]Selected: {suggestions[idx]}[/green]")
+                else:
+                    # Invalid number, treat as custom input
+                    answers[question_text] = answer
             else:
-                answers[question] = answer
+                answers[question_text] = answer
+
+            self.console.print()
 
         # Check if any answers were provided
         has_answers = any(a for a in answers.values())
 
         # Check if user wants to skip all clarifications
-        self.console.print()
         if has_answers:
             skip = Prompt.ask(
-                "[dim]Press Enter to continue, or 's' to skip all clarifications[/dim]",
-                default=""
+                "[dim]Press Enter to continue, or 's' to skip all[/dim]",
+                default="",
+                show_default=False
             ).lower()
         else:
-            # If no answers provided, ask if they want to continue without clarification
             skip = Prompt.ask(
-                "[dim]No clarifications provided. Press Enter to proceed anyway, or 's' to cancel[/dim]",
-                default=""
+                "[dim]No answers provided. Press Enter to proceed anyway, or 's' to cancel[/dim]",
+                default="",
+                show_default=False
             ).lower()
 
         if skip == "s":
-            self.console.print("[dim]Skipping clarification, proceeding with original question...[/dim]")
+            self.console.print("[dim]Skipping, proceeding with original question...[/dim]")
             return ClarificationResponse(answers={}, skip=True)
 
         # Filter out empty answers
@@ -753,6 +792,21 @@ class FeedbackDisplay:
             for i, s in enumerate(suggestions, 1):
                 self.console.print(f"  [dim]{i}.[/dim] [cyan]{s}[/cyan]")
 
+    def show_facts_extracted(self, facts: list[dict], source: str) -> None:
+        """Show facts that were extracted and cached.
+
+        Args:
+            facts: List of fact dicts with 'name' and 'value' keys
+            source: Where facts came from ('question' or 'response')
+        """
+        if not facts:
+            return
+
+        # Only show response-derived facts (question facts are implicit)
+        if source == "response":
+            fact_strs = [f"[cyan]{f['name']}[/cyan]={f['value']}" for f in facts[:5]]
+            self.console.print(f"[dim]Remembered: {', '.join(fact_strs)}[/dim]")
+
 
 class SessionFeedbackHandler:
     """
@@ -848,3 +902,9 @@ class SessionFeedbackHandler:
 
         elif event_type == "suggestions_ready":
             self.display.show_suggestions(data.get("suggestions", []))
+
+        elif event_type == "facts_extracted":
+            facts = data.get("facts", [])
+            source = data.get("source", "unknown")
+            if facts:
+                self.display.show_facts_extracted(facts, source)
