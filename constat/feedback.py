@@ -91,7 +91,21 @@ class FeedbackDisplay:
 
     def start(self) -> None:
         """Start the live display."""
-        self._live = Live(console=self.console, refresh_per_second=4)
+        # Create a wrapper that implements __rich__() so Live calls our builder on each refresh
+        class AnimatedDisplayWrapper:
+            def __init__(wrapper_self, display: "FeedbackDisplay"):
+                wrapper_self._display = display
+
+            def __rich__(wrapper_self) -> RenderableType:
+                return wrapper_self._display._build_animated_display()
+
+        self._display_wrapper = AnimatedDisplayWrapper(self)
+        self._live = Live(
+            self._display_wrapper,
+            console=self.console,
+            refresh_per_second=10,  # Faster for smoother animation
+            transient=False,
+        )
         self._live.start()
 
     def stop(self) -> None:
