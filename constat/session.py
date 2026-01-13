@@ -937,12 +937,31 @@ Examples:
         """
         schema_overview = self.schema_manager.get_overview()
 
+        # Build API overview if configured
+        api_overview = ""
+        if self.config.apis:
+            api_lines = ["\n## Available APIs"]
+            for name, api_config in self.config.apis.items():
+                api_type = api_config.type.upper()
+                desc = api_config.description or f"{api_type} endpoint"
+                api_lines.append(f"- **{name}** ({api_type}): {desc}")
+            api_overview = "\n".join(api_lines)
+
+        # Build document overview if configured
+        doc_overview = ""
+        if self.config.documents:
+            doc_lines = ["\n## Reference Documents"]
+            for name, doc_config in self.config.documents.items():
+                desc = doc_config.description or doc_config.type
+                doc_lines.append(f"- **{name}**: {desc}")
+            doc_overview = "\n".join(doc_lines)
+
         prompt = f"""Analyze this question for ambiguity. Determine if critical parameters are missing that would significantly change the analysis.
 
 Question: "{problem}"
 
-Available data:
-{schema_overview}
+Available data sources:
+{schema_overview}{api_overview}{doc_overview}
 
 Check for missing:
 1. Geographic scope (country, region, state, etc.)
