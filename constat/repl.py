@@ -2,38 +2,57 @@
 
 from typing import Optional
 from rich.console import Console
-from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 from rich.table import Table
-from rich.syntax import Syntax
 
 from constat.session import Session, SessionConfig
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
-from constat.suggestions import (
-    SmartSuggester,
-    SuggestionConfig,
-    create_suggester,
-    PROMPT_TOOLKIT_AVAILABLE,
-)
 
-if PROMPT_TOOLKIT_AVAILABLE:
+try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
     from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.styles import Style
+    PROMPT_TOOLKIT_AVAILABLE = True
+except ImportError:
+    PROMPT_TOOLKIT_AVAILABLE = False
+
+
+class ConstatSuggester(AutoSuggest):
+    """Auto-suggester for the Constat REPL."""
+
+    SUGGESTIONS = [
+        "What questions can you answer for me?",
+        "What data sources are available?",
+        "Show me a summary of the data",
+        "What tables can I query?",
+    ]
+
+    def __init__(self):
+        self._index = 0
+
+    def get_suggestion(self, buffer, document):
+        text = document.text
+
+        # Only suggest when empty or short input
+        if len(text) > 30:
+            return None
+
+        if not text:
+            # Empty input - show first suggestion
+            return Suggestion(self.SUGGESTIONS[self._index])
+
+        # Find matching suggestion
+        text_lower = text.lower()
+        for suggestion in self.SUGGESTIONS:
+            if suggestion.lower().startswith(text_lower):
+                return Suggestion(suggestion[len(text):])
+
+        return None
 
 
 class InteractiveREPL:
-    """
-    Interactive Read-Eval-Print Loop for Constat sessions.
-
-    Provides:
-    - Initial problem solving
-    - Follow-up questions with context preservation
-    - Session state inspection
-    - Table querying
-    - Session history navigation
-    """
+    """Interactive Read-Eval-Print Loop for Constat sessions."""
 
     def __init__(
         self,
@@ -41,33 +60,21 @@ class InteractiveREPL:
         verbose: bool = False,
         console: Optional[Console] = None,
         progress_callback: Optional[callable] = None,
-        suggestion_config: Optional[SuggestionConfig] = None,
     ):
         self.config = config
         self.verbose = verbose
         self.console = console or Console()
         self.display = FeedbackDisplay(console=self.console, verbose=verbose)
         self.progress_callback = progress_callback
-
         self.session: Optional[Session] = None
         self.session_config = SessionConfig(verbose=verbose)
 
-        # Initialize smart suggestions
-        self.suggestion_config = suggestion_config or SuggestionConfig()
-        self.suggester = create_suggester(config=self.suggestion_config)
-        self._prompt_session: Optional["PromptSession"] = None
-
+        # Setup prompt_toolkit
+        self._prompt_session = None
         if PROMPT_TOOLKIT_AVAILABLE:
-            # Create prompt_toolkit session with suggestion support
-            # Note: 'auto-suggestion' is the correct style class name for prompt_toolkit
-            self._prompt_style = Style.from_dict({
-                'prompt': 'bold cyan',
-                'auto-suggestion': 'fg:ansibrightblack italic',
-            })
             self._prompt_session = PromptSession(
                 history=InMemoryHistory(),
-                auto_suggest=self.suggester,
-                style=self._prompt_style,
+                auto_suggest=ConstatSuggester(),
             )
 
     def _create_session(self) -> Session:
@@ -77,75 +84,43 @@ class InteractiveREPL:
             session_config=self.session_config,
             progress_callback=self.progress_callback,
         )
-
-        # Wire up feedback display
         handler = SessionFeedbackHandler(self.display)
         session.on_event(handler.handle_event)
-
-        # Update suggester with session context
-        if self.suggester:
-            self.suggester.update_context(session)
-
         return session
 
-    def _get_input(self, has_session: bool = False) -> str:
-        """
-        Get user input with smart suggestions.
-
-        Uses prompt_toolkit if available, falls back to Rich Prompt.
-        Tab accepts the current suggestion, Enter submits.
-        """
-        prompt_marker = "> "
-
-        if self._prompt_session and PROMPT_TOOLKIT_AVAILABLE:
-            # Update suggester context before prompting
-            if self.suggester and self.session:
-                self.suggester.update_context(self.session)
-
-            # Use prompt_toolkit with suggestions
-            # Simple prompt without HTML styling to avoid issues
-            return self._prompt_session.prompt(prompt_marker).strip()
+    def _get_input(self) -> str:
+        """Get user input."""
+        if self._prompt_session:
+            return self._prompt_session.prompt("> ").strip()
         else:
-            # Fallback to Rich prompt
-            prompt_text = f"[bold cyan]{prompt_marker}[/bold cyan]" if has_session else f"[bold blue]{prompt_marker}[/bold blue]"
-            return Prompt.ask(prompt_text).strip()
+            return input("> ").strip()
 
     def _show_help(self) -> None:
         """Show available commands."""
         table = Table(title="Commands", show_header=True, box=None)
         table.add_column("Command", style="cyan")
         table.add_column("Description")
-
         commands = [
             ("/help, /h", "Show this help message"),
-            ("/tables", "List available tables from previous steps"),
+            ("/tables", "List available tables"),
             ("/query <sql>", "Run SQL query on datastore"),
-            ("/state", "Show session state (variables, tables)"),
-            ("/unresolved", "Show unresolved facts (auditable mode)"),
-            ("/facts <text>", "Provide facts in natural language"),
-            ("/history", "List previous sessions"),
-            ("/resume <id>", "Resume a previous session"),
+            ("/state", "Show session state"),
             ("/verbose", "Toggle verbose mode"),
-            ("/quit, /exit, /q", "Exit the REPL"),
+            ("/quit, /q", "Exit"),
         ]
-
         for cmd, desc in commands:
             table.add_row(cmd, desc)
-
         self.console.print(table)
-        self.console.print("\n[dim]Or type a question to analyze your data.[/dim]\n")
 
     def _show_tables(self) -> None:
         """Show tables in current session."""
         if not self.session or not self.session.datastore:
             self.console.print("[yellow]No active session.[/yellow]")
             return
-
         tables = self.session.datastore.list_tables()
         if not tables:
-            self.console.print("[dim]No tables saved yet.[/dim]")
+            self.console.print("[dim]No tables yet.[/dim]")
             return
-
         self.display.show_tables(tables)
 
     def _run_query(self, sql: str) -> None:
@@ -153,7 +128,6 @@ class InteractiveREPL:
         if not self.session or not self.session.datastore:
             self.console.print("[yellow]No active session.[/yellow]")
             return
-
         try:
             result = self.session.datastore.query(sql)
             self.console.print(result.to_string())
@@ -165,118 +139,15 @@ class InteractiveREPL:
         if not self.session:
             self.console.print("[yellow]No active session.[/yellow]")
             return
-
         state = self.session.get_state()
-
-        self.console.print(f"\n[bold]Session ID:[/bold] {state['session_id']}")
-
-        # Show tables
+        self.console.print(f"\n[bold]Session:[/bold] {state['session_id']}")
         if state['datastore_tables']:
-            self.console.print("\n[bold]Tables:[/bold]")
+            self.console.print("[bold]Tables:[/bold]")
             for t in state['datastore_tables']:
                 self.console.print(f"  - {t['name']} ({t['row_count']} rows)")
 
-        # Show state variables
-        if state['state']:
-            self.console.print("\n[bold]State Variables:[/bold]")
-            for key, value in state['state'].items():
-                val_str = str(value)[:50] + "..." if len(str(value)) > 50 else str(value)
-                self.console.print(f"  - {key}: {val_str}")
-
-        # Show completed steps
-        if state['completed_steps']:
-            self.console.print(f"\n[bold]Completed Steps:[/bold] {state['completed_steps']}")
-
-        self.console.print()
-
-    def _show_unresolved(self) -> None:
-        """Show unresolved facts from auditable mode."""
-        if not self.session:
-            self.console.print("[yellow]No active session.[/yellow]")
-            return
-
-        summary = self.session.get_unresolved_summary()
-        self.console.print(summary)
-
-    def _provide_facts(self, text: str) -> None:
-        """Provide facts in natural language."""
-        if not self.session:
-            self.console.print("[yellow]No active session.[/yellow]")
-            return
-
-        result = self.session.provide_facts(text)
-
-        if result["extracted_facts"]:
-            self.console.print("\n[green]Extracted facts:[/green]")
-            for fact in result["extracted_facts"]:
-                self.console.print(f"  - {fact['name']} = {fact['value']}")
-                if fact.get("reasoning"):
-                    self.console.print(f"    [dim]({fact['reasoning']})[/dim]")
-        else:
-            self.console.print("[yellow]No facts could be extracted from your input.[/yellow]")
-
-        if result["unresolved_remaining"]:
-            self.console.print(f"\n[yellow]Still unresolved: {len(result['unresolved_remaining'])} facts[/yellow]")
-            self.console.print("[dim]Use /unresolved to see details[/dim]")
-        else:
-            self.console.print("\n[green]All facts resolved![/green]")
-
-    def _show_history(self) -> None:
-        """Show recent session history."""
-        if not self.session:
-            # Create temporary session for history access
-            self.session = self._create_session()
-
-        sessions = self.session.history.list_sessions(limit=10)
-
-        if not sessions:
-            self.console.print("[dim]No previous sessions.[/dim]")
-            return
-
-        table = Table(title="Recent Sessions", show_header=True)
-        table.add_column("ID", style="cyan")
-        table.add_column("Created")
-        table.add_column("Status")
-        table.add_column("Queries")
-
-        for s in sessions:
-            table.add_row(
-                s.session_id[:12] + "...",
-                s.created_at[:16] if s.created_at else "",
-                s.status,
-                str(s.total_queries),
-            )
-
-        self.console.print(table)
-
-    def _resume_session(self, session_id: str) -> None:
-        """Resume a previous session."""
-        if not self.session:
-            self.session = self._create_session()
-
-        # Try to find matching session
-        sessions = self.session.history.list_sessions(limit=50)
-        matching = [s for s in sessions if s.session_id.startswith(session_id)]
-
-        if not matching:
-            self.console.print(f"[red]Session not found:[/red] {session_id}")
-            return
-
-        if len(matching) > 1:
-            self.console.print(f"[yellow]Multiple matches. Be more specific:[/yellow]")
-            for s in matching[:5]:
-                self.console.print(f"  - {s.session_id}")
-            return
-
-        full_id = matching[0].session_id
-        if self.session.resume(full_id):
-            self.console.print(f"[green]Resumed session:[/green] {full_id}")
-            self._show_state()
-        else:
-            self.console.print(f"[red]Failed to resume session:[/red] {full_id}")
-
     def _solve(self, problem: str) -> None:
-        """Solve a problem (new session or follow-up)."""
+        """Solve a problem."""
         if not self.session:
             self.session = self._create_session()
 
@@ -284,79 +155,49 @@ class InteractiveREPL:
 
         try:
             if self.session.session_id:
-                # Follow-up on existing session
                 result = self.session.follow_up(problem)
             else:
-                # New session
                 result = self.session.solve(problem)
 
-            # Handle meta-response (direct answer without planning)
             if result.get("meta_response"):
                 self.display.show_output(result.get("output", ""))
                 self.display.show_summary(success=True, total_steps=0, duration_ms=0)
             elif result.get("success"):
-                # Final answer is shown via answer_ready event, tables shown for reference
                 tables = result.get("datastore_tables", [])
                 total_duration = sum(r.duration_ms for r in result.get("results", []))
                 self.display.show_tables(tables, duration_ms=total_duration)
-
                 self.display.show_summary(
                     success=True,
                     total_steps=len(result.get("results", [])),
                     duration_ms=total_duration,
                 )
-
-                # Update suggester with answer for follow-up suggestions
-                if self.suggester and result.get("final_answer"):
-                    self.suggester.set_last_answer(result["final_answer"])
             else:
-                plan = result.get("plan")
-                total_steps = len(plan.steps) if plan and hasattr(plan, 'steps') else 0
-                self.display.show_summary(
-                    success=False,
-                    total_steps=total_steps,
-                    duration_ms=0,
-                )
-                self.console.print(f"\n[red]Error:[/red] {result.get('error', 'Unknown error')}")
-
+                self.console.print(f"[red]Error:[/red] {result.get('error', 'Unknown error')}")
         except KeyboardInterrupt:
-            self.console.print("\n[yellow]Interrupted. (Ctrl+C)[/yellow]")
+            self.console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
-            self.console.print(f"\n[red]Error:[/red] {e}")
+            self.console.print(f"[red]Error:[/red] {e}")
 
     def run(self, initial_problem: Optional[str] = None) -> None:
-        """
-        Run the interactive REPL.
-
-        Args:
-            initial_problem: Optional problem to solve immediately
-        """
-        # Show welcome banner with hints
-        hints = []
-        if PROMPT_TOOLKIT_AVAILABLE:
-            hints.append("[dim]Tab[/dim] accepts suggestion")
-        hints.append("[dim]Ctrl+C[/dim] interrupts")
-        hint_text = " | ".join(hints)
+        """Run the interactive REPL."""
+        # Welcome banner
+        hints = "[dim]Tab[/dim] accepts suggestion | [dim]Ctrl+C[/dim] interrupts"
         self.console.print(Panel.fit(
             "[bold blue]Constat[/bold blue] - Multi-Step AI Reasoning Engine\n"
-            f"[dim]Type /help for commands, or ask a question.[/dim]\n{hint_text}",
+            f"[dim]Type /help for commands, or ask a question.[/dim]\n{hints}",
             border_style="blue",
         ))
 
-        # Solve initial problem if provided
         if initial_problem:
             self._solve(initial_problem)
 
-        # Main REPL loop
         while True:
             try:
-                has_session = bool(self.session and self.session.session_id)
-                user_input = self._get_input(has_session)
+                user_input = self._get_input()
 
                 if not user_input:
                     continue
 
-                # Handle commands
                 if user_input.startswith("/"):
                     parts = user_input.split(maxsplit=1)
                     cmd = parts[0].lower()
@@ -365,52 +206,21 @@ class InteractiveREPL:
                     if cmd in ("/quit", "/exit", "/q"):
                         self.console.print("[dim]Goodbye![/dim]")
                         break
-
                     elif cmd in ("/help", "/h"):
                         self._show_help()
-
                     elif cmd == "/tables":
                         self._show_tables()
-
-                    elif cmd == "/query":
-                        if arg:
-                            self._run_query(arg)
-                        else:
-                            self.console.print("[yellow]Usage: /query <sql>[/yellow]")
-
+                    elif cmd == "/query" and arg:
+                        self._run_query(arg)
                     elif cmd == "/state":
                         self._show_state()
-
-                    elif cmd == "/history":
-                        self._show_history()
-
-                    elif cmd == "/resume":
-                        if arg:
-                            self._resume_session(arg)
-                        else:
-                            self.console.print("[yellow]Usage: /resume <session_id>[/yellow]")
-
-                    elif cmd == "/unresolved":
-                        self._show_unresolved()
-
-                    elif cmd == "/facts":
-                        if arg:
-                            self._provide_facts(arg)
-                        else:
-                            self.console.print("[yellow]Usage: /facts <text with facts>[/yellow]")
-                            self.console.print("[dim]Example: /facts There were 1 million people at the march[/dim]")
-
                     elif cmd == "/verbose":
                         self.verbose = not self.verbose
                         self.display.verbose = self.verbose
-                        self.console.print(f"Verbose mode: [bold]{'on' if self.verbose else 'off'}[/bold]")
-
+                        self.console.print(f"Verbose: [bold]{'on' if self.verbose else 'off'}[/bold]")
                     else:
-                        self.console.print(f"[yellow]Unknown command: {cmd}[/yellow]")
-                        self._show_help()
-
+                        self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
                 else:
-                    # Treat as a problem/question
                     self._solve(user_input)
 
             except KeyboardInterrupt:
@@ -418,20 +228,12 @@ class InteractiveREPL:
             except EOFError:
                 break
 
-        # Cleanup
         if self.session and self.session.datastore:
             self.session.datastore.close()
 
 
 def run_repl(config_path: str, verbose: bool = False, problem: Optional[str] = None) -> None:
-    """
-    Run the interactive REPL.
-
-    Args:
-        config_path: Path to config YAML file
-        verbose: Enable verbose output
-        problem: Optional initial problem to solve
-    """
+    """Run the interactive REPL."""
     config = Config.from_yaml(config_path)
     repl = InteractiveREPL(config, verbose=verbose)
     repl.run(initial_problem=problem)
