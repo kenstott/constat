@@ -110,16 +110,23 @@ result = api_<name>('GET /endpoint', {'param': 'value'})
 ## LLM Knowledge (via llm_ask)
 Use `llm_ask(question)` to get general knowledge not available in databases:
 ```python
-# Get industry benchmarks
-industry_avg = llm_ask("What is the average profit margin for retail companies?")
-
-# Get conversion factors
-exchange_rate = llm_ask("What is the current USD to EUR exchange rate?")
-
-# Get domain knowledge
+# Single fact lookup
 definition = llm_ask("What qualifies as a 'high-value customer' in e-commerce?")
 ```
-Note: llm_ask returns a string. Parse numeric values if needed.
+
+**IMPORTANT: Batch LLM calls for multiple items!**
+NEVER call llm_ask() in a loop - it's extremely slow. Instead, batch all questions into ONE call:
+```python
+# BAD - 10 separate LLM calls (very slow!)
+for country in countries:
+    attractions[country] = llm_ask(f"Tourist attractions in {country}")
+
+# GOOD - 1 batched LLM call (fast!)
+countries_list = ", ".join(df['name'].tolist())
+result = llm_ask(f"For each country, list 2-3 tourist attractions. Countries: {countries_list}. Format: Country: attraction1, attraction2")
+# Then parse the result
+```
+Note: llm_ask returns a string. Parse numeric values or structured data if needed.
 
 ## State Management (via store)
 Each step runs in complete isolation. The ONLY way to share data between steps is through `store`.
