@@ -26,14 +26,41 @@ Skill Locations (searched in order):
     1. Project: .constat/skills/
     2. Global: ~/.constat/skills/
     3. Config-specified paths
+
+Link Following:
+    Skills can reference additional files via markdown links:
+    - Relative links: [indicators](references/indicators.md)
+    - URLs: [docs](https://example.com/docs.md)
+
+    Links are discovered when the skill loads but content is fetched
+    lazily (on-demand) via get_skill_file or resolve_skill_link.
 """
 
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import yaml
+
+
+@dataclass
+class SkillLink:
+    """A link discovered in skill content."""
+    text: str  # Link text (e.g., "indicators")
+    target: str  # Link target (e.g., "references/indicators.md" or "https://...")
+    is_url: bool  # True if target is a URL, False if relative path
+    line_number: int  # Line number where link appears
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "text": self.text,
+            "target": self.target,
+            "is_url": self.is_url,
+            "line_number": self.line_number,
+        }
 
 
 @dataclass
@@ -55,7 +82,10 @@ class Skill:
     content: str  # Full markdown content (including frontmatter stripped)
     path: Path  # Source path for debugging
 
-    # Additional files in the skill directory
+    # Links discovered in the skill content (parsed lazily)
+    links: list[SkillLink] = field(default_factory=list)
+
+    # Cache for loaded files/URLs (lazy loading)
     additional_files: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -75,6 +105,7 @@ class Skill:
             "model": self.metadata.model,
             "user_invocable": self.metadata.user_invocable,
             "path": str(self.path),
+            "links": [link.to_dict() for link in self.links],
         }
 
 
@@ -291,11 +322,152 @@ class SkillManager:
             user_invocable=metadata.get("user-invocable", True),
         )
 
+        # Parse links from content (lazy discovery - content not fetched yet)
+        links = self._parse_links(body)
+
         return Skill(
             metadata=skill_metadata,
             content=body,
             path=path,
+            links=links,
         )
+
+    def _parse_links(self, content: str) -> list[SkillLink]:
+        """
+        Parse markdown links from content.
+
+        Extracts both relative file links and URLs for lazy loading.
+        Excludes anchor-only links (#section) and image links.
+
+        Args:
+            content: Markdown content to parse
+
+        Returns:
+            List of discovered links
+        """
+        links = []
+        # Match markdown links: [text](target)
+        # Excludes images: ![alt](src)
+        link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+
+        for line_num, line in enumerate(content.split('\n'), start=1):
+            for match in link_pattern.finditer(line):
+                text = match.group(1)
+                target = match.group(2)
+
+                # Skip anchor-only links
+                if target.startswith('#'):
+                    continue
+
+                # Skip mailto: and other non-file links
+                if target.startswith('mailto:') or target.startswith('javascript:'):
+                    continue
+
+                # Determine if this is a URL or relative path
+                parsed = urlparse(target)
+                is_url = bool(parsed.scheme and parsed.netloc)
+
+                links.append(SkillLink(
+                    text=text,
+                    target=target,
+                    is_url=is_url,
+                    line_number=line_num,
+                ))
+
+        return links
+
+    def list_skill_links(self, name: str) -> list[SkillLink]:
+        """
+        List all links discovered in a skill's content.
+
+        This enables the LLM to see what references are available
+        before deciding which ones to load.
+
+        Args:
+            name: The skill name
+
+        Returns:
+            List of discovered links, or empty list if skill not found
+        """
+        skill = self.get_skill(name)
+        if not skill:
+            return []
+
+        return skill.links
+
+    def resolve_skill_link(self, name: str, target: str) -> Optional[str]:
+        """
+        Resolve and fetch a link's content.
+
+        For relative paths: loads from skill directory.
+        For URLs: fetches via HTTP (with caching).
+
+        Args:
+            name: The skill name
+            target: The link target (path or URL)
+
+        Returns:
+            Content of the linked resource, or None if not found/failed
+        """
+        skill = self.get_skill(name)
+        if not skill:
+            return None
+
+        # Check cache first
+        if target in skill.additional_files:
+            return skill.additional_files[target]
+
+        # Determine if URL or relative path
+        parsed = urlparse(target)
+        is_url = bool(parsed.scheme and parsed.netloc)
+
+        if is_url:
+            # Fetch URL
+            content = self._fetch_url(target)
+        else:
+            # Load relative to skill directory
+            file_path = skill.path.parent / target
+            if file_path.exists() and file_path.is_file():
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                except Exception:
+                    content = None
+            else:
+                content = None
+
+        # Cache the result
+        if content is not None:
+            skill.additional_files[target] = content
+
+        return content
+
+    def _fetch_url(self, url: str, timeout: int = 30) -> Optional[str]:
+        """
+        Fetch content from a URL.
+
+        Args:
+            url: URL to fetch
+            timeout: Request timeout in seconds
+
+        Returns:
+            Response text, or None if failed
+        """
+        try:
+            import httpx
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                response = client.get(url)
+                response.raise_for_status()
+                return response.text
+        except ImportError:
+            # Fall back to urllib if httpx not available
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=timeout) as response:
+                    return response.read().decode("utf-8")
+            except Exception:
+                return None
+        except Exception:
+            return None
 
     def _parse_frontmatter(self, content: str) -> tuple[Optional[dict], str]:
         """
@@ -381,11 +553,82 @@ class SkillDiscoveryTools:
                 "available_skills": [s.name for s in self.manager.discover_skills()],
             }
 
+        # Include discovered links for lazy loading
+        links_info = [
+            {"text": link.text, "target": link.target, "is_url": link.is_url}
+            for link in skill.links
+        ]
+
         return {
             "name": skill.name,
             "description": skill.description,
             "content": skill.content,
             "allowed_tools": skill.metadata.allowed_tools,
+            "links": links_info,
+        }
+
+    def list_skill_links(self, name: str) -> dict[str, Any]:
+        """
+        List all links discovered in a skill's content.
+
+        Use this to see what references are available before loading them.
+        Links are parsed when the skill loads but content is not fetched
+        until you call resolve_skill_link.
+
+        Args:
+            name: The skill name
+
+        Returns:
+            Dict with list of discovered links, or error if skill not found
+        """
+        skill = self.manager.get_skill(name)
+        if not skill:
+            return {
+                "error": f"Skill not found: {name}",
+                "available_skills": [s.name for s in self.manager.discover_skills()],
+            }
+
+        return {
+            "skill": name,
+            "links": [
+                {
+                    "text": link.text,
+                    "target": link.target,
+                    "is_url": link.is_url,
+                    "line_number": link.line_number,
+                }
+                for link in skill.links
+            ],
+        }
+
+    def resolve_skill_link(self, name: str, target: str) -> dict[str, Any]:
+        """
+        Resolve and fetch a link's content (lazy loading).
+
+        For relative paths: loads from skill directory.
+        For URLs: fetches via HTTP.
+
+        Results are cached so subsequent calls for the same target
+        return immediately.
+
+        Args:
+            name: The skill name
+            target: The link target (relative path or URL)
+
+        Returns:
+            Dict with content, or error if not found/failed
+        """
+        content = self.manager.resolve_skill_link(name, target)
+        if content is None:
+            return {
+                "error": f"Failed to resolve link: {target} in skill {name}",
+                "hint": "Check that the file exists or URL is accessible",
+            }
+
+        return {
+            "skill": name,
+            "target": target,
+            "content": content,
         }
 
     def get_skill_file(self, name: str, filename: str) -> dict[str, Any]:
@@ -469,6 +712,48 @@ SKILL_TOOL_SCHEMAS = [
                 },
             },
             "required": ["name", "filename"],
+        },
+    },
+    {
+        "name": "list_skill_links",
+        "description": (
+            "List all links discovered in a skill's content. Links are parsed "
+            "when the skill loads but content is NOT fetched until you call "
+            "resolve_skill_link. Use this to see what references are available "
+            "before deciding which ones to load."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The skill name",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "resolve_skill_link",
+        "description": (
+            "Resolve and fetch a link's content (lazy loading). For relative "
+            "paths, loads from the skill directory. For URLs, fetches via HTTP. "
+            "Results are cached so subsequent calls return immediately. Use this "
+            "to load referenced content when needed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The skill name",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "The link target (relative path or URL)",
+                },
+            },
+            "required": ["name", "target"],
         },
     },
 ]
