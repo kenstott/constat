@@ -21,7 +21,6 @@ if PROMPT_TOOLKIT_AVAILABLE:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.styles import Style
-    from prompt_toolkit.formatted_text import HTML
 
 
 class InteractiveREPL:
@@ -96,7 +95,7 @@ class InteractiveREPL:
         Uses prompt_toolkit if available, falls back to Rich Prompt.
         Tab accepts the current suggestion, Enter submits.
         """
-        prompt_marker = "> " if has_session else "> "
+        prompt_marker = "> "
 
         if self._prompt_session and PROMPT_TOOLKIT_AVAILABLE:
             # Update suggester context before prompting
@@ -104,11 +103,8 @@ class InteractiveREPL:
                 self.suggester.update_context(self.session)
 
             # Use prompt_toolkit with suggestions
-            # The suggestion appears greyed out, Tab accepts it
-            prompt_html = HTML(
-                f'<style fg="{"cyan" if has_session else "blue"}" bg="" bold="true">{prompt_marker}</style>'
-            )
-            return self._prompt_session.prompt(prompt_html).strip()
+            # Simple prompt without HTML styling to avoid issues
+            return self._prompt_session.prompt(prompt_marker).strip()
         else:
             # Fallback to Rich prompt
             prompt_text = f"[bold cyan]{prompt_marker}[/bold cyan]" if has_session else f"[bold blue]{prompt_marker}[/bold blue]"
