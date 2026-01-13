@@ -484,6 +484,9 @@ class FeedbackDisplay:
         Returns:
             ClarificationResponse with user's answers
         """
+        # Stop any running animation before prompting for input
+        self.stop_spinner()
+
         self.console.print()
         self.console.print(Rule("[bold cyan]Clarification Needed[/bold cyan]", align="left"))
 
