@@ -172,7 +172,7 @@ class FeedbackDisplay:
     def set_problem(self, problem: str) -> None:
         """Set the problem being solved."""
         self.problem = problem
-        self.console.print(Rule("[bold blue]CONSTAT[/bold blue]"))
+        self.console.print(Rule("[bold blue]CONSTAT[/bold blue]", align="left"))
         self.console.print(f"\n[bold]Problem:[/bold] {problem}\n")
 
     def show_plan(self, steps: list[dict]) -> None:
@@ -183,7 +183,7 @@ class FeedbackDisplay:
         ]
 
         # Always show the plan so user knows what's coming
-        self.console.print(Rule("[bold cyan]PLAN[/bold cyan]"))
+        self.console.print(Rule("[bold cyan]PLAN[/bold cyan]", align="left"))
 
         for i, s in enumerate(steps):
             step_num = s.get("number", i+1)
@@ -201,7 +201,7 @@ class FeedbackDisplay:
 
     def start_execution(self) -> None:
         """Start the live execution display."""
-        self.console.print(Rule("[bold cyan]EXECUTING[/bold cyan]"))
+        self.console.print(Rule("[bold cyan]EXECUTING[/bold cyan]", align="left"))
         self._execution_started = True
         if self._use_live_display:
             self.start()
@@ -241,7 +241,7 @@ class FeedbackDisplay:
             self.console.print(Panel(request.reasoning, border_style="dim"))
 
         # Prompt for approval
-        self.console.print(Rule("[bold]Approval Required[/bold]"))
+        self.console.print(Rule("[bold]Approval Required[/bold]", align="left"))
         self.console.print(
             "[bold green][Y][/bold green]es - Execute this plan\n"
             "[bold red][N][/bold red]o  - Cancel and do not execute\n"
@@ -459,13 +459,13 @@ class FeedbackDisplay:
     def show_output(self, output: str) -> None:
         """Show final output."""
         self.console.print("\n[bold]Output:[/bold]")
-        self.console.print(Markdown(output))
+        self.console.print(Markdown(output, justify="left"))
 
     def show_final_answer(self, answer: str) -> None:
         """Show the final synthesized answer prominently."""
         self.console.print()
-        self.console.print(Rule("[bold green]ANSWER[/bold green]"))
-        self.console.print(Markdown(answer))
+        self.console.print(Rule("[bold green]ANSWER[/bold green]", align="left"))
+        self.console.print(Markdown(answer, justify="left"))
         self.console.print()
 
 
