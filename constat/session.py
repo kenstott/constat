@@ -1523,7 +1523,12 @@ Create a clear, direct answer to the user's question. Include:
 2. Key supporting data points or insights
 3. Any notable observations or caveats
 
-Format the answer for readability with markdown. Be concise but complete."""
+**Important formatting rules:**
+- If the user asked for data (list, table, enriched dataset), SHOW THE ACTUAL DATA in a markdown table
+- Don't just say "[data added]" or summarize - display the actual values
+- For enrichment requests, show the enriched table with all columns including new data
+- For small datasets (under 20 rows), show the complete table
+- Use markdown tables with proper formatting"""
 
         result = self.router.execute(
             task_type=TaskType.SUMMARIZATION,
