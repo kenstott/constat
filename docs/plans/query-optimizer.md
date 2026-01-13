@@ -259,6 +259,69 @@ else:
 - Strategy adapts to actual data, not stale estimates
 - Atomic - no partial execution if strategy changes mid-plan
 
+### 9. GraphQL Schema Introspection
+
+GraphQL lacks standardized filtering, but provides introspection. Use a two-layer approach (same as database schemas):
+
+| Layer | What's Cached | When |
+|-------|---------------|------|
+| **Overview** | Query/mutation names, descriptions | At startup |
+| **Detail** | Arguments, filter types, return schema | On-demand via tool |
+
+**Config:**
+```yaml
+apis:
+  countries:
+    type: graphql
+    url: https://countries.trevorblades.com/graphql
+    introspect: true  # Fetch schema at startup
+```
+
+**Startup introspection (cached):**
+```graphql
+query IntrospectionQuery {
+  __schema {
+    queryType { fields { name description } }
+    mutationType { fields { name description } }
+  }
+}
+```
+
+**On-demand tool for code generator:**
+```python
+# Tool: get_graphql_query_schema(api_name, query_name)
+# Returns detailed schema for a specific query
+
+schema = get_graphql_query_schema('countries', 'countries')
+# Returns:
+# {
+#   "name": "countries",
+#   "args": [
+#     {"name": "filter", "type": "CountryFilterInput", "fields": [
+#       {"name": "code", "type": "StringQueryOperatorInput"},
+#       {"name": "continent", "type": "StringQueryOperatorInput"}
+#     ]}
+#   ],
+#   "returns": "Country",
+#   "return_fields": ["code", "name", "currency", "continent", ...]
+# }
+```
+
+**Why this matters:**
+- Planner can push filters to API instead of fetching all + filtering client-side
+- Reduces data transfer (fetch 10 EU countries vs fetch 250 then filter)
+- Enables efficient pagination
+
+**Common filter patterns to recognize:**
+| Pattern | Example | Framework |
+|---------|---------|-----------|
+| Hasura-style | `filter: { continent: { eq: "EU" } }` | Hasura |
+| Prisma-style | `where: { continent: "EU" }` | Prisma/Nexus |
+| Argument-style | `countries(continent: "EU")` | Custom |
+| Relay-style | `first: 10, after: "cursor"` | Relay |
+
+The introspected schema reveals which pattern the API uses.
+
 ## Implementation Phases
 
 ### Phase 1: Telemetry Collection
