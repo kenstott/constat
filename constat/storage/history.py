@@ -45,6 +45,18 @@ class SessionSummary:
     total_duration_ms: int
     user_id: Optional[str] = None
     summary: Optional[str] = None  # Brief description (usually first query)
+    apis: Optional[list[str]] = None  # API names used
+    documents: Optional[list[str]] = None  # Document names used
+    files: Optional[list[str]] = None  # Session-added file names
+
+    def __post_init__(self):
+        """Initialize optional lists."""
+        if self.apis is None:
+            self.apis = []
+        if self.documents is None:
+            self.documents = []
+        if self.files is None:
+            self.files = []
 
 
 @dataclass
@@ -132,6 +144,8 @@ class SessionHistory:
         self,
         config_dict: dict,
         databases: list[str],
+        apis: Optional[list[str]] = None,
+        documents: Optional[list[str]] = None,
     ) -> str:
         """
         Create a new session.
@@ -139,6 +153,8 @@ class SessionHistory:
         Args:
             config_dict: Configuration dictionary for hash generation
             databases: List of database names in this session
+            apis: List of API names in this session
+            documents: List of document names in this session
 
         Returns:
             session_id: Unique identifier for this session
@@ -154,6 +170,9 @@ class SessionHistory:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "config_hash": self._hash_config(config_dict),
             "databases": databases,
+            "apis": apis or [],
+            "documents": documents or [],
+            "files": [],  # Session-added files (updated during session)
             "status": "running",
             "total_queries": 0,
             "total_duration_ms": 0,
@@ -322,6 +341,9 @@ class SessionHistory:
                     total_duration_ms=metadata.get("total_duration_ms", 0),
                     user_id=metadata.get("user_id"),
                     summary=metadata.get("summary"),
+                    apis=metadata.get("apis", []),
+                    documents=metadata.get("documents", []),
+                    files=metadata.get("files", []),
                 ))
 
                 if len(sessions) >= limit:

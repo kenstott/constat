@@ -433,6 +433,10 @@ class Session:
         # Central registry for tables and artifacts (shared across sessions)
         self.registry = ConstatRegistry(base_dir=Path(".constat"))
 
+        # Session-scoped data sources (added via /database and /file commands)
+        self.session_databases: dict[str, dict] = {}  # name -> {type, uri, description}
+        self.session_files: dict[str, dict] = {}  # name -> {uri, auth, description}
+
         # Fact resolver for auditable mode
         self.fact_resolver = FactResolver(
             llm=self.llm,
@@ -740,6 +744,7 @@ class Session:
                 session_id=self.session_id,
                 user_id=self.user_id,
                 registry=self.registry,
+                open_with_system_viewer=self.config.execution.open_with_system_viewer,
             ),  # Visualization/file output helper
         }
 
@@ -2063,9 +2068,13 @@ Please create a revised plan that addresses this feedback."""
 
         # Create session
         db_names = list(self.config.databases.keys())
+        api_names = list(self.config.apis.keys()) if self.config.apis else []
+        doc_names = list(self.config.documents.keys()) if self.config.documents else []
         self.session_id = self.history.create_session(
             config_dict=self.config.model_dump(),
             databases=db_names,
+            apis=api_names,
+            documents=doc_names,
         )
 
         # Initialize session state
@@ -3745,6 +3754,166 @@ If you don't have enough information, say so rather than guessing."""
             "completed_steps": self.plan.completed_steps if self.plan else [],
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
         }
+
+    # --- Session Data Sources ---
+
+    def add_database(
+        self,
+        name: str,
+        db_type: str,
+        uri: str,
+        description: str = "",
+    ) -> bool:
+        """Add a database to the current session.
+
+        The database will be available as `db_<name>` in code execution.
+
+        Args:
+            name: Database name (used as db_<name> variable)
+            db_type: Database type (sql, csv, json, parquet, mongodb, etc.)
+            uri: Connection URI or file path
+            description: Human-readable description
+
+        Returns:
+            True if added successfully
+        """
+        self.session_databases[name] = {
+            "type": db_type,
+            "uri": uri,
+            "description": description,
+        }
+        return True
+
+    def add_file(
+        self,
+        name: str,
+        uri: str,
+        auth: str = "",
+        description: str = "",
+    ) -> bool:
+        """Add a file to the current session.
+
+        The file will be available as `file_<name>` in code execution.
+        For local files, this is a Path. For HTTP files, content is fetched on-demand.
+
+        Args:
+            name: File name (used as file_<name> variable)
+            uri: File URI (file:// or http://)
+            auth: Auth header for HTTP (e.g., "Bearer token123")
+            description: Human-readable description
+
+        Returns:
+            True if added successfully
+        """
+        self.session_files[name] = {
+            "uri": uri,
+            "auth": auth,
+            "description": description,
+        }
+        return True
+
+    def get_all_databases(self) -> dict[str, dict]:
+        """Get all databases (config + session-added).
+
+        Returns:
+            Dict of name -> {type, uri, description, source}
+        """
+        from constat.storage.bookmarks import BookmarkStore
+
+        result = {}
+
+        # Config databases
+        for name, db_config in self.config.databases.items():
+            result[name] = {
+                "type": db_config.type or "sql",
+                "uri": db_config.uri or db_config.path or "",
+                "description": db_config.description or "",
+                "source": "config",
+            }
+
+        # Bookmarked databases
+        bookmarks = BookmarkStore()
+        for name, bm in bookmarks.list_databases().items():
+            if name not in result:  # Don't override config
+                result[name] = {
+                    "type": bm["type"],
+                    "uri": bm["uri"],
+                    "description": bm["description"],
+                    "source": "bookmark",
+                }
+
+        # Session databases
+        for name, db in self.session_databases.items():
+            result[name] = {
+                "type": db["type"],
+                "uri": db["uri"],
+                "description": db["description"],
+                "source": "session",
+            }
+
+        return result
+
+    def get_all_files(self) -> dict[str, dict]:
+        """Get all files (config documents + file sources + bookmarks + session).
+
+        Returns:
+            Dict of name -> {uri, description, auth, source, file_type}
+        """
+        from constat.storage.bookmarks import BookmarkStore
+
+        result = {}
+
+        # Config documents
+        if self.config.documents:
+            for name, doc_config in self.config.documents.items():
+                uri = ""
+                if doc_config.path:
+                    uri = f"file://{doc_config.path}"
+                elif doc_config.url:
+                    uri = doc_config.url
+                result[name] = {
+                    "uri": uri,
+                    "description": doc_config.description or "",
+                    "auth": "",
+                    "source": "config",
+                    "file_type": "document",
+                }
+
+        # Config file-type databases (csv, json, parquet)
+        for name, db_config in self.config.databases.items():
+            if db_config.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather"):
+                path = db_config.path or db_config.uri or ""
+                result[name] = {
+                    "uri": f"file://{path}" if not path.startswith(("file://", "http")) else path,
+                    "description": db_config.description or "",
+                    "auth": "",
+                    "source": "config",
+                    "file_type": db_config.type,
+                }
+
+        # Bookmarked files
+        bookmarks = BookmarkStore()
+        for name, bm in bookmarks.list_files().items():
+            if name not in result:  # Don't override config
+                result[name] = {
+                    "uri": bm["uri"],
+                    "description": bm["description"],
+                    "auth": bm.get("auth", ""),
+                    "source": "bookmark",
+                    "file_type": "file",
+                }
+
+        # Session files
+        for name, f in self.session_files.items():
+            result[name] = {
+                "uri": f["uri"],
+                "description": f["description"],
+                "auth": f.get("auth", ""),
+                "source": "session",
+                "file_type": "file",
+            }
+
+        return result
 
     # --- Context Management ---
 

@@ -41,7 +41,9 @@ REPL_COMMANDS = [
     "/update", "/refresh", "/reset", "/user", "/save", "/share", "/sharewith",
     "/plans", "/replay", "/history", "/sessions", "/resume", "/restore",
     "/context", "/compact", "/facts", "/remember", "/forget",
-    "/verbose", "/raw", "/insights", "/preferences", "/artifacts", "/quit", "/exit", "/q"
+    "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
+    "/database", "/databases", "/db", "/file", "/files",
+    "/quit", "/exit", "/q"
 ]
 
 # Use readline for tab completion (works reliably across terminals)
@@ -273,6 +275,14 @@ class InteractiveREPL:
             ("/insights [on|off]", "Toggle or set insight synthesis"),
             ("/preferences", "Show current preferences"),
             ("/artifacts", "Show saved artifacts with file:// URIs"),
+            ("/database, /databases, /db", "List or manage databases"),
+            ("/database save <n> <t> <uri>", "Save database bookmark"),
+            ("/database delete <name>", "Delete database bookmark"),
+            ("/database <name>", "Use bookmarked database"),
+            ("/file, /files", "List all data files"),
+            ("/file save <n> <uri>", "Save file bookmark"),
+            ("/file delete <name>", "Delete file bookmark"),
+            ("/file <name>", "Use bookmarked file"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -377,6 +387,303 @@ class InteractiveREPL:
 
         if not has_artifacts:
             self.console.print("[dim]No artifacts in this session.[/dim]")
+
+    def _handle_database(self, arg: str) -> None:
+        """Handle /database command variants.
+
+        /database                           - List all databases
+        /database save <name> <type> <uri> [--desc "..."]  - Save bookmark
+        /database delete <name>             - Delete bookmark
+        /database <name>                    - Use bookmark in session
+        /database <name> <type> <uri> [--desc "..."]  - Add for this session only
+        """
+        from constat.storage.bookmarks import BookmarkStore
+
+        if not arg:
+            # List all databases
+            self._show_databases()
+            return
+
+        parts = arg.split()
+        subcommand = parts[0].lower()
+
+        if subcommand == "save" and len(parts) >= 4:
+            # /database save <name> <type> <uri> [--desc "..."]
+            name, db_type, uri = parts[1], parts[2], parts[3]
+            description = self._extract_flag(arg, "--desc") or ""
+            bookmarks = BookmarkStore()
+            bookmarks.save_database(name, db_type, uri, description)
+            self.console.print(f"[green]Saved database bookmark:[/green] {name}")
+
+        elif subcommand == "delete" and len(parts) >= 2:
+            # /database delete <name>
+            name = parts[1]
+            bookmarks = BookmarkStore()
+            if bookmarks.delete_database(name):
+                self.console.print(f"[green]Deleted database bookmark:[/green] {name}")
+            else:
+                self.console.print(f"[yellow]Bookmark not found:[/yellow] {name}")
+
+        elif len(parts) == 1:
+            # /database <name> - Use bookmark
+            name = parts[0]
+            bookmarks = BookmarkStore()
+            bm = bookmarks.get_database(name)
+            if bm:
+                if self.session:
+                    self.session.add_database(name, bm["type"], bm["uri"], bm["description"])
+                    self.console.print(f"[green]Added database to session:[/green] {name} ({bm['type']})")
+                else:
+                    self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
+            else:
+                self.console.print(f"[yellow]Bookmark not found:[/yellow] {name}")
+
+        elif len(parts) >= 3:
+            # /database <name> <type> <uri> [--desc "..."] - Session-only
+            name, db_type, uri = parts[0], parts[1], parts[2]
+            description = self._extract_flag(arg, "--desc") or ""
+            if self.session:
+                self.session.add_database(name, db_type, uri, description)
+                self.console.print(f"[green]Added database to session:[/green] {name} ({db_type})")
+            else:
+                self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
+
+        else:
+            self.console.print("[yellow]Usage: /database [save|delete] <name> [<type> <uri>] [--desc \"...\"][/yellow]")
+
+    def _handle_file(self, arg: str) -> None:
+        """Handle /file command variants.
+
+        /file                               - List all files
+        /file save <name> <uri> [--auth "..."] [--desc "..."]  - Save bookmark
+        /file delete <name>                 - Delete bookmark
+        /file <name>                        - Use bookmark in session
+        /file <name> <uri> [--auth "..."] [--desc "..."]  - Add for this session only
+        """
+        from constat.storage.bookmarks import BookmarkStore
+
+        if not arg:
+            # List all files
+            self._show_files()
+            return
+
+        parts = arg.split()
+        subcommand = parts[0].lower()
+
+        if subcommand == "save" and len(parts) >= 3:
+            # /file save <name> <uri> [--auth "..."] [--desc "..."]
+            name, uri = parts[1], parts[2]
+            auth = self._extract_flag(arg, "--auth") or ""
+            description = self._extract_flag(arg, "--desc") or ""
+            bookmarks = BookmarkStore()
+            bookmarks.save_file(name, uri, description, auth)
+            self.console.print(f"[green]Saved file bookmark:[/green] {name}")
+
+        elif subcommand == "delete" and len(parts) >= 2:
+            # /file delete <name>
+            name = parts[1]
+            bookmarks = BookmarkStore()
+            if bookmarks.delete_file(name):
+                self.console.print(f"[green]Deleted file bookmark:[/green] {name}")
+            else:
+                self.console.print(f"[yellow]Bookmark not found:[/yellow] {name}")
+
+        elif len(parts) == 1:
+            # /file <name> - Use bookmark
+            name = parts[0]
+            bookmarks = BookmarkStore()
+            bm = bookmarks.get_file(name)
+            if bm:
+                if self.session:
+                    self.session.add_file(name, bm["uri"], bm.get("auth", ""), bm["description"])
+                    self.console.print(f"[green]Added file to session:[/green] {name}")
+                else:
+                    self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
+            else:
+                self.console.print(f"[yellow]Bookmark not found:[/yellow] {name}")
+
+        elif len(parts) >= 2:
+            # /file <name> <uri> [--auth "..."] [--desc "..."] - Session-only
+            name, uri = parts[0], parts[1]
+            auth = self._extract_flag(arg, "--auth") or ""
+            description = self._extract_flag(arg, "--desc") or ""
+            if self.session:
+                self.session.add_file(name, uri, auth, description)
+                self.console.print(f"[green]Added file to session:[/green] {name}")
+            else:
+                self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
+
+        else:
+            self.console.print("[yellow]Usage: /file [save|delete] <name> [<uri>] [--auth \"...\"] [--desc \"...\"][/yellow]")
+
+    def _extract_flag(self, text: str, flag: str) -> Optional[str]:
+        """Extract a flag value from command text.
+
+        Handles both --flag "quoted value" and --flag value formats.
+        """
+        import re
+
+        # Try quoted value first
+        pattern = rf'{flag}\s+"([^"]*)"'
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+
+        # Try unquoted value (next word after flag)
+        pattern = rf'{flag}\s+(\S+)'
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+
+        return None
+
+    def _show_databases(self) -> None:
+        """Show all databases (config + bookmarks + session)."""
+        from constat.storage.bookmarks import BookmarkStore
+
+        # Group databases by source
+        config_dbs = {}
+        bookmark_dbs = {}
+        session_dbs = {}
+
+        # Get from session if available
+        if self.session:
+            all_dbs = self.session.get_all_databases()
+            for name, db in all_dbs.items():
+                if db["source"] == "config":
+                    config_dbs[name] = db
+                elif db["source"] == "bookmark":
+                    bookmark_dbs[name] = db
+                elif db["source"] == "session":
+                    session_dbs[name] = db
+        else:
+            # No session - show config and bookmarks only
+            if self.config and self.config.databases:
+                for name, db_config in self.config.databases.items():
+                    config_dbs[name] = {
+                        "type": db_config.type or "sql",
+                        "uri": db_config.uri or db_config.path or "",
+                        "description": db_config.description or "",
+                    }
+            bookmarks = BookmarkStore()
+            bookmark_dbs = bookmarks.list_databases()
+
+        has_any = config_dbs or bookmark_dbs or session_dbs
+        if not has_any:
+            self.console.print("[dim]No databases configured.[/dim]")
+            return
+
+        if config_dbs:
+            self.console.print(f"\n[bold]Config Databases[/bold] ({len(config_dbs)})")
+            for name, db in config_dbs.items():
+                uri_display = self._mask_credentials(db["uri"])
+                self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
+                if db["description"]:
+                    self.console.print(f"    {db['description']}")
+                self.console.print(f"    [dim]{uri_display}[/dim]")
+
+        if bookmark_dbs:
+            self.console.print(f"\n[bold]Bookmarked Databases[/bold] ({len(bookmark_dbs)})")
+            for name, db in bookmark_dbs.items():
+                uri_display = self._mask_credentials(db["uri"])
+                self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
+                if db["description"]:
+                    self.console.print(f"    {db['description']}")
+                self.console.print(f"    [dim]{uri_display}[/dim]")
+
+        if session_dbs:
+            self.console.print(f"\n[bold]Session Databases[/bold] ({len(session_dbs)})")
+            for name, db in session_dbs.items():
+                uri_display = self._mask_credentials(db["uri"])
+                self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
+                if db["description"]:
+                    self.console.print(f"    {db['description']}")
+                self.console.print(f"    [dim]{uri_display}[/dim]")
+
+    def _show_files(self) -> None:
+        """Show all files (config docs + file sources + bookmarks + session)."""
+        from constat.storage.bookmarks import BookmarkStore
+
+        # Group files by source
+        config_files = {}
+        bookmark_files = {}
+        session_files = {}
+
+        # Get from session if available
+        if self.session:
+            all_files = self.session.get_all_files()
+            for name, f in all_files.items():
+                if f["source"] == "config":
+                    config_files[name] = f
+                elif f["source"] == "bookmark":
+                    bookmark_files[name] = f
+                elif f["source"] == "session":
+                    session_files[name] = f
+        else:
+            # No session - show config and bookmarks only
+            if self.config:
+                # Documents
+                if self.config.documents:
+                    for name, doc in self.config.documents.items():
+                        uri = ""
+                        if doc.path:
+                            uri = f"file://{doc.path}"
+                        elif doc.url:
+                            uri = doc.url
+                        config_files[name] = {
+                            "uri": uri,
+                            "description": doc.description or "",
+                            "file_type": "document",
+                        }
+                # File-type databases
+                for name, db in self.config.databases.items():
+                    if db.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather"):
+                        path = db.path or db.uri or ""
+                        config_files[name] = {
+                            "uri": f"file://{path}" if not path.startswith(("file://", "http")) else path,
+                            "description": db.description or "",
+                            "file_type": db.type,
+                        }
+            bookmarks = BookmarkStore()
+            bookmark_files = bookmarks.list_files()
+
+        has_any = config_files or bookmark_files or session_files
+        if not has_any:
+            self.console.print("[dim]No files configured.[/dim]")
+            return
+
+        if config_files:
+            self.console.print(f"\n[bold]Config Files[/bold] ({len(config_files)})")
+            for name, f in config_files.items():
+                file_type = f.get("file_type", "file")
+                self.console.print(f"  [cyan]{name}[/cyan] [dim]({file_type})[/dim]")
+                if f.get("description"):
+                    self.console.print(f"    {f['description']}")
+                self.console.print(f"    [dim]{f['uri']}[/dim]")
+
+        if bookmark_files:
+            self.console.print(f"\n[bold]Bookmarked Files[/bold] ({len(bookmark_files)})")
+            for name, f in bookmark_files.items():
+                auth_status = " [auth]" if f.get("auth") else ""
+                self.console.print(f"  [cyan]{name}[/cyan]{auth_status}")
+                if f.get("description"):
+                    self.console.print(f"    {f['description']}")
+                self.console.print(f"    [dim]{f['uri']}[/dim]")
+
+        if session_files:
+            self.console.print(f"\n[bold]Session Files[/bold] ({len(session_files)})")
+            for name, f in session_files.items():
+                auth_status = " [auth]" if f.get("auth") else ""
+                self.console.print(f"  [cyan]{name}[/cyan]{auth_status}")
+                if f.get("description"):
+                    self.console.print(f"    {f['description']}")
+                self.console.print(f"    [dim]{f['uri']}[/dim]")
+
+    def _mask_credentials(self, uri: str) -> str:
+        """Mask credentials in a URI for display."""
+        import re
+        # Mask password in URIs like postgresql://user:password@host
+        return re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', uri)
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""
@@ -977,6 +1284,10 @@ class InteractiveREPL:
             self._show_preferences()
         elif cmd == "/artifacts":
             self._show_artifacts()
+        elif cmd in ("/database", "/databases", "/db"):
+            self._handle_database(arg)
+        elif cmd in ("/file", "/files"):
+            self._handle_file(arg)
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 
