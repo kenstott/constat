@@ -138,7 +138,8 @@ PLANNER_PROMPT_TEMPLATE = """{system_prompt}
 {api_overview}
 {doc_overview}
 ## Domain Context
-{domain_context}"""
+{domain_context}
+{user_facts}"""
 
 
 class Planner:
@@ -157,6 +158,7 @@ class Planner:
     ):
         self.config = config
         self.schema_manager = schema_manager
+        self._user_facts: dict = {}  # name -> value mapping
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -169,6 +171,14 @@ class Planner:
             # Create a router from config
             self.router = TaskRouter(config.llm)
             self.llm = None
+
+    def set_user_facts(self, facts: dict) -> None:
+        """Set user facts for inclusion in planning prompts.
+
+        Args:
+            facts: Dictionary of fact_name -> value (e.g., {"user_email": "ken@example.com"})
+        """
+        self._user_facts = facts or {}
 
     def _build_system_prompt(self) -> str:
         """Build the full system prompt for planning."""
@@ -194,12 +204,21 @@ class Planner:
                 doc_lines.append(f"- **{name}**: {desc}")
             doc_overview = "\n".join(doc_lines)
 
+        # Build user facts section - essential for using correct values like email addresses
+        user_facts_text = ""
+        if self._user_facts:
+            fact_lines = ["\n## Known User Facts (use these exact values)"]
+            for name, value in self._user_facts.items():
+                fact_lines.append(f"- **{name}**: {value}")
+            user_facts_text = "\n".join(fact_lines)
+
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             schema_overview=self.schema_manager.get_overview(),
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
+            user_facts=user_facts_text,
         )
 
     def _get_tool_handlers(self) -> dict:

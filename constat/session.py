@@ -292,7 +292,7 @@ STEP_PROMPT_TEMPLATE = """{system_prompt}
 {api_overview}
 ## Domain Context
 {domain_context}
-
+{user_facts}
 ## Intermediate Tables (from previous steps)
 {datastore_tables}
 
@@ -513,6 +513,16 @@ class Session:
             data=data,
         ))
 
+    def _sync_user_facts_to_planner(self) -> None:
+        """Sync current user facts to the planner for use in planning prompts."""
+        try:
+            all_facts = self.fact_resolver.get_all_facts()
+            # Convert Fact objects to simple name -> value dict
+            facts_dict = {name: fact.value for name, fact in all_facts.items()}
+            self.planner.set_user_facts(facts_dict)
+        except Exception:
+            pass  # Continue without facts if there's an error
+
     def _build_step_prompt(self, step: Step) -> str:
         """Build the prompt for generating step code."""
         # Format datastore tables info
@@ -549,11 +559,24 @@ class Session:
                 api_lines.append(f"- **api_{name}** ({api_type}): {desc}")
             api_overview = "\n".join(api_lines)
 
+        # Build user facts section - essential for code gen to use correct values
+        user_facts_text = ""
+        try:
+            all_facts = self.fact_resolver.get_all_facts()
+            if all_facts:
+                fact_lines = ["\n## Known User Facts (use these values in code)"]
+                for name, fact in all_facts.items():
+                    fact_lines.append(f"- **{name}**: {fact.value}")
+                user_facts_text = "\n".join(fact_lines)
+        except Exception:
+            pass
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
             schema_overview=schema_overview,
             api_overview=api_overview,
             domain_context=self.config.system_prompt or "No additional context.",
+            user_facts=user_facts_text,
             datastore_tables=datastore_info,
             scratchpad=scratchpad_context,
             step_number=step.number,
@@ -2023,6 +2046,7 @@ User feedback on previous plan:
 
 Please create a revised plan that addresses this feedback."""
 
+        self._sync_user_facts_to_planner()
         return self.planner.plan(enhanced_problem)
 
     def solve(self, problem: str) -> dict:
@@ -2168,6 +2192,9 @@ Please create a revised plan that addresses this feedback."""
                 step_number=0,
                 data={"message": "Analyzing data sources and creating plan..."}
             ))
+
+            # Sync user facts to planner before generating plan
+            self._sync_user_facts_to_planner()
 
             # Generate plan
             planner_response = self.planner.plan(current_problem)
@@ -2737,6 +2764,9 @@ Follow-up question: {question}
             data={"message": "Planning follow-up analysis..."}
         ))
 
+        # Sync user facts to planner before generating plan
+        self._sync_user_facts_to_planner()
+
         # Generate plan for follow-up
         planner_response = self.planner.plan(context_prompt)
         follow_up_plan = planner_response.plan
@@ -2801,6 +2831,7 @@ User feedback: {approval.suggestion}
                     data={"feedback": approval.suggestion}
                 ))
 
+                self._sync_user_facts_to_planner()
                 planner_response = self.planner.plan(context_prompt_with_feedback)
                 follow_up_plan = planner_response.plan
 
