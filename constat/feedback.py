@@ -444,7 +444,7 @@ class FeedbackDisplay:
         """Display the execution plan.
 
         Args:
-            steps: List of step dicts with number, goal, depends_on
+            steps: List of step dicts with number, goal, depends_on, type (optional)
             is_followup: If True, continue step numbering from previous plan
         """
         # Determine starting step number
@@ -475,14 +475,30 @@ class FeedbackDisplay:
         # Always show the plan so user knows what's coming
         self.console.print(Rule("[bold cyan]PLAN[/bold cyan]", align="left"))
 
+        # Check if this is an auditable proof structure (has type field)
+        is_proof_structure = any(s.get("type") in ("premise", "inference", "conclusion") for s in steps)
+        current_section = None
+
         for i, s in enumerate(steps):
             display_num = self._step_number_map.get(s.get("number", i + 1), start_num + i)
             goal = s.get("goal", "")
             depends_on = s.get("depends_on", [])
+            step_type = s.get("type")
+
+            # Show section headers for proof structure
+            if is_proof_structure and step_type != current_section:
+                current_section = step_type
+                if step_type == "premise":
+                    self.console.print("\n  [bold yellow]PREMISES[/bold yellow] [dim](facts to retrieve from sources)[/dim]")
+                elif step_type == "inference":
+                    self.console.print("\n  [bold yellow]INFERENCES[/bold yellow] [dim](facts derived from premises)[/dim]")
+                elif step_type == "conclusion":
+                    self.console.print("\n  [bold yellow]CONCLUSION[/bold yellow]")
 
             # Format dependency info with remapped step numbers
             dep_str = ""
-            if depends_on:
+            if depends_on and not is_proof_structure:
+                # Only show depends_on for non-proof plans (proof structure is implicit)
                 remapped_deps = [str(self._step_number_map.get(d, d)) for d in depends_on]
                 dep_str = f" [dim](depends on {', '.join(remapped_deps)})[/dim]"
 
