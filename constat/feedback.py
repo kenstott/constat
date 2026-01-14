@@ -31,6 +31,45 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
+
+# Patterns that indicate a request to switch execution mode
+MODE_SWITCH_PATTERNS = {
+    ExecutionMode.AUDITABLE: [
+        "use auditable",
+        "switch to auditable",
+        "auditable mode",
+        "auditable",
+        "verify mode",
+        "verification mode",
+    ],
+    ExecutionMode.EXPLORATORY: [
+        "use exploratory",
+        "switch to exploratory",
+        "exploratory mode",
+        "exploratory",
+        "explore mode",
+        "exploration mode",
+        "stepwise",
+        "multi-step",
+    ],
+}
+
+
+def detect_mode_switch(text: str) -> ExecutionMode | None:
+    """Detect if the user is requesting a mode switch.
+
+    Args:
+        text: User input text
+
+    Returns:
+        Target ExecutionMode if a switch is requested, None otherwise
+    """
+    text_lower = text.lower().strip()
+    for mode, patterns in MODE_SWITCH_PATTERNS.items():
+        for pattern in patterns:
+            if pattern in text_lower:
+                return mode
+    return None
 from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
 
 
@@ -509,6 +548,17 @@ class FeedbackDisplay:
             # Slash commands - pass through to REPL for global handling
             elif response.startswith("/"):
                 return PlanApprovalResponse.pass_command(response)
+
+            # Check for mode switch request
+            target_mode = detect_mode_switch(response)
+            if target_mode is not None:
+                # Check if already in this mode
+                if target_mode == request.mode:
+                    self.console.print(f"[dim]Already in {target_mode.value} mode.[/dim]")
+                    continue  # Ask again
+                else:
+                    self.console.print(f"[yellow]Switching to {target_mode.value} mode and replanning...[/yellow]\n")
+                    return PlanApprovalResponse.switch_mode(target_mode)
 
             # Anything else is steering feedback
             else:

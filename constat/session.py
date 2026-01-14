@@ -16,6 +16,7 @@ from constat.execution.scratchpad import Scratchpad
 from constat.execution.fact_resolver import FactResolver, FactSource
 from constat.execution.mode import (
     ExecutionMode,
+    ModeSelection,
     suggest_mode,
     PlanApproval,
     PlanApprovalRequest,
@@ -1964,6 +1965,39 @@ Please create a revised plan that addresses this feedback."""
                     # Replan with feedback
                     current_problem = f"{problem}\n\nUser feedback: {approval.suggestion}"
                     continue  # Go back to planning
+
+                elif approval.decision == PlanApproval.MODE_SWITCH:
+                    # User wants to switch execution mode
+                    target_mode = approval.target_mode
+
+                    # Emit mode switch event
+                    self._emit_event(StepEvent(
+                        event_type="mode_switch",
+                        step_number=0,
+                        data={
+                            "mode": target_mode.value,
+                            "matched_keywords": ["user request"],
+                        }
+                    ))
+
+                    # If switching to auditable mode, use the auditable solver
+                    if target_mode == ExecutionMode.AUDITABLE:
+                        mode_selection = ModeSelection(
+                            mode=ExecutionMode.AUDITABLE,
+                            confidence=1.0,
+                            reasoning="User requested auditable mode",
+                            matched_keywords=["user request"],
+                        )
+                        return self._solve_auditable(problem, mode_selection)
+
+                    # Otherwise continue with exploratory mode (replan)
+                    mode_selection = ModeSelection(
+                        mode=ExecutionMode.EXPLORATORY,
+                        confidence=1.0,
+                        reasoning="User requested exploratory mode",
+                        matched_keywords=["user request"],
+                    )
+                    continue  # Go back to planning with new mode
 
                 # APPROVE - proceed with execution
                 break

@@ -263,6 +263,9 @@ class PlanApproval(Enum):
     COMMAND = "command"
     """User entered a slash command - pass back to REPL for handling."""
 
+    MODE_SWITCH = "mode_switch"
+    """User wants to switch execution mode (e.g., exploratory <-> auditable)."""
+
 
 @dataclass
 class PlanApprovalRequest:
@@ -301,6 +304,7 @@ class PlanApprovalResponse:
     suggestion: Optional[str] = None  # Feedback if decision is SUGGEST
     reason: Optional[str] = None  # Optional explanation for rejection
     command: Optional[str] = None  # Slash command if decision is COMMAND
+    target_mode: Optional[ExecutionMode] = None  # Target mode if decision is MODE_SWITCH
 
     @classmethod
     def approve(cls) -> "PlanApprovalResponse":
@@ -321,3 +325,8 @@ class PlanApprovalResponse:
     def pass_command(cls, command: str) -> "PlanApprovalResponse":
         """Create a command pass-through response."""
         return cls(decision=PlanApproval.COMMAND, command=command)
+
+    @classmethod
+    def switch_mode(cls, target_mode: ExecutionMode) -> "PlanApprovalResponse":
+        """Create a mode switch response."""
+        return cls(decision=PlanApproval.MODE_SWITCH, target_mode=target_mode)
