@@ -78,8 +78,14 @@ def detect_mode_switch(text: str) -> ExecutionMode | None:
     text_lower = text.lower().strip()
     for mode, patterns in MODE_SWITCH_PATTERNS.items():
         for pattern in patterns:
-            if pattern in text_lower:
-                return mode
+            # Single-char shortcuts require exact match to avoid false positives
+            # e.g., "a" shouldn't match "use a filter"
+            if len(pattern) == 1:
+                if text_lower == pattern:
+                    return mode
+            else:
+                if pattern in text_lower:
+                    return mode
     return None
 from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
 
