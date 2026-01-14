@@ -1506,7 +1506,12 @@ SUGGESTIONS: <suggestion1> | <suggestion2>
 Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach.
 Do NOT flag as ambiguous if an available API can fulfill the data requirement.
 Do NOT ask about information already provided in Known User Facts.
-Provide practical suggested answers based on what's in the data."""
+
+CRITICAL: Only suggest options that can be answered with the AVAILABLE DATA shown above.
+- If asking about data types (subscriptions vs transactions), only offer options that exist in the schema
+- If the schema shows only transactional order data, don't suggest "subscription billing data"
+- Base suggestions on actual tables/columns available, not theoretical data structures
+- Provide practical suggested answers based on what's ACTUALLY in the data."""
 
         try:
             result = self.router.execute(
