@@ -2642,7 +2642,7 @@ User feedback: {approval.suggestion}
                 for name, api in self.config.apis.items()
             )
 
-        fact_plan_prompt = f"""Analyze this verification request and identify the specific facts needed.
+        fact_plan_prompt = f"""Construct a logical proof for this verification request.
 
 Problem: {problem}
 
@@ -2651,26 +2651,35 @@ Available databases:
 {doc_list}
 {api_list}
 
-Identify ALL facts needed to verify this claim. For each fact, specify:
-1. The fact name (short identifier)
-2. Description of what the fact represents
-3. Specific source - use one of these formats:
-   - database:<db_name> (for SQL queries)
-   - document:<doc_name> (for reference documents)
-   - api:<api_name>:<endpoint_uri> (for REST, include full URI with query params, e.g., "GET /api/v1/orders?status=completed")
-   - api:<api_name>:<query_name> (for GraphQL, include query/mutation name, e.g., "query GetOrdersByStatus")
-4. Dependencies - list any other facts this depends on (leave empty if independent)
+Build a formal proof with:
+1. PREMISES - Base facts that must be retrieved from data sources (not derived)
+2. INFERENCE - Logical steps that derive new facts from premises using specific operations
+3. CONCLUSION - The final answer derived from the inference steps
+
+For each PREMISE, specify the source:
+- database:<db_name> (for SQL queries)
+- document:<doc_name> (for reference documents)
+- api:<api_name>:<query_name> (for API calls)
+
+For each INFERENCE step, specify:
+- What premises/prior inferences it uses
+- The operation (e.g., subtract, divide, compare, aggregate, filter)
 
 Format as:
 CLAIM: <the claim being verified>
 
-REQUIRED FACTS:
-- <fact_name>: <description> [source: <specific source>] [depends_on: <comma-separated fact names or NONE>]
-- <fact_name>: <description> [source: <specific source>] [depends_on: <comma-separated fact names or NONE>]
+PREMISES:
+P1: <fact_name> = ? (<description>) [source: <specific source>]
+P2: <fact_name> = ? (<description>) [source: <specific source>]
 ...
 
-DERIVATION LOGIC:
-<How these facts combine to answer the verification question - be specific about the calculation or comparison>
+INFERENCE:
+I1: <derived_fact> = <operation>(<inputs>) -- <explanation>
+I2: <derived_fact> = <operation>(<inputs>) -- <explanation>
+...
+
+CONCLUSION:
+C: <how the final inference answers the claim>
 """
 
         result = self.router.execute(
@@ -2681,10 +2690,12 @@ DERIVATION LOGIC:
         )
         fact_plan_text = result.content
 
-        # Parse the fact plan
+        # Parse the proof structure
+        import re
         claim = ""
-        required_facts = []
-        derivation_logic = ""
+        premises = []  # P1, P2, ... - base facts from sources
+        inferences = []  # I1, I2, ... - derived facts
+        conclusion = ""
 
         lines = fact_plan_text.split("\n")
         current_section = None
@@ -2692,85 +2703,103 @@ DERIVATION LOGIC:
             line = line.strip()
             if line.startswith("CLAIM:"):
                 claim = line.split("CLAIM:", 1)[1].strip()
-            elif line.startswith("REQUIRED FACTS:"):
-                current_section = "facts"
-            elif line.startswith("DERIVATION LOGIC:"):
-                current_section = "derivation"
-            elif current_section == "facts" and line.startswith("- "):
-                fact_part = line[2:].strip()
-                if ":" in fact_part:
-                    fact_name, rest = fact_part.split(":", 1)
-                    # Parse dependencies from the description
-                    # Format: description [source: xxx] [depends_on: a, b, c]
-                    depends_on = []
-                    description = rest.strip()
-                    if "[depends_on:" in description.lower():
-                        import re
-                        dep_match = re.search(r'\[depends_on:\s*([^\]]+)\]', description, re.IGNORECASE)
-                        if dep_match:
-                            dep_str = dep_match.group(1).strip()
-                            if dep_str.upper() != "NONE" and dep_str:
-                                depends_on = [d.strip() for d in dep_str.split(",") if d.strip()]
-                            # Remove the depends_on from description
-                            description = re.sub(r'\s*\[depends_on:\s*[^\]]+\]', '', description, flags=re.IGNORECASE).strip()
-                    required_facts.append({
-                        "name": fact_name.strip(),
-                        "description": description,
-                        "depends_on": depends_on,
+            elif line.startswith("PREMISES:"):
+                current_section = "premises"
+            elif line.startswith("INFERENCE:"):
+                current_section = "inference"
+            elif line.startswith("CONCLUSION:"):
+                current_section = "conclusion"
+            elif current_section == "premises" and re.match(r'^P\d+:', line):
+                # Parse: P1: fact_name = ? (description) [source: xxx]
+                match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*\?\s*\(([^)]+)\)\s*\[source:\s*([^\]]+)\]', line)
+                if match:
+                    premises.append({
+                        "id": match.group(1),
+                        "name": match.group(2).strip(),
+                        "description": match.group(3).strip(),
+                        "source": match.group(4).strip(),
                     })
-            elif current_section == "derivation" and line:
-                derivation_logic += line + "\n"
+            elif current_section == "inference" and re.match(r'^I\d+:', line):
+                # Parse: I1: derived_fact = operation(inputs) -- explanation
+                match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+?)\s*--\s*(.+)$', line)
+                if match:
+                    inferences.append({
+                        "id": match.group(1),
+                        "name": match.group(2).strip(),
+                        "operation": match.group(3).strip(),
+                        "explanation": match.group(4).strip(),
+                    })
+                else:
+                    # Simpler format without operation details
+                    simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
+                    if simple_match:
+                        inferences.append({
+                            "id": simple_match.group(1),
+                            "name": "",
+                            "operation": simple_match.group(2).strip(),
+                            "explanation": "",
+                        })
+            elif current_section == "conclusion" and line:
+                if line.startswith("C:"):
+                    conclusion = line.split("C:", 1)[1].strip()
+                elif not conclusion:
+                    conclusion = line
 
-        # Build fact name to step number mapping for dependency resolution
-        fact_name_to_step = {f["name"]: i + 1 for i, f in enumerate(required_facts)}
-
-        # Emit planning complete with fact-based plan
+        # Emit planning complete
+        total_steps = len(premises) + len(inferences) + 1  # +1 for conclusion
         self._emit_event(StepEvent(
             event_type="planning_complete",
             step_number=0,
-            data={"steps": len(required_facts) + 1}  # +1 for derivation step
+            data={"steps": total_steps}
         ))
 
-        # Build approval request data with resolved dependencies
-        fact_steps = []
-        for i, f in enumerate(required_facts):
-            # Resolve fact name dependencies to step numbers
-            step_deps = []
-            for dep_name in f.get("depends_on", []):
-                if dep_name in fact_name_to_step:
-                    step_deps.append(fact_name_to_step[dep_name])
+        # Build proof steps for display
+        # Structure: Premises (resolve from sources) → Inferences (derive) → Conclusion
+        proof_steps = []
+        step_num = 1
 
-            # Build goal with dependency info if present
-            goal = f"Resolve: {f['name']} - {f['description']}"
-            if step_deps:
-                dep_names = [required_facts[d-1]["name"] for d in step_deps]
-                goal += f" (requires: {', '.join(dep_names)})"
-
-            fact_steps.append({
-                "number": i + 1,
-                "goal": goal,
-                "depends_on": step_deps
+        # Add premises as steps (these need to be resolved from sources)
+        for p in premises:
+            proof_steps.append({
+                "number": step_num,
+                "goal": f"{p['id']}: {p['name']} = ? ({p['description']}) [source: {p['source']}]",
+                "depends_on": [],
+                "type": "premise",
             })
+            step_num += 1
 
-        # Add final derivation step that depends on all fact steps
-        all_fact_step_nums = list(range(1, len(required_facts) + 1))
-        derivation_step = {
-            "number": len(required_facts) + 1,
-            "goal": f"Derive: {derivation_logic.strip() or 'Apply derivation logic to combine facts and reach conclusion'}",
-            "depends_on": all_fact_step_nums
+        # Add inferences as steps (these depend on premises/prior inferences)
+        premise_count = len(premises)
+        for inf in inferences:
+            # Inferences depend on all premises (simplified - could parse actual deps from operation)
+            proof_steps.append({
+                "number": step_num,
+                "goal": f"{inf['id']}: {inf['operation']}" + (f" -- {inf['explanation']}" if inf['explanation'] else ""),
+                "depends_on": list(range(1, premise_count + 1)),  # Depends on all premises
+                "type": "inference",
+            })
+            step_num += 1
+
+        # Add conclusion as final step
+        all_prior_steps = list(range(1, step_num))
+        proof_steps.append({
+            "number": step_num,
+            "goal": f"CONCLUSION: {conclusion}",
+            "depends_on": all_prior_steps,
+            "type": "conclusion",
+        })
+
+        # Store parsed proof for later use
+        self._current_proof = {
+            "claim": claim,
+            "premises": premises,
+            "inferences": inferences,
+            "conclusion": conclusion,
         }
-        fact_steps.append(derivation_step)
 
-        # Emit plan_ready event with fact-based plan format
-        self._emit_event(StepEvent(
-            event_type="plan_ready",
-            step_number=0,
-            data={
-                "steps": fact_steps,
-                "reasoning": f"Claim: {claim}\n\nDerivation: {derivation_logic.strip()}",
-                "mode": "auditable",
-            }
-        ))
+        # NOTE: Don't emit plan_ready here - request_plan_approval will display the plan.
+        # Emitting here causes duplicate display.
+        fact_steps = proof_steps  # Use proof_steps for approval display
 
         # Request approval if required
         if self.session_config.require_approval:
