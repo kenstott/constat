@@ -1,6 +1,13 @@
 """Execution mode selection for traceability guarantees.
 
-Two fundamental modes with different traceability properties:
+Three execution modes with different purposes:
+
+KNOWLEDGE (Document lookup + LLM synthesis):
+- Searches configured documents for relevant content
+- LLM synthesizes explanation from documents + world knowledge
+- No code execution, no planning needed
+- Good for: explanations, definitions, process descriptions, policy lookups
+- Audit answer: "Based on [document], the process works as follows..."
 
 EXPLORATORY (Multi-step planner):
 - Generates a plan, executes steps sequentially
@@ -26,6 +33,15 @@ from typing import Optional
 class ExecutionMode(Enum):
     """Execution mode determines traceability guarantees."""
 
+    KNOWLEDGE = "knowledge"
+    """Document lookup and LLM synthesis for explanations.
+
+    - Searches configured documents for relevant content
+    - LLM synthesizes explanation from documents + world knowledge
+    - No code execution, no multi-step planning
+    - Shows sources consulted
+    """
+
     EXPLORATORY = "exploratory"
     """Multi-step planner for exploration and analysis.
 
@@ -45,6 +61,35 @@ class ExecutionMode(Enum):
     """
 
 
+# Keywords that suggest knowledge/explanation mode (no data analysis needed)
+KNOWLEDGE_KEYWORDS = [
+    # Explanation requests
+    "explain",
+    "describe",
+    "what is",
+    "what are",
+    "how does",
+    "how do",
+    "tell me about",
+    "definition of",
+    "define",
+    # Process/procedure questions
+    "process",
+    "procedure",
+    "workflow",
+    "steps for",
+    "how to",
+    # Policy/rule lookups
+    "policy",
+    "rule",
+    "guideline",
+    "requirement",
+    # Overview requests (without data)
+    "overview of",
+    "introduction to",
+    "background on",
+]
+
 # Keywords that suggest auditable mode is needed
 AUDITABLE_KEYWORDS = [
     # Verification keywords
@@ -54,9 +99,8 @@ AUDITABLE_KEYWORDS = [
     "check",
     "prove",
     "justify",
-    # Explanation keywords
+    # Reasoning keywords
     "why",
-    "explain",
     "because",
     "reasoning",
     "evidence",
@@ -83,7 +127,7 @@ AUDITABLE_KEYWORDS = [
     "false",
 ]
 
-# Keywords that suggest exploratory mode
+# Keywords that suggest exploratory mode (data analysis)
 EXPLORATORY_KEYWORDS = [
     "show",
     "display",
@@ -122,6 +166,11 @@ def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -
     Uses keyword matching as a heuristic. For production use,
     the LLM should make this decision with full context.
 
+    Priority: KNOWLEDGE > EXPLORATORY > AUDITABLE
+    - KNOWLEDGE: Pure explanation/lookup, no data analysis
+    - EXPLORATORY: Data analysis with multi-step execution
+    - AUDITABLE: Verification with fact-based provenance
+
     Args:
         query: The user's natural language query
         default: Default mode if unclear (AUDITABLE for safety)
@@ -131,13 +180,24 @@ def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -
     """
     query_lower = query.lower()
 
+    knowledge_matches = [kw for kw in KNOWLEDGE_KEYWORDS if kw in query_lower]
     auditable_matches = [kw for kw in AUDITABLE_KEYWORDS if kw in query_lower]
     exploratory_matches = [kw for kw in EXPLORATORY_KEYWORDS if kw in query_lower]
 
+    knowledge_score = len(knowledge_matches)
     auditable_score = len(auditable_matches)
     exploratory_score = len(exploratory_matches)
 
-    if auditable_score > exploratory_score:
+    # Knowledge mode takes priority when it has matches and no strong
+    # data analysis signals (exploratory keywords suggest actual data work)
+    if knowledge_score > 0 and knowledge_score >= exploratory_score and auditable_score == 0:
+        return ModeSelection(
+            mode=ExecutionMode.KNOWLEDGE,
+            confidence=min(0.9, 0.5 + knowledge_score * 0.1),
+            reasoning=f"Query is an explanation/knowledge request (matched: {knowledge_matches})",
+            matched_keywords=knowledge_matches,
+        )
+    elif auditable_score > exploratory_score:
         return ModeSelection(
             mode=ExecutionMode.AUDITABLE,
             confidence=min(0.9, 0.5 + auditable_score * 0.1),
@@ -162,6 +222,19 @@ def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -
 
 # System prompts for each mode
 MODE_SYSTEM_PROMPTS = {
+    ExecutionMode.KNOWLEDGE: """You are a knowledgeable assistant providing explanations.
+
+Answer the user's question by synthesizing information from available documents
+and your general knowledge. Focus on clear, accurate explanations.
+
+When referencing documents:
+- Cite the specific document by name
+- Quote relevant sections when helpful
+- Distinguish between document content and general knowledge
+
+Keep explanations concise but complete. If you don't have enough information,
+say so rather than guessing.""",
+
     ExecutionMode.EXPLORATORY: """You are a data analyst assistant.
 
 Execute the user's request by creating a step-by-step plan and running each step.
@@ -187,7 +260,7 @@ Every conclusion must be defensible with a formal proof.""",
 
 def get_mode_system_prompt(mode: ExecutionMode) -> str:
     """Get the system prompt addition for an execution mode."""
-    return MODE_SYSTEM_PROMPTS[mode]
+    return MODE_SYSTEM_PROMPTS.get(mode, "")
 
 
 @dataclass

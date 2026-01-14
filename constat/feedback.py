@@ -34,6 +34,14 @@ from constat.execution.mode import (
 
 # Patterns that indicate a request to switch execution mode
 MODE_SWITCH_PATTERNS = {
+    ExecutionMode.KNOWLEDGE: [
+        "use knowledge",
+        "switch to knowledge",
+        "knowledge mode",
+        "explanation mode",
+        "just explain",
+        "no data",
+    ],
     ExecutionMode.AUDITABLE: [
         "use auditable",
         "switch to auditable",

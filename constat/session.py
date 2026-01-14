@@ -1889,6 +1889,10 @@ Please create a revised plan that addresses this feedback."""
         mode_selection = suggest_mode(problem)
 
         # Branch based on execution mode
+        if mode_selection.mode == ExecutionMode.KNOWLEDGE:
+            # Use document lookup + LLM synthesis for knowledge/explanation requests
+            return self._solve_knowledge(problem, mode_selection)
+
         if mode_selection.mode == ExecutionMode.AUDITABLE:
             # Use fact-based derivation planning for auditable mode
             return self._solve_auditable(problem, mode_selection)
@@ -1989,6 +1993,16 @@ Please create a revised plan that addresses this feedback."""
                             matched_keywords=["user request"],
                         )
                         return self._solve_auditable(problem, mode_selection)
+
+                    # If switching to knowledge mode, use the knowledge solver
+                    if target_mode == ExecutionMode.KNOWLEDGE:
+                        mode_selection = ModeSelection(
+                            mode=ExecutionMode.KNOWLEDGE,
+                            confidence=1.0,
+                            reasoning="User requested knowledge mode",
+                            matched_keywords=["user request"],
+                        )
+                        return self._solve_knowledge(problem, mode_selection)
 
                     # Otherwise continue with exploratory mode (replan)
                     mode_selection = ModeSelection(
@@ -3114,6 +3128,171 @@ Verification request: {question}
                 "mode": "auditable",
                 "error": str(e),
                 "output": f"Verification failed: {e}",
+            }
+
+    def _solve_knowledge(self, problem: str, mode_selection: ModeSelection) -> dict:
+        """
+        Solve a problem in knowledge mode using document lookup + LLM synthesis.
+
+        This mode is for explanation/knowledge requests that don't need data analysis.
+        It searches configured documents and synthesizes an explanation.
+
+        Args:
+            problem: The question/request to answer
+            mode_selection: The mode selection result with reasoning
+
+        Returns:
+            Dict with synthesized explanation and sources
+        """
+        start_time = time.time()
+
+        # Emit mode selection event
+        self._emit_event(StepEvent(
+            event_type="mode_switch",
+            step_number=0,
+            data={
+                "mode": "knowledge",
+                "reasoning": mode_selection.reasoning,
+                "matched_keywords": mode_selection.matched_keywords,
+            }
+        ))
+
+        # Step 1: Search documents for relevant content
+        self._emit_event(StepEvent(
+            event_type="searching_documents",
+            step_number=0,
+            data={"message": "Searching reference documents..."}
+        ))
+
+        sources = []
+        doc_context = ""
+
+        if self.doc_tools and self.config.documents:
+            # Search for relevant document excerpts
+            search_results = self.doc_tools.search_documents(problem, limit=5)
+
+            if search_results:
+                doc_lines = ["Relevant document excerpts:"]
+                for i, result in enumerate(search_results, 1):
+                    doc_name = result.get("document", "unknown")
+                    excerpt = result.get("excerpt", "")
+                    relevance = result.get("relevance", 0)
+                    section = result.get("section", "")
+
+                    source_info = {
+                        "document": doc_name,
+                        "section": section,
+                        "relevance": relevance,
+                    }
+                    sources.append(source_info)
+
+                    doc_lines.append(f"\n[{i}] From '{doc_name}'" + (f" - {section}" if section else ""))
+                    doc_lines.append(excerpt)
+
+                doc_context = "\n".join(doc_lines)
+
+        # Step 2: Build prompt for LLM synthesis
+        self._emit_event(StepEvent(
+            event_type="synthesizing",
+            step_number=0,
+            data={"message": "Synthesizing explanation..."}
+        ))
+
+        # Get the knowledge mode system prompt
+        from constat.execution.mode import get_mode_system_prompt
+        system_prompt = get_mode_system_prompt(ExecutionMode.KNOWLEDGE)
+
+        # Add context about the configuration
+        if self.config.system_prompt:
+            system_prompt = f"{system_prompt}\n\n{self.config.system_prompt}"
+
+        # Build user message with document context
+        if doc_context:
+            user_message = f"""Question: {problem}
+
+{doc_context}
+
+Please provide a clear, accurate explanation based on the documents above and your general knowledge.
+Cite specific documents when referencing them."""
+        else:
+            user_message = f"""Question: {problem}
+
+No reference documents are configured. Please provide an explanation based on your general knowledge.
+If you don't have enough information, say so rather than guessing."""
+
+        # Step 3: Generate response
+        try:
+            response = self.router.route(
+                task_type=TaskType.SYNTHESIS,
+                system=system_prompt,
+                user_message=user_message,
+                max_tokens=2000,
+            )
+
+            answer = response.content if hasattr(response, 'content') else str(response)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self._emit_event(StepEvent(
+                event_type="knowledge_complete",
+                step_number=0,
+                data={
+                    "has_documents": bool(sources),
+                    "source_count": len(sources),
+                }
+            ))
+
+            # Build final output
+            output_parts = [answer]
+
+            if sources:
+                output_parts.extend([
+                    "",
+                    "**Sources consulted:**",
+                ])
+                for src in sources:
+                    src_line = f"- {src['document']}"
+                    if src.get('section'):
+                        src_line += f" ({src['section']})"
+                    output_parts.append(src_line)
+
+            final_output = "\n".join(output_parts)
+
+            # Record in history
+            self.history.record_query(
+                session_id=self.session_id,
+                question=problem,
+                success=True,
+                attempts=1,
+                duration_ms=duration_ms,
+                answer=final_output,
+            )
+
+            return {
+                "success": True,
+                "mode": "knowledge",
+                "output": final_output,
+                "sources": sources,
+                "plan": None,  # No plan in knowledge mode
+                "suggestions": [
+                    "Tell me more about a specific aspect",
+                    "What data is available to analyze?",
+                ],
+            }
+
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self._emit_event(StepEvent(
+                event_type="knowledge_error",
+                step_number=0,
+                data={"error": str(e)}
+            ))
+
+            return {
+                "success": False,
+                "mode": "knowledge",
+                "error": str(e),
+                "output": f"Failed to generate explanation: {e}",
             }
 
     def replay(self, problem: str) -> dict:
