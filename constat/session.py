@@ -1297,8 +1297,9 @@ Provide practical suggested answers based on what's in the data."""
                         suggestions = [s.strip() for s in suggestions_text.split("|") if s.strip()]
                         current_question.suggestions = suggestions[:4]  # Max 4 suggestions
                     elif in_questions_section and line:
-                        # Try to parse as a question in various formats:
+                        # Try to parse as a question in specific formats only:
                         # Q1: question, - question, 1. question, 1) question
+                        # Do NOT capture arbitrary text as questions (could be LLM reasoning)
                         question_text = None
 
                         if line.startswith("Q") and ":" in line[:4]:
@@ -1313,10 +1314,8 @@ Provide practical suggested answers based on what's in the data."""
                         elif len(line) > 3 and line[:2].isdigit() and line[2] in ".):":
                             # Format: 10. question (two digit number)
                             question_text = line[3:].strip()
-                        elif not line.startswith("SUGGESTIONS") and not line.startswith("("):
-                            # Plain text line after QUESTIONS - treat as question
-                            # Skip hint lines like "(max 3 questions..."
-                            question_text = line
+                        # NOTE: We intentionally do NOT capture arbitrary text as questions
+                        # The LLM sometimes adds explanatory text that shouldn't be treated as questions
 
                         if question_text and len(question_text) > 5:
                             # Save previous question and start new one
