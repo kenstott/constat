@@ -3569,7 +3569,7 @@ Available schema:
 Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 
                         sql_result = self.router.execute(
-                            task_type=TaskType.CODE_GENERATION,
+                            task_type=TaskType.SQL_GENERATION,
                             system="You generate SQL queries. Return only the SQL, no explanation.",
                             user_message=sql_prompt,
                             max_tokens=500,
