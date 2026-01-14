@@ -37,6 +37,8 @@ class FactSource(Enum):
     """Where a fact was resolved from."""
     CACHE = "cache"
     DATABASE = "database"
+    DOCUMENT = "document"  # From a reference document
+    API = "api"  # From REST or GraphQL API
     LLM_KNOWLEDGE = "llm_knowledge"
     LLM_HEURISTIC = "llm_heuristic"
     RULE = "rule"  # Derived via a registered rule function
@@ -58,7 +60,10 @@ class Fact:
     because: list["Fact"] = field(default_factory=list)
 
     # Additional metadata
+    description: Optional[str] = None  # Human-friendly description of what this fact represents
+    source_name: Optional[str] = None  # Specific source (database name, document path, API name)
     query: Optional[str] = None  # SQL query if from database
+    api_endpoint: Optional[str] = None  # REST endpoint or GraphQL query name if from API
     rule_name: Optional[str] = None  # Rule function name if derived
     reasoning: Optional[str] = None  # LLM explanation if from knowledge
     resolved_at: datetime = field(default_factory=datetime.now)
@@ -70,9 +75,15 @@ class Fact:
     @property
     def derivation_trace(self) -> str:
         """Human-readable derivation chain."""
-        lines = [f"{self.name} = {self.value} (confidence: {self.confidence:.2f}, source: {self.source.value})"]
+        # Build source string with specific name if available
+        source_str = self.source.value
+        if self.source_name:
+            source_str = f"{self.source.value}:{self.source_name}"
+        lines = [f"{self.name} = {self.value} (confidence: {self.confidence:.2f}, source: {source_str})"]
         if self.query:
             lines.append(f"  via SQL: {self.query}")
+        if self.api_endpoint:
+            lines.append(f"  via API: {self.api_endpoint}")
         if self.rule_name:
             lines.append(f"  via rule: {self.rule_name}")
         if self.reasoning:
@@ -89,7 +100,9 @@ class Fact:
             "value": self.value,
             "confidence": self.confidence,
             "source": self.source.value,
+            "source_name": self.source_name,
             "query": self.query,
+            "api_endpoint": self.api_endpoint,
             "rule_name": self.rule_name,
             "reasoning": self.reasoning,
             "because": [f.name for f in self.because],
@@ -154,11 +167,13 @@ class FactResolver:
         schema_manager=None,  # For database queries
         config=None,  # For config-based facts
         strategy: Optional[ResolutionStrategy] = None,
+        event_callback=None,  # Callback for resolution events (for display updates)
     ):
         self.llm = llm
         self.schema_manager = schema_manager
         self.config = config
         self.strategy = strategy or ResolutionStrategy()
+        self._event_callback = event_callback
 
         # Caches
         self._cache: dict[str, Fact] = {}
@@ -168,7 +183,12 @@ class FactResolver:
         self._resolution_depth: int = 0
 
         # All resolutions this session (for audit)
-        self.resolution_log: list[Fact] = []
+        self.resolution_log: list[Fact]  = []
+
+    def _emit_event(self, event_type: str, data: dict) -> None:
+        """Emit a resolution event if callback is registered."""
+        if self._event_callback:
+            self._event_callback(event_type, data)
 
     def rule(self, fact_pattern: str):
         """Decorator to register a rule function for a fact pattern.
@@ -348,6 +368,7 @@ NOT_POSSIBLE: <reason>
                         value=value,
                         confidence=1.0,  # Database facts are certain
                         source=FactSource.DATABASE,
+                        source_name=db_name,
                         query=sql,
                     )
         except Exception as e:
@@ -439,6 +460,13 @@ UNKNOWN
         if not self.llm:
             return None
 
+        # Emit event: starting sub-plan expansion
+        self._emit_event("premise_expanding", {
+            "fact_name": fact_name,
+            "params": params,
+            "depth": self._resolution_depth,
+        })
+
         # Ask LLM to create a plan to derive this fact
         prompt = f"""I need to derive this fact, but it's not directly available:
 Fact: {fact_name}
@@ -493,6 +521,16 @@ Generate the derivation function for {fact_name}:
                 self._resolution_depth += 1
                 try:
                     result = derive_func(self, params)
+                    # Emit event: sub-plan expansion completed
+                    if result and result.is_resolved:
+                        self._emit_event("premise_expanded", {
+                            "fact_name": fact_name,
+                            "value": result.value,
+                            "confidence": result.confidence,
+                            "sub_facts": [f.name for f in result.because] if result.because else [],
+                            "derivation_trace": result.derivation_trace,
+                            "depth": self._resolution_depth,
+                        })
                     return result
                 finally:
                     self._resolution_depth -= 1
@@ -506,18 +544,24 @@ Generate the derivation function for {fact_name}:
         fact_name: str,
         value: Any,
         reasoning: Optional[str] = None,
+        source: FactSource = FactSource.USER_PROVIDED,
+        description: Optional[str] = None,
         **params,
     ) -> Fact:
         """
-        Add a user-provided fact to the cache.
+        Add a fact to the cache with specified source.
 
-        This is used when the user provides missing facts via natural language
-        follow-up. The fact is added to the cache with USER_PROVIDED source.
+        This is used when:
+        - User provides facts via natural language (USER_PROVIDED)
+        - Facts are derived from query results (DATABASE)
+        - Facts are computed/derived during analysis (RULE)
 
         Args:
             fact_name: Name of the fact (e.g., "march_attendance")
-            value: The value provided by user
-            reasoning: Optional explanation from user
+            value: The value provided
+            reasoning: Optional explanation
+            source: Where the fact came from (defaults to USER_PROVIDED)
+            description: Human-friendly description of what this fact represents
             **params: Parameters for the fact
 
         Returns:
@@ -528,8 +572,9 @@ Generate the derivation function for {fact_name}:
         fact = Fact(
             name=cache_key,
             value=value,
-            confidence=1.0,  # User-provided facts are treated as certain
-            source=FactSource.USER_PROVIDED,
+            confidence=1.0,
+            source=source,
+            description=description,
             reasoning=reasoning,
         )
 
@@ -678,6 +723,183 @@ REASONING: User is focused on US region analysis
     def explain(self, fact: Fact) -> str:
         """Generate a human-readable explanation of how a fact was derived."""
         return fact.derivation_trace
+
+    def resolve_question(self, context: str) -> dict:
+        """
+        Resolve a verification question using fact-based derivation.
+
+        Decomposes the question into required facts, resolves each fact,
+        and generates a derivation trace showing how the conclusion was reached.
+
+        Args:
+            context: Context string containing the verification request and
+                    any prior analysis results
+
+        Returns:
+            Dict with:
+            - answer: The verification result
+            - confidence: Overall confidence (0.0-1.0)
+            - derivation: Human-readable derivation trace
+            - sources: List of source citations
+            - facts_resolved: List of fact names that were resolved
+        """
+        # Step 1: Decompose the question into required facts
+        decompose_prompt = f"""Analyze this verification request and identify the specific facts needed to answer it.
+
+{context}
+
+List each required fact on its own line in the format:
+FACT: <fact_name> - <description>
+
+Example:
+FACT: total_orders - Number of orders in the time period
+FACT: discount_policy_max - Maximum allowed discount percentage
+FACT: violations_count - Number of policy violations found
+
+Be specific and exhaustive - list ALL facts needed to verify the claim."""
+
+        decompose_result = self.llm.messages(
+            model=self.config.llm.model,
+            max_tokens=1000,
+            messages=[{"role": "user", "content": decompose_prompt}],
+        )
+        decompose_text = decompose_result.content[0].text
+
+        # Parse required facts
+        required_facts = []
+        for line in decompose_text.split("\n"):
+            if line.strip().startswith("FACT:"):
+                fact_part = line.split("FACT:", 1)[1].strip()
+                if " - " in fact_part:
+                    fact_name, fact_desc = fact_part.split(" - ", 1)
+                    required_facts.append((fact_name.strip(), fact_desc.strip()))
+                else:
+                    required_facts.append((fact_part, ""))
+
+        # Step 2: Resolve each required fact
+        resolved_facts = []
+        derivation_lines = ["**Fact Resolution:**", ""]
+
+        for fact_name, fact_desc in required_facts:
+            # Check cache first
+            if fact_name in self._cache:
+                fact = self._cache[fact_name]
+                derivation_lines.append(f"- {fact_name} = {fact.value} (cached)")
+                resolved_facts.append(fact)
+            else:
+                # Try to resolve the fact
+                try:
+                    fact = self.resolve(fact_name)
+                    resolved_facts.append(fact)
+
+                    # If fact has nested derivations (sub-plan resolution), show full trace
+                    if fact.because:
+                        # Show that this fact was derived from sub-facts
+                        derivation_lines.append(f"- {fact_name} = {fact.value} (derived, confidence: {fact.confidence:.0%})")
+                        derivation_lines.append(f"  ↳ Derived from:")
+                        for sub_fact in fact.because:
+                            sub_source = sub_fact.source.value
+                            if sub_fact.source_name:
+                                sub_source = f"{sub_fact.source.value}:{sub_fact.source_name}"
+                            derivation_lines.append(f"    - {sub_fact.name} = {sub_fact.value} ({sub_source})")
+                    else:
+                        # Simple fact, show source
+                        source_detail = fact.source.value
+                        if fact.query:
+                            source_detail = f"SQL query"
+                        derivation_lines.append(f"- {fact_name} = {fact.value} ({source_detail}, confidence: {fact.confidence:.0%})")
+                except Exception as e:
+                    # Mark as unresolved
+                    unresolved = Fact(
+                        name=fact_name,
+                        value=None,
+                        confidence=0.0,
+                        source=FactSource.UNRESOLVED,
+                        description=fact_desc,
+                        reasoning=str(e),
+                    )
+                    self.resolution_log.append(unresolved)
+                    derivation_lines.append(f"- {fact_name} = UNRESOLVED ({e})")
+
+        # Step 3: Synthesize the answer
+        facts_context = "\n".join([
+            f"- {f.name}: {f.value} (confidence: {f.confidence:.0%})"
+            for f in resolved_facts if f.is_resolved
+        ])
+
+        synthesis_prompt = f"""Based on the resolved facts, provide a verification answer.
+
+{context}
+
+Resolved Facts:
+{facts_context}
+
+Provide:
+1. A direct answer to the verification question
+2. The confidence level (HIGH/MEDIUM/LOW) with justification
+3. Any caveats or limitations
+
+Format your response as:
+ANSWER: <your answer>
+CONFIDENCE: <HIGH/MEDIUM/LOW> - <justification>
+CAVEATS: <any limitations or caveats>"""
+
+        synthesis_result = self.llm.messages(
+            model=self.config.llm.model,
+            max_tokens=1500,
+            messages=[{"role": "user", "content": synthesis_prompt}],
+        )
+        synthesis_text = synthesis_result.content[0].text
+
+        # Parse the synthesis
+        answer = ""
+        confidence = 0.8  # Default
+        caveats = ""
+
+        for line in synthesis_text.split("\n"):
+            if line.strip().startswith("ANSWER:"):
+                answer = line.split("ANSWER:", 1)[1].strip()
+            elif line.strip().startswith("CONFIDENCE:"):
+                conf_part = line.split("CONFIDENCE:", 1)[1].strip()
+                if conf_part.startswith("HIGH"):
+                    confidence = 0.9
+                elif conf_part.startswith("MEDIUM"):
+                    confidence = 0.7
+                elif conf_part.startswith("LOW"):
+                    confidence = 0.5
+            elif line.strip().startswith("CAVEATS:"):
+                caveats = line.split("CAVEATS:", 1)[1].strip()
+
+        # If we didn't parse an answer, use the full synthesis
+        if not answer:
+            answer = synthesis_text
+
+        # Build derivation trace
+        derivation_lines.append("")
+        derivation_lines.append("**Conclusion:**")
+        derivation_lines.append(answer)
+        if caveats and caveats.lower() not in ("none", "n/a", "-"):
+            derivation_lines.append("")
+            derivation_lines.append(f"**Caveats:** {caveats}")
+
+        derivation = "\n".join(derivation_lines)
+
+        # Build sources list
+        sources = []
+        for fact in resolved_facts:
+            if fact.is_resolved:
+                source = {"type": fact.source.value, "description": f"{fact.name}: {fact.value}"}
+                if fact.query:
+                    source["query"] = fact.query
+                sources.append(source)
+
+        return {
+            "answer": answer,
+            "confidence": confidence,
+            "derivation": derivation,
+            "sources": sources,
+            "facts_resolved": [f.name for f in resolved_facts if f.is_resolved],
+        }
 
 
 # Shared thread pool for running sync operations in async context
@@ -1146,6 +1368,7 @@ NOT_POSSIBLE: <reason>
                         value=value,
                         confidence=1.0,
                         source=FactSource.DATABASE,
+                        source_name=db_name,
                         query=sql,
                     )
         except Exception:
