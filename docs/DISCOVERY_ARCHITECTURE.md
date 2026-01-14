@@ -805,15 +805,31 @@ Document loading for `inline`, `file`, and `http` types is implemented in `doc_t
 - Office document extraction
 - Document chunking for vector search
 
-### Phase 4: Caching & Optimization - PLANNED
+### Phase 4: Caching & Optimization - IMPLEMENTED
 
-1. **Cache discovery results per session**
-   - Don't re-discover same tables
-   - Persist discovered context
+1. **Context Preload Cache** (`catalog/preload_cache.py`)
+   - Uses seed patterns (from config) to identify relevant tables via vector similarity
+   - Caches selected table metadata to `.constat/metadata_preload.json`
+   - Preloaded schema is loaded into context at session start
+   - Eliminates discovery tool calls for tables matching seed patterns
 
-2. **Smart prefetching**
-   - After `search_tables`, prefetch likely schemas
-   - Batch embedding lookups
+   ```yaml
+   # config.yaml
+   context_preload:
+     seed_patterns: ["sales", "customer", "revenue"]
+     similarity_threshold: 0.3
+     max_tables: 50
+   ```
+
+2. **Incremental Document Refresh** (`discovery/doc_tools.py`)
+   - Tracks file modification times for change detection
+   - Only reloads documents that have changed
+   - Returns stats: `{added: 1, updated: 2, removed: 0, unchanged: 5}`
+
+3. **`/refresh` Command**
+   - Refreshes schema metadata, documents, and preload cache
+   - Documents are refreshed incrementally by default
+   - Use in REPL to pick up new/changed documents or schema changes
 
 ---
 
@@ -825,12 +841,14 @@ Document loading for `inline`, `file`, and `http` types is implemented in `doc_t
 | `constat/discovery/tools.py` | Tool definitions |
 | `constat/discovery/schema_tools.py` | Schema discovery implementation |
 | `constat/discovery/api_tools.py` | API discovery implementation |
-| `constat/discovery/doc_tools.py` | Document discovery implementation |
+| `constat/discovery/doc_tools.py` | Document discovery with incremental refresh |
 | `constat/discovery/fact_tools.py` | Fact resolution implementation |
-| `constat/documents/loader.py` | Document loading (new) |
-| `constat/documents/index.py` | Document vector index (new) |
+| `constat/discovery/skill_tools.py` | Skill discovery with lazy link following |
+| `constat/catalog/preload_cache.py` | Context preload cache (seed patterns) |
+| `constat/documents/loader.py` | Document loading |
+| `constat/documents/index.py` | Document vector index |
 | `constat/planning/planner.py` | Add tool support, discovery loop |
-| `constat/core/config.py` | Already has DocumentConfig |
+| `constat/core/config.py` | DocumentConfig, ContextPreloadConfig |
 
 ---
 

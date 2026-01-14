@@ -178,15 +178,44 @@ def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -
     Returns:
         ModeSelection with mode, confidence, and reasoning
     """
+    import re
     query_lower = query.lower()
 
-    knowledge_matches = [kw for kw in KNOWLEDGE_KEYWORDS if kw in query_lower]
-    auditable_matches = [kw for kw in AUDITABLE_KEYWORDS if kw in query_lower]
-    exploratory_matches = [kw for kw in EXPLORATORY_KEYWORDS if kw in query_lower]
+    # Helper to check word boundaries for certain keywords
+    def match_with_boundary(kw: str, text: str) -> bool:
+        # Keywords that should match as whole words only (not as substrings)
+        boundary_keywords = {"correct", "true", "false", "risk", "flag"}
+        if kw in boundary_keywords:
+            return bool(re.search(rf'\b{re.escape(kw)}\b', text))
+        return kw in text
+
+    # Patterns that indicate action requests, not verification
+    # e.g., "verify you are doing X" = action, "verify that the total is X" = verification
+    action_patterns = [
+        r'\bverify\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
+        r'\bcheck\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
+        r'\bconfirm\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
+        r'\bmake\s+sure\b',  # "make sure you are doing X" is action, not verification
+        r'\bensure\b',  # "ensure you are" is action
+        r'\btry\s+(?:the|this|it|again)\b',  # "try the api again" suggests retry/action
+    ]
+
+    # Check if query matches action patterns - if so, reduce auditable score
+    is_action_request = any(re.search(p, query_lower) for p in action_patterns)
+
+    knowledge_matches = [kw for kw in KNOWLEDGE_KEYWORDS if match_with_boundary(kw, query_lower)]
+    auditable_matches = [kw for kw in AUDITABLE_KEYWORDS if match_with_boundary(kw, query_lower)]
+    exploratory_matches = [kw for kw in EXPLORATORY_KEYWORDS if match_with_boundary(kw, query_lower)]
 
     knowledge_score = len(knowledge_matches)
     auditable_score = len(auditable_matches)
     exploratory_score = len(exploratory_matches)
+
+    # If this looks like an action request (e.g., "verify you are doing X"),
+    # heavily discount auditable keywords - they're being used imperatively
+    if is_action_request:
+        auditable_score = 0  # Treat as exploratory/default instead
+        exploratory_score = max(exploratory_score, 1)  # Boost exploratory
 
     # Knowledge mode takes priority when it has matches and no strong
     # data analysis signals (exploratory keywords suggest actual data work)

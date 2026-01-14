@@ -39,7 +39,7 @@ class TestSessionHistory:
         assert session_dir.exists()
         assert (session_dir / "session.json").exists()
         assert (session_dir / "queries.jsonl").exists()
-        assert (session_dir / "artifacts").is_dir()
+        assert (session_dir / "logs").is_dir()
 
     def test_record_query(self, history):
         """Test recording a query."""

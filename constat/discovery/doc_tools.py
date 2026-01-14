@@ -370,20 +370,164 @@ class LoadedDocument:
     format: str
     sections: list[str] = field(default_factory=list)
     loaded_at: Optional[str] = None
+    file_mtime: Optional[float] = None  # File modification time for change detection
+    content_hash: Optional[str] = None  # Hash of content for change detection
 
 
 class DocumentDiscoveryTools:
-    """Tools for discovering and searching reference documents on-demand."""
+    """Tools for discovering and searching reference documents on-demand.
+
+    Supports incremental updates - only reloads documents that have changed
+    based on file modification times and content hashes.
+    """
 
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     CHUNK_SIZE = 500  # Characters per chunk for embedding
+    CACHE_FILENAME = "doc_index_cache.json"
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, cache_dir: Optional[Path] = None):
         self.config = config
         self._loaded_documents: dict[str, LoadedDocument] = {}
         self._chunks: list[DocumentChunk] = []
         self._embeddings: Optional[np.ndarray] = None
         self._model: Optional[SentenceTransformer] = None
+
+        # Cache directory for persisting document metadata
+        if cache_dir:
+            self._cache_dir = cache_dir
+        else:
+            local_cache = Path(".constat")
+            self._cache_dir = local_cache if local_cache.exists() else Path.home() / ".constat"
+        self._cache_file = self._cache_dir / self.CACHE_FILENAME
+
+    def refresh(self, force_full: bool = False) -> dict:
+        """Refresh documents, using incremental update by default.
+
+        Args:
+            force_full: If True, force full rebuild (clear all caches)
+
+        Returns:
+            Dict with refresh statistics: {added, updated, removed, unchanged}
+        """
+        if force_full:
+            self._loaded_documents.clear()
+            self._chunks = []
+            self._embeddings = None
+            return {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "mode": "full_rebuild"}
+
+        return self._refresh_incremental()
+
+    def _refresh_incremental(self) -> dict:
+        """Incrementally update document index based on file changes.
+
+        Returns:
+            Dict with refresh statistics
+        """
+        stats = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0}
+
+        # Get current document list (expanded for globs/directories)
+        current_docs = self._get_all_document_paths()
+
+        # Track which documents to reload
+        docs_to_reload: list[str] = []
+        docs_to_remove: list[str] = []
+
+        # Check each configured document
+        for doc_name, doc_path in current_docs.items():
+            if doc_path and doc_path.exists():
+                current_mtime = doc_path.stat().st_mtime
+
+                if doc_name in self._loaded_documents:
+                    # Check if file has changed
+                    loaded_doc = self._loaded_documents[doc_name]
+                    if loaded_doc.file_mtime != current_mtime:
+                        docs_to_reload.append(doc_name)
+                        stats["updated"] += 1
+                    else:
+                        stats["unchanged"] += 1
+                else:
+                    # New document
+                    docs_to_reload.append(doc_name)
+                    stats["added"] += 1
+            elif doc_name in self._loaded_documents:
+                # Document was removed
+                docs_to_remove.append(doc_name)
+                stats["removed"] += 1
+
+        # Check for documents that no longer exist in config
+        for doc_name in list(self._loaded_documents.keys()):
+            if doc_name not in current_docs:
+                docs_to_remove.append(doc_name)
+                stats["removed"] += 1
+
+        # Remove deleted documents
+        for doc_name in docs_to_remove:
+            if doc_name in self._loaded_documents:
+                del self._loaded_documents[doc_name]
+
+        # Reload changed documents
+        for doc_name in docs_to_reload:
+            try:
+                self._load_document_with_mtime(doc_name)
+            except Exception:
+                pass  # Skip documents that fail to load
+
+        # Rebuild index if anything changed
+        if docs_to_reload or docs_to_remove:
+            self._embeddings = None  # Force index rebuild
+
+        return stats
+
+    def _get_all_document_paths(self) -> dict[str, Optional[Path]]:
+        """Get all document names mapped to their file paths.
+
+        Returns:
+            Dict mapping document names to Path objects (None for non-file docs)
+        """
+        result = {}
+
+        for doc_name, doc_config in self.config.documents.items():
+            if doc_config.type == "file" and doc_config.path:
+                expanded = _expand_file_paths(doc_config.path)
+                if len(expanded) > 1:
+                    # Multiple files - each gets its own entry
+                    for filename, filepath in expanded:
+                        full_name = f"{doc_name}:{filename}"
+                        result[full_name] = filepath
+                elif len(expanded) == 1:
+                    _, filepath = expanded[0]
+                    result[doc_name] = filepath
+                else:
+                    result[doc_name] = None
+            else:
+                # Non-file documents (inline, http, etc.)
+                result[doc_name] = None
+
+        return result
+
+    def _load_document_with_mtime(self, name: str) -> None:
+        """Load a document and record its modification time."""
+        # Get the file path
+        doc_paths = self._get_all_document_paths()
+        filepath = doc_paths.get(name)
+
+        # Load the document
+        if ":" in name:
+            # Expanded glob/directory entry
+            parent_name, filename = name.split(":", 1)
+            if parent_name in self.config.documents:
+                doc_config = self.config.documents[parent_name]
+                if filepath and filepath.exists():
+                    self._load_file_directly(name, filepath, doc_config)
+        else:
+            self._load_document(name)
+
+        # Record mtime and content hash
+        if name in self._loaded_documents:
+            doc = self._loaded_documents[name]
+            if filepath and filepath.exists():
+                doc.file_mtime = filepath.stat().st_mtime
+            doc.content_hash = hashlib.sha256(doc.content.encode()).hexdigest()[:16]
 
     def list_documents(self) -> list[dict]:
         """

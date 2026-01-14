@@ -120,9 +120,9 @@ class SessionHistory:
         """Get the directory for a session."""
         return self.storage_dir / session_id
 
-    def _artifacts_dir(self, session_id: str) -> Path:
-        """Get the artifacts directory for a session."""
-        return self._session_dir(session_id) / "artifacts"
+    def _logs_dir(self, session_id: str) -> Path:
+        """Get the logs directory for execution exhaust (code, stdout, errors)."""
+        return self._session_dir(session_id) / "logs"
 
     def get_user_base_dir(self) -> Path:
         """Get the base directory for this user (for outputs, etc.)."""
@@ -146,7 +146,7 @@ class SessionHistory:
         session_id = self._generate_session_id()
         session_dir = self._session_dir(session_id)
         self._ensure_dir(session_dir)
-        self._ensure_dir(self._artifacts_dir(session_id))
+        self._ensure_dir(self._logs_dir(session_id))
 
         # Write session metadata
         metadata = {
@@ -237,24 +237,24 @@ class SessionHistory:
 
         # Save artifacts from attempt history
         if attempt_history:
-            artifacts_dir = self._artifacts_dir(session_id)
+            logs_dir = self._logs_dir(session_id)
             for attempt in attempt_history:
                 attempt_num = attempt.get("attempt", 1)
                 prefix = f"{query_id:03d}_{attempt_num:02d}"
 
                 # Save code
                 if attempt.get("code"):
-                    with open(artifacts_dir / f"{prefix}_code.py", "w") as f:
+                    with open(logs_dir / f"{prefix}_code.py", "w") as f:
                         f.write(attempt["code"])
 
                 # Save output
                 if attempt.get("stdout"):
-                    with open(artifacts_dir / f"{prefix}_output.txt", "w") as f:
+                    with open(logs_dir / f"{prefix}_output.txt", "w") as f:
                         f.write(attempt["stdout"])
 
                 # Save error
                 if attempt.get("error"):
-                    with open(artifacts_dir / f"{prefix}_error.txt", "w") as f:
+                    with open(logs_dir / f"{prefix}_error.txt", "w") as f:
                         f.write(attempt["error"])
 
         # Update session metadata
@@ -391,14 +391,14 @@ class SessionHistory:
         Returns:
             List of artifacts for this query
         """
-        artifacts_dir = self._artifacts_dir(session_id)
-        if not artifacts_dir.exists():
+        logs_dir = self._logs_dir(session_id)
+        if not logs_dir.exists():
             return []
 
         prefix = f"{query_id:03d}_"
         artifacts = []
 
-        for artifact_file in sorted(artifacts_dir.glob(f"{prefix}*")):
+        for artifact_file in sorted(logs_dir.glob(f"{prefix}*")):
             # Parse filename: 001_01_code.py -> query_id=1, attempt=1, type=code
             parts = artifact_file.stem.split("_")
             if len(parts) >= 3:
