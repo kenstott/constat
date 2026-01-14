@@ -10,6 +10,7 @@ from constat.core.config import Config
 from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType, TaskType
 from constat.storage.datastore import DataStore
 from constat.storage.history import SessionHistory
+from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
 from constat.storage.registry import ConstatRegistry
 from constat.storage.registry_datastore import RegistryAwareDataStore
 from constat.execution.executor import ExecutionResult, PythonExecutor, format_error_for_retry
@@ -269,6 +270,45 @@ fig = px.choropleth(df, locations='iso_code', color='value',
                     locationmode='ISO-3', title='World Map')
 ```
 
+## Dashboard Generation Rules
+
+When the user requests a "dashboard":
+
+### Default Layout (2x2)
+Generate 4 complementary visualizations arranged in a 2x2 grid using `make_subplots(rows=2, cols=2)`:
+- Top-left: Primary metric over time (line/bar)
+- Top-right: Breakdown/composition (pie/bar)
+- Bottom-left: Comparison or ranking (bar/table)
+- Bottom-right: Trend or KPI summary
+
+### Layout Variations
+Adjust based on data characteristics:
+
+| Data Available | Layout | Panels |
+|----------------|--------|--------|
+| Single metric, time series | 1x2 | Trend + Summary stats |
+| Multiple categories | 2x2 | Overview, breakdown, comparison, detail |
+| Hierarchical data | 1x3 | High-level → Mid → Detail |
+| KPI-focused | 3x2 | Top row: KPI cards, Bottom: supporting charts |
+
+### Panel Selection Priority
+1. **Critical/requested metrics** - Always include
+2. **Time-based trends** - If temporal data exists
+3. **Comparisons** - If categorical groupings exist
+4. **Distributions** - If numerical spread is relevant
+
+### Code Pattern
+Always use:
+```python
+from plotly.subplots import make_subplots
+fig = make_subplots(rows=R, cols=C, subplot_titles=(...))
+# Add traces to specific positions
+fig.add_trace(go.Bar(...), row=1, col=1)
+fig.add_trace(go.Pie(...), row=1, col=2)
+fig.update_layout(height=600, showlegend=True)
+viz.save_chart('dashboard', fig, title='Dashboard Title')
+```
+
 ## Code Rules
 1. Use pandas `pd.read_sql(query, db_<name>)` to query source databases
 2. For cross-database queries, load from each DB and join in pandas
@@ -293,6 +333,7 @@ STEP_PROMPT_TEMPLATE = """{system_prompt}
 ## Domain Context
 {domain_context}
 {user_facts}
+{learnings}
 ## Intermediate Tables (from previous steps)
 {datastore_tables}
 
@@ -462,6 +503,12 @@ class Session:
             event_callback=self._handle_fact_resolver_event,
         )
 
+        # Learning store for corrections and patterns
+        self.learning_store = LearningStore(user_id=self.user_id)
+
+        # Pass learning store to planner for injecting learned rules
+        self.planner.set_learning_store(self.learning_store)
+
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
 
@@ -571,12 +618,20 @@ class Session:
         except Exception:
             pass
 
+        # Build codegen learnings section - show what didn't work vs what did work
+        learnings_text = ""
+        try:
+            learnings_text = self._get_codegen_learnings(step.goal)
+        except Exception:
+            pass
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
             schema_overview=schema_overview,
             api_overview=api_overview,
             domain_context=self.config.system_prompt or "No additional context.",
             user_facts=user_facts_text,
+            learnings=learnings_text,
             datastore_tables=datastore_info,
             scratchpad=scratchpad_context,
             step_number=step.number,
@@ -585,6 +640,78 @@ class Session:
             inputs=", ".join(step.expected_inputs) if step.expected_inputs else "(none)",
             outputs=", ".join(step.expected_outputs) if step.expected_outputs else "(none)",
         )
+
+    def _get_codegen_learnings(self, step_goal: str) -> str:
+        """Get relevant codegen learnings showing what didn't work vs what did work.
+
+        Args:
+            step_goal: The goal of the current step for context matching
+
+        Returns:
+            Formatted learnings text for prompt injection
+        """
+        if not self.learning_store:
+            return ""
+
+        lines = []
+
+        # Get rules (compacted learnings) for codegen errors
+        rules = self.learning_store.list_rules(
+            category=LearningCategory.CODEGEN_ERROR,
+            min_confidence=0.6,
+        )
+        if rules:
+            lines.append("\n## Code Generation Rules (apply these)")
+            for rule in rules[:5]:
+                lines.append(f"- {rule['summary']}")
+
+        # Get recent raw learnings with full context (error vs fix)
+        raw_learnings = self.learning_store.list_raw_learnings(
+            category=LearningCategory.CODEGEN_ERROR,
+            limit=10,
+            include_promoted=False,
+        )
+        if raw_learnings:
+            # Filter to relevant ones based on step_goal similarity
+            relevant = [
+                l for l in raw_learnings
+                if self._is_learning_relevant(l, step_goal)
+            ][:3]  # Limit to 3 detailed examples
+
+            if relevant:
+                lines.append("\n## Recent Codegen Fixes (learn from these)")
+                for learning in relevant:
+                    ctx = learning.get("context", {})
+                    original = ctx.get("original_code", "")
+                    fixed = ctx.get("fixed_code", "")
+                    error_msg = ctx.get("error_message", "")
+
+                    # Show the contrast
+                    lines.append(f"\n### {learning['correction'][:80]}")
+                    if error_msg:
+                        lines.append(f"**Error:** {error_msg[:100]}")
+                    if original:
+                        lines.append(f"**Broken code:**\n```python\n{original[:300]}\n```")
+                    if fixed:
+                        lines.append(f"**Fixed code:**\n```python\n{fixed[:300]}\n```")
+
+        return "\n".join(lines) if lines else ""
+
+    def _is_learning_relevant(self, learning: dict, step_goal: str) -> bool:
+        """Check if a learning is relevant to the current step goal."""
+        # Simple keyword overlap check
+        goal_words = set(step_goal.lower().split())
+        learning_goal = learning.get("context", {}).get("step_goal", "")
+        learning_words = set(learning_goal.lower().split())
+        correction_words = set(learning.get("correction", "").lower().split())
+
+        # Check for meaningful keyword overlap
+        common_words = {"the", "a", "an", "to", "from", "for", "with", "in", "on", "of", "and", "or"}
+        goal_keywords = goal_words - common_words
+        learning_keywords = (learning_words | correction_words) - common_words
+
+        overlap = goal_keywords & learning_keywords
+        return len(overlap) >= 1  # At least one meaningful keyword match
 
     def _cached_get_table_schema(self, table: str) -> dict:
         """Get table schema with caching."""
@@ -861,6 +988,7 @@ class Session:
         start_time = time.time()
         last_code = ""
         last_error = None
+        pending_learning_context = None  # Track error for potential learning capture
 
         self._emit_event(StepEvent(
             event_type="step_start",
@@ -887,6 +1015,14 @@ class Session:
                     complexity=step.complexity,
                 )
             else:
+                # Track error context for potential learning capture
+                pending_learning_context = {
+                    "error_message": last_error[:500] if last_error else "",
+                    "original_code": last_code[:500] if last_code else "",
+                    "step_goal": step.goal,
+                    "attempt": attempt,
+                }
+
                 retry_prompt = RETRY_PROMPT_TEMPLATE.format(
                     error_details=last_error,
                     previous_code=last_code,
@@ -934,6 +1070,13 @@ class Session:
             if result.success:
                 duration_ms = int((time.time() - start_time) * 1000)
 
+                # Capture learning if this was a successful retry
+                if attempt > 1 and pending_learning_context:
+                    self._capture_error_learning(
+                        context=pending_learning_context,
+                        fixed_code=code,
+                    )
+
                 # Detect new tables created
                 tables_after = set(t['name'] for t in self.datastore.list_tables()) if self.datastore else set()
                 tables_created = list(tables_after - tables_before)
@@ -976,6 +1119,70 @@ class Session:
             attempts=self.session_config.max_retries_per_step,
             duration_ms=duration_ms,
         )
+
+    def _capture_error_learning(self, context: dict, fixed_code: str) -> None:
+        """Capture a learning from a successful error fix.
+
+        Args:
+            context: Error context dict with error_message, original_code, step_goal
+            fixed_code: The code that successfully fixed the error
+        """
+        try:
+            # Determine category based on step goal
+            step_goal_lower = context.get("step_goal", "").lower()
+            if "api" in step_goal_lower or "api_" in context.get("original_code", ""):
+                category = LearningCategory.API_ERROR
+            else:
+                category = LearningCategory.CODEGEN_ERROR
+
+            # Use LLM to generate a concise learning summary
+            summary = self._summarize_error_fix(context, fixed_code)
+            if not summary:
+                # Fallback to a simple summary
+                error_preview = context.get("error_message", "")[:100]
+                summary = f"Fixed error: {error_preview}"
+
+            # Add fixed code to context
+            context["fixed_code"] = fixed_code[:500]
+
+            # Save the learning
+            self.learning_store.save_learning(
+                category=category,
+                context=context,
+                correction=summary,
+                source=LearningSource.AUTO_CAPTURE,
+            )
+        except Exception:
+            pass  # Don't let learning capture failures affect execution
+
+    def _summarize_error_fix(self, context: dict, fixed_code: str) -> str:
+        """Use LLM to generate a concise learning summary from an error fix.
+
+        Args:
+            context: Error context with error_message, original_code
+            fixed_code: The code that fixed the error
+
+        Returns:
+            A concise summary of what was learned, or empty string on failure
+        """
+        try:
+            prompt = f"""Summarize what was learned from this error fix in ONE sentence.
+
+Error: {context.get('error_message', '')[:300]}
+Original code snippet: {context.get('original_code', '')[:200]}
+Fixed code snippet: {fixed_code[:200]}
+
+Output ONLY a single sentence describing the lesson learned, e.g., "Always use X instead of Y when..."
+Do not include any explanation or extra text."""
+
+            response = self.llm.generate(
+                system="You are a technical writer summarizing coding lessons learned.",
+                user_message=prompt,
+                max_tokens=100,
+            )
+            return response.content.strip()
+        except Exception:
+            return ""
 
     def _request_approval(
         self,

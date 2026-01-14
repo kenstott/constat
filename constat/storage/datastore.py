@@ -578,54 +578,87 @@ class DataStore:
 
         return "\n\n".join(parts)
 
-    def get_execution_history_table(self) -> Optional["pd.DataFrame"]:
+    def get_execution_history_table(self, include_all_attempts: bool = True) -> Optional["pd.DataFrame"]:
         """
         Get execution history as a queryable DataFrame.
 
-        Returns a table with step_number, goal, code, output for each executed step.
-        This can be stored as a table for SQL queries.
+        Returns a table with step_number, attempt, goal, code, output, error for each execution.
+        By default includes ALL attempts (both successful and failed) to show what didn't work
+        alongside what did work.
+
+        Args:
+            include_all_attempts: If True (default), include all attempts including failures.
+                                  If False, only include the final successful attempt per step.
 
         Returns:
             DataFrame with execution history, or None if no history
         """
         import pandas as pd
 
-        # Get scratchpad entries for step info
+        # Get scratchpad entries for step info (one per step)
         scratchpad_entries = self.get_scratchpad()
         if not scratchpad_entries:
             return None
 
-        # Get code artifacts
+        # Get all artifacts
         code_artifacts = self.get_artifacts(artifact_type="code")
         output_artifacts = self.get_artifacts(artifact_type="output")
+        error_artifacts = self.get_artifacts(artifact_type="error")
 
-        # Build lookup by step number (use latest attempt)
-        code_by_step = {}
+        # Build lookup by (step, attempt)
+        code_by_step_attempt = {}
         for artifact in code_artifacts:
-            step = artifact.step_number
-            if step not in code_by_step or artifact.attempt > code_by_step[step].attempt:
-                code_by_step[step] = artifact
+            key = (artifact.step_number, artifact.attempt)
+            code_by_step_attempt[key] = artifact
 
-        output_by_step = {}
+        output_by_step_attempt = {}
         for artifact in output_artifacts:
-            step = artifact.step_number
-            if step not in output_by_step or artifact.attempt > output_by_step[step].attempt:
-                output_by_step[step] = artifact
+            key = (artifact.step_number, artifact.attempt)
+            output_by_step_attempt[key] = artifact
+
+        error_by_step_attempt = {}
+        for artifact in error_artifacts:
+            key = (artifact.step_number, artifact.attempt)
+            error_by_step_attempt[key] = artifact
+
+        # Build lookup by step -> scratchpad entry
+        scratchpad_by_step = {entry["step_number"]: entry for entry in scratchpad_entries}
+
+        # Get all unique (step, attempt) combinations
+        all_attempts = set(code_by_step_attempt.keys())
+        all_attempts.update(output_by_step_attempt.keys())
+        all_attempts.update(error_by_step_attempt.keys())
+
+        if not include_all_attempts:
+            # Filter to only latest attempt per step
+            latest_by_step = {}
+            for step, attempt in all_attempts:
+                if step not in latest_by_step or attempt > latest_by_step[step]:
+                    latest_by_step[step] = attempt
+            all_attempts = {(step, attempt) for step, attempt in all_attempts
+                           if attempt == latest_by_step.get(step)}
 
         # Build history records
         history = []
-        for entry in scratchpad_entries:
-            step_num = entry["step_number"]
-            code = code_by_step.get(step_num)
-            output = output_by_step.get(step_num)
+        for step_num, attempt in sorted(all_attempts):
+            entry = scratchpad_by_step.get(step_num, {})
+            code = code_by_step_attempt.get((step_num, attempt))
+            output = output_by_step_attempt.get((step_num, attempt))
+            error = error_by_step_attempt.get((step_num, attempt))
+
+            # Determine success: has output and no error
+            success = output is not None and error is None
 
             history.append({
                 "step_number": step_num,
-                "goal": entry["goal"],
-                "narrative": entry["narrative"],
+                "attempt": attempt,
+                "success": success,
+                "goal": entry.get("goal"),
+                "narrative": entry.get("narrative") if success else None,
                 "code": code.content if code else None,
                 "output": output.content if output else None,
-                "tables_created": ", ".join(entry.get("tables_created", [])) or None,
+                "error": error.content if error else None,
+                "tables_created": ", ".join(entry.get("tables_created", [])) or None if success else None,
             })
 
         return pd.DataFrame(history)

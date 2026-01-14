@@ -337,6 +337,10 @@ Once in the interactive REPL, these commands are available:
 | `/facts` | Show cached facts (persistent + session) |
 | `/remember <fact>` | Save a fact that persists across sessions |
 | `/forget <name>` | Remove a persistent or session fact |
+| `/correct <text>` | Record a correction for future sessions |
+| `/learnings` | Show learned rules and pending corrections |
+| `/compact-learnings` | Promote similar learnings to rules |
+| `/forget-learning <id>` | Remove a specific learning |
 | `/insights [on\|off]` | Toggle insight synthesis |
 | `/preferences` | Show current settings |
 | `/verbose` | Toggle verbose mode |
@@ -376,6 +380,42 @@ Generated visualizations are:
 - "Create an interactive map showing customer locations"
 - "Show me a bar chart of revenue by region"
 - "Visualize the correlation between price and quantity"
+
+### Dashboards
+
+Request a "dashboard" to generate multi-panel visualizations automatically:
+
+```
+> Create a dashboard of sales performance
+
+[Generates 2x2 grid with: revenue trend, breakdown by category, top products, KPI summary]
+```
+
+Dashboard layouts adapt to data:
+- **Time series**: Trend + summary stats (1x2)
+- **Categories**: Overview, breakdown, comparison, detail (2x2)
+- **KPI-focused**: KPI cards on top, supporting charts below (3x2)
+
+### Learning System
+
+Constat learns from corrections and errors to improve over time. Learnings are stored per-user and persist across sessions.
+
+**Explicit corrections:**
+```
+/correct "revenue" means gross sales minus returns
+```
+
+**Automatic learning:** When code generation fails and retries succeed, the error-to-fix pattern is captured automatically. These learnings are injected into future code generation prompts.
+
+**Natural language detection:** Corrections in conversation are detected automatically:
+- "That's wrong, active users means 30-day logins"
+- "Actually, in our context, churn means 60 days inactive"
+
+**Compaction:** Similar learnings are automatically promoted to rules when patterns emerge:
+```
+/learnings          # Show rules and pending learnings
+/compact-learnings  # Manually trigger compaction
+```
 
 ## Configuration
 

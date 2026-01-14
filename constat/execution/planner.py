@@ -10,6 +10,7 @@ from constat.core.models import Plan, PlannerResponse, Step, StepType, TaskType
 from constat.providers import TaskRouter
 from constat.providers.base import BaseLLMProvider
 from constat.catalog.schema_manager import SchemaManager
+from constat.storage.learnings import LearningCategory
 
 
 # System prompt for planning
@@ -139,7 +140,8 @@ PLANNER_PROMPT_TEMPLATE = """{system_prompt}
 {doc_overview}
 ## Domain Context
 {domain_context}
-{user_facts}"""
+{user_facts}
+{learnings}"""
 
 
 class Planner:
@@ -155,10 +157,12 @@ class Planner:
         config: Config,
         schema_manager: SchemaManager,
         router_or_provider: Optional[Union[BaseLLMProvider, TaskRouter]] = None,
+        learning_store=None,
     ):
         self.config = config
         self.schema_manager = schema_manager
         self._user_facts: dict = {}  # name -> value mapping
+        self._learning_store = learning_store  # For injecting learned rules
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -179,6 +183,14 @@ class Planner:
             facts: Dictionary of fact_name -> value (e.g., {"user_email": "ken@example.com"})
         """
         self._user_facts = facts or {}
+
+    def set_learning_store(self, learning_store) -> None:
+        """Set learning store for injecting learned rules.
+
+        Args:
+            learning_store: LearningStore instance
+        """
+        self._learning_store = learning_store
 
     def _build_system_prompt(self) -> str:
         """Build the full system prompt for planning."""
@@ -212,6 +224,29 @@ class Planner:
                 fact_lines.append(f"- **{name}**: {value}")
             user_facts_text = "\n".join(fact_lines)
 
+        # Build learnings section - only user/NL corrections (not codegen errors)
+        # Codegen errors are only relevant to code generation steps, not planning
+        learnings_text = ""
+        if self._learning_store:
+            try:
+                # Get user corrections and NL corrections (domain terminology, etc.)
+                rule_lines = ["\n## Learned Rules (apply these patterns)"]
+                rules_count = 0
+
+                for category in [LearningCategory.USER_CORRECTION, LearningCategory.NL_CORRECTION]:
+                    rules = self._learning_store.list_rules(
+                        category=category,
+                        min_confidence=0.6,
+                    )
+                    for rule in rules[:3]:  # Max 3 per category
+                        rule_lines.append(f"- {rule['summary']}")
+                        rules_count += 1
+
+                if rules_count > 0:
+                    learnings_text = "\n".join(rule_lines)
+            except Exception:
+                pass  # Don't fail planning if learnings can't be loaded
+
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             schema_overview=self.schema_manager.get_overview(),
@@ -219,6 +254,7 @@ class Planner:
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
             user_facts=user_facts_text,
+            learnings=learnings_text,
         )
 
     def _get_tool_handlers(self) -> dict:

@@ -14,6 +14,7 @@ from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 from constat.storage.facts import FactStore
+from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
 
 
 # Display preference NL patterns
@@ -36,6 +37,28 @@ DISPLAY_OVERRIDE_PATTERNS = [
 ]
 
 
+# NL Correction patterns - detect corrections in natural conversation
+# Format: (pattern, correction_type)
+CORRECTION_PATTERNS = [
+    # Explicit wrong
+    (r"\bthat'?s\s+(wrong|incorrect|not\s+right)\b", "explicit_wrong"),
+    (r"\byou\s+(got|have)\s+it\s+wrong\b", "you_wrong"),
+    (r"\bthat'?s\s+not\s+(how|what|correct)\b", "not_correct"),
+
+    # "Actually" corrections
+    (r"\bactually[,]?\s+(.+)\s+(means|is|should\s+be)\b", "actually_means"),
+    (r"\bno[,]?\s+(.+)\s+(means|is|should\s+be)\b", "no_means"),
+
+    # Domain terminology
+    (r"\b(when\s+I\s+say|by)\s+['\"]?(\w+)['\"]?[,]?\s*I\s+mean\b", "i_mean"),
+    (r"\bin\s+(our|this)\s+(context|company)[,]?\s+(\w+)\s+(means|refers)\b", "domain_term"),
+
+    # Assumptions
+    (r"\bdon'?t\s+assume\s+(.+)\b", "dont_assume"),
+    (r"\bnever\s+assume\s+(.+)\b", "never_assume"),
+]
+
+
 # Commands available in the REPL
 REPL_COMMANDS = [
     "/help", "/h", "/tables", "/show", "/query", "/code", "/state",
@@ -44,6 +67,7 @@ REPL_COMMANDS = [
     "/context", "/compact", "/facts", "/remember", "/forget",
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
     "/database", "/databases", "/db", "/file", "/files",
+    "/correct", "/learnings", "/compact-learnings", "/forget-learning",
     "/quit", "/exit", "/q"
 ]
 
@@ -107,6 +131,7 @@ class InteractiveREPL:
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
         self.fact_store = FactStore(user_id=user_id)  # Persistent facts
+        self.learning_store = LearningStore(user_id=user_id)  # Learnings/corrections
 
         # Setup readline for tab completion
         self._readline_available = False
@@ -305,6 +330,10 @@ class InteractiveREPL:
             ("/file save <n> <uri>", "Save file bookmark"),
             ("/file delete <name>", "Delete file bookmark"),
             ("/file <name>", "Use bookmarked file"),
+            ("/correct <text>", "Record a correction for future reference"),
+            ("/learnings [category]", "Show learnings and rules"),
+            ("/compact-learnings", "Compact learnings into rules"),
+            ("/forget-learning <id>", "Delete a learning by ID"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -706,6 +735,144 @@ class InteractiveREPL:
         import re
         # Mask password in URIs like postgresql://user:password@host
         return re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', uri)
+
+    # -------------------------------------------------------------------------
+    # Learning/Correction Commands
+    # -------------------------------------------------------------------------
+
+    def _handle_correct(self, arg: str) -> None:
+        """Handle /correct <text> - explicit user correction."""
+        if not arg.strip():
+            self.console.print("[yellow]Usage: /correct <correction>[/yellow]")
+            self.console.print("[dim]Example: /correct 'active users' means users logged in within 30 days[/dim]")
+            return
+
+        self.learning_store.save_learning(
+            category=LearningCategory.USER_CORRECTION,
+            context={
+                "previous_question": self.last_problem,
+                "correction_text": arg,
+            },
+            correction=arg,
+            source=LearningSource.EXPLICIT_COMMAND,
+        )
+        self.console.print(f"[green]Learned:[/green] {arg[:60]}{'...' if len(arg) > 60 else ''}")
+
+    def _show_learnings(self, arg: str = "") -> None:
+        """Handle /learnings [category] - show learnings and rules."""
+        # Parse optional category filter
+        category = None
+        if arg.strip():
+            try:
+                category = LearningCategory(arg.strip().lower())
+            except ValueError:
+                self.console.print(f"[yellow]Unknown category: {arg}[/yellow]")
+                self.console.print("[dim]Valid: user_correction, api_error, codegen_error, nl_correction[/dim]")
+
+        # Show rules first (compacted, high-value)
+        rules = self.learning_store.list_rules(category=category)
+        if rules:
+            self.console.print(f"\n[bold]Rules[/bold] ({len(rules)})")
+            for r in rules[:10]:
+                conf = r.get("confidence", 0) * 100
+                applied = r.get("applied_count", 0)
+                self.console.print(f"  [{conf:.0f}%] {r['summary'][:60]} [dim](applied {applied}x)[/dim]")
+
+        # Show pending raw learnings
+        raw = self.learning_store.list_raw_learnings(category=category, limit=20)
+        pending = [l for l in raw if not l.get("promoted_to")]
+        if pending:
+            self.console.print(f"\n[bold]Pending Learnings[/bold] ({len(pending)})")
+            for l in pending[:10]:
+                cat = l.get("category", "")[:10]
+                lid = l.get("id", "")[:12]
+                self.console.print(f"  [dim]{lid}[/dim] [{cat}] {l['correction'][:50]}...")
+
+        # Show stats
+        stats = self.learning_store.get_stats()
+        if stats.get("total_raw", 0) > 0 or stats.get("total_rules", 0) > 0:
+            self.console.print(
+                f"\n[dim]Total: {stats.get('unpromoted', 0)} pending, "
+                f"{stats.get('total_rules', 0)} rules, "
+                f"{stats.get('total_archived', 0)} archived[/dim]"
+            )
+        else:
+            self.console.print("[dim]No learnings yet. Use /correct to add corrections.[/dim]")
+
+    def _compact_learnings(self) -> None:
+        """Handle /compact-learnings - trigger compaction."""
+        from constat.learning.compactor import LearningCompactor
+
+        if not self.session:
+            self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
+            return
+
+        stats = self.learning_store.get_stats()
+        if stats.get("unpromoted", 0) < 2:
+            self.console.print("[dim]Not enough learnings to compact (need at least 2).[/dim]")
+            return
+
+        self.display.start_spinner("Analyzing learnings for patterns...")
+        try:
+            # Get LLM from session's router
+            llm = self.session.router._get_provider(self.session.router.models["planning"])
+            compactor = LearningCompactor(self.learning_store, llm)
+            result = compactor.compact()
+
+            self.display.stop_spinner()
+            self.console.print(f"[green]Compaction complete:[/green]")
+            self.console.print(f"  Rules created: {result.rules_created}")
+            self.console.print(f"  Learnings archived: {result.learnings_archived}")
+            if result.skipped_low_confidence > 0:
+                self.console.print(f"  [dim]Skipped (low confidence): {result.skipped_low_confidence}[/dim]")
+            if result.errors:
+                for err in result.errors:
+                    self.console.print(f"  [yellow]Warning: {err}[/yellow]")
+        except Exception as e:
+            self.display.stop_spinner()
+            self.console.print(f"[red]Error:[/red] {e}")
+
+    def _forget_learning(self, learning_id: str) -> None:
+        """Handle /forget-learning <id> - delete a learning."""
+        learning_id = learning_id.strip()
+        if self.learning_store.delete_learning(learning_id):
+            self.console.print(f"[green]Deleted learning:[/green] {learning_id}")
+        else:
+            # Try deleting as a rule
+            if self.learning_store.delete_rule(learning_id):
+                self.console.print(f"[green]Deleted rule:[/green] {learning_id}")
+            else:
+                self.console.print(f"[yellow]Not found:[/yellow] {learning_id}")
+                self.console.print("[dim]Use /learnings to see IDs[/dim]")
+
+    def _detect_nl_correction(self, text: str) -> Optional[dict]:
+        """Detect if user input contains a correction pattern.
+
+        Args:
+            text: User input text
+
+        Returns:
+            Dict with correction type and match, or None if no correction detected
+        """
+        for pattern, correction_type in CORRECTION_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return {"type": correction_type, "match": match.group(0)}
+        return None
+
+    def _save_nl_correction(self, correction: dict, full_text: str) -> None:
+        """Save an NL-detected correction as a learning."""
+        self.learning_store.save_learning(
+            category=LearningCategory.NL_CORRECTION,
+            context={
+                "match_type": correction["type"],
+                "matched_text": correction["match"],
+                "full_text": full_text,
+                "previous_question": self.last_problem,
+            },
+            correction=full_text,
+            source=LearningSource.NL_DETECTION,
+        )
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""
@@ -1359,6 +1526,14 @@ class InteractiveREPL:
             self._handle_database(arg)
         elif cmd in ("/file", "/files"):
             self._handle_file(arg)
+        elif cmd == "/correct":
+            self._handle_correct(arg)
+        elif cmd == "/learnings":
+            self._show_learnings(arg)
+        elif cmd == "/compact-learnings":
+            self._compact_learnings()
+        elif cmd == "/forget-learning" and arg:
+            self._forget_learning(arg)
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 
@@ -1377,6 +1552,12 @@ class InteractiveREPL:
         # Detect and apply display preference overrides from NL
         overrides = self._detect_display_overrides(problem)
         original_settings = self._apply_display_overrides(overrides)
+
+        # Detect NL corrections and save as learnings
+        nl_correction = self._detect_nl_correction(problem)
+        if nl_correction:
+            self._save_nl_correction(nl_correction, problem)
+            self.console.print(f"[dim]Noted: {nl_correction['type'].replace('_', ' ')}[/dim]")
 
         # Clear any pending outputs from previous execution
         clear_pending_outputs()
