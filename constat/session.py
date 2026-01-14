@@ -2651,11 +2651,11 @@ User feedback: {approval.suggestion}
         Solve a problem in auditable mode using fact-based derivation.
 
         Instead of generating a stepwise execution plan, this method:
-        1. Identifies the claim to verify
-        2. Decomposes into required facts
-        3. Shows a fact-based plan for approval
+        1. Identifies the question to answer
+        2. Decomposes into required premises (facts from sources)
+        3. Shows a derivation plan for approval
         4. Resolves facts with provenance tracking
-        5. Generates a derivation trace
+        5. Generates an auditable derivation trace
 
         Args:
             problem: The problem/question to solve
@@ -2705,19 +2705,19 @@ User feedback: {approval.suggestion}
                 for name, api in self.config.apis.items()
             )
 
-        fact_plan_prompt = f"""Construct a logical proof for this verification request.
+        fact_plan_prompt = f"""Construct a logical derivation to answer this question with full provenance.
 
-Problem: {problem}
+Question: {problem}
 
 Available databases:
 {schema_overview}
 {doc_list}
 {api_list}
 
-Build a formal proof with:
-1. PREMISES - Base facts that must be retrieved from data sources (not derived)
-2. INFERENCE - Logical steps that derive new facts from premises using specific operations
-3. CONCLUSION - The final answer derived from the inference steps
+Build a formal derivation with:
+1. PREMISES (P1, P2, ...) - Base facts retrieved from data sources (databases, documents, APIs)
+2. INFERENCE (I1, I2, ...) - Logical steps that derive new facts from premises
+3. CONCLUSION (C) - The final answer derived from the inference steps
 
 For each PREMISE, specify the source:
 - database:<db_name> (for SQL queries)
@@ -2725,11 +2725,11 @@ For each PREMISE, specify the source:
 - api:<api_name>:<query_name> (for API calls)
 
 For each INFERENCE step, specify:
-- What premises/prior inferences it uses
+- What premises/prior inferences it uses (e.g., P1, P2, I1)
 - The operation (e.g., subtract, divide, compare, aggregate, filter)
 
 Format as:
-CLAIM: <the claim being verified>
+QUESTION: <restate the question being answered>
 
 PREMISES:
 P1: <fact_name> = ? (<description>) [source: <specific source>]
@@ -2742,12 +2742,12 @@ I2: <derived_fact> = <operation>(<inputs>) -- <explanation>
 ...
 
 CONCLUSION:
-C: <how the final inference answers the claim>
+C: <how the final inference answers the question>
 """
 
         result = self.router.execute(
             task_type=TaskType.INTENT_CLASSIFICATION,
-            system="You analyze verification requests and decompose them into required facts.",
+            system="You analyze questions and decompose them into premises and inferences for auditable answers.",
             user_message=fact_plan_prompt,
             max_tokens=1500,
         )
@@ -2764,8 +2764,8 @@ C: <how the final inference answers the claim>
         current_section = None
         for line in lines:
             line = line.strip()
-            if line.startswith("CLAIM:"):
-                claim = line.split("CLAIM:", 1)[1].strip()
+            if line.startswith("QUESTION:"):
+                claim = line.split("QUESTION:", 1)[1].strip()
             elif line.startswith("PREMISES:"):
                 current_section = "premises"
             elif line.startswith("INFERENCE:"):
@@ -2852,9 +2852,9 @@ C: <how the final inference answers the claim>
             "type": "conclusion",
         })
 
-        # Store parsed proof for later use
+        # Store parsed derivation for later use
         self._current_proof = {
-            "claim": claim,
+            "question": claim,  # The question being answered
             "premises": premises,
             "inferences": inferences,
             "conclusion": conclusion,
@@ -2880,7 +2880,7 @@ C: <how the final inference answers the claim>
             pseudo_plan = Plan(problem=problem, steps=pseudo_steps)
             pseudo_response = PlannerResponse(
                 plan=pseudo_plan,
-                reasoning=f"Claim: {claim}"  # Derivation is now in the final step
+                reasoning=f"Question: {claim}"  # The question being answered with full derivation
             )
 
             approval = self._request_approval(problem, pseudo_response, mode_selection)
@@ -2910,13 +2910,13 @@ C: <how the final inference answers the claim>
         self._emit_event(StepEvent(
             event_type="verifying",
             step_number=0,
-            data={"message": f"Verifying: {claim or problem}"}
+            data={"message": f"Deriving answer: {claim or problem}"}
         ))
 
         # Build context for fact resolver
-        context = f"""Verification request: {problem}
+        context = f"""Question: {problem}
 
-Claim to verify: {claim}
+Answer to derive (with provenance): {claim}
 
 Available data sources:
 {schema_overview}
@@ -3042,11 +3042,11 @@ Available tables: {', '.join(t['name'] for t in existing_tables) if existing_tab
 Verification request: {question}
 """
 
-        # Use fact resolver to verify the claim
+        # Use fact resolver to derive the answer with provenance
         self._emit_event(StepEvent(
-            event_type="verifying",
+            event_type="deriving",
             step_number=0,
-            data={"message": f"Verifying: {question}"}
+            data={"message": f"Deriving answer: {question}"}
         ))
 
         try:
