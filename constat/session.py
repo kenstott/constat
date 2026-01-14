@@ -2354,7 +2354,7 @@ Please create a revised plan that addresses this feedback."""
 
         # Create persistent datastore for this session
         session_dir = self.history._session_dir(self.session_id)
-        datastore_path = session_dir / "datastore.db"
+        datastore_path = session_dir / "datastore.duckdb"
         tables_dir = session_dir / "tables"
 
         # Create the underlying datastore
@@ -2720,6 +2720,10 @@ Please create a revised plan that addresses this feedback."""
         # Auto-compact if context is too large
         self._auto_compact_if_needed()
 
+        # Ensure execution history is available as a queryable table
+        if self.datastore:
+            self.datastore.ensure_execution_history_table()
+
         return {
             "success": True,
             "plan": self.plan,
@@ -2751,7 +2755,7 @@ Please create a revised plan that addresses this feedback."""
 
         # Load the datastore (contains tables, state, scratchpad, artifacts)
         session_dir = self.history._session_dir(session_id)
-        datastore_path = session_dir / "datastore.db"
+        datastore_path = session_dir / "datastore.duckdb"
         tables_dir = session_dir / "tables"
 
         # Create underlying datastore

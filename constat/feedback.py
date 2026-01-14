@@ -415,8 +415,6 @@ class FeedbackDisplay:
     def set_problem(self, problem: str) -> None:
         """Set the problem being solved."""
         self.problem = problem
-        self.console.print()  # Blank line before header
-        self.console.print(Rule("[bold blue]VERA[/bold blue]", align="left"))
         self.console.print()  # Blank line before plan
 
     def show_plan(self, steps: list[dict], is_followup: bool = False) -> None:
@@ -651,9 +649,18 @@ class FeedbackDisplay:
         non_empty_answers = {q: a for q, a in answers.items() if a}
         all_answered = len(non_empty_answers) == len(request.questions)
 
+        # Show summary of user's clarifications with YOU header
+        if non_empty_answers:
+            self.console.print()
+            self.console.print(Rule("[bold green]YOU[/bold green]", align="right"))
+            for q, a in non_empty_answers.items():
+                # Shorten question for display
+                short_q = q[:50] + "..." if len(q) > 50 else q
+                self.console.print(f"[dim]{short_q}:[/dim] [white]{a}[/white]")
+            self.console.print()
+
         if all_answered:
             # All questions answered - proceed automatically
-            self.console.print("[green]Proceeding with clarified question...[/green]\n")
             return ClarificationResponse(answers=non_empty_answers, skip=False)
         elif non_empty_answers:
             # Some questions skipped - ask if they want to continue
@@ -665,7 +672,6 @@ class FeedbackDisplay:
             if skip == "s":
                 self.console.print("[dim]Cancelled.[/dim]")
                 return ClarificationResponse(answers={}, skip=True)
-            self.console.print("[dim]Proceeding with partial clarification...[/dim]\n")
             return ClarificationResponse(answers=non_empty_answers, skip=False)
         else:
             # No answers provided at all
@@ -879,9 +885,9 @@ class FeedbackDisplay:
         self.console.print()  # One blank line after output
 
     def show_final_answer(self, answer: str) -> None:
-        """Show the final synthesized answer prominently."""
+        """Show the final synthesized answer from Vera."""
         self.console.print()
-        self.console.print(Rule("[bold green]ANSWER[/bold green]", align="left"))
+        self.console.print(Rule("[bold blue]VERA[/bold blue]", align="left"))
         self.console.print(Markdown(_left_align_markdown(answer)))
         self.console.print()
 

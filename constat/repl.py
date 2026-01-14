@@ -3,6 +3,7 @@
 from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
@@ -288,6 +289,9 @@ class InteractiveREPL:
 
     def _get_input(self) -> str:
         """Get user input with tab completion (readline)."""
+        # Show YOU header before prompt
+        self.console.print()
+        self.console.print(Rule("[bold green]YOU[/bold green]", align="right"))
         return input("> ").strip()
 
     def _show_help(self) -> None:
@@ -1683,9 +1687,6 @@ class InteractiveREPL:
 
                 if not user_input:
                     continue
-
-                # Show user input with YOU header
-                self.display.show_user_input(user_input)
 
                 # Check for suggestion shortcuts
                 suggestion_to_run = None
