@@ -3475,38 +3475,27 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
             "conclusion": conclusion,
         }
 
-        # Emit plan_ready with full proof structure (type, fact_id fields)
-        # This is shown to user before approval
-        self._emit_event(StepEvent(
-            event_type="plan_ready",
-            step_number=0,
-            data={
-                "steps": proof_steps,  # Has type, fact_id for proper display
-                "reasoning": f"Question: {claim}",
-                "is_followup": False,
-            }
-        ))
-
         # Request approval if required
+        # For auditable mode, we call the approval callback directly with proof_steps
+        # that preserve the type and fact_id fields for proper P1:/I1:/C: display
         if self.session_config.require_approval:
-            # Create a pseudo planner response for approval using proof_steps which includes
-            # dependencies and the final derivation step
-            from constat.core.models import PlannerResponse, Plan, Step
-            pseudo_steps = [
-                Step(
-                    number=fs["number"],
-                    goal=fs["goal"],
-                    depends_on=fs["depends_on"]
-                )
-                for fs in proof_steps
-            ]
-            pseudo_plan = Plan(problem=problem, steps=pseudo_steps)
-            pseudo_response = PlannerResponse(
-                plan=pseudo_plan,
-                reasoning=f"Question: {claim}"  # The question being answered with full derivation
-            )
+            from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse, PlanApproval
 
-            approval = self._request_approval(problem, pseudo_response, mode_selection)
+            # Auto-approve if configured
+            if self.session_config.auto_approve:
+                approval = PlanApprovalResponse.approve()
+            elif not self._approval_callback:
+                approval = PlanApprovalResponse.approve()
+            else:
+                # Build approval request with full proof structure (preserves type, fact_id)
+                request = PlanApprovalRequest(
+                    problem=problem,
+                    mode=mode_selection.mode,
+                    mode_reasoning=mode_selection.reasoning,
+                    steps=proof_steps,  # Includes type, fact_id for proper display
+                    reasoning=f"Question: {claim}",
+                )
+                approval = self._approval_callback(request)
 
             if approval.decision == PlanApproval.REJECT:
                 self.datastore.set_session_meta("status", "rejected")
@@ -3623,6 +3612,9 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         resolved_premises[fact_id] = fact
                         val_str = str(fact.value)[:100]
                         derivation_lines.append(f"- {fact_id}: {fact_name} = {val_str} (confidence: {fact.confidence:.0%})")
+                    elif fact and fact.reasoning:
+                        # Fact was created but has no value - include the reason
+                        raise Exception(fact.reasoning)
                     else:
                         raise Exception("No value resolved")
 
