@@ -479,7 +479,14 @@ class FeedbackDisplay:
                 remapped_deps = [str(self._step_number_map.get(d, d)) for d in depends_on]
                 dep_str = f" [dim](depends on {', '.join(remapped_deps)})[/dim]"
 
-            self.console.print(f"  [dim]{display_num}.[/dim] {goal}{dep_str}")
+            # Use fact_id (P1, I1, C) for proof structures, numeric for regular plans
+            if is_proof_structure:
+                fact_id = s.get("fact_id", "")
+                if step_type == "conclusion":
+                    fact_id = "C"
+                self.console.print(f"  [dim]{fact_id}:[/dim] {goal}")
+            else:
+                self.console.print(f"  [dim]{display_num}.[/dim] {goal}{dep_str}")
 
         self.console.print()
 
@@ -1018,6 +1025,33 @@ class SessionFeedbackHandler:
                 data.get("error", "Unknown error"),
                 data.get("attempt", 1),
             )
+
+        elif event_type == "premise_resolving":
+            # Show which fact is being resolved
+            fact_name = data.get("fact_name", "?")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+            self.display.update_spinner(f"Resolving {fact_name} ({step}/{total})...")
+
+        elif event_type == "premise_resolved":
+            # Show resolved fact value
+            fact_name = data.get("fact_name", "?")
+            value = data.get("value")
+            source = data.get("source", "")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+            confidence = data.get("confidence", 0)
+
+            if value is not None:
+                # Format value for display (truncate if too long)
+                val_str = str(value)
+                if len(val_str) > 60:
+                    val_str = val_str[:57] + "..."
+                conf_str = f" ({confidence:.0%})" if confidence else ""
+                self.display.console.print(f"  [green]✓[/green] {fact_name} = {val_str} [dim][{source}]{conf_str}[/dim]")
+            else:
+                error = data.get("error", "unresolved")
+                self.display.console.print(f"  [red]✗[/red] {fact_name} = [red]UNRESOLVED[/red] [dim]({error})[/dim]")
 
         elif event_type == "synthesizing":
             # Stop Live display before printing synthesizing message

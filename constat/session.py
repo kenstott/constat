@@ -2920,8 +2920,29 @@ NEW_REQUEST: <the new request, or NONE>
         if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
             return self._solve_knowledge(question, mode_selection)
 
-        # AUDITABLE mode: verification questions need fact resolver
+        # AUDITABLE mode: check if this is a "redo" request or a verification question
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
+            # Check for "redo" patterns - re-run original problem in auditable mode
+            redo_patterns = ["redo", "re-do", "re-run", "rerun", "again", "repeat", "retry"]
+            question_lower = question.lower()
+            is_redo = any(pattern in question_lower for pattern in redo_patterns)
+
+            if is_redo and self.datastore:
+                # Get original problem and re-run in auditable mode
+                original_problem = self.datastore.get_session_meta("problem")
+                if original_problem:
+                    self._emit_event(StepEvent(
+                        event_type="mode_switch",
+                        step_number=0,
+                        data={
+                            "mode": "auditable",
+                            "reasoning": "Re-running original analysis in auditable mode",
+                            "matched_keywords": ["redo", "auditable"],
+                        }
+                    ))
+                    return self._solve_auditable(original_problem, mode_selection)
+
+            # Otherwise treat as verification question
             return self._follow_up_auditable(question, mode_selection)
 
         # Otherwise proceed with EXPLORATORY mode (planning + execution)
