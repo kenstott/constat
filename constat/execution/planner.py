@@ -65,11 +65,19 @@ Example: For "10 random items with extra field X":
 ## Planning Guidelines
 1. Start by understanding what data is needed
 2. **Review available sources below** and pick the best match for the data needed
-3. **PREFER SQL JOINs over separate queries** - when data from multiple related tables is needed, use a single SQL query with JOINs rather than multiple separate queries followed by Python merges
-4. Each step should produce data that later steps can use
-5. Keep steps atomic - one main action per step
-6. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
-7. End with a step that synthesizes the final answer
+3. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE clauses, API filters, or GraphQL arguments instead of fetching all data and filtering in Python. This is critical for performance.
+4. **PREFER SQL JOINs over separate queries** - when data from multiple related tables is needed, use a single SQL query with JOINs rather than multiple separate queries followed by Python merges
+5. Each step should produce data that later steps can use
+6. Keep steps atomic - one main action per step
+7. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
+8. End with a step that synthesizes the final answer
+
+## API Filtering (Critical!)
+When using APIs, ALWAYS use API-level filtering:
+- **GraphQL**: Use query arguments - check schema for filter syntax (varies by implementation)
+- **REST**: Use query parameters for filtering
+- **NEVER** fetch all data then filter in Python - this wastes bandwidth and memory
+- Use `get_api_query_schema(api_name, query_name)` to discover available filter arguments
 
 ## JOIN Optimization Guidelines
 - **Use JOINs when:** Tables share foreign key relationships (e.g., orders.customer_id -> customers.id), you need data from 2-3 related tables, the relationships are straightforward

@@ -17,7 +17,7 @@ REPL_COMMANDS = [
     "/update", "/refresh", "/reset", "/user", "/save", "/share", "/sharewith",
     "/plans", "/replay", "/history", "/resume",
     "/context", "/compact", "/facts", "/remember", "/forget",
-    "/verbose", "/quit", "/exit", "/q"
+    "/verbose", "/insights", "/preferences", "/quit", "/exit", "/q"
 ]
 
 # Use readline for tab completion (works reliably across terminals)
@@ -154,6 +154,8 @@ class InteractiveREPL:
             ("/remember <fact>", "Remember a fact (e.g., /remember my role is CFO)"),
             ("/forget <name>", "Forget a remembered fact by name"),
             ("/verbose", "Toggle verbose mode"),
+            ("/insights [on|off]", "Toggle or set insight synthesis"),
+            ("/preferences", "Show current preferences"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -411,6 +413,39 @@ class InteractiveREPL:
         self.session.fact_resolver._cache.pop(fact_name, None)
         self.console.print(f"[green]Forgot:[/green] {fact_name}")
 
+    def _toggle_insights(self, arg: str = "") -> None:
+        """Toggle or set insight synthesis on/off."""
+        arg_lower = arg.lower().strip()
+        if arg_lower == "on":
+            self.session_config.enable_insights = True
+        elif arg_lower == "off":
+            self.session_config.enable_insights = False
+        else:
+            # Toggle
+            self.session_config.enable_insights = not self.session_config.enable_insights
+
+        status = "on" if self.session_config.enable_insights else "off"
+        self.console.print(f"Insights: [bold]{status}[/bold]")
+        if not self.session_config.enable_insights:
+            self.console.print("[dim]Raw results will be shown without synthesis[/dim]")
+
+    def _show_preferences(self) -> None:
+        """Show current preferences/settings."""
+        table = Table(title="Preferences", show_header=True, box=None)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("verbose", "on" if self.verbose else "off")
+        table.add_row("insights", "on" if self.session_config.enable_insights else "off")
+        table.add_row("user", self.user_id)
+
+        # Show mode if session exists
+        if self.session:
+            mode = self.session_config.mode.value if hasattr(self.session_config, 'mode') else "default"
+            table.add_row("mode", mode)
+
+        self.console.print(table)
+
     def _show_code(self, step_arg: str = "") -> None:
         """Show generated code for steps."""
         if not self.session or not self.session.datastore:
@@ -667,6 +702,10 @@ class InteractiveREPL:
             self.verbose = not self.verbose
             self.display.verbose = self.verbose
             self.console.print(f"Verbose: [bold]{'on' if self.verbose else 'off'}[/bold]")
+        elif cmd == "/insights":
+            self._toggle_insights(arg)
+        elif cmd == "/preferences":
+            self._show_preferences()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 
@@ -720,8 +759,13 @@ class InteractiveREPL:
             else:
                 self.console.print(f"[red]Error:[/red] {result.get('error', 'Unknown error')}")
         except KeyboardInterrupt:
+            # Clean up display state on interrupt
+            self.display.stop()
+            self.display.stop_spinner()
             self.console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
+            self.display.stop()
+            self.display.stop_spinner()
             self.console.print(f"[red]Error:[/red] {e}")
 
         return None

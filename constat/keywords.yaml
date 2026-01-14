@@ -1,0 +1,107 @@
+# Intent detection keywords for Constat
+# Supports i18n - add language-specific sections as needed
+#
+# Pattern types:
+# - Simple strings: exact substring match (case-insensitive)
+# - Strings starting with ^: exact match only (for single-char shortcuts)
+#
+# To add a new language, copy the 'en' section and translate keywords
+
+en:
+  # Keywords suggesting user wants brief/raw output (skip insights)
+  brief_output:
+    - brief
+    - briefly
+    - quick
+    - fast
+    - rapid
+    - just show
+    - just list
+    - just give
+    - just the
+    - only show
+    - only list
+    - no explanation
+    - no insights
+    - skip insights
+    - without insights
+    - no analysis
+    - no commentary
+    - no synthesis
+    - raw
+    - simple
+    - concise
+    - short
+    - succinct
+    - terse
+    - pithy
+    - quick answer
+    - tl;dr
+    - tldr
+    - bottom line
+    - cut to the chase
+    - data only
+    - numbers only
+    - results only
+    - facts only
+
+  # Mode switch patterns
+  mode_switch:
+    knowledge:
+      - ^k$          # Exact match only (single char)
+      - use knowledge
+      - switch to knowledge
+      - knowledge mode
+      - explanation mode
+      - just explain
+      - no data
+
+    auditable:
+      - ^a$          # Exact match only (single char)
+      - use auditable
+      - switch to auditable
+      - auditable mode
+      - auditable
+      - verify mode
+      - verification mode
+      - prove
+      - proof
+
+    exploratory:
+      - ^e$          # Exact match only (single char)
+      - use exploratory
+      - switch to exploratory
+      - exploratory mode
+      - exploratory
+      - explore mode
+      - exploration mode
+      - stepwise
+      - multi-step
+
+# Spanish (example - translate for full support)
+es:
+  brief_output:
+    - breve
+    - brevemente
+    - rapido
+    - solo muestra
+    - sin explicacion
+    - sin analisis
+    - datos solamente
+    - resumen
+
+  mode_switch:
+    knowledge:
+      - ^k$
+      - modo conocimiento
+      - solo explicar
+
+    auditable:
+      - ^a$
+      - modo auditable
+      - verificar
+
+    exploratory:
+      - ^e$
+      - modo exploratorio
+      - explorar

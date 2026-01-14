@@ -323,6 +323,29 @@ constat schema -c config.yaml
 constat init
 ```
 
+### REPL Commands
+
+Once in the interactive REPL, these commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all commands |
+| `/tables` | List tables in session datastore |
+| `/show <table>` | Show table contents |
+| `/query <sql>` | Run SQL on datastore |
+| `/code [step]` | Show generated code |
+| `/facts` | Show cached facts |
+| `/insights [on\|off]` | Toggle insight synthesis |
+| `/preferences` | Show current settings |
+| `/verbose` | Toggle verbose mode |
+| `/save <name>` | Save plan for replay |
+| `/plans` | List saved plans |
+| `/replay <name>` | Replay a saved plan |
+| `/reset` | Clear session state |
+| `/quit` | Exit |
+
+**Brief mode:** Use keywords like "briefly", "tl;dr", "just show" in your query to skip the synthesis step and get raw results faster.
+
 ## Configuration
 
 ### Configuration Hierarchy
@@ -671,6 +694,25 @@ system_prompt: |
   Data quality notes:
   - Some older transactions have NULL region (default to 'unknown')
   - Customer tiers are updated monthly
+
+#==============================================================================
+# CONTEXT PRELOAD (Optional)
+#==============================================================================
+# Preload relevant table metadata into context at session start.
+# This eliminates discovery tool calls for common query patterns.
+# Cache is built once and persists until /refresh is run.
+
+context_preload:
+  # Seed patterns representing typical queries/domains
+  # Used to match against table names, column names via vector similarity
+  seed_patterns:
+    - "sales"
+    - "customer"
+    - "revenue"
+    - "inventory"
+  similarity_threshold: 0.3        # Min similarity (0-1) for table inclusion
+  max_tables: 50                   # Max tables to preload
+  max_columns_per_table: 30        # Limit columns per table
 
 #==============================================================================
 # EXECUTION SETTINGS

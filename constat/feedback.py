@@ -31,39 +31,7 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
-
-# Patterns that indicate a request to switch execution mode
-MODE_SWITCH_PATTERNS = {
-    ExecutionMode.KNOWLEDGE: [
-        "k",  # Short alias
-        "use knowledge",
-        "switch to knowledge",
-        "knowledge mode",
-        "explanation mode",
-        "just explain",
-        "no data",
-    ],
-    ExecutionMode.AUDITABLE: [
-        "a",  # Short alias
-        "use auditable",
-        "switch to auditable",
-        "auditable mode",
-        "auditable",
-        "verify mode",
-        "verification mode",
-    ],
-    ExecutionMode.EXPLORATORY: [
-        "e",  # Short alias
-        "use exploratory",
-        "switch to exploratory",
-        "exploratory mode",
-        "exploratory",
-        "explore mode",
-        "exploration mode",
-        "stepwise",
-        "multi-step",
-    ],
-}
+from constat.keywords import detect_mode_switch as _detect_mode_switch_str
 
 
 def detect_mode_switch(text: str) -> ExecutionMode | None:
@@ -75,18 +43,17 @@ def detect_mode_switch(text: str) -> ExecutionMode | None:
     Returns:
         Target ExecutionMode if a switch is requested, None otherwise
     """
-    text_lower = text.lower().strip()
-    for mode, patterns in MODE_SWITCH_PATTERNS.items():
-        for pattern in patterns:
-            # Single-char shortcuts require exact match to avoid false positives
-            # e.g., "a" shouldn't match "use a filter"
-            if len(pattern) == 1:
-                if text_lower == pattern:
-                    return mode
-            else:
-                if pattern in text_lower:
-                    return mode
-    return None
+    mode_name = _detect_mode_switch_str(text)
+    if mode_name is None:
+        return None
+
+    # Map mode name string to ExecutionMode enum
+    mode_map = {
+        "knowledge": ExecutionMode.KNOWLEDGE,
+        "auditable": ExecutionMode.AUDITABLE,
+        "exploratory": ExecutionMode.EXPLORATORY,
+    }
+    return mode_map.get(mode_name)
 from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
 
 
@@ -1043,6 +1010,15 @@ class SessionFeedbackHandler:
             # Stop Live display before printing synthesizing message
             self.display.stop()
             self.display.console.print(f"\n[dim]{data.get('message', 'Synthesizing...')}[/dim]")
+
+        elif event_type == "raw_results_ready":
+            # Raw results are shown immediately so user can see them while synthesis runs
+            # (or if synthesis is skipped, this is the only output)
+            output = data.get("output", "")
+            if output:
+                self.display.stop()  # Stop any spinners/live display
+                self.display.console.print(f"\n[dim]─── Raw Results ───[/dim]")
+                self.display.console.print(output)
 
         elif event_type == "answer_ready":
             self.display.show_final_answer(data.get("answer", ""))

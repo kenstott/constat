@@ -93,18 +93,32 @@ Your code has access to:
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
 
 ## API Clients (api_<name>)
+
+**IMPORTANT: Always filter at the source!**
+- Use API filters/arguments instead of fetching all data and filtering in Python
+- This is faster and uses less memory
+- Check the API schema for available filter parameters
+
 For GraphQL APIs:
 ```python
 # Query a GraphQL API - pass the GraphQL query string
 result = api_<name>('query { ... }')
-# result is a dict with the query response, typically result['data']['<field>']
-df = pd.DataFrame(result['data']['<field>'])
+# result is the 'data' payload directly (outer wrapper stripped)
+df = pd.DataFrame(result['<field>'])  # NOT result['data']['<field>']
+
+# GOOD - filter in the query (check schema for exact filter syntax):
+result = api_orders('{ orders(status: "pending") { id total } }')
+
+# BAD - fetching all then filtering in Python:
+result = api_orders('{ orders { id total status } }')
+df = pd.DataFrame(result['orders'])
+df = df[df['status'] == 'pending']  # Don't do this!
 ```
 
 For REST APIs:
 ```python
-# Call a REST endpoint
-result = api_<name>('GET /endpoint', {'param': 'value'})
+# Call a REST endpoint with query parameters for filtering
+result = api_<name>('GET /endpoint', {'param': 'value', 'filter': 'active'})
 # result is the parsed JSON response
 ```
 
@@ -241,6 +255,10 @@ class ClarificationResponse:
 ClarificationCallback = Callable[[ClarificationRequest], ClarificationResponse]
 
 
+# Import keyword detection from keywords module (supports i18n)
+from constat.keywords import wants_brief_output
+
+
 @dataclass
 class SessionConfig:
     """Configuration for a session."""
@@ -255,6 +273,9 @@ class SessionConfig:
     # Clarification settings
     ask_clarifications: bool = True  # If True, ask for clarification on ambiguous requests
     skip_clarification: bool = False  # If True, skip clarification (for testing/scripts)
+
+    # Insight/synthesis settings
+    enable_insights: bool = True  # If True, synthesize answer and generate suggestions
 
 
 @dataclass
@@ -919,10 +940,25 @@ class Session:
                 f"- {name}: {fact.display_value}" for name, fact in cached_facts.items()
             )
 
+        # Build data source context for classification
+        data_sources = []
+        if self.config.databases:
+            for name, db in self.config.databases.items():
+                desc = f"database '{name}'"
+                data_sources.append(desc)
+        if self.config.apis:
+            for name, api in self.config.apis.items():
+                desc = api.description or f"{api.type} API"
+                data_sources.append(f"API '{name}' ({desc})")
+
+        source_context = ""
+        if data_sources:
+            source_context = f"\nAvailable data sources: {', '.join(data_sources)}"
+
         prompt = f"""Analyze this user question in one pass:
 
 Question: "{problem}"
-
+{source_context}
 {fact_context}
 
 Perform these analyses:
@@ -935,7 +971,11 @@ Perform these analyses:
 
 2. QUESTION CLASSIFICATION: Classify the question type:
    - META_QUESTION: About system capabilities ("what can you do?", "what data is available?")
-   - DATA_ANALYSIS: Requires database queries or computation
+   - DATA_ANALYSIS: Requires queries to configured data sources (databases, APIs) or computation
+   - GENERAL_KNOWLEDGE: Can be answered from general LLM knowledge AND no configured data source has this data
+
+   IMPORTANT: Prefer DATA_ANALYSIS if ANY configured source might have relevant data.
+   Only use GENERAL_KNOWLEDGE when you're confident no data source applies.
 
 3. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
 
@@ -944,15 +984,17 @@ Respond in this exact format:
 FACTS:
 (list each as FACT_NAME: VALUE | brief description, or NONE if no facts)
 ---
-QUESTION_TYPE: META_QUESTION | DATA_ANALYSIS
+QUESTION_TYPE: META_QUESTION | DATA_ANALYSIS | GENERAL_KNOWLEDGE
 ---
 CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
 ---
 
 Examples:
-- "what questions can I ask as CFO" -> FACTS: user_role: CFO | User's organizational role, QUESTION_TYPE: META_QUESTION
-- "show me revenue by region" -> FACTS: NONE, QUESTION_TYPE: DATA_ANALYSIS
-- "what is my role" (with known user_role=CFO) -> CACHED_ANSWER: Your role is CFO
+- "what questions can I ask as CFO" -> QUESTION_TYPE: META_QUESTION
+- "show me revenue by region" -> QUESTION_TYPE: DATA_ANALYSIS (uses database)
+- "show me countries using the euro" (with countries API) -> QUESTION_TYPE: DATA_ANALYSIS (uses API)
+- "what is the capital of France" (no geography data source) -> QUESTION_TYPE: GENERAL_KNOWLEDGE
+- "how many planets in the solar system" (no astronomy data source) -> QUESTION_TYPE: GENERAL_KNOWLEDGE
 """
 
         try:
@@ -1010,9 +1052,11 @@ Examples:
             # Parse QUESTION_TYPE
             if "QUESTION_TYPE:" in response:
                 type_line = response.split("QUESTION_TYPE:", 1)[1].split("\n")[0].strip()
-                type_line = type_line.split("---")[0].strip()
-                if "META" in type_line.upper():
+                type_line = type_line.split("---")[0].strip().upper()
+                if "META" in type_line:
                     question_type = QuestionType.META_QUESTION
+                elif "GENERAL" in type_line:
+                    question_type = QuestionType.GENERAL_KNOWLEDGE
 
             # Parse CACHED_ANSWER
             if "CACHED_ANSWER:" in response:
@@ -2155,42 +2199,62 @@ Please create a revised plan that addresses this feedback."""
             for i, r in enumerate(all_results)
         ])
 
-        # Synthesize final answer from step results
+        # Emit raw results first (so user can see them immediately)
         self._emit_event(StepEvent(
-            event_type="synthesizing",
+            event_type="raw_results_ready",
             step_number=0,
-            data={"message": "Synthesizing final answer..."}
+            data={"output": combined_output}
         ))
 
-        final_answer = self._synthesize_answer(problem, combined_output)
+        # Check if insights are enabled (config or per-query brief detection)
+        skip_insights = not self.session_config.enable_insights or wants_brief_output(problem)
+        suggestions = []  # Initialize for brief mode (no suggestions)
 
-        self._emit_event(StepEvent(
-            event_type="answer_ready",
-            step_number=0,
-            data={"answer": final_answer}
-        ))
-
-        # Extract facts from the response to cache for follow-up questions
-        response_facts = self._extract_facts_from_response(problem, final_answer)
-        if response_facts:
+        if skip_insights:
+            # Use raw output as final answer
+            final_answer = combined_output
             self._emit_event(StepEvent(
-                event_type="facts_extracted",
+                event_type="answer_ready",
                 step_number=0,
-                data={
-                    "facts": [f.to_dict() for f in response_facts],
-                    "source": "response",
-                }
+                data={"answer": final_answer, "brief": True}
+            ))
+        else:
+            # Synthesize final answer from step results
+            self._emit_event(StepEvent(
+                event_type="synthesizing",
+                step_number=0,
+                data={"message": "Synthesizing final answer..."}
             ))
 
-        # Generate follow-up suggestions
-        tables = self.datastore.list_tables() if self.datastore else []
-        suggestions = self._generate_suggestions(problem, final_answer, tables)
-        if suggestions:
+            final_answer = self._synthesize_answer(problem, combined_output)
+
             self._emit_event(StepEvent(
-                event_type="suggestions_ready",
+                event_type="answer_ready",
                 step_number=0,
-                data={"suggestions": suggestions}
+                data={"answer": final_answer}
             ))
+
+            # Extract facts from the response to cache for follow-up questions
+            response_facts = self._extract_facts_from_response(problem, final_answer)
+            if response_facts:
+                self._emit_event(StepEvent(
+                    event_type="facts_extracted",
+                    step_number=0,
+                    data={
+                        "facts": [f.to_dict() for f in response_facts],
+                        "source": "response",
+                    }
+                ))
+
+            # Generate follow-up suggestions
+            tables = self.datastore.list_tables() if self.datastore else []
+            suggestions = self._generate_suggestions(problem, final_answer, tables)
+            if suggestions:
+                self._emit_event(StepEvent(
+                    event_type="suggestions_ready",
+                    step_number=0,
+                    data={"suggestions": suggestions}
+                ))
 
         self.history.record_query(
             session_id=self.session_id,
@@ -2601,42 +2665,62 @@ User feedback: {approval.suggestion}
             for step, r in zip(follow_up_plan.steps, all_results)
         ])
 
-        # Synthesize final answer
+        # Emit raw results first (so user can see them immediately)
         self._emit_event(StepEvent(
-            event_type="synthesizing",
+            event_type="raw_results_ready",
             step_number=0,
-            data={"message": "Synthesizing final answer..."}
+            data={"output": combined_output}
         ))
 
-        final_answer = self._synthesize_answer(question, combined_output)
+        # Check if insights are enabled (config or per-query brief detection)
+        skip_insights = not self.session_config.enable_insights or wants_brief_output(question)
+        suggestions = []  # Initialize for brief mode (no suggestions)
 
-        self._emit_event(StepEvent(
-            event_type="answer_ready",
-            step_number=0,
-            data={"answer": final_answer}
-        ))
-
-        # Extract facts from the response to cache for future follow-ups
-        response_facts = self._extract_facts_from_response(question, final_answer)
-        if response_facts:
+        if skip_insights:
+            # Use raw output as final answer
+            final_answer = combined_output
             self._emit_event(StepEvent(
-                event_type="facts_extracted",
+                event_type="answer_ready",
                 step_number=0,
-                data={
-                    "facts": [f.to_dict() for f in response_facts],
-                    "source": "response",
-                }
+                data={"answer": final_answer, "brief": True}
+            ))
+        else:
+            # Synthesize final answer
+            self._emit_event(StepEvent(
+                event_type="synthesizing",
+                step_number=0,
+                data={"message": "Synthesizing final answer..."}
             ))
 
-        # Generate follow-up suggestions
-        tables = self.datastore.list_tables() if self.datastore else []
-        suggestions = self._generate_suggestions(question, final_answer, tables)
-        if suggestions:
+            final_answer = self._synthesize_answer(question, combined_output)
+
             self._emit_event(StepEvent(
-                event_type="suggestions_ready",
+                event_type="answer_ready",
                 step_number=0,
-                data={"suggestions": suggestions}
+                data={"answer": final_answer}
             ))
+
+            # Extract facts from the response to cache for future follow-ups
+            response_facts = self._extract_facts_from_response(question, final_answer)
+            if response_facts:
+                self._emit_event(StepEvent(
+                    event_type="facts_extracted",
+                    step_number=0,
+                    data={
+                        "facts": [f.to_dict() for f in response_facts],
+                        "source": "response",
+                    }
+                ))
+
+            # Generate follow-up suggestions
+            tables = self.datastore.list_tables() if self.datastore else []
+            suggestions = self._generate_suggestions(question, final_answer, tables)
+            if suggestions:
+                self._emit_event(StepEvent(
+                    event_type="suggestions_ready",
+                    step_number=0,
+                    data={"suggestions": suggestions}
+                ))
 
         self.history.record_query(
             session_id=self.session_id,
@@ -3426,25 +3510,43 @@ If you don't have enough information, say so rather than guessing."""
                     "step_number": step_number,
                 }
 
-        # Synthesize final answer (still uses LLM)
+        # Synthesize final answer (respects insights config)
         combined_output = "\n\n".join([
             f"Step {entry['step_number']}: {entry['goal']}\n{r.stdout}"
             for entry, r in zip(entries, all_results)
         ])
 
+        # Emit raw results first
         self._emit_event(StepEvent(
-            event_type="synthesizing",
+            event_type="raw_results_ready",
             step_number=0,
-            data={"message": "Synthesizing final answer..."}
+            data={"output": combined_output}
         ))
 
-        final_answer = self._synthesize_answer(problem, combined_output)
+        # Check if insights are enabled
+        skip_insights = not self.session_config.enable_insights
 
-        self._emit_event(StepEvent(
-            event_type="answer_ready",
-            step_number=0,
-            data={"answer": final_answer}
-        ))
+        if skip_insights:
+            final_answer = combined_output
+            self._emit_event(StepEvent(
+                event_type="answer_ready",
+                step_number=0,
+                data={"answer": final_answer, "brief": True}
+            ))
+        else:
+            self._emit_event(StepEvent(
+                event_type="synthesizing",
+                step_number=0,
+                data={"message": "Synthesizing final answer..."}
+            ))
+
+            final_answer = self._synthesize_answer(problem, combined_output)
+
+            self._emit_event(StepEvent(
+                event_type="answer_ready",
+                step_number=0,
+                data={"answer": final_answer}
+            ))
 
         total_duration = sum(r.duration_ms for r in all_results)
 
@@ -3870,25 +3972,43 @@ If you don't have enough information, say so rather than guessing."""
                     "step_number": step_number,
                 }
 
-        # Synthesize answer
+        # Synthesize answer (respects insights config)
         combined_output = "\n\n".join([
             f"Step {s['step_number']}: {s['goal']}\n{r.stdout}"
             for s, r in zip(steps, all_results)
         ])
 
+        # Emit raw results first
         self._emit_event(StepEvent(
-            event_type="synthesizing",
+            event_type="raw_results_ready",
             step_number=0,
-            data={"message": "Synthesizing final answer..."}
+            data={"output": combined_output}
         ))
 
-        final_answer = self._synthesize_answer(problem, combined_output)
+        # Check if insights are enabled
+        skip_insights = not self.session_config.enable_insights
 
-        self._emit_event(StepEvent(
-            event_type="answer_ready",
-            step_number=0,
-            data={"answer": final_answer}
-        ))
+        if skip_insights:
+            final_answer = combined_output
+            self._emit_event(StepEvent(
+                event_type="answer_ready",
+                step_number=0,
+                data={"answer": final_answer, "brief": True}
+            ))
+        else:
+            self._emit_event(StepEvent(
+                event_type="synthesizing",
+                step_number=0,
+                data={"message": "Synthesizing final answer..."}
+            ))
+
+            final_answer = self._synthesize_answer(problem, combined_output)
+
+            self._emit_event(StepEvent(
+                event_type="answer_ready",
+                step_number=0,
+                data={"answer": final_answer}
+            ))
 
         total_duration = sum(r.duration_ms for r in all_results)
 
