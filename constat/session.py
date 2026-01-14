@@ -3222,14 +3222,14 @@ If you don't have enough information, say so rather than guessing."""
 
         # Step 3: Generate response
         try:
-            response = self.router.route(
+            result = self.router.execute(
                 task_type=TaskType.SYNTHESIS,
                 system=system_prompt,
                 user_message=user_message,
                 max_tokens=2000,
             )
 
-            answer = response.content if hasattr(response, 'content') else str(response)
+            answer = result.content
             duration_ms = int((time.time() - start_time) * 1000)
 
             self._emit_event(StepEvent(
