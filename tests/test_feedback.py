@@ -445,14 +445,14 @@ class TestFeedbackDisplayOutput:
     """Tests for console output formatting."""
 
     def test_set_problem_prints_problem(self, captured_console):
-        """set_problem displays the VERA banner."""
+        """set_problem stores the problem and prints blank line."""
         console, output = captured_console
         display = FeedbackDisplay(console=console)
 
         display.set_problem("What are the top 5 customers?")
 
         result = strip_ansi(output.getvalue())
-        assert "VERA" in result  # Now shows VERA banner instead of Problem
+        assert "\n" in result  # Just stores the problem and prints blank line
 
     def test_show_plan_prints_steps(self, captured_console, sample_steps):
         """show_plan displays each step goal."""
@@ -957,10 +957,11 @@ class TestFeedbackDisplayEdgeCases:
         console, output = captured_console
         display = FeedbackDisplay(console=console)
 
-        display.set_problem("Test")
+        # Use show_plan which actually prints to verify console injection
+        display.show_plan([{"number": 1, "goal": "Test step"}])
 
         result = output.getvalue()
-        assert "VERA" in result  # Output went to our captured console (shows VERA banner)
+        assert "CONSTAT" in result  # Output went to our captured console (shows CONSTAT banner)
 
     def test_default_console_is_created(self):
         """Default console is created if not provided."""

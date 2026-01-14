@@ -3475,13 +3475,21 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
             "conclusion": conclusion,
         }
 
-        # NOTE: Don't emit plan_ready here - request_plan_approval will display the plan.
-        # Emitting here causes duplicate display.
-        fact_steps = proof_steps  # Use proof_steps for approval display
+        # Emit plan_ready with full proof structure (type, fact_id fields)
+        # This is shown to user before approval
+        self._emit_event(StepEvent(
+            event_type="plan_ready",
+            step_number=0,
+            data={
+                "steps": proof_steps,  # Has type, fact_id for proper display
+                "reasoning": f"Question: {claim}",
+                "is_followup": False,
+            }
+        ))
 
         # Request approval if required
         if self.session_config.require_approval:
-            # Create a pseudo planner response for approval using fact_steps which includes
+            # Create a pseudo planner response for approval using proof_steps which includes
             # dependencies and the final derivation step
             from constat.core.models import PlannerResponse, Plan, Step
             pseudo_steps = [
@@ -3490,7 +3498,7 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                     goal=fs["goal"],
                     depends_on=fs["depends_on"]
                 )
-                for fs in fact_steps
+                for fs in proof_steps
             ]
             pseudo_plan = Plan(problem=problem, steps=pseudo_steps)
             pseudo_response = PlannerResponse(
