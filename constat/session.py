@@ -916,7 +916,7 @@ class Session:
         fact_context = ""
         if cached_facts:
             fact_context = "Known facts:\n" + "\n".join(
-                f"- {name}: {fact.value}" for name, fact in cached_facts.items()
+                f"- {name}: {fact.display_value}" for name, fact in cached_facts.items()
             )
 
         prompt = f"""Analyze this user question in one pass:
@@ -1249,9 +1249,9 @@ Provide practical suggested answers based on what's in the data."""
         if not cached_facts:
             return None
 
-        # Create context about available facts
+        # Create context about available facts (use display_value for table references)
         fact_context = "\n".join(
-            f"- {name}: {fact.value}" for name, fact in cached_facts.items()
+            f"- {name}: {fact.display_value}" for name, fact in cached_facts.items()
         )
 
         prompt = f"""Check if this question can be answered from these known facts:
@@ -1881,6 +1881,9 @@ Please create a revised plan that addresses this feedback."""
         datastore_path = session_dir / "datastore.db"
         self.datastore = DataStore(db_path=datastore_path)
 
+        # Update fact resolver's datastore reference (for storing large facts as tables)
+        self.fact_resolver._datastore = self.datastore
+
         # Save problem statement to datastore (for UI restoration)
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
@@ -2263,6 +2266,9 @@ Please create a revised plan that addresses this feedback."""
         else:
             # No datastore file - create empty one
             self.datastore = DataStore(db_path=datastore_path)
+
+        # Update fact resolver's datastore reference (for storing large facts as tables)
+        self.fact_resolver._datastore = self.datastore
 
         return True
 
@@ -2823,23 +2829,31 @@ C: <how the final inference answers the question>
 
         # Add premises as steps (these need to be resolved from sources)
         for p in premises:
+            # Format: fact_name = ? (description) [source: xxx]
             proof_steps.append({
                 "number": step_num,
-                "goal": f"{p['id']}: {p['name']} = ? ({p['description']}) [source: {p['source']}]",
+                "goal": f"{p['name']} = ? ({p['description']}) [source: {p['source']}]",
                 "depends_on": [],
                 "type": "premise",
+                "fact_id": p['id'],  # Keep P1/P2 id for execution reference
             })
             step_num += 1
 
         # Add inferences as steps (these depend on premises/prior inferences)
         premise_count = len(premises)
         for inf in inferences:
-            # Inferences depend on all premises (simplified - could parse actual deps from operation)
+            # Format: derived_fact = operation -- explanation
+            goal = inf['operation']
+            if inf.get('name'):
+                goal = f"{inf['name']} = {inf['operation']}"
+            if inf.get('explanation'):
+                goal += f" -- {inf['explanation']}"
             proof_steps.append({
                 "number": step_num,
-                "goal": f"{inf['id']}: {inf['operation']}" + (f" -- {inf['explanation']}" if inf['explanation'] else ""),
+                "goal": goal,
                 "depends_on": list(range(1, premise_count + 1)),  # Depends on all premises
                 "type": "inference",
+                "fact_id": inf['id'],  # Keep I1/I2 id for execution reference
             })
             step_num += 1
 
@@ -2847,7 +2861,7 @@ C: <how the final inference answers the question>
         all_prior_steps = list(range(1, step_num))
         proof_steps.append({
             "number": step_num,
-            "goal": f"CONCLUSION: {conclusion}",
+            "goal": conclusion,
             "depends_on": all_prior_steps,
             "type": "conclusion",
         })
