@@ -792,7 +792,7 @@ class InteractiveREPL:
             "[bold blue]Constat[/bold blue] [dim]— Multi-Step AI Reasoning Agent[/dim]\n"
             "[dim](Latin: \"it is established\")[/dim]\n"
             "─" * 50 + "\n"
-            "[white]Hi, I'm [bold]Vera[/bold], your ground truth assistant.[/white]\n"
+            "[white]Hi, I'm [bold]Vera[/bold], your truthful data analyst.[/white]\n"
             "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]\n"
             f"[dim]Type /help for commands, or ask a question.[/dim] | {hints}",
             border_style="blue",
