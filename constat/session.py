@@ -3556,6 +3556,14 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                         # Generate and execute SQL for database premises
                         db_name = source.split(":", 1)[1].strip() if ":" in source else None
 
+                        # If no database specified, use the first available SQL database
+                        if not db_name:
+                            available_dbs = list(self.schema_manager.connections.keys())
+                            if available_dbs:
+                                db_name = available_dbs[0]
+                            else:
+                                raise Exception("No SQL databases configured")
+
                         # Use LLM to generate SQL from premise description
                         sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
 
@@ -3578,10 +3586,12 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                             sql = re.sub(r'^```\w*\n?', '', sql)
                             sql = re.sub(r'\n?```$', '', sql)
 
-                        # Execute the query
+                        # Execute the query using SQLAlchemy engine
                         from constat.execution.fact_resolver import Fact, FactSource
+                        import pandas as pd
                         try:
-                            result_df = self.schema_manager.query(sql)
+                            engine = self.schema_manager.get_sql_connection(db_name)
+                            result_df = pd.read_sql(sql, engine)
                             row_count = len(result_df) if result_df is not None else 0
                             fact = Fact(
                                 name=fact_name,
