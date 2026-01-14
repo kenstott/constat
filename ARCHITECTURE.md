@@ -16,7 +16,7 @@ Technical documentation of the system architecture and logic flow.
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Session Layer                                   │
+│                              Sessjust ion Layer                                   │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                         Session (session.py)                             ││
 │  │  - Orchestrates execution                                                ││
@@ -289,6 +289,84 @@ User Question: "Is customer C001 a VIP?"
 │      reasoning: Customer revenue ($150,000) exceeds VIP threshold ($100,000)│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Knowledge Mode: Document Lookup + LLM Synthesis
+
+Used for explanation and knowledge requests that don't require data analysis.
+
+```
+User Question: "Explain the revenue recognition process"
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. MODE DETECTION                                                          │
+│                                                                             │
+│  Query analyzed for knowledge keywords:                                     │
+│    - "explain", "describe", "what is", "how does"                          │
+│    - "process", "procedure", "workflow", "policy"                          │
+│    - "tell me about", "definition of", "overview of"                       │
+│                                                                             │
+│  If knowledge keywords dominate and no data analysis needed:                │
+│    → Route to KNOWLEDGE mode                                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  2. DOCUMENT SEARCH                                                         │
+│                                                                             │
+│  Semantic search across configured documents:                               │
+│    - Search query: "revenue recognition process"                            │
+│    - Vector embeddings via sentence-transformers                            │
+│    - Return top-k relevant excerpts with relevance scores                   │
+│                                                                             │
+│  Results:                                                                   │
+│    [1] From 'accounting-policies' (relevance: 0.85)                        │
+│        "Revenue is recognized when performance obligations..."              │
+│    [2] From 'finance-procedures' (relevance: 0.72)                         │
+│        "The five-step model for revenue recognition..."                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  3. LLM SYNTHESIS                                                           │
+│                                                                             │
+│  Input to LLM:                                                              │
+│    - System prompt: Knowledge mode instructions                             │
+│    - User question                                                          │
+│    - Document excerpts with source attribution                              │
+│                                                                             │
+│  LLM synthesizes explanation:                                               │
+│    - Combines document content with world knowledge                         │
+│    - Cites specific documents when referencing them                         │
+│    - Distinguishes between documented facts and general knowledge           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  4. OUTPUT WITH SOURCES                                                     │
+│                                                                             │
+│  Returns:                                                                   │
+│    - Synthesized explanation                                                │
+│    - Sources consulted (document names, sections, relevance)                │
+│    - No plan (skips planning phase entirely)                                │
+│                                                                             │
+│  Example output:                                                            │
+│    Revenue recognition follows a five-step process as defined in           │
+│    ASC 606 and documented in the accounting policies guide:                │
+│    1. Identify the contract...                                             │
+│                                                                             │
+│    **Sources consulted:**                                                   │
+│    - accounting-policies (Revenue Recognition)                              │
+│    - finance-procedures                                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key characteristics of Knowledge Mode:**
+- No multi-step planning required
+- No code execution or database queries
+- Direct LLM synthesis with document context
+- Shows sources consulted for transparency
+- Fast response time (single LLM call)
 
 ### Follow-Up Questions (Context Preservation)
 
@@ -600,6 +678,62 @@ content = manager.resolve_skill_link("financial-analysis", "references/indicator
 content = manager.resolve_skill_link("financial-analysis", "https://example.com/docs.md")
 ```
 
+### MetadataPreloadCache (`catalog/preload_cache.py`)
+
+Caches relevant table metadata for faster session startup.
+
+**Purpose:**
+- Eliminates discovery tool calls for common query patterns
+- Preloads schema info into context at session start
+- Uses seed patterns (from config) to identify relevant tables via vector similarity
+
+**Configuration:**
+
+```yaml
+context_preload:
+  seed_patterns:
+    - "sales"
+    - "customer"
+    - "revenue"
+  similarity_threshold: 0.3   # Min similarity for inclusion
+  max_tables: 50              # Limit tables to avoid context overflow
+```
+
+**How it works:**
+1. On `/refresh`, seed patterns are matched against all table/column names
+2. Tables above similarity threshold are cached to `.constat/metadata_preload.json`
+3. On session start, cached schema is loaded directly into context
+4. No tool call needed for tables matching seed patterns
+
+### DocumentDiscoveryTools (`discovery/doc_tools.py`)
+
+Provides on-demand access to reference documents with incremental refresh.
+
+**Incremental Refresh:**
+
+Documents are refreshed incrementally based on file modification times:
+
+```python
+# Refresh returns statistics
+stats = doc_tools.refresh()
+# → {"added": 1, "updated": 2, "removed": 0, "unchanged": 5}
+```
+
+- **Added**: New documents since last refresh
+- **Updated**: Documents with changed file modification times
+- **Removed**: Documents deleted or removed from config
+- **Unchanged**: Documents that haven't changed
+
+**Vector Index:**
+
+Documents are chunked and embedded for semantic search:
+
+```python
+# Search documents semantically
+results = doc_tools.search_documents("VIP customer criteria")
+# → Returns relevant document chunks with scores
+```
+
 ### APICatalog (`catalog/api_catalog.py`)
 
 Provides API operation metadata for external services.
@@ -670,7 +804,7 @@ Resolves facts with full provenance for auditable mode.
 5. Generate sub-plan for complex derivations
 6. Return UNRESOLVED (user can provide via follow-up)
 
-**Parallel Fact Resolution (Planned):**
+**Parallel Fact Resolution:**
 
 Top-level assumed facts are independent and can be resolved in parallel:
 
@@ -700,8 +834,6 @@ User Question
 ```
 
 For derived facts requiring multi-step calculations, the system generates **sub-proofs** recursively, with the sub-facts at each level also resolved in parallel.
-
-See [docs/plans/fact-resolver-parallelization.md](docs/plans/fact-resolver-parallelization.md) for detailed implementation plan.
 
 **User-Provided Facts:**
 
@@ -741,9 +873,14 @@ Interactive command loop for exploration.
 
 **Commands:**
 - `/tables` - Show available tables
+- `/show <table>` - Display table contents
 - `/query <sql>` - Run SQL on datastore
 - `/code [step]` - Show generated code
 - `/state` - Inspect session state
+- `/facts` - Show cached facts from session
+- `/refresh` - Refresh metadata, documents, and preload cache (incremental)
+- `/context` - Show context token usage
+- `/compact` - Manually compact context
 - `/user [name]` - Show/set current user
 - `/save <name>` - Save plan for replay
 - `/share <name>` - Save as shared plan
