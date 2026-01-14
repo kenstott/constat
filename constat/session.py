@@ -3370,14 +3370,25 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                 current_section = "conclusion"
             elif current_section == "premises" and re.match(r'^P\d+:', line):
                 # Parse: P1: fact_name = ? (description) [source: xxx]
-                match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*\?\s*\(([^)]+)\)\s*\[source:\s*([^\]]+)\]', line)
+                # Also handle: P1: fact_name = ? (description) without source
+                match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*\?\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
                 if match:
                     premises.append({
                         "id": match.group(1),
                         "name": match.group(2).strip(),
                         "description": match.group(3).strip(),
-                        "source": match.group(4).strip(),
+                        "source": match.group(4).strip() if match.group(4) else "database",
                     })
+                else:
+                    # Try simpler format: P1: fact_name (description)
+                    simple_match = re.match(r'^(P\d+):\s*(.+?)\s*\(([^)]+)\)', line)
+                    if simple_match:
+                        premises.append({
+                            "id": simple_match.group(1),
+                            "name": simple_match.group(2).strip().rstrip('=?').strip(),
+                            "description": simple_match.group(3).strip(),
+                            "source": "database",
+                        })
             elif current_section == "inference" and re.match(r'^I\d+:', line):
                 # Parse: I1: derived_fact = operation(inputs) -- explanation
                 match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+?)\s*--\s*(.+)$', line)
@@ -3543,20 +3554,69 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
 
                 # Try to resolve based on source type
                 try:
-                    if source.startswith("database:"):
-                        # Resolve from database via SQL
-                        fact = self.fact_resolver.resolve(fact_name)
+                    fact = None
+                    if source.startswith("database") or source == "database":
+                        # Generate and execute SQL for database premises
+                        db_name = source.split(":", 1)[1].strip() if ":" in source else None
+
+                        # Use LLM to generate SQL from premise description
+                        sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
+
+The result should be stored as '{fact_name}'.
+Available schema:
+{schema_overview}
+
+Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
+
+                        sql_result = self.router.execute(
+                            task_type=TaskType.CODE_GENERATION,
+                            system="You generate SQL queries. Return only the SQL, no explanation.",
+                            user_message=sql_prompt,
+                            max_tokens=500,
+                        )
+
+                        # Extract SQL from response
+                        sql = sql_result.content.strip()
+                        if sql.startswith("```"):
+                            sql = re.sub(r'^```\w*\n?', '', sql)
+                            sql = re.sub(r'\n?```$', '', sql)
+
+                        # Execute the query
+                        from constat.execution.fact_resolver import Fact, FactSource
+                        try:
+                            result_df = self.schema_manager.query(sql)
+                            row_count = len(result_df) if result_df is not None else 0
+                            fact = Fact(
+                                name=fact_name,
+                                value=f"{row_count} rows retrieved",
+                                confidence=0.9,
+                                source=FactSource.SQL,
+                                query=sql,
+                            )
+                            # Store result in datastore for later use
+                            if self.datastore and result_df is not None and len(result_df) > 0:
+                                self.datastore.save_dataframe(fact_name, result_df, step_number=idx + 1)
+                        except Exception as sql_err:
+                            fact = Fact(
+                                name=fact_name,
+                                value=None,
+                                confidence=0.0,
+                                source=FactSource.UNRESOLVED,
+                                reasoning=f"SQL error: {sql_err}",
+                            )
                     elif source.startswith("document:"):
                         # Resolve from document
-                        doc_name = source.split(":", 1)[1].strip()
                         fact = self.fact_resolver.resolve(fact_name)
                     else:
                         # Generic resolution
                         fact = self.fact_resolver.resolve(fact_name)
 
-                    resolved_premises[fact_id] = fact
-                    val_str = str(fact.value)[:100] if fact.value else "N/A"
-                    derivation_lines.append(f"- {fact_id}: {fact_name} = {val_str} (confidence: {fact.confidence:.0%})")
+                    if fact and fact.value:
+                        resolved_premises[fact_id] = fact
+                        val_str = str(fact.value)[:100]
+                        derivation_lines.append(f"- {fact_id}: {fact_name} = {val_str} (confidence: {fact.confidence:.0%})")
+                    else:
+                        raise Exception("No value resolved")
 
                     # Emit resolved event
                     self._emit_event(StepEvent(
