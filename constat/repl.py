@@ -789,8 +789,10 @@ class InteractiveREPL:
         else:
             hints = "[dim]Ctrl+C[/dim] interrupts"
         self.console.print(Panel.fit(
-            "[bold blue]Constat[/bold blue] - Multi-Step AI Reasoning Engine\n"
-            f"[dim]Type /help for commands, or ask a question.[/dim]\n{hints}",
+            "[bold blue]Constat[/bold blue] [dim](Latin: \"it is established\")[/dim]\n"
+            "[white]Hi, I'm [bold]Vera[/bold], your ground truth assistant.[/white]\n"
+            "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]\n"
+            f"[dim]Type /help for commands, or ask a question.[/dim] | {hints}",
             border_style="blue",
         ))
 
@@ -802,7 +804,7 @@ class InteractiveREPL:
                 "What data is available?",
                 "What can you help me with?",
                 "How do you reason about problems?",
-                "What makes Constat different?",
+                "What makes you different, Vera?",
             ]
             for i, s in enumerate(starter_suggestions, 1):
                 self.console.print(f"  [dim]{i}.[/dim] [cyan]{s}[/cyan]")
