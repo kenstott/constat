@@ -516,6 +516,11 @@ class APIConfig(BaseModel):
     # API type: graphql | openapi
     type: str = "graphql"
 
+    # GraphQL implementation flavor (affects filter syntax hints)
+    # Options: hasura | prisma | apollo | relay | custom
+    # If not specified, generic hints are provided
+    graphql_flavor: Optional[str] = None
+
     # Base URL for the API
     url: Optional[str] = None
 

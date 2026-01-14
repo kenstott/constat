@@ -94,23 +94,16 @@ Your code has access to:
 
 ## API Best Practices
 When using APIs (`api_<name>`):
-1. **Use filters at the source** - APIs often support filtering parameters. Always check if the API supports filtering by the fields you need (dates, IDs, status, etc.) and apply filters in the API call rather than fetching all data and filtering in Python.
+1. **Use filters at the source** - Always filter in the API call rather than fetching all data and filtering in Python. Check the API schema for supported filter parameters.
 
-2. **GraphQL filters** - Use filter arguments in the query itself:
-   ```graphql
-   # Filter in query arguments
-   query { orders(status: "pending", limit: 100) { id total } }
-
-   # Use variables for dynamic filters
-   query($status: String!) { orders(where: {status: {_eq: $status}}) { id } }
-   ```
-   Call with: `api_orders(query, variables={"status": "pending"})`
+2. **GraphQL** - Filter syntax varies by implementation. Check the Available APIs section below for implementation-specific hints. Common patterns:
+   - Query arguments: `query { orders(status: "pending") { id } }`
+   - Variables: `query($s: String!) { orders(status: $s) { id } }` with `variables={"s": "pending"}`
 
 3. **REST filters** - Use query parameters:
    - `api_orders({"params": {"status": "active", "since": "2024-01-01"}})`
-   - Check API schema for supported filter parameters
 
-4. **Only fetch needed fields** - In GraphQL, request only the fields you need. In REST, check if the API supports field selection.
+4. **Only fetch needed fields** - In GraphQL, request only the fields you need.
 
 ## Data Source Types
 
@@ -232,6 +225,27 @@ class QueryEngine:
                 api_lines.append(f"- **{name}** ({api_type}): {desc}")
                 if url:
                     api_lines.append(f"  URL: {url}")
+
+                # Add GraphQL flavor-specific hints
+                if api_config.type == "graphql" and api_config.graphql_flavor:
+                    flavor = api_config.graphql_flavor.lower()
+                    if flavor == "hasura":
+                        api_lines.append(f"  **Hasura GraphQL** - Filter syntax:")
+                        api_lines.append(f"    - where: `{{field: {{_eq: value}}}}` operators: _eq, _neq, _gt, _lt, _gte, _lte, _in, _like, _ilike")
+                        api_lines.append(f"    - order_by: `{{field: asc}}` or `{{field: desc}}`")
+                        api_lines.append(f"    - limit/offset: `limit: 10, offset: 0`")
+                        api_lines.append(f"    - Aggregates: use `<table>_aggregate` for count, sum, avg, max, min")
+                        api_lines.append(f"    - Example: `orders_aggregate(where: {{status: {{_eq: \"pending\"}}}}) {{ aggregate {{ count sum {{ total }} }} }}`")
+                    elif flavor == "prisma":
+                        api_lines.append(f"  **Prisma GraphQL** - Filter syntax:")
+                        api_lines.append(f"    - where: `{{field: {{equals: value}}}}` operators: equals, not, in, notIn, lt, lte, gt, gte, contains, startsWith, endsWith")
+                        api_lines.append(f"    - orderBy: `{{field: asc}}` or `{{field: desc}}`")
+                        api_lines.append(f"    - take/skip: `take: 10, skip: 0`")
+                    elif flavor == "apollo":
+                        api_lines.append(f"  **Apollo GraphQL** - Check schema for filter arguments (no standard syntax)")
+                    elif flavor == "relay":
+                        api_lines.append(f"  **Relay GraphQL** - Uses connection pattern with edges/nodes, first/after for pagination")
+
             api_overview = "\n".join(api_lines)
 
         # Build document overview if configured
