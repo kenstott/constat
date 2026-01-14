@@ -410,7 +410,7 @@ class FeedbackDisplay:
         """Set the problem being solved."""
         self.problem = problem
         self.console.print()  # Blank line before header
-        self.console.print(Rule("[bold blue]CONSTAT[/bold blue]", align="left"))
+        self.console.print(Rule("[bold blue]VERA[/bold blue]", align="left"))
         self.console.print()  # Blank line before plan
 
     def show_plan(self, steps: list[dict], is_followup: bool = False) -> None:
@@ -928,12 +928,13 @@ class SessionFeedbackHandler:
 
     Usage:
         display = FeedbackDisplay(verbose=True)
-        handler = SessionFeedbackHandler(display)
+        handler = SessionFeedbackHandler(display, session_config)
         session.on_event(handler.handle_event)
     """
 
-    def __init__(self, display: FeedbackDisplay):
+    def __init__(self, display: FeedbackDisplay, session_config=None):
         self.display = display
+        self.session_config = session_config
         self._execution_started = False
 
     def handle_event(self, event) -> None:
@@ -1014,8 +1015,13 @@ class SessionFeedbackHandler:
         elif event_type == "raw_results_ready":
             # Raw results are shown immediately so user can see them while synthesis runs
             # (or if synthesis is skipped, this is the only output)
+            # Check if raw output is enabled (respects session_config.show_raw_output)
+            show_raw = True
+            if self.session_config is not None:
+                show_raw = getattr(self.session_config, 'show_raw_output', True)
+
             output = data.get("output", "")
-            if output:
+            if output and show_raw:
                 self.display.stop()  # Stop any spinners/live display
                 self.display.console.print(f"\n[dim]─── Raw Results ───[/dim]")
                 self.display.console.print(output)
@@ -1036,6 +1042,10 @@ class SessionFeedbackHandler:
             mode = data.get("mode", "")
             keywords = data.get("matched_keywords", [])
             self.display.show_mode_switch(mode, keywords)
+
+        elif event_type == "deriving":
+            message = data.get("message", "Deriving answer...")
+            self.display.start_spinner(message)
 
         elif event_type == "verifying":
             message = data.get("message", "Verifying...")

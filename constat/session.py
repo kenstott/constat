@@ -352,6 +352,7 @@ class SessionConfig:
 
     # Insight/synthesis settings
     enable_insights: bool = True  # If True, synthesize answer and generate suggestions
+    show_raw_output: bool = True  # If True, show raw step output before synthesis
 
 
 @dataclass
@@ -729,6 +730,7 @@ class Session:
             "viz": create_viz_helper(
                 datastore=self.datastore,
                 print_file_refs=self.config.execution.print_file_refs,
+                session_id=self.session_id,
             ),  # Visualization/file output helper
         }
 

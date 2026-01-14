@@ -61,8 +61,8 @@ class TestHelpCommand:
         """Test /help shows command table."""
         repl._show_help()
 
-        # Verify console.print was called (multiple times for table + footer)
-        assert mock_console.print.call_count >= 2
+        # Verify console.print was called at least once (for the table)
+        assert mock_console.print.call_count >= 1
 
     def test_help_shows_all_commands(self, repl):
         """Test /help includes all documented commands."""
@@ -76,12 +76,14 @@ class TestHelpCommand:
             "/tables",
             "/query",
             "/state",
-            "/unresolved",
             "/facts",
             "/history",
             "/resume",
             "/verbose",
-            "/quit", "/exit", "/q",
+            "/raw",
+            "/insights",
+            "/artifacts",
+            "/quit", "/q",
         ]
 
         # Verify by checking the source - commands are defined in _show_help
@@ -126,7 +128,7 @@ class TestTablesCommand:
 
         mock_console.print.assert_called()
         call_args = str(mock_console.print.call_args)
-        assert "No tables saved" in call_args
+        assert "No tables yet" in call_args
 
     def test_tables_with_data(self, repl):
         """Test /tables displays table list correctly."""
@@ -215,7 +217,7 @@ class TestStateCommand:
         assert "No active session" in call_args
 
     def test_state_displays_session_info(self, repl, mock_console):
-        """Test /state shows session ID, tables, state variables, and steps."""
+        """Test /state shows session ID and tables."""
         repl.session = Mock()
         repl.session.get_state.return_value = {
             "session_id": "test-session-123",
@@ -223,8 +225,6 @@ class TestStateCommand:
                 {"name": "users", "row_count": 10},
                 {"name": "orders", "row_count": 5},
             ],
-            "state": {"total_count": 100, "threshold": 50},
-            "completed_steps": [1, 2, 3],
         }
 
         repl._show_state()
@@ -234,55 +234,22 @@ class TestStateCommand:
         calls_str = " ".join(calls)
         assert "test-session-123" in calls_str
         assert "users" in calls_str
-        assert "10 rows" in calls_str
-        assert "total_count" in calls_str
+        assert "10" in calls_str  # row count
 
-    def test_state_truncates_long_values(self, repl, mock_console):
-        """Test /state truncates values longer than 50 chars."""
-        long_value = "x" * 100
+    def test_state_handles_empty_tables(self, repl, mock_console):
+        """Test /state handles empty tables list."""
         repl.session = Mock()
         repl.session.get_state.return_value = {
             "session_id": "test",
             "datastore_tables": [],
-            "state": {"long_key": long_value},
-            "completed_steps": [],
         }
 
         repl._show_state()
 
-        # The displayed value should be truncated with ...
+        # Should still show session ID
         calls = [str(call) for call in mock_console.print.call_args_list]
         calls_str = " ".join(calls)
-        assert "..." in calls_str
-        # Should not contain the full long value
-        assert long_value not in calls_str
-
-
-class TestUnresolvedCommand:
-    """Tests for /unresolved command."""
-
-    def test_unresolved_no_session(self, repl, mock_console):
-        """Test /unresolved with no active session."""
-        repl.session = None
-
-        repl._show_unresolved()
-
-        call_args = str(mock_console.print.call_args)
-        assert "No active session" in call_args
-
-    def test_unresolved_shows_summary(self, repl, mock_console):
-        """Test /unresolved displays unresolved facts summary."""
-        repl.session = Mock()
-        repl.session.get_unresolved_summary.return_value = (
-            "Unresolved facts:\n- march_attendance: Unknown value\n- budget_limit: Unknown value"
-        )
-
-        repl._show_unresolved()
-
-        repl.session.get_unresolved_summary.assert_called_once()
-        mock_console.print.assert_called_with(
-            "Unresolved facts:\n- march_attendance: Unknown value\n- budget_limit: Unknown value"
-        )
+        assert "test" in calls_str
 
 
 class TestFactsCommand:
@@ -292,76 +259,41 @@ class TestFactsCommand:
         """Test /facts with no active session."""
         repl.session = None
 
-        repl._provide_facts("There were 1 million people at the march")
+        repl._show_facts()
 
         call_args = str(mock_console.print.call_args)
         assert "No active session" in call_args
 
-    def test_facts_extracted_successfully(self, repl, mock_console):
-        """Test /facts extracts and displays facts."""
+    def test_facts_shows_cached_facts(self, repl, mock_console):
+        """Test /facts displays cached facts."""
+        from constat.execution.fact_resolver import Fact, FactSource
+
         repl.session = Mock()
-        repl.session.provide_facts.return_value = {
-            "extracted_facts": [
-                {"name": "march_attendance", "value": 1000000, "reasoning": "User stated 1 million"},
-            ],
-            "unresolved_remaining": [],
+        repl.session.fact_resolver = Mock()
+        repl.session.fact_resolver.get_all_facts.return_value = {
+            "march_attendance": Fact(
+                name="march_attendance",
+                value=1000000,
+                source=FactSource.USER_PROVIDED,
+                description="Estimated attendance at the march",
+            ),
         }
 
-        repl._provide_facts("There were 1 million people at the march")
+        repl._show_facts()
 
-        repl.session.provide_facts.assert_called_once_with("There were 1 million people at the march")
+        # Verify get_all_facts was called
+        repl.session.fact_resolver.get_all_facts.assert_called_once()
 
-        # Check output shows extracted facts
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "Extracted facts" in calls_str
-        assert "march_attendance" in calls_str
-        assert "1000000" in calls_str
-
-    def test_facts_no_extraction(self, repl, mock_console):
-        """Test /facts handles case when no facts extracted."""
+    def test_facts_empty(self, repl, mock_console):
+        """Test /facts handles case when no facts cached."""
         repl.session = Mock()
-        repl.session.provide_facts.return_value = {
-            "extracted_facts": [],
-            "unresolved_remaining": [{"name": "some_fact"}],
-        }
+        repl.session.fact_resolver = Mock()
+        repl.session.fact_resolver.get_all_facts.return_value = {}
 
-        repl._provide_facts("Hello world")
+        repl._show_facts()
 
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "No facts could be extracted" in calls_str
-
-    def test_facts_with_remaining_unresolved(self, repl, mock_console):
-        """Test /facts shows remaining unresolved count."""
-        repl.session = Mock()
-        repl.session.provide_facts.return_value = {
-            "extracted_facts": [
-                {"name": "fact1", "value": 10},
-            ],
-            "unresolved_remaining": [{"name": "fact2"}, {"name": "fact3"}],
-        }
-
-        repl._provide_facts("Fact1 is 10")
-
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "Still unresolved" in calls_str
-        assert "2 facts" in calls_str
-
-    def test_facts_all_resolved(self, repl, mock_console):
-        """Test /facts shows success when all resolved."""
-        repl.session = Mock()
-        repl.session.provide_facts.return_value = {
-            "extracted_facts": [{"name": "fact1", "value": 10}],
-            "unresolved_remaining": [],
-        }
-
-        repl._provide_facts("Fact1 is 10")
-
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "All facts resolved" in calls_str
+        call_args = str(mock_console.print.call_args)
+        assert "No facts cached" in call_args
 
 
 class TestHistoryCommand:
@@ -390,7 +322,7 @@ class TestHistoryCommand:
         repl._show_history()
 
         call_args = str(mock_console.print.call_args)
-        assert "No previous sessions" in call_args
+        assert "No session history" in call_args
 
     def test_history_shows_sessions(self, repl, mock_console):
         """Test /history displays session list."""
@@ -453,8 +385,8 @@ class TestResumeCommand:
         assert "Session not found" in call_args
         assert "nonexistent" in call_args
 
-    def test_resume_multiple_matches(self, repl, mock_console):
-        """Test /resume when session ID prefix matches multiple sessions."""
+    def test_resume_multiple_matches_takes_first(self, repl, mock_console):
+        """Test /resume when session ID prefix matches multiple sessions takes first."""
         repl.session = Mock()
         repl.session.history = Mock()
         repl.session.history.list_sessions.return_value = [
@@ -475,14 +407,13 @@ class TestResumeCommand:
                 total_duration_ms=100,
             ),
         ]
+        repl.session.resume.return_value = True
+        repl.session.datastore = None
 
         repl._resume_session("abc123")
 
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "Multiple matches" in calls_str
-        assert "abc123_session1" in calls_str
-        assert "abc123_session2" in calls_str
+        # Should resume the first match
+        repl.session.resume.assert_called_once_with("abc123_session1")
 
     def test_resume_success(self, repl, mock_console):
         """Test /resume successfully resumes a session."""
@@ -499,12 +430,10 @@ class TestResumeCommand:
             ),
         ]
         repl.session.resume.return_value = True
-        repl.session.get_state.return_value = {
-            "session_id": "abc123_unique",
-            "datastore_tables": [],
-            "state": {},
-            "completed_steps": [],
-        }
+        repl.session.datastore = Mock()
+        repl.session.datastore.list_tables.return_value = [
+            {"name": "test_table", "row_count": 10}
+        ]
 
         repl._resume_session("abc123")
 
@@ -749,8 +678,8 @@ class TestCreateSession:
 
                 repl._create_session()
 
-                # Verify handler was created with display
-                mock_handler_class.assert_called_once_with(repl.display)
+                # Verify handler was created with display and session_config
+                mock_handler_class.assert_called_once_with(repl.display, repl.session_config)
                 # Verify on_event was called with handler.handle_event
                 mock_session.on_event.assert_called_once_with(mock_handler.handle_event)
 

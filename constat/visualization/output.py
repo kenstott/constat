@@ -23,12 +23,45 @@ Usage in generated code:
 """
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from constat.storage.datastore import DataStore
+
+
+def is_repl_mode() -> bool:
+    """Check if running in REPL mode."""
+    return os.environ.get("CONSTAT_REPL_MODE", "").lower() in ("1", "true", "yes")
+
+
+# Global to collect outputs during REPL execution
+_pending_outputs: list[dict] = []
+
+
+def clear_pending_outputs() -> None:
+    """Clear the pending outputs list."""
+    global _pending_outputs
+    _pending_outputs = []
+
+
+def get_pending_outputs() -> list[dict]:
+    """Get and clear pending outputs for display."""
+    global _pending_outputs
+    outputs = _pending_outputs[:]
+    _pending_outputs = []
+    return outputs
+
+
+def add_pending_output(file_uri: str, description: str, file_type: str = "") -> None:
+    """Add an output to the pending list for later display."""
+    _pending_outputs.append({
+        "file_uri": file_uri,
+        "description": description,
+        "type": file_type,
+    })
 
 
 # File extension to artifact type mapping
@@ -56,6 +89,7 @@ class VisualizationHelper:
         output_dir: Directory where files are saved
         datastore: DataStore for artifact registration (optional)
         print_file_refs: Whether to print file:// URIs (True for CLI, False for React UI)
+        session_id: Session ID for organizing outputs
     """
 
     def __init__(
@@ -64,19 +98,28 @@ class VisualizationHelper:
         datastore: Optional["DataStore"] = None,
         step_number: int = 0,
         print_file_refs: bool = True,
+        session_id: Optional[str] = None,
     ):
         """Initialize the output helper.
 
         Args:
-            output_dir: Directory for saving files. Defaults to ~/.constat/outputs/
+            output_dir: Directory for saving files. Defaults to ~/.constat/outputs/<session_id>/
             datastore: DataStore for registering artifacts (for React UI)
             step_number: Current step number for artifact metadata
             print_file_refs: If True, print file:// URIs for CLI users.
                            If False, suppress file references (for React UI where
                            artifacts are displayed directly).
+            session_id: Session ID for organizing outputs by session
         """
+        self.session_id = session_id
+
         if output_dir is None:
-            output_dir = Path.home() / ".constat" / "outputs"
+            base_dir = Path.home() / ".constat" / "outputs"
+            if session_id:
+                # Use session-specific subdirectory
+                output_dir = base_dir / session_id[:20]  # Truncate for filesystem
+            else:
+                output_dir = base_dir
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,10 +138,24 @@ class VisualizationHelper:
         """Convert a path to a file:// URI for clickable terminal links."""
         return path.resolve().as_uri()
 
-    def _print_ref(self, label: str, filepath: Path) -> None:
-        """Print file reference if print_file_refs is enabled."""
-        if self.print_file_refs:
-            print(f"{label}: {self._file_uri(filepath)}")
+    def _print_ref(self, label: str, filepath: Path, description: str = "") -> None:
+        """Print file reference or collect for later display.
+
+        In REPL mode, outputs are collected and displayed in an "Outputs:" section
+        at the end of execution rather than printed inline.
+        """
+        if not self.print_file_refs:
+            return
+
+        file_uri = self._file_uri(filepath)
+        desc = description or label
+
+        if is_repl_mode():
+            # Collect for later display in REPL
+            add_pending_output(file_uri, desc, filepath.suffix.lstrip("."))
+        else:
+            # Direct print for non-REPL contexts
+            print(f"{label}: {file_uri}")
 
     def save_file(
         self,
@@ -146,7 +203,7 @@ class VisualizationHelper:
                 if self.print_file_refs:
                     print(f"Note: Could not register artifact: {e}")
 
-        self._print_ref(f"File saved ({ext})", filepath)
+        self._print_ref(f"File saved ({ext})", filepath, description=title or name)
         return filepath
 
     def save_html(
@@ -186,7 +243,7 @@ class VisualizationHelper:
                 if self.print_file_refs:
                     print(f"Note: Could not register artifact: {e}")
 
-        self._print_ref("Saved", filepath)
+        self._print_ref("HTML", filepath, description=title or name)
         return filepath
 
     def save_map(
@@ -228,7 +285,7 @@ class VisualizationHelper:
                 if self.print_file_refs:
                     print(f"Note: Could not register artifact: {e}")
 
-        self._print_ref("Interactive map", filepath)
+        self._print_ref("Map", filepath, description=title or f"Map: {name}")
         return filepath
 
     def save_chart(
@@ -296,7 +353,7 @@ class VisualizationHelper:
         else:
             raise ValueError(f"Unsupported chart type: {chart_type}")
 
-        self._print_ref("Interactive chart", filepath)
+        self._print_ref("Chart", filepath, description=title or name)
         return filepath
 
     def save_image(
@@ -351,7 +408,7 @@ class VisualizationHelper:
                 if self.print_file_refs:
                     print(f"Note: Could not register image artifact: {e}")
 
-        self._print_ref("Image saved", filepath)
+        self._print_ref("Image", filepath, description=title or name)
         return filepath
 
 
@@ -360,6 +417,7 @@ def create_viz_helper(
     output_dir: Optional[Path] = None,
     step_number: int = 0,
     print_file_refs: bool = True,
+    session_id: Optional[str] = None,
 ) -> VisualizationHelper:
     """Create a VisualizationHelper instance.
 
@@ -371,6 +429,7 @@ def create_viz_helper(
         step_number: Current step number
         print_file_refs: If True, print file:// URIs (CLI mode).
                         If False, suppress (React UI mode).
+        session_id: Session ID for organizing outputs by session
 
     Returns:
         Configured VisualizationHelper instance
@@ -380,4 +439,5 @@ def create_viz_helper(
         datastore=datastore,
         step_number=step_number,
         print_file_refs=print_file_refs,
+        session_id=session_id,
     )

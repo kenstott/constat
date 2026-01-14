@@ -6,9 +6,33 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
+import os
+import re
+from pathlib import Path
 from constat.session import Session, SessionConfig
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
+from constat.visualization.output import clear_pending_outputs, get_pending_outputs
+
+
+# Display preference NL patterns
+# Format: (pattern, setting_name, value, persistent)
+DISPLAY_OVERRIDE_PATTERNS = [
+    # Persistent changes (detected by "always", "from now on", "stop", "never")
+    (r"\b(always|from now on)\s+(show|display|include)\s+raw\b", "raw", True, True),
+    (r"\b(stop|never|don't|do not)\s+(show|display|include)\s+raw\b", "raw", False, True),
+    (r"\b(always|from now on)\s+(be\s+)?verbose\b", "verbose", True, True),
+    (r"\b(stop|never|don't|do not)\s+(be\s+)?verbose\b", "verbose", False, True),
+    (r"\b(always|from now on)\s+(show|give|provide)\s+(insights?|synthesis)\b", "insights", True, True),
+    (r"\b(stop|never|don't|do not)\s+(show|give|provide)\s+(insights?|synthesis)\b", "insights", False, True),
+
+    # Single-turn overrides (apply only to this query)
+    (r"^(briefly|concisely|quick(ly)?)\b", "insights", False, False),
+    (r"\b(with(out)?\s+)?raw\s+(output|results)\b", "raw", True, False),
+    (r"\b(hide|no|skip|without)\s+raw\b", "raw", False, False),
+    (r"\b(verbose(ly)?|in\s+detail|detailed)\b", "verbose", True, False),
+    (r"\bjust\s+the\s+(answer|result)\b", "raw", False, False),
+]
 
 
 # Commands available in the REPL
@@ -17,7 +41,7 @@ REPL_COMMANDS = [
     "/update", "/refresh", "/reset", "/user", "/save", "/share", "/sharewith",
     "/plans", "/replay", "/history", "/resume",
     "/context", "/compact", "/facts", "/remember", "/forget",
-    "/verbose", "/insights", "/preferences", "/quit", "/exit", "/q"
+    "/verbose", "/raw", "/insights", "/preferences", "/artifacts", "/quit", "/exit", "/q"
 ]
 
 # Use readline for tab completion (works reliably across terminals)
@@ -104,6 +128,93 @@ class InteractiveREPL:
 
         return context
 
+    def _detect_display_overrides(self, text: str) -> dict:
+        """Detect display preference overrides in natural language.
+
+        Returns dict with:
+            - overrides: dict of {setting: value} to apply
+            - persistent: dict of {setting: value} that are persistent changes
+            - single_turn: dict of {setting: value} for this query only
+        """
+        overrides = {"persistent": {}, "single_turn": {}}
+        text_lower = text.lower()
+
+        for pattern, setting, value, is_persistent in DISPLAY_OVERRIDE_PATTERNS:
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                key = "persistent" if is_persistent else "single_turn"
+                overrides[key][setting] = value
+
+        return overrides
+
+    def _apply_display_overrides(self, overrides: dict) -> dict:
+        """Apply display overrides and return original values for restoration.
+
+        Args:
+            overrides: Dict from _detect_display_overrides
+
+        Returns:
+            Dict of original values to restore after query (for single_turn only)
+        """
+        original = {}
+
+        # Apply persistent changes first (these stick)
+        for setting, value in overrides.get("persistent", {}).items():
+            if setting == "verbose":
+                self.verbose = value
+                self.display.verbose = value
+                self.console.print(f"[dim]Verbose: {'on' if value else 'off'} (persistent)[/dim]")
+            elif setting == "raw":
+                self.session_config.show_raw_output = value
+                self.console.print(f"[dim]Raw output: {'on' if value else 'off'} (persistent)[/dim]")
+            elif setting == "insights":
+                self.session_config.enable_insights = value
+                self.console.print(f"[dim]Insights: {'on' if value else 'off'} (persistent)[/dim]")
+
+        # Apply single-turn overrides (save originals for restoration)
+        for setting, value in overrides.get("single_turn", {}).items():
+            # Skip if persistent already set the same value
+            if setting in overrides.get("persistent", {}):
+                continue
+
+            if setting == "verbose":
+                original["verbose"] = self.verbose
+                self.verbose = value
+                self.display.verbose = value
+            elif setting == "raw":
+                original["raw"] = self.session_config.show_raw_output
+                self.session_config.show_raw_output = value
+            elif setting == "insights":
+                original["insights"] = self.session_config.enable_insights
+                self.session_config.enable_insights = value
+
+        return original
+
+    def _restore_display_settings(self, original: dict) -> None:
+        """Restore display settings after single-turn override."""
+        if "verbose" in original:
+            self.verbose = original["verbose"]
+            self.display.verbose = original["verbose"]
+        if "raw" in original:
+            self.session_config.show_raw_output = original["raw"]
+        if "insights" in original:
+            self.session_config.enable_insights = original["insights"]
+
+    def _display_outputs(self) -> None:
+        """Display any pending outputs from artifact saves."""
+        outputs = get_pending_outputs()
+        if not outputs:
+            return
+
+        self.console.print()
+        self.console.print("[bold]Outputs:[/bold]")
+        for output in outputs:
+            file_uri = output["file_uri"]
+            desc = output.get("description", "")
+            file_type = output.get("type", "")
+            type_hint = f" [dim]({file_type})[/dim]" if file_type else ""
+            self.console.print(f"  [cyan]{desc}[/cyan]{type_hint}")
+            self.console.print(f"    {file_uri}")
+
     def _create_session(self) -> Session:
         """Create a new session with feedback handler and callbacks."""
         session = Session(
@@ -111,7 +222,7 @@ class InteractiveREPL:
             session_config=self.session_config,
             progress_callback=self.progress_callback,
         )
-        handler = SessionFeedbackHandler(self.display)
+        handler = SessionFeedbackHandler(self.display, self.session_config)
         session.on_event(handler.handle_event)
 
         # Wire up approval callback
@@ -153,9 +264,11 @@ class InteractiveREPL:
             ("/facts", "Show cached facts from this session"),
             ("/remember <fact>", "Remember a fact (e.g., /remember my role is CFO)"),
             ("/forget <name>", "Forget a remembered fact by name"),
-            ("/verbose", "Toggle verbose mode"),
+            ("/verbose [on|off]", "Toggle or set verbose mode (step details)"),
+            ("/raw [on|off]", "Toggle or set raw output display"),
             ("/insights [on|off]", "Toggle or set insight synthesis"),
             ("/preferences", "Show current preferences"),
+            ("/artifacts", "Show saved artifacts with file:// URIs"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -172,6 +285,38 @@ class InteractiveREPL:
             self.console.print("[dim]No tables yet.[/dim]")
             return
         self.display.show_tables(tables, force_show=True)
+
+    def _show_artifacts(self) -> None:
+        """Show saved artifacts from current session with clickable file:// URIs."""
+        if not self.session or not self.session.session_id:
+            self.console.print("[yellow]No active session.[/yellow]")
+            return
+
+        # Use session-specific output directory
+        session_id = self.session.session_id
+        output_dir = Path.home() / ".constat" / "outputs" / session_id[:20]
+
+        if not output_dir.exists():
+            self.console.print("[dim]No artifacts in this session.[/dim]")
+            return
+
+        # Get all files in output directory, sorted by modification time (newest first)
+        files = sorted(output_dir.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True)
+        files = [f for f in files if f.is_file()]
+
+        if not files:
+            self.console.print("[dim]No artifacts in this session.[/dim]")
+            return
+
+        self.console.print(f"\n[bold]Session Artifacts[/bold] ({len(files)} files)\n")
+        for f in files[:20]:  # Show last 20
+            file_uri = f.resolve().as_uri()
+            size_kb = f.stat().st_size / 1024
+            self.console.print(f"  [cyan]{f.name}[/cyan] [dim]({size_kb:.1f}KB)[/dim]")
+            self.console.print(f"    {file_uri}")
+
+        if len(files) > 20:
+            self.console.print(f"\n[dim]... and {len(files) - 20} more[/dim]")
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""
@@ -413,6 +558,41 @@ class InteractiveREPL:
         self.session.fact_resolver._cache.pop(fact_name, None)
         self.console.print(f"[green]Forgot:[/green] {fact_name}")
 
+    def _toggle_verbose(self, arg: str = "") -> None:
+        """Toggle or set verbose mode on/off."""
+        arg_lower = arg.lower().strip()
+        if arg_lower == "on":
+            self.verbose = True
+        elif arg_lower == "off":
+            self.verbose = False
+        else:
+            # Toggle
+            self.verbose = not self.verbose
+
+        self.display.verbose = self.verbose
+        status = "on" if self.verbose else "off"
+        self.console.print(f"Verbose: [bold]{status}[/bold]")
+        if self.verbose:
+            self.console.print("[dim]Will show detailed step execution info[/dim]")
+
+    def _toggle_raw(self, arg: str = "") -> None:
+        """Toggle or set raw output display on/off."""
+        arg_lower = arg.lower().strip()
+        if arg_lower == "on":
+            self.session_config.show_raw_output = True
+        elif arg_lower == "off":
+            self.session_config.show_raw_output = False
+        else:
+            # Toggle
+            self.session_config.show_raw_output = not self.session_config.show_raw_output
+
+        status = "on" if self.session_config.show_raw_output else "off"
+        self.console.print(f"Raw output: [bold]{status}[/bold]")
+        if self.session_config.show_raw_output:
+            self.console.print("[dim]Raw step results will be shown before synthesis[/dim]")
+        else:
+            self.console.print("[dim]Only synthesized answer will be shown[/dim]")
+
     def _toggle_insights(self, arg: str = "") -> None:
         """Toggle or set insight synthesis on/off."""
         arg_lower = arg.lower().strip()
@@ -436,6 +616,7 @@ class InteractiveREPL:
         table.add_column("Value", style="green")
 
         table.add_row("verbose", "on" if self.verbose else "off")
+        table.add_row("raw", "on" if self.session_config.show_raw_output else "off")
         table.add_row("insights", "on" if self.session_config.enable_insights else "off")
         table.add_row("user", self.user_id)
 
@@ -560,8 +741,8 @@ class InteractiveREPL:
         for s in sessions:
             # Shorten ID for display
             short_id = s.session_id[:20] + "..." if len(s.session_id) > 20 else s.session_id
-            started = s.started_at.strftime("%Y-%m-%d %H:%M") if s.started_at else "?"
-            table.add_row(short_id, started, str(s.query_count), s.status or "?")
+            started = s.created_at if s.created_at else "?"
+            table.add_row(short_id, started, str(s.total_queries), s.status or "?")
 
         self.console.print(table)
         self.console.print("[dim]Use /resume <id> to continue a session[/dim]")
@@ -699,13 +880,15 @@ class InteractiveREPL:
         elif cmd == "/forget" and arg:
             self._forget_fact(arg)
         elif cmd == "/verbose":
-            self.verbose = not self.verbose
-            self.display.verbose = self.verbose
-            self.console.print(f"Verbose: [bold]{'on' if self.verbose else 'off'}[/bold]")
+            self._toggle_verbose(arg)
+        elif cmd == "/raw":
+            self._toggle_raw(arg)
         elif cmd == "/insights":
             self._toggle_insights(arg)
         elif cmd == "/preferences":
             self._show_preferences()
+        elif cmd == "/artifacts":
+            self._show_artifacts()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 
@@ -720,6 +903,13 @@ class InteractiveREPL:
         """
         if not self.session:
             self.session = self._create_session()
+
+        # Detect and apply display preference overrides from NL
+        overrides = self._detect_display_overrides(problem)
+        original_settings = self._apply_display_overrides(overrides)
+
+        # Clear any pending outputs from previous execution
+        clear_pending_outputs()
 
         self.last_problem = problem  # Track for /save
         self.suggestions = []  # Clear previous suggestions
@@ -754,6 +944,9 @@ class InteractiveREPL:
                 # Store suggestions for shortcut handling
                 self.suggestions = result.get("suggestions", [])
 
+                # Display any outputs (artifacts) from this execution
+                self._display_outputs()
+
                 # Check context size and warn if needed
                 self._check_context_warning()
             else:
@@ -768,11 +961,16 @@ class InteractiveREPL:
             self.display.stop()
             self.display.stop_spinner()
             self.console.print(f"[red]Error:[/red] {e}")
+        finally:
+            # Restore single-turn display settings
+            self._restore_display_settings(original_settings)
 
         return None
 
     def run(self, initial_problem: Optional[str] = None) -> None:
         """Run the interactive REPL."""
+        # Set REPL mode for output formatting
+        os.environ["CONSTAT_REPL_MODE"] = "1"
         try:
             self._run_repl_body(initial_problem)
         finally:
