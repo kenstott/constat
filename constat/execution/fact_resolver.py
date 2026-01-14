@@ -68,9 +68,25 @@ class Fact:
     reasoning: Optional[str] = None  # LLM explanation if from knowledge
     resolved_at: datetime = field(default_factory=datetime.now)
 
+    # Table reference (for large array values stored in datastore)
+    table_name: Optional[str] = None  # Name of table in datastore if value is stored there
+    row_count: Optional[int] = None  # Number of rows if stored as table
+
     @property
     def is_resolved(self) -> bool:
         return self.source != FactSource.UNRESOLVED
+
+    @property
+    def is_table_reference(self) -> bool:
+        """True if value is stored as a table in datastore."""
+        return self.table_name is not None
+
+    @property
+    def display_value(self) -> str:
+        """Human-readable value for display (concise for table references)."""
+        if self.is_table_reference:
+            return f"{self.row_count} rows (table: {self.table_name})"
+        return str(self.value)
 
     @property
     def derivation_trace(self) -> str:
@@ -79,7 +95,8 @@ class Fact:
         source_str = self.source.value
         if self.source_name:
             source_str = f"{self.source.value}:{self.source_name}"
-        lines = [f"{self.name} = {self.value} (confidence: {self.confidence:.2f}, source: {source_str})"]
+        # Use display_value for concise table references
+        lines = [f"{self.name} = {self.display_value} (confidence: {self.confidence:.2f}, source: {source_str})"]
         if self.query:
             lines.append(f"  via SQL: {self.query}")
         if self.api_endpoint:
@@ -95,7 +112,7 @@ class Fact:
 
     def to_dict(self) -> dict:
         """Serialize for storage/API."""
-        return {
+        result = {
             "name": self.name,
             "value": self.value,
             "confidence": self.confidence,
@@ -108,6 +125,11 @@ class Fact:
             "because": [f.name for f in self.because],
             "resolved_at": self.resolved_at.isoformat(),
         }
+        # Add table reference fields if present
+        if self.table_name:
+            result["table_name"] = self.table_name
+            result["row_count"] = self.row_count
+        return result
 
 
 # Type for rule functions: (resolver, **params) -> Fact
@@ -134,6 +156,11 @@ class ResolutionStrategy:
     # Sub-plan settings
     allow_sub_plans: bool = True
     max_sub_plan_depth: int = 3  # Prevent infinite recursion
+
+
+# Thresholds for storing arrays as tables (to avoid context bloat)
+ARRAY_ROW_THRESHOLD = 5  # Store as table if array has > N items
+ARRAY_SIZE_THRESHOLD = 1000  # Store as table if JSON size > N chars
 
 
 class FactResolver:
@@ -168,12 +195,14 @@ class FactResolver:
         config=None,  # For config-based facts
         strategy: Optional[ResolutionStrategy] = None,
         event_callback=None,  # Callback for resolution events (for display updates)
+        datastore=None,  # For storing large array facts as tables
     ):
         self.llm = llm
         self.schema_manager = schema_manager
         self.config = config
         self.strategy = strategy or ResolutionStrategy()
         self._event_callback = event_callback
+        self._datastore = datastore  # Reference to session's datastore for table storage
 
         # Caches
         self._cache: dict[str, Fact] = {}
@@ -257,6 +286,71 @@ class FactResolver:
             Dictionary mapping fact names/keys to Fact objects
         """
         return dict(self._cache)
+
+    def _should_store_as_table(self, value: Any) -> bool:
+        """
+        Check if a value should be stored as a table instead of inline.
+
+        Uses threshold-based logic to avoid context bloat for large arrays.
+
+        Args:
+            value: The resolved fact value
+
+        Returns:
+            True if value should be stored as a table
+        """
+        if not isinstance(value, list):
+            return False
+
+        # Check row count threshold
+        if len(value) > ARRAY_ROW_THRESHOLD:
+            return True
+
+        # Check JSON size threshold
+        try:
+            import json
+            json_size = len(json.dumps(value))
+            if json_size > ARRAY_SIZE_THRESHOLD:
+                return True
+        except (TypeError, ValueError):
+            # Can't serialize - keep as-is
+            pass
+
+        return False
+
+    def _store_value_as_table(self, fact_name: str, value: list, source_name: str = None) -> tuple[str, int]:
+        """
+        Store a list value as a table in the datastore.
+
+        Args:
+            fact_name: Name of the fact (used to generate table name)
+            value: List of dicts to store as table
+            source_name: Optional source name for table naming
+
+        Returns:
+            Tuple of (table_name, row_count)
+        """
+        if not self._datastore:
+            raise ValueError("No datastore configured for table storage")
+
+        import pandas as pd
+
+        # Generate a clean table name from fact name
+        # Replace special chars, ensure valid SQL identifier
+        table_name = f"fact_{fact_name}".replace("(", "_").replace(")", "").replace(",", "_").replace("=", "_")
+        table_name = table_name.replace("-", "_").replace(" ", "_").lower()
+
+        # Convert to DataFrame
+        if value and isinstance(value[0], dict):
+            df = pd.DataFrame(value)
+        else:
+            # Handle list of primitives
+            df = pd.DataFrame({"value": value})
+
+        # Store in datastore
+        self._datastore.store(table_name, df)
+
+        return table_name, len(df)
 
     def _try_resolve(
         self,
@@ -357,20 +451,49 @@ NOT_POSSIBLE: <reason>
                     import pandas as pd
                     result = pd.read_sql(sql, conn)
 
+                    cache_key = self._cache_key(fact_name, params)
+
                     # Convert result to appropriate value
                     if len(result) == 1 and len(result.columns) == 1:
+                        # Scalar value - store directly
                         value = result.iloc[0, 0]
+                        return Fact(
+                            name=cache_key,
+                            value=value,
+                            confidence=1.0,
+                            source=FactSource.DATABASE,
+                            source_name=db_name,
+                            query=sql,
+                        )
                     else:
+                        # Multi-row result - check if should store as table
                         value = result.to_dict('records')
 
-                    return Fact(
-                        name=self._cache_key(fact_name, params),
-                        value=value,
-                        confidence=1.0,  # Database facts are certain
-                        source=FactSource.DATABASE,
-                        source_name=db_name,
-                        query=sql,
-                    )
+                        if self._datastore and self._should_store_as_table(value):
+                            # Store as table and return reference
+                            table_name, row_count = self._store_value_as_table(
+                                fact_name, value, source_name=db_name
+                            )
+                            return Fact(
+                                name=cache_key,
+                                value=f"table:{table_name}",  # Reference, not data
+                                confidence=1.0,
+                                source=FactSource.DATABASE,
+                                source_name=db_name,
+                                query=sql,
+                                table_name=table_name,
+                                row_count=row_count,
+                            )
+                        else:
+                            # Small result - store inline
+                            return Fact(
+                                name=cache_key,
+                                value=value,
+                                confidence=1.0,
+                                source=FactSource.DATABASE,
+                                source_name=db_name,
+                                query=sql,
+                            )
         except Exception as e:
             # Query failed
             return None
@@ -1398,19 +1521,48 @@ NOT_POSSIBLE: <reason>
                         lambda: pd.read_sql(sql, conn)
                     )
 
+                    cache_key = self._cache_key(fact_name, params)
+
                     if len(result) == 1 and len(result.columns) == 1:
+                        # Scalar value - store directly
                         value = result.iloc[0, 0]
+                        return Fact(
+                            name=cache_key,
+                            value=value,
+                            confidence=1.0,
+                            source=FactSource.DATABASE,
+                            source_name=db_name,
+                            query=sql,
+                        )
                     else:
+                        # Multi-row result - check if should store as table
                         value = result.to_dict('records')
 
-                    return Fact(
-                        name=self._cache_key(fact_name, params),
-                        value=value,
-                        confidence=1.0,
-                        source=FactSource.DATABASE,
-                        source_name=db_name,
-                        query=sql,
-                    )
+                        if self._datastore and self._should_store_as_table(value):
+                            # Store as table and return reference
+                            table_name, row_count = self._store_value_as_table(
+                                fact_name, value, source_name=db_name
+                            )
+                            return Fact(
+                                name=cache_key,
+                                value=f"table:{table_name}",
+                                confidence=1.0,
+                                source=FactSource.DATABASE,
+                                source_name=db_name,
+                                query=sql,
+                                table_name=table_name,
+                                row_count=row_count,
+                            )
+                        else:
+                            # Small result - store inline
+                            return Fact(
+                                name=cache_key,
+                                value=value,
+                                confidence=1.0,
+                                source=FactSource.DATABASE,
+                                source_name=db_name,
+                                query=sql,
+                            )
         except Exception:
             pass
 

@@ -356,7 +356,8 @@ class InteractiveREPL:
                 source_info = fact.reasoning[:40] + "..." if len(fact.reasoning) > 40 else fact.reasoning
             else:
                 source_info = fact.source.value
-            table.add_row(name, str(fact.value), desc, source_info)
+            # Use display_value for concise table reference display
+            table.add_row(name, fact.display_value, desc, source_info)
 
         self.console.print(table)
 
