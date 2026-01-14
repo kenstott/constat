@@ -39,6 +39,7 @@ class TaskType(Enum):
     # Text processing
     SUMMARIZATION = "summarization"
     ERROR_ANALYSIS = "error_analysis"  # Analyzing execution errors for retry
+    SYNTHESIS = "synthesis"  # Generate final response from resolved facts
 
     # Default fallback
     GENERAL = "general"

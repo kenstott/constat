@@ -10,6 +10,8 @@ from constat.core.config import Config
 from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType, TaskType
 from constat.storage.datastore import DataStore
 from constat.storage.history import SessionHistory
+from constat.storage.registry import ConstatRegistry
+from constat.storage.registry_datastore import RegistryAwareDataStore
 from constat.execution.executor import ExecutionResult, PythonExecutor, format_error_for_retry
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
@@ -426,7 +428,10 @@ class Session:
         self.session_id: Optional[str] = None
         self.plan: Optional[Plan] = None
         self.scratchpad = Scratchpad()
-        self.datastore: Optional[DataStore] = None  # Persistent storage (only shared state between steps)
+        self.datastore: Optional[RegistryAwareDataStore] = None  # Persistent storage (only shared state between steps)
+
+        # Central registry for tables and artifacts (shared across sessions)
+        self.registry = ConstatRegistry(base_dir=Path(".constat"))
 
         # Fact resolver for auditable mode
         self.fact_resolver = FactResolver(
@@ -733,6 +738,8 @@ class Session:
                 datastore=self.datastore,
                 print_file_refs=self.config.execution.print_file_refs,
                 session_id=self.session_id,
+                user_id=self.user_id,
+                registry=self.registry,
             ),  # Visualization/file output helper
         }
 
@@ -2067,7 +2074,19 @@ Please create a revised plan that addresses this feedback."""
         # Create persistent datastore for this session
         session_dir = self.history._session_dir(self.session_id)
         datastore_path = session_dir / "datastore.db"
-        self.datastore = DataStore(db_path=datastore_path)
+        tables_dir = session_dir / "tables"
+
+        # Create the underlying datastore
+        underlying_datastore = DataStore(db_path=datastore_path)
+
+        # Wrap with registry-aware datastore for Parquet + registry integration
+        self.datastore = RegistryAwareDataStore(
+            datastore=underlying_datastore,
+            registry=self.registry,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            tables_dir=tables_dir,
+        )
 
         # Update fact resolver's datastore reference (for storing large facts as tables)
         self.fact_resolver._datastore = self.datastore
@@ -2449,10 +2468,25 @@ Please create a revised plan that addresses this feedback."""
         # Load the datastore (contains tables, state, scratchpad, artifacts)
         session_dir = self.history._session_dir(session_id)
         datastore_path = session_dir / "datastore.db"
+        tables_dir = session_dir / "tables"
+
+        # Create underlying datastore
+        if datastore_path.exists():
+            underlying_datastore = DataStore(db_path=datastore_path)
+        else:
+            # No datastore file - create empty one
+            underlying_datastore = DataStore(db_path=datastore_path)
+
+        # Wrap with registry-aware datastore
+        self.datastore = RegistryAwareDataStore(
+            datastore=underlying_datastore,
+            registry=self.registry,
+            user_id=self.user_id,
+            session_id=session_id,
+            tables_dir=tables_dir,
+        )
 
         if datastore_path.exists():
-            self.datastore = DataStore(db_path=datastore_path)
-
             # Rebuild scratchpad from datastore
             scratchpad_entries = self.datastore.get_scratchpad()
             if scratchpad_entries:
@@ -2471,9 +2505,6 @@ Please create a revised plan that addresses this feedback."""
                         result=entry["narrative"],
                         tables_created=entry.get("tables_created", []),
                     )
-        else:
-            # No datastore file - create empty one
-            self.datastore = DataStore(db_path=datastore_path)
 
         # Update fact resolver's datastore reference (for storing large facts as tables)
         self.fact_resolver._datastore = self.datastore
@@ -3826,8 +3857,18 @@ If you don't have enough information, say so rather than guessing."""
 
     # --- Saved Plans ---
 
-    SAVED_PLANS_FILE = Path(".constat/saved_plans.json")
-    DEFAULT_USER_ID = "root"
+    CONSTAT_BASE_DIR = Path(".constat")
+    DEFAULT_USER_ID = "default"
+
+    @classmethod
+    def _get_user_plans_file(cls, user_id: str) -> Path:
+        """Get path to user-scoped saved plans file."""
+        return cls.CONSTAT_BASE_DIR / user_id / "saved_plans.json"
+
+    @classmethod
+    def _get_shared_plans_file(cls) -> Path:
+        """Get path to shared plans file."""
+        return cls.CONSTAT_BASE_DIR / "shared" / "saved_plans.json"
 
     def save_plan(self, name: str, problem: str, user_id: Optional[str] = None, shared: bool = False) -> None:
         """
@@ -3861,21 +3902,14 @@ If you don't have enough information, say so rather than guessing."""
             ],
         }
 
-        # Load existing saved plans
-        all_plans = self._load_all_plans()
-
         if shared:
-            if "shared" not in all_plans:
-                all_plans["shared"] = {}
-            all_plans["shared"][name] = plan_data
+            plans = self._load_shared_plans()
+            plans[name] = plan_data
+            self._save_shared_plans(plans)
         else:
-            if "users" not in all_plans:
-                all_plans["users"] = {}
-            if user_id not in all_plans["users"]:
-                all_plans["users"][user_id] = {}
-            all_plans["users"][user_id][name] = plan_data
-
-        self._save_all_plans(all_plans)
+            plans = self._load_user_plans(user_id)
+            plans[name] = plan_data
+            self._save_user_plans(user_id, plans)
 
     @classmethod
     def load_saved_plan(cls, name: str, user_id: Optional[str] = None) -> dict:
@@ -3892,15 +3926,14 @@ If you don't have enough information, say so rather than guessing."""
             Dict with problem and steps
         """
         user_id = user_id or cls.DEFAULT_USER_ID
-        all_plans = cls._load_all_plans()
 
         # Check user's plans first
-        user_plans = all_plans.get("users", {}).get(user_id, {})
+        user_plans = cls._load_user_plans(user_id)
         if name in user_plans:
             return user_plans[name]
 
         # Check shared plans
-        shared_plans = all_plans.get("shared", {})
+        shared_plans = cls._load_shared_plans()
         if name in shared_plans:
             return shared_plans[name]
 
@@ -3919,11 +3952,10 @@ If you don't have enough information, say so rather than guessing."""
             List of dicts with name, problem, shared flag
         """
         user_id = user_id or cls.DEFAULT_USER_ID
-        all_plans = cls._load_all_plans()
         result = []
 
         # User's plans
-        user_plans = all_plans.get("users", {}).get(user_id, {})
+        user_plans = cls._load_user_plans(user_id)
         for name, data in user_plans.items():
             result.append({
                 "name": name,
@@ -3934,7 +3966,7 @@ If you don't have enough information, say so rather than guessing."""
 
         # Shared plans
         if include_shared:
-            shared_plans = all_plans.get("shared", {})
+            shared_plans = cls._load_shared_plans()
             for name, data in shared_plans.items():
                 result.append({
                     "name": name,
@@ -3950,14 +3982,13 @@ If you don't have enough information, say so rather than guessing."""
     def delete_saved_plan(cls, name: str, user_id: Optional[str] = None) -> bool:
         """Delete a saved plan by name (only user's own plans)."""
         user_id = user_id or cls.DEFAULT_USER_ID
-        all_plans = cls._load_all_plans()
+        user_plans = cls._load_user_plans(user_id)
 
-        user_plans = all_plans.get("users", {}).get(user_id, {})
         if name not in user_plans:
             return False
 
-        del all_plans["users"][user_id][name]
-        cls._save_all_plans(all_plans)
+        del user_plans[name]
+        cls._save_user_plans(user_id, user_plans)
         return True
 
     @classmethod
@@ -3974,51 +4005,60 @@ If you don't have enough information, say so rather than guessing."""
             True if shared successfully
         """
         from_user = from_user or cls.DEFAULT_USER_ID
-        all_plans = cls._load_all_plans()
 
         # Find the plan (check user's plans first, then shared)
-        source_plans = all_plans.get("users", {}).get(from_user, {})
+        source_plans = cls._load_user_plans(from_user)
         if name in source_plans:
             plan_data = source_plans[name].copy()
         else:
-            shared_plans = all_plans.get("shared", {})
+            shared_plans = cls._load_shared_plans()
             if name in shared_plans:
                 plan_data = shared_plans[name].copy()
             else:
                 return False
 
         # Copy to target user's plans
-        if "users" not in all_plans:
-            all_plans["users"] = {}
-        if target_user not in all_plans["users"]:
-            all_plans["users"][target_user] = {}
-
+        target_plans = cls._load_user_plans(target_user)
         plan_data["shared_by"] = from_user
-        all_plans["users"][target_user][name] = plan_data
-        cls._save_all_plans(all_plans)
+        target_plans[name] = plan_data
+        cls._save_user_plans(target_user, target_plans)
         return True
 
     @classmethod
-    def _load_all_plans(cls) -> dict:
-        """Load all saved plans from file."""
-        if not cls.SAVED_PLANS_FILE.exists():
-            return {"users": {}, "shared": {}}
+    def _load_user_plans(cls, user_id: str) -> dict:
+        """Load saved plans for a specific user."""
+        plans_file = cls._get_user_plans_file(user_id)
+        if not plans_file.exists():
+            return {}
         try:
-            data = json.loads(cls.SAVED_PLANS_FILE.read_text())
-            # Ensure structure
-            if "users" not in data:
-                data["users"] = {}
-            if "shared" not in data:
-                data["shared"] = {}
-            return data
+            return json.loads(plans_file.read_text())
         except (json.JSONDecodeError, OSError):
-            return {"users": {}, "shared": {}}
+            return {}
 
     @classmethod
-    def _save_all_plans(cls, plans: dict) -> None:
-        """Save plans to file."""
-        cls.SAVED_PLANS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        cls.SAVED_PLANS_FILE.write_text(json.dumps(plans, indent=2))
+    def _save_user_plans(cls, user_id: str, plans: dict) -> None:
+        """Save plans to user-scoped file."""
+        plans_file = cls._get_user_plans_file(user_id)
+        plans_file.parent.mkdir(parents=True, exist_ok=True)
+        plans_file.write_text(json.dumps(plans, indent=2))
+
+    @classmethod
+    def _load_shared_plans(cls) -> dict:
+        """Load shared plans accessible to all users."""
+        plans_file = cls._get_shared_plans_file()
+        if not plans_file.exists():
+            return {}
+        try:
+            return json.loads(plans_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    @classmethod
+    def _save_shared_plans(cls, plans: dict) -> None:
+        """Save shared plans."""
+        plans_file = cls._get_shared_plans_file()
+        plans_file.parent.mkdir(parents=True, exist_ok=True)
+        plans_file.write_text(json.dumps(plans, indent=2))
 
     def replay_saved(self, name: str, user_id: Optional[str] = None) -> dict:
         """

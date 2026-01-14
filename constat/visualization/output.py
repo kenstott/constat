@@ -30,6 +30,7 @@ from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from constat.storage.datastore import DataStore
+    from constat.storage.registry import ConstatRegistry
 
 
 def is_repl_mode() -> bool:
@@ -99,27 +100,33 @@ class VisualizationHelper:
         step_number: int = 0,
         print_file_refs: bool = True,
         session_id: Optional[str] = None,
+        user_id: str = "default",
+        registry: Optional["ConstatRegistry"] = None,
     ):
         """Initialize the output helper.
 
         Args:
-            output_dir: Directory for saving files. Defaults to ~/.constat/outputs/<session_id>/
+            output_dir: Directory for saving files. Defaults to .constat/<user_id>/artifacts/
             datastore: DataStore for registering artifacts (for React UI)
             step_number: Current step number for artifact metadata
             print_file_refs: If True, print file:// URIs for CLI users.
                            If False, suppress file references (for React UI where
                            artifacts are displayed directly).
             session_id: Session ID for organizing outputs by session
+            user_id: User ID for user-scoped storage (default: "default")
+            registry: Central registry for artifact tracking (optional)
         """
         self.session_id = session_id
+        self.user_id = user_id
+        self.registry = registry
 
         if output_dir is None:
-            base_dir = Path.home() / ".constat" / "outputs"
+            # Use session directory under user-scoped storage
+            # "artifacts" = user-requested outputs (charts, files, visualizations)
             if session_id:
-                # Use session-specific subdirectory
-                output_dir = base_dir / session_id[:20]  # Truncate for filesystem
+                output_dir = Path(".constat") / user_id / "sessions" / session_id / "artifacts"
             else:
-                output_dir = base_dir
+                output_dir = Path(".constat") / user_id / "artifacts"
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -156,6 +163,36 @@ class VisualizationHelper:
         else:
             # Direct print for non-REPL contexts
             print(f"{label}: {file_uri}")
+
+    def _register_artifact(
+        self,
+        filepath: Path,
+        artifact_type: str,
+        description: Optional[str] = None,
+    ) -> None:
+        """Register an artifact in the central registry.
+
+        Args:
+            filepath: Path to the saved file
+            artifact_type: Type of artifact (chart, image, csv, etc.)
+            description: Human-readable description
+        """
+        if not self.registry or not self.session_id:
+            return
+
+        try:
+            size_bytes = filepath.stat().st_size if filepath.exists() else 0
+            self.registry.register_artifact(
+                user_id=self.user_id,
+                session_id=self.session_id,
+                name=filepath.name,
+                file_path=str(filepath),
+                artifact_type=artifact_type,
+                size_bytes=size_bytes,
+                description=description,
+            )
+        except Exception:
+            pass  # Don't fail the save if registry fails
 
     def save_file(
         self,
@@ -203,6 +240,10 @@ class VisualizationHelper:
                 if self.print_file_refs:
                     print(f"Note: Could not register artifact: {e}")
 
+        # Register in central registry
+        artifact_type = FILE_EXT_ARTIFACT_TYPES.get(ext, "text")
+        self._register_artifact(filepath, artifact_type, description=title or name)
+
         self._print_ref(f"File saved ({ext})", filepath, description=title or name)
         return filepath
 
@@ -242,6 +283,9 @@ class VisualizationHelper:
                 # Don't fail if artifact save fails - file is already saved
                 if self.print_file_refs:
                     print(f"Note: Could not register artifact: {e}")
+
+        # Register in central registry
+        self._register_artifact(filepath, "html", description=title or name)
 
         self._print_ref("HTML", filepath, description=title or name)
         return filepath
@@ -284,6 +328,9 @@ class VisualizationHelper:
             except Exception as e:
                 if self.print_file_refs:
                     print(f"Note: Could not register artifact: {e}")
+
+        # Register in central registry
+        self._register_artifact(filepath, "map", description=title or f"Map: {name}")
 
         self._print_ref("Map", filepath, description=title or f"Map: {name}")
         return filepath
@@ -353,6 +400,9 @@ class VisualizationHelper:
         else:
             raise ValueError(f"Unsupported chart type: {chart_type}")
 
+        # Register in central registry
+        self._register_artifact(filepath, "chart", description=title or name)
+
         self._print_ref("Chart", filepath, description=title or name)
         return filepath
 
@@ -408,6 +458,9 @@ class VisualizationHelper:
                 if self.print_file_refs:
                     print(f"Note: Could not register image artifact: {e}")
 
+        # Register in central registry
+        self._register_artifact(filepath, "image", description=title or name)
+
         self._print_ref("Image", filepath, description=title or name)
         return filepath
 
@@ -418,6 +471,8 @@ def create_viz_helper(
     step_number: int = 0,
     print_file_refs: bool = True,
     session_id: Optional[str] = None,
+    user_id: str = "default",
+    registry: Optional["ConstatRegistry"] = None,
 ) -> VisualizationHelper:
     """Create a VisualizationHelper instance.
 
@@ -430,6 +485,8 @@ def create_viz_helper(
         print_file_refs: If True, print file:// URIs (CLI mode).
                         If False, suppress (React UI mode).
         session_id: Session ID for organizing outputs by session
+        user_id: User ID for user-scoped storage (default: "default")
+        registry: Central registry for artifact tracking
 
     Returns:
         Configured VisualizationHelper instance
@@ -440,4 +497,6 @@ def create_viz_helper(
         step_number=step_number,
         print_file_refs=print_file_refs,
         session_id=session_id,
+        user_id=user_id,
+        registry=registry,
     )

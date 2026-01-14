@@ -326,7 +326,9 @@ class DataStore:
             DataFrame or None if table doesn't exist
         """
         try:
-            return pd.read_sql_table(name, self.engine)
+            # Use read_sql_query instead of read_sql_table to avoid
+            # duckdb-engine compatibility issues with SQLAlchemy reflection
+            return pd.read_sql_query(f"SELECT * FROM {name}", self.engine)
         except Exception:
             return None
 
