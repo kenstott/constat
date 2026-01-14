@@ -3591,6 +3591,12 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         import pandas as pd
                         try:
                             engine = self.schema_manager.get_sql_connection(db_name)
+
+                            # For SQLite, strip database prefix from table names
+                            # (SQLite doesn't support schema.table syntax)
+                            if "sqlite" in str(engine.url):
+                                sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
+
                             result_df = pd.read_sql(sql, engine)
                             row_count = len(result_df) if result_df is not None else 0
                             fact = Fact(
