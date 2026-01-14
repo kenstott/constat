@@ -29,6 +29,7 @@ from constat.catalog.preload_cache import MetadataPreloadCache
 from constat.discovery.doc_tools import DocumentDiscoveryTools
 from constat.email import create_send_email
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
+from constat.visualization import create_viz_helper
 
 
 # Meta-questions that don't require data queries
@@ -91,6 +92,7 @@ Your code has access to:
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask`: a function to query the LLM for general knowledge
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
+- `viz`: visualization helper for saving interactive maps and charts to files
 
 ## API Clients (api_<name>)
 
@@ -175,6 +177,57 @@ genres = store.get_state('top_genres')
 all_state = store.get_all_state()
 ```
 
+## Visualizations (via viz)
+Create interactive visualizations that users can view in their browser:
+
+**Interactive Maps (using folium):**
+```python
+import folium
+
+# Create a map centered on Europe
+m = folium.Map(location=[50, 10], zoom_start=4)
+
+# Add markers for each country
+for _, row in df.iterrows():
+    folium.Marker(
+        location=[row['latitude'], row['longitude']],
+        popup=row['name'],
+        tooltip=row['name']
+    ).add_to(m)
+
+# Save the map - prints file path user can open
+viz.save_map('euro_countries', m, title='Countries Using Euro')
+```
+
+**Interactive Charts (using Plotly):**
+```python
+import plotly.express as px
+
+# Create an interactive bar chart
+fig = px.bar(df, x='country', y='population', title='Population by Country')
+
+# Save the chart - prints file path user can open
+viz.save_chart('population_chart', fig, title='Population by Country')
+```
+
+**Other Plotly chart types:**
+```python
+# Pie chart
+fig = px.pie(df, values='count', names='category')
+
+# Line chart
+fig = px.line(df, x='date', y='value', color='series')
+
+# Scatter plot
+fig = px.scatter(df, x='x', y='y', color='category', size='value')
+
+# Choropleth map
+fig = px.choropleth(df, locations='iso_code', color='value',
+                    locationmode='ISO-3', title='World Map')
+```
+
+The viz helper saves files to ~/.constat/outputs/ and prints the path so users can open them.
+
 ## Code Rules
 1. Use pandas `pd.read_sql(query, db_<name>)` to query source databases
 2. For cross-database queries, load from each DB and join in pandas
@@ -184,6 +237,7 @@ all_state = store.get_all_state()
    - Nothing in local variables persists between steps!
 4. Print informative output about what was done
 5. Keep code focused on the current step's goal
+6. When asked for interactive visualizations (maps, charts), use the `viz` helper
 
 ## Output Format
 Return ONLY the Python code wrapped in ```python ... ``` markers.
@@ -650,6 +704,7 @@ class Session:
             "store": self.datastore,  # Persistent datastore - only shared state between steps
             "llm_ask": self._create_llm_ask_helper(),  # LLM query helper for general knowledge
             "send_email": create_send_email(self.config.email),  # Email function
+            "viz": create_viz_helper(datastore=self.datastore),  # Visualization helper for maps/charts
         }
 
         # Provide database connections

@@ -63,7 +63,9 @@ class PythonExecutor:
         self.timeout_seconds = timeout_seconds
         self.allowed_imports = allowed_imports or [
             "pandas", "numpy", "scipy", "sklearn", "math", "json",
-            "datetime", "re", "collections", "itertools", "functools"
+            "datetime", "re", "collections", "itertools", "functools",
+            # Visualization libraries
+            "plotly", "altair", "matplotlib", "seaborn", "folium",
         ]
 
     def validate_imports(self, code: str) -> Optional[str]:

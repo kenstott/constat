@@ -1,0 +1,293 @@
+"""Visualization output helper for saving visualizations to files and artifacts.
+
+Saves visualizations in two ways:
+1. To disk for immediate CLI access (file paths users can open)
+2. As artifacts in datastore for React UI to display
+
+Usage in generated code:
+    # Save a folium map
+    import folium
+    m = folium.Map(location=[50, 10], zoom_start=4)
+    viz.save_map('euro_countries', m, title='Countries Using Euro')
+
+    # Save a plotly chart
+    import plotly.express as px
+    fig = px.bar(df, x='country', y='population')
+    viz.save_chart('population_chart', fig, title='Population by Country')
+
+    # Save raw HTML
+    viz.save_html('custom_viz', html_string, title='Custom Visualization')
+"""
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from constat.storage.datastore import DataStore
+
+
+class VisualizationHelper:
+    """Helper for saving visualizations to files and artifacts.
+
+    Provides a simple interface for generated code to save interactive
+    visualizations. Files are saved to an output directory and also
+    registered as artifacts in the datastore for the React UI.
+
+    Attributes:
+        output_dir: Directory where visualization files are saved
+        datastore: DataStore for artifact registration (optional)
+    """
+
+    def __init__(
+        self,
+        output_dir: Optional[Path] = None,
+        datastore: Optional["DataStore"] = None,
+        step_number: int = 0,
+    ):
+        """Initialize the visualization helper.
+
+        Args:
+            output_dir: Directory for saving files. Defaults to ~/.constat/outputs/
+            datastore: DataStore for registering artifacts (for React UI)
+            step_number: Current step number for artifact metadata
+        """
+        if output_dir is None:
+            output_dir = Path.home() / ".constat" / "outputs"
+
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.datastore = datastore
+        self.step_number = step_number
+
+    def _generate_filename(self, name: str, extension: str) -> Path:
+        """Generate a unique filename for the visualization."""
+        # Sanitize name for filesystem
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        return self.output_dir / f"{safe_name}.{extension}"
+
+    def save_html(
+        self,
+        name: str,
+        html_content: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Path:
+        """Save raw HTML content to file and artifact store.
+
+        Args:
+            name: Name for the visualization (used in filename and artifact)
+            html_content: HTML string to save
+            title: Human-readable title for the artifact
+            description: Description of the visualization
+
+        Returns:
+            Path to the saved HTML file
+        """
+        # Save to file
+        filepath = self._generate_filename(name, "html")
+        filepath.write_text(html_content, encoding="utf-8")
+
+        # Register as artifact if datastore available
+        if self.datastore:
+            try:
+                self.datastore.save_html(
+                    name=name,
+                    html_content=html_content,
+                    step_number=self.step_number,
+                    title=title or name,
+                    description=description,
+                )
+            except Exception as e:
+                # Don't fail if artifact save fails - file is already saved
+                print(f"Note: Could not register artifact: {e}")
+
+        print(f"Saved: {filepath}")
+        return filepath
+
+    def save_map(
+        self,
+        name: str,
+        folium_map: Any,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Path:
+        """Save a folium map to file and artifact store.
+
+        Args:
+            name: Name for the map (used in filename and artifact)
+            folium_map: Folium Map object
+            title: Human-readable title for the artifact
+            description: Description of the map
+
+        Returns:
+            Path to the saved HTML file
+        """
+        # Get HTML from folium map
+        html_content = folium_map._repr_html_()
+
+        # Save to file
+        filepath = self._generate_filename(name, "html")
+        folium_map.save(str(filepath))
+
+        # Register as artifact if datastore available
+        if self.datastore:
+            try:
+                self.datastore.save_html(
+                    name=name,
+                    html_content=html_content,
+                    step_number=self.step_number,
+                    title=title or f"Map: {name}",
+                    description=description or "Interactive map visualization",
+                )
+            except Exception as e:
+                print(f"Note: Could not register artifact: {e}")
+
+        print(f"Interactive map: {filepath}")
+        return filepath
+
+    def save_chart(
+        self,
+        name: str,
+        figure: Any,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        chart_type: str = "plotly",
+    ) -> Path:
+        """Save a Plotly or Altair chart to file and artifact store.
+
+        Args:
+            name: Name for the chart (used in filename and artifact)
+            figure: Plotly Figure or Altair Chart object
+            title: Human-readable title for the artifact
+            description: Description of the chart
+            chart_type: Type of chart ("plotly" or "altair")
+
+        Returns:
+            Path to the saved HTML file
+        """
+        filepath = self._generate_filename(name, "html")
+
+        # Handle different chart libraries
+        if chart_type == "plotly" or hasattr(figure, "write_html"):
+            # Plotly figure
+            figure.write_html(str(filepath), include_plotlyjs=True, full_html=True)
+            html_content = filepath.read_text(encoding="utf-8")
+
+            # Also save chart spec as artifact
+            if self.datastore:
+                try:
+                    spec = json.loads(figure.to_json())
+                    self.datastore.save_chart(
+                        name=name,
+                        spec=spec,
+                        step_number=self.step_number,
+                        title=title or name,
+                        chart_type="plotly",
+                    )
+                except Exception as e:
+                    print(f"Note: Could not register chart artifact: {e}")
+
+        elif chart_type == "altair" or hasattr(figure, "save"):
+            # Altair chart
+            figure.save(str(filepath))
+            html_content = filepath.read_text(encoding="utf-8")
+
+            # Also save chart spec as artifact
+            if self.datastore:
+                try:
+                    spec = figure.to_dict()
+                    self.datastore.save_chart(
+                        name=name,
+                        spec=spec,
+                        step_number=self.step_number,
+                        title=title or name,
+                        chart_type="vega-lite",
+                    )
+                except Exception as e:
+                    print(f"Note: Could not register chart artifact: {e}")
+        else:
+            raise ValueError(f"Unsupported chart type: {chart_type}")
+
+        print(f"Interactive chart: {filepath}")
+        return filepath
+
+    def save_image(
+        self,
+        name: str,
+        figure: Any,
+        format: str = "png",
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Path:
+        """Save a matplotlib figure or image to file.
+
+        Args:
+            name: Name for the image
+            figure: Matplotlib figure or image data
+            format: Image format (png, svg, jpg)
+            title: Human-readable title
+            description: Description of the image
+
+        Returns:
+            Path to the saved image file
+        """
+        filepath = self._generate_filename(name, format)
+
+        # Handle matplotlib figures
+        if hasattr(figure, "savefig"):
+            figure.savefig(str(filepath), format=format, bbox_inches="tight", dpi=150)
+        else:
+            # Assume raw bytes
+            filepath.write_bytes(figure)
+
+        # Register as artifact if datastore available
+        if self.datastore and format in ("png", "svg", "jpg", "jpeg"):
+            try:
+                image_data = filepath.read_bytes()
+                from constat.core.models import ArtifactType
+                artifact_type = {
+                    "png": ArtifactType.PNG,
+                    "svg": ArtifactType.SVG,
+                    "jpg": ArtifactType.JPEG,
+                    "jpeg": ArtifactType.JPEG,
+                }.get(format, ArtifactType.PNG)
+
+                self.datastore.save_image(
+                    name=name,
+                    image_data=image_data,
+                    image_format=format,
+                    step_number=self.step_number,
+                    title=title or name,
+                )
+            except Exception as e:
+                print(f"Note: Could not register image artifact: {e}")
+
+        print(f"Image saved: {filepath}")
+        return filepath
+
+
+def create_viz_helper(
+    datastore: Optional["DataStore"] = None,
+    output_dir: Optional[Path] = None,
+    step_number: int = 0,
+) -> VisualizationHelper:
+    """Create a VisualizationHelper instance.
+
+    Factory function for use in execution globals.
+
+    Args:
+        datastore: DataStore for artifact registration
+        output_dir: Custom output directory
+        step_number: Current step number
+
+    Returns:
+        Configured VisualizationHelper instance
+    """
+    return VisualizationHelper(
+        output_dir=output_dir,
+        datastore=datastore,
+        step_number=step_number,
+    )

@@ -18,12 +18,13 @@ dependencies = [
     # CLI & REPL
     "rich>=13.0",
     "click>=8.0",
-    "prompt_toolkit>=3.0",
+    "gnureadline>=8.0; sys_platform == 'darwin'",  # Better readline on macOS
     # Visualization (works OOB)
     "plotly>=5.0",
     "altair>=5.0",
     "matplotlib>=3.7",
     "seaborn>=0.12",
+    "folium>=0.14",  # Interactive maps
     # Documents (works OOB)
     "pypdf>=4.0",
     "python-docx>=1.0",

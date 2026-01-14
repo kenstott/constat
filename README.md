@@ -346,6 +346,35 @@ Once in the interactive REPL, these commands are available:
 
 **Brief mode:** Use keywords like "briefly", "tl;dr", "just show" in your query to skip the synthesis step and get raw results faster.
 
+### Interactive Visualizations
+
+Constat can generate interactive visualizations that are saved as HTML files you can open in your browser:
+
+```
+> Show me an interactive map of countries using the Euro
+
+Interactive map: /Users/you/.constat/outputs/euro_countries.html
+```
+
+**Supported visualization types:**
+
+| Type | Library | Example |
+|------|---------|---------|
+| Interactive maps | Folium | Geographic data, markers, choropleth maps |
+| Interactive charts | Plotly | Bar, line, scatter, pie, treemap, etc. |
+| Statistical charts | Altair | Declarative statistical visualizations |
+| Static plots | Matplotlib/Seaborn | Traditional Python plotting |
+
+Generated visualizations are:
+- Saved to `~/.constat/outputs/` as self-contained HTML files
+- Stored as artifacts in the session datastore (for UI display)
+- Fully interactive in your browser (zoom, hover, pan)
+
+**Example queries:**
+- "Create an interactive map showing customer locations"
+- "Show me a bar chart of revenue by region"
+- "Visualize the correlation between price and quantity"
+
 ## Configuration
 
 ### Configuration Hierarchy
@@ -733,6 +762,8 @@ execution:
     - plotly
     - altair
     - matplotlib
+    - seaborn
+    - folium
 
 #==============================================================================
 # STORAGE SETTINGS
