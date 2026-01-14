@@ -3301,35 +3301,39 @@ Available databases:
 {doc_list}
 {api_list}
 
-Build a formal derivation with:
-1. PREMISES (P1, P2, ...) - Base facts retrieved from data sources (databases, documents, APIs)
-2. INFERENCE (I1, I2, ...) - Logical steps that derive new facts from premises
-3. CONCLUSION (C) - The final answer derived from the inference steps
+Build a formal derivation with EXACTLY this format:
 
-For each PREMISE, specify the source:
-- database:<db_name> (for SQL queries)
-- document:<doc_name> (for reference documents)
-- api:<api_name>:<query_name> (for API calls)
-
-For each INFERENCE step, specify:
-- What premises/prior inferences it uses (e.g., P1, P2, I1)
-- The operation (e.g., subtract, divide, compare, aggregate, filter)
-
-Format as:
-QUESTION: <restate the question being answered>
+QUESTION: <restate the question>
 
 PREMISES:
-P1: <fact_name> = ? (<description>) [source: <specific source>]
-P2: <fact_name> = ? (<description>) [source: <specific source>]
-...
+P1: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
+P2: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
+(list ALL base data needed from sources)
 
 INFERENCE:
-I1: <derived_fact> = <operation>(<inputs>) -- <explanation>
-I2: <derived_fact> = <operation>(<inputs>) -- <explanation>
-...
+I1: <result_name> = <operation>(P1, P2) -- <explanation>
+I2: <result_name> = <operation>(I1) -- <explanation>
+(each step references premises P1/P2/etc or prior inferences I1/I2/etc)
 
 CONCLUSION:
-C: <how the final inference answers the question>
+C: <final sentence answering the question using the inferences>
+
+EXAMPLE for "What is total revenue by region?":
+
+QUESTION: What is total revenue by region?
+
+PREMISES:
+P1: orders_data = ? (All orders with amounts and dates) [source: database:shop]
+P2: customer_regions = ? (Customer ID to region mapping) [source: database:shop]
+
+INFERENCE:
+I1: orders_with_region = join(P1, P2) -- Join orders to get region for each order
+I2: revenue_by_region = aggregate(I1, SUM(amount) GROUP BY region) -- Sum revenue per region
+
+CONCLUSION:
+C: The total revenue by region is provided by I2, showing the sum of order amounts grouped by customer region.
+
+Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: prefixes EXACTLY as shown.
 """
 
         result = self.router.execute(
@@ -3501,25 +3505,128 @@ C: <how the final inference answers the question>
                 # Replan with feedback - for now, just include feedback in context
                 problem = f"{problem}\n\nUser guidance: {approval.suggestion}"
 
-        # Step 2: Resolve facts using the fact resolver
+        # Step 2: Resolve premises from the approved plan
         self._emit_event(StepEvent(
             event_type="verifying",
             step_number=0,
-            data={"message": f"Deriving answer: {claim or problem}"}
+            data={"message": f"Resolving premises for: {claim or problem}"}
         ))
 
-        # Build context for fact resolver
-        context = f"""Question: {problem}
-
-Answer to derive (with provenance): {claim}
-
-Available data sources:
-{schema_overview}
-"""
-
         try:
-            # Use fact resolver to verify
-            verify_result = self.fact_resolver.resolve_question(context)
+            # Resolve premises from the plan (not re-decomposing)
+            resolved_premises = {}
+            derivation_lines = ["**Premise Resolution:**", ""]
+            total_premises = len(premises)
+
+            for idx, premise in enumerate(premises):
+                fact_id = premise["id"]  # P1, P2, etc.
+                fact_name = premise["name"]
+                fact_desc = premise["description"]
+                source = premise["source"]
+
+                # Emit resolving event
+                self._emit_event(StepEvent(
+                    event_type="premise_resolving",
+                    step_number=idx + 1,
+                    data={
+                        "fact_name": f"{fact_id}: {fact_name}",
+                        "description": fact_desc,
+                        "step": idx + 1,
+                        "total": total_premises,
+                    }
+                ))
+
+                # Try to resolve based on source type
+                try:
+                    if source.startswith("database:"):
+                        # Resolve from database via SQL
+                        fact = self.fact_resolver.resolve(fact_name)
+                    elif source.startswith("document:"):
+                        # Resolve from document
+                        doc_name = source.split(":", 1)[1].strip()
+                        fact = self.fact_resolver.resolve(fact_name)
+                    else:
+                        # Generic resolution
+                        fact = self.fact_resolver.resolve(fact_name)
+
+                    resolved_premises[fact_id] = fact
+                    val_str = str(fact.value)[:100] if fact.value else "N/A"
+                    derivation_lines.append(f"- {fact_id}: {fact_name} = {val_str} (confidence: {fact.confidence:.0%})")
+
+                    # Emit resolved event
+                    self._emit_event(StepEvent(
+                        event_type="premise_resolved",
+                        step_number=idx + 1,
+                        data={
+                            "fact_name": f"{fact_id}: {fact_name}",
+                            "value": fact.value,
+                            "source": source,
+                            "confidence": fact.confidence,
+                            "step": idx + 1,
+                            "total": total_premises,
+                        }
+                    ))
+                except Exception as e:
+                    derivation_lines.append(f"- {fact_id}: {fact_name} = UNRESOLVED ({e})")
+                    self._emit_event(StepEvent(
+                        event_type="premise_resolved",
+                        step_number=idx + 1,
+                        data={
+                            "fact_name": f"{fact_id}: {fact_name}",
+                            "value": None,
+                            "source": "unresolved",
+                            "error": str(e),
+                            "step": idx + 1,
+                            "total": total_premises,
+                        }
+                    ))
+
+            # Step 3: Synthesize answer from resolved premises and inferences
+            self._emit_event(StepEvent(
+                event_type="synthesizing",
+                step_number=0,
+                data={"message": "Synthesizing answer from resolved facts..."}
+            ))
+
+            # Build synthesis context
+            resolved_context = "\n".join([
+                f"- {pid}: {p.value}" for pid, p in resolved_premises.items() if p and p.value
+            ])
+            inference_context = "\n".join([
+                f"- {inf['id']}: {inf['operation']}" for inf in inferences
+            ])
+
+            synthesis_prompt = f"""Based on the resolved premises and inference plan, provide the answer.
+
+Question: {claim}
+
+Resolved Premises:
+{resolved_context if resolved_context else "(no premises resolved)"}
+
+Inference Steps:
+{inference_context}
+
+Conclusion to derive: {conclusion}
+
+Provide a clear answer based on the available data. If premises are unresolved, explain what data is missing."""
+
+            synthesis_result = self.router.execute(
+                task_type=TaskType.SYNTHESIS,
+                system="You synthesize answers from resolved facts with full provenance.",
+                user_message=synthesis_prompt,
+                max_tokens=1500,
+            )
+
+            answer = synthesis_result.content
+            confidence = sum(p.confidence for p in resolved_premises.values() if p) / max(len(resolved_premises), 1)
+            derivation_trace = "\n".join(derivation_lines)
+
+            verify_result = {
+                "answer": answer,
+                "confidence": confidence,
+                "derivation": derivation_trace,
+                "sources": [{"type": p["source"], "description": p["description"]} for p in premises],
+            }
 
             duration_ms = int((time.time() - start_time) * 1000)
 
