@@ -639,7 +639,7 @@ class DataStore:
             return False
 
         # Store as a regular table (not internal)
-        self.store("execution_history", df)
+        self.save_dataframe("execution_history", df, step_number=0, description="Execution history with code and outputs")
         return True
 
     # --- Artifact catalog methods ---
