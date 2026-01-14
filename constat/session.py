@@ -2380,12 +2380,18 @@ NEW_REQUEST: <the new request, or NONE>
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
 
-        # Check if this follow-up suggests auditable mode
+        # Check if this follow-up suggests a different mode
         mode_selection = suggest_mode(question)
+
+        # KNOWLEDGE mode: explanation/knowledge requests don't need data analysis
+        if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
+            return self._solve_knowledge(question, mode_selection)
+
+        # AUDITABLE mode: verification questions need fact resolver
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
-            # Use fact resolver for verification questions
             return self._follow_up_auditable(question, mode_selection)
 
+        # Otherwise proceed with EXPLORATORY mode (planning + execution)
         # Check for unresolved facts and try to extract facts from user message
         unresolved = self.fact_resolver.get_unresolved_facts()
         extracted_facts = []
