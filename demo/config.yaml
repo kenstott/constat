@@ -107,3 +107,9 @@ execution:
     - datetime
     - statistics
     - polars
+    # Visualization libraries
+    - plotly
+    - altair
+    - matplotlib
+    - seaborn
+    - folium
