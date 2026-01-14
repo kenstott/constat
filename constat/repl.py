@@ -39,7 +39,7 @@ DISPLAY_OVERRIDE_PATTERNS = [
 REPL_COMMANDS = [
     "/help", "/h", "/tables", "/show", "/query", "/code", "/state",
     "/update", "/refresh", "/reset", "/user", "/save", "/share", "/sharewith",
-    "/plans", "/replay", "/history", "/resume",
+    "/plans", "/replay", "/history", "/sessions", "/resume", "/restore",
     "/context", "/compact", "/facts", "/remember", "/forget",
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts", "/quit", "/exit", "/q"
 ]
@@ -221,6 +221,7 @@ class InteractiveREPL:
             self.config,
             session_config=self.session_config,
             progress_callback=self.progress_callback,
+            user_id=self.user_id,
         )
         handler = SessionFeedbackHandler(self.display, self.session_config)
         session.on_event(handler.handle_event)
@@ -257,8 +258,8 @@ class InteractiveREPL:
             ("/sharewith <user> <name>", "Share plan with specific user"),
             ("/plans", "List saved plans"),
             ("/replay <name>", "Replay a saved plan"),
-            ("/history", "List recent sessions"),
-            ("/resume <id>", "Resume a previous session"),
+            ("/history, /sessions", "List your recent sessions"),
+            ("/resume, /restore <id>", "Resume a previous session"),
             ("/context", "Show context size and token usage"),
             ("/compact", "Compact context to reduce token usage"),
             ("/facts", "Show cached facts from this session"),
@@ -723,7 +724,7 @@ class InteractiveREPL:
         self.console.print(table)
 
     def _show_history(self) -> None:
-        """Show recent session history."""
+        """Show recent session history for current user."""
         if not self.session:
             self.session = self._create_session()
 
@@ -732,20 +733,23 @@ class InteractiveREPL:
             self.console.print("[dim]No session history.[/dim]")
             return
 
-        table = Table(title="Recent Sessions", show_header=True, box=None)
+        table = Table(title=f"Sessions for {self.user_id}", show_header=True, box=None)
         table.add_column("ID", style="cyan")
         table.add_column("Started")
+        table.add_column("Summary")
         table.add_column("Queries", justify="right")
         table.add_column("Status")
 
         for s in sessions:
             # Shorten ID for display
             short_id = s.session_id[:20] + "..." if len(s.session_id) > 20 else s.session_id
-            started = s.created_at if s.created_at else "?"
-            table.add_row(short_id, started, str(s.total_queries), s.status or "?")
+            started = s.created_at[:16] if s.created_at else "?"  # Truncate to date/time
+            # Truncate summary for table display
+            summary = s.summary[:40] + "..." if s.summary and len(s.summary) > 40 else (s.summary or "-")
+            table.add_row(short_id, started, summary, str(s.total_queries), s.status or "?")
 
         self.console.print(table)
-        self.console.print("[dim]Use /resume <id> to continue a session[/dim]")
+        self.console.print("[dim]Use /resume <id> or /restore <id> to continue a session[/dim]")
 
     def _resume_session(self, session_id: str) -> None:
         """Resume a previous session."""
@@ -865,9 +869,9 @@ class InteractiveREPL:
             self._list_plans()
         elif cmd == "/replay" and arg:
             self._replay_plan(arg)
-        elif cmd == "/history":
+        elif cmd in ("/history", "/sessions"):
             self._show_history()
-        elif cmd == "/resume" and arg:
+        elif cmd in ("/resume", "/restore") and arg:
             self._resume_session(arg)
         elif cmd == "/context":
             self._show_context()

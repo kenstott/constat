@@ -387,9 +387,11 @@ class Session:
         session_config: Optional[SessionConfig] = None,
         history: Optional[SessionHistory] = None,
         progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
+        user_id: Optional[str] = None,
     ):
         self.config = config
         self.session_config = session_config or SessionConfig()
+        self.user_id = user_id or "default"
 
         # Initialize components
         self.schema_manager = SchemaManager(config)
@@ -418,7 +420,7 @@ class Session:
             allowed_imports=config.execution.allowed_imports or None,
         )
 
-        self.history = history or SessionHistory()
+        self.history = history or SessionHistory(user_id=self.user_id)
 
         # Session state
         self.session_id: Optional[str] = None

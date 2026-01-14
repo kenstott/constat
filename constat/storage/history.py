@@ -43,6 +43,8 @@ class SessionSummary:
     status: str
     total_queries: int
     total_duration_ms: int
+    user_id: Optional[str] = None
+    summary: Optional[str] = None  # Brief description (usually first query)
 
 
 @dataclass
@@ -62,29 +64,41 @@ class SessionHistory:
     """
     Persist complete session state for review, debugging, and resumption.
 
-    Storage structure:
+    Storage structure (user-scoped):
         .constat/
-        ├── sessions/
-        │   ├── 2024-01-15_143022_abc123/
-        │   │   ├── session.json       # Metadata, config, timestamps
-        │   │   ├── queries.jsonl      # All queries in order
-        │   │   ├── artifacts/
-        │   │   │   ├── 001_code.py    # Generated code
-        │   │   │   ├── 001_output.txt # Execution output
-        │   │   │   └── ...
-        │   │   └── state.json         # Final state (for resumption)
+        ├── <user_id>/
+        │   ├── sessions/
+        │   │   ├── 2024-01-15_143022_abc123/
+        │   │   │   ├── session.json       # Metadata, config, timestamps
+        │   │   │   ├── queries.jsonl      # All queries in order
+        │   │   │   ├── artifacts/
+        │   │   │   │   ├── 001_code.py    # Generated code
+        │   │   │   │   ├── 001_output.txt # Execution output
+        │   │   │   │   └── ...
+        │   │   │   └── state.json         # Final state (for resumption)
     """
 
-    def __init__(self, storage_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        storage_dir: Optional[Path] = None,
+        user_id: Optional[str] = None,
+    ):
         """
         Initialize session history storage.
 
         Args:
-            storage_dir: Directory for session storage. Defaults to .constat/sessions
+            storage_dir: Base directory for storage. Defaults to .constat/
+            user_id: User ID for user-scoped storage. If provided, sessions are
+                    stored under <storage_dir>/<user_id>/sessions/
         """
         if storage_dir is None:
-            storage_dir = Path(".constat/sessions")
-        self.storage_dir = Path(storage_dir)
+            storage_dir = Path(".constat")
+
+        self.base_dir = Path(storage_dir)
+        self.user_id = user_id or "default"
+
+        # User-scoped storage directory
+        self.storage_dir = self.base_dir / self.user_id / "sessions"
 
     def _ensure_dir(self, path: Path) -> None:
         """Ensure directory exists."""
@@ -110,7 +124,15 @@ class SessionHistory:
         """Get the artifacts directory for a session."""
         return self._session_dir(session_id) / "artifacts"
 
-    def create_session(self, config_dict: dict, databases: list[str]) -> str:
+    def get_user_base_dir(self) -> Path:
+        """Get the base directory for this user (for outputs, etc.)."""
+        return self.base_dir / self.user_id
+
+    def create_session(
+        self,
+        config_dict: dict,
+        databases: list[str],
+    ) -> str:
         """
         Create a new session.
 
@@ -135,6 +157,8 @@ class SessionHistory:
             "status": "running",
             "total_queries": 0,
             "total_duration_ms": 0,
+            "user_id": self.user_id,
+            "summary": None,
         }
 
         with open(session_dir / "session.json", "w") as f:
@@ -184,6 +208,14 @@ class SessionHistory:
         query_id = metadata["total_queries"] + 1
         metadata["total_queries"] = query_id
         metadata["total_duration_ms"] += duration_ms
+
+        # Set summary from first query if not already set
+        if metadata.get("summary") is None and question:
+            # Truncate to first 100 chars for summary
+            summary = question[:100].strip()
+            if len(question) > 100:
+                summary += "..."
+            metadata["summary"] = summary
 
         # Create query record
         query_record = {
@@ -252,7 +284,7 @@ class SessionHistory:
 
     def list_sessions(self, limit: int = 20) -> list[SessionSummary]:
         """
-        List recent sessions with summary info.
+        List recent sessions for this user with summary info.
 
         Args:
             limit: Maximum number of sessions to return
@@ -264,10 +296,15 @@ class SessionHistory:
             return []
 
         sessions = []
-        for session_dir in sorted(self.storage_dir.iterdir(), reverse=True):
-            if not session_dir.is_dir():
-                continue
 
+        # List sessions in user's directory, sorted by name (timestamp) descending
+        session_dirs = sorted(
+            [d for d in self.storage_dir.iterdir() if d.is_dir()],
+            key=lambda x: x.name,
+            reverse=True,
+        )
+
+        for session_dir in session_dirs:
             session_file = session_dir / "session.json"
             if not session_file.exists():
                 continue
@@ -283,6 +320,8 @@ class SessionHistory:
                     status=metadata.get("status", "unknown"),
                     total_queries=metadata.get("total_queries", 0),
                     total_duration_ms=metadata.get("total_duration_ms", 0),
+                    user_id=metadata.get("user_id"),
+                    summary=metadata.get("summary"),
                 ))
 
                 if len(sessions) >= limit:

@@ -192,7 +192,8 @@ def repl(config: str, verbose: bool, problem: Optional[str]):
     default=10,
     help="Number of sessions to show.",
 )
-def history(limit: int):
+@click.option("--user", "-u", default="default", help="User ID to list sessions for")
+def history(limit: int, user: str):
     """List recent sessions.
 
     Shows session IDs, timestamps, and status for recent sessions.
@@ -200,7 +201,7 @@ def history(limit: int):
     """
     from constat.storage.history import SessionHistory
 
-    hist = SessionHistory()
+    hist = SessionHistory(user_id=user)
     sessions = hist.list_sessions(limit=limit)
 
     if not sessions:
