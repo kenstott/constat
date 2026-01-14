@@ -13,6 +13,7 @@ from constat.session import Session, SessionConfig
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
+from constat.storage.facts import FactStore
 
 
 # Display preference NL patterns
@@ -105,6 +106,7 @@ class InteractiveREPL:
         self.auto_resume = auto_resume
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
+        self.fact_store = FactStore(user_id=user_id)  # Persistent facts
 
         # Setup readline for tab completion
         self._readline_available = False
@@ -237,7 +239,27 @@ class InteractiveREPL:
         # Wire up clarification callback
         session.set_clarification_callback(self.display.request_clarification)
 
+        # Load persistent facts into the session
+        self._load_persistent_facts(session)
+
         return session
+
+    def _load_persistent_facts(self, session: Session) -> None:
+        """Load persistent facts into a session's fact resolver."""
+        persistent_facts = self.fact_store.list_facts()
+        if not persistent_facts:
+            return
+
+        for name, fact_data in persistent_facts.items():
+            try:
+                session.fact_resolver.add_user_fact(
+                    fact_name=name,
+                    value=fact_data.get("value"),
+                    reasoning="Loaded from persistent storage",
+                    description=fact_data.get("description", ""),
+                )
+            except Exception:
+                pass  # Skip facts that fail to load
 
     def _get_input(self) -> str:
         """Get user input with tab completion (readline)."""
@@ -830,71 +852,90 @@ class InteractiveREPL:
             self.console.print(f"[red]Error during compaction:[/red] {e}")
 
     def _show_facts(self) -> None:
-        """Show cached facts from the current session."""
-        if not self.session:
-            self.console.print("[yellow]No active session.[/yellow]")
+        """Show both persistent and session facts."""
+        # Get persistent facts
+        persistent_facts = self.fact_store.list_facts()
+
+        # Get session facts
+        session_facts = {}
+        if self.session:
+            session_facts = self.session.fact_resolver.get_all_facts()
+
+        if not persistent_facts and not session_facts:
+            self.console.print("[dim]No facts stored.[/dim]")
+            self.console.print("[dim]Use /remember to save facts that persist across sessions.[/dim]")
             return
 
-        facts = self.session.fact_resolver.get_all_facts()
-        if not facts:
-            self.console.print("[dim]No facts cached.[/dim]")
-            return
-
-        table = Table(title="Cached Facts", show_header=True, box=None)
+        table = Table(title="Facts", show_header=True, box=None)
         table.add_column("Name", style="cyan")
         table.add_column("Value", style="green")
         table.add_column("Description", style="dim")
         table.add_column("Source", style="dim")
 
-        for name, fact in facts.items():
+        # Show persistent facts first
+        for name, fact_data in persistent_facts.items():
+            value = fact_data.get("value", "")
+            desc = fact_data.get("description", "")
+            table.add_row(name, str(value), desc, "[bold]persistent[/bold]")
+
+        # Show session facts (skip if same name exists in persistent)
+        for name, fact in session_facts.items():
+            if name in persistent_facts:
+                continue  # Skip - persistent version shown above
+
             desc = fact.description or ""
             # Build specific source info with source_name
             if fact.source_name:
-                # Use specific source name (database name, document path, API name)
                 source_info = f"{fact.source.value}:{fact.source_name}"
-                # Add endpoint detail for APIs
                 if fact.api_endpoint:
                     source_info += f" ({fact.api_endpoint})"
             elif fact.api_endpoint:
-                # Show API endpoint
                 endpoint_preview = fact.api_endpoint[:50] + "..." if len(fact.api_endpoint) > 50 else fact.api_endpoint
                 source_info = f"api: {endpoint_preview}"
             elif fact.query:
-                # Show SQL query preview
                 query_preview = fact.query[:50] + "..." if len(fact.query) > 50 else fact.query
                 source_info = f"SQL: {query_preview}"
             elif fact.rule_name:
                 source_info = f"rule: {fact.rule_name}"
             elif fact.reasoning and fact.source.value == "user_provided":
-                # Show first 40 chars of reasoning for user facts
                 source_info = fact.reasoning[:40] + "..." if len(fact.reasoning) > 40 else fact.reasoning
             else:
-                source_info = fact.source.value
-            # Use display_value for concise table reference display
+                source_info = f"session:{fact.source.value}"
             table.add_row(name, fact.display_value, desc, source_info)
 
         self.console.print(table)
 
     def _remember_fact(self, fact_text: str) -> None:
-        """Remember a fact from user input (e.g., 'my role is CFO')."""
-        if not self.session:
-            self.console.print("[yellow]No active session.[/yellow]")
-            return
-
+        """Remember a fact persistently (survives across sessions)."""
         if not fact_text.strip():
             self.console.print("[yellow]Usage: /remember <fact>[/yellow]")
             self.console.print("[dim]Example: /remember my role is CFO[/dim]")
             return
 
-        # Use fact extraction to parse and store the fact
+        # Use session's fact resolver if available, otherwise use a lightweight LLM call
         self.display.start_spinner("Extracting fact...")
         try:
-            extracted = self.session.fact_resolver.add_user_facts_from_text(fact_text)
+            extracted = []
+            if self.session:
+                extracted = self.session.fact_resolver.add_user_facts_from_text(fact_text)
+            else:
+                # No session - do lightweight extraction
+                extracted = self._extract_fact_without_session(fact_text)
+
             self.display.stop_spinner()
 
             if extracted:
                 for fact in extracted:
-                    self.console.print(f"[green]Remembered:[/green] {fact.name} = {fact.value}")
+                    # Save to persistent store
+                    self.fact_store.save_fact(
+                        name=fact.name if hasattr(fact, 'name') else fact['name'],
+                        value=fact.value if hasattr(fact, 'value') else fact['value'],
+                        description=fact.description if hasattr(fact, 'description') else fact.get('description', ''),
+                    )
+                    name = fact.name if hasattr(fact, 'name') else fact['name']
+                    value = fact.value if hasattr(fact, 'value') else fact['value']
+                    self.console.print(f"[green]Remembered:[/green] {name} = {value}")
+                    self.console.print("[dim]This fact will persist across sessions.[/dim]")
             else:
                 self.console.print("[yellow]Could not extract a fact from that text.[/yellow]")
                 self.console.print("[dim]Try being more explicit, e.g., 'my role is CFO'[/dim]")
@@ -903,27 +944,57 @@ class InteractiveREPL:
             self.display.stop_spinner()
             self.console.print(f"[red]Error:[/red] {e}")
 
-    def _forget_fact(self, fact_name: str) -> None:
-        """Forget a cached fact by name."""
-        if not self.session:
-            self.console.print("[yellow]No active session.[/yellow]")
-            return
+    def _extract_fact_without_session(self, text: str) -> list[dict]:
+        """Extract facts from text without an active session (lightweight)."""
+        # Simple pattern matching for common fact patterns
+        import re
 
+        patterns = [
+            # "my X is Y" pattern
+            (r"my\s+(\w+)\s+is\s+(.+)", lambda m: {"name": f"user_{m.group(1)}", "value": m.group(2).strip(), "description": f"User's {m.group(1)}"}),
+            # "I am a X" pattern
+            (r"i\s+am\s+(?:a|an)\s+(.+)", lambda m: {"name": "user_role", "value": m.group(1).strip(), "description": "User's role"}),
+            # "X = Y" pattern
+            (r"(\w+)\s*=\s*(.+)", lambda m: {"name": m.group(1).strip(), "value": m.group(2).strip(), "description": ""}),
+            # "X is Y" pattern (generic)
+            (r"(\w+(?:\s+\w+)?)\s+is\s+(.+)", lambda m: {"name": m.group(1).strip().replace(" ", "_"), "value": m.group(2).strip(), "description": ""}),
+        ]
+
+        text_lower = text.lower()
+        for pattern, extractor in patterns:
+            match = re.search(pattern, text_lower, re.IGNORECASE)
+            if match:
+                return [extractor(match)]
+
+        return []
+
+    def _forget_fact(self, fact_name: str) -> None:
+        """Forget a fact by name (checks both persistent and session)."""
         if not fact_name.strip():
             self.console.print("[yellow]Usage: /forget <fact_name>[/yellow]")
             self.console.print("[dim]Use /facts to see fact names[/dim]")
             return
 
-        # Check if fact exists
-        facts = self.session.fact_resolver.get_all_facts()
-        if fact_name not in facts:
+        fact_name = fact_name.strip()
+        found = False
+
+        # Check persistent facts first
+        if self.fact_store.delete_fact(fact_name):
+            self.console.print(f"[green]Forgot persistent fact:[/green] {fact_name}")
+            found = True
+
+        # Also remove from session if exists
+        if self.session:
+            facts = self.session.fact_resolver.get_all_facts()
+            if fact_name in facts:
+                self.session.fact_resolver._cache.pop(fact_name, None)
+                if not found:
+                    self.console.print(f"[green]Forgot session fact:[/green] {fact_name}")
+                found = True
+
+        if not found:
             self.console.print(f"[yellow]Fact '{fact_name}' not found.[/yellow]")
             self.console.print("[dim]Use /facts to see available facts[/dim]")
-            return
-
-        # Remove from cache
-        self.session.fact_resolver._cache.pop(fact_name, None)
-        self.console.print(f"[green]Forgot:[/green] {fact_name}")
 
     def _toggle_verbose(self, arg: str = "") -> None:
         """Toggle or set verbose mode on/off."""
@@ -1327,6 +1398,13 @@ class InteractiveREPL:
             if result.get("meta_response"):
                 self.display.show_output(result.get("output", ""))
                 # Store and show suggestions from meta responses (example questions)
+                self.suggestions = result.get("suggestions", [])
+                if self.suggestions:
+                    self.display.show_suggestions(self.suggestions)
+                self.display.show_summary(success=True, total_steps=0, duration_ms=0)
+            elif result.get("mode") == "knowledge":
+                # KNOWLEDGE mode - display output directly (no step artifacts)
+                self.display.show_output(result.get("output", ""))
                 self.suggestions = result.get("suggestions", [])
                 if self.suggestions:
                     self.display.show_suggestions(self.suggestions)

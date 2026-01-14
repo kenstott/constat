@@ -551,6 +551,7 @@ class ExecutionConfig(BaseModel):
     max_retries: int = 10
     allowed_imports: list[str] = Field(default_factory=list)
     print_file_refs: bool = True  # Print file:// URIs for saved files (set False for React UI)
+    open_with_system_viewer: bool = False  # Auto-open saved files in the OS default app
 
 
 class EmailConfig(BaseModel):

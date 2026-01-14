@@ -432,3 +432,31 @@ class FileConnector:
             return f"pd.read_feather('{self.path}')"
         else:
             return f"# Unknown file type: {self.file_type}"
+
+    def load(self, **kwargs):
+        """Load the file data as a pandas DataFrame.
+
+        This is the primary method for accessing file data in generated code.
+        Additional kwargs are passed to the underlying pandas read function.
+
+        Returns:
+            pandas.DataFrame: The file data
+
+        Example:
+            df = db_events.load()
+            df = db_events.load(nrows=1000)  # Load only first 1000 rows
+        """
+        import pandas as pd
+
+        if self.file_type == FileType.CSV:
+            return pd.read_csv(self.path, **kwargs)
+        elif self.file_type == FileType.JSON:
+            return pd.read_json(self.path, **kwargs)
+        elif self.file_type == FileType.JSONL:
+            return pd.read_json(self.path, lines=True, **kwargs)
+        elif self.file_type == FileType.PARQUET:
+            return pd.read_parquet(self.path, **kwargs)
+        elif self.file_type in (FileType.ARROW, FileType.FEATHER):
+            return pd.read_feather(self.path, **kwargs)
+        else:
+            raise ValueError(f"Unsupported file type: {self.file_type}")

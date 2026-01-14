@@ -27,6 +27,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
+import sys
+import subprocess
 
 if TYPE_CHECKING:
     from constat.storage.datastore import DataStore
@@ -90,6 +92,7 @@ class VisualizationHelper:
         output_dir: Directory where files are saved
         datastore: DataStore for artifact registration (optional)
         print_file_refs: Whether to print file:// URIs (True for CLI, False for React UI)
+        open_with_system_viewer: Auto-open saved files in system default app if True
         session_id: Session ID for organizing outputs
     """
 
@@ -102,6 +105,7 @@ class VisualizationHelper:
         session_id: Optional[str] = None,
         user_id: str = "default",
         registry: Optional["ConstatRegistry"] = None,
+        open_with_system_viewer: bool = False,
     ):
         """Initialize the output helper.
 
@@ -115,10 +119,12 @@ class VisualizationHelper:
             session_id: Session ID for organizing outputs by session
             user_id: User ID for user-scoped storage (default: "default")
             registry: Central registry for artifact tracking (optional)
+            open_with_system_viewer: If True, auto-open saved files in the OS default app
         """
         self.session_id = session_id
         self.user_id = user_id
         self.registry = registry
+        self.open_with_system_viewer = open_with_system_viewer
 
         if output_dir is None:
             # Use session directory under user-scoped storage
@@ -145,24 +151,54 @@ class VisualizationHelper:
         """Convert a path to a file:// URI for clickable terminal links."""
         return path.resolve().as_uri()
 
+    def _open_in_system_viewer(self, filepath: Path) -> None:
+        """Open the file in the OS default application (non-blocking)."""
+        try:
+            path_str = str(filepath.resolve())
+            if sys.platform.startswith("darwin"):
+                # macOS
+                subprocess.Popen(["open", path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sys.platform.startswith("win"):
+                # Windows
+                try:
+                    os.startfile(path_str)  # type: ignore[attr-defined]
+                except AttributeError:
+                    subprocess.Popen(["cmd", "/c", "start", "", path_str], shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # Linux / other Unix
+                subprocess.Popen(["xdg-open", path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            # Swallow errors; printing is handled by caller
+            raise
+
     def _print_ref(self, label: str, filepath: Path, description: str = "") -> None:
         """Print file reference or collect for later display.
 
         In REPL mode, outputs are collected and displayed in an "Outputs:" section
         at the end of execution rather than printed inline.
         """
-        if not self.print_file_refs:
+        if not self.print_file_refs and not self.open_with_system_viewer:
             return
 
         file_uri = self._file_uri(filepath)
         desc = description or label
 
-        if is_repl_mode():
-            # Collect for later display in REPL
-            add_pending_output(file_uri, desc, filepath.suffix.lstrip("."))
-        else:
-            # Direct print for non-REPL contexts
-            print(f"{label}: {file_uri}")
+        # Optionally open with system viewer to bypass IDE interception of file:// links
+        if self.open_with_system_viewer:
+            try:
+                self._open_in_system_viewer(filepath)
+            except Exception as e:
+                # Non-fatal; continue to print refs if requested
+                if self.print_file_refs:
+                    print(f"Note: Could not auto-open file in system viewer: {e}")
+
+        if self.print_file_refs:
+            if is_repl_mode():
+                # Collect for later display in REPL
+                add_pending_output(file_uri, desc, filepath.suffix.lstrip("."))
+            else:
+                # Direct print for non-REPL contexts
+                print(f"{label}: {file_uri}")
 
     def _register_artifact(
         self,
@@ -473,6 +509,7 @@ def create_viz_helper(
     session_id: Optional[str] = None,
     user_id: str = "default",
     registry: Optional["ConstatRegistry"] = None,
+    open_with_system_viewer: bool = False,
 ) -> VisualizationHelper:
     """Create a VisualizationHelper instance.
 
@@ -499,4 +536,5 @@ def create_viz_helper(
         session_id=session_id,
         user_id=user_id,
         registry=registry,
+        open_with_system_viewer=open_with_system_viewer,
     )

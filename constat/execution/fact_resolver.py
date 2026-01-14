@@ -278,6 +278,18 @@ class FactResolver:
         param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
         return f"{fact_name}({param_str})"
 
+    def get_fact(self, name: str) -> Optional[Fact]:
+        """
+        Get a specific fact by name.
+
+        Args:
+            name: The fact name to retrieve
+
+        Returns:
+            The Fact object if found, None otherwise
+        """
+        return self._cache.get(name)
+
     def get_all_facts(self) -> dict[str, Fact]:
         """
         Get all cached facts.

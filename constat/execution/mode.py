@@ -62,32 +62,30 @@ class ExecutionMode(Enum):
 
 
 # Keywords that suggest knowledge/explanation mode (no data analysis needed)
+# NOTE: Be VERY conservative here - false positives send data questions to
+# knowledge mode which can't answer them. Better to miss some knowledge
+# questions than to break data queries.
 KNOWLEDGE_KEYWORDS = [
-    # Explanation requests
-    "explain",
-    "describe",
-    "what is",
-    "what are",
-    "how does",
-    "how do",
-    "tell me about",
+    # Explicit explanation requests (with articles suggesting conceptual questions)
+    "explain what",
+    "explain how",
+    "explain the concept",
+    "what is a ",  # Note trailing space: "what is a X" (definition) not "what is the X" (data)
+    "what is an ",
+    "what are the differences",
+    "what does .* mean",
+    "tell me about the concept",
     "definition of",
-    "define",
-    # Process/procedure questions
-    "process",
-    "procedure",
-    "workflow",
-    "steps for",
-    "how to",
-    # Policy/rule lookups
-    "policy",
-    "rule",
-    "guideline",
-    "requirement",
-    # Overview requests (without data)
-    "overview of",
-    "introduction to",
-    "background on",
+    # Policy/rule lookups (specific enough to not match data questions)
+    "company policy",
+    "our policy",
+    "the policy",
+    "guideline for",
+    "guidelines for",
+    # Overview requests (with "the" to avoid matching data queries)
+    "overview of the",
+    "introduction to the",
+    "background on the",
 ]
 
 # Keywords that suggest auditable mode is needed

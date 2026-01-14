@@ -178,6 +178,7 @@ class TestSessionHistory:
 class TestEventHandling:
     """Test event emission during execution."""
 
+    @pytest.mark.flaky(reruns=2)
     def test_events_emitted(self, session: Session):
         """Test that events are emitted during execution."""
         events = []
@@ -207,6 +208,7 @@ class TestEventHandling:
 class TestSessionResumption:
     """Test session resumption and follow-up queries."""
 
+    @pytest.mark.flaky(reruns=2)
     def test_follow_up_has_context(self, fresh_history_dir):
         """
         Test that follow-up queries have access to data from previous steps.

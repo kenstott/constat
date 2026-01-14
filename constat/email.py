@@ -5,11 +5,51 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 import pandas as pd
 import io
 
 from constat.core.config import EmailConfig
+
+
+# Basic email-safe CSS for rendered Markdown
+EMAIL_CSS = """
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.5; color: #333; }
+h1, h2, h3 { color: #2c3e50; margin-top: 1em; margin-bottom: 0.5em; }
+p { margin: 0.5em 0; }
+ul, ol { margin: 0.5em 0; padding-left: 1.5em; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background-color: #f5f5f5; }
+code { background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+pre { background-color: #f4f4f4; padding: 1em; border-radius: 5px; overflow-x: auto; }
+blockquote { border-left: 4px solid #ddd; margin: 1em 0; padding-left: 1em; color: #666; }
+</style>
+"""
+
+
+def markdown_to_html(text: str) -> str:
+    """Convert Markdown text to HTML with email-safe styling.
+
+    Args:
+        text: Markdown formatted text
+
+    Returns:
+        HTML string with inline-friendly CSS
+    """
+    try:
+        import markdown
+        html_body = markdown.markdown(
+            text,
+            extensions=['tables', 'fenced_code', 'nl2br']
+        )
+        return f"<!DOCTYPE html><html><head>{EMAIL_CSS}</head><body>{html_body}</body></html>"
+    except ImportError:
+        # Fall back to basic HTML wrapping if markdown not installed
+        escaped = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        html_body = f"<pre>{escaped}</pre>"
+        return f"<!DOCTYPE html><html><head>{EMAIL_CSS}</head><body>{html_body}</body></html>"
 
 
 class EmailSender:
@@ -109,6 +149,7 @@ def create_send_email(config: Optional[EmailConfig]):
             to: str,
             subject: str,
             body: str,
+            format: Literal["plain", "markdown", "html"] = "plain",
             html: bool = False,
             df: Optional[pd.DataFrame] = None,
             attachment_name: str = "data.csv",
@@ -132,7 +173,8 @@ def create_send_email(config: Optional[EmailConfig]):
         to: str,
         subject: str,
         body: str,
-        html: bool = False,
+        format: Literal["plain", "markdown", "html"] = "plain",
+        html: bool = False,  # Deprecated, use format="html" instead
         df: Optional[pd.DataFrame] = None,
         attachment_name: str = "data.csv",
     ) -> bool:
@@ -142,8 +184,12 @@ def create_send_email(config: Optional[EmailConfig]):
         Args:
             to: Recipient email address (can be comma-separated for multiple)
             subject: Email subject line
-            body: Email body text
-            html: If True, body is treated as HTML
+            body: Email body text (plain text, Markdown, or HTML)
+            format: Body format - "plain" (default), "markdown", or "html"
+                - "plain": Send as plain text
+                - "markdown": Convert Markdown to styled HTML
+                - "html": Send body as raw HTML
+            html: DEPRECATED - use format="html" instead
             df: Optional DataFrame to attach as CSV
             attachment_name: Filename for the DataFrame attachment
 
@@ -151,11 +197,29 @@ def create_send_email(config: Optional[EmailConfig]):
             True if sent successfully, False otherwise
 
         Example:
+            # Plain text email
             send_email(
                 to="alice@example.com",
                 subject="Monthly Report",
                 body="Please find the report attached.",
                 df=report_df,
+            )
+
+            # Markdown formatted email
+            send_email(
+                to="team@example.com",
+                subject="Weekly Summary",
+                body=\"\"\"# Weekly Summary
+
+## Key Metrics
+- Revenue: $1.2M
+- Orders: 450
+
+## Action Items
+1. Review pending orders
+2. Update forecasts
+\"\"\",
+                format="markdown",
             )
         """
         recipients = [addr.strip() for addr in to.split(",")]
@@ -168,11 +232,21 @@ def create_send_email(config: Optional[EmailConfig]):
             csv_data = csv_buffer.getvalue().encode("utf-8")
             attachments = [(attachment_name, csv_data, "text/csv")]
 
+        # Handle format conversion
+        send_as_html = html  # Support deprecated html parameter
+        final_body = body
+
+        if format == "markdown":
+            final_body = markdown_to_html(body)
+            send_as_html = True
+        elif format == "html":
+            send_as_html = True
+
         return sender.send(
             to=recipients,
             subject=subject,
-            body=body,
-            html=html,
+            body=final_body,
+            html=send_as_html,
             attachments=attachments,
         )
 

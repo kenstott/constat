@@ -45,7 +45,12 @@ def mock_console():
 @pytest.fixture
 def repl(mock_config, mock_console):
     """Create an InteractiveREPL with mocked dependencies."""
-    with patch('constat.repl.FeedbackDisplay'):
+    with patch('constat.repl.FeedbackDisplay'), \
+         patch('constat.repl.FactStore') as mock_fact_store_class:
+        # Mock FactStore to return empty facts by default
+        mock_fact_store = Mock()
+        mock_fact_store.list_facts.return_value = {}
+        mock_fact_store_class.return_value = mock_fact_store
         repl = InteractiveREPL(
             config=mock_config,
             verbose=False,
@@ -256,13 +261,14 @@ class TestFactsCommand:
     """Tests for /facts command."""
 
     def test_facts_no_session(self, repl, mock_console):
-        """Test /facts with no active session."""
+        """Test /facts with no active session shows message about /remember."""
         repl.session = None
 
         repl._show_facts()
 
         call_args = str(mock_console.print.call_args)
-        assert "No active session" in call_args
+        # With no session and no persistent facts, shows hint about /remember
+        assert "/remember" in call_args
 
     def test_facts_shows_cached_facts(self, repl, mock_console):
         """Test /facts displays cached facts."""
@@ -293,7 +299,8 @@ class TestFactsCommand:
         repl._show_facts()
 
         call_args = str(mock_console.print.call_args)
-        assert "No facts cached" in call_args
+        # With no persistent or session facts, shows hint about /remember
+        assert "/remember" in call_args
 
 
 class TestHistoryCommand:

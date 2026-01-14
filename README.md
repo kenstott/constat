@@ -334,7 +334,9 @@ Once in the interactive REPL, these commands are available:
 | `/show <table>` | Show table contents |
 | `/query <sql>` | Run SQL on datastore |
 | `/code [step]` | Show generated code |
-| `/facts` | Show cached facts |
+| `/facts` | Show cached facts (persistent + session) |
+| `/remember <fact>` | Save a fact that persists across sessions |
+| `/forget <name>` | Remove a persistent or session fact |
 | `/insights [on\|off]` | Toggle insight synthesis |
 | `/preferences` | Show current settings |
 | `/verbose` | Toggle verbose mode |

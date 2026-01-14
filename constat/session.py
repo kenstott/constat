@@ -54,6 +54,23 @@ META_QUESTION_PATTERNS = [
     "any analyses",
     "ideas for",
     "what would you",
+    # Reasoning methodology questions
+    "how do you reason",
+    "how do you think",
+    "how do you work",
+    "reasoning process",
+    "methodology",
+    "how does this work",
+    "how does constat",
+    "how does vera",
+    # Differentiator questions
+    "what makes",
+    "what's different",
+    "unique about",
+    "special about",
+    "why constat",
+    "why use constat",
+    "why vera",
     # Personal questions about Vera
     "who are you",
     "what are you",
@@ -1024,9 +1041,14 @@ class Session:
         # First, use fast regex-based classification for obvious meta-questions
         # This avoids an LLM call for simple cases like "what can you do?"
         if is_meta_question(problem):
-            # Even for meta-questions, we still want to extract facts
-            # e.g., "what questions can I ask as CFO" contains user_role=CFO
-            pass  # Fall through to combined LLM analysis
+            # Return immediately for meta-questions - no LLM classification needed
+            # Note: We skip fact extraction here for efficiency. Most meta-questions
+            # like "how do you reason" don't contain extractable facts anyway.
+            return QuestionAnalysis(
+                question_type=QuestionType.META_QUESTION,
+                extracted_facts=[],
+                cached_fact_answer=None,
+            )
 
         # Get cached facts for context
         cached_facts = self.fact_resolver.get_all_facts()

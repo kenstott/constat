@@ -869,7 +869,8 @@ class FeedbackDisplay:
         # Clean up output: strip trailing whitespace and collapse multiple blank lines
         cleaned = re.sub(r'\n{3,}', '\n\n', output.rstrip())
         self.console.print()
-        self.console.print(Markdown(_left_align_markdown(cleaned)), end="")
+        self.console.print(Markdown(_left_align_markdown(cleaned)))
+        self.console.print()  # One blank line after output
 
     def show_final_answer(self, answer: str) -> None:
         """Show the final synthesized answer prominently."""
@@ -883,8 +884,7 @@ class FeedbackDisplay:
         if not suggestions:
             return
 
-        # One blank line before suggestions (note: Markdown output may already end with a blank line)
-        self.console.print()
+        # No extra blank line - caller (show_output) handles spacing
         if len(suggestions) == 1:
             self.console.print(f"[dim]Suggestion:[/dim] [cyan]{suggestions[0]}[/cyan]")
         else:
