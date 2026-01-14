@@ -308,3 +308,207 @@ class TestAPIExecutorIntegration:
         )
         assert "countries" in data
         assert len(data["countries"]) > 0
+
+
+class TestGraphQLErrorHandling:
+    """Tests for GraphQL error response handling per spec."""
+
+    @pytest.fixture
+    def executor_with_mock(self):
+        """Create executor that we can test with mocked responses."""
+        from unittest.mock import patch, MagicMock
+        config = Config(
+            apis={
+                "test": APIConfig(
+                    type="graphql",
+                    url="https://test.example.com/graphql",
+                ),
+            }
+        )
+        return APIExecutor(config)
+
+    def test_errors_with_empty_data_raises_exception(self, executor_with_mock):
+        """Test: errors present + data empty/null = raise exception for retry."""
+        from unittest.mock import patch, MagicMock
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": {"countries": []},
+            "errors": [{"message": "Invalid filter: currency field not found"}]
+        }
+
+        with patch.object(executor_with_mock.client, 'post', return_value=mock_response):
+            with pytest.raises(APIExecutionError) as exc_info:
+                executor_with_mock.execute_graphql("test", "{ countries { name } }")
+
+            assert "no data returned" in str(exc_info.value)
+            assert "Invalid filter" in str(exc_info.value)
+
+    def test_errors_with_null_data_raises_exception(self, executor_with_mock):
+        """Test: errors present + data null = raise exception for retry."""
+        from unittest.mock import patch, MagicMock
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": None,
+            "errors": [{"message": "Syntax error in query"}]
+        }
+
+        with patch.object(executor_with_mock.client, 'post', return_value=mock_response):
+            with pytest.raises(APIExecutionError) as exc_info:
+                executor_with_mock.execute_graphql("test", "{ invalid }")
+
+            assert "no data returned" in str(exc_info.value)
+            assert "Syntax error" in str(exc_info.value)
+
+    def test_errors_with_partial_data_returns_data_with_warning(self, executor_with_mock, caplog):
+        """Test: errors present + some data = return data (partial response)."""
+        from unittest.mock import patch, MagicMock
+        import logging
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": {
+                "countries": [{"name": "Germany"}, {"name": "France"}],
+                "failing_field": None  # This field failed
+            },
+            "errors": [{"message": "Field 'failing_field' resolver error"}]
+        }
+
+        with patch.object(executor_with_mock.client, 'post', return_value=mock_response):
+            with caplog.at_level(logging.WARNING):
+                result = executor_with_mock.execute_graphql("test", "{ countries { name } failing_field }")
+
+            # Should return the data
+            assert "countries" in result
+            assert len(result["countries"]) == 2
+
+            # Should log a warning about partial response
+            assert "partial response" in caplog.text.lower()
+
+    def test_no_errors_returns_data_normally(self, executor_with_mock):
+        """Test: no errors = return data normally."""
+        from unittest.mock import patch, MagicMock
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": {"countries": [{"name": "Germany"}]}
+        }
+
+        with patch.object(executor_with_mock.client, 'post', return_value=mock_response):
+            result = executor_with_mock.execute_graphql("test", "{ countries { name } }")
+
+        assert "countries" in result
+        assert result["countries"][0]["name"] == "Germany"
+
+    def test_empty_data_without_errors_returns_empty(self, executor_with_mock):
+        """Test: empty data + no errors = return empty (valid empty result)."""
+        from unittest.mock import patch, MagicMock
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": {"countries": []}  # Legitimate empty result
+        }
+
+        with patch.object(executor_with_mock.client, 'post', return_value=mock_response):
+            result = executor_with_mock.execute_graphql("test", "{ countries(filter: {code: {eq: \"XX\"}}) { name } }")
+
+        # Should return the empty result without error
+        assert "countries" in result
+        assert result["countries"] == []
+
+
+class TestHTTPErrorClassification:
+    """Tests for HTTP error classification and retry hints."""
+
+    def test_401_not_retryable(self):
+        """Auth errors should not be retryable."""
+        from constat.catalog.api_executor import classify_http_error
+        retryable, hint = classify_http_error(401)
+        assert retryable is False
+        assert "Authentication" in hint
+
+    def test_403_not_retryable(self):
+        """Permission errors should not be retryable."""
+        from constat.catalog.api_executor import classify_http_error
+        retryable, hint = classify_http_error(403)
+        assert retryable is False
+        assert "Permission" in hint
+
+    def test_404_retryable(self):
+        """Not found errors may be retryable with different params."""
+        from constat.catalog.api_executor import classify_http_error
+        retryable, hint = classify_http_error(404)
+        assert retryable is True
+        assert "not found" in hint.lower()
+
+    def test_500_retryable(self):
+        """Server errors should be retryable (transient)."""
+        from constat.catalog.api_executor import classify_http_error
+        retryable, hint = classify_http_error(500)
+        assert retryable is True
+        assert "transient" in hint.lower()
+
+    def test_429_retryable(self):
+        """Rate limit errors should be retryable."""
+        from constat.catalog.api_executor import classify_http_error
+        retryable, hint = classify_http_error(429)
+        assert retryable is True
+        assert "rate" in hint.lower()
+
+    def test_rest_error_includes_retry_hint(self):
+        """REST errors should include retry hint in exception."""
+        from unittest.mock import patch, MagicMock
+        from constat.catalog.api_executor import APIExecutor, APIExecutionError
+
+        config = Config(
+            apis={
+                "test": APIConfig(
+                    type="openapi",
+                    url="https://test.example.com/api",
+                ),
+            }
+        )
+        executor = APIExecutor(config)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.text = "Not found"
+
+        with patch.object(executor.client, 'get', return_value=mock_response):
+            with pytest.raises(APIExecutionError) as exc_info:
+                executor.execute_rest("test", "/users/123")
+
+            assert exc_info.value.retryable is True
+            assert exc_info.value.retry_hint is not None
+            assert "not found" in exc_info.value.retry_hint.lower()
+
+    def test_auth_error_not_retryable_in_exception(self):
+        """Auth errors should have retryable=False in exception."""
+        from unittest.mock import patch, MagicMock
+        from constat.catalog.api_executor import APIExecutor, APIExecutionError
+
+        config = Config(
+            apis={
+                "test": APIConfig(
+                    type="openapi",
+                    url="https://test.example.com/api",
+                ),
+            }
+        )
+        executor = APIExecutor(config)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = "Unauthorized"
+
+        with patch.object(executor.client, 'get', return_value=mock_response):
+            with pytest.raises(APIExecutionError) as exc_info:
+                executor.execute_rest("test", "/users")
+
+            assert exc_info.value.retryable is False

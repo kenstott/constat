@@ -25,6 +25,7 @@ Usage:
 """
 
 import json
+import logging
 from typing import Any, Optional
 from urllib.parse import urljoin, urlencode
 
@@ -35,10 +36,67 @@ from constat.core.config import Config, APIConfig
 
 class APIExecutionError(Exception):
     """Raised when an API call fails."""
-    def __init__(self, message: str, status_code: Optional[int] = None, response_body: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        response_body: Optional[str] = None,
+        retryable: bool = True,
+        retry_hint: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+        self.retryable = retryable
+        self.retry_hint = retry_hint
+
+
+def classify_http_error(status_code: int, response_body: str = "") -> tuple[bool, str]:
+    """
+    Classify HTTP error by status code to determine retry strategy.
+
+    Returns:
+        (retryable, retry_hint) tuple with guidance for LLM code generation.
+    """
+    # Auth errors - NOT retryable (credentials won't change)
+    if status_code == 401:
+        return False, "Authentication failed. Check API credentials in config."
+    if status_code == 403:
+        return False, "Permission denied. The API key may lack required permissions."
+
+    # Client errors that might be fixable with different params
+    if status_code == 400:
+        return True, "Bad request - check query parameters, request body format, or field names."
+    if status_code == 404:
+        return True, "Resource not found - check path parameters, IDs, or endpoint path. The resource may not exist."
+    if status_code == 405:
+        return False, "HTTP method not allowed. Check the correct method (GET/POST/PUT/DELETE) for this endpoint."
+    if status_code == 422:
+        return True, "Validation error - check field types, required fields, or data constraints."
+
+    # Rate limiting - retryable but may need delay
+    if status_code == 429:
+        return True, "Rate limited. Consider reducing request frequency or adding delays."
+
+    # Server errors - potentially transient, worth one retry
+    if status_code >= 500:
+        if status_code == 500:
+            return True, "Internal server error (transient). Retry once - if it persists, the API may have issues."
+        if status_code == 502:
+            return True, "Bad gateway (transient). The upstream server may be temporarily unavailable."
+        if status_code == 503:
+            return True, "Service unavailable (transient). The API may be under maintenance or overloaded."
+        if status_code == 504:
+            return True, "Gateway timeout (transient). The request took too long - try simplifying the query."
+        # Other 5xx errors
+        return True, f"Server error {status_code} (possibly transient). Retry once."
+
+    # Other 4xx errors - generally retryable with fixes
+    if status_code >= 400:
+        return True, f"Client error {status_code}. Check the request parameters and format."
+
+    # Shouldn't reach here for errors, but default to retryable
+    return True, f"Unexpected status {status_code}."
 
 
 class APIExecutor:
@@ -162,10 +220,13 @@ class APIExecutor:
             raise APIExecutionError(f"Request to {api_config.url} failed: {e}")
 
         if response.status_code != 200:
+            retryable, retry_hint = classify_http_error(response.status_code, response.text)
             raise APIExecutionError(
-                f"GraphQL request failed with status {response.status_code}",
+                f"GraphQL request failed with status {response.status_code}. {retry_hint}",
                 status_code=response.status_code,
                 response_body=response.text,
+                retryable=retryable,
+                retry_hint=retry_hint,
             )
 
         try:
@@ -176,15 +237,38 @@ class APIExecutor:
                 response_body=response.text,
             )
 
-        # Check for GraphQL errors
-        if "errors" in result and result["errors"]:
-            error_messages = [e.get("message", str(e)) for e in result["errors"]]
-            raise APIExecutionError(
-                f"GraphQL errors: {'; '.join(error_messages)}",
-                response_body=json.dumps(result),
+        # Check for GraphQL errors per spec (https://graphql.org/learn/response/)
+        # Response can have: data only (success), errors only (request error),
+        # or both (partial response with field errors)
+        data = result.get("data")
+        errors = result.get("errors")
+
+        if errors:
+            error_messages = [e.get("message", str(e)) for e in errors]
+            error_str = "; ".join(error_messages)
+
+            # Check if data is empty/null (complete failure) vs has content (partial success)
+            data_is_empty = (
+                data is None
+                or data == {}
+                or (isinstance(data, dict) and all(
+                    v is None or v == [] or v == {}
+                    for v in data.values()
+                ))
             )
 
-        return result.get("data", {})
+            if data_is_empty:
+                # Complete failure: no usable data returned, raise for retry
+                raise APIExecutionError(
+                    f"GraphQL errors (no data returned): {error_str}",
+                    response_body=json.dumps(result),
+                )
+            else:
+                # Partial success: some data returned with field errors
+                # Log warning but return the data - let caller decide
+                logging.warning(f"GraphQL partial response - errors present but data returned: {error_str}")
+
+        return data if data is not None else {}
 
     def execute_rest(
         self,
@@ -256,10 +340,13 @@ class APIExecutor:
             raise APIExecutionError(f"Request to {url} failed: {e}")
 
         if response.status_code >= 400:
+            retryable, retry_hint = classify_http_error(response.status_code, response.text)
             raise APIExecutionError(
-                f"REST request failed with status {response.status_code}",
+                f"REST request failed with status {response.status_code}. {retry_hint}",
                 status_code=response.status_code,
                 response_body=response.text,
+                retryable=retryable,
+                retry_hint=retry_hint,
             )
 
         # Parse response
