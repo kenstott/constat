@@ -3603,7 +3603,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                 name=fact_name,
                                 value=f"{row_count} rows retrieved",
                                 confidence=0.9,
-                                source=FactSource.SQL,
+                                source=FactSource.DATABASE,
                                 query=sql,
                             )
                             # Store result in datastore for later use
