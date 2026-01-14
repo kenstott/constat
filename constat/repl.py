@@ -2,7 +2,6 @@
 
 from typing import Optional
 from rich.console import Console
-from rich.control import Control
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
@@ -763,8 +762,7 @@ class InteractiveREPL:
             # Clean up display state on interrupt
             self.display.stop()
             self.display.stop_spinner()
-            # Clear current line to remove any partial output
-            self.console.print(Control.clear_line())
+            # Print interrupt message on new line
             self.console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
             self.display.stop()
@@ -789,11 +787,10 @@ class InteractiveREPL:
         else:
             hints = "[dim]Ctrl+C[/dim] interrupts"
         self.console.print(Panel.fit(
-            "[bold blue]Constat[/bold blue] [dim]— Multi-Step AI Reasoning Agent[/dim]\n"
-            "[dim](Latin: \"it is established\")[/dim]\n"
-            "─" * 50 + "\n"
             "[white]Hi, I'm [bold]Vera[/bold], your truthful data analyst.[/white]\n"
             "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]\n"
+            "\n"
+            "[dim]Powered by [bold blue]Constat[/bold blue] [italic](Latin: \"it is established\")[/italic] — Multi-Step AI Reasoning Agent[/dim]\n"
             f"[dim]Type /help for commands, or ask a question.[/dim] | {hints}",
             border_style="blue",
         ))
