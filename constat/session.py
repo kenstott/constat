@@ -3662,7 +3662,124 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         }
                     ))
 
-            # Step 3: Synthesize answer from resolved premises and inferences
+            # Step 3: Execute inferences using the resolved premises
+            resolved_inferences = {}
+            inference_lines = ["**Inference Execution:**", ""]
+
+            for idx, inf in enumerate(inferences):
+                inf_id = inf['id']
+                operation = inf['operation']
+                explanation = inf.get('explanation', '')
+                inf_name = inf.get('name', inf_id)
+
+                self._emit_event(StepEvent(
+                    event_type="inference_executing",
+                    step_number=len(premises) + idx + 1,
+                    data={
+                        "inference_id": inf_id,
+                        "operation": operation,
+                        "step": idx + 1,
+                        "total": len(inferences),
+                    }
+                ))
+
+                try:
+                    # Build context of available data (premises + prior inferences)
+                    available_tables = []
+                    for pid, fact in resolved_premises.items():
+                        if fact and fact.value and "rows" in str(fact.value):
+                            # Extract table name from the premise name
+                            table_name = pid.lower().replace(":", "_")
+                            available_tables.append(f"- {pid}: stored as '{premises[int(pid[1:])-1]['name']}'")
+
+                    for prior_id, prior_result in resolved_inferences.items():
+                        if prior_result and "rows" in str(prior_result):
+                            available_tables.append(f"- {prior_id}: stored as '{prior_id.lower()}_result'")
+
+                    tables_context = "\n".join(available_tables) if available_tables else "(no tables available)"
+
+                    # Generate code to execute the inference
+                    inference_prompt = f"""Generate Python code to execute this inference step:
+
+Inference: {inf_id}: {inf_name} = {operation}
+Explanation: {explanation}
+
+Available data in datastore:
+{tables_context}
+
+The datastore is available as 'store' with methods:
+- store.query(sql) -> pd.DataFrame  # Query using SQL
+- store.list_tables() -> list of table names
+
+Previous premises were stored with their fact names (e.g., 'orders_data', 'customer_tiers').
+
+Generate code that:
+1. Loads the required data from the store
+2. Performs the operation (join, filter, aggregate, transform, etc.)
+3. Saves the result back to the store as '{inf_id.lower()}_result'
+4. Prints a summary of the result
+
+Return ONLY executable Python code, no explanations."""
+
+                    code_result = self.router.execute(
+                        task_type=TaskType.SQL_GENERATION,
+                        system="You generate Python code for data operations. Return only executable code.",
+                        user_message=inference_prompt,
+                        max_tokens=800,
+                    )
+
+                    # Extract code
+                    code = code_result.content.strip()
+                    if code.startswith("```"):
+                        code = re.sub(r'^```\w*\n?', '', code)
+                        code = re.sub(r'\n?```$', '', code)
+
+                    # Execute the inference code
+                    exec_globals = {
+                        "store": self.datastore,
+                        "pd": __import__("pandas"),
+                    }
+                    exec(code, exec_globals)
+
+                    # Check if result was stored
+                    result_table = f"{inf_id.lower()}_result"
+                    if self.datastore and result_table in [t['name'] for t in self.datastore.list_tables()]:
+                        result_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {result_table}")
+                        row_count = result_df.iloc[0, 0] if len(result_df) > 0 else 0
+                        resolved_inferences[inf_id] = f"{row_count} rows computed"
+                        inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} rows ✓")
+                    else:
+                        resolved_inferences[inf_id] = "computed (inline)"
+                        inference_lines.append(f"- {inf_id}: {inf_name} = computed ✓")
+
+                    self._emit_event(StepEvent(
+                        event_type="inference_complete",
+                        step_number=len(premises) + idx + 1,
+                        data={
+                            "inference_id": inf_id,
+                            "result": resolved_inferences[inf_id],
+                            "step": idx + 1,
+                            "total": len(inferences),
+                        }
+                    ))
+
+                except Exception as e:
+                    resolved_inferences[inf_id] = f"FAILED: {str(e)[:100]}"
+                    inference_lines.append(f"- {inf_id}: {inf_name} = FAILED ({str(e)[:50]})")
+                    self._emit_event(StepEvent(
+                        event_type="inference_failed",
+                        step_number=len(premises) + idx + 1,
+                        data={
+                            "inference_id": inf_id,
+                            "error": str(e),
+                            "step": idx + 1,
+                            "total": len(inferences),
+                        }
+                    ))
+
+            derivation_lines.extend(inference_lines)
+
+            # Step 4: Synthesize answer from resolved premises and inferences
             self._emit_event(StepEvent(
                 event_type="synthesizing",
                 step_number=0,
@@ -3674,7 +3791,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                 f"- {pid}: {p.value}" for pid, p in resolved_premises.items() if p and p.value
             ])
             inference_context = "\n".join([
-                f"- {inf['id']}: {inf['operation']}" for inf in inferences
+                f"- {inf_id}: {result}" for inf_id, result in resolved_inferences.items()
             ])
 
             synthesis_prompt = f"""Based on the resolved premises and inference plan, provide the answer.
