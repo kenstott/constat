@@ -70,18 +70,47 @@ ENGINE_SYSTEM_PROMPT = """You are a data analyst assistant. Answer questions by 
 ## Discovery Tools
 Use these tools to explore available data sources BEFORE writing code:
 
+**Database Discovery:**
 - get_table_schema(table): Get column info for a table (e.g., "sales.customers", "metrics.web_metrics")
 - find_relevant_tables(query): Semantic search for relevant tables
 
+**Document Discovery:**
+- list_documents(): List all available reference documents
+- search_documents(query, limit=5): Semantic search for relevant document content
+- get_document(name): Get full document content
+- get_document_section(name, section): Get specific section from a document
+
 IMPORTANT: Use discovery tools FIRST to understand what data is available.
+Use document search when questions involve business rules, policies, or domain knowledge.
 
 ## Code Environment
 Your code has access to:
 - `pd`: pandas (pre-imported)
 - `np`: numpy (pre-imported)
 - SQL database connections: `db_<name>` (e.g., `db_sales`)
+- API clients: `api_<name>` for GraphQL/REST APIs (e.g., `api_countries`)
 - File data source paths: `file_<name>` (e.g., `file_web_metrics`)
 - `send_email(to, subject, body, df=None)`: Send email with optional DataFrame attachment
+
+## API Best Practices
+When using APIs (`api_<name>`):
+1. **Use filters at the source** - APIs often support filtering parameters. Always check if the API supports filtering by the fields you need (dates, IDs, status, etc.) and apply filters in the API call rather than fetching all data and filtering in Python.
+
+2. **GraphQL filters** - Use filter arguments in the query itself:
+   ```graphql
+   # Filter in query arguments
+   query { orders(status: "pending", limit: 100) { id total } }
+
+   # Use variables for dynamic filters
+   query($status: String!) { orders(where: {status: {_eq: $status}}) { id } }
+   ```
+   Call with: `api_orders(query, variables={"status": "pending"})`
+
+3. **REST filters** - Use query parameters:
+   - `api_orders({"params": {"status": "active", "since": "2024-01-01"}})`
+   - Check API schema for supported filter parameters
+
+4. **Only fetch needed fields** - In GraphQL, request only the fields you need. In REST, check if the API supports field selection.
 
 ## Data Source Types
 
@@ -133,7 +162,8 @@ SYSTEM_PROMPT_TEMPLATE = """{engine_prompt}
 
 ## Available Databases
 {schema_overview}
-
+{api_overview}
+{doc_overview}
 ## Domain Context
 {domain_context}"""
 
@@ -187,11 +217,37 @@ class QueryEngine:
         Combines:
         - Engine prompt (constat-owned): code generation rules, tool usage
         - Schema overview (auto-generated): databases, tables, relationships
+        - API overview (from config): available GraphQL/REST APIs
+        - Document overview (from config): reference documents
         - Domain context (user-owned): business context, terminology
         """
+        # Build API overview if configured
+        api_overview = ""
+        if self.config.apis:
+            api_lines = ["\n## Available APIs"]
+            for name, api_config in self.config.apis.items():
+                api_type = api_config.type.upper()
+                desc = api_config.description or f"{api_type} endpoint"
+                url = api_config.url or ""
+                api_lines.append(f"- **{name}** ({api_type}): {desc}")
+                if url:
+                    api_lines.append(f"  URL: {url}")
+            api_overview = "\n".join(api_lines)
+
+        # Build document overview if configured
+        doc_overview = ""
+        if self.config.documents:
+            doc_lines = ["\n## Reference Documents"]
+            for name, doc_config in self.config.documents.items():
+                desc = doc_config.description or doc_config.type
+                doc_lines.append(f"- **{name}**: {desc}")
+            doc_overview = "\n".join(doc_lines)
+
         return SYSTEM_PROMPT_TEMPLATE.format(
             engine_prompt=ENGINE_SYSTEM_PROMPT,
             schema_overview=self.schema_manager.get_overview(),
+            api_overview=api_overview,
+            doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
         )
 
@@ -239,6 +295,20 @@ class QueryEngine:
         # Backwards compat: 'db' alias for first SQL database
         if first_sql_db is not None:
             globals_dict["db"] = first_sql_db
+
+        # Provide API clients for GraphQL/REST APIs
+        if self.config.apis:
+            from constat.catalog.api_executor import APIExecutor
+            api_executor = APIExecutor(self.config)
+            for api_name, api_config in self.config.apis.items():
+                if api_config.type == "graphql":
+                    # Create a GraphQL query function
+                    globals_dict[f"api_{api_name}"] = lambda query, variables=None, _name=api_name: \
+                        api_executor.execute_graphql(_name, query, variables)
+                else:
+                    # Create a REST call function
+                    globals_dict[f"api_{api_name}"] = lambda operation, params=None, _name=api_name: \
+                        api_executor.execute_rest(_name, operation, params or {})
 
         # Inject send_email function
         globals_dict["send_email"] = create_send_email(self.config.email)
