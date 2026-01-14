@@ -74,8 +74,8 @@ class TestMultiStepSession:
     def test_simple_multi_step_query(self, session: Session):
         """Test a simple multi-step query."""
         result = session.solve(
-            "What are the top 3 music genres by number of tracks in Chinook? "
-            "Then calculate what percentage of total tracks each represents."
+            "List the top 3 music genres by number of tracks in Chinook. "
+            "Then analyze what percentage of total tracks each represents."
         )
 
         assert result["success"], f"Query failed: {result.get('error')}"
@@ -109,9 +109,9 @@ class TestMultiStepSession:
     def test_state_sharing_between_steps(self, session: Session):
         """Test that state is properly shared between steps."""
         result = session.solve(
-            "First, count the total number of tracks in Chinook. "
+            "Analyze the Chinook database: first, count the total number of tracks. "
             "Then, find how many tracks are in the 'Rock' genre. "
-            "Finally, calculate what percentage of tracks are Rock."
+            "Finally, summarize what percentage of tracks are Rock."
         )
 
         assert result["success"], f"Query failed: {result.get('error')}"
@@ -122,7 +122,10 @@ class TestMultiStepSession:
         assert "%" in output or "percent" in output
 
         print(f"\n--- State Sharing Test ---")
-        print(f"Scratchpad:\n{result['scratchpad'][:1000]}")
+        if "scratchpad" in result:
+            print(f"Scratchpad:\n{result['scratchpad'][:1000]}")
+        else:
+            print(f"Output:\n{result['output'][:1000]}")
 
 
 class TestPlanner:
@@ -184,7 +187,7 @@ class TestEventHandling:
 
         session.on_event(capture_event)
 
-        result = session.solve("How many genres are in Chinook?")
+        result = session.solve("Show me how many genres are in Chinook")
 
         assert result["success"]
         assert len(events) > 0

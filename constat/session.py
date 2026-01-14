@@ -332,6 +332,7 @@ class Session:
             llm=self.llm,
             schema_manager=self.schema_manager,
             config=self.config,
+            event_callback=self._handle_fact_resolver_event,
         )
 
         # Event callbacks for monitoring
@@ -376,6 +377,14 @@ class Session:
         """Emit an event to all handlers."""
         for handler in self._event_handlers:
             handler(event)
+
+    def _handle_fact_resolver_event(self, event_type: str, data: dict) -> None:
+        """Convert fact resolver events to StepEvents and emit them."""
+        self._emit_event(StepEvent(
+            event_type=event_type,
+            step_number=data.get("step", 0),
+            data=data,
+        ))
 
     def _build_step_prompt(self, step: Step) -> str:
         """Build the prompt for generating step code."""

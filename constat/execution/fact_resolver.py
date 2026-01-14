@@ -758,12 +758,11 @@ FACT: violations_count - Number of policy violations found
 
 Be specific and exhaustive - list ALL facts needed to verify the claim."""
 
-        decompose_result = self.llm.messages(
-            model=self.config.llm.model,
+        decompose_text = self.llm.generate(
+            system="You are analyzing verification requests to identify required facts.",
+            user_message=decompose_prompt,
             max_tokens=1000,
-            messages=[{"role": "user", "content": decompose_prompt}],
         )
-        decompose_text = decompose_result.content[0].text
 
         # Parse required facts
         required_facts = []
@@ -779,13 +778,29 @@ Be specific and exhaustive - list ALL facts needed to verify the claim."""
         # Step 2: Resolve each required fact
         resolved_facts = []
         derivation_lines = ["**Fact Resolution:**", ""]
+        total_facts = len(required_facts)
 
-        for fact_name, fact_desc in required_facts:
+        for idx, (fact_name, fact_desc) in enumerate(required_facts):
+            # Emit event: starting to resolve this fact
+            self._emit_event("premise_resolving", {
+                "fact_name": fact_name,
+                "description": fact_desc,
+                "step": idx + 1,
+                "total": total_facts,
+            })
             # Check cache first
             if fact_name in self._cache:
                 fact = self._cache[fact_name]
                 derivation_lines.append(f"- {fact_name} = {fact.value} (cached)")
                 resolved_facts.append(fact)
+                # Emit resolved event for cached fact
+                self._emit_event("premise_resolved", {
+                    "fact_name": fact_name,
+                    "value": fact.value,
+                    "source": "cache",
+                    "step": idx + 1,
+                    "total": total_facts,
+                })
             else:
                 # Try to resolve the fact
                 try:
@@ -802,12 +817,23 @@ Be specific and exhaustive - list ALL facts needed to verify the claim."""
                             if sub_fact.source_name:
                                 sub_source = f"{sub_fact.source.value}:{sub_fact.source_name}"
                             derivation_lines.append(f"    - {sub_fact.name} = {sub_fact.value} ({sub_source})")
+                        source_detail = "derived"
                     else:
                         # Simple fact, show source
                         source_detail = fact.source.value
                         if fact.query:
                             source_detail = f"SQL query"
                         derivation_lines.append(f"- {fact_name} = {fact.value} ({source_detail}, confidence: {fact.confidence:.0%})")
+
+                    # Emit resolved event
+                    self._emit_event("premise_resolved", {
+                        "fact_name": fact_name,
+                        "value": fact.value,
+                        "source": source_detail,
+                        "confidence": fact.confidence,
+                        "step": idx + 1,
+                        "total": total_facts,
+                    })
                 except Exception as e:
                     # Mark as unresolved
                     unresolved = Fact(
@@ -820,8 +846,23 @@ Be specific and exhaustive - list ALL facts needed to verify the claim."""
                     )
                     self.resolution_log.append(unresolved)
                     derivation_lines.append(f"- {fact_name} = UNRESOLVED ({e})")
+                    # Emit resolved event for unresolved fact
+                    self._emit_event("premise_resolved", {
+                        "fact_name": fact_name,
+                        "value": None,
+                        "source": "unresolved",
+                        "error": str(e),
+                        "step": idx + 1,
+                        "total": total_facts,
+                    })
 
         # Step 3: Synthesize the answer
+        self._emit_event("synthesizing", {
+            "message": "Synthesizing answer from resolved facts",
+            "resolved_count": len([f for f in resolved_facts if f.is_resolved]),
+            "total_count": total_facts,
+        })
+
         facts_context = "\n".join([
             f"- {f.name}: {f.value} (confidence: {f.confidence:.0%})"
             for f in resolved_facts if f.is_resolved
@@ -844,12 +885,11 @@ ANSWER: <your answer>
 CONFIDENCE: <HIGH/MEDIUM/LOW> - <justification>
 CAVEATS: <any limitations or caveats>"""
 
-        synthesis_result = self.llm.messages(
-            model=self.config.llm.model,
+        synthesis_text = self.llm.generate(
+            system="You are synthesizing verification results from resolved facts.",
+            user_message=synthesis_prompt,
             max_tokens=1500,
-            messages=[{"role": "user", "content": synthesis_prompt}],
         )
-        synthesis_text = synthesis_result.content[0].text
 
         # Parse the synthesis
         answer = ""
