@@ -94,6 +94,25 @@ Your code has access to:
 
 ## API Best Practices
 When using APIs (`api_<name>`):
+
+**IMPORTANT - Response format:**
+The `api_<name>()` functions return the GraphQL `data` payload DIRECTLY - the outer `{"data": ...}` wrapper is already stripped.
+
+```python
+# GraphQL returns: {"data": {"countries": [...]}}
+# But api_countries() returns JUST: {"countries": [...]}
+
+result = api_countries('{ countries { name } }')
+print(result.keys())  # dict_keys(['countries'])
+
+# CORRECT:
+countries = result['countries']
+
+# WRONG - will fail with KeyError:
+countries = result['data']['countries']  # NO! 'data' wrapper is stripped
+```
+
+**Filtering:**
 1. **Use filters at the source** - Always filter in the API call rather than fetching all data and filtering in Python. Check the API schema for supported filter parameters.
 
 2. **GraphQL** - Filter syntax varies by implementation. Check the Available APIs section below for implementation-specific hints. Common patterns:
