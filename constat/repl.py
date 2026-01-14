@@ -2,6 +2,7 @@
 
 from typing import Optional
 from rich.console import Console
+from rich.control import Control
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
@@ -762,6 +763,8 @@ class InteractiveREPL:
             # Clean up display state on interrupt
             self.display.stop()
             self.display.stop_spinner()
+            # Clear current line to remove any partial output
+            self.console.print(Control.clear_line())
             self.console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:
             self.display.stop()
