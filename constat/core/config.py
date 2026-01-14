@@ -550,6 +550,7 @@ class ExecutionConfig(BaseModel):
     timeout_seconds: int = 60
     max_retries: int = 10
     allowed_imports: list[str] = Field(default_factory=list)
+    print_file_refs: bool = True  # Print file:// URIs for saved files (set False for React UI)
 
 
 class EmailConfig(BaseModel):

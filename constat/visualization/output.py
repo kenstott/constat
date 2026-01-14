@@ -1,10 +1,13 @@
-"""Visualization output helper for saving visualizations to files and artifacts.
+"""Output helper for saving files and visualizations.
 
-Saves visualizations in two ways:
-1. To disk for immediate CLI access (file paths users can open)
+Saves outputs in two ways:
+1. To disk for immediate CLI access (file:// URIs users can click)
 2. As artifacts in datastore for React UI to display
 
 Usage in generated code:
+    # Save a document (markdown, text, etc.)
+    viz.save_file('quarterly_report', content, ext='md', title='Q4 Report')
+
     # Save a folium map
     import folium
     m = folium.Map(location=[50, 10], zoom_start=4)
@@ -28,16 +31,31 @@ if TYPE_CHECKING:
     from constat.storage.datastore import DataStore
 
 
-class VisualizationHelper:
-    """Helper for saving visualizations to files and artifacts.
+# File extension to artifact type mapping
+FILE_EXT_ARTIFACT_TYPES = {
+    "md": "markdown",
+    "markdown": "markdown",
+    "txt": "text",
+    "text": "text",
+    "csv": "csv",
+    "json": "json",
+    "xml": "xml",
+    "yaml": "yaml",
+    "yml": "yaml",
+}
 
-    Provides a simple interface for generated code to save interactive
-    visualizations. Files are saved to an output directory and also
-    registered as artifacts in the datastore for the React UI.
+
+class VisualizationHelper:
+    """Helper for saving files and visualizations.
+
+    Provides a simple interface for generated code to save files and
+    interactive visualizations. Files are saved to an output directory
+    and also registered as artifacts in the datastore for the React UI.
 
     Attributes:
-        output_dir: Directory where visualization files are saved
+        output_dir: Directory where files are saved
         datastore: DataStore for artifact registration (optional)
+        print_file_refs: Whether to print file:// URIs (True for CLI, False for React UI)
     """
 
     def __init__(
@@ -45,13 +63,17 @@ class VisualizationHelper:
         output_dir: Optional[Path] = None,
         datastore: Optional["DataStore"] = None,
         step_number: int = 0,
+        print_file_refs: bool = True,
     ):
-        """Initialize the visualization helper.
+        """Initialize the output helper.
 
         Args:
             output_dir: Directory for saving files. Defaults to ~/.constat/outputs/
             datastore: DataStore for registering artifacts (for React UI)
             step_number: Current step number for artifact metadata
+            print_file_refs: If True, print file:// URIs for CLI users.
+                           If False, suppress file references (for React UI where
+                           artifacts are displayed directly).
         """
         if output_dir is None:
             output_dir = Path.home() / ".constat" / "outputs"
@@ -61,12 +83,71 @@ class VisualizationHelper:
 
         self.datastore = datastore
         self.step_number = step_number
+        self.print_file_refs = print_file_refs
 
     def _generate_filename(self, name: str, extension: str) -> Path:
-        """Generate a unique filename for the visualization."""
+        """Generate a unique filename for the output."""
         # Sanitize name for filesystem
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
         return self.output_dir / f"{safe_name}.{extension}"
+
+    def _file_uri(self, path: Path) -> str:
+        """Convert a path to a file:// URI for clickable terminal links."""
+        return path.resolve().as_uri()
+
+    def _print_ref(self, label: str, filepath: Path) -> None:
+        """Print file reference if print_file_refs is enabled."""
+        if self.print_file_refs:
+            print(f"{label}: {self._file_uri(filepath)}")
+
+    def save_file(
+        self,
+        name: str,
+        content: str,
+        ext: str = "txt",
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Path:
+        """Save any text file to disk and artifact store.
+
+        Use this for documents, reports, data exports, etc.
+
+        Args:
+            name: Name for the file (used in filename and artifact)
+            content: Text content to save
+            ext: File extension (md, txt, csv, json, etc.)
+            title: Human-readable title for the artifact
+            description: Description of the file
+
+        Returns:
+            Path to the saved file
+        """
+        # Normalize extension
+        ext = ext.lstrip(".")
+
+        # Save to file
+        filepath = self._generate_filename(name, ext)
+        filepath.write_text(content, encoding="utf-8")
+
+        # Register as artifact if datastore available
+        if self.datastore:
+            try:
+                artifact_type = FILE_EXT_ARTIFACT_TYPES.get(ext, "text")
+                self.datastore.save_rich_artifact(
+                    name=name,
+                    artifact_type=artifact_type,
+                    content=content,
+                    step_number=self.step_number,
+                    title=title or name,
+                    description=description,
+                )
+            except Exception as e:
+                # Don't fail if artifact save fails - file is already saved
+                if self.print_file_refs:
+                    print(f"Note: Could not register artifact: {e}")
+
+        self._print_ref(f"File saved ({ext})", filepath)
+        return filepath
 
     def save_html(
         self,
@@ -102,9 +183,10 @@ class VisualizationHelper:
                 )
             except Exception as e:
                 # Don't fail if artifact save fails - file is already saved
-                print(f"Note: Could not register artifact: {e}")
+                if self.print_file_refs:
+                    print(f"Note: Could not register artifact: {e}")
 
-        print(f"Saved: {filepath}")
+        self._print_ref("Saved", filepath)
         return filepath
 
     def save_map(
@@ -143,9 +225,10 @@ class VisualizationHelper:
                     description=description or "Interactive map visualization",
                 )
             except Exception as e:
-                print(f"Note: Could not register artifact: {e}")
+                if self.print_file_refs:
+                    print(f"Note: Could not register artifact: {e}")
 
-        print(f"Interactive map: {filepath}")
+        self._print_ref("Interactive map", filepath)
         return filepath
 
     def save_chart(
@@ -188,7 +271,8 @@ class VisualizationHelper:
                         chart_type="plotly",
                     )
                 except Exception as e:
-                    print(f"Note: Could not register chart artifact: {e}")
+                    if self.print_file_refs:
+                        print(f"Note: Could not register chart artifact: {e}")
 
         elif chart_type == "altair" or hasattr(figure, "save"):
             # Altair chart
@@ -207,11 +291,12 @@ class VisualizationHelper:
                         chart_type="vega-lite",
                     )
                 except Exception as e:
-                    print(f"Note: Could not register chart artifact: {e}")
+                    if self.print_file_refs:
+                        print(f"Note: Could not register chart artifact: {e}")
         else:
             raise ValueError(f"Unsupported chart type: {chart_type}")
 
-        print(f"Interactive chart: {filepath}")
+        self._print_ref("Interactive chart", filepath)
         return filepath
 
     def save_image(
@@ -263,9 +348,10 @@ class VisualizationHelper:
                     title=title or name,
                 )
             except Exception as e:
-                print(f"Note: Could not register image artifact: {e}")
+                if self.print_file_refs:
+                    print(f"Note: Could not register image artifact: {e}")
 
-        print(f"Image saved: {filepath}")
+        self._print_ref("Image saved", filepath)
         return filepath
 
 
@@ -273,6 +359,7 @@ def create_viz_helper(
     datastore: Optional["DataStore"] = None,
     output_dir: Optional[Path] = None,
     step_number: int = 0,
+    print_file_refs: bool = True,
 ) -> VisualizationHelper:
     """Create a VisualizationHelper instance.
 
@@ -282,6 +369,8 @@ def create_viz_helper(
         datastore: DataStore for artifact registration
         output_dir: Custom output directory
         step_number: Current step number
+        print_file_refs: If True, print file:// URIs (CLI mode).
+                        If False, suppress (React UI mode).
 
     Returns:
         Configured VisualizationHelper instance
@@ -290,4 +379,5 @@ def create_viz_helper(
         output_dir=output_dir,
         datastore=datastore,
         step_number=step_number,
+        print_file_refs=print_file_refs,
     )

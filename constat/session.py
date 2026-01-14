@@ -177,8 +177,20 @@ genres = store.get_state('top_genres')
 all_state = store.get_all_state()
 ```
 
-## Visualizations (via viz)
-Create interactive visualizations that users can view in their browser:
+## File Output & Visualizations (via viz)
+Save files and interactive visualizations. Files are saved to ~/.constat/outputs/ with clickable file:// URIs.
+
+**Documents and Data Files:**
+```python
+# Save a markdown document (report, letter, etc.)
+viz.save_file('quarterly_report', markdown_content, ext='md', title='Q4 Report')
+
+# Save CSV data
+viz.save_file('export', df.to_csv(index=False), ext='csv', title='Data Export')
+
+# Save JSON
+viz.save_file('config', json.dumps(data, indent=2), ext='json')
+```
 
 **Interactive Maps (using folium):**
 ```python
@@ -195,7 +207,7 @@ for _, row in df.iterrows():
         tooltip=row['name']
     ).add_to(m)
 
-# Save the map - prints file path user can open
+# Save the map - prints clickable file:// URI
 viz.save_map('euro_countries', m, title='Countries Using Euro')
 ```
 
@@ -206,7 +218,7 @@ import plotly.express as px
 # Create an interactive bar chart
 fig = px.bar(df, x='country', y='population', title='Population by Country')
 
-# Save the chart - prints file path user can open
+# Save the chart - prints clickable file:// URI
 viz.save_chart('population_chart', fig, title='Population by Country')
 ```
 
@@ -225,8 +237,6 @@ fig = px.scatter(df, x='x', y='y', color='category', size='value')
 fig = px.choropleth(df, locations='iso_code', color='value',
                     locationmode='ISO-3', title='World Map')
 ```
-
-The viz helper saves files to ~/.constat/outputs/ and prints the path so users can open them.
 
 ## Code Rules
 1. Use pandas `pd.read_sql(query, db_<name>)` to query source databases
@@ -704,7 +714,10 @@ class Session:
             "store": self.datastore,  # Persistent datastore - only shared state between steps
             "llm_ask": self._create_llm_ask_helper(),  # LLM query helper for general knowledge
             "send_email": create_send_email(self.config.email),  # Email function
-            "viz": create_viz_helper(datastore=self.datastore),  # Visualization helper for maps/charts
+            "viz": create_viz_helper(
+                datastore=self.datastore,
+                print_file_refs=self.config.execution.print_file_refs,
+            ),  # Visualization/file output helper
         }
 
         # Provide database connections

@@ -293,6 +293,10 @@ class DataStore:
             step_number: Which step created this table
             description: Human-readable description
         """
+        # Cannot save DataFrame with no columns - would generate invalid SQL
+        if len(df.columns) == 0:
+            return
+
         # Serialize dict/list columns to JSON for SQLite compatibility
         df = self._serialize_complex_columns(df)
 

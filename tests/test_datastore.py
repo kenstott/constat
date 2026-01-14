@@ -48,6 +48,17 @@ class TestDataStore:
         assert list(loaded.columns) == ["name", "value"]
         assert loaded["value"].sum() == 600
 
+    def test_save_empty_dataframe_no_columns(self, memory_store):
+        """Test that saving a DataFrame with no columns doesn't crash."""
+        df = pd.DataFrame()  # Empty DataFrame with no columns
+
+        # This should not raise an error - it should silently skip
+        memory_store.save_dataframe("empty_table", df, step_number=1)
+
+        # Table should not be created
+        assert memory_store.load_dataframe("empty_table") is None
+        assert len([t for t in memory_store.list_tables() if t["name"] == "empty_table"]) == 0
+
     def test_load_nonexistent_table(self, memory_store):
         """Test loading a table that doesn't exist."""
         result = memory_store.load_dataframe("nonexistent")
