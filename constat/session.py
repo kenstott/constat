@@ -1508,10 +1508,10 @@ Do NOT flag as ambiguous if an available API can fulfill the data requirement.
 Do NOT ask about information already provided in Known User Facts.
 
 CRITICAL: Only suggest options that can be answered with the AVAILABLE DATA shown above.
-- If asking about data types (subscriptions vs transactions), only offer options that exist in the schema
-- If the schema shows only transactional order data, don't suggest "subscription billing data"
-- Base suggestions on actual tables/columns available, not theoretical data structures
-- Provide practical suggested answers based on what's ACTUALLY in the data."""
+- Review the schema before suggesting options - don't suggest data that doesn't exist
+- If the user asks about data types not in the schema, clarify what IS available instead
+- Base suggestions on actual tables/columns shown above, not hypothetical data
+- Provide practical suggested answers grounded in the actual available data."""
 
         try:
             result = self.router.execute(
@@ -3328,8 +3328,8 @@ EXAMPLE for "What is total revenue by region?":
 QUESTION: What is total revenue by region?
 
 PREMISES:
-P1: orders_data = ? (All orders with amounts and dates) [source: database:shop]
-P2: customer_regions = ? (Customer ID to region mapping) [source: database:shop]
+P1: orders_data = ? (All orders with amounts and dates) [source: database:sales_db]
+P2: customer_regions = ? (Customer ID to region mapping) [source: database:sales_db]
 
 INFERENCE:
 I1: orders_with_region = join(P1, P2) -- Join orders to get region for each order
