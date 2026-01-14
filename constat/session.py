@@ -1171,11 +1171,14 @@ Examples:
 
 Question: "{problem}"
 
-Available data sources:
+Available data sources (databases AND APIs - both are valid data sources):
 {schema_overview}{api_overview}{doc_overview}
 
+IMPORTANT: If an API can provide the data needed for the question, the question is CLEAR.
+For example, if the question asks about countries and a countries API is available, that's sufficient.
+
 Check for missing:
-1. Geographic scope (country, region, state, etc.)
+1. Geographic scope (country, region, state, etc.) - unless an API provides this
 2. Time period (date range, year, quarter, etc.)
 3. Quantity limits (top N, threshold values)
 4. Category/segment filters (which products, customer types, etc.)
@@ -1195,6 +1198,7 @@ SUGGESTIONS: <suggestion1> | <suggestion2>
 (max 3 questions, 2-4 suggestions per question)
 
 Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach.
+Do NOT flag as ambiguous if an available API can fulfill the data requirement.
 Provide practical suggested answers based on what's in the data."""
 
         try:
