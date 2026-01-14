@@ -1230,15 +1230,28 @@ Examples:
                 doc_lines.append(f"- **{name}**: {desc}")
             doc_overview = "\n".join(doc_lines)
 
+        # Include known user facts in the prompt
+        user_facts_text = ""
+        try:
+            all_facts = self.fact_resolver.get_all_facts()
+            if all_facts:
+                fact_lines = ["\n## Known User Facts"]
+                for name, fact in all_facts.items():
+                    fact_lines.append(f"- {name}: {fact.value}")
+                user_facts_text = "\n".join(fact_lines)
+        except Exception:
+            pass
+
         prompt = f"""Analyze this question for ambiguity. Determine if critical parameters are missing that would significantly change the analysis.
 
 Question: "{problem}"
 
 Available data sources (databases AND APIs - both are valid data sources):
-{schema_overview}{api_overview}{doc_overview}
+{schema_overview}{api_overview}{doc_overview}{user_facts_text}
 
 IMPORTANT: If an API can provide the data needed for the question, the question is CLEAR.
 For example, if the question asks about countries and a countries API is available, that's sufficient.
+If a user fact provides needed information (like user_email for sending results), USE IT - do not ask again.
 
 Check for missing:
 1. Geographic scope (country, region, state, etc.) - unless an API provides this
@@ -1254,14 +1267,15 @@ If critical parameters are missing that would significantly change results, resp
 AMBIGUOUS
 REASON: <brief explanation of what's unclear>
 QUESTIONS:
-Q1: <specific clarifying question>
+Q1: <specific clarifying question ending with ?>
 SUGGESTIONS: <suggestion1> | <suggestion2> | <suggestion3>
-Q2: <specific clarifying question>
+Q2: <specific clarifying question ending with ?>
 SUGGESTIONS: <suggestion1> | <suggestion2>
-(max 3 questions, 2-4 suggestions per question)
+(max 3 questions, 2-4 suggestions per question, each question MUST end with ?)
 
 Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach.
 Do NOT flag as ambiguous if an available API can fulfill the data requirement.
+Do NOT ask about information already provided in Known User Facts.
 Provide practical suggested answers based on what's in the data."""
 
         try:
@@ -1317,11 +1331,17 @@ Provide practical suggested answers based on what's in the data."""
                         # NOTE: We intentionally do NOT capture arbitrary text as questions
                         # The LLM sometimes adds explanatory text that shouldn't be treated as questions
 
+                        # Only accept if it looks like a question (ends with ? or starts with question word)
                         if question_text and len(question_text) > 5:
-                            # Save previous question and start new one
-                            if current_question and current_question.text:
-                                questions.append(current_question)
-                            current_question = ClarificationQuestion(text=question_text)
+                            is_question = (
+                                question_text.endswith("?") or
+                                question_text.lower().startswith(("what ", "which ", "how ", "when ", "where ", "who ", "should ", "do ", "does ", "is ", "are "))
+                            )
+                            if is_question:
+                                # Save previous question and start new one
+                                if current_question and current_question.text:
+                                    questions.append(current_question)
+                                current_question = ClarificationQuestion(text=question_text)
 
                 # Don't forget the last question
                 if current_question and current_question.text:
