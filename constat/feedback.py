@@ -35,6 +35,7 @@ from constat.execution.mode import (
 # Patterns that indicate a request to switch execution mode
 MODE_SWITCH_PATTERNS = {
     ExecutionMode.KNOWLEDGE: [
+        "k",  # Short alias
         "use knowledge",
         "switch to knowledge",
         "knowledge mode",
@@ -43,6 +44,7 @@ MODE_SWITCH_PATTERNS = {
         "no data",
     ],
     ExecutionMode.AUDITABLE: [
+        "a",  # Short alias
         "use auditable",
         "switch to auditable",
         "auditable mode",
@@ -51,6 +53,7 @@ MODE_SWITCH_PATTERNS = {
         "verification mode",
     ],
     ExecutionMode.EXPLORATORY: [
+        "e",  # Short alias
         "use exploratory",
         "switch to exploratory",
         "exploratory mode",
@@ -534,7 +537,7 @@ class FeedbackDisplay:
 
         # Prompt for approval - allow direct steering input
         self.console.print()
-        self.console.print("[dim]Enter to execute, 'n' to cancel, or type changes to steer the plan[/dim]")
+        self.console.print("[dim]Enter to execute, 'n' to cancel, 'k/a/e' to switch mode, or type changes[/dim]")
 
         while True:
             try:
