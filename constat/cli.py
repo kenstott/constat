@@ -149,7 +149,17 @@ def solve(problem: str, config: str, verbose: bool, output: Optional[str]):
     "--problem", "-p",
     help="Initial problem to solve.",
 )
-def repl(config: str, verbose: bool, problem: Optional[str]):
+@click.option(
+    "--continue", "continue_session",
+    is_flag=True,
+    help="Automatically resume the last session.",
+)
+@click.option(
+    "--user", "-u",
+    default="default",
+    help="User ID for session management.",
+)
+def repl(config: str, verbose: bool, problem: Optional[str], continue_session: bool, user: str):
     """Start interactive REPL session.
 
     The REPL allows you to:
@@ -162,6 +172,7 @@ def repl(config: str, verbose: bool, problem: Optional[str]):
     Examples:
         constat repl -c config.yaml
         constat repl -c config.yaml -p "Show me the sales data"
+        constat repl -c config.yaml --continue  # Resume last session
     """
     try:
         cfg = Config.from_yaml(config)
@@ -172,7 +183,13 @@ def repl(config: str, verbose: bool, problem: Optional[str]):
     # Initialize REPL with progress feedback
     with console.status("[bold]Initializing...", spinner="dots") as status:
         progress_cb = create_progress_callback(status)
-        interactive = InteractiveREPL(cfg, verbose=verbose, progress_callback=progress_cb)
+        interactive = InteractiveREPL(
+            cfg,
+            verbose=verbose,
+            progress_callback=progress_cb,
+            user_id=user,
+            auto_resume=continue_session,
+        )
     console.print("[green]Ready[/green]\n")
 
     try:

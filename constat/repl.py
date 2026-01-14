@@ -89,6 +89,8 @@ class InteractiveREPL:
         verbose: bool = False,
         console: Optional[Console] = None,
         progress_callback: Optional[callable] = None,
+        user_id: str = "default",
+        auto_resume: bool = False,
     ):
         self.config = config
         self.verbose = verbose
@@ -97,7 +99,8 @@ class InteractiveREPL:
         self.progress_callback = progress_callback
         self.session: Optional[Session] = None
         self.session_config = SessionConfig(verbose=verbose)
-        self.user_id = "root"  # Default user
+        self.user_id = user_id
+        self.auto_resume = auto_resume
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
 
@@ -277,47 +280,103 @@ class InteractiveREPL:
         self.console.print(table)
 
     def _show_tables(self) -> None:
-        """Show tables in current session."""
-        if not self.session or not self.session.datastore:
-            self.console.print("[yellow]No active session.[/yellow]")
-            return
-        tables = self.session.datastore.list_tables()
-        if not tables:
-            self.console.print("[dim]No tables yet.[/dim]")
-            return
-        self.display.show_tables(tables, force_show=True)
-
-    def _show_artifacts(self) -> None:
-        """Show saved artifacts from current session with clickable file:// URIs."""
+        """Show tables in current session with file:// URIs for Parquet files."""
         if not self.session or not self.session.session_id:
             self.console.print("[yellow]No active session.[/yellow]")
             return
 
-        # Use session-specific output directory
+        # Try registry first for Parquet file paths
+        try:
+            from constat.storage.registry import ConstatRegistry
+            registry = ConstatRegistry()
+            tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+            registry.close()
+
+            if not tables:
+                self.console.print("[dim]No tables yet.[/dim]")
+                return
+
+            self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
+            for t in tables:
+                self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]")
+                # Show file:// URI for the Parquet file
+                file_path = Path(t.file_path)
+                if file_path.exists():
+                    file_uri = file_path.resolve().as_uri()
+                    self.console.print(f"    {file_uri}")
+
+        except Exception:
+            # Fall back to datastore
+            if not self.session.datastore:
+                self.console.print("[yellow]No active session.[/yellow]")
+                return
+            tables = self.session.datastore.list_tables()
+            if not tables:
+                self.console.print("[dim]No tables yet.[/dim]")
+                return
+            self.display.show_tables(tables, force_show=True)
+
+    def _show_artifacts(self) -> None:
+        """Show session artifacts: tables (Parquet) and saved files from registry."""
+        if not self.session or not self.session.session_id:
+            self.console.print("[yellow]No active session.[/yellow]")
+            return
+
+        has_artifacts = False
         session_id = self.session.session_id
-        output_dir = Path.home() / ".constat" / "outputs" / session_id[:20]
 
-        if not output_dir.exists():
+        # Try to get registry (may not exist yet)
+        try:
+            from constat.storage.registry import ConstatRegistry
+            registry = ConstatRegistry()
+
+            # Show tables from registry (with file:// URIs for Parquet files)
+            tables = registry.list_tables(user_id=self.user_id, session_id=session_id)
+            if tables:
+                has_artifacts = True
+                self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
+                for t in tables:
+                    self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]")
+                    if t.description:
+                        self.console.print(f"    {t.description}")
+                    # Show file:// URI for the Parquet file
+                    file_path = Path(t.file_path)
+                    if file_path.exists():
+                        file_uri = file_path.resolve().as_uri()
+                        self.console.print(f"    {file_uri}")
+
+            # Show artifacts from registry (charts, files, etc.)
+            artifacts = registry.list_artifacts(user_id=self.user_id, session_id=session_id)
+            if artifacts:
+                has_artifacts = True
+                self.console.print(f"\n[bold]Files[/bold] ({len(artifacts)})")
+                for a in artifacts[:20]:
+                    file_path = Path(a.file_path)
+                    if file_path.exists():
+                        file_uri = file_path.resolve().as_uri()
+                        size_str = f"{a.size_bytes / 1024:.1f}KB" if a.size_bytes else ""
+                        self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]")
+                        if a.description:
+                            self.console.print(f"    {a.description}")
+                        self.console.print(f"    {file_uri}")
+
+                if len(artifacts) > 20:
+                    self.console.print(f"\n[dim]... and {len(artifacts) - 20} more[/dim]")
+
+            registry.close()
+
+        except Exception:
+            # Fall back to datastore if registry not available
+            if self.session.datastore:
+                tables = self.session.datastore.list_tables()
+                if tables:
+                    has_artifacts = True
+                    self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
+                    for t in tables:
+                        self.console.print(f"  [cyan]{t['name']}[/cyan] [dim]({t['row_count']} rows)[/dim]")
+
+        if not has_artifacts:
             self.console.print("[dim]No artifacts in this session.[/dim]")
-            return
-
-        # Get all files in output directory, sorted by modification time (newest first)
-        files = sorted(output_dir.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True)
-        files = [f for f in files if f.is_file()]
-
-        if not files:
-            self.console.print("[dim]No artifacts in this session.[/dim]")
-            return
-
-        self.console.print(f"\n[bold]Session Artifacts[/bold] ({len(files)} files)\n")
-        for f in files[:20]:  # Show last 20
-            file_uri = f.resolve().as_uri()
-            size_kb = f.stat().st_size / 1024
-            self.console.print(f"  [cyan]{f.name}[/cyan] [dim]({size_kb:.1f}KB)[/dim]")
-            self.console.print(f"    {file_uri}")
-
-        if len(files) > 20:
-            self.console.print(f"\n[dim]... and {len(files) - 20} more[/dim]")
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""
@@ -777,6 +836,31 @@ class InteractiveREPL:
         else:
             self.console.print(f"[red]Failed to resume session: {match}[/red]")
 
+    def _handle_auto_resume(self) -> None:
+        """Handle auto-resume from --continue flag."""
+        # Create session if needed to access history
+        if not self.session:
+            self.session = self._create_session()
+
+        # Get most recent session for this user
+        sessions = self.session.history.list_sessions(limit=1)
+        if not sessions:
+            self.console.print("[dim]No previous session to resume.[/dim]")
+            return
+
+        latest = sessions[0]
+        if self.session.resume(latest.session_id):
+            self.console.print(f"[green]Resumed last session:[/green] {latest.session_id[:30]}...")
+            if latest.summary:
+                self.console.print(f"[dim]{latest.summary}[/dim]")
+            # Show what's available
+            tables = self.session.datastore.list_tables() if self.session.datastore else []
+            if tables:
+                self.console.print(f"[dim]{len(tables)} tables available - use /tables to view[/dim]")
+            self.console.print()
+        else:
+            self.console.print(f"[yellow]Could not resume session {latest.session_id[:20]}...[/yellow]")
+
     def _replay_plan(self, name: str) -> None:
         """Replay a saved plan."""
         if not self.session:
@@ -983,6 +1067,10 @@ class InteractiveREPL:
 
     def _run_repl_body(self, initial_problem: Optional[str] = None) -> None:
         """Run the REPL body (banner + loop)."""
+        # Handle auto-resume before banner
+        if self.auto_resume:
+            self._handle_auto_resume()
+
         # Welcome banner
         if self._readline_available:
             hints = "[dim]Tab[/dim] completes commands | [dim]Ctrl+C[/dim] interrupts"
