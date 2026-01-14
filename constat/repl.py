@@ -1503,6 +1503,9 @@ class InteractiveREPL:
                 if not user_input:
                     continue
 
+                # Show user input with YOU header
+                self.display.show_user_input(user_input)
+
                 # Check for suggestion shortcuts
                 suggestion_to_run = None
                 lower_input = user_input.lower().strip()

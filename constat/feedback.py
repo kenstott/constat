@@ -406,6 +406,12 @@ class FeedbackDisplay:
         self._active_step_goal = ""
         self.stop()
 
+    def show_user_input(self, user_input: str) -> None:
+        """Display user input with YOU header (right-aligned)."""
+        self.console.print()
+        self.console.print(Rule("[bold green]YOU[/bold green]", align="right"))
+        self.console.print(f"[white]{user_input}[/white]")
+
     def set_problem(self, problem: str) -> None:
         """Set the problem being solved."""
         self.problem = problem
@@ -446,7 +452,7 @@ class FeedbackDisplay:
             self.plan_steps = new_steps
 
         # Always show the plan so user knows what's coming
-        self.console.print(Rule("[bold cyan]PLAN[/bold cyan]", align="left"))
+        self.console.print(Rule("[bold cyan]CONSTAT[/bold cyan]", align="left"))
 
         # Check if this is an auditable proof structure (has type field)
         is_proof_structure = any(s.get("type") in ("premise", "inference", "conclusion") for s in steps)
@@ -481,7 +487,7 @@ class FeedbackDisplay:
 
     def start_execution(self) -> None:
         """Start the live execution display."""
-        self.console.print(Rule("[bold cyan]EXECUTING[/bold cyan]", align="left"))
+        self.console.print(Rule("[bold cyan]CONSTAT[/bold cyan]", align="left"))
         self._execution_started = True
         self._start_time = time.time()  # Start timing
         self._completed_outputs = []  # Clear completed outputs buffer
