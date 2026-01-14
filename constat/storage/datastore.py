@@ -572,6 +572,76 @@ class DataStore:
 
         return "\n\n".join(parts)
 
+    def get_execution_history_table(self) -> Optional["pd.DataFrame"]:
+        """
+        Get execution history as a queryable DataFrame.
+
+        Returns a table with step_number, goal, code, output for each executed step.
+        This can be stored as a table for SQL queries.
+
+        Returns:
+            DataFrame with execution history, or None if no history
+        """
+        import pandas as pd
+
+        # Get scratchpad entries for step info
+        scratchpad_entries = self.get_scratchpad()
+        if not scratchpad_entries:
+            return None
+
+        # Get code artifacts
+        code_artifacts = self.get_artifacts(artifact_type="code")
+        output_artifacts = self.get_artifacts(artifact_type="output")
+
+        # Build lookup by step number (use latest attempt)
+        code_by_step = {}
+        for artifact in code_artifacts:
+            step = artifact.step_number
+            if step not in code_by_step or artifact.attempt > code_by_step[step].attempt:
+                code_by_step[step] = artifact
+
+        output_by_step = {}
+        for artifact in output_artifacts:
+            step = artifact.step_number
+            if step not in output_by_step or artifact.attempt > output_by_step[step].attempt:
+                output_by_step[step] = artifact
+
+        # Build history records
+        history = []
+        for entry in scratchpad_entries:
+            step_num = entry["step_number"]
+            code = code_by_step.get(step_num)
+            output = output_by_step.get(step_num)
+
+            history.append({
+                "step_number": step_num,
+                "goal": entry["goal"],
+                "narrative": entry["narrative"],
+                "code": code.content if code else None,
+                "output": output.content if output else None,
+                "tables_created": ", ".join(entry.get("tables_created", [])) or None,
+            })
+
+        return pd.DataFrame(history)
+
+    def ensure_execution_history_table(self) -> bool:
+        """
+        Ensure execution history is available as a queryable table.
+
+        Creates/updates the `execution_history` table with current session's
+        step info and code. This table can be queried via SQL.
+
+        Returns:
+            True if table was created/updated, False if no history
+        """
+        df = self.get_execution_history_table()
+        if df is None or df.empty:
+            return False
+
+        # Store as a regular table (not internal)
+        self.store("execution_history", df)
+        return True
+
     # --- Artifact catalog methods ---
 
     def add_artifact(

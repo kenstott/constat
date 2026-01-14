@@ -2415,6 +2415,11 @@ NEW_REQUEST: <the new request, or NONE>
         existing_state = self.datastore.get_all_state()
         scratchpad_context = self.datastore.get_scratchpad_as_markdown()
 
+        # Ensure execution history is available as a queryable table
+        # This includes step goals, code, and outputs
+        self.datastore.ensure_execution_history_table()
+        existing_tables = self.datastore.list_tables()  # Refresh after adding history table
+
         # Calculate next step number
         existing_scratchpad = self.datastore.get_scratchpad()
         next_step_number = max((e["step_number"] for e in existing_scratchpad), default=0) + 1
@@ -2426,6 +2431,10 @@ NEW_REQUEST: <the new request, or NONE>
 
 Available tables from previous steps:
 {', '.join(t['name'] for t in existing_tables) if existing_tables else '(none)'}
+
+**IMPORTANT**: The `execution_history` table contains the actual code and output from each step.
+To retrieve code for a step: `SELECT code FROM execution_history WHERE step_number = N`
+Columns: step_number, goal, narrative, code, output, tables_created
 
 Available state variables:
 {existing_state if existing_state else '(none)'}
