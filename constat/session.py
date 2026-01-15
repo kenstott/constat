@@ -3655,9 +3655,15 @@ For world knowledge (planets, constants, geography), embed the value directly or
                 # Check if the premise name contains an embedded value (e.g., "name = 8")
                 # This happens when the LLM provides a known constant at planning time
                 embedded_value = None
-                if " = " in fact_name and not fact_name.endswith(" = ?"):
+                working_name = fact_name
+
+                # Strip trailing " = ?" if present (LLM sometimes appends this)
+                if working_name.endswith(" = ?"):
+                    working_name = working_name[:-4].strip()
+
+                if " = " in working_name:
                     # Extract the embedded value
-                    parts = fact_name.rsplit(" = ", 1)
+                    parts = working_name.rsplit(" = ", 1)
                     if len(parts) == 2:
                         clean_name = parts[0].strip()
                         value_str = parts[1].strip()
@@ -3690,8 +3696,12 @@ For world knowledge (planets, constants, geography), embed the value directly or
                 try:
                     fact = None
 
+                    # First, check if this fact is already cached (from previous queries)
+                    cached_fact = self.fact_resolver._cache.get(fact_name)
+                    if cached_fact and cached_fact.value is not None:
+                        fact = cached_fact
                     # If we extracted an embedded value, use it directly
-                    if embedded_value is not None:
+                    elif embedded_value is not None:
                         from constat.execution.fact_resolver import Fact, FactSource
                         fact = Fact(
                             name=fact_name,

@@ -489,8 +489,8 @@ class FactResolver:
 
         # Could not resolve
         sources_summary = " → ".join(sources_tried)
-        logger.warning(f"[FACT_RESOLVER] Could not resolve: {cache_key}")
-        logger.warning(f"[FACT_RESOLVER] Sources tried: {sources_summary}")
+        logger.debug(f"[FACT_RESOLVER] Could not resolve: {cache_key}")
+        logger.debug(f"[FACT_RESOLVER] Sources tried: {sources_summary}")
         unresolved = Fact(
             name=cache_key,
             value=None,
