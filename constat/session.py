@@ -3859,15 +3859,7 @@ YOUR JSON RESPONSE:"""
                                         else:
                                             value = raw_value  # Other types (bool, etc.)
                             except json.JSONDecodeError:
-                                # Fallback: try VALUE: format
-                                if "VALUE:" in response.upper():
-                                    value_part = response.upper().split("VALUE:", 1)[1].strip()
-                                    value_str = value_part.split("\n")[0].strip()
-                                    value_str = value_str.replace(",", "").replace("$", "").strip()
-                                    try:
-                                        value = float(value_str) if "." in value_str else int(value_str)
-                                    except ValueError:
-                                        value = value_str  # Keep as string
+                                pass  # Will raise below if value is None
 
                             if value is not None:
                                 fact = Fact(
