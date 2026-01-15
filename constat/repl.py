@@ -1838,6 +1838,15 @@ class InteractiveREPL:
                 if self.suggestions:
                     self.display.show_suggestions(self.suggestions)
                 self.display.show_summary(success=True, total_steps=0, duration_ms=0)
+            elif result.get("mode") == "auditable":
+                # AUDITABLE mode - display full output with answer, derivation, and insights
+                self.display.show_output(result.get("output", ""))
+                tables = result.get("datastore_tables", [])
+                self.display.show_tables(tables, force_show=False)
+                self.suggestions = result.get("suggestions", [])
+                if self.suggestions:
+                    self.display.show_suggestions(self.suggestions)
+                self.display.show_summary(success=True, total_steps=0, duration_ms=0)
             elif result.get("success"):
                 tables = result.get("datastore_tables", [])
                 total_duration = sum(r.duration_ms for r in result.get("results", []))
