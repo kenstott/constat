@@ -3415,6 +3415,41 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                 elif not conclusion:
                     conclusion = line
 
+        # Detect collection-oriented queries (reports, lists, etc.)
+        # These don't have explicit scalar comparisons - the implicit goal is "data exists"
+        comparison_keywords = [
+            "greater than", "less than", "equal to", "equals",
+            ">", "<", ">=", "<=", "==", "!=",
+            "compare", "check if", "verify that", "prove that",
+            "is positive", "is negative", "is zero",
+        ]
+        is_collection_query = True
+        combined_text = (problem + " " + conclusion).lower()
+        for keyword in comparison_keywords:
+            if keyword.lower() in combined_text:
+                is_collection_query = False
+                break
+
+        # Also check if the last inference is a comparison operation
+        if inferences:
+            last_op = inferences[-1].get("operation", "").lower()
+            if any(kw in last_op for kw in ["compare", "check", "verify", ">", "<"]):
+                is_collection_query = False
+
+        # For collection queries, add implicit verification inference
+        if is_collection_query and inferences:
+            last_inf_id = inferences[-1]["id"]
+            verify_id = f"I{len(inferences) + 1}"
+            inferences.append({
+                "id": verify_id,
+                "name": "data_verified",
+                "operation": f"verify_exists({last_inf_id})",
+                "explanation": "Verify result has data (count > 0) to confirm derivation succeeded",
+            })
+            # Update conclusion to emphasize provenance
+            if not conclusion.lower().startswith("the data"):
+                conclusion = f"The data is verified to exist with provenance: {conclusion}"
+
         # Emit planning complete
         total_steps = len(premises) + len(inferences) + 1  # +1 for conclusion
         self._emit_event(StepEvent(
@@ -3777,6 +3812,54 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                     # Build context strings
                     scalars_context = "\n".join(scalar_values) if scalar_values else "(none)"
                     tables_context = "\n".join(available_tables) if available_tables else "(none)"
+
+                    # Handle special verify_exists operation for collection queries
+                    if operation.startswith("verify_exists("):
+                        # Extract the reference (e.g., "I2" from "verify_exists(I2)")
+                        ref_match = re.match(r'verify_exists\((\w+)\)', operation)
+                        if ref_match:
+                            ref_id = ref_match.group(1)
+                            # Find the referenced table
+                            ref_table = None
+                            if ref_id.startswith("I"):
+                                ref_table = f"{ref_id.lower()}_result"
+                            elif ref_id.startswith("P"):
+                                p_idx = int(ref_id[1:]) - 1
+                                if p_idx < len(premises):
+                                    ref_table = premises[p_idx]['name']
+
+                            if ref_table and self.datastore:
+                                try:
+                                    count_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {ref_table}")
+                                    row_count = int(count_df.iloc[0, 0]) if len(count_df) > 0 else 0
+                                    verified = row_count > 0
+
+                                    resolved_inferences[inf_id] = f"Verified: {row_count} records exist"
+                                    inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} records ✓" if verified else f"- {inf_id}: {inf_name} = EMPTY (0 records)")
+
+                                    # Store as fact
+                                    self.fact_resolver.add_user_fact(
+                                        fact_name=inf_name if inf_name else inf_id,
+                                        value=f"{row_count} records verified",
+                                        reasoning=f"Verified {ref_table} contains {row_count} records",
+                                        source=FactSource.DERIVED,
+                                    )
+
+                                    self._emit_event(StepEvent(
+                                        event_type="inference_complete",
+                                        step_number=len(premises) + idx + 1,
+                                        data={
+                                            "inference_id": inf_id,
+                                            "result": f"{row_count} records verified",
+                                            "output": f"Data verification: {row_count} records in {ref_table}",
+                                            "step": idx + 1,
+                                            "total": len(inferences),
+                                        }
+                                    ))
+                                    continue  # Skip LLM code generation for verify_exists
+                                except Exception as ve:
+                                    resolved_inferences[inf_id] = f"Verification failed: {ve}"
+                                    inference_lines.append(f"- {inf_id}: {inf_name} = verification error")
 
                     # Generate code to execute the inference
                     inference_prompt = f"""Generate Python code to execute this inference step:
