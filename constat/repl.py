@@ -424,6 +424,7 @@ class InteractiveREPL:
             ("/help, /h", "Show this help message"),
             ("/tables", "List available tables"),
             ("/show <table>", "Show table contents"),
+            ("/export <table> [file]", "Export table to CSV or XLSX"),
             ("/query <sql>", "Run SQL query on datastore"),
             ("/code [step]", "Show generated code (all or specific step)"),
             ("/state", "Show session state"),
@@ -502,6 +503,69 @@ class InteractiveREPL:
                 self.console.print("[dim]No tables yet.[/dim]")
                 return
             self.display.show_tables(tables, force_show=True)
+
+    def _export_table(self, arg: str) -> None:
+        """Export a table to CSV or XLSX file.
+
+        Usage:
+            /export <table>              - Export to table.csv in current dir
+            /export <table> <filename>   - Export to specified file (.csv or .xlsx)
+            /export _facts               - Export facts table
+        """
+        if not arg.strip():
+            self.console.print("[yellow]Usage: /export <table> [filename][/yellow]")
+            self.console.print("[dim]Example: /export orders orders.csv[/dim]")
+            self.console.print("[dim]Example: /export orders report.xlsx[/dim]")
+            self.console.print("[dim]Example: /export _facts[/dim]")
+            return
+
+        parts = arg.strip().split(maxsplit=1)
+        table_name = parts[0]
+        filename = parts[1] if len(parts) > 1 else f"{table_name}.csv"
+
+        # Determine format from extension
+        ext = Path(filename).suffix.lower()
+        if ext not in (".csv", ".xlsx"):
+            self.console.print(f"[yellow]Unsupported format: {ext}. Use .csv or .xlsx[/yellow]")
+            return
+
+        try:
+            # Handle special _facts table
+            if table_name == "_facts":
+                if not self.session:
+                    self.console.print("[yellow]No active session.[/yellow]")
+                    return
+                df = self.session.fact_resolver.get_facts_as_dataframe()
+                if df.empty:
+                    self.console.print("[dim]No facts to export.[/dim]")
+                    return
+            else:
+                # Get table from datastore
+                if not self.session or not self.session.datastore:
+                    self.console.print("[yellow]No active session.[/yellow]")
+                    return
+
+                tables = self.session.datastore.list_tables()
+                table_names = [t['name'] for t in tables]
+                if table_name not in table_names:
+                    self.console.print(f"[yellow]Table '{table_name}' not found.[/yellow]")
+                    self.console.print(f"[dim]Available: {', '.join(table_names) or '(none)'}[/dim]")
+                    return
+
+                df = self.session.datastore.query(f"SELECT * FROM {table_name}")
+
+            # Export to file
+            output_path = Path(filename).resolve()
+            if ext == ".csv":
+                df.to_csv(output_path, index=False)
+            else:  # .xlsx
+                df.to_excel(output_path, index=False)
+
+            self.console.print(f"[green]Exported {len(df)} rows to:[/green]")
+            self.console.print(f"  {output_path.as_uri()}")
+
+        except Exception as e:
+            self.console.print(f"[red]Export failed:[/red] {e}")
 
     def _show_artifacts(self) -> None:
         """Show session artifacts: tables (Parquet) and saved files from registry."""
@@ -1242,6 +1306,16 @@ class InteractiveREPL:
 
         self.console.print(table)
 
+        # Sync facts to datastore as "_facts" table for SQL queries
+        if self.session and self.session.datastore:
+            try:
+                facts_df = self.session.fact_resolver.get_facts_as_dataframe()
+                if not facts_df.empty:
+                    self.session.datastore.save_dataframe("_facts", facts_df)
+                    self.console.print("[dim]Facts synced to _facts table (queryable via SQL)[/dim]")
+            except Exception:
+                pass  # Silent fail - facts table is optional
+
     def _remember_fact(self, fact_text: str) -> None:
         """Remember a fact persistently (survives across sessions)."""
         if not fact_text.strip():
@@ -1648,6 +1722,8 @@ class InteractiveREPL:
             self._run_query(f"SELECT * FROM {arg}")
         elif cmd == "/query" and arg:
             self._run_query(arg)
+        elif cmd == "/export":
+            self._export_table(arg)
         elif cmd == "/code":
             self._show_code(arg)
         elif cmd == "/state":

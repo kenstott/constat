@@ -3599,9 +3599,20 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 
                             result_df = pd.read_sql(sql, engine)
                             row_count = len(result_df) if result_df is not None else 0
+
+                            # For scalar results (1 row, 1 col), extract the actual value
+                            if row_count == 1 and len(result_df.columns) == 1:
+                                scalar_value = result_df.iloc[0, 0]
+                                # Convert numpy types to Python native
+                                if hasattr(scalar_value, 'item'):
+                                    scalar_value = scalar_value.item()
+                                fact_value = scalar_value
+                            else:
+                                fact_value = f"{row_count} rows"
+
                             fact = Fact(
                                 name=fact_name,
-                                value=f"{row_count} rows retrieved",
+                                value=fact_value,
                                 confidence=0.9,
                                 source=FactSource.DATABASE,
                                 query=sql,
@@ -3645,9 +3656,9 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         except NameError:
                             desc = None
                         self.fact_resolver.add_user_fact(
-                            fact_name=f"{fact_id}:{fact_name}",
+                            fact_name=fact_name,  # Just the fact name, no P1: prefix
                             value=fact.value,
-                            reasoning=source_detail,
+                            reasoning=query_info if query_info else source_detail,  # Show SQL query
                             description=desc,
                             source=FactSource.DATABASE if source.startswith("database") else FactSource.DERIVED,
                         )
@@ -3798,9 +3809,9 @@ Return ONLY executable Python code, no explanations."""
                     if inference_output.strip():
                         inference_value = inference_output.strip()
                     self.fact_resolver.add_user_fact(
-                        fact_name=f"{inf_id}:{inf_name}" if inf_name else inf_id,
+                        fact_name=inf_name if inf_name else inf_id,  # Just the name, no I1: prefix
                         value=inference_value,
-                        reasoning=f"Derived via {operation}",
+                        reasoning=f"Computed: {operation}",  # Include the operation formula
                         source=FactSource.DERIVED,
                     )
 
