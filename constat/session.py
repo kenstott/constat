@@ -3312,8 +3312,13 @@ QUESTION: <restate the question>
 
 PREMISES:
 P1: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
-P2: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
-(list ALL base data needed from sources)
+P2: <fact_name> = ? (<description>) [source: knowledge]
+P3: <fact_name> = <known_value> (<description>) [source: knowledge]
+(list ALL base data needed - use "database" for data queries, "knowledge" for general facts)
+
+IMPORTANT: For well-known facts (like scientific constants, geography, etc.), you can either:
+- Use [source: knowledge] and the system will ask an LLM
+- Or embed the value directly: P3: planet_count = 8 (Number of planets in solar system) [source: knowledge]
 
 INFERENCE:
 I1: <result_name> = <operation>(P1, P2) -- <explanation>
@@ -3323,22 +3328,22 @@ I2: <result_name> = <operation>(I1) -- <explanation>
 CONCLUSION:
 C: <final sentence answering the question using the inferences>
 
-EXAMPLE for "What is total revenue by region?":
+EXAMPLE for "What is revenue multiplied by Pi?":
 
-QUESTION: What is total revenue by region?
+QUESTION: What is revenue multiplied by Pi?
 
 PREMISES:
-P1: orders_data = ? (All orders with amounts and dates) [source: database:sales_db]
-P2: customer_regions = ? (Customer ID to region mapping) [source: database:sales_db]
+P1: total_revenue = ? (Sum of all order amounts) [source: database:sales_db]
+P2: pi_value = 3.14159 (Mathematical constant Pi) [source: knowledge]
 
 INFERENCE:
-I1: orders_with_region = join(P1, P2) -- Join orders to get region for each order
-I2: revenue_by_region = aggregate(I1, SUM(amount) GROUP BY region) -- Sum revenue per region
+I1: adjusted_revenue = multiply(P1, P2) -- Multiply revenue by Pi
 
 CONCLUSION:
-C: The total revenue by region is provided by I2, showing the sum of order amounts grouped by customer region.
+C: The revenue multiplied by Pi is provided by I1.
 
 Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: prefixes EXACTLY as shown.
+For world knowledge (planets, constants, geography), embed the value directly or use [source: knowledge].
 """
 
         result = self.router.execute(
@@ -3380,15 +3385,28 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                         "source": match.group(4).strip() if match.group(4) else "database",
                     })
                 else:
-                    # Try simpler format: P1: fact_name (description)
-                    simple_match = re.match(r'^(P\d+):\s*(.+?)\s*\(([^)]+)\)', line)
-                    if simple_match:
+                    # Try format with embedded value: P1: fact_name = 8 (description) [source: knowledge]
+                    value_match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*([^\s(]+)\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
+                    if value_match:
+                        # Include the value in the name so embedded value extraction works
+                        fact_name = value_match.group(2).strip()
+                        embedded_val = value_match.group(3).strip()
                         premises.append({
-                            "id": simple_match.group(1),
-                            "name": simple_match.group(2).strip().rstrip('=?').strip(),
-                            "description": simple_match.group(3).strip(),
-                            "source": "database",
+                            "id": value_match.group(1),
+                            "name": f"{fact_name} = {embedded_val}",  # Include value for extraction
+                            "description": value_match.group(4).strip(),
+                            "source": value_match.group(5).strip() if value_match.group(5) else "knowledge",
                         })
+                    else:
+                        # Try simpler format: P1: fact_name (description)
+                        simple_match = re.match(r'^(P\d+):\s*(.+?)\s*\(([^)]+)\)', line)
+                        if simple_match:
+                            premises.append({
+                                "id": simple_match.group(1),
+                                "name": simple_match.group(2).strip().rstrip('=?').strip(),
+                                "description": simple_match.group(3).strip(),
+                                "source": "database",
+                            })
             elif current_section == "inference" and re.match(r'^I\d+:', line):
                 # Parse: I1: derived_fact = operation(inputs) -- explanation
                 match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+?)\s*--\s*(.+)$', line)
@@ -3699,6 +3717,61 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                     elif source.startswith("document:"):
                         # Resolve from document
                         fact = self.fact_resolver.resolve(fact_name)
+                    elif source.startswith("knowledge") or source.startswith("llm") or source == "general":
+                        # Knowledge-based fact - ask LLM directly with full context
+                        knowledge_prompt = f"""I need to know this fact for a data analysis:
+
+Fact name: {fact_name}
+Description: {fact_desc}
+
+Provide the value if you know it from your training/knowledge.
+Respond with ONLY:
+VALUE: <the numeric or text value>
+
+For example:
+- "Number of planets in the solar system" → VALUE: 8
+- "Boiling point of water in Celsius" → VALUE: 100
+- "Capital of France" → VALUE: Paris
+
+If you don't know with certainty, respond: UNKNOWN"""
+
+                        try:
+                            knowledge_result = self.router.execute(
+                                task_type=TaskType.SYNTHESIS,
+                                system="You provide factual knowledge. Be precise and certain.",
+                                user_message=knowledge_prompt,
+                                max_tokens=100,
+                            )
+
+                            response = knowledge_result.content.strip()
+                            if "UNKNOWN" not in response and "VALUE:" in response:
+                                value_str = response.split("VALUE:", 1)[1].strip().split("\n")[0]
+                                # Try to parse as number
+                                try:
+                                    if "." in value_str:
+                                        value = float(value_str)
+                                    else:
+                                        value = int(value_str)
+                                except ValueError:
+                                    value = value_str
+
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=value,
+                                    confidence=0.9,
+                                    source=FactSource.LLM_KNOWLEDGE,
+                                    reasoning=f"From LLM knowledge: {fact_desc}",
+                                )
+                            else:
+                                raise Exception(f"LLM could not resolve: {fact_desc}")
+                        except Exception as llm_err:
+                            fact = Fact(
+                                name=fact_name,
+                                value=None,
+                                confidence=0.0,
+                                source=FactSource.UNRESOLVED,
+                                reasoning=f"Knowledge resolution failed: {llm_err}",
+                            )
                     else:
                         # Generic resolution
                         fact = self.fact_resolver.resolve(fact_name)
