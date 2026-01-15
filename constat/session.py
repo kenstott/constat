@@ -570,6 +570,51 @@ class Session:
         except Exception:
             pass  # Continue without facts if there's an error
 
+    def _is_unclear_input(self, text: str) -> bool:
+        """Check if input appears to be unclear, garbage, or a copy-paste error.
+
+        Detects:
+        - Terminal prompts (e.g., "(.venv) user@host % command")
+        - File paths without context
+        - Very short input with no meaningful words
+        - Copy-paste errors with shell syntax
+        """
+        import re
+
+        text = text.strip()
+
+        # Empty or very short without meaningful content
+        if len(text) < 3:
+            return True
+
+        # Terminal prompt patterns
+        terminal_patterns = [
+            r'^\(.+\)\s*\(.+\)\s*\w+@\w+',  # (.venv) (base) user@host
+            r'^\w+@[\w\-]+\s*[%$#>]',  # user@hostname %
+            r'^[%$#>]\s*\w+',  # % command or $ command
+            r'^\(.+\)\s*%',  # (.venv) %
+            r'constat\s+repl',  # constat repl command
+            r'^pip\s+install',  # pip install
+            r'^python\s+-',  # python -m
+            r'^cd\s+/',  # cd /path
+            r'^\s*\$\s*\w+',  # $ command
+        ]
+
+        for pattern in terminal_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+
+        # Looks like a file path without a question
+        if re.match(r'^[/~][\w/\-\.]+$', text) or re.match(r'^[\w]:\\', text):
+            return True
+
+        # Contains mostly special characters
+        alpha_ratio = sum(1 for c in text if c.isalpha()) / max(len(text), 1)
+        if alpha_ratio < 0.3 and len(text) > 10:
+            return True
+
+        return False
+
     def _build_step_prompt(self, step: Step) -> str:
         """Build the prompt for generating step code."""
         # Format datastore tables info
@@ -2380,6 +2425,23 @@ Please create a revised plan that addresses this feedback."""
         # Save problem statement to datastore (for UI restoration)
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
+
+        # Check for unclear/garbage input before processing
+        if self._is_unclear_input(problem):
+            return {
+                "success": True,
+                "meta_response": True,
+                "output": "I'm not sure I understand that input. Could you rephrase your question?\n\n"
+                          "You can ask me things like:\n"
+                          "- Questions about your data (e.g., \"What's our total revenue?\")\n"
+                          "- Verification requests (e.g., \"Prove that sales increased\")\n"
+                          "- Explanations (e.g., \"How do you reason about problems?\")\n\n"
+                          "Type /help for available commands.",
+                "suggestions": [
+                    "What data is available?",
+                    "How can you help me?",
+                ],
+            }
 
         # Determine execution mode
         mode_selection = suggest_mode(problem)
