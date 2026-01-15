@@ -3791,51 +3791,76 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         fact = self.fact_resolver.resolve(fact_name)
                     elif source.startswith("knowledge") or source.startswith("llm") or source == "general":
                         # Knowledge-based fact - ask LLM directly with full context
-                        knowledge_prompt = f"""I need to know this fact for a data analysis:
+                        knowledge_prompt = f"""Provide a numeric value for this fact. I will use it in a calculation.
 
-Fact name: {fact_name}
-Description: {fact_desc}
+FACT: {fact_desc}
 
-Provide the value if you know it from your training/knowledge.
-Respond with ONLY:
-VALUE: <the numeric or text value>
+CRITICAL FORMAT REQUIREMENT:
+Your ENTIRE response must be EXACTLY: VALUE: <number>
+Nothing else. No explanations. No units. Just "VALUE:" followed by a single number.
 
-For example:
-- "Number of planets in the solar system" → VALUE: 8
-- "Boiling point of water in Celsius" → VALUE: 100
-- "Capital of France" → VALUE: Paris
+Examples of CORRECT responses:
+VALUE: 8
+VALUE: 15000000
+VALUE: 3.14159
 
-If you don't know with certainty, respond: UNKNOWN"""
+For statistics/averages, use a typical/median value. For unknowns, provide your best estimate.
+
+YOUR RESPONSE:"""
 
                         try:
                             knowledge_result = self.router.execute(
                                 task_type=TaskType.SYNTHESIS,
-                                system="You provide factual knowledge. Be precise and certain.",
+                                system="You output ONLY 'VALUE: <number>' with no other text. Always provide a number.",
                                 user_message=knowledge_prompt,
-                                max_tokens=100,
+                                max_tokens=50,  # Short response expected
                             )
 
                             response = knowledge_result.content.strip()
-                            if "UNKNOWN" not in response and "VALUE:" in response:
-                                value_str = response.split("VALUE:", 1)[1].strip().split("\n")[0]
-                                # Try to parse as number
+                            import logging
+                            logger = logging.getLogger(__name__)
+                            logger.debug(f"[LLM_KNOWLEDGE] Response for {fact_name}: {response[:200]}")
+
+                            # Try to extract value from response
+                            value = None
+                            if "VALUE:" in response.upper():
+                                # Extract after VALUE:
+                                value_part = response.upper().split("VALUE:", 1)[1].strip()
+                                # Get just the number part (handle things like "15,000,000" or "$15M")
+                                value_str = value_part.split("\n")[0].strip()
+                                # Clean up common formats
+                                value_str = value_str.replace(",", "").replace("$", "").strip()
+                                # Handle shorthand like "15M" or "15K"
+                                multiplier = 1
+                                if value_str.endswith("M"):
+                                    multiplier = 1_000_000
+                                    value_str = value_str[:-1]
+                                elif value_str.endswith("K"):
+                                    multiplier = 1_000
+                                    value_str = value_str[:-1]
+                                elif value_str.endswith("B"):
+                                    multiplier = 1_000_000_000
+                                    value_str = value_str[:-1]
+
                                 try:
                                     if "." in value_str:
-                                        value = float(value_str)
+                                        value = float(value_str) * multiplier
                                     else:
-                                        value = int(value_str)
+                                        value = int(float(value_str) * multiplier)
                                 except ValueError:
+                                    # If still can't parse, use as string
                                     value = value_str
 
+                            if value is not None:
                                 fact = Fact(
                                     name=fact_name,
                                     value=value,
-                                    confidence=0.9,
+                                    confidence=0.7,  # Lower confidence for LLM estimates
                                     source=FactSource.LLM_KNOWLEDGE,
-                                    reasoning=f"From LLM knowledge: {fact_desc}",
+                                    reasoning=f"LLM estimate: {fact_desc}",
                                 )
                             else:
-                                raise Exception(f"LLM could not resolve: {fact_desc}")
+                                raise Exception(f"Could not parse LLM response: {response[:100]}")
                         except Exception as llm_err:
                             fact = Fact(
                                 name=fact_name,
@@ -3895,6 +3920,62 @@ If you don't know with certainty, respond: UNKNOWN"""
                         }
                     ))
                 except Exception as e:
+                    # Try to ask the user for the value as last resort
+                    if self._clarification_callback:
+                        try:
+                            request = ClarificationRequest(
+                                original_question=problem,
+                                ambiguity_reason=f"Could not resolve fact: {fact_name}",
+                                questions=[
+                                    ClarificationQuestion(
+                                        text=f"What is the value for '{fact_name}' ({fact_desc})?",
+                                        suggestions=[]
+                                    )
+                                ]
+                            )
+                            response = self._clarification_callback(request)
+                            if not response.skip and response.answers:
+                                user_value_str = list(response.answers.values())[0]
+                                # Try to parse as number
+                                try:
+                                    if "." in user_value_str:
+                                        user_value = float(user_value_str.replace(",", ""))
+                                    else:
+                                        user_value = int(user_value_str.replace(",", ""))
+                                except ValueError:
+                                    user_value = user_value_str
+
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=user_value,
+                                    confidence=1.0,
+                                    source=FactSource.USER_PROVIDED,
+                                    reasoning=f"User provided: {user_value_str}",
+                                )
+                                resolved_premises[fact_id] = fact
+                                derivation_lines.append(f"- {fact_id}: {fact_name} = {user_value} (user provided)")
+                                self.fact_resolver.add_user_fact(
+                                    fact_name=fact_name,
+                                    value=user_value,
+                                    reasoning=f"User provided for {fact_desc}",
+                                    source=FactSource.USER_PROVIDED,
+                                )
+                                self._emit_event(StepEvent(
+                                    event_type="premise_resolved",
+                                    step_number=idx + 1,
+                                    data={
+                                        "fact_name": f"{fact_id}: {fact_name}",
+                                        "value": user_value,
+                                        "source": "user_provided",
+                                        "confidence": 1.0,
+                                        "step": idx + 1,
+                                        "total": total_premises,
+                                    }
+                                ))
+                                continue  # Successfully resolved via user, skip the error path
+                        except Exception:
+                            pass  # Fall through to error handling
+
                     derivation_lines.append(f"- {fact_id}: {fact_name} = UNRESOLVED ({e})")
                     self._emit_event(StepEvent(
                         event_type="premise_resolved",
