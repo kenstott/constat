@@ -3791,29 +3791,38 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         fact = self.fact_resolver.resolve(fact_name)
                     elif source.startswith("knowledge") or source.startswith("llm") or source == "general":
                         # Knowledge-based fact - ask LLM directly with full context
-                        knowledge_prompt = f"""Provide a numeric value for this fact. I will use it in a calculation.
+                        # Use JSON format for reliable parsing
+                        json_key = fact_name.replace(" ", "_").lower()
+                        knowledge_prompt = f"""Provide the value for this fact.
 
 FACT: {fact_desc}
 
-CRITICAL FORMAT REQUIREMENT:
-Your ENTIRE response must be EXACTLY: VALUE: <number>
-Nothing else. No explanations. No units. Just "VALUE:" followed by a single number.
+Respond with ONLY valid JSON in this exact format:
+{{"{json_key}": <value>}}
 
-Examples of CORRECT responses:
-VALUE: 8
-VALUE: 15000000
-VALUE: 3.14159
+The value can be:
+- A number (integer or decimal): {{"planets": 8}} or {{"rate": 3.14}}
+- A string: {{"country": "United States"}}
+- An ISO date: {{"founding_date": "1776-07-04"}}
 
-For statistics/averages, use a typical/median value. For unknowns, provide your best estimate.
+Examples:
+- "planets in solar system" → {{"planets": 8}}
+- "average CEO compensation" → {{"avg_ceo_compensation": 15000000}}
+- "capital of France" → {{"capital": "Paris"}}
+- "US Independence Day" → {{"independence_day": "1776-07-04"}}
 
-YOUR RESPONSE:"""
+For statistics/averages, use typical values. For unknowns, estimate.
+
+YOUR JSON RESPONSE:"""
 
                         try:
+                            import json
+                            from datetime import datetime
                             knowledge_result = self.router.execute(
                                 task_type=TaskType.SYNTHESIS,
-                                system="You output ONLY 'VALUE: <number>' with no other text. Always provide a number.",
+                                system="You output ONLY valid JSON with a single value (number, string, or ISO date). No explanations.",
                                 user_message=knowledge_prompt,
-                                max_tokens=50,  # Short response expected
+                                max_tokens=100,
                             )
 
                             response = knowledge_result.content.strip()
@@ -3821,35 +3830,44 @@ YOUR RESPONSE:"""
                             logger = logging.getLogger(__name__)
                             logger.debug(f"[LLM_KNOWLEDGE] Response for {fact_name}: {response[:200]}")
 
-                            # Try to extract value from response
+                            # Try to parse as JSON
                             value = None
-                            if "VALUE:" in response.upper():
-                                # Extract after VALUE:
-                                value_part = response.upper().split("VALUE:", 1)[1].strip()
-                                # Get just the number part (handle things like "15,000,000" or "$15M")
-                                value_str = value_part.split("\n")[0].strip()
-                                # Clean up common formats
-                                value_str = value_str.replace(",", "").replace("$", "").strip()
-                                # Handle shorthand like "15M" or "15K"
-                                multiplier = 1
-                                if value_str.endswith("M"):
-                                    multiplier = 1_000_000
-                                    value_str = value_str[:-1]
-                                elif value_str.endswith("K"):
-                                    multiplier = 1_000
-                                    value_str = value_str[:-1]
-                                elif value_str.endswith("B"):
-                                    multiplier = 1_000_000_000
-                                    value_str = value_str[:-1]
-
-                                try:
-                                    if "." in value_str:
-                                        value = float(value_str) * multiplier
-                                    else:
-                                        value = int(float(value_str) * multiplier)
-                                except ValueError:
-                                    # If still can't parse, use as string
-                                    value = value_str
+                            try:
+                                # Extract JSON from response (handle markdown code blocks)
+                                json_str = response
+                                if "```" in json_str:
+                                    json_str = re.sub(r'```\w*\n?', '', json_str).strip()
+                                if json_str.startswith("{"):
+                                    data = json.loads(json_str)
+                                    # Get the first value from the JSON
+                                    if data:
+                                        raw_value = list(data.values())[0]
+                                        # Detect value type
+                                        if isinstance(raw_value, (int, float)):
+                                            value = raw_value
+                                        elif isinstance(raw_value, str):
+                                            # Check if it's an ISO date
+                                            try:
+                                                # Try to parse as ISO date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+                                                if re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?', raw_value):
+                                                    datetime.fromisoformat(raw_value.replace('Z', '+00:00'))
+                                                    value = raw_value  # Keep as ISO string for dates
+                                                else:
+                                                    value = raw_value  # Regular string
+                                            except ValueError:
+                                                value = raw_value  # Regular string if date parse fails
+                                        else:
+                                            value = raw_value  # Other types (bool, etc.)
+                            except json.JSONDecodeError:
+                                # Fallback: try VALUE: format
+                                if "VALUE:" in response.upper():
+                                    value_part = response.upper().split("VALUE:", 1)[1].strip()
+                                    value_str = value_part.split("\n")[0].strip()
+                                    value_str = value_str.replace(",", "").replace("$", "").strip()
+                                    try:
+                                        value = float(value_str) if "." in value_str else int(value_str)
+                                    except ValueError:
+                                        value = value_str  # Keep as string
 
                             if value is not None:
                                 fact = Fact(
