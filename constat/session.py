@@ -636,32 +636,8 @@ class Session:
         else:
             scratchpad_context = self.scratchpad.get_recent_context(max_steps=5)
 
-        # Build schema overview with preloaded context if available
-        schema_overview = self.schema_manager.get_overview()
-        if self._preloaded_context:
-            schema_overview = f"{self._preloaded_context}\n\n{schema_overview}"
-
-        # Build API overview if configured
-        api_overview = ""
-        if self.config.apis:
-            api_lines = ["\n## Available APIs"]
-            for name, api_config in self.config.apis.items():
-                api_type = api_config.type.upper()
-                desc = api_config.description or f"{api_type} endpoint"
-                api_lines.append(f"- **api_{name}** ({api_type}): {desc}")
-            api_overview = "\n".join(api_lines)
-
-        # Build user facts section - essential for code gen to use correct values
-        user_facts_text = ""
-        try:
-            all_facts = self.fact_resolver.get_all_facts()
-            if all_facts:
-                fact_lines = ["\n## Known User Facts (use these values in code)"]
-                for name, fact in all_facts.items():
-                    fact_lines.append(f"- **{name}**: {fact.value}")
-                user_facts_text = "\n".join(fact_lines)
-        except Exception:
-            pass
+        # Build source context
+        ctx = self._build_source_context()
 
         # Build codegen learnings section - show what didn't work vs what did work
         learnings_text = ""
@@ -672,10 +648,10 @@ class Session:
 
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
-            schema_overview=schema_overview,
-            api_overview=api_overview,
+            schema_overview=ctx["schema_overview"],
+            api_overview=ctx["api_overview"],
             domain_context=self.config.system_prompt or "No additional context.",
-            user_facts=user_facts_text,
+            user_facts=ctx["user_facts"],
             learnings=learnings_text,
             datastore_tables=datastore_info,
             scratchpad=scratchpad_context,
@@ -914,9 +890,138 @@ class Session:
 
         return tools
 
+    def _resolve_llm_knowledge(self, question: str) -> int | float | str:
+        """Resolve a fact from LLM general knowledge.
+
+        Args:
+            question: The question or fact description to resolve
+
+        Returns:
+            The value (number, string, or ISO date string)
+
+        Raises:
+            Exception: If the LLM response cannot be parsed
+        """
+        import json
+        from datetime import datetime
+        import logging
+
+        logger = logging.getLogger(__name__)
+        json_key = question.replace(" ", "_").lower()[:30]
+
+        knowledge_prompt = f"""Provide the value for this fact.
+
+FACT: {question}
+
+Respond with ONLY valid JSON in this exact format:
+{{"{json_key}": <value>}}
+
+The value can be:
+- A number (integer or decimal): {{"planets": 8}} or {{"rate": 3.14}}
+- A string: {{"country": "United States"}}
+- An ISO date: {{"founding_date": "1776-07-04"}}
+
+Examples:
+- "planets in solar system" → {{"planets": 8}}
+- "average CEO compensation" → {{"avg_ceo_compensation": 15000000}}
+- "capital of France" → {{"capital": "Paris"}}
+- "US Independence Day" → {{"independence_day": "1776-07-04"}}
+
+For statistics/averages, use typical values. For unknowns, estimate.
+
+YOUR JSON RESPONSE:"""
+
+        result = self.router.execute(
+            task_type=TaskType.SYNTHESIS,
+            system="You output ONLY valid JSON with a single value (number, string, or ISO date). No explanations.",
+            user_message=knowledge_prompt,
+            max_tokens=100,
+        )
+
+        response = result.content.strip()
+        logger.debug(f"[LLM_KNOWLEDGE] Response for {question}: {response[:200]}")
+
+        # Parse JSON response
+        json_str = response
+        if "```" in json_str:
+            json_str = re.sub(r'```\w*\n?', '', json_str).strip()
+
+        if not json_str.startswith("{"):
+            raise Exception(f"Could not parse LLM response: {response[:100]}")
+
+        data = json.loads(json_str)
+        if not data:
+            raise Exception(f"Empty JSON response: {response[:100]}")
+
+        raw_value = list(data.values())[0]
+
+        # Return typed value
+        if isinstance(raw_value, (int, float)):
+            return raw_value
+        elif isinstance(raw_value, str):
+            # Check if it's an ISO date (validate but return as string)
+            if re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?', raw_value):
+                try:
+                    datetime.fromisoformat(raw_value.replace('Z', '+00:00'))
+                except ValueError:
+                    pass  # Not a valid date, return as regular string
+            return raw_value
+        else:
+            return raw_value  # Other types (bool, etc.)
+
+    def _build_source_context(self, include_user_facts: bool = True) -> dict:
+        """Build context about available data sources (schema, APIs, documents, facts).
+
+        Returns:
+            dict with keys: schema_overview, api_overview, doc_overview, user_facts
+        """
+        # Schema overview
+        schema_overview = self.schema_manager.get_overview()
+        if self._preloaded_context:
+            schema_overview = f"{self._preloaded_context}\n\n{schema_overview}"
+
+        # API overview
+        api_overview = ""
+        if self.config.apis:
+            api_lines = ["\n## Available APIs"]
+            for name, api_config in self.config.apis.items():
+                api_type = api_config.type.upper()
+                desc = api_config.description or f"{api_type} endpoint"
+                api_lines.append(f"- **{name}** ({api_type}): {desc}")
+            api_overview = "\n".join(api_lines)
+
+        # Document overview
+        doc_overview = ""
+        if self.config.documents:
+            doc_lines = ["\n## Reference Documents"]
+            for name, doc_config in self.config.documents.items():
+                desc = doc_config.description or doc_config.type
+                doc_lines.append(f"- **{name}**: {desc}")
+            doc_overview = "\n".join(doc_lines)
+
+        # User facts
+        user_facts = ""
+        if include_user_facts:
+            try:
+                all_facts = self.fact_resolver.get_all_facts()
+                if all_facts:
+                    fact_lines = ["\n## Known User Facts (use these values in code)"]
+                    for name, fact in all_facts.items():
+                        fact_lines.append(f"- **{name}**: {fact.value}")
+                    user_facts = "\n".join(fact_lines)
+            except Exception:
+                pass
+
+        return {
+            "schema_overview": schema_overview,
+            "api_overview": api_overview,
+            "doc_overview": doc_overview,
+            "user_facts": user_facts,
+        }
+
     def _create_llm_ask_helper(self) -> callable:
         """Create a helper function for step code to query LLM for general knowledge."""
-        def llm_ask(question: str) -> str:
+        def llm_ask(question: str) -> int | float | str:
             """
             Ask the LLM a general knowledge question.
 
@@ -930,15 +1035,9 @@ class Session:
                 question: The question to ask
 
             Returns:
-                The LLM's response as a string
+                The value (number, string, or ISO date string)
             """
-            result = self.router.execute(
-                task_type=TaskType.GENERAL,
-                system="You are a helpful assistant. Provide factual, concise answers. If you're uncertain, say so.",
-                user_message=question,
-                max_tokens=500,
-            )
-            return result.content
+            return self._resolve_llm_knowledge(question)
         return llm_ask
 
     def _get_execution_globals(self) -> dict:
@@ -1484,45 +1583,14 @@ Examples:
         Returns:
             ClarificationRequest if clarification needed, None otherwise
         """
-        schema_overview = self.schema_manager.get_overview()
-
-        # Build API overview if configured
-        api_overview = ""
-        if self.config.apis:
-            api_lines = ["\n## Available APIs"]
-            for name, api_config in self.config.apis.items():
-                api_type = api_config.type.upper()
-                desc = api_config.description or f"{api_type} endpoint"
-                api_lines.append(f"- **{name}** ({api_type}): {desc}")
-            api_overview = "\n".join(api_lines)
-
-        # Build document overview if configured
-        doc_overview = ""
-        if self.config.documents:
-            doc_lines = ["\n## Reference Documents"]
-            for name, doc_config in self.config.documents.items():
-                desc = doc_config.description or doc_config.type
-                doc_lines.append(f"- **{name}**: {desc}")
-            doc_overview = "\n".join(doc_lines)
-
-        # Include known user facts in the prompt
-        user_facts_text = ""
-        try:
-            all_facts = self.fact_resolver.get_all_facts()
-            if all_facts:
-                fact_lines = ["\n## Known User Facts"]
-                for name, fact in all_facts.items():
-                    fact_lines.append(f"- {name}: {fact.value}")
-                user_facts_text = "\n".join(fact_lines)
-        except Exception:
-            pass
+        ctx = self._build_source_context()
 
         prompt = f"""Analyze this question for ambiguity. Determine if critical parameters are missing that would significantly change the analysis.
 
 Question: "{problem}"
 
 Available data sources (databases AND APIs - both are valid data sources):
-{schema_overview}{api_overview}{doc_overview}{user_facts_text}
+{ctx["schema_overview"]}{ctx["api_overview"]}{ctx["doc_overview"]}{ctx["user_facts"]}
 
 IMPORTANT: If an API can provide the data needed for the question, the question is CLEAR.
 For example, if the question asks about countries and a countries API is available, that's sufficient.
@@ -1982,7 +2050,7 @@ Unlike chat-based AI tools, I don't just generate text — I execute real querie
         ]):
             return self._answer_personal_question()
 
-        schema_overview = self.schema_manager.get_overview()
+        ctx = self._build_source_context(include_user_facts=False)
         domain_context = self.config.system_prompt or ""
 
         # Get user role if known
@@ -1996,33 +2064,14 @@ Unlike chat-based AI tools, I don't just generate text — I execute real querie
 
         role_context = f"\nThe user's role is: {user_role}" if user_role else ""
 
-        # Build API overview if configured
-        api_overview = ""
-        if self.config.apis:
-            api_lines = ["Available APIs:"]
-            for name, api_config in self.config.apis.items():
-                api_type = api_config.type.upper()
-                desc = api_config.description or f"{api_type} endpoint"
-                api_lines.append(f"  - {name} ({api_type}): {desc}")
-            api_overview = "\n" + "\n".join(api_lines)
-
-        # Build document overview if configured
-        doc_overview = ""
-        if self.doc_tools and self.config.documents:
-            doc_lines = ["Reference Documents:"]
-            for name, doc_config in self.config.documents.items():
-                desc = doc_config.description or doc_config.type
-                doc_lines.append(f"  - {name}: {desc}")
-            doc_overview = "\n" + "\n".join(doc_lines)
-
         prompt = f"""The user is asking about your capabilities. Answer based on the available data.
 
 User question: {problem}{role_context}
 
 Available databases and tables:
-{schema_overview}
-{api_overview}
-{doc_overview}
+{ctx["schema_overview"]}
+{ctx["api_overview"]}
+{ctx["doc_overview"]}
 
 Domain context:
 {domain_context}
@@ -3339,34 +3388,17 @@ User feedback: {approval.suggestion}
             data={"message": "Identifying required facts for verification..."}
         ))
 
-        # Get schema context for the planner
-        schema_overview = self.schema_manager.get_overview()
-
-        # Build document list for source attribution
-        doc_list = ""
-        if self.doc_tools and self.config.documents:
-            doc_names = list(self.config.documents.keys())
-            doc_list = "\n\nAvailable reference documents:\n" + "\n".join(
-                f"- {name}: {self.config.documents[name].description or 'reference document'}"
-                for name in doc_names
-            )
-
-        # Build API list for source attribution
-        api_list = ""
-        if self.config.apis:
-            api_list = "\n\nAvailable APIs:\n" + "\n".join(
-                f"- {name} ({api.type}): {api.description or api.url or 'API endpoint'}"
-                for name, api in self.config.apis.items()
-            )
+        # Get source context for the planner
+        ctx = self._build_source_context(include_user_facts=False)
 
         fact_plan_prompt = f"""Construct a logical derivation to answer this question with full provenance.
 
 Question: {problem}
 
 Available databases:
-{schema_overview}
-{doc_list}
-{api_list}
+{ctx["schema_overview"]}
+{ctx["doc_overview"]}
+{ctx["api_overview"]}
 
 Build a formal derivation with EXACTLY this format:
 
@@ -3727,7 +3759,7 @@ For world knowledge (planets, constants, geography), embed the value directly or
 
 The result should be stored as '{fact_name}'.
 Available schema:
-{schema_overview}
+{ctx["schema_overview"]}
 
 Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 
@@ -3790,87 +3822,16 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         # Resolve from document
                         fact = self.fact_resolver.resolve(fact_name)
                     elif source.startswith("knowledge") or source.startswith("llm") or source == "general":
-                        # Knowledge-based fact - ask LLM directly with full context
-                        # Use JSON format for reliable parsing
-                        json_key = fact_name.replace(" ", "_").lower()
-                        knowledge_prompt = f"""Provide the value for this fact.
-
-FACT: {fact_desc}
-
-Respond with ONLY valid JSON in this exact format:
-{{"{json_key}": <value>}}
-
-The value can be:
-- A number (integer or decimal): {{"planets": 8}} or {{"rate": 3.14}}
-- A string: {{"country": "United States"}}
-- An ISO date: {{"founding_date": "1776-07-04"}}
-
-Examples:
-- "planets in solar system" → {{"planets": 8}}
-- "average CEO compensation" → {{"avg_ceo_compensation": 15000000}}
-- "capital of France" → {{"capital": "Paris"}}
-- "US Independence Day" → {{"independence_day": "1776-07-04"}}
-
-For statistics/averages, use typical values. For unknowns, estimate.
-
-YOUR JSON RESPONSE:"""
-
+                        # Knowledge-based fact - ask LLM directly
                         try:
-                            import json
-                            from datetime import datetime
-                            knowledge_result = self.router.execute(
-                                task_type=TaskType.SYNTHESIS,
-                                system="You output ONLY valid JSON with a single value (number, string, or ISO date). No explanations.",
-                                user_message=knowledge_prompt,
-                                max_tokens=100,
+                            value = self._resolve_llm_knowledge(fact_desc)
+                            fact = Fact(
+                                name=fact_name,
+                                value=value,
+                                confidence=0.7,  # Lower confidence for LLM estimates
+                                source=FactSource.LLM_KNOWLEDGE,
+                                reasoning=f"LLM estimate: {fact_desc}",
                             )
-
-                            response = knowledge_result.content.strip()
-                            import logging
-                            logger = logging.getLogger(__name__)
-                            logger.debug(f"[LLM_KNOWLEDGE] Response for {fact_name}: {response[:200]}")
-
-                            # Try to parse as JSON
-                            value = None
-                            try:
-                                # Extract JSON from response (handle markdown code blocks)
-                                json_str = response
-                                if "```" in json_str:
-                                    json_str = re.sub(r'```\w*\n?', '', json_str).strip()
-                                if json_str.startswith("{"):
-                                    data = json.loads(json_str)
-                                    # Get the first value from the JSON
-                                    if data:
-                                        raw_value = list(data.values())[0]
-                                        # Detect value type
-                                        if isinstance(raw_value, (int, float)):
-                                            value = raw_value
-                                        elif isinstance(raw_value, str):
-                                            # Check if it's an ISO date
-                                            try:
-                                                # Try to parse as ISO date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
-                                                if re.match(r'^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?', raw_value):
-                                                    datetime.fromisoformat(raw_value.replace('Z', '+00:00'))
-                                                    value = raw_value  # Keep as ISO string for dates
-                                                else:
-                                                    value = raw_value  # Regular string
-                                            except ValueError:
-                                                value = raw_value  # Regular string if date parse fails
-                                        else:
-                                            value = raw_value  # Other types (bool, etc.)
-                            except json.JSONDecodeError:
-                                pass  # Will raise below if value is None
-
-                            if value is not None:
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=value,
-                                    confidence=0.7,  # Lower confidence for LLM estimates
-                                    source=FactSource.LLM_KNOWLEDGE,
-                                    reasoning=f"LLM estimate: {fact_desc}",
-                                )
-                            else:
-                                raise Exception(f"Could not parse LLM response: {response[:100]}")
                         except Exception as llm_err:
                             fact = Fact(
                                 name=fact_name,
