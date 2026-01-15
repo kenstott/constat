@@ -3537,6 +3537,28 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                 fact_desc = premise["description"]
                 source = premise["source"]
 
+                # Check if the premise name contains an embedded value (e.g., "name = 8")
+                # This happens when the LLM provides a known constant at planning time
+                embedded_value = None
+                if " = " in fact_name and not fact_name.endswith(" = ?"):
+                    # Extract the embedded value
+                    parts = fact_name.rsplit(" = ", 1)
+                    if len(parts) == 2:
+                        clean_name = parts[0].strip()
+                        value_str = parts[1].strip()
+                        # Try to parse the value
+                        try:
+                            # Try numeric first
+                            if "." in value_str:
+                                embedded_value = float(value_str)
+                            else:
+                                embedded_value = int(value_str)
+                            fact_name = clean_name  # Use clean name without the value
+                        except ValueError:
+                            # Keep as string if not numeric
+                            embedded_value = value_str.strip("'\"")
+                            fact_name = clean_name
+
                 # Emit resolving event
                 self._emit_event(StepEvent(
                     event_type="premise_resolving",
@@ -3552,7 +3574,18 @@ Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: pref
                 # Try to resolve based on source type
                 try:
                     fact = None
-                    if source.startswith("database") or source == "database":
+
+                    # If we extracted an embedded value, use it directly
+                    if embedded_value is not None:
+                        from constat.execution.fact_resolver import Fact, FactSource
+                        fact = Fact(
+                            name=fact_name,
+                            value=embedded_value,
+                            confidence=0.95,  # High but not 100% - LLM knowledge can be wrong
+                            source=FactSource.LLM_KNOWLEDGE,
+                            reasoning="Value resolved from LLM knowledge during planning",
+                        )
+                    elif source.startswith("database") or source == "database":
                         # Generate and execute SQL for database premises
                         db_name = source.split(":", 1)[1].strip() if ":" in source else None
 
@@ -3719,18 +3752,31 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 
                 try:
                     # Build context of available data (premises + prior inferences)
+                    # Separate scalar values from tables
+                    scalar_values = []
                     available_tables = []
                     for pid, fact in resolved_premises.items():
-                        if fact and fact.value and "rows" in str(fact.value):
-                            # Extract table name from the premise name
-                            table_name = pid.lower().replace(":", "_")
-                            available_tables.append(f"- {pid}: stored as '{premises[int(pid[1:])-1]['name']}'")
+                        if fact and fact.value:
+                            val_str = str(fact.value)
+                            if "rows" in val_str:
+                                # Table data stored in datastore
+                                premise_idx = int(pid[1:]) - 1
+                                fact_name = premises[premise_idx]['name'] if premise_idx < len(premises) else pid.lower()
+                                available_tables.append(f"- {pid}: stored as table '{fact_name}'")
+                            else:
+                                # Scalar value - provide directly
+                                scalar_values.append(f"- {pid} ({premises[int(pid[1:])-1]['name']}): {fact.value}")
 
                     for prior_id, prior_result in resolved_inferences.items():
-                        if prior_result and "rows" in str(prior_result):
-                            available_tables.append(f"- {prior_id}: stored as '{prior_id.lower()}_result'")
+                        if prior_result:
+                            if "rows" in str(prior_result):
+                                available_tables.append(f"- {prior_id}: stored as table '{prior_id.lower()}_result'")
+                            else:
+                                scalar_values.append(f"- {prior_id}: {prior_result}")
 
-                    tables_context = "\n".join(available_tables) if available_tables else "(no tables available)"
+                    # Build context strings
+                    scalars_context = "\n".join(scalar_values) if scalar_values else "(none)"
+                    tables_context = "\n".join(available_tables) if available_tables else "(none)"
 
                     # Generate code to execute the inference
                     inference_prompt = f"""Generate Python code to execute this inference step:
@@ -3738,7 +3784,10 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 Inference: {inf_id}: {inf_name} = {operation}
 Explanation: {explanation}
 
-Available data in datastore:
+SCALAR VALUES (use these directly in calculations):
+{scalars_context}
+
+TABLES in datastore (query with store.query()):
 {tables_context}
 
 The datastore is available as 'store' with methods:
@@ -3746,15 +3795,16 @@ The datastore is available as 'store' with methods:
 - store.list_tables() -> list of table dicts with 'name' key
 - store.save_dataframe(name, df)  # Save a DataFrame to the store
 
-Previous premises were stored with their fact names (e.g., 'orders_data', 'customer_tiers').
-
 Generate code that:
-1. Loads the required data from the store using store.query()
-2. Performs the operation (join, filter, aggregate, transform, etc.)
-3. Saves the result back to the store using store.save_dataframe('{inf_id.lower()}_result', result_df)
-4. Prints a summary of the result
+1. Uses scalar values directly (they are already resolved numbers)
+2. For tables, loads data using store.query()
+3. Performs the operation (divide, compare, join, filter, aggregate, etc.)
+4. Prints a clear summary of the result
 
-IMPORTANT: Use store.save_dataframe(name, df) to save results, NOT store.save_table().
+For scalar operations like divide(P1, P2), use the actual values directly:
+Example: ratio = 12 / 15  # Using P1=12, P2=15
+
+IMPORTANT: Use store.save_dataframe(name, df) to save results if needed.
 
 Return ONLY executable Python code, no explanations."""
 
@@ -3890,6 +3940,54 @@ Provide a clear answer based on the available data. If premises are unresolved, 
                 "sources": [{"type": p["source"], "description": p["description"]} for p in premises],
             }
 
+            # Generate insights if enabled
+            insights = ""
+            skip_insights = not self.session_config.enable_insights
+            if not skip_insights:
+                self._emit_event(StepEvent(
+                    event_type="generating_insights",
+                    step_number=0,
+                    data={"message": "Generating insights..."}
+                ))
+
+                # Build source summary
+                source_types = set()
+                for p in resolved_premises.values():
+                    if p and p.source:
+                        source_types.add(p.source.value if hasattr(p.source, 'value') else str(p.source))
+
+                insights_prompt = f"""Analyze this proof and provide insights.
+
+Original question: {claim}
+
+Resolved premises:
+{resolved_context}
+
+Inference results:
+{inference_context}
+
+Conclusion: {conclusion}
+
+Sources used: {', '.join(source_types) if source_types else 'various'}
+
+Provide 2-3 concise insights about:
+1. What this proof tells us (implications, significance)
+2. Any assumptions or limitations in the reasoning
+3. What additional questions this raises
+
+Be direct and specific. No fluff."""
+
+                try:
+                    insights_result = self.router.execute(
+                        task_type=TaskType.SYNTHESIS,
+                        system="You analyze proofs and provide actionable insights.",
+                        user_message=insights_prompt,
+                        max_tokens=500,
+                    )
+                    insights = insights_result.content
+                except Exception:
+                    insights = ""  # Silent fail - insights are optional
+
             duration_ms = int((time.time() - start_time) * 1000)
 
             # Format output
@@ -3909,6 +4007,13 @@ Provide a clear answer based on the available data. If premises are unresolved, 
                 output_parts.extend([
                     "",
                     derivation_trace,
+                ])
+
+            if insights:
+                output_parts.extend([
+                    "",
+                    "**Insights:**",
+                    insights,
                 ])
 
             final_output = "\n".join(output_parts)
