@@ -42,10 +42,85 @@ class FactSource(Enum):
     LLM_KNOWLEDGE = "llm_knowledge"
     LLM_HEURISTIC = "llm_heuristic"
     RULE = "rule"  # Derived via a registered rule function
-    SUB_PLAN = "sub_plan"  # Required a mini-plan to derive
+    SUB_PLAN = "sub_plan"  # Required a mini-plan to derive (legacy)
+    DERIVED = "derived"  # Computed from other resolved facts
     USER_PROVIDED = "user_provided"
     CONFIG = "config"  # From system prompt / config
     UNRESOLVED = "unresolved"
+
+
+# Sources that represent ground truth (raw data from sources)
+# These can be reused in audit mode since data is immutable
+GROUND_TRUTH_SOURCES = {
+    FactSource.DATABASE,
+    FactSource.DOCUMENT,
+    FactSource.API,
+    FactSource.USER_PROVIDED,
+    FactSource.CONFIG,
+}
+
+# Sources that represent derived/computed facts
+# These must be re-derived independently in audit mode
+DERIVED_SOURCES = {
+    FactSource.RULE,
+    FactSource.SUB_PLAN,
+    FactSource.DERIVED,
+    FactSource.LLM_KNOWLEDGE,
+    FactSource.LLM_HEURISTIC,
+}
+
+
+@dataclass
+class AuditContext:
+    """Context for audit mode from exploratory session.
+
+    Enables independent re-derivation while reusing ground truth data.
+    The audit mode will:
+    1. Re-interpret the question independently
+    2. Determine what conclusion to prove
+    3. Reuse ground truth facts (why re-query same data?)
+    4. Re-derive all computed facts independently
+    5. Compare final answer with exploratory's result
+    """
+    # The question to re-interpret and prove
+    original_question: str
+    follow_ups: list[str] = field(default_factory=list)
+
+    # Ground truth facts with their retrieval methods (reusable)
+    ground_truth_facts: dict[str, "Fact"] = field(default_factory=dict)
+
+    # Exploratory's answer (for comparison AFTER audit derives its own)
+    exploratory_answer: Any = None
+
+    # Optional hints (audit can use or ignore)
+    relevant_tables: list[str] = field(default_factory=list)
+    relevant_columns: dict[str, list[str]] = field(default_factory=dict)
+
+    @classmethod
+    def from_exploratory_session(
+        cls,
+        original_question: str,
+        follow_ups: list[str],
+        facts: list["Fact"],
+        exploratory_answer: Any,
+        relevant_tables: Optional[list[str]] = None,
+        relevant_columns: Optional[dict[str, list[str]]] = None,
+    ) -> "AuditContext":
+        """Build audit context from exploratory session state."""
+        # Extract only ground truth facts
+        ground_truth = {}
+        for fact in facts:
+            if fact.source in GROUND_TRUTH_SOURCES:
+                ground_truth[fact.name] = fact
+
+        return cls(
+            original_question=original_question,
+            follow_ups=follow_ups,
+            ground_truth_facts=ground_truth,
+            exploratory_answer=exploratory_answer,
+            relevant_tables=relevant_tables or [],
+            relevant_columns=relevant_columns or {},
+        )
 
 
 @dataclass
@@ -87,6 +162,45 @@ class Fact:
         if self.is_table_reference:
             return f"{self.row_count} rows (table: {self.table_name})"
         return str(self.value)
+
+    @property
+    def resolution_summary(self) -> str:
+        """One-line summary of how this fact was resolved, suitable for proof tree display."""
+        if self.source == FactSource.DATABASE:
+            if self.query:
+                # Extract just the SQL part if it's wrapped in code
+                sql = self.query
+                if "pd.read_sql(" in sql:
+                    # Extract the SQL string from pd.read_sql call
+                    import re
+                    match = re.search(r'pd\.read_sql\(["\']([^"\']+)', sql)
+                    if match:
+                        sql = match.group(1)
+                # Truncate for display
+                sql = sql.replace('\n', ' ').strip()
+                if len(sql) > 80:
+                    sql = sql[:77] + "..."
+                return f"SQL: {sql}"
+            return f"queried {self.source_name or 'database'}"
+        elif self.source == FactSource.DOCUMENT:
+            return f"text search in '{self.source_name or 'documents'}'"
+        elif self.source == FactSource.LLM_KNOWLEDGE:
+            if self.reasoning:
+                reason = self.reasoning[:60] + "..." if len(self.reasoning) > 60 else self.reasoning
+                return f"LLM knowledge: {reason}"
+            return "LLM knowledge"
+        elif self.source == FactSource.RULE:
+            return f"rule: {self.rule_name or 'derived'}"
+        elif self.source == FactSource.CACHE:
+            return "cached from prior resolution"
+        elif self.source == FactSource.USER_PROVIDED:
+            return "provided by user"
+        elif self.source == FactSource.API:
+            return f"API: {self.api_endpoint or self.source_name or 'external'}"
+        elif self.source == FactSource.CONFIG:
+            return "from configuration"
+        else:
+            return self.source.value
 
     @property
     def derivation_trace(self) -> str:
@@ -132,6 +246,83 @@ class Fact:
         return result
 
 
+@dataclass
+class FactDependency:
+    """A declared dependency on another fact.
+
+    Used in ResolutionSpec to explicitly declare what facts are needed
+    before the derivation logic runs.
+    """
+    name: str
+    params: dict = field(default_factory=dict)
+    source_hint: Optional[str] = None  # "database", "document", "config", etc.
+
+
+@dataclass
+class ResolutionSpec:
+    """Declarative specification for resolving a fact.
+
+    This separates the "what do I need" from the "how do I combine it":
+    - depends_on: Facts that must be resolved first
+    - logic: Python code that ONLY uses resolved facts (sandboxed)
+    - sql/doc_query: For leaf facts with no dependencies
+
+    The resolver:
+    1. Resolves all dependencies first (building proof tree)
+    2. Executes logic with only resolved facts as input
+    3. Returns result with full provenance
+    """
+    fact_name: str
+    depends_on: list[FactDependency] = field(default_factory=list)
+    logic: Optional[str] = None  # Python code combining resolved facts
+
+    # For leaf facts (no dependencies, direct resolution)
+    sql: Optional[str] = None        # Direct SQL for database facts
+    doc_query: Optional[str] = None  # Search query for document facts
+    source_hint: Optional[str] = None  # Which source to use
+
+    @property
+    def is_leaf(self) -> bool:
+        """True if this is a leaf fact with no dependencies."""
+        return len(self.depends_on) == 0
+
+
+@dataclass
+class ProofNode:
+    """A node in a formal derivation proof tree.
+
+    Used in auditable mode to show exactly how a conclusion was reached:
+    - What premises (other facts) it depends on
+    - What source provided the data
+    - What evidence (SQL, doc excerpt) supports it
+    """
+    conclusion: str
+    source: FactSource
+    source_name: Optional[str] = None  # database name, document path, etc.
+    evidence: Optional[str] = None  # SQL query, document excerpt, etc.
+    premises: list["ProofNode"] = field(default_factory=list)
+    confidence: float = 1.0
+
+    def to_trace(self, indent: int = 0) -> str:
+        """Render as human-readable proof trace."""
+        prefix = "  " * indent
+        source_str = self.source.value
+        if self.source_name:
+            source_str = f"{self.source.value}:{self.source_name}"
+
+        lines = [f"{prefix}∴ {self.conclusion} [{source_str}, confidence={self.confidence:.2f}]"]
+
+        if self.evidence:
+            # Truncate long evidence
+            evidence_display = self.evidence[:200] + "..." if len(self.evidence) > 200 else self.evidence
+            lines.append(f"{prefix}  evidence: {evidence_display}")
+
+        for premise in self.premises:
+            lines.append(premise.to_trace(indent + 1))
+
+        return "\n".join(lines)
+
+
 # Type for rule functions: (resolver, **params) -> Fact
 RuleFunction = Callable[["FactResolver", dict], Fact]
 
@@ -139,14 +330,22 @@ RuleFunction = Callable[["FactResolver", dict], Fact]
 @dataclass
 class ResolutionStrategy:
     """Configuration for how facts should be resolved."""
-    # Try these sources in order
+    # Try these sources in order of certainty:
+    # 1. Cache - already resolved this session
+    # 2. Rule - pre-registered derivation functions (deterministic code)
+    # 3. Database - direct source data (most authoritative)
+    # 4. Sub-plan - decompose into smaller facts (resolved recursively through this hierarchy)
+    # 5. Document - reference documents
+    # 6. LLM Knowledge - world knowledge (less certain)
+    # 7. User-provided - fallback (facts user explicitly provided)
     source_priority: list[FactSource] = field(default_factory=lambda: [
         FactSource.CACHE,
-        FactSource.CONFIG,
         FactSource.RULE,
         FactSource.DATABASE,
-        FactSource.LLM_KNOWLEDGE,
         FactSource.SUB_PLAN,
+        FactSource.DOCUMENT,
+        FactSource.LLM_KNOWLEDGE,
+        FactSource.USER_PROVIDED,
     ])
 
     # Confidence thresholds
@@ -196,6 +395,8 @@ class FactResolver:
         strategy: Optional[ResolutionStrategy] = None,
         event_callback=None,  # Callback for resolution events (for display updates)
         datastore=None,  # For storing large array facts as tables
+        doc_tools=None,  # For document search/retrieval
+        learning_callback=None,  # Callback for learning from error fixes
     ):
         self.llm = llm
         self.schema_manager = schema_manager
@@ -203,6 +404,8 @@ class FactResolver:
         self.strategy = strategy or ResolutionStrategy()
         self._event_callback = event_callback
         self._datastore = datastore  # Reference to session's datastore for table storage
+        self._doc_tools = doc_tools  # For document-based fact resolution
+        self._learning_callback = learning_callback  # For capturing learnings from error fixes
 
         # Caches
         self._cache: dict[str, Fact] = {}
@@ -247,26 +450,53 @@ class FactResolver:
         Returns:
             Fact with value, confidence, and provenance
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         # Build cache key from name + params
         cache_key = self._cache_key(fact_name, params)
+        logger.debug(f"[FACT_RESOLVER] Resolving: {cache_key}")
 
         # Try each source in priority order
+        sources_tried = []
         for source in self.strategy.source_priority:
-            fact = self._try_resolve(source, fact_name, params, cache_key)
-            if fact and fact.is_resolved:
-                if fact.confidence >= self.strategy.min_confidence:
-                    # Cache successful resolution
+            logger.debug(f"[FACT_RESOLVER] Trying source: {source.value}")
+            try:
+                fact = self._try_resolve(source, fact_name, params, cache_key)
+                if fact is None:
+                    sources_tried.append(f"{source.value}:no_result")
+                    logger.debug(f"[FACT_RESOLVER] Source {source.value} returned None - continuing to next")
+                elif not fact.is_resolved:
+                    sources_tried.append(f"{source.value}:unresolved")
+                    logger.debug(f"[FACT_RESOLVER] Source {source.value} returned unresolved fact - continuing")
+                elif fact.confidence < self.strategy.min_confidence:
+                    sources_tried.append(f"{source.value}:low_conf({fact.confidence})")
+                    logger.debug(f"[FACT_RESOLVER] Source {source.value} confidence {fact.confidence} "
+                                f"below threshold {self.strategy.min_confidence} - continuing")
+                else:
+                    # Success!
+                    sources_tried.append(f"{source.value}:SUCCESS")
                     self._cache[cache_key] = fact
                     self.resolution_log.append(fact)
+                    logger.info(f"[FACT_RESOLVER] Resolved {cache_key} via {source.value}: {fact.value}")
                     return fact
+            except Exception as e:
+                sources_tried.append(f"{source.value}:ERROR({type(e).__name__})")
+                logger.error(f"[FACT_RESOLVER] Error in source {source.value}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Continue to next source after error
 
         # Could not resolve
+        sources_summary = " → ".join(sources_tried)
+        logger.warning(f"[FACT_RESOLVER] Could not resolve: {cache_key}")
+        logger.warning(f"[FACT_RESOLVER] Sources tried: {sources_summary}")
         unresolved = Fact(
             name=cache_key,
             value=None,
             confidence=0.0,
             source=FactSource.UNRESOLVED,
-            reasoning=f"Could not resolve fact: {fact_name} with params {params}"
+            reasoning=f"Could not resolve fact: {fact_name}. Sources: {sources_summary}"
         )
         self.resolution_log.append(unresolved)
         return unresolved
@@ -298,6 +528,511 @@ class FactResolver:
             Dictionary mapping fact names/keys to Fact objects
         """
         return dict(self._cache)
+
+    # =========================================================================
+    # Declarative Resolution (spec-based)
+    # =========================================================================
+
+    def resolve_with_spec(
+        self,
+        fact_name: str,
+        params: dict = None,
+        build_proof: bool = True,
+    ) -> tuple[Fact, Optional[ProofNode]]:
+        """
+        Resolve a fact using declarative specification.
+
+        This is the preferred resolution method for auditable mode:
+        1. Ask LLM to generate a ResolutionSpec (dependencies + logic)
+        2. Resolve all dependencies first (recursive)
+        3. Execute sandboxed logic with only resolved facts
+        4. Build proof tree automatically
+
+        Args:
+            fact_name: The fact to resolve
+            params: Parameters for the fact
+            build_proof: Whether to build a proof tree (for auditable mode)
+
+        Returns:
+            Tuple of (Fact, ProofNode) - proof is None if build_proof=False
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        params = params or {}
+
+        cache_key = self._cache_key(fact_name, params)
+        logger.debug(f"[resolve_with_spec] Resolving: {cache_key}")
+
+        # Check cache first
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            proof = ProofNode(
+                conclusion=f"{fact_name} = {cached.display_value}",
+                source=FactSource.CACHE,
+                confidence=cached.confidence,
+            ) if build_proof else None
+            return cached, proof
+
+        # Generate resolution spec from LLM
+        spec = self._generate_resolution_spec(fact_name, params)
+        if spec is None:
+            unresolved = Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning=f"Could not generate resolution spec for: {fact_name}"
+            )
+            return unresolved, None
+
+        # Resolve using the spec
+        return self._resolve_spec(spec, params, build_proof)
+
+    def _generate_resolution_spec(
+        self,
+        fact_name: str,
+        params: dict,
+    ) -> Optional[ResolutionSpec]:
+        """
+        Ask LLM to generate a ResolutionSpec for a fact.
+
+        The spec declares:
+        - What dependencies are needed (other facts)
+        - How to combine them (logic code)
+        - Or, for leaf facts: direct SQL/doc query
+        """
+        import logging
+        import json
+        logger = logging.getLogger(__name__)
+
+        if not self.llm:
+            logger.debug("[_generate_resolution_spec] No LLM configured")
+            return None
+
+        # Get schema info for context
+        schema_info = ""
+        if self.schema_manager:
+            schema_info = self.schema_manager.get_overview()
+
+        # Get database type for SQL hints
+        db_type = "sqlite"
+        db_names = list(self.config.databases.keys()) if self.config else []
+        if db_names and self.config:
+            db_config = self.config.databases.get(db_names[0])
+            if db_config:
+                db_type = db_config.type or "sqlite"
+
+        prompt = f"""Generate a resolution specification for this fact:
+
+Fact: {fact_name}
+Parameters: {params}
+
+Database type: {db_type}
+Available schema:
+{schema_info}
+
+Respond with a JSON object in this exact format:
+
+For a LEAF fact (can be resolved with a single SQL query):
+{{
+    "fact_name": "{fact_name}",
+    "depends_on": [],
+    "sql": "SELECT ... FROM ... WHERE ...",
+    "source_hint": "database"
+}}
+
+For a DERIVED fact (needs other facts first):
+{{
+    "fact_name": "{fact_name}",
+    "depends_on": [
+        {{"name": "other_fact", "params": {{}}, "source_hint": "database"}},
+        {{"name": "another_fact", "params": {{}}, "source_hint": "database"}}
+    ],
+    "logic": "def derive(facts):\\n    # facts is a dict of resolved fact values\\n    result = facts['other_fact'] + facts['another_fact']\\n    return result",
+    "source_hint": "derived"
+}}
+
+IMPORTANT for SQL:
+- Use {db_type} syntax
+- For SQLite: use strftime('%Y-%m', col), date('now', '-6 months'), etc.
+- Do NOT use schema prefixes (use 'customers' not 'sales.customers')
+
+IMPORTANT for logic:
+- The derive function receives a 'facts' dict with resolved values
+- It can use pandas (available as 'pd') for DataFrames
+- It must return the final value (not a Fact object)
+- Keep it simple - just combine the resolved facts
+
+Respond with ONLY the JSON object, no explanation."""
+
+        try:
+            response = self.llm.generate(
+                system="You are a data resolution expert. Generate resolution specs in JSON format.",
+                user_message=prompt,
+                max_tokens=800,
+            )
+
+            # Clean up response
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+
+            # Parse JSON
+            spec_dict = json.loads(response)
+
+            # Build ResolutionSpec
+            depends_on = []
+            for dep in spec_dict.get("depends_on", []):
+                depends_on.append(FactDependency(
+                    name=dep["name"],
+                    params=dep.get("params", {}),
+                    source_hint=dep.get("source_hint"),
+                ))
+
+            spec = ResolutionSpec(
+                fact_name=spec_dict.get("fact_name", fact_name),
+                depends_on=depends_on,
+                logic=spec_dict.get("logic"),
+                sql=spec_dict.get("sql"),
+                doc_query=spec_dict.get("doc_query"),
+                source_hint=spec_dict.get("source_hint"),
+            )
+
+            logger.debug(f"[_generate_resolution_spec] Generated spec: {spec}")
+            return spec
+
+        except Exception as e:
+            logger.error(f"[_generate_resolution_spec] Error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    def _resolve_spec(
+        self,
+        spec: ResolutionSpec,
+        params: dict,
+        build_proof: bool = True,
+    ) -> tuple[Fact, Optional[ProofNode]]:
+        """
+        Resolve a fact using its ResolutionSpec.
+
+        For leaf facts: execute SQL or doc query directly
+        For derived facts: resolve dependencies, then execute logic
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        cache_key = self._cache_key(spec.fact_name, params)
+
+        # Leaf fact - resolve directly
+        if spec.is_leaf:
+            if spec.sql:
+                return self._execute_leaf_sql(spec, params, build_proof)
+            elif spec.doc_query:
+                return self._execute_leaf_doc_query(spec, params, build_proof)
+            else:
+                logger.warning(f"[_resolve_spec] Leaf spec has no sql or doc_query")
+                return Fact(
+                    name=cache_key,
+                    value=None,
+                    confidence=0.0,
+                    source=FactSource.UNRESOLVED,
+                ), None
+
+        # Derived fact - resolve dependencies first
+        resolved_facts = {}
+        premise_proofs = []
+        all_because = []
+
+        for dep in spec.depends_on:
+            logger.debug(f"[_resolve_spec] Resolving dependency: {dep.name}")
+            dep_fact, dep_proof = self.resolve_with_spec(
+                dep.name,
+                dep.params,
+                build_proof=build_proof,
+            )
+
+            if not dep_fact.is_resolved:
+                logger.warning(f"[_resolve_spec] Dependency {dep.name} unresolved")
+                return Fact(
+                    name=cache_key,
+                    value=None,
+                    confidence=0.0,
+                    source=FactSource.UNRESOLVED,
+                    reasoning=f"Dependency {dep.name} could not be resolved",
+                ), None
+
+            resolved_facts[dep.name] = dep_fact.value
+            all_because.append(dep_fact)
+            if dep_proof:
+                premise_proofs.append(dep_proof)
+
+        # Execute logic with resolved facts
+        result, confidence = self._execute_sandboxed_logic(spec.logic, resolved_facts)
+
+        if result is None:
+            return Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning="Logic execution failed",
+            ), None
+
+        # Build the fact
+        fact = Fact(
+            name=cache_key,
+            value=result,
+            confidence=confidence,
+            source=FactSource.DERIVED,
+            because=all_because,
+        )
+
+        # Cache it
+        self._cache[cache_key] = fact
+        self.resolution_log.append(fact)
+
+        # Build proof
+        proof = None
+        if build_proof:
+            proof = ProofNode(
+                conclusion=f"{spec.fact_name} = {fact.display_value}",
+                source=FactSource.DERIVED,
+                evidence=spec.logic,
+                premises=premise_proofs,
+                confidence=confidence,
+            )
+
+        return fact, proof
+
+    def _execute_leaf_sql(
+        self,
+        spec: ResolutionSpec,
+        params: dict,
+        build_proof: bool = True,
+    ) -> tuple[Fact, Optional[ProofNode]]:
+        """Execute SQL for a leaf database fact."""
+        import logging
+        import pandas as pd
+        logger = logging.getLogger(__name__)
+
+        cache_key = self._cache_key(spec.fact_name, params)
+
+        if not self.schema_manager:
+            logger.warning("[_execute_leaf_sql] No schema_manager")
+            return Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+            ), None
+
+        # Get database connection
+        db_names = list(self.config.databases.keys()) if self.config else []
+        db_name = db_names[0] if db_names else None
+        if not db_name:
+            return Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+            ), None
+
+        # Get database type for SQL transformation
+        db_type = "sqlite"
+        if self.config:
+            db_config = self.config.databases.get(db_name)
+            if db_config:
+                db_type = db_config.type or "sqlite"
+
+        sql = spec.sql
+
+        # Transform SQL for SQLite if needed
+        if db_type.lower() == "sqlite":
+            import re
+            # Strip schema prefixes
+            sql = re.sub(r'\b(\w+)\.(\w+)\b', r'\2', sql)
+            # Transform date functions
+            sql = self._transform_sql_for_sqlite(sql)
+
+        logger.debug(f"[_execute_leaf_sql] Executing: {sql[:200]}...")
+
+        try:
+            conn = self.schema_manager.get_connection(db_name)
+            result_df = pd.read_sql(sql, conn)
+
+            # Convert result
+            if len(result_df) == 1 and len(result_df.columns) == 1:
+                value = result_df.iloc[0, 0]
+            else:
+                value = result_df.to_dict('records')
+
+            fact = Fact(
+                name=cache_key,
+                value=value,
+                confidence=1.0,
+                source=FactSource.DATABASE,
+                source_name=db_name,
+                query=sql,
+            )
+
+            # Handle large results
+            if self._datastore and isinstance(value, list) and self._should_store_as_table(value):
+                table_name, row_count = self._store_value_as_table(spec.fact_name, value, db_name)
+                fact.value = f"table:{table_name}"
+                fact.table_name = table_name
+                fact.row_count = row_count
+
+            self._cache[cache_key] = fact
+            self.resolution_log.append(fact)
+
+            # Build proof
+            proof = None
+            if build_proof:
+                proof = ProofNode(
+                    conclusion=f"{spec.fact_name} = {fact.display_value}",
+                    source=FactSource.DATABASE,
+                    source_name=db_name,
+                    evidence=sql,
+                    confidence=1.0,
+                )
+
+            return fact, proof
+
+        except Exception as e:
+            logger.error(f"[_execute_leaf_sql] Error: {e}")
+            return Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning=f"SQL error: {e}",
+            ), None
+
+    def _execute_leaf_doc_query(
+        self,
+        spec: ResolutionSpec,
+        params: dict,
+        build_proof: bool = True,
+    ) -> tuple[Fact, Optional[ProofNode]]:
+        """Execute document search for a leaf document fact."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        cache_key = self._cache_key(spec.fact_name, params)
+
+        if not self._doc_tools:
+            return Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning="No document tools configured",
+            ), None
+
+        try:
+            # Use doc_tools to search
+            results = self._doc_tools.search(spec.doc_query)
+
+            fact = Fact(
+                name=cache_key,
+                value=results,
+                confidence=0.8,  # Lower confidence for doc search
+                source=FactSource.DOCUMENT,
+                query=spec.doc_query,
+            )
+
+            self._cache[cache_key] = fact
+            self.resolution_log.append(fact)
+
+            proof = None
+            if build_proof:
+                proof = ProofNode(
+                    conclusion=f"{spec.fact_name} = {fact.display_value}",
+                    source=FactSource.DOCUMENT,
+                    evidence=spec.doc_query,
+                    confidence=0.8,
+                )
+
+            return fact, proof
+
+        except Exception as e:
+            logger.error(f"[_execute_leaf_doc_query] Error: {e}")
+            return Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning=f"Document search error: {e}",
+            ), None
+
+    def _execute_sandboxed_logic(
+        self,
+        logic: str,
+        resolved_facts: dict[str, Any],
+    ) -> tuple[Any, float]:
+        """
+        Execute derivation logic with only resolved facts as input.
+
+        The logic code is sandboxed - it only gets:
+        - facts: dict of resolved fact values
+        - pd: pandas for DataFrame operations
+
+        Args:
+            logic: Python code with a derive(facts) function
+            resolved_facts: Dict mapping fact names to their values
+
+        Returns:
+            Tuple of (result, confidence)
+        """
+        import logging
+        import pandas as pd
+        import numpy as np
+        logger = logging.getLogger(__name__)
+
+        if not logic:
+            return None, 0.0
+
+        try:
+            # Validate syntax
+            compile(logic, "<sandboxed_logic>", "exec")
+
+            # Sandboxed namespace - only facts and pandas
+            local_ns = {
+                "pd": pd,
+                "np": np,
+            }
+
+            # Execute to define the derive function
+            exec(logic, local_ns)
+
+            derive_func = local_ns.get("derive")
+            if not derive_func:
+                logger.error("[_execute_sandboxed_logic] No 'derive' function found")
+                return None, 0.0
+
+            # Call with resolved facts only
+            result = derive_func(resolved_facts)
+
+            # Calculate confidence as min of all input facts
+            # (we don't have confidence here, assume 1.0 for now)
+            confidence = 1.0
+
+            return result, confidence
+
+        except SyntaxError as e:
+            logger.error(f"[_execute_sandboxed_logic] Syntax error: {e}")
+            return None, 0.0
+        except Exception as e:
+            logger.error(f"[_execute_sandboxed_logic] Execution error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, 0.0
 
     def _should_store_as_table(self, value: Any) -> bool:
         """
@@ -360,7 +1095,7 @@ class FactResolver:
             df = pd.DataFrame({"value": value})
 
         # Store in datastore
-        self._datastore.store(table_name, df)
+        self._datastore.save_dataframe(table_name, df)
 
         return table_name, len(df)
 
@@ -372,24 +1107,54 @@ class FactResolver:
         cache_key: str
     ) -> Optional[Fact]:
         """Try to resolve from a specific source."""
+        import logging
+        logger = logging.getLogger(__name__)
 
         if source == FactSource.CACHE:
-            return self._cache.get(cache_key)
+            cached = self._cache.get(cache_key)
+            if cached:
+                logger.debug(f"[_try_resolve] CACHE hit for {cache_key}")
+            return cached
 
         elif source == FactSource.CONFIG:
-            return self._resolve_from_config(fact_name, params)
+            result = self._resolve_from_config(fact_name, params)
+            logger.debug(f"[_try_resolve] CONFIG for {fact_name}: {result is not None}")
+            return result
 
         elif source == FactSource.RULE:
-            return self._resolve_from_rule(fact_name, params)
+            result = self._resolve_from_rule(fact_name, params)
+            logger.debug(f"[_try_resolve] RULE for {fact_name}: {result is not None}")
+            return result
 
         elif source == FactSource.DATABASE:
-            return self._resolve_from_database(fact_name, params)
+            logger.debug(f"[_try_resolve] DATABASE attempting for {fact_name}")
+            result = self._resolve_from_database(fact_name, params)
+            logger.debug(f"[_try_resolve] DATABASE for {fact_name}: {result is not None}")
+            return result
+
+        elif source == FactSource.DOCUMENT:
+            logger.debug(f"[_try_resolve] DOCUMENT attempting for {fact_name}")
+            result = self._resolve_from_document(fact_name, params)
+            logger.debug(f"[_try_resolve] DOCUMENT for {fact_name}: {result is not None}")
+            return result
 
         elif source == FactSource.LLM_KNOWLEDGE:
-            return self._resolve_from_llm(fact_name, params)
+            logger.debug(f"[_try_resolve] LLM_KNOWLEDGE attempting for {fact_name}")
+            result = self._resolve_from_llm(fact_name, params)
+            logger.debug(f"[_try_resolve] LLM_KNOWLEDGE for {fact_name}: {result is not None}")
+            return result
+
+        elif source == FactSource.USER_PROVIDED:
+            # User-provided facts are only in cache (added via add_user_fact)
+            # This is a fallback - if we reach here, fact is unresolved
+            logger.debug(f"[_try_resolve] USER_PROVIDED - no fallback for {fact_name}")
+            return None
 
         elif source == FactSource.SUB_PLAN:
-            return self._resolve_from_sub_plan(fact_name, params)
+            logger.debug(f"[_try_resolve] SUB_PLAN attempting for {fact_name}")
+            result = self._resolve_from_sub_plan(fact_name, params)
+            logger.debug(f"[_try_resolve] SUB_PLAN for {fact_name}: {result is not None}")
+            return result
 
         return None
 
@@ -414,108 +1179,415 @@ class FactResolver:
             # Rule failed - log but don't crash
             return None
 
+    def _transform_sql_for_sqlite(self, sql: str) -> str:
+        """Transform MySQL/PostgreSQL SQL syntax to SQLite equivalents.
+
+        Handles common incompatibilities:
+        - DATE_FORMAT(col, fmt) -> strftime(fmt, col)
+        - DATE_SUB(date, INTERVAL n MONTH) -> date(date, '-n months')
+        - CURDATE() -> date('now')
+        - YEAR(col) -> CAST(strftime('%Y', col) AS INTEGER)
+        - MONTH(col) -> CAST(strftime('%m', col) AS INTEGER)
+        - EXTRACT(YEAR FROM col) -> CAST(strftime('%Y', col) AS INTEGER)
+        - EXTRACT(MONTH FROM col) -> CAST(strftime('%m', col) AS INTEGER)
+        """
+        import re
+
+        # DATE_FORMAT(col, '%Y-%m') -> strftime('%Y-%m', col)
+        def replace_date_format(match):
+            col = match.group(1)
+            fmt = match.group(2)
+            return f"strftime({fmt}, {col})"
+        sql = re.sub(r"DATE_FORMAT\s*\(\s*([^,]+),\s*('[^']+')\s*\)", replace_date_format, sql, flags=re.IGNORECASE)
+
+        # DATE_SUB(CURDATE(), INTERVAL n MONTH) -> date('now', '-n months')
+        # Also handles DATE_SUB(date_col, INTERVAL n MONTH)
+        def replace_date_sub(match):
+            date_expr = match.group(1)
+            num = match.group(2)
+            unit = match.group(3).lower()
+            # Convert CURDATE() to 'now'
+            if date_expr.strip().upper() == "CURDATE()":
+                date_expr = "'now'"
+            return f"date({date_expr}, '-{num} {unit}s')"
+        sql = re.sub(r"DATE_SUB\s*\(\s*([^,]+),\s*INTERVAL\s+(\d+)\s+(MONTH|DAY|YEAR)\s*\)", replace_date_sub, sql, flags=re.IGNORECASE)
+
+        # CURDATE() -> date('now')
+        sql = re.sub(r"\bCURDATE\s*\(\s*\)", "date('now')", sql, flags=re.IGNORECASE)
+
+        # NOW() -> datetime('now')
+        sql = re.sub(r"\bNOW\s*\(\s*\)", "datetime('now')", sql, flags=re.IGNORECASE)
+
+        # YEAR(col) -> CAST(strftime('%Y', col) AS INTEGER)
+        def replace_year(match):
+            col = match.group(1)
+            return f"CAST(strftime('%Y', {col}) AS INTEGER)"
+        sql = re.sub(r"\bYEAR\s*\(\s*([^)]+)\s*\)", replace_year, sql, flags=re.IGNORECASE)
+
+        # MONTH(col) -> CAST(strftime('%m', col) AS INTEGER)
+        def replace_month(match):
+            col = match.group(1)
+            return f"CAST(strftime('%m', {col}) AS INTEGER)"
+        sql = re.sub(r"\bMONTH\s*\(\s*([^)]+)\s*\)", replace_month, sql, flags=re.IGNORECASE)
+
+        # EXTRACT(YEAR FROM col) -> CAST(strftime('%Y', col) AS INTEGER)
+        def replace_extract_year(match):
+            col = match.group(1)
+            return f"CAST(strftime('%Y', {col}) AS INTEGER)"
+        sql = re.sub(r"\bEXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+)\s*\)", replace_extract_year, sql, flags=re.IGNORECASE)
+
+        # EXTRACT(MONTH FROM col) -> CAST(strftime('%m', col) AS INTEGER)
+        def replace_extract_month(match):
+            col = match.group(1)
+            return f"CAST(strftime('%m', {col}) AS INTEGER)"
+        sql = re.sub(r"\bEXTRACT\s*\(\s*MONTH\s+FROM\s+([^)]+)\s*\)", replace_extract_month, sql, flags=re.IGNORECASE)
+
+        return sql
+
     def _resolve_from_database(self, fact_name: str, params: dict) -> Optional[Fact]:
-        """Ask LLM to generate SQL query to resolve fact from database."""
+        """Generate and execute Python code to resolve a fact from data sources.
+
+        Uses code generation (like exploratory mode) to support all data source types:
+        - SQL databases: pd.read_sql()
+        - NoSQL databases: connector methods
+        - File sources: pd.read_csv(), pd.read_json(), etc.
+
+        Uses PythonExecutor for consistent execution and error handling.
+        Participates in learning loop when syntax errors are fixed.
+        """
+        import logging
+        import pandas as pd
+        from constat.execution.executor import PythonExecutor, format_error_for_retry
+        logger = logging.getLogger(__name__)
+
         if not self.llm or not self.schema_manager:
+            logger.debug(f"[_resolve_from_database] Missing LLM ({self.llm is not None}) "
+                        f"or schema_manager ({self.schema_manager is not None})")
             return None
 
-        # Build prompt for LLM to generate SQL
+        # Build execution globals with database connections and file paths
+        exec_globals = {"pd": pd, "Fact": Fact, "FactSource": FactSource}
+        db_names = list(self.config.databases.keys()) if self.config else []
+
+        for db_name in db_names:
+            db_config = self.config.databases.get(db_name)
+            if db_config:
+                if db_config.is_file_source():
+                    # Provide file path for CSV, JSON, Parquet, etc.
+                    exec_globals[f"file_{db_name}"] = db_config.path
+                else:
+                    # Provide database connection for SQL/NoSQL
+                    conn = self.schema_manager.get_connection(db_name)
+                    exec_globals[f"db_{db_name}"] = conn
+
+        # Build data source hints for the prompt
+        source_hints = []
+        for db_name, db_config in (self.config.databases.items() if self.config else []):
+            if db_config.is_file_source():
+                file_type = db_config.type
+                source_hints.append(f"- {db_name} ({file_type}): use pd.read_{file_type}(file_{db_name})")
+            elif db_config.is_nosql():
+                source_hints.append(f"- {db_name} (NoSQL {db_config.type}): use db_{db_name} connector methods")
+            else:
+                # SQL database - detect dialect
+                dialect = "sql"
+                if db_config.type == "sql" and db_config.uri:
+                    uri_lower = db_config.uri.lower()
+                    if uri_lower.startswith("sqlite"):
+                        dialect = "sqlite"
+                    elif uri_lower.startswith("postgresql") or uri_lower.startswith("postgres"):
+                        dialect = "postgresql"
+                    elif uri_lower.startswith("mysql"):
+                        dialect = "mysql"
+                    elif uri_lower.startswith("duckdb"):
+                        dialect = "duckdb"
+                source_hints.append(f"- {db_name} ({dialect}): use pd.read_sql(query, db_{db_name})")
+
+        source_hints_text = "\n".join(source_hints) if source_hints else "No data sources configured."
+
+        # Get schema overview
         schema_overview = self.schema_manager.get_overview()
-        prompt = f"""I need to resolve this fact from the database:
-Fact: {fact_name}
+
+        # Build prompt for code generation
+        prompt = f"""Generate Python code to resolve this fact from the available data sources.
+
+Fact to resolve: {fact_name}
 Parameters: {params}
 
-Available schema:
+Available data sources:
+{source_hints_text}
+
+Schema:
 {schema_overview}
 
-If this fact can be resolved with a SQL query, provide the query.
-If not possible from database, respond with "NOT_POSSIBLE".
+Generate a `get_result()` function that:
+1. Queries the appropriate data source(s)
+2. Returns the result value (scalar, list, or DataFrame)
 
-Respond in this format:
-SQL: <your query here>
-or
-NOT_POSSIBLE: <reason>
+IMPORTANT:
+- For SQLite: Do NOT use schema prefixes (use 'customers' not 'sales.customers')
+- For SQLite: Use strftime() for date formatting, date() for date math
+- Return the raw result - the caller will wrap it in a Fact
+
+Example for SQL:
+```python
+def get_result():
+    df = pd.read_sql("SELECT SUM(amount) as total FROM orders", db_sales)
+    return df.iloc[0, 0]  # Return scalar
+```
+
+Example for CSV:
+```python
+def get_result():
+    df = pd.read_csv(file_web_metrics)
+    return df[df['page'] == 'home']['visitors'].sum()
+```
+
+If this fact cannot be resolved from the available sources, respond with "NOT_POSSIBLE: <reason>".
 """
 
-        try:
-            response = self.llm.generate(
-                system="You are a SQL expert. Generate precise queries to resolve facts.",
-                user_message=prompt,
-                max_tokens=500,
-            )
+        # Use PythonExecutor for consistent execution (DRY with exploratory mode)
+        executor = PythonExecutor()
+        max_retries = 3
+        last_code = None
+        last_error = None
+        original_error_code = None  # Track original failing code for learning
+
+        for attempt in range(1, max_retries + 1):
+            # Generate code
+            if attempt == 1:
+                response = self.llm.generate(
+                    system="You are a Python data expert. Generate code to extract facts from data sources.",
+                    user_message=prompt,
+                    max_tokens=600,
+                )
+            else:
+                # Retry with error context
+                retry_prompt = f"""Your previous code failed:
+
+{last_error}
+
+Previous code:
+```python
+{last_code}
+```
+
+Please fix the error and regenerate the code.
+
+Original request:
+{prompt}"""
+                response = self.llm.generate(
+                    system="You are a Python data expert. Generate code to extract facts from data sources.",
+                    user_message=retry_prompt,
+                    max_tokens=600,
+                )
 
             if "NOT_POSSIBLE" in response:
+                logger.debug(f"[_resolve_from_database] LLM said not possible: {response}")
                 return None
 
-            # Extract SQL from response
-            if "SQL:" in response:
-                sql = response.split("SQL:", 1)[1].strip()
-                # Clean up markdown if present
-                sql = sql.replace("```sql", "").replace("```", "").strip()
+            # Extract code from response
+            code = response
+            if "```python" in code:
+                code = code.split("```python", 1)[1].split("```", 1)[0]
+            elif "```" in code:
+                code = code.split("```", 1)[1].split("```", 1)[0]
 
-                # Execute query
-                # TODO: Get appropriate connection based on tables in query
-                # For now, use first database
-                db_names = list(self.config.databases.keys()) if self.config else []
-                db_name = db_names[0] if db_names else None
-                if db_name:
-                    conn = self.schema_manager.get_connection(db_name)
-                    import pandas as pd
-                    result = pd.read_sql(sql, conn)
+            last_code = code
+            logger.debug(f"[_resolve_from_database] Attempt {attempt} generated code:\n{code}")
 
-                    cache_key = self._cache_key(fact_name, params)
+            # Execute using PythonExecutor
+            result = executor.execute(code, exec_globals)
 
-                    # Convert result to appropriate value
-                    if len(result) == 1 and len(result.columns) == 1:
-                        # Scalar value - store directly
-                        value = result.iloc[0, 0]
-                        return Fact(
-                            name=cache_key,
-                            value=value,
-                            confidence=1.0,
-                            source=FactSource.DATABASE,
-                            source_name=db_name,
-                            query=sql,
-                        )
+            if result.compile_error:
+                # Syntax error - retry with feedback
+                if original_error_code is None:
+                    original_error_code = code
+                last_error = format_error_for_retry(result, code)
+                logger.warning(f"[_resolve_from_database] Attempt {attempt} syntax error")
+                continue
+
+            if result.runtime_error:
+                # Runtime error - don't retry, move to next source type
+                logger.warning(f"[_resolve_from_database] Runtime error for {fact_name}: {result.runtime_error.error}")
+                return None
+
+            # Execution succeeded - check for get_result function
+            get_result = result.namespace.get("get_result")
+            if not get_result:
+                if original_error_code is None:
+                    original_error_code = code
+                last_error = "No get_result() function found in generated code. Please define a get_result() function."
+                logger.warning(f"[_resolve_from_database] Attempt {attempt}: no get_result() function")
+                continue
+
+            # Call get_result and process the result
+            try:
+                value = get_result()
+
+                # If we fixed a syntax error, record the learning
+                if original_error_code is not None and self._learning_callback:
+                    self._learning_callback(
+                        category="code_error",
+                        context={
+                            "fact_name": fact_name,
+                            "error_message": last_error or "Syntax error",
+                            "original_code": original_error_code,
+                        },
+                        fixed_code=code,
+                    )
+
+                cache_key = self._cache_key(fact_name, params)
+                source_name = db_names[0] if db_names else None
+
+                # Handle DataFrame results
+                if isinstance(value, pd.DataFrame):
+                    if len(value) == 1 and len(value.columns) == 1:
+                        value = value.iloc[0, 0]
                     else:
-                        # Multi-row result - check if should store as table
-                        value = result.to_dict('records')
+                        value = value.to_dict('records')
 
-                        if self._datastore and self._should_store_as_table(value):
-                            # Store as table and return reference
-                            table_name, row_count = self._store_value_as_table(
-                                fact_name, value, source_name=db_name
-                            )
-                            return Fact(
-                                name=cache_key,
-                                value=f"table:{table_name}",  # Reference, not data
-                                confidence=1.0,
-                                source=FactSource.DATABASE,
-                                source_name=db_name,
-                                query=sql,
-                                table_name=table_name,
-                                row_count=row_count,
-                            )
-                        else:
-                            # Small result - store inline
-                            return Fact(
-                                name=cache_key,
-                                value=value,
-                                confidence=1.0,
-                                source=FactSource.DATABASE,
-                                source_name=db_name,
-                                query=sql,
-                            )
-        except Exception as e:
-            # Query failed
+                # Check if should store as table
+                if isinstance(value, list) and self._datastore and self._should_store_as_table(value):
+                    table_name, row_count = self._store_value_as_table(
+                        fact_name, value, source_name=source_name
+                    )
+                    return Fact(
+                        name=cache_key,
+                        value=f"table:{table_name}",
+                        confidence=1.0,
+                        source=FactSource.DATABASE,
+                        source_name=source_name,
+                        query=code,
+                        table_name=table_name,
+                        row_count=row_count,
+                    )
+
+                return Fact(
+                    name=cache_key,
+                    value=value,
+                    confidence=1.0,
+                    source=FactSource.DATABASE,
+                    source_name=source_name,
+                    query=code,
+                )
+
+            except Exception as e:
+                # Runtime error in get_result() - retry with feedback
+                if original_error_code is None:
+                    original_error_code = code
+                import traceback
+                tb = traceback.format_exc()
+                last_error = f"get_result() raised an exception:\n{type(e).__name__}: {e}\n\nTraceback:\n{tb}"
+                logger.warning(f"[_resolve_from_database] get_result() failed for {fact_name}: {e}")
+                continue  # Retry with error feedback
+
+        # All retry attempts exhausted
+        logger.error(f"[_resolve_from_database] All {max_retries} attempts failed for {fact_name}")
+        return None
+
+    def _resolve_from_document(self, fact_name: str, params: dict) -> Optional[Fact]:
+        """Search reference documents for fact information."""
+        if not self.llm:
             return None
+
+        # Check if we have document tools configured
+        # This requires doc_tools to be set on the resolver
+        doc_tools = getattr(self, '_doc_tools', None)
+        if not doc_tools:
+            return None
+
+        cache_key = self._cache_key(fact_name, params)
+
+        try:
+            # Search documents for information about this fact
+            search_query = f"{fact_name} {' '.join(str(v) for v in params.values())}"
+            search_results = doc_tools.search(search_query, top_k=3)
+
+            if not search_results:
+                return None
+
+            # Build context from search results
+            context = "\n\n".join([
+                f"From {r.get('source', 'document')}:\n{r.get('content', '')}"
+                for r in search_results
+            ])
+
+            # Ask LLM to extract the fact from document context
+            prompt = f"""Extract the value for this fact from the document content:
+
+Fact needed: {fact_name}
+Parameters: {params}
+
+Document content:
+{context}
+
+If the fact can be found in the documents, respond with:
+VALUE: <the value>
+CONFIDENCE: <0.0-1.0>
+SOURCE: <which document>
+REASONING: <brief explanation>
+
+If the fact is not in the documents, respond with:
+NOT_FOUND
+"""
+
+            response = self.llm.generate(
+                system="You extract specific facts from document content.",
+                user_message=prompt,
+                max_tokens=300,
+            )
+
+            if "NOT_FOUND" in response:
+                return None
+
+            # Parse response
+            value = None
+            confidence = 0.8
+            source_name = None
+            reasoning = None
+
+            for line in response.split("\n"):
+                if line.startswith("VALUE:"):
+                    value_str = line.split(":", 1)[1].strip()
+                    try:
+                        value = float(value_str)
+                    except ValueError:
+                        value = value_str
+                elif line.startswith("CONFIDENCE:"):
+                    try:
+                        confidence = float(line.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                elif line.startswith("SOURCE:"):
+                    source_name = line.split(":", 1)[1].strip()
+                elif line.startswith("REASONING:"):
+                    reasoning = line.split(":", 1)[1].strip()
+
+            if value is not None:
+                return Fact(
+                    name=cache_key,
+                    value=value,
+                    confidence=confidence,
+                    source=FactSource.DOCUMENT,
+                    source_name=source_name,
+                    reasoning=reasoning,
+                )
+        except Exception:
+            pass
 
         return None
 
     def _resolve_from_llm(self, fact_name: str, params: dict) -> Optional[Fact]:
         """Ask LLM for world knowledge or heuristics."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self.llm:
+            logger.debug(f"[_resolve_from_llm] No LLM configured")
             return None
+
+        logger.debug(f"[_resolve_from_llm] Asking LLM about {fact_name}")
 
         prompt = f"""I need to know this fact:
 Fact: {fact_name}
@@ -572,6 +1644,7 @@ UNKNOWN
                     reasoning = line.split(":", 1)[1].strip()
 
             if value is not None:
+                logger.debug(f"[_resolve_from_llm] Got value for {fact_name}: {value} (conf={confidence})")
                 return Fact(
                     name=self._cache_key(fact_name, params),
                     value=value,
@@ -579,21 +1652,33 @@ UNKNOWN
                     source=source,
                     reasoning=reasoning,
                 )
-        except Exception:
-            pass
+            else:
+                logger.debug(f"[_resolve_from_llm] No value parsed for {fact_name}")
+        except Exception as e:
+            logger.error(f"[_resolve_from_llm] Error for {fact_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         return None
 
     def _resolve_from_sub_plan(self, fact_name: str, params: dict) -> Optional[Fact]:
-        """Generate a mini-plan to derive a complex fact."""
+        """Generate a mini-plan to derive a complex fact with parallel resolution."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self.strategy.allow_sub_plans:
+            logger.debug(f"[_resolve_from_sub_plan] Sub-plans disabled")
             return None
 
         if self._resolution_depth >= self.strategy.max_sub_plan_depth:
+            logger.debug(f"[_resolve_from_sub_plan] Max depth {self.strategy.max_sub_plan_depth} reached")
             return None  # Prevent infinite recursion
 
         if not self.llm:
+            logger.debug(f"[_resolve_from_sub_plan] No LLM configured")
             return None
+
+        logger.debug(f"[_resolve_from_sub_plan] Attempting sub-plan for {fact_name} at depth {self._resolution_depth}")
 
         # Emit event: starting sub-plan expansion
         self._emit_event("premise_expanding", {
@@ -603,56 +1688,128 @@ UNKNOWN
         })
 
         # Ask LLM to create a plan to derive this fact
+        # Key: use resolve_many_sync() for parallel resolution of independent facts
         prompt = f"""I need to derive this fact, but it's not directly available:
 Fact: {fact_name}
 Parameters: {params}
 
 This fact needs to be computed from other facts.
 Create a Python function that:
-1. Uses resolver.resolve() to get the facts it depends on
-2. Computes the final value
-3. Returns a Fact with proper confidence (min of dependencies)
+1. Identifies which facts are needed
+2. Groups INDEPENDENT facts and resolves them in PARALLEL using resolve_many_sync()
+3. Resolves DEPENDENT facts sequentially (when one depends on another)
+4. Computes the final value
+5. Returns a Fact with proper confidence (min of dependencies)
 
-Example:
+IMPORTANT: Use resolve_many_sync() for parallel resolution of independent facts!
+
+Example with PARALLEL resolution:
 ```python
 def derive(resolver, params):
-    revenue = resolver.resolve("total_revenue", customer_id=params["customer_id"])
-    orders = resolver.resolve("order_count", customer_id=params["customer_id"])
+    # These are INDEPENDENT - resolve in PARALLEL
+    facts = resolver.resolve_many_sync([
+        ("total_revenue", {{"customer_id": params["customer_id"]}}),
+        ("order_count", {{"customer_id": params["customer_id"]}}),
+        ("return_count", {{"customer_id": params["customer_id"]}}),
+    ])
+    revenue, orders, returns = facts
 
-    avg = revenue.value / orders.value if orders.value else 0
+    # Compute from parallel-resolved facts
+    net_orders = orders.value - returns.value
+    avg = revenue.value / net_orders if net_orders else 0
 
     return Fact(
         name=f"avg_order_value(customer_id={{params['customer_id']}})",
         value=avg,
-        confidence=min(revenue.confidence, orders.confidence),
+        confidence=min(f.confidence for f in facts),
         source=FactSource.SUB_PLAN,
-        because=[revenue, orders]
+        because=facts
     )
 ```
 
-Generate the derivation function for {fact_name}:
+Example with SEQUENTIAL resolution (when facts depend on each other):
+```python
+def derive(resolver, params):
+    # start_date must be resolved first
+    start = resolver.resolve("start_date")
+    # end_date depends on start_date
+    end = resolver.resolve("end_date", start=start.value)
+
+    return Fact(
+        name="date_range",
+        value={{"start": start.value, "end": end.value}},
+        confidence=min(start.confidence, end.confidence),
+        source=FactSource.SUB_PLAN,
+        because=[start, end]
+    )
+```
+
+Generate the derivation function for {fact_name}. Use resolve_many_sync() when facts are independent:
 """
 
-        try:
-            response = self.llm.generate(
-                system="You are a Python expert. Generate fact derivation functions.",
-                user_message=prompt,
-                max_tokens=500,
-            )
+        max_retries = 3
+        last_code = None
+        last_error = None
 
-            # Extract code
-            code = response
-            if "```python" in code:
-                code = code.split("```python", 1)[1].split("```", 1)[0]
-            elif "```" in code:
-                code = code.split("```", 1)[1].split("```", 1)[0]
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Generate or regenerate code
+                if attempt == 1:
+                    response = self.llm.generate(
+                        system="You are a Python expert. Generate fact derivation functions. Keep code simple and complete.",
+                        user_message=prompt,
+                        max_tokens=800,
+                    )
+                else:
+                    # Retry with error context
+                    retry_prompt = f"""Your previous derive() function failed with an error:
 
-            # Execute the generated function
-            local_ns = {"Fact": Fact, "FactSource": FactSource}
-            exec(code, local_ns)
+{last_error}
 
-            derive_func = local_ns.get("derive")
-            if derive_func:
+Previous code:
+```python
+{last_code}
+```
+
+Please fix the error and regenerate the derive() function.
+
+Original request:
+{prompt}"""
+                    response = self.llm.generate(
+                        system="You are a Python expert. Generate fact derivation functions. Keep code simple and complete.",
+                        user_message=retry_prompt,
+                        max_tokens=800,
+                    )
+
+                # Extract code
+                code = response
+                if "```python" in code:
+                    code = code.split("```python", 1)[1].split("```", 1)[0]
+                elif "```" in code:
+                    code = code.split("```", 1)[1].split("```", 1)[0]
+
+                last_code = code
+                logger.debug(f"[_resolve_from_sub_plan] Attempt {attempt} generated code:\n{code}")
+
+                # Validate syntax before executing
+                try:
+                    compile(code, "<sub_plan>", "exec")
+                except SyntaxError as syn_err:
+                    last_error = f"Syntax error: {syn_err}"
+                    logger.warning(f"[_resolve_from_sub_plan] Attempt {attempt} syntax error: {syn_err}")
+                    continue  # Retry
+
+                # Execute the generated function
+                local_ns = {"Fact": Fact, "FactSource": FactSource}
+                exec(code, local_ns)
+
+                derive_func = local_ns.get("derive")
+                if not derive_func:
+                    last_error = "No derive() function found in generated code. Please define a derive(resolver, params) function."
+                    logger.warning(f"[_resolve_from_sub_plan] Attempt {attempt}: no derive() function")
+                    continue  # Retry
+
+                # Execute the derive function
                 self._resolution_depth += 1
                 try:
                     result = derive_func(self, params)
@@ -667,11 +1824,24 @@ Generate the derivation function for {fact_name}:
                             "depth": self._resolution_depth,
                         })
                     return result
+                except Exception as derive_err:
+                    # Runtime error in derive() - retry with feedback
+                    import traceback
+                    tb = traceback.format_exc()
+                    last_error = f"derive() raised an exception:\n{type(derive_err).__name__}: {derive_err}\n\nTraceback:\n{tb}"
+                    logger.warning(f"[_resolve_from_sub_plan] Attempt {attempt} derive() failed: {derive_err}")
+                    continue  # Retry
                 finally:
                     self._resolution_depth -= 1
-        except Exception:
-            pass
 
+            except Exception as e:
+                import traceback
+                last_error = f"Unexpected error: {e}\n{traceback.format_exc()}"
+                logger.error(f"[_resolve_from_sub_plan] Attempt {attempt} unexpected error: {e}")
+                continue  # Retry
+
+        # All retry attempts exhausted
+        logger.error(f"[_resolve_from_sub_plan] All {max_retries} attempts failed for {fact_name}")
         return None
 
     def add_user_fact(
@@ -855,9 +2025,694 @@ REASONING: User is focused on US region analysis
         """Get all resolutions for audit purposes."""
         return [f.to_dict() for f in self.resolution_log]
 
+    def get_facts_as_dataframe(self) -> "pd.DataFrame":
+        """
+        Get all cached facts as a pandas DataFrame for export.
+
+        Returns:
+            DataFrame with columns: name, value, source, confidence, description, reasoning
+        """
+        import pandas as pd
+
+        rows = []
+        for cache_key, fact in self._cache.items():
+            rows.append({
+                "name": fact.name,
+                "value": str(fact.value) if fact.value is not None else None,
+                "source": fact.source.value if hasattr(fact.source, 'value') else str(fact.source),
+                "confidence": fact.confidence,
+                "description": fact.description or "",
+                "reasoning": fact.reasoning or "",
+            })
+
+        return pd.DataFrame(rows) if rows else pd.DataFrame(
+            columns=["name", "value", "source", "confidence", "description", "reasoning"]
+        )
+
     def explain(self, fact: Fact) -> str:
         """Generate a human-readable explanation of how a fact was derived."""
         return fact.derivation_trace
+
+    def resolve_many_sync(
+        self,
+        fact_requests: list[tuple[str, dict]],
+        on_resolve: Callable[[int, "Fact"], None] | None = None,
+    ) -> list[Fact]:
+        """
+        Resolve multiple facts. Base implementation is sequential.
+
+        AsyncFactResolver overrides this with parallel resolution.
+
+        Args:
+            fact_requests: List of (fact_name, params) tuples
+            on_resolve: Optional callback called as each fact resolves.
+                        Receives (index, fact) where index is the position in fact_requests.
+
+        Returns:
+            List of resolved Facts in same order as requests
+        """
+        results = []
+        for idx, (name, params) in enumerate(fact_requests):
+            fact = self.resolve(name, **params)
+            results.append(fact)
+            if on_resolve:
+                on_resolve(idx, fact)
+        return results
+
+    def resolve_goal(self, question: str, schema_context: str = "") -> dict:
+        """
+        Resolve a question using Prolog-style goal decomposition.
+
+        The question is decomposed into a goal and rules using Prolog syntax:
+        - Goal: `answer(Q3, premium, Revenue)` - what we want to prove
+        - Rules: `answer(Q, T, R) :- dates(Q, S, E), tier(T, C), revenue(C, S, E, R).`
+        - Facts: Base predicates resolved through the hierarchy
+
+        This approach naturally captures:
+        - Variable binding/unification
+        - Dependency graphs (implicit in rule bodies)
+        - Recursive decomposition
+
+        Args:
+            question: The question to answer
+            schema_context: Optional schema/database context
+
+        Returns:
+            Dict with:
+            - answer: The resolved goal with bound variables
+            - goal: The original goal predicate
+            - rules: The decomposition rules
+            - bindings: Variable -> value bindings
+            - derivation: Prolog-style derivation trace
+            - confidence: Overall confidence
+            - unresolved: Goals that couldn't be resolved
+        """
+        if not self.llm:
+            return {"answer": None, "error": "No LLM configured"}
+
+        # Step 1: Decompose question into Prolog-style goal and rules
+        decompose_prompt = f"""Express this question as a Prolog-style goal with decomposition rules.
+
+Question: {question}
+
+{f"Available data context:\\n{schema_context}" if schema_context else ""}
+
+Format your response as:
+
+GOAL: predicate(Arg1, Arg2, Result)
+
+RULES:
+predicate(A, B, R) :-
+    subgoal1(A, X),
+    subgoal2(B, Y),
+    compute(X, Y, R).
+
+SOURCES:
+subgoal1: DATABASE | DOCUMENT | LLM_KNOWLEDGE | USER_PROVIDED
+subgoal2: DATABASE | DOCUMENT | LLM_KNOWLEDGE | USER_PROVIDED
+
+Example for "What was revenue by customer tier in Q3?":
+
+GOAL: revenue_by_tier(q3, Tier, Revenue)
+
+RULES:
+revenue_by_tier(Quarter, Tier, Revenue) :-
+    date_range(Quarter, StartDate, EndDate),
+    tier_criteria(Tier, Criteria),
+    customers_matching(Criteria, Customers),
+    sum_revenue(Customers, StartDate, EndDate, Revenue).
+
+SOURCES:
+date_range: LLM_KNOWLEDGE (calendar knowledge)
+tier_criteria: DOCUMENT or USER_PROVIDED (business definition)
+customers_matching: DATABASE (query customers table)
+sum_revenue: DATABASE (aggregate orders table)
+
+Use uppercase for Variables that need binding, lowercase for constants.
+"""
+
+        self._emit_event("decomposing_goal", {"question": question})
+
+        response = self.llm.generate(
+            system="You decompose questions into Prolog-style goals and rules.",
+            user_message=decompose_prompt,
+            max_tokens=800,
+        )
+
+        # Parse the response
+        goal = ""
+        rules: list[str] = []
+        sources: dict[str, str] = {}
+
+        current_section = None
+        rule_lines = []
+
+        for line in response.split("\n"):
+            line_stripped = line.strip()
+
+            if line_stripped.startswith("GOAL:"):
+                goal = line_stripped.split("GOAL:", 1)[1].strip()
+                current_section = "goal"
+            elif line_stripped == "RULES:":
+                current_section = "rules"
+            elif line_stripped == "SOURCES:":
+                # Save accumulated rule
+                if rule_lines:
+                    rules.append(" ".join(rule_lines))
+                    rule_lines = []
+                current_section = "sources"
+            elif current_section == "rules" and line_stripped:
+                rule_lines.append(line_stripped)
+                # Check if rule is complete (ends with period)
+                if line_stripped.endswith("."):
+                    rules.append(" ".join(rule_lines))
+                    rule_lines = []
+            elif current_section == "sources" and ":" in line_stripped:
+                parts = line_stripped.split(":", 1)
+                pred_name = parts[0].strip()
+                source_hint = parts[1].strip()
+                sources[pred_name] = source_hint
+
+        self._emit_event("goal_decomposed", {
+            "goal": goal,
+            "rules": rules,
+            "sources": list(sources.keys()),
+        })
+
+        # Step 2: Parse the goal to extract predicate name and arguments
+        goal_pred, goal_args = self._parse_predicate(goal)
+        if not goal_pred:
+            return {"answer": None, "error": f"Could not parse goal: {goal}"}
+
+        # Step 3: Resolve the goal using rules and hierarchy
+        bindings: dict[str, Any] = {}
+        resolved_facts: dict[str, Fact] = {}
+        unresolved: list[str] = []
+
+        # First, bind any constants in the goal
+        for arg in goal_args:
+            if arg and arg[0].islower():  # lowercase = constant
+                bindings[arg] = arg
+
+        # Parse rules to understand dependencies
+        rule_deps = self._parse_rules(rules)
+
+        # Resolve sub-goals in dependency order
+        resolved_subgoals = self._resolve_subgoals(
+            goal_pred, goal_args, rule_deps, sources, bindings, resolved_facts, unresolved
+        )
+
+        # Step 4: Build the derivation trace in Prolog style
+        derivation = self._build_prolog_derivation(
+            goal, rules, bindings, resolved_facts, unresolved
+        )
+
+        # Calculate confidence
+        if resolved_facts:
+            confidence = min(f.confidence for f in resolved_facts.values())
+        else:
+            confidence = 0.0
+
+        # Build final answer by substituting bindings into goal
+        answer = self._substitute_bindings(goal, bindings)
+
+        return {
+            "answer": answer,
+            "goal": goal,
+            "rules": rules,
+            "sources": sources,
+            "bindings": bindings,
+            "derivation": derivation,
+            "confidence": confidence,
+            "unresolved": unresolved,
+            "facts": {k: v.to_dict() for k, v in resolved_facts.items()},
+        }
+
+    def _parse_predicate(self, pred_str: str) -> tuple[str, list[str]]:
+        """Parse a predicate string like 'foo(X, Y, Z)' into name and args."""
+        pred_str = pred_str.strip().rstrip(".")
+        if "(" not in pred_str:
+            return pred_str, []
+
+        name = pred_str.split("(")[0].strip()
+        args_str = pred_str.split("(", 1)[1].rsplit(")", 1)[0]
+        args = [a.strip() for a in args_str.split(",")]
+        return name, args
+
+    def _parse_rules(self, rules: list[str]) -> dict[str, list[str]]:
+        """Parse rules to extract head -> body dependencies."""
+        deps = {}
+        for rule in rules:
+            if ":-" not in rule:
+                continue
+            head, body = rule.split(":-", 1)
+            head_pred, _ = self._parse_predicate(head)
+
+            # Extract predicates from body
+            body_preds = []
+            # Simple parsing - split by comma but handle nested parens
+            depth = 0
+            current = ""
+            for char in body:
+                if char == "(":
+                    depth += 1
+                    current += char
+                elif char == ")":
+                    depth -= 1
+                    current += char
+                elif char == "," and depth == 0:
+                    if current.strip():
+                        pred_name, _ = self._parse_predicate(current.strip())
+                        if pred_name:
+                            body_preds.append(pred_name)
+                    current = ""
+                else:
+                    current += char
+            # Don't forget the last one
+            if current.strip():
+                pred_name, _ = self._parse_predicate(current.strip().rstrip("."))
+                if pred_name:
+                    body_preds.append(pred_name)
+
+            deps[head_pred] = body_preds
+
+        return deps
+
+    def _resolve_subgoals(
+        self,
+        goal_pred: str,
+        goal_args: list[str],
+        rule_deps: dict[str, list[str]],
+        sources: dict[str, str],
+        bindings: dict[str, Any],
+        resolved_facts: dict[str, Fact],
+        unresolved: list[str],
+    ) -> bool:
+        """Recursively resolve subgoals using the hierarchy."""
+        # Get subgoals for this predicate
+        subgoals = rule_deps.get(goal_pred, [])
+
+        if not subgoals:
+            # This is a base predicate - resolve it directly
+            return self._resolve_base_predicate(
+                goal_pred, goal_args, sources, bindings, resolved_facts, unresolved
+            )
+
+        # Resolve each subgoal
+        # First, identify which can be resolved in parallel (no shared unbound vars)
+        independent = []
+        dependent = []
+
+        for subgoal in subgoals:
+            # Check if this subgoal depends on variables from previous subgoals
+            # For simplicity, assume all are potentially dependent for now
+            dependent.append(subgoal)
+
+        # Resolve subgoals
+        for subgoal in dependent:
+            sub_args = []  # Would need to track args from rule body
+            success = self._resolve_subgoals(
+                subgoal, sub_args, rule_deps, sources, bindings, resolved_facts, unresolved
+            )
+            if not success:
+                # Continue trying others, but mark as unresolved
+                pass
+
+        return len(unresolved) == 0
+
+    def _resolve_base_predicate(
+        self,
+        pred_name: str,
+        pred_args: list[str],
+        sources: dict[str, str],
+        bindings: dict[str, Any],
+        resolved_facts: dict[str, Fact],
+        unresolved: list[str],
+    ) -> bool:
+        """Resolve a base predicate (leaf in the dependency tree)."""
+        self._emit_event("resolving_predicate", {
+            "predicate": pred_name,
+            "args": pred_args,
+        })
+
+        # Try to resolve using our hierarchy
+        fact = self.resolve(pred_name)
+
+        if fact.is_resolved:
+            resolved_facts[pred_name] = fact
+            # Bind the result to any output variable
+            if pred_args:
+                # Last arg is typically the result/output
+                result_var = pred_args[-1]
+                if result_var and result_var[0].isupper():
+                    bindings[result_var] = fact.value
+
+            self._emit_event("predicate_resolved", {
+                "predicate": pred_name,
+                "value": fact.value,
+                "source": fact.source.value,
+            })
+            return True
+        else:
+            unresolved.append(pred_name)
+            self._emit_event("predicate_unresolved", {
+                "predicate": pred_name,
+                "source_hint": sources.get(pred_name, "unknown"),
+            })
+            return False
+
+    def _substitute_bindings(self, term: str, bindings: dict[str, Any]) -> str:
+        """Substitute variable bindings into a term."""
+        result = term
+        for var, value in bindings.items():
+            # Replace variable with its bound value
+            result = result.replace(var, str(value))
+        return result
+
+    def _build_prolog_derivation(
+        self,
+        goal: str,
+        rules: list[str],
+        bindings: dict[str, Any],
+        resolved: dict[str, Fact],
+        unresolved: list[str],
+    ) -> str:
+        """Build Prolog-style derivation trace."""
+        lines = [
+            "/* Query */",
+            f"?- {goal}",
+            "",
+            "/* Rules */",
+        ]
+        for rule in rules:
+            lines.append(rule)
+
+        lines.append("")
+        lines.append("/* Resolution */")
+
+        for pred_name, fact in resolved.items():
+            source = fact.source.value
+            if fact.source_name:
+                source = f"{source}:{fact.source_name}"
+            lines.append(f"{pred_name}({fact.value}).  % from {source}, confidence={fact.confidence:.0%}")
+            if fact.query:
+                lines.append(f"  % SQL: {fact.query[:60]}...")
+
+        if unresolved:
+            lines.append("")
+            lines.append("/* Unresolved (need user input) */")
+            for pred in unresolved:
+                lines.append(f"% {pred}(?).  % Could not resolve")
+
+        lines.append("")
+        lines.append("/* Answer */")
+        answer = self._substitute_bindings(goal, bindings)
+        lines.append(f"{answer}.")
+
+        if bindings:
+            lines.append("")
+            lines.append("/* Bindings */")
+            for var, val in bindings.items():
+                if var[0].isupper():  # Only show variable bindings
+                    lines.append(f"% {var} = {val}")
+
+        return "\n".join(lines)
+
+    def resolve_conclusion(self, question: str, schema_context: str = "") -> dict:
+        """
+        Resolve a question using template-based symbolic evaluation.
+
+        1. Create a statement template with {variables} that would answer the question
+        2. Extract variables from the template
+        3. Resolve each variable through the hierarchy (recursively)
+        4. Substitute resolved values back into the template
+        5. Evaluate to get the final answer
+
+        Args:
+            question: The question to answer
+            schema_context: Optional schema/database context
+
+        Returns:
+            Dict with:
+            - answer: The final resolved answer
+            - template: The statement template with variables
+            - substitutions: Dict of variable -> resolved value
+            - derivation: Human-readable trace
+            - confidence: Overall confidence (min of all resolved facts)
+            - unresolved: List of variables that couldn't be resolved
+        """
+        if not self.llm:
+            return {"answer": None, "error": "No LLM configured"}
+
+        # Step 1: Generate statement template with variables
+        template_prompt = f"""Given this question, create a statement template that would answer it.
+Use {{variable_name}} for values that need to be resolved.
+
+Question: {question}
+
+{f"Available data context: {schema_context}" if schema_context else ""}
+
+Create a template where resolving all variables would answer the question.
+For each variable, briefly describe what it represents.
+
+Format:
+TEMPLATE: <statement with {{variables}}>
+VARIABLES:
+- {{var1}}: description of what this variable represents
+- {{var2}}: description of what this variable represents
+...
+
+Example for "What was total revenue in Q3 for premium customers?":
+TEMPLATE: The total revenue in Q3 for premium customers was ${{total_revenue}}, calculated from {{order_count}} orders with an average of ${{avg_order_value}} per order.
+VARIABLES:
+- {{total_revenue}}: Sum of all order amounts for premium customers in Q3
+- {{order_count}}: Number of orders from premium customers in Q3
+- {{avg_order_value}}: Average order value (total_revenue / order_count)
+- {{q3_start_date}}: Start date of Q3 (derived from "Q3")
+- {{q3_end_date}}: End date of Q3 (derived from "Q3")
+- {{premium_customer_ids}}: List of customer IDs classified as premium
+"""
+
+        self._emit_event("template_generating", {"question": question})
+
+        template_response = self.llm.generate(
+            system="You create answer templates with variables. Be thorough - include ALL variables needed.",
+            user_message=template_prompt,
+            max_tokens=800,
+        )
+
+        # Parse template and variables
+        template = ""
+        variables: dict[str, str] = {}  # var_name -> description
+
+        for line in template_response.split("\n"):
+            line = line.strip()
+            if line.startswith("TEMPLATE:"):
+                template = line.split("TEMPLATE:", 1)[1].strip()
+            elif line.startswith("- {") and "}:" in line:
+                # Parse variable definition
+                var_part = line[2:]  # Remove "- "
+                if "}:" in var_part:
+                    var_name = var_part.split("}")[0].strip("{}")
+                    var_desc = var_part.split("}:", 1)[1].strip()
+                    variables[var_name] = var_desc
+
+        self._emit_event("template_created", {
+            "template": template,
+            "variables": list(variables.keys()),
+        })
+
+        # Step 2: Identify dependencies between variables
+        # Some variables depend on others (e.g., avg = total / count)
+        dependency_prompt = f"""Given these variables, identify which ones depend on others.
+
+Variables:
+{chr(10).join(f"- {k}: {v}" for k, v in variables.items())}
+
+For each variable, list its dependencies (other variables it needs).
+Variables with no dependencies can be resolved in PARALLEL.
+
+Format each line as:
+{{variable}}: [{{dep1}}, {{dep2}}] or [] if no dependencies
+
+Example:
+{{total_revenue}}: []
+{{order_count}}: []
+{{avg_order_value}}: [{{total_revenue}}, {{order_count}}]
+"""
+
+        dep_response = self.llm.generate(
+            system="You analyze variable dependencies.",
+            user_message=dependency_prompt,
+            max_tokens=400,
+        )
+
+        # Parse dependencies
+        dependencies: dict[str, list[str]] = {var: [] for var in variables}
+        for line in dep_response.split("\n"):
+            if ":" in line and "{" in line:
+                parts = line.split(":", 1)
+                var_name = parts[0].strip().strip("{}")
+                if var_name in dependencies:
+                    deps_str = parts[1].strip()
+                    if deps_str.startswith("[") and "]" in deps_str:
+                        deps_list = deps_str[1:deps_str.index("]")]
+                        deps = [d.strip().strip("{}") for d in deps_list.split(",") if d.strip()]
+                        dependencies[var_name] = [d for d in deps if d in variables]
+
+        # Step 3: Resolve variables in dependency order
+        # Independent variables first (parallel), then dependent ones
+        resolved: dict[str, Fact] = {}
+        unresolved: list[str] = []
+
+        # Find independent variables (no dependencies)
+        independent = [v for v, deps in dependencies.items() if not deps]
+        dependent = [v for v, deps in dependencies.items() if deps]
+
+        self._emit_event("resolving_independent", {
+            "independent": independent,
+            "dependent": dependent,
+        })
+
+        # Resolve independent variables in parallel
+        # Note: We don't pass description as a param since it would change the cache key
+        if independent:
+            fact_requests = [(var, {}) for var in independent]
+            facts = self.resolve_many_sync(fact_requests)
+
+            for var, fact in zip(independent, facts):
+                if fact.is_resolved:
+                    resolved[var] = fact
+                    self._emit_event("variable_resolved", {
+                        "variable": var,
+                        "value": fact.value,
+                        "source": fact.source.value,
+                    })
+                else:
+                    unresolved.append(var)
+
+        # Resolve dependent variables in dependency order
+        max_iterations = len(dependent) + 1  # Prevent infinite loop
+        iterations = 0
+
+        while dependent and iterations < max_iterations:
+            iterations += 1
+            resolved_this_round = []
+
+            for var in dependent:
+                deps = dependencies[var]
+                # Check if all dependencies are resolved
+                if all(d in resolved for d in deps):
+                    # First check if already in cache with just the variable name
+                    cached = self._cache.get(var)
+                    if cached and cached.is_resolved:
+                        fact = cached
+                    else:
+                        # Try to resolve - pass dependencies for context but they won't
+                        # affect the cache key since we use just the var name
+                        fact = self.resolve(var)
+
+                    if fact.is_resolved:
+                        # Link to dependency facts
+                        fact.because = [resolved[d] for d in deps]
+                        resolved[var] = fact
+                        resolved_this_round.append(var)
+                        self._emit_event("variable_resolved", {
+                            "variable": var,
+                            "value": fact.value,
+                            "source": fact.source.value,
+                            "derived_from": deps,
+                        })
+                    else:
+                        unresolved.append(var)
+                        resolved_this_round.append(var)  # Remove from dependent list
+
+            # Remove resolved variables from dependent list
+            for var in resolved_this_round:
+                if var in dependent:
+                    dependent.remove(var)
+
+        # Any remaining dependent variables couldn't be resolved
+        unresolved.extend(dependent)
+
+        # Step 4: Substitute resolved values into template
+        final_template = template
+        substitutions = {}
+        for var, fact in resolved.items():
+            placeholder = "{" + var + "}"
+            if placeholder in final_template:
+                value_str = str(fact.value)
+                final_template = final_template.replace(placeholder, value_str)
+                substitutions[var] = fact.value
+
+        # Step 5: Calculate overall confidence
+        if resolved:
+            confidence = min(f.confidence for f in resolved.values())
+        else:
+            confidence = 0.0
+
+        # Build derivation trace
+        derivation = self._build_derivation_trace(
+            template=template,
+            resolved=resolved,
+            unresolved=unresolved,
+            variables=variables,
+            answer=final_template,
+        )
+
+        return {
+            "answer": final_template,
+            "template": template,
+            "variables": variables,
+            "substitutions": substitutions,
+            "derivation": derivation,
+            "confidence": confidence,
+            "unresolved": unresolved,
+            "facts": {k: v.to_dict() for k, v in resolved.items()},
+        }
+
+    def _build_derivation_trace(
+        self,
+        template: str,
+        resolved: dict[str, Fact],
+        unresolved: list[str],
+        variables: dict[str, str],
+        answer: str,
+    ) -> str:
+        """Build a human-readable derivation trace with provenance."""
+        lines = [
+            "**Statement:**",
+            f"  {template}",
+            "",
+            "**Variable Resolution:**",
+        ]
+
+        for var, fact in resolved.items():
+            source_str = fact.source.value
+            if fact.source_name:
+                source_str = f"{fact.source.value}:{fact.source_name}"
+            lines.append(f"  {{{var}}} = {fact.display_value}")
+            lines.append(f"    source: {source_str}, confidence: {fact.confidence:.0%}")
+            if fact.query:
+                lines.append(f"    query: {fact.query[:80]}...")
+            if fact.reasoning:
+                lines.append(f"    reasoning: {fact.reasoning}")
+            if fact.because:
+                deps = ", ".join(f.name for f in fact.because)
+                lines.append(f"    derived from: {deps}")
+
+        if unresolved:
+            lines.append("")
+            lines.append("**Unresolved (need user input):**")
+            for var in unresolved:
+                desc = variables.get(var, "")
+                lines.append(f"  {{{var}}}: {desc}")
+
+        lines.append("")
+        lines.append("**Conclusion:**")
+        lines.append(f"  {answer}")
+
+        return "\n".join(lines)
 
     def resolve_question(self, context: str) -> dict:
         """
@@ -1738,6 +3593,7 @@ Generate the derivation function for {fact_name}:
     async def resolve_many_async(
         self,
         fact_requests: list[tuple[str, dict]],
+        on_resolve: Callable[[int, "Fact"], None] | None = None,
     ) -> list[Fact]:
         """
         Resolve multiple facts in parallel.
@@ -1748,6 +3604,8 @@ Generate the derivation function for {fact_name}:
 
         Args:
             fact_requests: List of (fact_name, params) tuples
+            on_resolve: Optional callback called as each fact resolves.
+                        Receives (index, fact) where index is the position in fact_requests.
 
         Returns:
             List of resolved Facts in same order as requests
@@ -1759,15 +3617,38 @@ Generate the derivation function for {fact_name}:
                 ("revenue_threshold", {}),
             ])
         """
-        tasks = [
-            self.resolve_async(name, **params)
-            for name, params in fact_requests
-        ]
-        return await asyncio.gather(*tasks)
+        if on_resolve is None:
+            # No callback - use gather for efficiency
+            tasks = [
+                self.resolve_async(name, **params)
+                for name, params in fact_requests
+            ]
+            return await asyncio.gather(*tasks)
+        else:
+            # With callback - use as_completed to emit events as each resolves
+            async def resolve_with_index(idx: int, name: str, params: dict) -> tuple[int, Fact]:
+                fact = await self.resolve_async(name, **params)
+                return idx, fact
+
+            tasks = [
+                resolve_with_index(i, name, params)
+                for i, (name, params) in enumerate(fact_requests)
+            ]
+
+            # Results will be out of order as they complete
+            results = [None] * len(fact_requests)
+            for coro in asyncio.as_completed(tasks):
+                idx, fact = await coro
+                results[idx] = fact
+                # Call callback as each fact completes
+                on_resolve(idx, fact)
+
+            return results
 
     def resolve_many_sync(
         self,
         fact_requests: list[tuple[str, dict]],
+        on_resolve: Callable[[int, "Fact"], None] | None = None,
     ) -> list[Fact]:
         """
         Synchronous wrapper for resolve_many_async.
@@ -1778,6 +3659,8 @@ Generate the derivation function for {fact_name}:
 
         Args:
             fact_requests: List of (fact_name, params) tuples
+            on_resolve: Optional callback called as each fact resolves.
+                        Receives (index, fact) where index is the position in fact_requests.
 
         Returns:
             List of resolved Facts in same order as requests
@@ -1787,7 +3670,7 @@ Generate the derivation function for {fact_name}:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             # No running loop - we're in sync context, safe to use asyncio.run()
-            return asyncio.run(self.resolve_many_async(fact_requests))
+            return asyncio.run(self.resolve_many_async(fact_requests, on_resolve))
 
         # We're in an async context - need to run in a separate thread
         # to avoid "asyncio.run() cannot be called from a running event loop"
@@ -1795,6 +3678,6 @@ Generate the derivation function for {fact_name}:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 asyncio.run,
-                self.resolve_many_async(fact_requests)
+                self.resolve_many_async(fact_requests, on_resolve)
             )
             return future.result()

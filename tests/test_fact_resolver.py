@@ -2020,3 +2020,1209 @@ class TestRateLimiter:
 
         assert resolver._rate_limiter.config.max_concurrent == 10
         assert resolver._rate_limiter.config.max_retries == 5
+
+
+# =============================================================================
+# DEMAND-DRIVEN FACT RESOLUTION TESTS
+# Tests for DAG-based resolution with parallel independent facts
+# =============================================================================
+
+
+class TestResolutionHierarchy:
+    """Tests for the fact resolution hierarchy order."""
+
+    def test_default_hierarchy_order(self):
+        """Test that default hierarchy is cache → rule → database → sub_plan → document → llm_knowledge → user_provided."""
+        strategy = ResolutionStrategy()
+        expected = [
+            FactSource.CACHE,
+            FactSource.RULE,
+            FactSource.DATABASE,
+            FactSource.SUB_PLAN,
+            FactSource.DOCUMENT,
+            FactSource.LLM_KNOWLEDGE,
+            FactSource.USER_PROVIDED,
+        ]
+        assert strategy.source_priority == expected
+
+    def test_cache_checked_first(self):
+        """Test that cached facts are returned immediately without trying other sources."""
+        resolver = FactResolver()
+
+        # Pre-cache a fact
+        cached_fact = Fact(name="cached_value", value=42, source=FactSource.CACHE)
+        resolver._cache["cached_value"] = cached_fact
+
+        # Resolve should hit cache
+        result = resolver.resolve("cached_value")
+
+        assert result.value == 42
+        assert result.source == FactSource.CACHE
+
+    def test_rule_checked_before_database(self):
+        """Test that rules are checked before database queries."""
+        resolver = FactResolver()
+        resolution_order = []
+
+        @resolver.rule("derived_fact")
+        def compute_derived(resolver, params):
+            resolution_order.append("rule")
+            return Fact(name="derived_fact", value=100, source=FactSource.RULE)
+
+        result = resolver.resolve("derived_fact")
+
+        assert result.value == 100
+        assert result.source == FactSource.RULE
+        assert "rule" in resolution_order
+
+    def test_hierarchy_stops_at_first_success(self):
+        """Test that resolution stops as soon as a source succeeds."""
+        resolver = FactResolver()
+        sources_tried = []
+
+        # Register a rule that succeeds
+        @resolver.rule("test_fact")
+        def rule_succeeds(resolver, params):
+            sources_tried.append("rule")
+            return Fact(name="test_fact", value="from_rule", source=FactSource.RULE)
+
+        result = resolver.resolve("test_fact")
+
+        # Should have tried rule and stopped (not tried database, sub_plan, etc.)
+        assert result.source == FactSource.RULE
+        assert sources_tried == ["rule"]
+
+
+class TestDemandDrivenResolution:
+    """Tests for demand-driven (conclusion-first) resolution."""
+
+    def test_conclusion_triggers_dependency_resolution(self):
+        """Test that resolving a conclusion fact triggers resolution of its dependencies."""
+        resolver = FactResolver()
+        resolution_order = []
+
+        # Register base facts
+        @resolver.rule("base_a")
+        def resolve_a(resolver, params):
+            resolution_order.append("base_a")
+            return Fact(name="base_a", value=10, source=FactSource.RULE)
+
+        @resolver.rule("base_b")
+        def resolve_b(resolver, params):
+            resolution_order.append("base_b")
+            return Fact(name="base_b", value=20, source=FactSource.RULE)
+
+        # Register conclusion that depends on base facts
+        @resolver.rule("conclusion")
+        def resolve_conclusion(resolver, params):
+            resolution_order.append("conclusion_start")
+            a = resolver.resolve("base_a")
+            b = resolver.resolve("base_b")
+            resolution_order.append("conclusion_end")
+            return Fact(
+                name="conclusion",
+                value=a.value + b.value,
+                source=FactSource.RULE,
+                because=[a, b]
+            )
+
+        result = resolver.resolve("conclusion")
+
+        assert result.value == 30
+        assert len(result.because) == 2
+        # Conclusion started, then resolved dependencies, then finished
+        assert resolution_order == ["conclusion_start", "base_a", "base_b", "conclusion_end"]
+
+    def test_dependencies_cached_for_reuse(self):
+        """Test that resolved dependencies are cached and reused."""
+        resolver = FactResolver()
+        call_count = {"base": 0}
+
+        @resolver.rule("base")
+        def resolve_base(resolver, params):
+            call_count["base"] += 1
+            return Fact(name="base", value=100, source=FactSource.RULE)
+
+        @resolver.rule("derived1")
+        def resolve_d1(resolver, params):
+            base = resolver.resolve("base")
+            return Fact(name="derived1", value=base.value * 2, source=FactSource.RULE, because=[base])
+
+        @resolver.rule("derived2")
+        def resolve_d2(resolver, params):
+            base = resolver.resolve("base")
+            return Fact(name="derived2", value=base.value * 3, source=FactSource.RULE, because=[base])
+
+        # Resolve both derived facts
+        d1 = resolver.resolve("derived1")
+        d2 = resolver.resolve("derived2")
+
+        assert d1.value == 200
+        assert d2.value == 300
+        # Base should only be resolved once (cached after first call)
+        assert call_count["base"] == 1
+
+    def test_provenance_chain_tracked(self):
+        """Test that the full provenance chain is tracked via 'because' field."""
+        resolver = FactResolver()
+
+        @resolver.rule("level1")
+        def resolve_l1(resolver, params):
+            return Fact(name="level1", value=1, source=FactSource.RULE)
+
+        @resolver.rule("level2")
+        def resolve_l2(resolver, params):
+            l1 = resolver.resolve("level1")
+            return Fact(name="level2", value=2, source=FactSource.RULE, because=[l1])
+
+        @resolver.rule("level3")
+        def resolve_l3(resolver, params):
+            l2 = resolver.resolve("level2")
+            return Fact(name="level3", value=3, source=FactSource.RULE, because=[l2])
+
+        result = resolver.resolve("level3")
+
+        # Check provenance chain
+        assert result.name == "level3"
+        assert len(result.because) == 1
+        assert result.because[0].name == "level2"
+        assert len(result.because[0].because) == 1
+        assert result.because[0].because[0].name == "level1"
+
+
+class TestParallelResolution:
+    """Tests for parallel resolution of independent facts."""
+
+    def test_resolve_many_sync_exists_on_base_resolver(self):
+        """Test that resolve_many_sync is available on base FactResolver."""
+        resolver = FactResolver()
+        assert hasattr(resolver, "resolve_many_sync")
+        assert callable(resolver.resolve_many_sync)
+
+    def test_resolve_many_sync_resolves_all_facts(self):
+        """Test that resolve_many_sync resolves all requested facts."""
+        resolver = FactResolver()
+
+        @resolver.rule("fact_a")
+        def resolve_a(resolver, params):
+            return Fact(name="fact_a", value="A", source=FactSource.RULE)
+
+        @resolver.rule("fact_b")
+        def resolve_b(resolver, params):
+            return Fact(name="fact_b", value="B", source=FactSource.RULE)
+
+        @resolver.rule("fact_c")
+        def resolve_c(resolver, params):
+            return Fact(name="fact_c", value="C", source=FactSource.RULE)
+
+        facts = resolver.resolve_many_sync([
+            ("fact_a", {}),
+            ("fact_b", {}),
+            ("fact_c", {}),
+        ])
+
+        assert len(facts) == 3
+        assert facts[0].value == "A"
+        assert facts[1].value == "B"
+        assert facts[2].value == "C"
+
+    def test_resolve_many_sync_preserves_order(self):
+        """Test that resolve_many_sync returns facts in request order."""
+        resolver = FactResolver()
+
+        @resolver.rule("z_last")
+        def resolve_z(resolver, params):
+            return Fact(name="z_last", value="Z", source=FactSource.RULE)
+
+        @resolver.rule("a_first")
+        def resolve_a(resolver, params):
+            return Fact(name="a_first", value="A", source=FactSource.RULE)
+
+        @resolver.rule("m_middle")
+        def resolve_m(resolver, params):
+            return Fact(name="m_middle", value="M", source=FactSource.RULE)
+
+        facts = resolver.resolve_many_sync([
+            ("z_last", {}),
+            ("a_first", {}),
+            ("m_middle", {}),
+        ])
+
+        # Order should match request order, not alphabetical
+        assert [f.value for f in facts] == ["Z", "A", "M"]
+
+    def test_resolve_many_sync_with_params(self):
+        """Test that resolve_many_sync passes params correctly."""
+        resolver = FactResolver()
+
+        @resolver.rule("parameterized")
+        def resolve_param(resolver, params):
+            multiplier = params.get("multiplier", 1)
+            return Fact(
+                name=f"parameterized(multiplier={multiplier})",
+                value=10 * multiplier,
+                source=FactSource.RULE
+            )
+
+        facts = resolver.resolve_many_sync([
+            ("parameterized", {"multiplier": 1}),
+            ("parameterized", {"multiplier": 2}),
+            ("parameterized", {"multiplier": 5}),
+        ])
+
+        assert facts[0].value == 10
+        assert facts[1].value == 20
+        assert facts[2].value == 50
+
+    def test_async_resolve_many_is_parallel(self):
+        """Test that AsyncFactResolver.resolve_many_async runs in parallel."""
+        import time
+
+        resolver = AsyncFactResolver()
+
+        @resolver.rule("slow_fact")
+        def resolve_slow(resolver, params):
+            time.sleep(0.1)  # 100ms delay
+            return Fact(name=f"slow_fact_{params.get('id')}", value=params.get('id'), source=FactSource.RULE)
+
+        # Resolve 5 facts - if sequential would take 500ms, if parallel ~100ms
+        start = time.time()
+        facts = resolver.resolve_many_sync([
+            ("slow_fact", {"id": i}) for i in range(5)
+        ])
+        elapsed = time.time() - start
+
+        assert len(facts) == 5
+        # Should complete in roughly 100-200ms if parallel, not 500ms+
+        assert elapsed < 0.4, f"Expected parallel execution (<400ms), got {elapsed*1000:.0f}ms"
+
+
+class TestSequentialDependencies:
+    """Tests for sequential resolution when facts depend on each other."""
+
+    def test_dependent_facts_resolved_sequentially(self):
+        """Test that dependent facts are resolved in correct order."""
+        resolver = FactResolver()
+        resolution_times = {}
+
+        import time
+
+        @resolver.rule("start_date")
+        def resolve_start(resolver, params):
+            resolution_times["start_date"] = time.time()
+            return Fact(name="start_date", value="2024-01-01", source=FactSource.RULE)
+
+        @resolver.rule("end_date")
+        def resolve_end(resolver, params):
+            # end_date depends on start_date
+            start = resolver.resolve("start_date")
+            resolution_times["end_date"] = time.time()
+            return Fact(
+                name="end_date",
+                value="2024-03-31",  # start + 3 months
+                source=FactSource.RULE,
+                because=[start]
+            )
+
+        result = resolver.resolve("end_date")
+
+        assert result.value == "2024-03-31"
+        assert len(result.because) == 1
+        assert result.because[0].value == "2024-01-01"
+        # start_date must be resolved before end_date
+        assert resolution_times["start_date"] <= resolution_times["end_date"]
+
+    def test_diamond_dependency_resolved_correctly(self):
+        """Test diamond dependency pattern: D depends on B and C, both depend on A."""
+        resolver = FactResolver()
+        call_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+
+        @resolver.rule("A")
+        def resolve_a(resolver, params):
+            call_counts["A"] += 1
+            return Fact(name="A", value=1, source=FactSource.RULE)
+
+        @resolver.rule("B")
+        def resolve_b(resolver, params):
+            call_counts["B"] += 1
+            a = resolver.resolve("A")
+            return Fact(name="B", value=a.value * 2, source=FactSource.RULE, because=[a])
+
+        @resolver.rule("C")
+        def resolve_c(resolver, params):
+            call_counts["C"] += 1
+            a = resolver.resolve("A")
+            return Fact(name="C", value=a.value * 3, source=FactSource.RULE, because=[a])
+
+        @resolver.rule("D")
+        def resolve_d(resolver, params):
+            call_counts["D"] += 1
+            b = resolver.resolve("B")
+            c = resolver.resolve("C")
+            return Fact(name="D", value=b.value + c.value, source=FactSource.RULE, because=[b, c])
+
+        result = resolver.resolve("D")
+
+        assert result.value == 5  # (1*2) + (1*3)
+        # Each fact should only be resolved once due to caching
+        assert call_counts == {"A": 1, "B": 1, "C": 1, "D": 1}
+
+
+class TestUserProvidedReSteer:
+    """Tests for USER_PROVIDED as re-steer trigger."""
+
+    def test_user_provided_fact_from_cache(self):
+        """Test that user-provided facts are retrieved from cache."""
+        resolver = FactResolver()
+
+        # User provides a fact (simulating clarification)
+        resolver.add_user_fact("customer_tier_threshold", 100000, reasoning="User specified VIP threshold")
+
+        # Later resolution should find it in cache
+        result = resolver.resolve("customer_tier_threshold")
+
+        assert result.is_resolved
+        assert result.value == 100000
+        assert result.source == FactSource.USER_PROVIDED
+
+    def test_unresolved_when_user_fact_missing(self):
+        """Test that resolution returns UNRESOLVED when user fact not provided."""
+        resolver = FactResolver()
+        # No LLM, no rules, no database - should exhaust all sources
+
+        result = resolver.resolve("undefined_user_fact")
+
+        assert not result.is_resolved
+        assert result.source == FactSource.UNRESOLVED
+
+    def test_user_fact_usable_in_derived_computation(self):
+        """Test that user-provided facts can be used in derived computations."""
+        resolver = FactResolver()
+
+        # User provides period description
+        resolver.add_user_fact("period", "last_3_months", reasoning="User clarified time period")
+
+        # Rule derives dates from user-provided period
+        @resolver.rule("date_range")
+        def resolve_dates(resolver, params):
+            period = resolver.resolve("period")
+            # Simulate deriving dates from period
+            if period.value == "last_3_months":
+                return Fact(
+                    name="date_range",
+                    value={"start": "2024-01-01", "end": "2024-03-31"},
+                    source=FactSource.RULE,
+                    because=[period]
+                )
+            return Fact(name="date_range", value=None, source=FactSource.UNRESOLVED)
+
+        result = resolver.resolve("date_range")
+
+        assert result.is_resolved
+        assert result.value == {"start": "2024-01-01", "end": "2024-03-31"}
+        assert len(result.because) == 1
+        assert result.because[0].source == FactSource.USER_PROVIDED
+
+    def test_get_unresolved_identifies_missing_user_facts(self):
+        """Test that get_unresolved_facts identifies facts that need user input."""
+        resolver = FactResolver()
+
+        # Try to resolve facts that will fail
+        resolver.resolve("tier_definition")
+        resolver.resolve("revenue_source")
+
+        unresolved = resolver.get_unresolved_facts()
+
+        assert len(unresolved) == 2
+        assert any(f.name == "tier_definition" for f in unresolved)
+        assert any(f.name == "revenue_source" for f in unresolved)
+
+    def test_unresolved_summary_suggests_user_input(self):
+        """Test that unresolved summary suggests user can provide facts."""
+        resolver = FactResolver()
+
+        resolver.resolve("unknown_threshold")
+
+        summary = resolver.get_unresolved_summary()
+
+        assert "could not be resolved" in summary.lower()
+        assert "unknown_threshold" in summary
+
+
+class TestDAGDiscovery:
+    """Tests for DAG discovery through recursive resolution."""
+
+    def test_dag_discovered_through_resolution(self):
+        """Test that the dependency DAG is discovered during resolution."""
+        resolver = FactResolver()
+
+        # Simulate a complex DAG:
+        # answer depends on [trend_data, tier_summary]
+        # trend_data depends on [raw_orders, date_range]
+        # tier_summary depends on [raw_orders, tier_definitions]
+        # date_range depends on [start_date, end_date]
+
+        @resolver.rule("start_date")
+        def r_start(res, p):
+            return Fact(name="start_date", value="2024-01-01", source=FactSource.RULE)
+
+        @resolver.rule("end_date")
+        def r_end(res, p):
+            start = res.resolve("start_date")
+            return Fact(name="end_date", value="2024-03-31", source=FactSource.RULE, because=[start])
+
+        @resolver.rule("date_range")
+        def r_range(res, p):
+            start = res.resolve("start_date")
+            end = res.resolve("end_date")
+            return Fact(name="date_range", value={"start": start.value, "end": end.value},
+                       source=FactSource.RULE, because=[start, end])
+
+        @resolver.rule("tier_definitions")
+        def r_tiers(res, p):
+            return Fact(name="tier_definitions", value=["Gold", "Silver", "Bronze"], source=FactSource.RULE)
+
+        @resolver.rule("raw_orders")
+        def r_orders(res, p):
+            dates = res.resolve("date_range")
+            return Fact(name="raw_orders", value=[{"id": 1}, {"id": 2}], source=FactSource.RULE, because=[dates])
+
+        @resolver.rule("trend_data")
+        def r_trend(res, p):
+            orders = res.resolve("raw_orders")
+            dates = res.resolve("date_range")
+            return Fact(name="trend_data", value="trend_computed", source=FactSource.RULE, because=[orders, dates])
+
+        @resolver.rule("tier_summary")
+        def r_summary(res, p):
+            orders = res.resolve("raw_orders")
+            tiers = res.resolve("tier_definitions")
+            return Fact(name="tier_summary", value="summary_computed", source=FactSource.RULE, because=[orders, tiers])
+
+        @resolver.rule("answer")
+        def r_answer(res, p):
+            trend = res.resolve("trend_data")
+            summary = res.resolve("tier_summary")
+            return Fact(name="answer", value="final_answer", source=FactSource.RULE, because=[trend, summary])
+
+        result = resolver.resolve("answer")
+
+        # Check that the full DAG was discovered
+        assert result.is_resolved
+        assert result.value == "final_answer"
+
+        # Check provenance - answer depends on trend_data and tier_summary
+        assert len(result.because) == 2
+        dep_names = {f.name for f in result.because}
+        assert dep_names == {"trend_data", "tier_summary"}
+
+        # Check that all facts were resolved (via resolution_log)
+        resolved_names = {f.name for f in resolver.resolution_log if f.is_resolved}
+        expected = {"start_date", "end_date", "date_range", "tier_definitions",
+                   "raw_orders", "trend_data", "tier_summary", "answer"}
+        assert resolved_names == expected
+
+    def test_audit_log_captures_full_dag(self):
+        """Test that the audit log captures all facts in the DAG."""
+        resolver = FactResolver()
+
+        @resolver.rule("leaf1")
+        def r1(res, p):
+            return Fact(name="leaf1", value=1, source=FactSource.RULE)
+
+        @resolver.rule("leaf2")
+        def r2(res, p):
+            return Fact(name="leaf2", value=2, source=FactSource.RULE)
+
+        @resolver.rule("branch")
+        def r3(res, p):
+            l1 = res.resolve("leaf1")
+            l2 = res.resolve("leaf2")
+            return Fact(name="branch", value=l1.value + l2.value, source=FactSource.RULE, because=[l1, l2])
+
+        @resolver.rule("root")
+        def r4(res, p):
+            b = res.resolve("branch")
+            return Fact(name="root", value=b.value * 2, source=FactSource.RULE, because=[b])
+
+        resolver.resolve("root")
+
+        audit_log = resolver.get_audit_log()
+
+        # Should have 4 entries: leaf1, leaf2, branch, root
+        assert len(audit_log) == 4
+
+        # Check each entry has required fields
+        for entry in audit_log:
+            assert "name" in entry
+            assert "value" in entry
+            assert "source" in entry
+            assert "confidence" in entry
+            assert "because" in entry
+
+
+class TestIndependentVsDependentFacts:
+    """Tests for correctly identifying independent vs dependent facts."""
+
+    def test_independent_facts_can_use_resolve_many(self):
+        """Test that independent facts can be resolved together via resolve_many_sync."""
+        resolver = FactResolver()
+
+        # These facts are independent - no dependencies between them
+        @resolver.rule("fact_x")
+        def rx(res, p):
+            return Fact(name="fact_x", value="X", source=FactSource.RULE)
+
+        @resolver.rule("fact_y")
+        def ry(res, p):
+            return Fact(name="fact_y", value="Y", source=FactSource.RULE)
+
+        @resolver.rule("fact_z")
+        def rz(res, p):
+            return Fact(name="fact_z", value="Z", source=FactSource.RULE)
+
+        # Resolve all at once
+        facts = resolver.resolve_many_sync([
+            ("fact_x", {}),
+            ("fact_y", {}),
+            ("fact_z", {}),
+        ])
+
+        values = [f.value for f in facts]
+        assert values == ["X", "Y", "Z"]
+
+    def test_mixed_independent_and_dependent_resolution(self):
+        """Test resolving a mix of independent and dependent facts."""
+        resolver = FactResolver()
+        resolution_order = []
+
+        # Independent facts
+        @resolver.rule("config_a")
+        def ra(res, p):
+            resolution_order.append("config_a")
+            return Fact(name="config_a", value="A", source=FactSource.RULE)
+
+        @resolver.rule("config_b")
+        def rb(res, p):
+            resolution_order.append("config_b")
+            return Fact(name="config_b", value="B", source=FactSource.RULE)
+
+        # Dependent fact
+        @resolver.rule("combined")
+        def rc(res, p):
+            resolution_order.append("combined_start")
+            a = res.resolve("config_a")
+            b = res.resolve("config_b")
+            resolution_order.append("combined_end")
+            return Fact(name="combined", value=f"{a.value}+{b.value}", source=FactSource.RULE, because=[a, b])
+
+        result = resolver.resolve("combined")
+
+        assert result.value == "A+B"
+        # combined starts, then resolves a and b, then finishes
+        assert resolution_order[0] == "combined_start"
+        assert "config_a" in resolution_order
+        assert "config_b" in resolution_order
+        assert resolution_order[-1] == "combined_end"
+
+
+class TestResolveConclusion:
+    """Tests for template-based symbolic resolution via resolve_conclusion."""
+
+    def test_resolve_conclusion_without_llm_returns_error(self):
+        """Test that resolve_conclusion requires an LLM."""
+        resolver = FactResolver()
+        result = resolver.resolve_conclusion("What is the revenue?")
+        assert "error" in result
+        assert result["answer"] is None
+
+    def test_resolve_conclusion_generates_template(self):
+        """Test that resolve_conclusion generates a template with variables."""
+        mock_llm = MagicMock()
+        # First call: generate template
+        mock_llm.generate.side_effect = [
+            """TEMPLATE: The total revenue for {time_period} was ${total_revenue}.
+VARIABLES:
+- {time_period}: The time period to analyze
+- {total_revenue}: Sum of all revenue in the period""",
+            # Second call: dependency analysis
+            """{time_period}: []
+{total_revenue}: [{time_period}]""",
+        ]
+
+        resolver = FactResolver(llm=mock_llm)
+
+        # Pre-cache facts so resolution succeeds
+        resolver.add_user_fact("time_period", "Q3 2024")
+        resolver.add_user_fact("total_revenue", 150000)
+
+        result = resolver.resolve_conclusion("What was the revenue for Q3?")
+
+        assert "template" in result
+        assert "variables" in result
+        assert "time_period" in result["variables"]
+        assert "total_revenue" in result["variables"]
+
+    def test_resolve_conclusion_parallel_independent_vars(self):
+        """Test that independent variables are resolved together via resolve_many_sync."""
+        mock_llm = MagicMock()
+        mock_llm.generate.side_effect = [
+            """TEMPLATE: Report for {region}: {metric_a} and {metric_b}.
+VARIABLES:
+- {region}: Target region
+- {metric_a}: First metric
+- {metric_b}: Second metric""",
+            """{region}: []
+{metric_a}: []
+{metric_b}: []""",
+        ]
+
+        resolver = FactResolver(llm=mock_llm)
+        resolve_calls = []
+
+        # Mock resolve_many_sync to track calls
+        original_resolve_many = resolver.resolve_many_sync
+
+        def tracking_resolve_many(requests):
+            resolve_calls.append(requests)
+            return original_resolve_many(requests)
+
+        resolver.resolve_many_sync = tracking_resolve_many
+
+        # Pre-cache all facts
+        resolver.add_user_fact("region", "US")
+        resolver.add_user_fact("metric_a", 100)
+        resolver.add_user_fact("metric_b", 200)
+
+        result = resolver.resolve_conclusion("Show me metrics for US")
+
+        # All three variables are independent - should be resolved together
+        assert len(resolve_calls) == 1  # Single call to resolve_many_sync
+        assert len(resolve_calls[0]) == 3  # All three variables
+
+    def test_resolve_conclusion_substitutes_values(self):
+        """Test that resolved values are substituted into the template."""
+        mock_llm = MagicMock()
+        mock_llm.generate.side_effect = [
+            """TEMPLATE: Revenue in {quarter} was ${amount}.
+VARIABLES:
+- {quarter}: The quarter
+- {amount}: Revenue amount""",
+            """{quarter}: []
+{amount}: []""",
+        ]
+
+        resolver = FactResolver(llm=mock_llm)
+        resolver.add_user_fact("quarter", "Q3")
+        resolver.add_user_fact("amount", 50000)
+
+        result = resolver.resolve_conclusion("Revenue in Q3?")
+
+        # Answer should have substituted values
+        assert "Q3" in result["answer"]
+        assert "50000" in result["answer"]
+
+    def test_resolve_conclusion_tracks_unresolved(self):
+        """Test that unresolved variables are tracked."""
+        mock_llm = MagicMock()
+        mock_llm.generate.side_effect = [
+            """TEMPLATE: Customer {customer_id} has tier {tier}.
+VARIABLES:
+- {customer_id}: Customer identifier
+- {tier}: Customer tier classification""",
+            """{customer_id}: []
+{tier}: []""",
+        ]
+
+        resolver = FactResolver(llm=mock_llm)
+        # Only provide one fact - tier will be unresolved
+        resolver.add_user_fact("customer_id", "ACME-001")
+
+        result = resolver.resolve_conclusion("What tier is customer ACME?")
+
+        # tier should be unresolved
+        assert "tier" in result["unresolved"]
+        # customer_id should be resolved
+        assert "customer_id" not in result["unresolved"]
+
+    def test_resolve_conclusion_builds_derivation_trace(self):
+        """Test that derivation trace is built correctly."""
+        mock_llm = MagicMock()
+        mock_llm.generate.side_effect = [
+            """TEMPLATE: The value is {x}.
+VARIABLES:
+- {x}: The value""",
+            """{x}: []""",
+        ]
+
+        resolver = FactResolver(llm=mock_llm)
+        resolver.add_user_fact("x", 42)
+
+        result = resolver.resolve_conclusion("What is x?")
+
+        # Derivation should have Statement, Variable Resolution, Conclusion sections
+        assert "derivation" in result
+        assert "Statement" in result["derivation"]
+        assert "Variable Resolution" in result["derivation"]
+        assert "Conclusion" in result["derivation"]
+
+    def test_resolve_conclusion_calculates_confidence(self):
+        """Test that confidence is calculated as min of all facts."""
+        mock_llm = MagicMock()
+        mock_llm.generate.side_effect = [
+            """TEMPLATE: {a} and {b}.
+VARIABLES:
+- {a}: First value
+- {b}: Second value""",
+            """{a}: []
+{b}: []""",
+        ]
+
+        resolver = FactResolver(llm=mock_llm)
+
+        # Add facts with different confidence levels
+        resolver._cache["a"] = Fact(
+            name="a", value=100, confidence=1.0, source=FactSource.DATABASE
+        )
+        resolver._cache["b"] = Fact(
+            name="b", value=200, confidence=0.7, source=FactSource.LLM_KNOWLEDGE
+        )
+
+        result = resolver.resolve_conclusion("Show a and b")
+
+        # Confidence should be min of all facts
+        assert result["confidence"] == 0.7
+
+
+class TestBuildDerivationTrace:
+    """Tests for the _build_derivation_trace helper method."""
+
+    def test_build_derivation_trace_includes_all_sections(self):
+        """Test that derivation trace includes all required sections."""
+        resolver = FactResolver()
+
+        fact = Fact(name="x", value=42, confidence=1.0, source=FactSource.DATABASE)
+        trace = resolver._build_derivation_trace(
+            template="Answer is {x}",
+            resolved={"x": fact},
+            unresolved=[],
+            variables={"x": "The answer"},
+            answer="Answer is 42",
+        )
+
+        assert "**Statement:**" in trace
+        assert "**Variable Resolution:**" in trace
+        assert "**Conclusion:**" in trace
+        assert "Answer is {x}" in trace
+        assert "Answer is 42" in trace
+
+    def test_build_derivation_trace_shows_provenance(self):
+        """Test that provenance information is included."""
+        resolver = FactResolver()
+
+        fact = Fact(
+            name="revenue",
+            value=50000,
+            confidence=0.9,
+            source=FactSource.DATABASE,
+            source_name="sales_db",
+            query="SELECT SUM(amount) FROM sales",
+        )
+        trace = resolver._build_derivation_trace(
+            template="Revenue is {revenue}",
+            resolved={"revenue": fact},
+            unresolved=[],
+            variables={"revenue": "Total revenue"},
+            answer="Revenue is 50000",
+        )
+
+        assert "database" in trace.lower()
+        assert "sales_db" in trace
+        assert "90%" in trace or "0.9" in trace
+        assert "query:" in trace.lower()
+
+    def test_build_derivation_trace_shows_unresolved(self):
+        """Test that unresolved variables are clearly marked."""
+        resolver = FactResolver()
+
+        trace = resolver._build_derivation_trace(
+            template="{known} and {unknown}",
+            resolved={"known": Fact(name="known", value=1, source=FactSource.RULE)},
+            unresolved=["unknown"],
+            variables={"known": "Known value", "unknown": "Needs user input"},
+            answer="{known} and {unknown}",
+        )
+
+        assert "**Unresolved" in trace
+        assert "{unknown}" in trace
+        assert "Needs user input" in trace
+
+    def test_build_derivation_trace_shows_derived_from(self):
+        """Test that derived-from dependencies are shown."""
+        resolver = FactResolver()
+
+        base = Fact(name="base", value=10, source=FactSource.DATABASE)
+        derived = Fact(
+            name="derived",
+            value=20,
+            confidence=1.0,
+            source=FactSource.RULE,
+            because=[base],
+        )
+        trace = resolver._build_derivation_trace(
+            template="Result is {derived}",
+            resolved={"derived": derived},
+            unresolved=[],
+            variables={"derived": "Computed value"},
+            answer="Result is 20",
+        )
+
+        assert "derived from:" in trace.lower()
+        assert "base" in trace
+
+
+class TestResolveGoal:
+    """Tests for Prolog-style goal decomposition via resolve_goal."""
+
+    def test_resolve_goal_without_llm_returns_error(self):
+        """Test that resolve_goal requires an LLM."""
+        resolver = FactResolver()
+        result = resolver.resolve_goal("What is the revenue?")
+        assert "error" in result
+        assert result["answer"] is None
+
+    def test_resolve_goal_parses_prolog_response(self):
+        """Test that Prolog-style LLM response is parsed correctly."""
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = """GOAL: total_revenue(q3, Revenue)
+
+RULES:
+total_revenue(Quarter, Revenue) :-
+    date_range(Quarter, Start, End),
+    sum_sales(Start, End, Revenue).
+
+SOURCES:
+date_range: LLM_KNOWLEDGE
+sum_sales: DATABASE"""
+
+        resolver = FactResolver(llm=mock_llm)
+
+        # Pre-cache facts
+        resolver.add_user_fact("date_range", ("2024-07-01", "2024-09-30"))
+        resolver.add_user_fact("sum_sales", 150000)
+
+        result = resolver.resolve_goal("What was revenue in Q3?")
+
+        assert result["goal"] == "total_revenue(q3, Revenue)"
+        assert len(result["rules"]) >= 1
+        assert "date_range" in result["sources"]
+        assert "sum_sales" in result["sources"]
+
+    def test_parse_predicate(self):
+        """Test predicate parsing helper."""
+        resolver = FactResolver()
+
+        # Simple predicate
+        name, args = resolver._parse_predicate("foo(X, Y, Z)")
+        assert name == "foo"
+        assert args == ["X", "Y", "Z"]
+
+        # Predicate with constants
+        name, args = resolver._parse_predicate("revenue(q3, premium, Amount)")
+        assert name == "revenue"
+        assert args == ["q3", "premium", "Amount"]
+
+        # No args
+        name, args = resolver._parse_predicate("fact")
+        assert name == "fact"
+        assert args == []
+
+    def test_parse_rules_extracts_dependencies(self):
+        """Test that rule parsing extracts head -> body dependencies."""
+        resolver = FactResolver()
+
+        rules = [
+            "answer(Q, R) :- date_range(Q, S, E), sum_revenue(S, E, R).",
+            "complex(X, Y, Z) :- a(X, A), b(A, B), c(B, Y), compute(Y, Z).",
+        ]
+
+        deps = resolver._parse_rules(rules)
+
+        assert "answer" in deps
+        assert set(deps["answer"]) == {"date_range", "sum_revenue"}
+
+        assert "complex" in deps
+        assert set(deps["complex"]) == {"a", "b", "c", "compute"}
+
+    def test_resolve_goal_builds_prolog_derivation(self):
+        """Test that derivation trace is in Prolog style."""
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = """GOAL: value(X)
+
+RULES:
+
+SOURCES:
+value: DATABASE"""
+
+        resolver = FactResolver(llm=mock_llm)
+        resolver.add_user_fact("value", 42)
+
+        result = resolver.resolve_goal("What is the value?")
+
+        # Check Prolog-style derivation
+        deriv = result["derivation"]
+        assert "/* Query */" in deriv
+        assert "?- value(X)" in deriv
+        assert "/* Resolution */" in deriv
+        assert "/* Answer */" in deriv
+
+    def test_resolve_goal_binds_variables(self):
+        """Test that variables are bound during resolution."""
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = """GOAL: answer(Result)
+
+RULES:
+
+SOURCES:
+answer: DATABASE"""
+
+        resolver = FactResolver(llm=mock_llm)
+        resolver.add_user_fact("answer", 100)
+
+        result = resolver.resolve_goal("What is the answer?")
+
+        # Result variable should be bound
+        assert "Result" in result["bindings"]
+        assert result["bindings"]["Result"] == 100
+
+    def test_resolve_goal_tracks_unresolved(self):
+        """Test that unresolved predicates are tracked."""
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = """GOAL: result(X, Y)
+
+RULES:
+result(X, Y) :-
+    known(X),
+    unknown(Y).
+
+SOURCES:
+known: DATABASE
+unknown: USER_PROVIDED"""
+
+        resolver = FactResolver(llm=mock_llm)
+        # Only provide known fact
+        resolver.add_user_fact("known", "value_x")
+
+        result = resolver.resolve_goal("Get result")
+
+        # unknown should be in unresolved list
+        assert "unknown" in result["unresolved"]
+
+    def test_substitute_bindings(self):
+        """Test variable substitution in terms."""
+        resolver = FactResolver()
+
+        bindings = {"X": 10, "Y": 20, "Result": 30}
+        term = "answer(X, Y, Result)"
+
+        substituted = resolver._substitute_bindings(term, bindings)
+
+        assert substituted == "answer(10, 20, 30)"
+
+
+class TestPrologDerivationTrace:
+    """Tests for Prolog-style derivation trace building."""
+
+    def test_build_prolog_derivation_includes_query(self):
+        """Test that derivation includes the original query."""
+        resolver = FactResolver()
+
+        trace = resolver._build_prolog_derivation(
+            goal="revenue(q3, R)",
+            rules=["revenue(Q, R) :- sales(Q, R)."],
+            bindings={"R": 50000},
+            resolved={"sales": Fact(name="sales", value=50000, source=FactSource.DATABASE)},
+            unresolved=[],
+        )
+
+        assert "?- revenue(q3, R)" in trace
+
+    def test_build_prolog_derivation_includes_rules(self):
+        """Test that derivation includes the rules used."""
+        resolver = FactResolver()
+
+        trace = resolver._build_prolog_derivation(
+            goal="result(X)",
+            rules=["result(X) :- compute(X)."],
+            bindings={},
+            resolved={},
+            unresolved=[],
+        )
+
+        assert "/* Rules */" in trace
+        assert "result(X) :- compute(X)." in trace
+
+    def test_build_prolog_derivation_shows_resolution_with_source(self):
+        """Test that resolution shows facts with their sources."""
+        resolver = FactResolver()
+
+        fact = Fact(
+            name="revenue",
+            value=100000,
+            confidence=1.0,
+            source=FactSource.DATABASE,
+            source_name="sales_db",
+            query="SELECT SUM(amount) FROM sales",
+        )
+
+        trace = resolver._build_prolog_derivation(
+            goal="revenue(R)",
+            rules=[],
+            bindings={"R": 100000},
+            resolved={"revenue": fact},
+            unresolved=[],
+        )
+
+        assert "/* Resolution */" in trace
+        assert "revenue(100000)" in trace
+        assert "database:sales_db" in trace
+        assert "SQL:" in trace
+
+    def test_build_prolog_derivation_shows_unresolved(self):
+        """Test that unresolved predicates are shown."""
+        resolver = FactResolver()
+
+        trace = resolver._build_prolog_derivation(
+            goal="answer(X, Y)",
+            rules=[],
+            bindings={"X": 10},
+            resolved={},
+            unresolved=["missing_fact"],
+        )
+
+        assert "/* Unresolved" in trace
+        assert "missing_fact" in trace
+
+    def test_build_prolog_derivation_shows_bindings(self):
+        """Test that variable bindings are shown."""
+        resolver = FactResolver()
+
+        trace = resolver._build_prolog_derivation(
+            goal="compute(X, Y, Result)",
+            rules=[],
+            bindings={"X": 10, "Y": 20, "Result": 200},
+            resolved={},
+            unresolved=[],
+        )
+
+        assert "/* Bindings */" in trace
+        assert "X = 10" in trace
+        assert "Y = 20" in trace
+        assert "Result = 200" in trace
+
+
+class TestSQLTransformForSQLite:
+    """Tests for MySQL/PostgreSQL to SQLite SQL transformation."""
+
+    def test_date_format_transformation(self):
+        """Test DATE_FORMAT is converted to strftime."""
+        resolver = FactResolver()
+        sql = "SELECT DATE_FORMAT(order_date, '%Y-%m') as month FROM orders"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "strftime('%Y-%m', order_date)" in result
+        assert "DATE_FORMAT" not in result
+
+    def test_date_sub_with_curdate(self):
+        """Test DATE_SUB(CURDATE(), INTERVAL n MONTH) conversion."""
+        resolver = FactResolver()
+        sql = "SELECT * FROM orders WHERE order_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "date('now', '-6 months')" in result
+        assert "DATE_SUB" not in result
+        assert "CURDATE" not in result
+
+    def test_date_sub_with_column(self):
+        """Test DATE_SUB with column reference."""
+        resolver = FactResolver()
+        sql = "SELECT DATE_SUB(created_at, INTERVAL 30 DAY) as past_date FROM users"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "date(created_at, '-30 days')" in result
+
+    def test_curdate_standalone(self):
+        """Test standalone CURDATE() conversion."""
+        resolver = FactResolver()
+        sql = "SELECT * FROM orders WHERE order_date = CURDATE()"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "date('now')" in result
+        assert "CURDATE" not in result
+
+    def test_now_conversion(self):
+        """Test NOW() conversion to datetime('now')."""
+        resolver = FactResolver()
+        sql = "SELECT * FROM logs WHERE created_at < NOW()"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "datetime('now')" in result
+        assert "NOW()" not in result
+
+    def test_year_function(self):
+        """Test YEAR() conversion to strftime."""
+        resolver = FactResolver()
+        sql = "SELECT YEAR(order_date) as year FROM orders"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "CAST(strftime('%Y', order_date) AS INTEGER)" in result
+        assert "YEAR(" not in result
+
+    def test_month_function(self):
+        """Test MONTH() conversion to strftime."""
+        resolver = FactResolver()
+        sql = "SELECT MONTH(order_date) as month FROM orders"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "CAST(strftime('%m', order_date) AS INTEGER)" in result
+        assert "MONTH(" not in result
+
+    def test_extract_year(self):
+        """Test EXTRACT(YEAR FROM col) conversion."""
+        resolver = FactResolver()
+        sql = "SELECT EXTRACT(YEAR FROM order_date) as year FROM orders"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "CAST(strftime('%Y', order_date) AS INTEGER)" in result
+        assert "EXTRACT" not in result
+
+    def test_extract_month(self):
+        """Test EXTRACT(MONTH FROM col) conversion."""
+        resolver = FactResolver()
+        sql = "SELECT EXTRACT(MONTH FROM order_date) as month FROM orders"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "CAST(strftime('%m', order_date) AS INTEGER)" in result
+        assert "EXTRACT" not in result
+
+    def test_complex_query_transformation(self):
+        """Test transformation of complex query with multiple MySQL functions."""
+        resolver = FactResolver()
+        sql = """
+        SELECT
+            DATE_FORMAT(o.order_date, '%Y-%m') as month,
+            c.tier,
+            SUM(o.total_amount) as monthly_revenue
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        WHERE o.order_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+        GROUP BY YEAR(o.order_date), MONTH(o.order_date), c.tier
+        ORDER BY month
+        """
+        result = resolver._transform_sql_for_sqlite(sql)
+        # Check all MySQL functions are converted
+        assert "DATE_FORMAT" not in result
+        assert "DATE_SUB" not in result
+        assert "CURDATE" not in result
+        # Check SQLite equivalents are present
+        assert "strftime('%Y-%m', o.order_date)" in result
+        assert "date('now', '-6 months')" in result
+
+    def test_case_insensitive_transformation(self):
+        """Test that transformations are case-insensitive."""
+        resolver = FactResolver()
+        sql = "SELECT date_format(created_at, '%Y') as year, curdate() as today FROM users"
+        result = resolver._transform_sql_for_sqlite(sql)
+        assert "strftime('%Y', created_at)" in result
+        assert "date('now')" in result

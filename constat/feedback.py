@@ -16,7 +16,10 @@ from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.layout import Layout
 from rich.columns import Columns
+from rich.tree import Tree
 import threading
+
+from constat.proof_tree import ProofTree, NodeStatus
 
 
 def _left_align_markdown(text: str) -> str:
@@ -115,6 +118,65 @@ class FeedbackDisplay:
         # Background animation thread
         self._animation_thread: Optional[threading.Thread] = None
         self._animation_running: bool = False
+
+        # Proof tree for auditable mode
+        self._proof_tree: Optional[ProofTree] = None
+        self._auditable_mode: bool = False
+        self._proof_outputs: list[tuple[str, str]] = []  # (fact_name, output) for resolved facts
+
+    def start_proof_tree(self, conclusion_name: str, conclusion_description: str = "") -> None:
+        """Start tracking a proof tree for auditable mode."""
+        self._proof_tree = ProofTree(conclusion_name, conclusion_description)
+        self._auditable_mode = True
+        self._proof_outputs = []
+
+    def update_proof_resolving(self, fact_name: str, description: str = "", parent_name: str = None) -> None:
+        """Mark a fact as being resolved in the proof tree."""
+        if self._proof_tree:
+            self._proof_tree.start_resolving(fact_name, description, parent_name=parent_name)
+
+    def update_proof_resolved(
+        self,
+        fact_name: str,
+        value,
+        source: str = "",
+        confidence: float = 1.0,
+        query: str = "",
+        from_cache: bool = False,
+        resolution_summary: str = None,
+    ) -> None:
+        """Mark a fact as resolved in the proof tree."""
+        if self._proof_tree:
+            self._proof_tree.resolve_fact(
+                fact_name,
+                value,
+                source=source,
+                confidence=confidence,
+                query=query,
+                from_cache=from_cache,
+                result_summary=resolution_summary,  # Show resolution method, not just value
+            )
+            # Store output for intermediate display - use resolution summary
+            if value is not None:
+                summary = resolution_summary or str(value)
+                if len(summary) > 100:
+                    summary = summary[:97] + "..."
+                self._proof_outputs.append((fact_name, summary))
+
+    def update_proof_failed(self, fact_name: str, error: str) -> None:
+        """Mark a fact as failed in the proof tree."""
+        if self._proof_tree:
+            self._proof_tree.fail_fact(fact_name, error)
+
+    def get_proof_tree_renderable(self) -> Optional[Panel]:
+        """Get the proof tree as a renderable for display."""
+        if self._proof_tree:
+            return self._proof_tree.render_with_panel()
+        return None
+
+    def stop_proof_tree(self) -> None:
+        """Stop the proof tree display."""
+        self._auditable_mode = False
 
     def start(self) -> None:
         """Start the live display."""
@@ -288,7 +350,7 @@ class FeedbackDisplay:
     def _build_animated_display(self) -> RenderableType:
         """Build the animated display with output above and plan pinned below.
 
-        Layout:
+        For exploratory mode:
         ┌─────────────────────────────────────────┐
         │  Output from current step               │
         │  (streaming text, code, results)        │
@@ -299,9 +361,24 @@ class FeedbackDisplay:
         │  ☐ Step 3: Pending...                   │
         │  ☑ Step 4: Completed 2.3s               │
         └─────────────────────────────────────────┘
+
+        For auditable mode:
+        ┌─────────────────────────────────────────┐
+        │  Resolved fact outputs                   │
+        │  (intermediate values)                   │
+        ├─────────────────────────────────────────┤
+        │  Prove: conclusion_fact                  │
+        │  ├── premise_1 ✓ (database)             │
+        │  ├── premise_2 ⏳ resolving...           │
+        │  └── premise_3 ○ pending                 │
+        └─────────────────────────────────────────┘
         """
         # Use current spinner frame (advanced by background thread)
         spinner_char = SPINNER_FRAMES[self._spinner_frame]
+
+        # Check if we're in auditable mode with a proof tree
+        if self._auditable_mode and self._proof_tree:
+            return self._build_proof_tree_display(spinner_char)
 
         # Build output section (top) - show completed step outputs
         output_parts = []
@@ -376,6 +453,60 @@ class FeedbackDisplay:
             all_parts.append(Text(""))  # Spacer
 
         all_parts.extend(plan_parts)
+
+        return Group(*all_parts)
+
+    def _build_proof_tree_display(self, spinner_char: str) -> RenderableType:
+        """Build the animated display for auditable mode with proof tree.
+
+        Shows:
+        1. Intermediate outputs from resolved facts (top)
+        2. Proof tree structure with live status updates (bottom)
+        """
+        all_parts = []
+
+        # Show elapsed time header
+        elapsed = self._format_elapsed()
+        header = Text.from_markup(f"[dim]Resolving proof... ({elapsed})[/dim]")
+        all_parts.append(header)
+        all_parts.append(Text(""))
+
+        # Show intermediate outputs from resolved facts (like exploratory mode)
+        if self._proof_outputs:
+            all_parts.append(Text.from_markup("[dim]─── Resolved Facts ───[/dim]"))
+            # Show last few resolved facts
+            recent_outputs = self._proof_outputs[-5:]  # Last 5
+            for fact_name, value in recent_outputs:
+                # Truncate value for display
+                val_display = value[:60] + "..." if len(value) > 60 else value
+                all_parts.append(Text.from_markup(f"  [green]✓[/green] [cyan]{fact_name}[/cyan] = {val_display}"))
+            if len(self._proof_outputs) > 5:
+                all_parts.append(Text.from_markup(f"  [dim]... and {len(self._proof_outputs) - 5} more[/dim]"))
+            all_parts.append(Text(""))
+
+        # Show the proof tree structure (with animated spinner for resolving nodes)
+        if self._proof_tree:
+            tree = self._proof_tree.render(spinner_char=spinner_char)
+            all_parts.append(tree)
+
+            # Show summary
+            summary = self._proof_tree.get_summary()
+            resolved = summary["resolved"] + summary["cached"]
+            total = summary["total"]
+            pending = summary["pending"]
+            failed = summary["failed"]
+
+            status_parts = []
+            if resolved > 0:
+                status_parts.append(f"[green]{resolved} resolved[/green]")
+            if pending > 0:
+                status_parts.append(f"[yellow]{pending} pending[/yellow]")
+            if failed > 0:
+                status_parts.append(f"[red]{failed} failed[/red]")
+
+            if status_parts:
+                all_parts.append(Text(""))
+                all_parts.append(Text.from_markup(f"[dim]Progress: {' | '.join(status_parts)}[/dim]"))
 
         return Group(*all_parts)
 
@@ -568,7 +699,7 @@ class FeedbackDisplay:
                     self.console.print(f"[dim]Already in {target_mode.value} mode.[/dim]")
                     continue  # Ask again
                 else:
-                    self.console.print(f"[yellow]Switching to {target_mode.value} mode and replanning...[/yellow]\n")
+                    # Mode switch message will be shown by the mode_switch event
                     return PlanApprovalResponse.switch_mode(target_mode)
 
             # Anything else is steering feedback
@@ -933,6 +1064,9 @@ class FeedbackDisplay:
             mode: The new execution mode
             keywords: Keywords that triggered the switch
         """
+        # Skip message for explicit user requests - they know what they asked for
+        if keywords == ["user request"]:
+            return
         keyword_str = ", ".join(keywords) if keywords else "context"
         self.console.print()
         self.console.print(
@@ -1026,12 +1160,32 @@ class SessionFeedbackHandler:
                 data.get("attempt", 1),
             )
 
+        elif event_type == "proof_start":
+            # Stop any running spinner before starting proof tree display
+            self.display.stop_spinner()
+            # Start the proof tree display for auditable mode
+            conclusion_fact = data.get("conclusion_fact", "answer")
+            conclusion_desc = data.get("conclusion_description", "")
+            self.display.start_proof_tree(conclusion_fact, conclusion_desc)
+            # Start live display for the proof tree (like exploratory mode does)
+            self.display.start()
+            self.display._start_time = time.time()
+            # Start animation thread for smooth spinner (same as exploratory mode)
+            self.display._start_animation_thread()
+
         elif event_type == "premise_resolving":
             # Show which fact is being resolved
             fact_name = data.get("fact_name", "?")
+            description = data.get("description", "")
             step = data.get("step", 0)
             total = data.get("total", 0)
-            self.display.update_spinner(f"Resolving {fact_name} ({step}/{total})...")
+            parent = data.get("parent")  # Parent fact for tree structure
+
+            # Update proof tree if active
+            if self.display._proof_tree:
+                self.display.update_proof_resolving(fact_name, description, parent_name=parent)
+            else:
+                self.display.update_spinner(f"Resolving {fact_name} ({step}/{total})...")
 
         elif event_type == "premise_resolved":
             # Show resolved fact value
@@ -1040,18 +1194,94 @@ class SessionFeedbackHandler:
             source = data.get("source", "")
             step = data.get("step", 0)
             total = data.get("total", 0)
-            confidence = data.get("confidence", 0)
+            confidence = data.get("confidence", 1.0)
+            resolution_summary = data.get("resolution_summary")
+            query = data.get("query")
 
-            if value is not None:
-                # Format value for display (truncate if too long)
-                val_str = str(value)
-                if len(val_str) > 60:
-                    val_str = val_str[:57] + "..."
-                conf_str = f" ({confidence:.0%})" if confidence else ""
-                self.display.console.print(f"  [green]✓[/green] {fact_name} = {val_str} [dim][{source}]{conf_str}[/dim]")
+            # Update proof tree if active
+            if self.display._proof_tree:
+                if value is not None:
+                    from_cache = source == "cache"
+                    self.display.update_proof_resolved(
+                        fact_name,
+                        value,
+                        source=source,
+                        confidence=confidence,
+                        from_cache=from_cache,
+                        resolution_summary=resolution_summary,
+                        query=query,
+                    )
+                else:
+                    error = data.get("error", "unresolved")
+                    self.display.update_proof_failed(fact_name, error)
             else:
-                error = data.get("error", "unresolved")
-                self.display.console.print(f"  [red]✗[/red] {fact_name} = [red]UNRESOLVED[/red] [dim]({error})[/dim]")
+                # Fallback to simple console output
+                if value is not None:
+                    val_str = str(value)
+                    if len(val_str) > 60:
+                        val_str = val_str[:57] + "..."
+                    conf_str = f" ({confidence:.0%})" if confidence else ""
+                    self.display.console.print(f"  [green]✓[/green] {fact_name} = {val_str} [dim][{source}]{conf_str}[/dim]")
+                else:
+                    error = data.get("error", "unresolved")
+                    self.display.console.print(f"  [red]✗[/red] {fact_name} = [red]UNRESOLVED[/red] [dim]({error})[/dim]")
+
+        elif event_type == "inference_executing":
+            # Show which inference step is being executed
+            inference_id = data.get("inference_id", "?")
+            operation = data.get("operation", "")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+
+            # Update proof tree if active
+            if self.display._proof_tree:
+                self.display.update_proof_resolving(inference_id, operation)
+            else:
+                self.display.update_spinner(f"Executing {inference_id} ({step}/{total})...")
+
+        elif event_type == "inference_complete":
+            # Show completed inference step
+            inference_id = data.get("inference_id", "?")
+            result = data.get("result", "computed")
+            output = data.get("output", "")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+
+            # Build result summary including output if present
+            result_summary = result
+            if output:
+                # Truncate long output
+                output_preview = output[:100] + "..." if len(output) > 100 else output
+                result_summary = f"{result} ({output_preview})"
+
+            # Update proof tree if active
+            if self.display._proof_tree:
+                self.display.update_proof_resolved(
+                    inference_id,
+                    result,
+                    source="derived",
+                    confidence=1.0,
+                    resolution_summary=output if output else None,
+                )
+            else:
+                self.display.console.print(f"  [green]✓[/green] {inference_id} = {result}")
+                if output:
+                    # Show captured output
+                    for line in output.split("\n"):
+                        self.display.console.print(f"    [dim]{line}[/dim]")
+
+        elif event_type == "inference_failed":
+            # Show failed inference step
+            inference_id = data.get("inference_id", "?")
+            error = data.get("error", "unknown error")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+
+            # Update proof tree if active
+            if self.display._proof_tree:
+                self.display.update_proof_failed(inference_id, error)
+            else:
+                self.display.console.print(f"  [red]✗[/red] {inference_id} = [red]FAILED[/red] [dim]({error})[/dim]")
 
         elif event_type == "synthesizing":
             # Stop Live display before printing synthesizing message
@@ -1098,7 +1328,12 @@ class SessionFeedbackHandler:
             self.display.start_spinner(message)
 
         elif event_type == "verification_complete":
-            self.display.stop_spinner()
+            # Stop proof tree display if active
+            if self.display._proof_tree:
+                self.display.stop()
+                self.display.stop_proof_tree()
+            else:
+                self.display.stop_spinner()
             confidence = data.get("confidence", 0.0)
             self.display.console.print(
                 f"[green]Verification complete[/green] [dim](confidence: {confidence:.0%})[/dim]"

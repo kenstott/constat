@@ -9,6 +9,7 @@ from rich.table import Table
 
 import os
 import re
+import random
 from pathlib import Path
 from constat.session import Session, SessionConfig
 from constat.core.config import Config
@@ -16,6 +17,125 @@ from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
+
+
+# =============================================================================
+# VERA'S PERSONALITY ADJECTIVES
+# Two adjectives are randomly combined on each REPL start:
+#   - RELIABLE: dependable, trustworthy, consistent
+#   - HONEST: truthful, candid, transparent
+# =============================================================================
+
+RELIABLE_ADJECTIVES = [
+    # Classic/Formal
+    "dependable", "reliable", "trustworthy", "steadfast", "unwavering",
+    "consistent", "solid", "stable", "faithful", "devoted", "dedicated",
+    "committed", "resolute", "determined", "tenacious", "persistent",
+    "unfailing", "infallible", "unshakeable", "unflappable", "imperturbable",
+    "meticulous", "rigorous", "thorough", "diligent", "assiduous",
+    "conscientious", "scrupulous", "painstaking", "exacting", "precise",
+
+    # Compound - Material/Strength
+    "rock-solid", "iron-willed", "steel-nerved", "granite-steady",
+    "diamond-hard", "titanium-tough", "carbon-fiber-strong", "kevlar-wrapped",
+    "adamantium-grade", "mithril-forged", "vibranium-infused", "oak-sturdy",
+    "mountain-firm", "bedrock-stable", "concrete-reliable", "cast-iron",
+
+    # Compound - Battle/Test
+    "battle-tested", "combat-proven", "field-hardened", "war-room-ready",
+    "stress-tested", "pressure-forged", "trial-by-fire-certified",
+    "audit-surviving", "edge-case-hardened", "chaos-tested", "murphy-proof",
+
+    # Compound - Technical
+    "bulletproof", "bomb-proof", "crash-proof", "glitch-immune",
+    "bug-resistant", "error-allergic", "fault-tolerant", "redundancy-backed",
+    "failsafe-equipped", "backup-ready", "disaster-proof", "apocalypse-ready",
+    "enterprise-grade", "production-hardened", "mission-critical-certified",
+
+    # Compound - Precision
+    "laser-focused", "sniper-accurate", "surgeon-precise", "watchmaker-careful",
+    "Swiss-watch-precise", "atomic-clock-accurate", "GPS-level-precise",
+    "micrometer-exact", "pixel-perfect", "decimal-place-obsessed",
+
+    # Compound - Nature/Elements
+    "lighthouse-steady", "compass-true", "anchor-stable", "north-star-guided",
+    "old-growth-rooted", "deep-ocean-calm", "glacier-patient", "volcano-powered",
+
+    # Compound - Professional
+    "boardroom-ready", "CFO-approved", "auditor-friendly", "regulator-compliant",
+    "due-diligence-passing", "SOC2-certified", "bank-vault-secure",
+
+    # Compound - Quirky/Fun
+    "caffeine-powered", "deadline-crushing", "crunch-time-clutch",
+    "Monday-morning-functional", "3am-deployment-ready", "demo-day-dependable",
+    "investor-meeting-ready", "client-facing-polished", "stakeholder-approved",
+
+    # Compound - Hyperbolic
+    "absolutely-unbreakable", "categorically-dependable", "pathologically-reliable",
+    "obsessively-consistent", "fanatically-thorough", "religiously-accurate",
+    "compulsively-precise", "neurotically-careful", "almost-paranoid-level-prepared",
+]
+
+HONEST_ADJECTIVES = [
+    # Classic/Formal
+    "honest", "truthful", "candid", "forthright", "sincere", "genuine",
+    "authentic", "transparent", "frank", "direct", "straightforward",
+    "plain-spoken", "outspoken", "blunt", "unvarnished", "unfiltered",
+    "unembellished", "unadulterated", "undisguised", "unconcealed",
+    "open", "aboveboard", "upfront", "level", "square", "veracious",
+    "principled", "ethical", "honorable", "credible", "earnest",
+
+    # Compound - Communication Style
+    "straight-shooting", "straight-talking", "plain-talking", "truth-telling",
+    "fact-stating", "no-nonsense", "no-spin", "no-fluff", "no-BS",
+    "cards-on-the-table", "what-you-see-is-what-you-get", "tell-it-like-it-is",
+    "cut-to-the-chase", "bottom-line-first", "TL;DR-ready",
+
+    # Compound - Filter/Spin Free
+    "filter-free", "spin-free", "BS-free", "hype-free", "buzzword-free",
+    "jargon-allergic", "corporate-speak-averse", "marketing-immune",
+    "spin-doctor-proof", "PR-resistant", "agenda-free", "bias-aware",
+
+    # Compound - Intensity
+    "radically-transparent", "aggressively-honest", "militantly-clear",
+    "ruthlessly-honest", "brutally-frank", "savagely-direct",
+    "unapologetically-blunt", "fearlessly-candid", "boldly-truthful",
+    "refreshingly-blunt", "disarmingly-direct", "surprisingly-forthright",
+
+    # Compound - Pathological
+    "pathologically-truthful", "compulsively-honest", "constitutionally-incapable-of-lying",
+    "genetically-transparent", "allergic-to-BS", "physically-unable-to-spin",
+    "truth-addicted", "fact-obsessed", "accuracy-compelled", "honesty-hardwired",
+
+    # Compound - Clarity
+    "crystal-clear", "glass-transparent", "window-clean", "see-through-honest",
+    "HDTV-clear", "4K-transparent", "fiber-optic-direct", "zero-latency-honest",
+
+    # Compound - Professional
+    "audit-trail-friendly", "compliance-ready", "disclosure-complete",
+    "footnote-thorough", "caveat-including", "asterisk-acknowledging",
+    "fine-print-reading", "terms-and-conditions-honoring", "due-diligence-level",
+
+    # Compound - Quirky/Fun
+    "pinky-swear-honest", "scout's-honor-truthful", "cross-my-heart-sincere",
+    "lie-detector-passing", "Pinocchio-nose-free", "truth-serum-unnecessary",
+    "polygraph-ready", "under-oath-comfortable", "deposition-proof",
+
+    # Compound - Data/Analysis
+    "data-driven-honest", "evidence-backed", "source-citing", "receipt-keeping",
+    "methodology-explaining", "assumption-stating", "uncertainty-acknowledging",
+    "confidence-interval-providing", "margin-of-error-disclosing", "p-value-reporting",
+
+    # Compound - Limitations
+    "limitation-admitting", "blind-spot-acknowledging", "mistake-owning",
+    "correction-issuing", "update-providing", "wrong-admitting",
+    "I-don't-know-saying", "uncertainty-embracing", "humility-having",
+]
+
+
+def get_vera_adjectives() -> tuple[str, str]:
+    """Return a random pair of (reliable, honest) adjectives for Vera's intro."""
+    return (random.choice(RELIABLE_ADJECTIVES), random.choice(HONEST_ADJECTIVES))
 
 
 # Display preference NL patterns
@@ -69,6 +189,7 @@ REPL_COMMANDS = [
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
     "/database", "/databases", "/db", "/file", "/files",
     "/correct", "/learnings", "/compact-learnings", "/forget-learning",
+    "/audit",
     "/quit", "/exit", "/q"
 ]
 
@@ -338,6 +459,7 @@ class InteractiveREPL:
             ("/learnings [category]", "Show learnings and rules"),
             ("/compact-learnings", "Compact learnings into rules"),
             ("/forget-learning <id>", "Delete a learning by ID"),
+            ("/audit", "Re-derive last result with full audit trail"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -848,6 +970,50 @@ class InteractiveREPL:
             else:
                 self.console.print(f"[yellow]Not found:[/yellow] {learning_id}")
                 self.console.print("[dim]Use /learnings to see IDs[/dim]")
+
+    def _handle_audit(self) -> None:
+        """Handle /audit command - re-derive last result with full audit trail."""
+        if not self.session:
+            self.console.print("[yellow]No active session. Ask a question first.[/yellow]")
+            return
+
+        self.display.start_spinner("Re-deriving with full audit trail...")
+        try:
+            result = self.session.audit()
+            self.display.stop_spinner()
+
+            if result.get("success"):
+                # Display the audit output
+                output = result.get("output", "")
+                if output:
+                    self.console.print()
+                    self.console.print(Panel(
+                        output,
+                        title="[bold]Audit Result[/bold]",
+                        border_style="green",
+                    ))
+
+                # Show verification status if available
+                verification = result.get("verification")
+                if verification:
+                    status = verification.get("verified", False)
+                    msg = verification.get("message", "")
+                    if status:
+                        self.console.print(f"\n[bold green]Verified:[/bold green] {msg}")
+                    else:
+                        self.console.print(f"\n[bold yellow]Discrepancy:[/bold yellow] {msg}")
+
+                # Show suggestions
+                suggestions = result.get("suggestions", [])
+                if suggestions:
+                    self.display.show_suggestions(suggestions)
+            else:
+                error = result.get("error", "Unknown error")
+                self.console.print(f"[red]Audit failed:[/red] {error}")
+
+        except Exception as e:
+            self.display.stop_spinner()
+            self.console.print(f"[red]Error during audit:[/red] {e}")
 
     def _detect_nl_correction(self, text: str) -> Optional[dict]:
         """Detect if user input contains a correction pattern.
@@ -1538,6 +1704,8 @@ class InteractiveREPL:
             self._compact_learnings()
         elif cmd == "/forget-learning" and arg:
             self._forget_learning(arg)
+        elif cmd == "/audit":
+            self._handle_audit()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 
@@ -1645,13 +1813,14 @@ class InteractiveREPL:
         if self.auto_resume:
             self._handle_auto_resume()
 
-        # Welcome banner
+        # Welcome banner with random personality adjectives
+        reliable_adj, honest_adj = get_vera_adjectives()
         if self._readline_available:
             hints = "[dim]Tab[/dim] completes commands | [dim]Ctrl+C[/dim] interrupts"
         else:
             hints = "[dim]Ctrl+C[/dim] interrupts"
         self.console.print(Panel.fit(
-            "[white]Hi, I'm [bold]Vera[/bold], your truthful data analyst.[/white]\n"
+            f"[white]Hi, I'm [bold]Vera[/bold], your {reliable_adj} and {honest_adj} data analyst.[/white]\n"
             "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]\n"
             "\n"
             "[dim]Powered by [bold blue]Constat[/bold blue] [italic](Latin: \"it is established\")[/italic] — Multi-Step AI Reasoning Agent[/dim]\n"

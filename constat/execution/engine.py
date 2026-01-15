@@ -276,9 +276,43 @@ class QueryEngine:
                 doc_lines.append(f"- **{name}**: {desc}")
             doc_overview = "\n".join(doc_lines)
 
+        # Build SQL dialect hints based on database types
+        sql_hints = ""
+        dialect_hints_map = {
+            "sqlite": "SQLite: Use strftime('%Y-%m', date_col), date('now', '-12 months'). Do NOT use schema prefixes (use 'customers' not 'sales.customers').",
+            "duckdb": "DuckDB: Use strftime(date_col, '%Y-%m'), current_date - interval '12 months'.",
+            "postgresql": "PostgreSQL: Use to_char(date_col, 'YYYY-MM'), current_date - interval '12 months'.",
+            "mysql": "MySQL: Use DATE_FORMAT(date_col, '%Y-%m'), DATE_SUB(CURDATE(), INTERVAL 12 MONTH).",
+        }
+        detected_dialects = set()
+        for db_name, db_config in self.config.databases.items():
+            if db_config.is_file_source():
+                continue  # Skip file sources
+            config_type = db_config.type or "sqlite"
+            # Detect actual dialect from URI for 'sql' type
+            if config_type == "sql" and db_config.uri:
+                uri_lower = db_config.uri.lower()
+                if uri_lower.startswith("sqlite"):
+                    detected_dialects.add("sqlite")
+                elif uri_lower.startswith("postgresql") or uri_lower.startswith("postgres"):
+                    detected_dialects.add("postgresql")
+                elif uri_lower.startswith("mysql"):
+                    detected_dialects.add("mysql")
+                elif uri_lower.startswith("duckdb"):
+                    detected_dialects.add("duckdb")
+            elif config_type in dialect_hints_map:
+                detected_dialects.add(config_type)
+
+        if detected_dialects:
+            hint_lines = ["\n## SQL Dialect Notes"]
+            for dialect in detected_dialects:
+                if dialect in dialect_hints_map:
+                    hint_lines.append(f"- **{dialect.upper()}**: {dialect_hints_map[dialect]}")
+            sql_hints = "\n".join(hint_lines)
+
         return SYSTEM_PROMPT_TEMPLATE.format(
             engine_prompt=ENGINE_SYSTEM_PROMPT,
-            schema_overview=self.schema_manager.get_overview(),
+            schema_overview=self.schema_manager.get_overview() + sql_hints,
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",

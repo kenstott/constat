@@ -3628,6 +3628,29 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         resolved_premises[fact_id] = fact
                         val_str = str(fact.value)[:100]
                         derivation_lines.append(f"- {fact_id}: {fact_name} = {val_str} (confidence: {fact.confidence:.0%})")
+
+                        # Build detailed source info including query if available
+                        query_info = getattr(fact, 'query', None)
+                        try:
+                            query_info = query_info or sql
+                        except NameError:
+                            pass
+                        source_detail = source
+                        if query_info:
+                            source_detail = f"{source} | SQL: {query_info}"
+
+                        # Store the resolved fact so it appears in /facts
+                        try:
+                            desc = fact_desc
+                        except NameError:
+                            desc = None
+                        self.fact_resolver.add_user_fact(
+                            fact_name=f"{fact_id}:{fact_name}",
+                            value=fact.value,
+                            reasoning=source_detail,
+                            description=desc,
+                            source=FactSource.DATABASE if source.startswith("database") else FactSource.DERIVED,
+                        )
                     elif fact and fact.reasoning:
                         # Fact was created but has no value - include the reason
                         raise Exception(fact.reasoning)
@@ -3709,15 +3732,18 @@ Available data in datastore:
 
 The datastore is available as 'store' with methods:
 - store.query(sql) -> pd.DataFrame  # Query using SQL
-- store.list_tables() -> list of table names
+- store.list_tables() -> list of table dicts with 'name' key
+- store.save_dataframe(name, df)  # Save a DataFrame to the store
 
 Previous premises were stored with their fact names (e.g., 'orders_data', 'customer_tiers').
 
 Generate code that:
-1. Loads the required data from the store
+1. Loads the required data from the store using store.query()
 2. Performs the operation (join, filter, aggregate, transform, etc.)
-3. Saves the result back to the store as '{inf_id.lower()}_result'
+3. Saves the result back to the store using store.save_dataframe('{inf_id.lower()}_result', result_df)
 4. Prints a summary of the result
+
+IMPORTANT: Use store.save_dataframe(name, df) to save results, NOT store.save_table().
 
 Return ONLY executable Python code, no explanations."""
 
@@ -3734,12 +3760,21 @@ Return ONLY executable Python code, no explanations."""
                         code = re.sub(r'^```\w*\n?', '', code)
                         code = re.sub(r'\n?```$', '', code)
 
-                    # Execute the inference code
+                    # Execute the inference code (capture stdout to avoid disrupting display)
+                    import io
+                    import sys
                     exec_globals = {
                         "store": self.datastore,
                         "pd": __import__("pandas"),
                     }
-                    exec(code, exec_globals)
+                    captured_output = io.StringIO()
+                    old_stdout = sys.stdout
+                    try:
+                        sys.stdout = captured_output
+                        exec(code, exec_globals)
+                    finally:
+                        sys.stdout = old_stdout
+                    inference_output = captured_output.getvalue()
 
                     # Check if result was stored
                     result_table = f"{inf_id.lower()}_result"
@@ -3752,12 +3787,30 @@ Return ONLY executable Python code, no explanations."""
                         resolved_inferences[inf_id] = "computed (inline)"
                         inference_lines.append(f"- {inf_id}: {inf_name} = computed ✓")
 
+                    # Include captured output if any
+                    if inference_output.strip():
+                        inference_lines.append(f"  Output: {inference_output.strip()}")
+                        # Also update resolved_inferences so synthesis gets the actual value
+                        resolved_inferences[inf_id] = inference_output.strip()
+
+                    # Store the inference result as a fact so it appears in /facts
+                    inference_value = resolved_inferences[inf_id]
+                    if inference_output.strip():
+                        inference_value = inference_output.strip()
+                    self.fact_resolver.add_user_fact(
+                        fact_name=f"{inf_id}:{inf_name}" if inf_name else inf_id,
+                        value=inference_value,
+                        reasoning=f"Derived via {operation}",
+                        source=FactSource.DERIVED,
+                    )
+
                     self._emit_event(StepEvent(
                         event_type="inference_complete",
                         step_number=len(premises) + idx + 1,
                         data={
                             "inference_id": inf_id,
                             "result": resolved_inferences[inf_id],
+                            "output": inference_output.strip(),
                             "step": idx + 1,
                             "total": len(inferences),
                         }
