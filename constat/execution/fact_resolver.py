@@ -2165,14 +2165,18 @@ REASONING: User is focused on US region analysis
 
         This restores previously resolved facts so they don't need to be re-resolved.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[IMPORT_CACHE] Importing {len(facts)} facts")
         for fact_dict in facts:
             try:
                 fact = Fact.from_dict(fact_dict)
                 self._cache[fact.name] = fact
+                logger.debug(f"[IMPORT_CACHE] Imported: {fact.name} = {fact.value} (table_name={fact.table_name})")
             except (KeyError, ValueError) as e:
                 # Skip invalid facts
-                import logging
-                logging.debug(f"Skipping invalid fact during import: {e}")
+                logger.debug(f"Skipping invalid fact during import: {e}")
+        logger.debug(f"[IMPORT_CACHE] Cache keys after import: {list(self._cache.keys())}")
 
     def get_audit_log(self) -> list[dict]:
         """Get all resolutions for audit purposes."""

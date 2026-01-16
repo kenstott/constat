@@ -3176,21 +3176,35 @@ NEW_REQUEST: <the new request, or NONE>
                 if original_problem:
                     # Load previously resolved facts from datastore
                     import json
+                    import logging
+                    logger = logging.getLogger(__name__)
                     saved_facts_json = self.datastore.get_session_meta("resolved_facts")
+                    logger.debug(f"[REDO] saved_facts_json exists: {saved_facts_json is not None}")
                     if saved_facts_json:
+                        logger.debug(f"[REDO] saved_facts_json length: {len(saved_facts_json)}")
                         try:
                             saved_facts = json.loads(saved_facts_json)
+                            # Log which facts have table references (critical for redo)
+                            table_facts = [f for f in saved_facts if f.get("value_type") == "table"]
+                            logger.debug(f"[REDO] Importing {len(saved_facts)} facts, {len(table_facts)} are table-type")
+                            for tf in table_facts:
+                                logger.debug(f"[REDO] Table fact: {tf.get('name')} (row_count={tf.get('row_count')})")
                             self.fact_resolver.import_cache(saved_facts)
+                            # Log cache state after import
+                            logger.debug(f"[REDO] Cache keys after import: {list(self.fact_resolver._cache.keys())}")
                             self._emit_event(StepEvent(
                                 event_type="facts_restored",
                                 step_number=0,
                                 data={
                                     "count": len(saved_facts),
                                     "fact_names": [f.get("name") for f in saved_facts],
+                                    "table_facts": [f.get("name") for f in table_facts],
                                 }
                             ))
                         except json.JSONDecodeError:
-                            pass  # Skip invalid JSON
+                            logger.error("[REDO] Failed to parse saved_facts JSON")
+                    else:
+                        logger.warning("[REDO] No saved_facts_json found in datastore")
 
                     # Extract any new values from the redo request (e.g., "change my age to 50")
                     # These will override previously cached facts
@@ -3216,7 +3230,8 @@ NEW_REQUEST: <the new request, or NONE>
                             "matched_keywords": ["redo", "auditable"],
                         }
                     ))
-                    return self._solve_auditable(original_problem, mode_selection)
+                    # Pass cached fact hints to help LLM use consistent names
+                    return self._solve_auditable(original_problem, mode_selection, cached_fact_hints=saved_facts)
 
             # Otherwise treat as verification question
             return self._follow_up_auditable(question, mode_selection)
@@ -3512,7 +3527,7 @@ User feedback: {approval.suggestion}
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
         }
 
-    def _solve_auditable(self, problem: str, mode_selection) -> dict:
+    def _solve_auditable(self, problem: str, mode_selection, cached_fact_hints: list[dict] = None) -> dict:
         """
         Solve a problem in auditable mode using fact-based derivation.
 
@@ -3526,6 +3541,8 @@ User feedback: {approval.suggestion}
         Args:
             problem: The problem/question to solve
             mode_selection: The mode selection result with reasoning
+            cached_fact_hints: Optional list of cached facts from previous run (for redo)
+                               Each dict has 'name', 'value', 'value_type' keys
 
         Returns:
             Dict with derivation trace and verification result
@@ -3558,11 +3575,26 @@ User feedback: {approval.suggestion}
         # Get source context for the planner
         ctx = self._build_source_context(include_user_facts=False)
 
+        # Build hint about cached facts for redo (helps LLM use consistent names)
+        cached_facts_hint = ""
+        if cached_fact_hints:
+            hint_lines = ["IMPORTANT - REDO MODE:", "The following facts are already cached from a previous run. Use these EXACT names for corresponding premises:"]
+            for fact in cached_fact_hints:
+                name = fact.get("name", "")
+                value = fact.get("value", "?")
+                value_type = fact.get("value_type", "")
+                if value_type == "table":
+                    hint_lines.append(f"  - {name} (table, {fact.get('row_count', '?')} rows)")
+                else:
+                    hint_lines.append(f"  - {name} = {value}")
+            hint_lines.append("")
+            cached_facts_hint = "\n".join(hint_lines) + "\n"
+
         fact_plan_prompt = f"""Construct a logical derivation to answer this question with full provenance.
 
 Question: {problem}
 
-Available databases:
+{cached_facts_hint}Available databases:
 {ctx["schema_overview"]}
 {ctx["doc_overview"]}
 {ctx["api_overview"]}
@@ -4649,6 +4681,12 @@ Be direct and specific. No fluff."""
                 duration_ms=duration_ms,
                 answer=final_output,
             )
+
+            # Save resolved facts for redo operations
+            if self.datastore:
+                import json
+                cached_facts = self.fact_resolver.export_cache()
+                self.datastore.set_session_meta("resolved_facts", json.dumps(cached_facts))
 
             return {
                 "success": True,

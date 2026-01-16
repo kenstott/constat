@@ -151,6 +151,7 @@ EXECUTION_INTENTS: set[FollowUpIntent] = {
     FollowUpIntent.PREDICT,
     FollowUpIntent.CREATE_ARTIFACT,
     FollowUpIntent.NEW_QUESTION,
+    FollowUpIntent.ALERT,
 }
 
 
