@@ -3810,7 +3810,16 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
                     # First, check if this fact is already cached (from previous queries)
                     cached_fact = self.fact_resolver._cache.get(fact_name)
                     if cached_fact and cached_fact.value is not None:
-                        fact = cached_fact
+                        # For table facts (has table_name), verify table exists in datastore
+                        if cached_fact.table_name and self.datastore:
+                            # Check if the table exists in datastore
+                            existing_tables = [t["name"] for t in self.datastore.list_tables()]
+                            if cached_fact.table_name in existing_tables:
+                                fact = cached_fact
+                            # else: table doesn't exist, need to re-resolve
+                        else:
+                            # Non-table fact, use cached value directly
+                            fact = cached_fact
                     # If we extracted an embedded value, use it directly
                     elif embedded_value is not None:
                         from constat.execution.fact_resolver import Fact, FactSource
@@ -3879,13 +3888,25 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                             else:
                                 fact_value = f"{row_count} rows"
 
-                            fact = Fact(
-                                name=fact_name,
-                                value=fact_value,
-                                confidence=0.9,
-                                source=FactSource.DATABASE,
-                                query=sql,
-                            )
+                            # For multi-row results, store as table reference
+                            if row_count > 1 or (row_count == 1 and len(result_df.columns) > 1):
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=fact_value,
+                                    confidence=0.9,
+                                    source=FactSource.DATABASE,
+                                    query=sql,
+                                    table_name=fact_name,  # Reference to datastore table
+                                    row_count=row_count,
+                                )
+                            else:
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=fact_value,
+                                    confidence=0.9,
+                                    source=FactSource.DATABASE,
+                                    query=sql,
+                                )
                             # Store result in datastore for later use
                             if self.datastore and result_df is not None and len(result_df) > 0:
                                 self.datastore.save_dataframe(fact_name, result_df, step_number=idx + 1)
