@@ -3412,8 +3412,10 @@ P3: <fact_name> = <known_value> (<description>) [source: knowledge]
 PREMISE RULES:
 - Premises are DATA only (tables, records, values) - NOT functions or operations
 - Every premise MUST be referenced by at least one inference
-- Use "database" for SQL queries, "knowledge" for constants/facts
-- For known values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: knowledge]
+- Use "database" for SQL queries, "knowledge" for universal facts (scientific constants, geography)
+- For known universal values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: knowledge]
+- NEVER ASSUME personal values (age, location, preferences) - use [source: user] and leave value as ?
+- Example: P4: my_age = ? (User's age) [source: user]
 
 INFERENCE:
 I1: <result_name> = <operation>(P1, P2) -- <explanation>
@@ -3857,6 +3859,53 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                 source=FactSource.UNRESOLVED,
                                 reasoning=f"Knowledge resolution failed: {llm_err}",
                             )
+                    elif source.startswith("user"):
+                        # User-provided fact - MUST ask the user, never assume
+                        if self._clarification_callback:
+                            request = ClarificationRequest(
+                                original_question=problem,
+                                ambiguity_reason=f"Need your input for: {fact_name}",
+                                questions=[
+                                    ClarificationQuestion(
+                                        text=f"What is {fact_desc}?",
+                                        suggestions=[]
+                                    )
+                                ]
+                            )
+                            response = self._clarification_callback(request)
+                            if not response.skip and response.answers:
+                                user_value_str = list(response.answers.values())[0]
+                                # Try to parse as number
+                                try:
+                                    if "." in user_value_str:
+                                        user_value = float(user_value_str)
+                                    else:
+                                        user_value = int(user_value_str)
+                                except ValueError:
+                                    user_value = user_value_str
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=user_value,
+                                    confidence=1.0,  # User-provided = 100% confidence
+                                    source=FactSource.USER_PROVIDED,
+                                    reasoning=f"User provided: {user_value_str}",
+                                )
+                            else:
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=None,
+                                    confidence=0.0,
+                                    source=FactSource.UNRESOLVED,
+                                    reasoning=f"User skipped providing value for {fact_name}",
+                                )
+                        else:
+                            fact = Fact(
+                                name=fact_name,
+                                value=None,
+                                confidence=0.0,
+                                source=FactSource.UNRESOLVED,
+                                reasoning=f"No way to ask user for {fact_name}",
+                            )
                     else:
                         # Generic resolution
                         fact = self.fact_resolver.resolve(fact_name)
@@ -3892,6 +3941,8 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                             fact_source = FactSource.DATABASE
                         elif source.startswith("knowledge") or source.startswith("llm"):
                             fact_source = FactSource.LLM_KNOWLEDGE
+                        elif source.startswith("user"):
+                            fact_source = FactSource.USER_PROVIDED
                         self.fact_resolver.add_user_fact(
                             fact_name=fact_name,  # Just the fact name, no P1: prefix
                             value=fact.value,
