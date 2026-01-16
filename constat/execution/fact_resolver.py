@@ -226,9 +226,43 @@ class Fact:
 
     def to_dict(self) -> dict:
         """Serialize for storage/API."""
+        import datetime as dt
+
+        # Determine value type for proper restoration
+        # Types: boolean, integer, float, string, date, datetime, time, table, array, object
+        value = self.value
+        value_type = "string"  # default
+
+        if self.table_name:
+            # Table type: value is the table name (URI to parquet)
+            value_type = "table"
+            value = self.table_name
+        elif isinstance(self.value, bool):
+            value_type = "boolean"
+        elif isinstance(self.value, int):
+            value_type = "integer"
+        elif isinstance(self.value, float):
+            value_type = "float"
+        elif isinstance(self.value, dt.datetime):
+            value_type = "datetime"
+            value = self.value.isoformat()
+        elif isinstance(self.value, dt.date):
+            value_type = "date"
+            value = self.value.isoformat()
+        elif isinstance(self.value, dt.time):
+            value_type = "time"
+            value = self.value.isoformat()
+        elif isinstance(self.value, list):
+            value_type = "array"
+        elif isinstance(self.value, dict):
+            value_type = "object"
+        elif isinstance(self.value, str):
+            value_type = "string"
+
         result = {
             "name": self.name,
-            "value": self.value,
+            "value": value,
+            "value_type": value_type,
             "confidence": self.confidence,
             "source": self.source.value,
             "source_name": self.source_name,
@@ -239,15 +273,16 @@ class Fact:
             "because": [f.name for f in self.because],
             "resolved_at": self.resolved_at.isoformat(),
         }
-        # Add table reference fields if present
-        if self.table_name:
-            result["table_name"] = self.table_name
+        # Add row count for table types
+        if self.table_name and self.row_count:
             result["row_count"] = self.row_count
         return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "Fact":
         """Deserialize a Fact from dictionary (for redo/restore)."""
+        import datetime as dt
+
         # Handle source conversion
         source = data.get("source", "database")
         if isinstance(source, str):
@@ -260,9 +295,31 @@ class Fact:
         elif resolved_at is None:
             resolved_at = datetime.now()
 
+        # Handle value based on value_type
+        value = data["value"]
+        value_type = data.get("value_type", "string")
+        table_name = None
+        row_count = data.get("row_count")
+
+        if value_type == "table":
+            # Value is the table name (URI to parquet)
+            table_name = value
+            # Restore display value for table facts
+            if row_count:
+                value = f"{row_count} rows"
+            else:
+                value = f"table:{table_name}"
+        elif value_type == "datetime" and isinstance(value, str):
+            value = dt.datetime.fromisoformat(value)
+        elif value_type == "date" and isinstance(value, str):
+            value = dt.date.fromisoformat(value)
+        elif value_type == "time" and isinstance(value, str):
+            value = dt.time.fromisoformat(value)
+        # array, object, boolean, integer, float, string - JSON handles these correctly
+
         return cls(
             name=data["name"],
-            value=data["value"],
+            value=value,
             confidence=data.get("confidence", 1.0),
             source=source,
             because=[],  # Dependencies not restored (would need full cache)
@@ -273,8 +330,8 @@ class Fact:
             rule_name=data.get("rule_name"),
             reasoning=data.get("reasoning"),
             resolved_at=resolved_at,
-            table_name=data.get("table_name"),
-            row_count=data.get("row_count"),
+            table_name=table_name,
+            row_count=row_count,
         )
 
 
