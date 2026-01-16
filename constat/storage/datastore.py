@@ -390,6 +390,42 @@ class DataStore:
 
         return {key: json.loads(value_json) for key, value_json in rows}
 
+    def set_query_intent(
+        self,
+        query_text: str,
+        intents: list[dict],
+        is_followup: bool = False,
+    ) -> None:
+        """
+        Store intent classification for debugging and analysis.
+
+        Args:
+            query_text: The user's query text
+            intents: List of detected intents, each with 'intent', 'confidence', 'patterns'
+            is_followup: Whether this is a follow-up query
+        """
+        import datetime
+
+        # Get existing intent history or create new
+        history = self.get_state("_intent_history") or []
+
+        history.append({
+            "timestamp": datetime.datetime.now().isoformat(),
+            "query": query_text[:500],  # Truncate long queries
+            "is_followup": is_followup,
+            "intents": intents,
+        })
+
+        # Keep last 50 intent records
+        if len(history) > 50:
+            history = history[-50:]
+
+        self.set_state("_intent_history", history)
+
+    def get_intent_history(self) -> list[dict]:
+        """Get the intent classification history for this session."""
+        return self.get_state("_intent_history") or []
+
     def list_tables(self) -> list[dict]:
         """
         List all user tables with metadata.

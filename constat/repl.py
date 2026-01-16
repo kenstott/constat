@@ -189,7 +189,7 @@ REPL_COMMANDS = [
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
     "/database", "/databases", "/db", "/file", "/files",
     "/correct", "/learnings", "/compact-learnings", "/forget-learning",
-    "/audit",
+    "/audit", "/summarize",
     "/quit", "/exit", "/q"
 ]
 
@@ -461,6 +461,7 @@ class InteractiveREPL:
             ("/compact-learnings", "Compact learnings into rules"),
             ("/forget-learning <id>", "Delete a learning by ID"),
             ("/audit", "Re-derive last result with full audit trail"),
+            ("/summarize <target>", "Summarize plan|session|facts|<table>"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -1079,6 +1080,218 @@ class InteractiveREPL:
             self.display.stop_spinner()
             self.console.print(f"[red]Error during audit:[/red] {e}")
 
+    def _handle_summarize(self, arg: str) -> None:
+        """Handle /summarize command - generate LLM summary of plan, session, facts, or table.
+
+        Usage:
+            /summarize plan     - Summarize the current execution plan
+            /summarize session  - Summarize the current session state
+            /summarize facts    - Summarize all cached facts
+            /summarize <table>  - Summarize a specific table's contents
+        """
+        if not arg.strip():
+            self.console.print("[yellow]Usage: /summarize plan|session|facts|<table_name>[/yellow]")
+            self.console.print("[dim]Examples:[/dim]")
+            self.console.print("  /summarize plan     - Summarize execution plan")
+            self.console.print("  /summarize session  - Summarize session state")
+            self.console.print("  /summarize facts    - Summarize cached facts")
+            self.console.print("  /summarize orders   - Summarize 'orders' table")
+            return
+
+        if not self.session:
+            self.console.print("[yellow]No active session. Ask a question first.[/yellow]")
+            return
+
+        target = arg.strip().lower()
+        self.display.start_spinner(f"Generating summary of {target}...")
+
+        try:
+            # Get LLM provider
+            llm = self.session.router._get_provider(self.session.router.models["planning"])
+
+            if target == "plan":
+                summary = self._summarize_plan(llm)
+            elif target == "session":
+                summary = self._summarize_session(llm)
+            elif target == "facts":
+                summary = self._summarize_facts(llm)
+            else:
+                # Assume it's a table name
+                summary = self._summarize_table(llm, arg.strip())
+
+            self.display.stop_spinner()
+
+            if summary:
+                self.console.print()
+                self.console.print(Panel(
+                    summary,
+                    title=f"[bold]Summary: {target}[/bold]",
+                    border_style="cyan",
+                ))
+            else:
+                self.console.print(f"[yellow]No data to summarize for '{target}'[/yellow]")
+
+        except Exception as e:
+            self.display.stop_spinner()
+            self.console.print(f"[red]Error generating summary:[/red] {e}")
+
+    def _summarize_plan(self, llm) -> Optional[str]:
+        """Generate a summary of the current execution plan."""
+        if not self.session.plan:
+            return None
+
+        plan = self.session.plan
+        plan_text = f"Goal: {plan.goal}\n\nSteps:\n"
+        for i, step in enumerate(plan.steps, 1):
+            status = "completed" if i <= len(getattr(self.session, 'step_results', [])) else "pending"
+            plan_text += f"{i}. [{status}] {step.description}\n"
+            if step.code:
+                plan_text += f"   Code: {step.code[:100]}...\n" if len(step.code) > 100 else f"   Code: {step.code}\n"
+
+        prompt = f"""Summarize this execution plan concisely:
+
+{plan_text}
+
+Provide a 2-3 sentence summary covering:
+1. The overall goal
+2. Key steps and current progress
+3. Any notable approach or methodology"""
+
+        result = llm.generate(
+            system="You are a concise technical summarizer.",
+            user_message=prompt,
+            max_tokens=300,
+        )
+        return result
+
+    def _summarize_session(self, llm) -> Optional[str]:
+        """Generate a summary of the current session state."""
+        session_info = []
+
+        # Session ID and mode
+        session_info.append(f"Session ID: {self.session.session_id or 'Not started'}")
+        if hasattr(self.session, 'current_mode'):
+            session_info.append(f"Mode: {self.session.current_mode}")
+
+        # Plan status
+        if self.session.plan:
+            session_info.append(f"Plan: {self.session.plan.goal}")
+            session_info.append(f"Steps: {len(self.session.plan.steps)}")
+
+        # Tables in datastore
+        if self.session.datastore:
+            tables = self.session.datastore.list_tables()
+            if tables:
+                session_info.append(f"Tables: {', '.join(tables)}")
+
+        # Facts count
+        if self.session.fact_resolver:
+            facts = self.session.fact_resolver.get_all_facts()
+            if facts:
+                session_info.append(f"Facts cached: {len(facts)}")
+
+        # Execution history
+        if hasattr(self.session, 'execution_history') and self.session.execution_history:
+            session_info.append(f"Queries executed: {len(self.session.execution_history)}")
+
+        if not session_info:
+            return None
+
+        prompt = f"""Summarize this session state concisely:
+
+{chr(10).join(session_info)}
+
+Provide a 2-3 sentence summary of what this session has accomplished and its current state."""
+
+        result = llm.generate(
+            system="You are a concise technical summarizer.",
+            user_message=prompt,
+            max_tokens=300,
+        )
+        return result
+
+    def _summarize_facts(self, llm) -> Optional[str]:
+        """Generate a summary of all cached facts."""
+        if not self.session.fact_resolver:
+            return None
+
+        facts = self.session.fact_resolver.get_all_facts()
+        if not facts:
+            return None
+
+        facts_text = []
+        for name, fact in facts.items():
+            source = fact.source.value if hasattr(fact.source, 'value') else str(fact.source)
+            value_str = str(fact.value)[:100] if fact.value else "None"
+            facts_text.append(f"- {name}: {value_str} (source: {source})")
+
+        prompt = f"""Summarize these cached facts concisely:
+
+{chr(10).join(facts_text)}
+
+Provide a summary covering:
+1. How many facts are cached
+2. Types of facts (data sources, user-provided, computed)
+3. Key facts that drive the analysis"""
+
+        result = llm.generate(
+            system="You are a concise technical summarizer.",
+            user_message=prompt,
+            max_tokens=300,
+        )
+        return result
+
+    def _summarize_table(self, llm, table_name: str) -> Optional[str]:
+        """Generate a summary of a specific table's contents."""
+        if not self.session.datastore:
+            return None
+
+        tables = self.session.datastore.list_tables()
+        if table_name not in tables:
+            self.console.print(f"[yellow]Table '{table_name}' not found.[/yellow]")
+            self.console.print(f"[dim]Available tables: {', '.join(tables) if tables else 'None'}[/dim]")
+            return None
+
+        try:
+            # Get table info
+            df = self.session.datastore.load_dataframe(table_name)
+            row_count = len(df)
+            columns = list(df.columns)
+
+            # Get sample data
+            sample = df.head(5).to_string() if row_count > 0 else "Empty table"
+
+            # Get basic stats for numeric columns
+            stats = []
+            for col in df.select_dtypes(include=['number']).columns[:3]:
+                stats.append(f"{col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}")
+
+            prompt = f"""Summarize this table concisely:
+
+Table: {table_name}
+Rows: {row_count}
+Columns: {', '.join(columns)}
+
+Sample data:
+{sample}
+
+{"Numeric stats: " + "; ".join(stats) if stats else ""}
+
+Provide a 2-3 sentence summary covering:
+1. What kind of data this table contains
+2. Key columns and their purpose
+3. Notable patterns or ranges in the data"""
+
+            result = llm.generate(
+                system="You are a concise data analyst.",
+                user_message=prompt,
+                max_tokens=300,
+            )
+            return result
+
+        except Exception as e:
+            return f"Error reading table: {e}"
+
     def _detect_nl_correction(self, text: str) -> Optional[dict]:
         """Detect if user input contains a correction pattern.
 
@@ -1342,6 +1555,7 @@ class InteractiveREPL:
                         name=fact.name if hasattr(fact, 'name') else fact['name'],
                         value=fact.value if hasattr(fact, 'value') else fact['value'],
                         description=fact.description if hasattr(fact, 'description') else fact.get('description', ''),
+                        context=fact.context if hasattr(fact, 'context') else fact.get('context', ''),
                     )
                     name = fact.name if hasattr(fact, 'name') else fact['name']
                     value = fact.value if hasattr(fact, 'value') else fact['value']
@@ -1782,6 +1996,8 @@ class InteractiveREPL:
             self._forget_learning(arg)
         elif cmd == "/audit":
             self._handle_audit()
+        elif cmd == "/summarize":
+            self._handle_summarize(arg)
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 

@@ -20,10 +20,12 @@ class FactStore:
       user_role:
         value: CFO
         description: User's role for context-aware suggestions
+        context: "User text: my role is CFO"
         created: 2024-01-15T10:30:00Z
       fiscal_year_start:
         value: April
         description: When fiscal year begins
+        context: "User text: fiscal year starts in April"
         created: 2024-01-15T10:31:00Z
     ```
     """
@@ -68,6 +70,7 @@ class FactStore:
         name: str,
         value: Any,
         description: str = "",
+        context: str = "",
     ) -> None:
         """Save a persistent fact.
 
@@ -75,11 +78,13 @@ class FactStore:
             name: Fact name (snake_case recommended)
             value: Fact value (string, number, etc.)
             description: Human-readable description
+            context: Creation context (code, prompt, query that created this fact)
         """
         data = self._load()
         data["facts"][name] = {
             "value": value,
             "description": description,
+            "context": context,
             "created": datetime.now(timezone.utc).isoformat(),
         }
         self._save()
@@ -91,7 +96,7 @@ class FactStore:
             name: Fact name
 
         Returns:
-            Dict with value, description, created, or None if not found
+            Dict with value, description, context, created, or None if not found
         """
         data = self._load()
         return data["facts"].get(name)
@@ -100,7 +105,7 @@ class FactStore:
         """List all persistent facts.
 
         Returns:
-            Dict of name -> {value, description, created}
+            Dict of name -> {value, description, context, created}
         """
         data = self._load()
         return data["facts"].copy()

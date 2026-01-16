@@ -5,6 +5,7 @@ from typing import Optional
 
 from constat.core.config import Config
 from .executor import ExecutionResult, PythonExecutor, format_error_for_retry
+from . import RETRY_PROMPT_TEMPLATE
 from constat.providers.anthropic import AnthropicProvider
 from constat.catalog.schema_manager import SchemaManager
 from constat.discovery.doc_tools import DocumentDiscoveryTools, DOC_TOOL_SCHEMAS
@@ -178,18 +179,6 @@ SYSTEM_PROMPT_TEMPLATE = """{engine_prompt}
 {doc_overview}
 ## Domain Context
 {domain_context}"""
-
-
-RETRY_PROMPT_TEMPLATE = """Your previous code failed to execute.
-
-{error_details}
-
-Previous code:
-```python
-{previous_code}
-```
-
-Please fix the code and try again. Return ONLY the corrected Python code wrapped in ```python ... ``` markers."""
 
 
 class QueryEngine:

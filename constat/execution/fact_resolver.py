@@ -147,6 +147,10 @@ class Fact:
     table_name: Optional[str] = None  # Name of table in datastore if value is stored there
     row_count: Optional[int] = None  # Number of rows if stored as table
 
+    # Creation context - detailed information about how this fact was created
+    # Contains: code from plan, user prompt, SQL query, or other creation details
+    context: Optional[str] = None
+
     @property
     def is_resolved(self) -> bool:
         return self.source != FactSource.UNRESOLVED
@@ -1570,6 +1574,7 @@ Original request:
                         query=code,
                         table_name=table_name,
                         row_count=row_count,
+                        context=f"Generated code:\n{code}",
                     )
 
                 return Fact(
@@ -1579,6 +1584,7 @@ Original request:
                     source=FactSource.DATABASE,
                     source_name=source_name,
                     query=code,
+                    context=f"Generated code:\n{code}",
                 )
 
             except Exception as e:
@@ -1965,6 +1971,7 @@ Original request:
         api_endpoint: Optional[str] = None,
         table_name: Optional[str] = None,
         row_count: Optional[int] = None,
+        context: Optional[str] = None,
         **params,
     ) -> Fact:
         """
@@ -1986,6 +1993,7 @@ Original request:
             api_endpoint: API endpoint if from API source
             table_name: Table name in datastore if this is a table reference
             row_count: Number of rows if this is a table reference
+            context: Detailed creation context (code, prompt, query that created this fact)
             **params: Parameters for the fact
 
         Returns:
@@ -2005,6 +2013,7 @@ Original request:
             api_endpoint=api_endpoint,
             table_name=table_name,
             row_count=row_count,
+            context=context,
         )
 
         self._cache[cache_key] = fact
@@ -2083,6 +2092,7 @@ REASONING: User is focused on US region analysis
                             fact_name=current_fact["fact_name"],
                             value=current_fact["value"],
                             reasoning=current_fact.get("reasoning"),
+                            context=f"User text: {user_text}",
                         )
                         facts.append(fact)
                     current_fact = {}
@@ -2106,6 +2116,7 @@ REASONING: User is focused on US region analysis
                     fact_name=current_fact["fact_name"],
                     value=current_fact["value"],
                     reasoning=current_fact.get("reasoning"),
+                    context=f"User text: {user_text}",
                 )
                 facts.append(fact)
 
@@ -2172,7 +2183,8 @@ REASONING: User is focused on US region analysis
         Get all cached facts as a pandas DataFrame for export.
 
         Returns:
-            DataFrame with columns: name, value, source, confidence, description, reasoning
+            DataFrame with columns: name, value, source, confidence, description, reasoning,
+                                   context, query, api_endpoint, rule_name, table_name, row_count
         """
         import pandas as pd
 
@@ -2185,11 +2197,17 @@ REASONING: User is focused on US region analysis
                 "confidence": fact.confidence,
                 "description": fact.description or "",
                 "reasoning": fact.reasoning or "",
+                "context": fact.context or "",
+                "query": fact.query or "",
+                "api_endpoint": fact.api_endpoint or "",
+                "rule_name": fact.rule_name or "",
+                "table_name": fact.table_name or "",
+                "row_count": fact.row_count,
             })
 
-        return pd.DataFrame(rows) if rows else pd.DataFrame(
-            columns=["name", "value", "source", "confidence", "description", "reasoning"]
-        )
+        columns = ["name", "value", "source", "confidence", "description", "reasoning",
+                   "context", "query", "api_endpoint", "rule_name", "table_name", "row_count"]
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=columns)
 
     def explain(self, fact: Fact) -> str:
         """Generate a human-readable explanation of how a fact was derived."""
@@ -3542,6 +3560,7 @@ NOT_POSSIBLE: <reason>
                             source=FactSource.DATABASE,
                             source_name=db_name,
                             query=sql,
+                            context=f"SQL Query:\n{sql}",
                         )
                     else:
                         # Multi-row result - check if should store as table
@@ -3561,6 +3580,7 @@ NOT_POSSIBLE: <reason>
                                 query=sql,
                                 table_name=table_name,
                                 row_count=row_count,
+                                context=f"SQL Query:\n{sql}",
                             )
                         else:
                             # Small result - store inline
@@ -3571,6 +3591,7 @@ NOT_POSSIBLE: <reason>
                                 source=FactSource.DATABASE,
                                 source_name=db_name,
                                 query=sql,
+                                context=f"SQL Query:\n{sql}",
                             )
         except Exception:
             pass

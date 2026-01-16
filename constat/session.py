@@ -26,6 +26,7 @@ from constat.execution.mode import (
     PlanApprovalResponse,
 )
 from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
+from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
 from constat.catalog.preload_cache import MetadataPreloadCache
@@ -101,11 +102,23 @@ class QuestionType:
 
 
 @dataclass
+class DetectedIntent:
+    """A single detected intent with confidence."""
+    intent: str  # Intent name (REDO, MODIFY_FACT, etc.)
+    confidence: float = 0.8
+    extracted_value: Optional[str] = None  # Context extracted (e.g., "threshold=$50k")
+
+
+@dataclass
 class QuestionAnalysis:
-    """Combined result of question analysis (facts + classification)."""
+    """Combined result of question analysis (facts + classification + intent)."""
     question_type: str  # QuestionType value
     extracted_facts: list = field(default_factory=list)  # List of Fact objects
     cached_fact_answer: Optional[str] = None  # Answer from cached facts if applicable
+    intents: list = field(default_factory=list)  # List of DetectedIntent objects
+    fact_modifications: list = field(default_factory=list)  # [{fact_name, new_value, action}]
+    scope_refinements: list = field(default_factory=list)  # ["California", "Q4"]
+    wants_brief: bool = False  # User wants brief/concise output (skip insights)
 
 
 # System prompt for step code generation
@@ -349,18 +362,6 @@ Expected outputs: {outputs}
 Generate the Python code to accomplish this step."""
 
 
-RETRY_PROMPT_TEMPLATE = """Your previous code failed to execute.
-
-{error_details}
-
-Previous code:
-```python
-{previous_code}
-```
-
-Please fix the code and try again. Return ONLY the corrected Python code wrapped in ```python ... ``` markers."""
-
-
 # Type for approval callback: (request) -> response
 ApprovalCallback = Callable[[PlanApprovalRequest], PlanApprovalResponse]
 
@@ -390,9 +391,6 @@ class ClarificationResponse:
 # Type for clarification callback: (request) -> response
 ClarificationCallback = Callable[[ClarificationRequest], ClarificationResponse]
 
-
-# Import keyword detection from keywords module (supports i18n)
-from constat.keywords import wants_brief_output
 
 
 @dataclass
@@ -1455,7 +1453,7 @@ Question: "{problem}"
 
 Perform these analyses:
 
-1. FACT EXTRACTION: Extract any facts from the question:
+1. FACT EXTRACTION: Extract any facts embedded in the question:
    - User context/persona (e.g., "my role as CFO" -> user_role: CFO)
    - Numeric values (e.g., "threshold of $50,000" -> revenue_threshold: 50000)
    - Preferences/constraints (e.g., "for the US region" -> target_region: US)
@@ -1467,9 +1465,39 @@ Perform these analyses:
    - GENERAL_KNOWLEDGE: Can be answered from general LLM knowledge AND no configured data source has this data
 
    IMPORTANT: Prefer DATA_ANALYSIS if ANY configured source might have relevant data.
-   Only use GENERAL_KNOWLEDGE when you're confident no data source applies.
 
-3. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
+3. INTENT DETECTION: Identify ALL user intents in LOGICAL EXECUTION ORDER.
+   A message can have MULTIPLE intents (e.g., "change threshold and redo" = MODIFY_FACT, then REDO).
+
+   IMPORTANT: Order intents by when they should EXECUTE, not by word order in the text:
+   - Temporal words override textual order: "redo AFTER changing threshold" → MODIFY_FACT, REDO
+   - "BEFORE", "FIRST", "THEN", "AFTER" indicate sequence
+   - Priority words like "ALWAYS", "NEVER" push intents to the front
+   - Dependencies matter: if B requires A's result, A comes first
+
+   Possible intents:
+   - REDO: Re-run analysis ("redo", "run again", "try again")
+   - MODIFY_FACT: Change a value ("change X to Y", "use $50k", "actually it's...")
+   - STEER_PLAN: Modify plan ("skip step", "different approach", "don't use that table")
+   - DRILL_DOWN: Explain ("why?", "show details", "break down")
+   - REFINE_SCOPE: Filter ("only California", "exclude X", "just Q4")
+   - CHALLENGE: Verify ("are you sure?", "double check", "confirm")
+   - EXPORT: Save ("export to CSV", "download", "save")
+   - EXTEND: Continue ("what about X?", "also check...")
+   - MODE_SWITCH: Change mode ("switch to auditable", "less formal")
+   - PROVENANCE: Show proof ("where did that come from?", "audit trail")
+   - CREATE_ARTIFACT: Create output ("create dashboard", "make chart", "generate report")
+   - TRIGGER_ACTION: Execute action ("send email", "notify team")
+   - COMPARE: Compare ("vs", "difference between", "compare to")
+   - PREDICT: Forecast ("what if", "predict", "forecast")
+   - LOOKUP: Simple lookup ("status of", "who owns", "when did")
+   - ALERT: Set monitoring ("alert me when", "notify if")
+   - SUMMARIZE: Condense results ("summarize", "give me the gist", "bottom line")
+   - QUERY: Direct SQL query ("SELECT", "query the table", "run SQL")
+   - RESET: Clear session ("start over", "clear everything", "fresh start")
+   - NEW_QUESTION: A new query (default if nothing else applies)
+
+4. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
 
 Respond in this exact format:
 ---
@@ -1478,15 +1506,21 @@ FACTS:
 ---
 QUESTION_TYPE: META_QUESTION | DATA_ANALYSIS | GENERAL_KNOWLEDGE
 ---
+INTENTS:
+(list IN ORDER as INTENT_NAME | optional extracted value, e.g., "MODIFY_FACT | threshold=$50k")
+---
+FACT_MODIFICATIONS:
+(list as FACT_NAME: NEW_VALUE if user wants to change a fact, or NONE)
+---
+SCOPE_REFINEMENTS:
+(list scope filters like "California", "Q4", "active users only", or NONE)
+---
+WANTS_BRIEF: YES or NO
+(YES if user wants brief/concise output: "just show me", "quick answer", "bottom line", "tl;dr",
+"no explanation needed", "keep it short", "high-level view", etc. NO otherwise)
+---
 CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
 ---
-
-Examples:
-- "what questions can I ask as CFO" -> QUESTION_TYPE: META_QUESTION
-- "show me revenue by region" -> QUESTION_TYPE: DATA_ANALYSIS (uses database)
-- "show me countries using the euro" (with countries API) -> QUESTION_TYPE: DATA_ANALYSIS (uses API)
-- "what is the capital of France" (no geography data source) -> QUESTION_TYPE: GENERAL_KNOWLEDGE
-- "how many planets in the solar system" (no astronomy data source) -> QUESTION_TYPE: GENERAL_KNOWLEDGE
 """
 
         try:
@@ -1556,10 +1590,79 @@ Examples:
                 if answer_section and answer_section.upper() != "NONE":
                     cached_answer = answer_section
 
+            # Parse INTENTS (preserving order)
+            intents = []
+            if "INTENTS:" in response:
+                intents_section = response.split("INTENTS:", 1)[1].split("---")[0].strip()
+                if intents_section and intents_section.upper() != "NONE":
+                    for line in intents_section.split("\n"):
+                        line = line.strip().lstrip("-").strip()
+                        if line and line.upper() != "NONE":
+                            # Parse "INTENT_NAME | extracted_value" or just "INTENT_NAME"
+                            if "|" in line:
+                                intent_name, extracted = line.split("|", 1)
+                                intent_name = intent_name.strip().upper()
+                                extracted = extracted.strip()
+                            else:
+                                intent_name = line.strip().upper()
+                                extracted = None
+                            intents.append(DetectedIntent(
+                                intent=intent_name,
+                                confidence=0.8,
+                                extracted_value=extracted,
+                            ))
+
+            # Default to NEW_QUESTION if no intents detected
+            if not intents:
+                intents.append(DetectedIntent(intent="NEW_QUESTION", confidence=0.5))
+
+            # Parse FACT_MODIFICATIONS
+            fact_modifications = []
+            if "FACT_MODIFICATIONS:" in response:
+                mods_section = response.split("FACT_MODIFICATIONS:", 1)[1].split("---")[0].strip()
+                if mods_section and mods_section.upper() != "NONE":
+                    for line in mods_section.split("\n"):
+                        line = line.strip().lstrip("-").strip()
+                        if ":" in line and line.upper() != "NONE":
+                            fact_name, new_value = line.split(":", 1)
+                            fact_modifications.append({
+                                "fact_name": fact_name.strip(),
+                                "new_value": new_value.strip(),
+                                "action": "modify",
+                            })
+
+            # Parse SCOPE_REFINEMENTS
+            scope_refinements = []
+            if "SCOPE_REFINEMENTS:" in response:
+                scope_section = response.split("SCOPE_REFINEMENTS:", 1)[1].split("---")[0].strip()
+                if scope_section and scope_section.upper() != "NONE":
+                    for line in scope_section.split("\n"):
+                        line = line.strip().lstrip("-").strip()
+                        if line and line.upper() != "NONE":
+                            scope_refinements.append(line)
+
+            # Parse WANTS_BRIEF
+            wants_brief = False
+            if "WANTS_BRIEF:" in response:
+                brief_section = response.split("WANTS_BRIEF:", 1)[1].split("---")[0].strip()
+                wants_brief = brief_section.upper().startswith("YES")
+
+            # Store intent in datastore for debugging
+            if self.datastore:
+                self.datastore.set_query_intent(
+                    query_text=problem,
+                    intents=[{"intent": i.intent, "confidence": i.confidence, "value": i.extracted_value} for i in intents],
+                    is_followup=bool(self.session_id),
+                )
+
             return QuestionAnalysis(
                 question_type=question_type,
                 extracted_facts=extracted_facts,
                 cached_fact_answer=cached_answer,
+                intents=intents,
+                fact_modifications=fact_modifications,
+                scope_refinements=scope_refinements,
+                wants_brief=wants_brief,
             )
 
         except Exception:
@@ -1568,6 +1671,7 @@ Examples:
                 question_type=QuestionType.META_QUESTION if is_meta_question(problem) else QuestionType.DATA_ANALYSIS,
                 extracted_facts=[],
                 cached_fact_answer=None,
+                intents=[DetectedIntent(intent="NEW_QUESTION", confidence=0.5)],
             )
 
     def _detect_ambiguity(self, problem: str, is_auditable_mode: bool = False) -> Optional[ClarificationRequest]:
@@ -2779,8 +2883,8 @@ Please create a revised plan that addresses this feedback."""
             data={"output": combined_output}
         ))
 
-        # Check if insights are enabled (config or per-query brief detection)
-        skip_insights = not self.session_config.enable_insights or wants_brief_output(problem)
+        # Check if insights are enabled (config or per-query brief detection via LLM)
+        skip_insights = not self.session_config.enable_insights or analysis.wants_brief
         suggestions = []  # Initialize for brief mode (no suggestions)
 
         if skip_insights:
@@ -3332,8 +3436,11 @@ User feedback: {approval.suggestion}
             data={"output": combined_output}
         ))
 
-        # Check if insights are enabled (config or per-query brief detection)
-        skip_insights = not self.session_config.enable_insights or wants_brief_output(question)
+        # Analyze follow-up question for brief output preference (LLM-based, not keywords)
+        follow_up_analysis = self._analyze_question(question)
+
+        # Check if insights are enabled (config or per-query brief detection via LLM)
+        skip_insights = not self.session_config.enable_insights or follow_up_analysis.wants_brief
         suggestions = []  # Initialize for brief mode (no suggestions)
 
         if skip_insights:
@@ -4026,6 +4133,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                             source=fact_source,
                             table_name=fact.table_name,  # Preserve table reference for redo
                             row_count=fact.row_count,  # Preserve row count for redo
+                            context=f"SQL Query:\n{query_info}" if query_info else fact.context,
                         )
                     elif fact and fact.reasoning:
                         # Fact was created but has no value - include the reason
@@ -4086,6 +4194,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                     value=user_value,
                                     reasoning=f"User provided for {fact_desc}",
                                     source=FactSource.USER_PROVIDED,
+                                    context=f"User prompt: {user_value_str}",
                                 )
                                 self._emit_event(StepEvent(
                                     event_type="premise_resolved",
@@ -4191,11 +4300,13 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                     inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} records ✓" if verified else f"- {inf_id}: {inf_name} = EMPTY (0 records)")
 
                                     # Store as fact
+                                    verify_sql = f"SELECT COUNT(*) as cnt FROM {ref_table}"
                                     self.fact_resolver.add_user_fact(
                                         fact_name=inf_name if inf_name else inf_id,
                                         value=f"{row_count} records verified",
                                         reasoning=f"Verified {ref_table} contains {row_count} records",
                                         source=FactSource.DERIVED,
+                                        context=f"SQL Query:\n{verify_sql}",
                                     )
 
                                     self._emit_event(StepEvent(
@@ -4250,29 +4361,35 @@ IMPORTANT:
 
 Return ONLY executable Python code, no explanations."""
 
-                    # Retry loop for code generation
+                    # Retry loop for code generation with learning capture
                     max_retries = 3
                     last_error = None
                     code = None
+                    original_code = None  # Track original code for learning capture
                     inference_output = ""
+                    pending_learning_context = None
 
                     for attempt in range(max_retries):
                         if attempt == 0:
                             prompt_to_use = inference_prompt
                         else:
-                            # Retry with error feedback
-                            prompt_to_use = f"""Your previous code failed with this error:
-
-ERROR: {last_error}
-
-Previous code:
-```python
-{code}
-```
+                            # Track error context for learning capture
+                            pending_learning_context = {
+                                "error_message": last_error[:500] if last_error else "",
+                                "original_code": original_code[:500] if original_code else "",
+                                "step_goal": f"Inference {inf_id}: {operation}",
+                                "attempt": attempt + 1,
+                            }
+                            # Use shared retry template with context-specific hints
+                            retry_prompt = RETRY_PROMPT_TEMPLATE.format(
+                                error_details=f"ERROR: {last_error}",
+                                previous_code=code,
+                            )
+                            prompt_to_use = f"""{retry_prompt}
 
 {inference_prompt}
 
-Fix the error and return corrected code. Common fixes:
+Common fixes:
 - Use pd.to_datetime() to convert string columns to datetime
 - Check column names exist in the DataFrame
 - Use proper DuckDB SQL syntax for store.query()"""
@@ -4290,6 +4407,10 @@ Fix the error and return corrected code. Common fixes:
                             code = re.sub(r'^```\w*\n?', '', code)
                             code = re.sub(r'\n?```$', '', code)
 
+                        # Track original code for learning capture
+                        if attempt == 0:
+                            original_code = code
+
                         # Execute the inference code (capture stdout to avoid disrupting display)
                         import io
                         import sys
@@ -4303,6 +4424,14 @@ Fix the error and return corrected code. Common fixes:
                             sys.stdout = captured_output
                             exec(code, exec_globals)
                             inference_output = captured_output.getvalue()
+
+                            # Capture learning if this was a successful retry
+                            if attempt > 0 and pending_learning_context:
+                                self._capture_error_learning(
+                                    context=pending_learning_context,
+                                    fixed_code=code,
+                                )
+
                             last_error = None  # Success
                             break  # Exit retry loop on success
                         except Exception as exec_err:
@@ -4345,6 +4474,7 @@ Fix the error and return corrected code. Common fixes:
                         value=actual_value,
                         reasoning=f"Computed: {operation}",  # Include the operation formula
                         source=FactSource.DERIVED,
+                        context=f"Code:\n{code}" if code else None,  # Include the executed code
                     )
 
                     self._emit_event(StepEvent(
