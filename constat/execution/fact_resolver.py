@@ -1963,6 +1963,8 @@ Original request:
         query: Optional[str] = None,
         source_name: Optional[str] = None,
         api_endpoint: Optional[str] = None,
+        table_name: Optional[str] = None,
+        row_count: Optional[int] = None,
         **params,
     ) -> Fact:
         """
@@ -1982,6 +1984,8 @@ Original request:
             query: SQL query used to derive the fact (for DATABASE source)
             source_name: Name of the specific source (database name, API name, etc.)
             api_endpoint: API endpoint if from API source
+            table_name: Table name in datastore if this is a table reference
+            row_count: Number of rows if this is a table reference
             **params: Parameters for the fact
 
         Returns:
@@ -1999,6 +2003,8 @@ Original request:
             query=query,
             source_name=source_name,
             api_endpoint=api_endpoint,
+            table_name=table_name,
+            row_count=row_count,
         )
 
         self._cache[cache_key] = fact

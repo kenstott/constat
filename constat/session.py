@@ -4024,6 +4024,8 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                             reasoning=fact.reasoning,  # Preserve original reasoning
                             description=desc,
                             source=fact_source,
+                            table_name=fact.table_name,  # Preserve table reference for redo
+                            row_count=fact.row_count,  # Preserve row count for redo
                         )
                     elif fact and fact.reasoning:
                         # Fact was created but has no value - include the reason
