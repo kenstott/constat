@@ -266,7 +266,7 @@ df = pd.read_parquet(file_transactions)
                             |
               +-------------v-------------+
               |     Discovery Tools       |
-              | (automatic mode selection)|
+              |  (tool-based or prompt)   |
               +-------------+-------------+
                             |
     +-------+-------+-------+-------+-------+-------+
