@@ -3554,16 +3554,8 @@ User feedback: {approval.suggestion}
         if self.datastore:
             self.datastore.set_session_meta("mode", "auditable")
 
-        # Emit mode selection event
-        self._emit_event(StepEvent(
-            event_type="mode_switch",
-            step_number=0,
-            data={
-                "mode": "auditable",
-                "reasoning": mode_selection.reasoning,
-                "matched_keywords": mode_selection.matched_keywords,
-            }
-        ))
+        # Note: mode_switch event is NOT emitted here because the approval callback
+        # will display the mode via show_mode_selection() in request_plan_approval()
 
         # Step 1: Generate fact-based plan (identify required facts)
         self._emit_event(StepEvent(
@@ -4450,6 +4442,28 @@ Common fixes:
                             "store": self.datastore,
                             "pd": __import__("pandas"),
                         }
+                        # Add resolved premises to exec context (e.g., P1, P2)
+                        for pid, fact in resolved_premises.items():
+                            if fact and fact.value is not None:
+                                val = fact.value
+                                # Extract numeric value from "X rows" strings
+                                if isinstance(val, str) and "rows" in val:
+                                    try:
+                                        val = int(val.split()[0])
+                                    except (ValueError, IndexError):
+                                        pass
+                                exec_globals[pid] = val
+                        # Add resolved inferences to exec context (e.g., I1, I2, I3)
+                        for iid, ival in resolved_inferences.items():
+                            if ival is not None:
+                                val = ival
+                                # Extract numeric value from "X rows" strings
+                                if isinstance(val, str) and "rows" in val:
+                                    try:
+                                        val = int(val.split()[0])
+                                    except (ValueError, IndexError):
+                                        pass
+                                exec_globals[iid] = val
                         captured_output = io.StringIO()
                         old_stdout = sys.stdout
                         try:
