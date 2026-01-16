@@ -24,7 +24,7 @@ class OllamaProvider(OpenAIProvider):
     # Models known to support tool calling
     TOOL_CAPABLE_MODELS = {
         "llama3.2", "llama3.1", "llama3", "llama3.3",
-        "mistral", "mixtral",
+        "mistral", "mixtral", "mistral-nemo",
         "qwen2.5", "qwen2",
         "command-r",
     }

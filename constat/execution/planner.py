@@ -45,7 +45,18 @@ Generated code has access to:
 - `send_email(to, subject, body, df=None)` to send emails with optional DataFrame attachment
 
 Use `llm_ask()` when the question requires general knowledge not in the databases.
-Use `send_email()` when the user wants to email results to someone.
+
+## Email Policy (CRITICAL)
+ONLY include email steps when the user EXPLICITLY requests emailing results (e.g., "email this to...", "send to...").
+NEVER proactively add email steps to plans. Do NOT interpret phrases like "for CFO review" or "analysis for the team" as email requests.
+NEVER include email steps for data that contains:
+- Salary, compensation, or pay information
+- Personal identifiable information (SSN, addresses, phone numbers)
+- Performance reviews or disciplinary records
+- Medical or health information
+- Financial account numbers
+- Passwords or authentication credentials
+If the user explicitly requests emailing sensitive data, add a WARNING note to the step that manual review is required before sending.
 Use `api_<name>` to fetch data from configured APIs (GraphQL or REST endpoints).
 
 ## Data Source Selection
@@ -85,11 +96,15 @@ When using APIs, ALWAYS use API-level filtering:
 - **Use separate queries when:** Tables are in different databases, no clear relationship exists, more than 3 tables would need complex multi-way joins, you need to apply complex transformations before joining
 - **JOIN syntax tips:** Always qualify column names with table aliases (e.g., o.customer_id, c.name), use explicit JOIN syntax (INNER JOIN, LEFT JOIN) rather than comma-joins, keep JOINs simple - if it requires more than 3 tables, consider breaking it up
 
+## Data Sensitivity
+Set `contains_sensitive_data: true` if the plan involves data that would be considered sensitive under privacy regulations (GDPR, HIPAA, etc.) or standard confidentiality practices.
+
 ## Output Format
 Return your plan as a JSON object with this structure:
 ```json
 {
   "reasoning": "Brief explanation of your approach",
+  "contains_sensitive_data": false,
   "steps": [
     {
       "number": 1,
@@ -426,6 +441,7 @@ class Planner:
             problem=problem,
             steps=steps,
             created_at=datetime.now(timezone.utc).isoformat(),
+            contains_sensitive_data=plan_data.get("contains_sensitive_data", False),
         )
 
         # If LLM didn't provide depends_on, infer from inputs/outputs
@@ -554,6 +570,7 @@ Return the plan in JSON format."""
             steps=steps,
             created_at=datetime.now(timezone.utc).isoformat(),
             completed_steps=list(completed_steps),
+            contains_sensitive_data=plan_data.get("contains_sensitive_data", original_plan.contains_sensitive_data),
         )
 
         # Copy results from original completed steps

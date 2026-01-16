@@ -620,6 +620,18 @@ execution:
     - datetime
     - statistics
     - polars
+    # Standard library
+    - re
+    - math
+    - collections
+    - itertools
+    - functools
+    # Visualization libraries
+    - plotly
+    - altair
+    - matplotlib
+    - seaborn
+    - folium
 """
     config_path.write_text(content)
     print(f"Created: {config_path}")

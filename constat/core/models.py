@@ -149,6 +149,15 @@ class Step:
 
 
 @dataclass
+class FailureSuggestion:
+    """A suggested alternative approach when a step fails."""
+    id: str  # Short identifier (e.g., "rephrase", "skip", "manual")
+    label: str  # Display label (e.g., "Rephrase search query")
+    description: str  # Detailed description of what this option does
+    action: Optional[str] = None  # Optional action hint for the system
+
+
+@dataclass
 class StepResult:
     """Result of executing a step."""
     success: bool
@@ -167,6 +176,9 @@ class StepResult:
     # Generated code (for replay)
     code: str = ""
 
+    # Suggestions for alternative approaches when step fails
+    suggestions: list[FailureSuggestion] = field(default_factory=list)
+
 
 @dataclass
 class Plan:
@@ -184,6 +196,10 @@ class Plan:
     current_step: int = 0
     completed_steps: list[int] = field(default_factory=list)
     failed_steps: list[int] = field(default_factory=list)
+
+    # Data sensitivity (set by planner based on data involved)
+    # If True, email operations require explicit authorization
+    contains_sensitive_data: bool = False
 
     @property
     def is_complete(self) -> bool:

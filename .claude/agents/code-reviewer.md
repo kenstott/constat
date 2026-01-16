@@ -97,6 +97,40 @@ except (ValueError, KeyError) as e:
     raise
 ```
 
+**Fallback Values (CRITICAL):**
+Fallbacks that mask failures are a code smell. If you see code returning default values when operations fail, flag it for review.
+
+```python
+# BAD - masks the failure, caller never knows something went wrong
+def get_user(user_id: int) -> User | None:
+    try:
+        return db.fetch_user(user_id)
+    except DatabaseError:
+        return None  # Silent failure!
+
+# BAD - empty fallback hides data issues
+def load_config() -> dict:
+    try:
+        return json.load(open("config.json"))
+    except FileNotFoundError:
+        return {}  # Caller assumes success with empty config
+
+# GOOD - fail explicitly, let caller decide
+def get_user(user_id: int) -> User:
+    return db.fetch_user(user_id)  # Raises on failure
+
+# GOOD - if fallback is intentional, make it explicit and documented
+def get_user(user_id: int, default: User | None = None) -> User | None:
+    """Fetch user, returning default if not found (NOT on errors)."""
+    try:
+        return db.fetch_user(user_id)
+    except UserNotFoundError:
+        return default  # Explicit: only for "not found", not for failures
+    # DatabaseError still propagates - failures are visible
+```
+
+**Fallbacks require explicit architectural approval.** If a PR introduces fallback behavior, flag it and confirm with the user that this is an intentional design choice, not a defensive coding reflex.
+
 ## Review Process
 
 1. Run `git diff --name-only` to identify changed Python files

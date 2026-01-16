@@ -111,7 +111,7 @@ class DetectedIntent:
 
 @dataclass
 class QuestionAnalysis:
-    """Combined result of question analysis (facts + classification + intent)."""
+    """Combined result of question analysis (facts + classification + intent + mode)."""
     question_type: str  # QuestionType value
     extracted_facts: list = field(default_factory=list)  # List of Fact objects
     cached_fact_answer: Optional[str] = None  # Answer from cached facts if applicable
@@ -119,6 +119,8 @@ class QuestionAnalysis:
     fact_modifications: list = field(default_factory=list)  # [{fact_name, new_value, action}]
     scope_refinements: list = field(default_factory=list)  # ["California", "Q4"]
     wants_brief: bool = False  # User wants brief/concise output (skip insights)
+    recommended_mode: Optional[str] = None  # KNOWLEDGE, EXPLORATORY, or AUDITABLE
+    mode_reasoning: Optional[str] = None  # Why this mode was recommended
 
 
 # System prompt for step code generation
@@ -1038,6 +1040,10 @@ YOUR JSON RESPONSE:"""
             return self._resolve_llm_knowledge(question)
         return llm_ask
 
+    def _is_current_plan_sensitive(self) -> bool:
+        """Check if the current plan involves sensitive data."""
+        return self.plan is not None and self.plan.contains_sensitive_data
+
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution.
 
@@ -1046,7 +1052,10 @@ YOUR JSON RESPONSE:"""
         globals_dict = {
             "store": self.datastore,  # Persistent datastore - only shared state between steps
             "llm_ask": self._create_llm_ask_helper(),  # LLM query helper for general knowledge
-            "send_email": create_send_email(self.config.email),  # Email function
+            "send_email": create_send_email(
+                self.config.email,
+                is_sensitive=self._is_current_plan_sensitive,
+            ),  # Email function - blocked if plan involves sensitive data
             "viz": create_viz_helper(
                 datastore=self.datastore,
                 print_file_refs=self.config.execution.print_file_refs,
@@ -1252,14 +1261,28 @@ YOUR JSON RESPONSE:"""
                 data={"error": last_error, "attempt": attempt}
             ))
 
-        # Max retries exceeded
+        # Max retries exceeded - generate suggestions for alternative approaches
         duration_ms = int((time.time() - start_time) * 1000)
+        suggestions = self._generate_failure_suggestions(step, last_error, last_code)
+
+        # Emit step_failed event with suggestions
+        self._emit_event(StepEvent(
+            event_type="step_failed",
+            step_number=step.number,
+            data={
+                "error": last_error,
+                "attempts": self.session_config.max_retries_per_step,
+                "suggestions": suggestions,
+            }
+        ))
+
         return StepResult(
             success=False,
             stdout="",
             error=f"Failed after {self.session_config.max_retries_per_step} attempts. Last error: {last_error}",
             attempts=self.session_config.max_retries_per_step,
             duration_ms=duration_ms,
+            suggestions=suggestions,
         )
 
     def _capture_error_learning(self, context: dict, fixed_code: str) -> None:
@@ -1296,6 +1319,181 @@ YOUR JSON RESPONSE:"""
             )
         except Exception:
             pass  # Don't let learning capture failures affect execution
+
+    def _generate_failure_suggestions(
+        self, step: "Step", error: str, code: str
+    ) -> list["FailureSuggestion"]:
+        """Generate suggestions for alternative approaches when a step fails.
+
+        Differentiates between:
+        - Codegen failures: LLM couldn't produce working code (need different approach)
+        - Runtime errors: Code ran but failed on data/environment (user can redirect)
+
+        Args:
+            step: The step that failed
+            error: The last error message
+            code: The last code that was attempted
+
+        Returns:
+            List of FailureSuggestion objects
+        """
+        from constat.core.models import FailureSuggestion
+
+        suggestions = []
+        error_lower = error.lower() if error else ""
+        goal_lower = step.goal.lower() if step.goal else ""
+
+        # Detect if this is a codegen failure vs runtime error
+        codegen_indicators = [
+            "syntax error", "invalid syntax", "unexpected token",
+            "code generation failed", "could not generate",
+            "parsing error", "indentation error"
+        ]
+        is_codegen_failure = any(ind in error_lower for ind in codegen_indicators)
+
+        if is_codegen_failure:
+            # Codegen failures - LLM couldn't produce working code
+            suggestions.extend([
+                FailureSuggestion(
+                    id="break_down",
+                    label="Break into smaller steps",
+                    description="Split this step into simpler sub-steps that may be easier to generate",
+                    action="break_down"
+                ),
+                FailureSuggestion(
+                    id="simplify_goal",
+                    label="Simplify the goal",
+                    description="Rephrase the step goal in simpler terms",
+                    action="rephrase"
+                ),
+                FailureSuggestion(
+                    id="provide_code",
+                    label="Provide code snippet",
+                    description="Give a working code example or pattern to follow",
+                    action="provide_code"
+                ),
+                FailureSuggestion(
+                    id="report_issue",
+                    label="Report this issue",
+                    description="This appears to be a code generation bug - report it for investigation",
+                    action="report"
+                ),
+            ])
+        else:
+            # Runtime errors - likely data/source issues user can redirect
+
+            # Document/search related failures
+            if any(term in error_lower or term in goal_lower for term in [
+                "document", "search", "not found", "no results", "relevance", "policy", "guideline"
+            ]):
+                suggestions.extend([
+                    FailureSuggestion(
+                        id="rephrase_search",
+                        label="Rephrase search query",
+                        description="Try searching with different or broader terms",
+                        action="rephrase"
+                    ),
+                    FailureSuggestion(
+                        id="list_documents",
+                        label="List available documents",
+                        description="Show all documents so you can specify which one to use",
+                        action="list_docs"
+                    ),
+                    FailureSuggestion(
+                        id="load_full_doc",
+                        label="Load full document",
+                        description="Load an entire document instead of searching chunks",
+                        action="load_doc"
+                    ),
+                ])
+
+            # Database/query related failures
+            if any(term in error_lower for term in [
+                "table", "column", "sql", "query", "database", "no such", "does not exist"
+            ]):
+                suggestions.extend([
+                    FailureSuggestion(
+                        id="list_tables",
+                        label="List available tables",
+                        description="Show database schema to find correct table/column names",
+                        action="list_tables"
+                    ),
+                    FailureSuggestion(
+                        id="different_table",
+                        label="Use different data source",
+                        description="Specify which table or data source to use instead",
+                        action="redirect"
+                    ),
+                ])
+
+            # Data not found / empty results
+            if any(term in error_lower for term in [
+                "empty", "no data", "zero rows", "none", "missing"
+            ]):
+                suggestions.extend([
+                    FailureSuggestion(
+                        id="broaden_query",
+                        label="Broaden the query",
+                        description="Remove filters or expand date range to find data",
+                        action="broaden"
+                    ),
+                    FailureSuggestion(
+                        id="check_filters",
+                        label="Check filter criteria",
+                        description="The filters may be too restrictive",
+                        action="check_filters"
+                    ),
+                ])
+
+            # API/connection errors
+            if any(term in error_lower for term in [
+                "api", "connection", "timeout", "rate limit", "unauthorized", "403", "401", "500"
+            ]):
+                suggestions.extend([
+                    FailureSuggestion(
+                        id="use_cached",
+                        label="Use cached/local data",
+                        description="Check if we have data from a previous call or local source",
+                        action="use_cache"
+                    ),
+                ])
+
+        # Import/syntax errors (could be either codegen or config issue)
+        if any(term in error_lower for term in [
+            "import", "module", "not allowed"
+        ]):
+            suggestions.append(
+                FailureSuggestion(
+                    id="simplify_code",
+                    label="Simplify approach",
+                    description="Use a simpler method that doesn't require this import",
+                    action="simplify"
+                )
+            )
+
+        # Always offer these general options
+        suggestions.extend([
+            FailureSuggestion(
+                id="modify_step",
+                label="Modify this step",
+                description="Change the goal or approach for this step",
+                action="modify"
+            ),
+            FailureSuggestion(
+                id="skip_step",
+                label="Skip this step",
+                description="Continue without this step (may affect later steps)",
+                action="skip"
+            ),
+            FailureSuggestion(
+                id="manual_input",
+                label="Provide value manually",
+                description="Enter the needed information directly",
+                action="manual"
+            ),
+        ])
+
+        return suggestions
 
     def _summarize_error_fix(self, context: dict, fixed_code: str) -> str:
         """Use LLM to generate a concise learning summary from an error fix.
@@ -1438,16 +1636,20 @@ Do not include any explanation or extra text."""
         data_sources = []
         if self.config.databases:
             for name, db in self.config.databases.items():
-                desc = f"database '{name}'"
-                data_sources.append(desc)
+                desc = db.description.split('\n')[0] if db.description else f"database '{name}'"
+                data_sources.append(f"DATABASE '{name}': {desc}")
         if self.config.apis:
             for name, api in self.config.apis.items():
-                desc = api.description or f"{api.type} API"
-                data_sources.append(f"API '{name}' ({desc})")
+                desc = api.description.split('\n')[0] if api.description else f"{api.type} API"
+                data_sources.append(f"API '{name}': {desc}")
+        if self.config.documents:
+            for name, doc in self.config.documents.items():
+                desc = doc.description.split('\n')[0] if doc.description else "reference document"
+                data_sources.append(f"DOCUMENT '{name}': {desc}")
 
         source_context = ""
         if data_sources:
-            source_context = f"\nAvailable data sources: {', '.join(data_sources)}"
+            source_context = "\nAvailable data sources:\n" + "\n".join(f"- {s}" for s in data_sources)
 
         # Build follow-up context if this is a continuation of a previous analysis
         followup_context = ""
@@ -1515,6 +1717,17 @@ Perform these analyses:
 
 4. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
 
+5. EXECUTION MODE: Select the best mode for this request:
+   - KNOWLEDGE: Pure explanation/lookup - user wants to UNDERSTAND something without data analysis
+     Examples: "What is our policy?", "Explain how X works", "What does term Y mean?"
+   - EXPLORATORY: Data analysis and creation - user wants to CREATE, ANALYZE, BUILD, or COMPUTE
+     Examples: "Create an analysis...", "Show sales by region", "Suggest salary increases based on..."
+     NOTE: If user mentions policy but wants to APPLY it to data, use EXPLORATORY (policy resolved during execution)
+   - AUDITABLE: Verification with provenance - user needs PROOF or DEFENSIBLE conclusions
+     Examples: "Prove that X", "Verify compliance", "Why did decision Y happen?"
+
+   CRITICAL: "Apply policy to data" = EXPLORATORY, "What is the policy?" = KNOWLEDGE
+
 Respond in this exact format:
 ---
 FACTS:
@@ -1535,6 +1748,9 @@ WANTS_BRIEF: YES or NO
 (YES if user wants brief/concise output: "just show me", "quick answer", "bottom line", "tl;dr",
 "no explanation needed", "keep it short", "high-level view", etc. NO otherwise)
 ---
+EXECUTION_MODE: KNOWLEDGE | EXPLORATORY | AUDITABLE
+MODE_REASON: <brief explanation why this mode, max 20 words>
+---
 CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
 ---
 """
@@ -1544,7 +1760,7 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system="You analyze user questions efficiently. Be precise and concise.",
                 user_message=prompt,
-                max_tokens=400,
+                max_tokens=500,
             )
 
             response = result.content.strip()
@@ -1663,6 +1879,23 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                 brief_section = response.split("WANTS_BRIEF:", 1)[1].split("---")[0].strip()
                 wants_brief = brief_section.upper().startswith("YES")
 
+            # Parse EXECUTION_MODE and MODE_REASON
+            recommended_mode = "EXPLORATORY"  # Default
+            mode_reasoning = None
+            if "EXECUTION_MODE:" in response:
+                mode_section = response.split("EXECUTION_MODE:", 1)[1].split("\n")[0].strip()
+                mode_section = mode_section.split("---")[0].strip().upper()
+                if "KNOWLEDGE" in mode_section:
+                    recommended_mode = "KNOWLEDGE"
+                elif "AUDITABLE" in mode_section:
+                    recommended_mode = "AUDITABLE"
+                elif "EXPLORATORY" in mode_section:
+                    recommended_mode = "EXPLORATORY"
+            if "MODE_REASON:" in response:
+                reason_section = response.split("MODE_REASON:", 1)[1].split("---")[0].strip()
+                if reason_section and reason_section.upper() != "NONE":
+                    mode_reasoning = reason_section.split("\n")[0].strip()
+
             # Store intent in datastore for debugging
             if self.datastore:
                 self.datastore.set_query_intent(
@@ -1679,6 +1912,8 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                 fact_modifications=fact_modifications,
                 scope_refinements=scope_refinements,
                 wants_brief=wants_brief,
+                recommended_mode=recommended_mode,
+                mode_reasoning=mode_reasoning,
             )
 
         except Exception:
@@ -1750,7 +1985,15 @@ CRITICAL: Only suggest options that can be answered with the AVAILABLE DATA show
 - Review the schema before suggesting options - don't suggest data that doesn't exist
 - If the user asks about data types not in the schema, clarify what IS available instead
 - Base suggestions on actual tables/columns shown above, not hypothetical data
-- Provide practical suggested answers grounded in the actual available data."""
+- Provide practical suggested answers grounded in the actual available data
+
+DOCUMENT-AWARE SUGGESTIONS:
+- When Reference Documents are available AND relevant to the question, suggest using them
+- If a document contains policies/guidelines that could answer a "what criteria" question,
+  include a suggestion like "Based on [document name]" or "Use guidelines from [document]"
+- Example: If user asks "how should salary increases be calculated" and a business_rules
+  document exists with policies, suggest "Based on performance review guidelines in business_rules"
+- This helps users leverage their internal documents instead of guessing criteria"""
 
         try:
             result = self.router.execute(
@@ -2551,21 +2794,24 @@ Please create a revised plan that addresses this feedback."""
             return self._answer_general_question(problem)
 
         # Check for ambiguity and request clarification if needed
+        # Analyze the question to get intent, mode, and facts in a single LLM call
+        self._emit_event(StepEvent(
+            event_type="progress",
+            step_number=0,
+            data={"message": "Analyzing question..."}
+        ))
+        analysis = self._analyze_question(problem)
+
+        # Check for clarification (using mode from analysis)
         if self.session_config.ask_clarifications and self._clarification_callback:
-            self._emit_event(StepEvent(
-                event_type="progress",
-                step_number=0,
-                data={"message": "Checking if clarification needed..."}
-            ))
-            # Pre-detect mode to adjust clarification behavior
-            # Auditable mode defers personal value questions to lazy resolution
-            early_mode = suggest_mode(problem)
-            is_auditable = early_mode.mode == ExecutionMode.AUDITABLE
+            is_auditable = analysis.recommended_mode == "AUDITABLE"
             clarification_request = self._detect_ambiguity(problem, is_auditable_mode=is_auditable)
             if clarification_request:
                 enhanced_problem = self._request_clarification(clarification_request)
                 if enhanced_problem:
                     problem = enhanced_problem
+                    # Re-analyze with clarified problem
+                    analysis = self._analyze_question(problem)
 
         # Create session
         db_names = list(self.config.databases.keys())
@@ -2622,8 +2868,19 @@ Please create a revised plan that addresses this feedback."""
                 ],
             }
 
-        # Determine execution mode
-        mode_selection = suggest_mode(problem)
+        # Build mode selection from analysis result (determined in single LLM call above)
+        mode_map = {
+            "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
+            "EXPLORATORY": ExecutionMode.EXPLORATORY,
+            "AUDITABLE": ExecutionMode.AUDITABLE,
+        }
+        mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
+        mode_selection = ModeSelection(
+            mode=mode,
+            confidence=0.8,  # High confidence since LLM determined this
+            reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
+            matched_keywords=[],
+        )
 
         # Branch based on execution mode
         if mode_selection.mode == ExecutionMode.KNOWLEDGE:
@@ -3163,10 +3420,22 @@ NEW_REQUEST: <the new request, or NONE>
         previous_problem = self.datastore.get_session_meta("problem")
 
         # Use LLM to analyze the question and detect intents (with follow-up context)
+        # This single call determines intent, facts, AND execution mode
         analysis = self._analyze_question(question, previous_problem=previous_problem)
 
-        # Check if this follow-up suggests a different mode
-        mode_selection = suggest_mode(question)
+        # Build mode selection from analysis result (mode determined in single LLM call above)
+        mode_map = {
+            "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
+            "EXPLORATORY": ExecutionMode.EXPLORATORY,
+            "AUDITABLE": ExecutionMode.AUDITABLE,
+        }
+        mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
+        mode_selection = ModeSelection(
+            mode=mode,
+            confidence=0.8,  # High confidence since LLM determined this
+            reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
+            matched_keywords=[],
+        )
 
         # KNOWLEDGE mode: explanation/knowledge requests don't need data analysis
         if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
@@ -3206,6 +3475,23 @@ NEW_REQUEST: <the new request, or NONE>
                     confidence=0.9,
                     matched_keywords=list(detected_intent_names & redo_intents),
                 )
+        # Fallback: even if no redo intent detected, preserve mode if it's a follow-up
+        # This ensures "Unclear intent" doesn't override the previous session's mode
+        elif self.datastore and not has_explicit_mode_switch:
+            previous_mode_str = self.datastore.get_session_meta("mode")
+            if previous_mode_str:
+                try:
+                    previous_mode = ExecutionMode(previous_mode_str)
+                    # If previous mode matches current default mode, use better reasoning
+                    if mode_selection.mode == previous_mode and mode_selection.confidence < 0.6:
+                        mode_selection = ModeSelection(
+                            mode=previous_mode,
+                            reasoning=f"Continuing in {previous_mode_str} mode from previous query",
+                            confidence=0.7,  # Higher than fallback but lower than explicit redo
+                            matched_keywords=[],
+                        )
+                except ValueError:
+                    pass  # Keep original mode_selection
 
         # AUDITABLE mode: check if this is a "redo" request or a verification question
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
@@ -3390,8 +3676,10 @@ Follow-up question: {question}
         ))
 
         # Request approval if required (same as solve())
+        # Note: mode_selection is already computed earlier in follow_up() and may have
+        # been updated for mode preservation (e.g., redo/what-if scenarios). Do NOT
+        # re-evaluate mode here as that would lose the preserved mode.
         if self.session_config.require_approval:
-            mode_selection = suggest_mode(question)
             approval = self._request_approval(question, planner_response, mode_selection)
 
             if approval.decision == PlanApproval.REJECT:

@@ -842,6 +842,28 @@ storage:
   vector_store:
     backend: duckdb  # "duckdb" (persistent) or "numpy" (in-memory)
     db_path: ~/.constat/vectors.duckdb
+
+#==============================================================================
+# EMAIL CONFIGURATION
+#==============================================================================
+email:
+  # SMTP server settings
+  smtp_host: ${SMTP_HOST}
+  smtp_port: 587
+  smtp_user: ${SMTP_USER}
+  smtp_password: ${SMTP_PASSWORD}
+
+  # Sender information
+  from_address: noreply@company.com
+  from_name: Constat
+
+  # Use TLS encryption (recommended)
+  tls: true
+
+# Note: Email sending is protected by automatic data sensitivity detection.
+# When plans involve sensitive data (PII, financial, health, HR data, etc.),
+# email operations are blocked unless explicitly authorized with allow_sensitive=True.
+# The planner classifies data sensitivity based on privacy regulations (GDPR, HIPAA, etc.).
 ```
 
 ### Environment Variable Substitution

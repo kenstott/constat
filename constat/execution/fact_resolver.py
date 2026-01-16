@@ -449,6 +449,12 @@ class ResolutionStrategy:
     allow_sub_plans: bool = True
     max_sub_plan_depth: int = 3  # Prevent infinite recursion
 
+    # Parallel I/O optimization for cheap sources (DATABASE, DOCUMENT).
+    # When enabled, runs these in parallel and picks best result.
+    # LLM_KNOWLEDGE is NOT included in parallel - it's expensive (cost + time)
+    # and only used as fallback if cheap sources fail.
+    parallel_io_sources: bool = False
+
 
 # Thresholds for storing arrays as tables (to avoid context bloat)
 ARRAY_ROW_THRESHOLD = 5  # Store as table if array has > N items
@@ -544,30 +550,97 @@ class FactResolver:
             Fact with value, confidence, and provenance
         """
         import logging
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         logger = logging.getLogger(__name__)
 
         # Build cache key from name + params
         cache_key = self._cache_key(fact_name, params)
         logger.debug(f"[FACT_RESOLVER] Resolving: {cache_key}")
 
-        # Try each source in priority order
+        # Separate sources by cost/speed:
+        # - Fast: CACHE, RULE, CONFIG (sync, instant)
+        # - Cheap I/O: DATABASE, DOCUMENT (can parallelize)
+        # - Expensive: LLM_KNOWLEDGE (API cost + latency, use as fallback)
+        fast_sources = {FactSource.CACHE, FactSource.RULE, FactSource.CONFIG}
+        cheap_io_sources = {FactSource.DATABASE, FactSource.DOCUMENT, FactSource.SUB_PLAN}
+        expensive_sources = {FactSource.LLM_KNOWLEDGE}
+
         sources_tried = []
+
+        # Phase 1: Try fast sources first (serial, quick)
         for source in self.strategy.source_priority:
-            logger.debug(f"[FACT_RESOLVER] Trying source: {source.value}")
+            if source not in fast_sources:
+                continue
+            logger.debug(f"[FACT_RESOLVER] Trying fast source: {source.value}")
+            try:
+                fact = self._try_resolve(source, fact_name, params, cache_key)
+                if fact and fact.is_resolved and fact.confidence >= self.strategy.min_confidence:
+                    sources_tried.append(f"{source.value}:SUCCESS")
+                    self._cache[cache_key] = fact
+                    self.resolution_log.append(fact)
+                    logger.info(f"[FACT_RESOLVER] Resolved {cache_key} via {source.value}: {fact.value}")
+                    return fact
+                elif fact is None:
+                    sources_tried.append(f"{source.value}:no_result")
+                elif not fact.is_resolved:
+                    sources_tried.append(f"{source.value}:unresolved")
+                else:
+                    sources_tried.append(f"{source.value}:low_conf({fact.confidence})")
+            except Exception as e:
+                sources_tried.append(f"{source.value}:ERROR({type(e).__name__})")
+                logger.debug(f"[FACT_RESOLVER] Error in {source.value}: {e}")
+
+        # Phase 2: Try cheap I/O sources (DATABASE, DOCUMENT)
+        cheap_io_list = [s for s in self.strategy.source_priority if s in cheap_io_sources]
+
+        if self.strategy.parallel_io_sources and len(cheap_io_list) > 1:
+            # Parallel resolution of cheap I/O sources
+            logger.debug(f"[FACT_RESOLVER] Trying cheap I/O in parallel: {[s.value for s in cheap_io_list]}")
+            fact = self._resolve_io_parallel(fact_name, params, cache_key, cheap_io_list, sources_tried)
+            if fact:
+                return fact
+        else:
+            # Serial cheap I/O resolution
+            for source in cheap_io_list:
+                logger.debug(f"[FACT_RESOLVER] Trying source: {source.value}")
+                try:
+                    fact = self._try_resolve(source, fact_name, params, cache_key)
+                    if fact is None:
+                        sources_tried.append(f"{source.value}:no_result")
+                        logger.debug(f"[FACT_RESOLVER] Source {source.value} returned None - continuing to next")
+                    elif not fact.is_resolved:
+                        sources_tried.append(f"{source.value}:unresolved")
+                        logger.debug(f"[FACT_RESOLVER] Source {source.value} returned unresolved fact - continuing")
+                    elif fact.confidence < self.strategy.min_confidence:
+                        sources_tried.append(f"{source.value}:low_conf({fact.confidence})")
+                        logger.debug(f"[FACT_RESOLVER] Source {source.value} confidence {fact.confidence} "
+                                    f"below threshold {self.strategy.min_confidence} - continuing")
+                    else:
+                        # Success!
+                        sources_tried.append(f"{source.value}:SUCCESS")
+                        self._cache[cache_key] = fact
+                        self.resolution_log.append(fact)
+                        logger.info(f"[FACT_RESOLVER] Resolved {cache_key} via {source.value}: {fact.value}")
+                        return fact
+                except Exception as e:
+                    sources_tried.append(f"{source.value}:ERROR({type(e).__name__})")
+                    logger.error(f"[FACT_RESOLVER] Error in source {source.value}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+        # Phase 3: Expensive fallback (LLM_KNOWLEDGE) - only if cheap sources failed
+        expensive_list = [s for s in self.strategy.source_priority if s in expensive_sources]
+        for source in expensive_list:
+            logger.debug(f"[FACT_RESOLVER] Trying expensive fallback: {source.value}")
             try:
                 fact = self._try_resolve(source, fact_name, params, cache_key)
                 if fact is None:
                     sources_tried.append(f"{source.value}:no_result")
-                    logger.debug(f"[FACT_RESOLVER] Source {source.value} returned None - continuing to next")
                 elif not fact.is_resolved:
                     sources_tried.append(f"{source.value}:unresolved")
-                    logger.debug(f"[FACT_RESOLVER] Source {source.value} returned unresolved fact - continuing")
                 elif fact.confidence < self.strategy.min_confidence:
                     sources_tried.append(f"{source.value}:low_conf({fact.confidence})")
-                    logger.debug(f"[FACT_RESOLVER] Source {source.value} confidence {fact.confidence} "
-                                f"below threshold {self.strategy.min_confidence} - continuing")
                 else:
-                    # Success!
                     sources_tried.append(f"{source.value}:SUCCESS")
                     self._cache[cache_key] = fact
                     self.resolution_log.append(fact)
@@ -575,10 +648,7 @@ class FactResolver:
                     return fact
             except Exception as e:
                 sources_tried.append(f"{source.value}:ERROR({type(e).__name__})")
-                logger.error(f"[FACT_RESOLVER] Error in source {source.value}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                # Continue to next source after error
+                logger.error(f"[FACT_RESOLVER] Error in expensive source {source.value}: {e}")
 
         # Could not resolve
         sources_summary = " → ".join(sources_tried)
@@ -593,6 +663,67 @@ class FactResolver:
         )
         self.resolution_log.append(unresolved)
         return unresolved
+
+    def _resolve_io_parallel(
+        self,
+        fact_name: str,
+        params: dict,
+        cache_key: str,
+        io_sources: list[FactSource],
+        sources_tried: list[str],
+    ) -> Optional[Fact]:
+        """
+        Run I/O-bound sources in parallel and pick the best result.
+
+        Uses ThreadPoolExecutor for true parallelism in synchronous code.
+        Selection: prioritizes by source order, uses confidence as tiebreaker.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import logging
+        logger = logging.getLogger(__name__)
+
+        def try_source(source: FactSource) -> tuple[FactSource, Optional[Fact]]:
+            try:
+                fact = self._try_resolve(source, fact_name, params, cache_key)
+                return (source, fact)
+            except Exception as e:
+                logger.debug(f"[_resolve_io_parallel] {source.value} raised: {e}")
+                return (source, None)
+
+        # Run all I/O sources in parallel
+        valid_results: list[tuple[int, float, Fact, FactSource]] = []
+
+        with ThreadPoolExecutor(max_workers=len(io_sources)) as executor:
+            futures = {executor.submit(try_source, s): s for s in io_sources}
+
+            for future in as_completed(futures):
+                source, fact = future.result()
+                if fact is None:
+                    sources_tried.append(f"{source.value}:no_result")
+                elif not fact.is_resolved:
+                    sources_tried.append(f"{source.value}:unresolved")
+                elif fact.confidence < self.strategy.min_confidence:
+                    sources_tried.append(f"{source.value}:low_conf({fact.confidence})")
+                else:
+                    # Valid result - store with priority index
+                    priority_idx = io_sources.index(source)
+                    valid_results.append((priority_idx, fact.confidence, fact, source))
+                    sources_tried.append(f"{source.value}:conf={fact.confidence:.2f}")
+                    logger.debug(f"[_resolve_io_parallel] {source.value}: conf={fact.confidence:.2f}")
+
+        if not valid_results:
+            return None
+
+        # Pick best: sort by (priority_index, -confidence)
+        valid_results.sort(key=lambda x: (x[0], -x[1]))
+        best_priority, best_conf, best_fact, best_source = valid_results[0]
+
+        sources_tried.append(f"{best_source.value}:SELECTED")
+        logger.info(f"[_resolve_io_parallel] Selected {best_source.value} with confidence {best_conf:.2f}")
+
+        self._cache[cache_key] = best_fact
+        self.resolution_log.append(best_fact)
+        return best_fact
 
     def _cache_key(self, fact_name: str, params: dict) -> str:
         """Generate cache key from fact name and params."""
@@ -1602,31 +1733,84 @@ Original request:
         return None
 
     def _resolve_from_document(self, fact_name: str, params: dict) -> Optional[Fact]:
-        """Search reference documents for fact information."""
+        """Search reference documents for fact information.
+
+        Uses a two-stage approach:
+        1. Semantic search to find potentially relevant document chunks
+        2. If chunks have low relevance, load full document sections for better context
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self.llm:
+            logger.debug(f"[_resolve_from_document] No LLM configured")
             return None
 
         # Check if we have document tools configured
-        # This requires doc_tools to be set on the resolver
         doc_tools = getattr(self, '_doc_tools', None)
         if not doc_tools:
+            logger.debug(f"[_resolve_from_document] No doc_tools configured")
             return None
 
         cache_key = self._cache_key(fact_name, params)
 
         try:
-            # Search documents for information about this fact
-            search_query = f"{fact_name} {' '.join(str(v) for v in params.values())}"
-            search_results = doc_tools.search(search_query, top_k=3)
+            # Build a more descriptive search query
+            param_str = ' '.join(str(v) for v in params.values() if v)
+            # Clean up fact_name for better semantic matching
+            fact_readable = fact_name.replace('_', ' ')
+            search_query = f"{fact_readable} {param_str}".strip()
+
+            logger.debug(f"[_resolve_from_document] Searching for: {search_query}")
+            search_results = doc_tools.search_documents(search_query, limit=5)
 
             if not search_results:
+                logger.debug(f"[_resolve_from_document] No search results")
                 return None
 
-            # Build context from search results
-            context = "\n\n".join([
-                f"From {r.get('source', 'document')}:\n{r.get('content', '')}"
-                for r in search_results
-            ])
+            # Check relevance scores - search_documents returns: document, excerpt, relevance, section
+            best_relevance = max(r.get('relevance', 0) for r in search_results)
+            logger.debug(f"[_resolve_from_document] Best relevance: {best_relevance}")
+
+            # Filter to results with reasonable relevance (> 0.3)
+            relevant_results = [r for r in search_results if r.get('relevance', 0) > 0.3]
+
+            context = ""
+            if relevant_results:
+                # Use chunk excerpts
+                context = "\n\n".join([
+                    f"From {r.get('document', 'document')} (section: {r.get('section', 'unknown')}, relevance: {r.get('relevance', 0):.2f}):\n{r.get('excerpt', '')}"
+                    for r in relevant_results
+                ])
+            else:
+                # Low relevance - try loading full document sections
+                logger.debug(f"[_resolve_from_document] Low relevance, trying full sections")
+                seen_sections = set()
+                section_contents = []
+
+                for r in search_results[:3]:
+                    doc_name = r.get('document')
+                    section = r.get('section')
+                    if doc_name and section and (doc_name, section) not in seen_sections:
+                        seen_sections.add((doc_name, section))
+                        section_result = doc_tools.get_document_section(doc_name, section)
+                        if 'content' in section_result:
+                            section_contents.append(
+                                f"From {doc_name} - {section}:\n{section_result['content']}"
+                            )
+
+                if section_contents:
+                    context = "\n\n".join(section_contents)
+                else:
+                    # Fall back to whatever we found
+                    context = "\n\n".join([
+                        f"From {r.get('document', 'document')}:\n{r.get('excerpt', '')}"
+                        for r in search_results[:3]
+                    ])
+
+            if not context.strip():
+                logger.debug(f"[_resolve_from_document] No context built")
+                return None
 
             # Ask LLM to extract the fact from document context
             prompt = f"""Extract the value for this fact from the document content:
@@ -1653,7 +1837,10 @@ NOT_FOUND
                 max_tokens=300,
             )
 
+            logger.debug(f"[_resolve_from_document] LLM response: {response[:200]}...")
+
             if "NOT_FOUND" in response:
+                logger.debug(f"[_resolve_from_document] LLM returned NOT_FOUND")
                 return None
 
             # Parse response
@@ -1680,6 +1867,7 @@ NOT_FOUND
                     reasoning = line.split(":", 1)[1].strip()
 
             if value is not None:
+                logger.debug(f"[_resolve_from_document] Resolved {fact_name} = {value} from {source_name}")
                 return Fact(
                     name=cache_key,
                     value=value,
@@ -1688,8 +1876,8 @@ NOT_FOUND
                     source_name=source_name,
                     reasoning=reasoning,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[_resolve_from_document] Error resolving {fact_name}: {e}")
 
         return None
 
@@ -3384,11 +3572,22 @@ class AsyncFactResolver(FactResolver):
         params: dict,
         cache_key: str,
     ) -> Optional[Fact]:
-        """Try I/O-bound sources sequentially (default behavior)."""
-        io_sources = [
+        """Try I/O-bound sources sequentially (default behavior).
+
+        Tries cheap sources first (DATABASE, DOCUMENT, SUB_PLAN), then
+        falls back to expensive sources (LLM_KNOWLEDGE) only if needed.
+        """
+        # Cheap I/O sources first
+        cheap_sources = [
             s for s in self.strategy.source_priority
-            if s in (FactSource.DATABASE, FactSource.LLM_KNOWLEDGE, FactSource.SUB_PLAN)
+            if s in (FactSource.DATABASE, FactSource.DOCUMENT, FactSource.SUB_PLAN)
         ]
+        # Expensive fallback
+        expensive_sources = [
+            s for s in self.strategy.source_priority
+            if s == FactSource.LLM_KNOWLEDGE
+        ]
+        io_sources = cheap_sources + expensive_sources
 
         for source in io_sources:
             fact = await self._try_resolve_async(source, fact_name, params, cache_key)
@@ -3407,14 +3606,27 @@ class AsyncFactResolver(FactResolver):
         cache_key: str,
     ) -> Optional[Fact]:
         """
-        Try I/O-bound sources in parallel, taking first successful result.
+        Try I/O-bound sources in parallel, picking the best result.
 
         This can provide speedup when multiple sources might work,
         as we don't wait for each to fail before trying the next.
+
+        NOTE: Only runs CHEAP I/O sources in parallel (DATABASE, DOCUMENT, SUB_PLAN).
+        LLM_KNOWLEDGE is excluded - it's expensive (API cost + latency) and should
+        only be used as a fallback if cheap sources fail.
+
+        Selection strategy:
+        1. Collect all successful results from parallel execution
+        2. Filter by min_confidence threshold
+        3. Pick best based on: (priority_index, -confidence) for stable ordering
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Only parallelize cheap I/O sources - exclude LLM_KNOWLEDGE (expensive)
         io_sources = [
             s for s in self.strategy.source_priority
-            if s in (FactSource.DATABASE, FactSource.LLM_KNOWLEDGE, FactSource.SUB_PLAN)
+            if s in (FactSource.DATABASE, FactSource.DOCUMENT, FactSource.SUB_PLAN)
         ]
 
         if not io_sources:
@@ -3429,17 +3641,34 @@ class AsyncFactResolver(FactResolver):
         # Use asyncio.gather with return_exceptions to get all results
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Find first successful result in priority order
-        for source, result in zip(io_sources, results):
+        # Collect all valid results with their source priority
+        valid_results: list[tuple[int, float, Fact]] = []
+        for i, (source, result) in enumerate(zip(io_sources, results)):
             if isinstance(result, Exception):
+                logger.debug(f"[_resolve_parallel] {source.value} raised: {result}")
                 continue
             if result and result.is_resolved:
                 if result.confidence >= self.strategy.min_confidence:
-                    self._cache[cache_key] = result
-                    self.resolution_log.append(result)
-                    return result
+                    # Store (priority_index, confidence, fact)
+                    valid_results.append((i, result.confidence, result))
+                    logger.debug(f"[_resolve_parallel] {source.value}: conf={result.confidence:.2f}")
 
-        return None
+        if not valid_results:
+            return None
+
+        # Pick best result:
+        # - Sort by priority index (lower = better), then by confidence (higher = better)
+        # - This means DATABASE (priority 0) beats DOCUMENT (priority 1) at same confidence
+        # - But if DOCUMENT has significantly higher confidence, it could win
+        #   when confidence_weight_factor is set (future enhancement)
+        valid_results.sort(key=lambda x: (x[0], -x[1]))
+        best = valid_results[0]
+
+        logger.debug(f"[_resolve_parallel] Picked {best[2].source.value} with confidence {best[1]:.2f}")
+
+        self._cache[cache_key] = best[2]
+        self.resolution_log.append(best[2])
+        return best[2]
 
     async def _try_resolve_async(
         self,
@@ -3451,11 +3680,25 @@ class AsyncFactResolver(FactResolver):
         """Async version of _try_resolve for I/O-bound sources."""
         if source == FactSource.DATABASE:
             return await self._resolve_from_database_async(fact_name, params)
+        elif source == FactSource.DOCUMENT:
+            return await self._resolve_from_document_async(fact_name, params)
         elif source == FactSource.LLM_KNOWLEDGE:
             return await self._resolve_from_llm_async(fact_name, params)
         elif source == FactSource.SUB_PLAN:
             return await self._resolve_from_sub_plan_async(fact_name, params)
         return None
+
+    async def _resolve_from_document_async(
+        self,
+        fact_name: str,
+        params: dict,
+    ) -> Optional[Fact]:
+        """Async document resolution - runs sync method in executor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            lambda: self._resolve_from_document(fact_name, params)
+        )
 
     async def _resolve_from_rule_async(
         self,

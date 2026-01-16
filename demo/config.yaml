@@ -107,6 +107,12 @@ execution:
     - datetime
     - statistics
     - polars
+    # Standard library
+    - re
+    - math
+    - collections
+    - itertools
+    - functools
     # Visualization libraries
     - plotly
     - altair

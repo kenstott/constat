@@ -959,8 +959,21 @@ class FeedbackDisplay:
                 self.console.print(f"  [red]Error:[/red] {brief[:80]}")
                 self.console.print(Panel(error, title="Full Error", border_style="red"))
 
-    def step_failed(self, step_number: int, error: str, attempts: int) -> None:
-        """Mark a step as permanently failed."""
+    def step_failed(
+        self,
+        step_number: int,
+        error: str,
+        attempts: int,
+        suggestions: Optional[list] = None
+    ) -> None:
+        """Mark a step as permanently failed and show suggestions.
+
+        Args:
+            step_number: The step that failed
+            error: Error message
+            attempts: Number of attempts made
+            suggestions: List of FailureSuggestion objects for alternative approaches
+        """
         step = self._get_step(step_number)
         if step:
             step.status = "failed"
@@ -973,6 +986,35 @@ class FeedbackDisplay:
             self.console.print(" " * 60, end="\r")
             self.console.print(f"  [bold red]FAILED[/bold red] after {attempts} attempts")
             self.console.print(Panel(error, title="Error", border_style="red"))
+
+        # Show suggestions if available
+        if suggestions:
+            self._show_failure_suggestions(suggestions)
+
+    def _show_failure_suggestions(self, suggestions: list) -> None:
+        """Display failure recovery suggestions to the user.
+
+        Args:
+            suggestions: List of FailureSuggestion objects
+        """
+        from rich.table import Table
+
+        self.console.print()
+        self.console.print("[bold yellow]Alternative approaches:[/bold yellow]")
+
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Option", style="cyan", width=3)
+        table.add_column("Label", style="bold")
+        table.add_column("Description", style="dim")
+
+        for i, suggestion in enumerate(suggestions, 1):
+            label = getattr(suggestion, 'label', str(suggestion))
+            description = getattr(suggestion, 'description', '')
+            table.add_row(f"{i}.", label, description)
+
+        self.console.print(table)
+        self.console.print()
+        self.console.print("[dim]Enter a number to try that approach, or type your own suggestion[/dim]")
 
     def show_summary(self, success: bool, total_steps: int, duration_ms: int) -> None:
         """Show final execution summary."""
@@ -1158,6 +1200,15 @@ class SessionFeedbackHandler:
                 step_number,
                 data.get("error", "Unknown error"),
                 data.get("attempt", 1),
+            )
+
+        elif event_type == "step_failed":
+            # Permanent failure after all retries - show suggestions
+            self.display.step_failed(
+                step_number,
+                data.get("error", "Unknown error"),
+                data.get("attempts", 1),
+                data.get("suggestions"),
             )
 
         elif event_type == "proof_start":

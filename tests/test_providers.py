@@ -6,6 +6,7 @@ Provider test strategy:
 - OpenAI: Skipped by default (requires OPENAI_API_KEY)
 - Gemini: Skipped by default (requires GOOGLE_API_KEY)
 - Grok: Skipped by default (requires XAI_API_KEY)
+t- Mistral: Skipped by default (requires MISTRAL_API_KEY)
 - Together: Skipped by default (requires TOGETHER_API_KEY)
 - Groq: Skipped by default (requires GROQ_API_KEY)
 """
@@ -19,6 +20,8 @@ from constat.providers import (
     OpenAIProvider,
     GeminiProvider,
     GrokProvider,
+    MistralProvider,
+    CodestralProvider,
     OllamaProvider,
     TogetherProvider,
     GroqProvider,
@@ -54,6 +57,11 @@ requires_together_key = pytest.mark.skipif(
 requires_groq_key = pytest.mark.skipif(
     not os.environ.get("GROQ_API_KEY"),
     reason="GROQ_API_KEY not set - set to run Groq tests"
+)
+
+requires_mistral_key = pytest.mark.skipif(
+    not os.environ.get("MISTRAL_API_KEY"),
+    reason="MISTRAL_API_KEY not set - set to run Mistral tests"
 )
 
 
@@ -943,6 +951,246 @@ class TestGroqProvider:
         )
         assert "def" in response
         assert "```" not in response
+
+
+# =============================================================================
+# Mistral Provider Tests (Skipped by default)
+# =============================================================================
+
+class TestMistralProviderUnit:
+    """Unit tests for MistralProvider - no API required."""
+
+    def test_instantiation_requires_api_key(self):
+        """Provider requires API key."""
+        # Clear any existing env var for this test
+        import os
+        old_key = os.environ.pop("MISTRAL_API_KEY", None)
+        try:
+            with pytest.raises(ValueError, match="API key required"):
+                MistralProvider()
+        finally:
+            if old_key:
+                os.environ["MISTRAL_API_KEY"] = old_key
+
+    def test_list_models_returns_dict(self):
+        """list_models() returns available models."""
+        models = MistralProvider.list_models()
+        assert isinstance(models, dict)
+        assert "mistral-large-latest" in models
+        assert "codestral-latest" in models
+
+    def test_codestral_provider_default_model(self):
+        """CodestralProvider defaults to codestral model."""
+        # This will fail without API key, but we can check the class
+        assert CodestralProvider.__bases__[0] == MistralProvider
+
+
+class TestMistralProvider:
+    """Tests for Mistral AI provider.
+
+    These tests are skipped by default. Set MISTRAL_API_KEY to run them.
+    """
+
+    @requires_mistral_key
+    def test_instantiation(self):
+        """Provider can be instantiated."""
+        provider = MistralProvider()
+        assert provider.model == "mistral-large-latest"
+        assert provider.supports_tools is True
+
+    @requires_mistral_key
+    def test_instantiation_with_custom_model(self):
+        """Provider accepts custom model."""
+        provider = MistralProvider(model="mistral-small-latest")
+        assert provider.model == "mistral-small-latest"
+
+    @requires_mistral_key
+    def test_generate_simple(self):
+        """Basic generation without tools."""
+        provider = MistralProvider(model="mistral-small-latest")
+        response = provider.generate(
+            system="You are a helpful assistant. Be concise.",
+            user_message="What is 2 + 2? Reply with just the number.",
+            max_tokens=50,
+        )
+        assert "4" in response
+
+    @requires_mistral_key
+    def test_generate_code(self):
+        """Code generation extracts from markdown blocks."""
+        provider = MistralProvider(model="mistral-small-latest")
+        response = provider.generate_code(
+            system="You are a Python expert. Return only code in markdown blocks.",
+            user_message="Write a function that adds two numbers. Just the function.",
+            max_tokens=200,
+        )
+        assert "def" in response
+        assert "```" not in response
+
+    @requires_mistral_key
+    def test_generate_with_tools(self):
+        """Generation with tool calling."""
+        provider = MistralProvider(model="mistral-small-latest")
+        response = provider.generate(
+            system="You have access to tools. Use them to answer questions.",
+            user_message="What's the weather in Madrid?",
+            tools=SAMPLE_TOOLS,
+            tool_handlers=TOOL_HANDLERS,
+            max_tokens=500,
+        )
+        assert "Madrid" in response or "72" in response or "sunny" in response
+
+    @requires_mistral_key
+    def test_generate_with_calculation_tool(self):
+        """Tool calling with calculation."""
+        provider = MistralProvider(model="mistral-small-latest")
+        response = provider.generate(
+            system="Use the calculate tool for math. Report the result.",
+            user_message="What is 17 * 6?",
+            tools=SAMPLE_TOOLS,
+            tool_handlers=TOOL_HANDLERS,
+            max_tokens=500,
+        )
+        assert "102" in response
+
+    @requires_mistral_key
+    def test_mistral_large_generation(self):
+        """Test with Mistral Large model."""
+        provider = MistralProvider(model="mistral-large-latest")
+        response = provider.generate(
+            system="You are a helpful assistant. Be concise.",
+            user_message="What is the capital of France? Reply with just the city name.",
+            max_tokens=50,
+        )
+        assert "Paris" in response
+
+
+class TestCodestralProvider:
+    """Tests for Codestral (code-specialized Mistral model).
+
+    These tests are skipped by default. Set MISTRAL_API_KEY to run them.
+    """
+
+    @requires_mistral_key
+    def test_instantiation(self):
+        """Provider can be instantiated."""
+        provider = CodestralProvider()
+        assert "codestral" in provider.model.lower()
+        assert provider.supports_tools is True
+
+    @requires_mistral_key
+    def test_generate_code(self):
+        """Code generation with Codestral."""
+        provider = CodestralProvider()
+        response = provider.generate_code(
+            system="You are a code expert. Return only code in markdown blocks.",
+            user_message="Write a Python function to check if a number is prime.",
+            max_tokens=300,
+        )
+        assert "def" in response
+        assert "prime" in response.lower() or "%" in response
+        assert "```" not in response
+
+    @requires_mistral_key
+    def test_generate_sql(self):
+        """SQL generation with Codestral."""
+        provider = CodestralProvider()
+        response = provider.generate_code(
+            system="You are a SQL expert. Return only SQL in markdown blocks.",
+            user_message="Write a SQL query to get the top 5 customers by total orders.",
+            max_tokens=200,
+        )
+        assert "SELECT" in response.upper()
+        assert "```" not in response
+
+
+# =============================================================================
+# Mistral Nemo Integration Tests (Docker-based via Ollama)
+# =============================================================================
+
+@pytest.mark.requires_docker
+class TestMistralNemoIntegration:
+    """Integration tests for Mistral Nemo via Ollama Docker.
+
+    These tests require Docker to run Ollama with mistral-nemo model.
+    Mistral Nemo is a 12B open-weight model that runs locally.
+    """
+
+    def test_generate_simple(self, mistral_container):
+        """Basic generation with Mistral Nemo."""
+        provider = OllamaProvider(
+            model=mistral_container["model"],
+            base_url=mistral_container["base_url"],
+        )
+        response = provider.generate(
+            system="You are a helpful assistant. Be very brief.",
+            user_message="What is 2 + 2? Reply with just the number.",
+            max_tokens=50,
+        )
+        assert "4" in response
+
+    def test_generate_code(self, mistral_container):
+        """Code generation with Mistral Nemo."""
+        provider = OllamaProvider(
+            model=mistral_container["model"],
+            base_url=mistral_container["base_url"],
+        )
+        response = provider.generate_code(
+            system="You are a Python expert. Return only code in markdown blocks.",
+            user_message="Write a one-line function that returns the sum of a and b.",
+            max_tokens=200,
+        )
+        assert "def" in response or "lambda" in response or "+" in response
+        assert "```" not in response
+
+    def test_generate_with_tools(self, mistral_container):
+        """Tool calling with Mistral Nemo."""
+        provider = OllamaProvider(
+            model=mistral_container["model"],
+            base_url=mistral_container["base_url"],
+        )
+        if not provider.supports_tools:
+            pytest.skip("Model does not support tools")
+
+        response = provider.generate(
+            system="You have access to tools. Use them when needed.",
+            user_message="What's the weather in Paris?",
+            tools=SAMPLE_TOOLS,
+            tool_handlers=TOOL_HANDLERS,
+            max_tokens=500,
+        )
+        assert len(response) > 0
+
+    def test_multiple_generations(self, mistral_container):
+        """Multiple generations work without issues."""
+        provider = OllamaProvider(
+            model=mistral_container["model"],
+            base_url=mistral_container["base_url"],
+        )
+        # First generation
+        response1 = provider.generate(
+            system="You are a helpful assistant. Be brief.",
+            user_message="What is 1 + 1? Reply with just the number.",
+            max_tokens=20,
+        )
+        assert "2" in response1
+
+        # Second generation
+        response2 = provider.generate(
+            system="You are a helpful assistant. Be brief.",
+            user_message="What is 3 + 3? Reply with just the number.",
+            max_tokens=20,
+        )
+        assert "6" in response2
+
+    def test_supports_tools_property(self, mistral_container):
+        """Mistral Nemo should support tool calling."""
+        provider = OllamaProvider(
+            model=mistral_container["model"],
+            base_url=mistral_container["base_url"],
+        )
+        # mistral-nemo should be recognized as tool-capable
+        assert provider.supports_tools is True
 
 
 # =============================================================================

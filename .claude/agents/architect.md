@@ -215,6 +215,29 @@ Always consider:
 
 ## Anti-Patterns to Flag
 
+### Fallbacks That Mask Failures (CRITICAL)
+Adding fallback behavior is an **architectural decision**, not a defensive coding default. Fallbacks hide failures, making systems harder to debug and giving false confidence.
+
+**Before adding any fallback, ask:**
+- What failure mode does this hide?
+- Who needs to know when this fails?
+- Is "silent degradation" actually the right choice here?
+- What happens when the fallback itself is wrong?
+
+**Fallbacks are appropriate when:**
+- Explicitly designed for graceful degradation (e.g., cache miss falls back to source)
+- The fallback is documented and monitored
+- Failure is expected and recoverable (e.g., optional enrichment)
+- Users/operators can see that fallback occurred
+
+**Fallbacks are NOT appropriate when:**
+- Used to avoid error handling ("just return empty list")
+- Hiding infrastructure failures from callers
+- Making code "safer" without understanding failure modes
+- Default response to "what if this fails?"
+
+**Rule: If you're adding a fallback, confirm it's an intentional design choice with explicit user approval—not a reflexive defensive pattern.**
+
 ### Accidental Complexity
 - Configuration that could be convention
 - Abstractions that don't abstract

@@ -5,11 +5,21 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from typing import Literal, Optional, Union
+from typing import Callable, Literal, Optional, Union
 import pandas as pd
 import io
 
 from constat.core.config import EmailConfig
+
+
+class SensitiveDataError(Exception):
+    """Raised when attempting to email sensitive data without explicit consent."""
+    pass
+
+
+# Type for checking if current context is sensitive
+# Returns True if sensitive data is involved
+SensitivityChecker = Callable[[], bool]
 
 
 # Basic email-safe CSS for rendered Markdown
@@ -132,7 +142,10 @@ class EmailSender:
             return False
 
 
-def create_send_email(config: Optional[EmailConfig]):
+def create_send_email(
+    config: Optional[EmailConfig],
+    is_sensitive: Optional[SensitivityChecker] = None,
+):
     """
     Create a send_email function for injection into execution globals.
 
@@ -140,6 +153,9 @@ def create_send_email(config: Optional[EmailConfig]):
 
     Args:
         config: EmailConfig or None
+        is_sensitive: Optional function that returns True if the current execution
+            context involves sensitive data. Used to block emailing confidential
+            data without explicit authorization.
 
     Returns:
         A send_email function for use in generated code
@@ -153,8 +169,16 @@ def create_send_email(config: Optional[EmailConfig]):
             html: bool = False,
             df: Optional[pd.DataFrame] = None,
             attachment_name: str = "data.csv",
+            allow_sensitive: bool = False,
         ) -> bool:
             """Email not configured. Add email config to your constat.yaml."""
+            # Still check sensitivity even if email not configured
+            if is_sensitive is not None and not allow_sensitive:
+                if is_sensitive():
+                    raise SensitiveDataError(
+                        "BLOCKED: This analysis involves sensitive/confidential data.\n\n"
+                        "Sensitive data should not be emailed without explicit authorization."
+                    )
             print("ERROR: Email not configured. Add email section to your config file.")
             print("Example:")
             print("  email:")
@@ -177,6 +201,7 @@ def create_send_email(config: Optional[EmailConfig]):
         html: bool = False,  # Deprecated, use format="html" instead
         df: Optional[pd.DataFrame] = None,
         attachment_name: str = "data.csv",
+        allow_sensitive: bool = False,
     ) -> bool:
         """
         Send an email with optional DataFrame attachment.
@@ -192,9 +217,15 @@ def create_send_email(config: Optional[EmailConfig]):
             html: DEPRECATED - use format="html" instead
             df: Optional DataFrame to attach as CSV
             attachment_name: Filename for the DataFrame attachment
+            allow_sensitive: If True, bypasses sensitivity check.
+                WARNING: Only set this to True if you have verified the recipient
+                is authorized to receive this data.
 
         Returns:
             True if sent successfully, False otherwise
+
+        Raises:
+            SensitiveDataError: If sensitive data is detected and allow_sensitive=False
 
         Example:
             # Plain text email
@@ -222,6 +253,18 @@ def create_send_email(config: Optional[EmailConfig]):
                 format="markdown",
             )
         """
+        # Check if current context involves sensitive data
+        if is_sensitive is not None and not allow_sensitive:
+            if is_sensitive():
+                raise SensitiveDataError(
+                    "BLOCKED: This analysis involves sensitive/confidential data.\n\n"
+                    "Sensitive data should not be emailed without explicit authorization.\n"
+                    "If you need to send this data:\n"
+                    "1. Verify the recipient is authorized to receive it\n"
+                    "2. Consider whether email is the appropriate channel\n"
+                    "3. Use allow_sensitive=True only after manual review"
+                )
+
         recipients = [addr.strip() for addr in to.split(",")]
         attachments = None
 

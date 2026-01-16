@@ -67,6 +67,8 @@ class TaskRouter:
         "openai": "constat.providers.openai.OpenAIProvider",
         "gemini": "constat.providers.gemini.GeminiProvider",
         "grok": "constat.providers.grok.GrokProvider",
+        "mistral": "constat.providers.mistral.MistralProvider",
+        "codestral": "constat.providers.mistral.CodestralProvider",
         "ollama": "constat.providers.llama.OllamaProvider",
         "llama": "constat.providers.llama.LlamaProvider",
         "together": "constat.providers.llama.TogetherProvider",

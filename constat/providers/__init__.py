@@ -5,7 +5,9 @@ Available providers:
 - OpenAIProvider: GPT models (GPT-4, GPT-4o, etc.)
 - GeminiProvider: Google Gemini models
 - GrokProvider: xAI Grok models
-- OllamaProvider: Local Llama models via Ollama
+- MistralProvider: Mistral AI models (Mistral Large, Small, Nemo)
+- CodestralProvider: Mistral's code-specialized model
+- OllamaProvider: Local Llama/Mistral models via Ollama
 - TogetherProvider: Hosted Llama models via Together AI
 - GroqProvider: Fast Llama inference via Groq
 - LlamaProvider: Alias for OllamaProvider (default local option)
@@ -19,6 +21,7 @@ from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .gemini import GeminiProvider
 from .grok import GrokProvider
+from .mistral import MistralProvider, CodestralProvider
 from .llama import LlamaProvider, OllamaProvider, TogetherProvider, GroqProvider
 from .router import TaskRouter
 
@@ -34,6 +37,8 @@ __all__ = [
     "OpenAIProvider",
     "GeminiProvider",
     "GrokProvider",
+    "MistralProvider",
+    "CodestralProvider",
     "LlamaProvider",
     "OllamaProvider",
     "TogetherProvider",
