@@ -1570,7 +1570,7 @@ Examples:
                 cached_fact_answer=None,
             )
 
-    def _detect_ambiguity(self, problem: str) -> Optional[ClarificationRequest]:
+    def _detect_ambiguity(self, problem: str, is_auditable_mode: bool = False) -> Optional[ClarificationRequest]:
         """
         Detect if a question is ambiguous and needs clarification before planning.
 
@@ -1579,6 +1579,10 @@ Examples:
         - Time period ("what were sales" - when?)
         - Threshold values ("top customers" - top how many?)
         - Category/segment ("product performance" - which products?)
+
+        Args:
+            problem: The user's question
+            is_auditable_mode: If True, defer personal value questions to lazy resolution
 
         Returns:
             ClarificationRequest if clarification needed, None otherwise
@@ -1603,8 +1607,7 @@ ONLY ask about SCOPE and APPROACH - things that affect how to structure the anal
 4. Category/segment filters (which products, customer types, etc.)
 5. Comparison basis (compared to what baseline?)
 
-NEVER ask for personal VALUES like age, salary, preferences - these will be requested later during fact resolution.
-The user explicitly referenced "my age" means they intend to provide it - don't pre-ask.
+{"NEVER ask for personal VALUES like age, salary, preferences - these will be requested later during fact resolution. The user explicitly referenced 'my age' means they intend to provide it - don't pre-ask." if is_auditable_mode else "For personal values mentioned (like 'my age'), you MAY ask since exploratory mode needs all values upfront."}
 
 If the question is CLEAR ENOUGH to proceed (even with reasonable defaults), respond:
 CLEAR
@@ -2434,7 +2437,11 @@ Please create a revised plan that addresses this feedback."""
                 step_number=0,
                 data={"message": "Checking if clarification needed..."}
             ))
-            clarification_request = self._detect_ambiguity(problem)
+            # Pre-detect mode to adjust clarification behavior
+            # Auditable mode defers personal value questions to lazy resolution
+            early_mode = suggest_mode(problem)
+            is_auditable = early_mode.mode == ExecutionMode.AUDITABLE
+            clarification_request = self._detect_ambiguity(problem, is_auditable_mode=is_auditable)
             if clarification_request:
                 enhanced_problem = self._request_clarification(clarification_request)
                 if enhanced_problem:
