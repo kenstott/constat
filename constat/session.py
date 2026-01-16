@@ -1596,12 +1596,15 @@ IMPORTANT: If an API can provide the data needed for the question, the question 
 For example, if the question asks about countries and a countries API is available, that's sufficient.
 If a user fact provides needed information (like user_email for sending results), USE IT - do not ask again.
 
-Check for missing:
+ONLY ask about SCOPE and APPROACH - things that affect how to structure the analysis:
 1. Geographic scope (country, region, state, etc.) - unless an API provides this
 2. Time period (date range, year, quarter, etc.)
 3. Quantity limits (top N, threshold values)
 4. Category/segment filters (which products, customer types, etc.)
 5. Comparison basis (compared to what baseline?)
+
+NEVER ask for personal VALUES like age, salary, preferences - these will be requested later during fact resolution.
+The user explicitly referenced "my age" means they intend to provide it - don't pre-ask.
 
 If the question is CLEAR ENOUGH to proceed (even with reasonable defaults), respond:
 CLEAR
