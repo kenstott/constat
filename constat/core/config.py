@@ -365,8 +365,30 @@ class LLMConfig(BaseModel):
         )
 
 
+class VectorStoreConfig(BaseModel):
+    """Configuration for the vector store backend.
+
+    The vector store handles document embedding storage and similarity search.
+
+    Uses DuckDB VSS extension with array_cosine_similarity() for efficient
+    vector search. Data persists across restarts.
+
+    Example YAML:
+        storage:
+          vector_store:
+            backend: duckdb
+            db_path: ~/.constat/vectors.duckdb
+    """
+    # Backend type: "duckdb" or "numpy"
+    backend: str = "duckdb"
+
+    # Path to DuckDB database file (only for duckdb backend)
+    # Default: ~/.constat/vectors.duckdb
+    db_path: Optional[str] = None
+
+
 class StorageConfig(BaseModel):
-    """Storage configuration for artifact store."""
+    """Storage configuration for artifact store and vector store."""
     # SQLAlchemy URI for the artifact store
     # Default: Uses DuckDB file per session
     # Options:
@@ -374,6 +396,9 @@ class StorageConfig(BaseModel):
     #   - postgresql://user:pass@host:port/db (production, multi-user)
     #   - sqlite:///path/to/file.db (embedded alternative)
     artifact_store_uri: Optional[str] = None
+
+    # Vector store configuration for document embeddings
+    vector_store: Optional[VectorStoreConfig] = None
 
 
 class DocumentConfig(BaseModel):

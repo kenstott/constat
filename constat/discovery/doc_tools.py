@@ -5,7 +5,6 @@ on-demand rather than loading everything into the system prompt.
 """
 
 import glob as glob_module
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 import hashlib
@@ -14,6 +13,15 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from constat.core.config import Config, DocumentConfig
+from constat.discovery.models import (
+    DocumentChunk,
+    LoadedDocument,
+    StructuredFileSchema,
+)
+from constat.discovery.vector_store import (
+    VectorStoreBackend,
+    create_vector_store,
+)
 
 
 def _is_glob_pattern(path: str) -> bool:
@@ -53,39 +61,6 @@ def _expand_file_paths(path: str) -> list[tuple[str, Path]]:
     # Path doesn't exist yet - return as-is for later error handling
     return [(p.name, p)]
 
-
-@dataclass
-class StructuredFileSchema:
-    """Inferred schema for a structured data file."""
-    filename: str
-    filepath: str
-    file_format: str  # csv, json, jsonl, parquet
-    row_count: Optional[int] = None
-    columns: list[dict] = field(default_factory=list)  # [{name, type, sample_values}]
-    description: Optional[str] = None
-
-    def to_metadata_doc(self) -> str:
-        """Generate a metadata document for indexing."""
-        lines = [
-            f"Structured Data File: {self.filename}",
-            f"Path: {self.filepath}",
-            f"Format: {self.file_format}",
-        ]
-        if self.description:
-            lines.append(f"Description: {self.description}")
-        if self.row_count is not None:
-            lines.append(f"Row count: {self.row_count}")
-
-        if self.columns:
-            lines.append("\nColumns:")
-            for col in self.columns:
-                col_line = f"  - {col['name']} ({col.get('type', 'unknown')})"
-                if col.get('sample_values'):
-                    samples = col['sample_values'][:5]  # Limit samples
-                    col_line += f": {samples}"
-                lines.append(col_line)
-
-        return "\n".join(lines)
 
 
 def _infer_csv_schema(filepath: Path, sample_rows: int = 100) -> StructuredFileSchema:
@@ -352,28 +327,6 @@ def _infer_jsonl_schema(filepath: Path, sample_lines: int = 100) -> StructuredFi
     )
 
 
-@dataclass
-class DocumentChunk:
-    """A chunk of a document for embedding and search."""
-    document_name: str
-    content: str
-    section: Optional[str] = None
-    chunk_index: int = 0
-
-
-@dataclass
-class LoadedDocument:
-    """A loaded document with content and metadata."""
-    name: str
-    config: DocumentConfig
-    content: str
-    format: str
-    sections: list[str] = field(default_factory=list)
-    loaded_at: Optional[str] = None
-    file_mtime: Optional[float] = None  # File modification time for change detection
-    content_hash: Optional[str] = None  # Hash of content for change detection
-
-
 class DocumentDiscoveryTools:
     """Tools for discovering and searching reference documents on-demand.
 
@@ -387,12 +340,16 @@ class DocumentDiscoveryTools:
     CHUNK_SIZE = 800
     CACHE_FILENAME = "doc_index_cache.json"
 
-    def __init__(self, config: Config, cache_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        config: Config,
+        cache_dir: Optional[Path] = None,
+        vector_store: Optional[VectorStoreBackend] = None,
+    ):
         self.config = config
         self._loaded_documents: dict[str, LoadedDocument] = {}
-        self._chunks: list[DocumentChunk] = []
-        self._embeddings: Optional[np.ndarray] = None
         self._model: Optional[SentenceTransformer] = None
+        self._index_built = False
 
         # Cache directory for persisting document metadata
         if cache_dir:
@@ -401,6 +358,22 @@ class DocumentDiscoveryTools:
             local_cache = Path(".constat")
             self._cache_dir = local_cache if local_cache.exists() else Path.home() / ".constat"
         self._cache_file = self._cache_dir / self.CACHE_FILENAME
+
+        # Initialize vector store
+        if vector_store:
+            self._vector_store = vector_store
+        else:
+            self._vector_store = self._create_vector_store()
+
+    def _create_vector_store(self) -> VectorStoreBackend:
+        """Create vector store based on config."""
+        storage_config = self.config.storage
+        vs_config = storage_config.vector_store if storage_config else None
+
+        backend = vs_config.backend if vs_config else "duckdb"
+        db_path = vs_config.db_path if vs_config else None
+
+        return create_vector_store(backend=backend, db_path=db_path)
 
     def refresh(self, force_full: bool = False) -> dict:
         """Refresh documents, using incremental update by default.
@@ -413,8 +386,8 @@ class DocumentDiscoveryTools:
         """
         if force_full:
             self._loaded_documents.clear()
-            self._chunks = []
-            self._embeddings = None
+            self._vector_store.clear()
+            self._index_built = False
             return {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "mode": "full_rebuild"}
 
         return self._refresh_incremental()
@@ -476,7 +449,7 @@ class DocumentDiscoveryTools:
 
         # Rebuild index if anything changed
         if docs_to_reload or docs_to_remove:
-            self._embeddings = None  # Force index rebuild
+            self._index_built = False  # Force index rebuild
 
         return stats
 
@@ -686,27 +659,21 @@ class DocumentDiscoveryTools:
         # Ensure all documents are loaded and indexed
         self._ensure_indexed()
 
-        if self._model is None or self._embeddings is None or len(self._chunks) == 0:
+        if self._model is None or self._vector_store.count() == 0:
             return []
 
         # Embed the query
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-        # Compute cosine similarity
-        similarities = np.dot(self._embeddings, query_embedding.T).flatten()
-
-        # Get top-k indices
-        top_indices = np.argsort(similarities)[::-1][:limit]
+        # Search using vector store
+        search_results = self._vector_store.search(query_embedding, limit=limit)
 
         results = []
-        for idx in top_indices:
-            chunk = self._chunks[idx]
-            relevance = float(similarities[idx])
-
+        for chunk_id, similarity, chunk in search_results:
             results.append({
                 "document": chunk.document_name,
                 "excerpt": chunk.content[:500] + ("..." if len(chunk.content) > 500 else ""),
-                "relevance": round(relevance, 3),
+                "relevance": round(similarity, 3),
                 "section": chunk.section,
             })
 
@@ -929,7 +896,7 @@ class DocumentDiscoveryTools:
 
         # Invalidate index (unless it's a structured data file)
         if not self._is_structured_data_format(doc_format):
-            self._embeddings = None
+            self._index_built = False
 
     def _load_file_directly(self, name: str, filepath: Path, doc_config: DocumentConfig) -> None:
         """Load a file directly from a path (for expanded glob/directory entries)."""
@@ -964,7 +931,7 @@ class DocumentDiscoveryTools:
                 loaded_at=datetime.now().isoformat(),
             )
             # Structured files DO get indexed (via their metadata)
-            self._embeddings = None
+            self._index_built = False
             return
 
         # Handle other file types
@@ -1011,7 +978,7 @@ class DocumentDiscoveryTools:
         )
 
         # Invalidate index
-        self._embeddings = None
+        self._index_built = False
 
     def _is_structured_data_format(self, doc_format: str) -> bool:
         """Check if format is structured data that shouldn't be semantically indexed."""
@@ -1314,7 +1281,7 @@ class DocumentDiscoveryTools:
                     pass
 
         # Build index if needed
-        if self._embeddings is None:
+        if not self._index_built:
             self._build_index()
 
     def _build_index(self) -> None:
@@ -1323,14 +1290,17 @@ class DocumentDiscoveryTools:
         Note: Structured data files (CSV, JSON) are indexed via their
         schema metadata, not raw data rows.
         """
-        self._chunks = []
+        # Clear existing index
+        self._vector_store.clear()
 
+        chunks = []
         for name, doc in self._loaded_documents.items():
             # Chunk the document (structured files have metadata content)
-            chunks = self._chunk_document(name, doc.content)
-            self._chunks.extend(chunks)
+            doc_chunks = self._chunk_document(name, doc.content)
+            chunks.extend(doc_chunks)
 
-        if not self._chunks:
+        if not chunks:
+            self._index_built = True
             return
 
         # Load embedding model
@@ -1338,8 +1308,12 @@ class DocumentDiscoveryTools:
             self._model = SentenceTransformer(self.EMBEDDING_MODEL)
 
         # Generate embeddings
-        texts = [chunk.content for chunk in self._chunks]
-        self._embeddings = self._model.encode(texts, convert_to_numpy=True)
+        texts = [chunk.content for chunk in chunks]
+        embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+        # Add to vector store
+        self._vector_store.add_chunks(chunks, embeddings)
+        self._index_built = True
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.

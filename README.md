@@ -303,9 +303,10 @@ Document discovery supports:
 - **Structured files**: CSV, JSON, JSONL, Parquet with automatic schema inference
 - **Section extraction**: Retrieve specific sections from large documents
 
-Documents are indexed into an in-memory vector index (lazy, on first access). During fact
-resolution and knowledge synthesis, relevant document excerpts are automatically retrieved
-via semantic search - no explicit discovery step required.
+Documents are indexed into a persistent vector store using DuckDB VSS (lazy, on first access).
+The index persists at `~/.constat/vectors.duckdb` by default, eliminating re-indexing on restart.
+During fact resolution and knowledge synthesis, relevant document excerpts are automatically
+retrieved via semantic search - no explicit discovery step required.
 
 **Full prompt mode** (legacy models):
 - Comprehensive system prompt with all metadata
@@ -836,6 +837,11 @@ storage:
 
   # DuckDB (analytical workloads, requires duckdb-engine)
   # artifact_store_uri: duckdb:///~/.constat/artifacts.duckdb
+
+  # Vector store for document embeddings (default: DuckDB VSS)
+  vector_store:
+    backend: duckdb  # "duckdb" (persistent) or "numpy" (in-memory)
+    db_path: ~/.constat/vectors.duckdb
 ```
 
 ### Environment Variable Substitution
