@@ -203,7 +203,7 @@ store.save_dataframe('customers', df, step_number=1, description='Customer data'
 # Load a DataFrame from a previous step
 customers = store.load_dataframe('customers')
 
-# Query saved data with SQL
+# Query saved data with SQL (DuckDB syntax)
 result = store.query('SELECT * FROM customers WHERE revenue > 1000')
 
 # List available tables
@@ -212,16 +212,46 @@ tables = store.list_tables()
 
 For simple values (numbers, strings, lists, dicts):
 ```python
-# Save a state variable for later steps
+# Save a state variable (NOTE: set_state does NOT have a 'description' parameter)
 store.set_state('total_revenue', total, step_number=1)
 store.set_state('top_genres', ['Rock', 'Latin', 'Metal'], step_number=1)
 
-# Load a state variable from a previous step
+# Load a state variable - ALWAYS check for None!
 total = store.get_state('total_revenue')
+if total is None:
+    # Handle missing value - query fresh or use default
+    total = 0
+
 genres = store.get_state('top_genres')
 
 # Get all state variables
 all_state = store.get_all_state()
+```
+
+## Common Pitfalls
+**Check columns before accessing:**
+```python
+df = store.load_dataframe('customers')
+# BAD: df['tier'].nunique()  # May fail if 'tier' doesn't exist
+# GOOD:
+if 'tier' in df.columns:
+    result = df['tier'].nunique()
+else:
+    # Try alternative column names or handle gracefully
+    tier_cols = [c for c in df.columns if 'tier' in c.lower()]
+    if tier_cols:
+        result = df[tier_cols[0]].nunique()
+```
+
+**DuckDB date filtering (for store.query):**
+```python
+# BAD: strftime('%Y', date_col)  # May fail with type errors
+# GOOD: Use CAST and date comparisons
+result = store.query('''
+    SELECT * FROM orders
+    WHERE CAST(order_date AS DATE) >= '2024-01-01'
+    AND CAST(order_date AS DATE) < '2025-01-01'
+''')
 ```
 
 ## File Output & Visualizations (via viz)
@@ -323,6 +353,31 @@ fig.add_trace(go.Pie(...), row=1, col=2)
 fig.update_layout(height=600, showlegend=True)
 viz.save_chart('dashboard', fig, title='Dashboard Title')
 ```
+
+## Variable vs Hardcoded Values (for replay determinism)
+Plans can be saved and replayed. Use dynamic expressions for relative terms, hardcode explicit values.
+
+**Relative/variable terms → compute dynamically:**
+```python
+# "today", "this month", "last 30 days" → use datetime
+from datetime import datetime, timedelta
+today = datetime.now().date()
+last_30_days = datetime.now() - timedelta(days=30)
+
+# "within policy", "above threshold" → look up dynamically
+policy_threshold = store.get_state('inventory_policy_min') or lookup_policy()
+```
+
+**Explicit values → hardcode:**
+```python
+# "January 1st, 2006" → hardcode the date
+start_date = '2006-01-01'
+
+# "above 100 units" → hardcode the number
+threshold = 100
+```
+
+This ensures replayed plans behave correctly: "today's orders" shows fresh data, "2006 orders" always shows 2006.
 
 ## Code Rules
 1. Use pandas `pd.read_sql(query, db_<name>)` to query source databases
@@ -4713,7 +4768,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 Inference: {inf_id}: {inf_name} = {operation}
 Explanation: {explanation}
 
-SCALAR VALUES (use these directly in calculations):
+SCALAR VALUES (substitute these literal values in your code):
 {scalars_context}
 
 TABLES in datastore (query with store.query()):
@@ -4724,17 +4779,25 @@ The datastore is available as 'store' with methods:
 - store.list_tables() -> list of table dicts with 'name' key
 - store.save_dataframe(name, df)  # Save a DataFrame to the store
 
+CRITICAL: Identifiers like I1, I2, P1, P2 in the operation ARE NOT Python variables!
+You MUST substitute the actual numeric values from SCALAR VALUES above.
+
+Example - if operation is "divide(I1, I2)" and scalars show "I1: 12" and "I2: 4":
+```python
+# WRONG - will fail with "name 'I1' is not defined":
+ratio = I1 / I2
+
+# CORRECT - use the actual numbers:
+ratio = 12 / 4  # I1=12, I2=4
+_result = ratio
+```
+
 Generate code that:
-1. Uses scalar values directly (they are already resolved numbers)
+1. SUBSTITUTES the actual scalar values (do NOT use I1, I2, P1, P2 as variables)
 2. For tables, loads data using store.query()
 3. Performs the operation (divide, compare, join, filter, aggregate, etc.)
 4. MUST set _result = <computed_value> with the actual numeric/boolean result
 5. Optionally print a summary for debugging
-
-For scalar operations like divide(P1, P2), use the actual values directly:
-Example:
-ratio = 12 / 15  # Using P1=12, P2=15
-_result = ratio  # REQUIRED: set _result to the computed value
 
 IMPORTANT:
 - ALWAYS set _result = <the_computed_value> at the end

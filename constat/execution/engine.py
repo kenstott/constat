@@ -158,6 +158,14 @@ df = pd.read_json(file_events)
 df = pd.read_parquet(file_transactions)
 ```
 
+## Variable vs Hardcoded Values
+Use dynamic expressions for relative terms, hardcode explicit user-provided values.
+
+- "today", "last month", "this quarter" → `datetime.now()`, relative calculations
+- "January 2006", "Q3 2024" → hardcode `'2006-01-01'`
+- "within policy", "above threshold" → look up policy dynamically
+- "above 100 units" → hardcode `100`
+
 ## Code Generation Rules
 1. Use discovery tools to find relevant data sources and their types
 2. Check the database_type to determine how to load the data

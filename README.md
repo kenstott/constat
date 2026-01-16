@@ -365,6 +365,12 @@ Once in the interactive REPL, these commands are available:
 | `/reset` | Clear session state |
 | `/quit` | Exit |
 
+**Saved Plans & Replay:**
+- `/save` stores the executed code (not just the plan) for deterministic replay
+- `/replay` executes the stored code without regenerating it via LLM
+- Relative terms ("today", "last month", "within policy") are evaluated dynamically on each replay
+- Explicit values ("January 2006", "above 100 units") are hardcoded as specified
+
 **Brief mode:** Use keywords like "briefly", "tl;dr", "just show" in your query to skip the synthesis step and get raw results faster.
 
 ### Interactive Visualizations
