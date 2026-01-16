@@ -1851,6 +1851,9 @@ Original request:
         reasoning: Optional[str] = None,
         source: FactSource = FactSource.USER_PROVIDED,
         description: Optional[str] = None,
+        query: Optional[str] = None,
+        source_name: Optional[str] = None,
+        api_endpoint: Optional[str] = None,
         **params,
     ) -> Fact:
         """
@@ -1867,6 +1870,9 @@ Original request:
             reasoning: Optional explanation
             source: Where the fact came from (defaults to USER_PROVIDED)
             description: Human-friendly description of what this fact represents
+            query: SQL query used to derive the fact (for DATABASE source)
+            source_name: Name of the specific source (database name, API name, etc.)
+            api_endpoint: API endpoint if from API source
             **params: Parameters for the fact
 
         Returns:
@@ -1881,6 +1887,9 @@ Original request:
             source=source,
             description=description,
             reasoning=reasoning,
+            query=query,
+            source_name=source_name,
+            api_endpoint=api_endpoint,
         )
 
         self._cache[cache_key] = fact

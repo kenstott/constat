@@ -2268,12 +2268,12 @@ If no concrete facts to extract, respond with: NO_FACTS"""
                     except ValueError:
                         value = value_str
 
-                    # Add to fact resolver - source is DATABASE since derived from query results
+                    # Add to fact resolver - source is DERIVED since synthesized from analysis
                     fact = self.fact_resolver.add_user_fact(
                         fact_name=fact_name,
                         value=value,
-                        reasoning=f"Derived from analysis of: {problem}",
-                        source=FactSource.DATABASE,
+                        reasoning=f"Extracted from exploratory analysis. Run in auditable mode for full provenance.",
+                        source=FactSource.DERIVED,
                         description=description,
                     )
                     extracted_facts.append(fact)
@@ -3864,12 +3864,25 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                             desc = fact_desc
                         except NameError:
                             desc = None
+                        # Get database name for source attribution
+                        try:
+                            db_source_name = db_name
+                        except NameError:
+                            db_source_name = None
+                        # Preserve the fact's original source type
+                        fact_source = fact.source
+                        if source.startswith("database") and fact_source == FactSource.DATABASE:
+                            fact_source = FactSource.DATABASE
+                        elif source.startswith("knowledge") or source.startswith("llm"):
+                            fact_source = FactSource.LLM_KNOWLEDGE
                         self.fact_resolver.add_user_fact(
                             fact_name=fact_name,  # Just the fact name, no P1: prefix
                             value=fact.value,
-                            reasoning=query_info if query_info else source_detail,  # Show SQL query
+                            query=query_info,  # SQL query for manual reproduction
+                            source_name=db_source_name,  # Database name
+                            reasoning=fact.reasoning,  # Preserve original reasoning
                             description=desc,
-                            source=FactSource.DATABASE if source.startswith("database") else FactSource.DERIVED,
+                            source=fact_source,
                         )
                     elif fact and fact.reasoning:
                         # Fact was created but has no value - include the reason
