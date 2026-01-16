@@ -1340,40 +1340,53 @@ class DocumentDiscoveryTools:
         self._embeddings = self._model.encode(texts, convert_to_numpy=True)
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
-        """Split a document into chunks for embedding."""
+        """Split a document into chunks for embedding.
+
+        Chunks are split only on paragraph boundaries (double newlines).
+        Each paragraph becomes its own chunk to preserve semantic units.
+        Very short paragraphs (< 50 chars) are merged with the next paragraph.
+        """
         chunks = []
         current_section = None
 
-        # Split by paragraphs first
+        # Split by paragraphs (double newlines)
         paragraphs = content.split("\n\n")
-        current_chunk = ""
         chunk_index = 0
+        pending_chunk = ""
 
         for para in paragraphs:
-            # Track sections
+            para = para.strip()
+            if not para:
+                continue
+
+            # Track sections from markdown headers
             if para.startswith("#"):
                 current_section = para.lstrip("#").strip()
 
-            # Add to current chunk or start new one
-            if len(current_chunk) + len(para) < self.CHUNK_SIZE:
-                current_chunk += para + "\n\n"
-            else:
-                # Save current chunk
-                if current_chunk.strip():
-                    chunks.append(DocumentChunk(
-                        document_name=name,
-                        content=current_chunk.strip(),
-                        section=current_section,
-                        chunk_index=chunk_index,
-                    ))
-                    chunk_index += 1
-                current_chunk = para + "\n\n"
+            # Merge very short paragraphs with pending content
+            if pending_chunk:
+                para = pending_chunk + "\n\n" + para
+                pending_chunk = ""
 
-        # Save final chunk
-        if current_chunk.strip():
+            # If paragraph is very short, hold it for merging
+            if len(para) < 50 and not para.startswith("#"):
+                pending_chunk = para
+                continue
+
+            # Create chunk for this paragraph
             chunks.append(DocumentChunk(
                 document_name=name,
-                content=current_chunk.strip(),
+                content=para,
+                section=current_section,
+                chunk_index=chunk_index,
+            ))
+            chunk_index += 1
+
+        # Save any remaining pending content
+        if pending_chunk:
+            chunks.append(DocumentChunk(
+                document_name=name,
+                content=pending_chunk,
                 section=current_section,
                 chunk_index=chunk_index,
             ))
