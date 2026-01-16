@@ -245,6 +245,38 @@ class Fact:
             result["row_count"] = self.row_count
         return result
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Fact":
+        """Deserialize a Fact from dictionary (for redo/restore)."""
+        # Handle source conversion
+        source = data.get("source", "database")
+        if isinstance(source, str):
+            source = FactSource(source)
+
+        # Handle resolved_at conversion
+        resolved_at = data.get("resolved_at")
+        if isinstance(resolved_at, str):
+            resolved_at = datetime.fromisoformat(resolved_at)
+        elif resolved_at is None:
+            resolved_at = datetime.now()
+
+        return cls(
+            name=data["name"],
+            value=data["value"],
+            confidence=data.get("confidence", 1.0),
+            source=source,
+            because=[],  # Dependencies not restored (would need full cache)
+            description=data.get("description"),
+            source_name=data.get("source_name"),
+            query=data.get("query"),
+            api_endpoint=data.get("api_endpoint"),
+            rule_name=data.get("rule_name"),
+            reasoning=data.get("reasoning"),
+            resolved_at=resolved_at,
+            table_name=data.get("table_name"),
+            row_count=data.get("row_count"),
+        )
+
 
 @dataclass
 class FactDependency:
@@ -2029,6 +2061,24 @@ REASONING: User is focused on US region analysis
     def clear_unresolved(self) -> None:
         """Remove unresolved facts from log, allowing re-resolution."""
         self.resolution_log = [f for f in self.resolution_log if f.source != FactSource.UNRESOLVED]
+
+    def export_cache(self) -> list[dict]:
+        """Export all cached facts for persistence (for redo operations)."""
+        return [fact.to_dict() for fact in self._cache.values()]
+
+    def import_cache(self, facts: list[dict]) -> None:
+        """Import facts into cache (for redo operations).
+
+        This restores previously resolved facts so they don't need to be re-resolved.
+        """
+        for fact_dict in facts:
+            try:
+                fact = Fact.from_dict(fact_dict)
+                self._cache[fact.name] = fact
+            except (KeyError, ValueError) as e:
+                # Skip invalid facts
+                import logging
+                logging.debug(f"Skipping invalid fact during import: {e}")
 
     def get_audit_log(self) -> list[dict]:
         """Get all resolutions for audit purposes."""

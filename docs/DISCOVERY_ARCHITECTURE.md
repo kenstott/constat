@@ -852,6 +852,58 @@ Document loading for `inline`, `file`, and `http` types is implemented in `doc_t
 
 ---
 
+## Execution Modes
+
+The system supports three execution modes, automatically selected based on query analysis:
+
+### AUDITABLE Mode
+For verification questions requiring formal proof derivation:
+- Generates a fact-based derivation with explicit premises
+- Each premise is resolved from a specific source (database, LLM knowledge, user input)
+- Produces a formal proof with citations and confidence scores
+- Code generation with retry logic (up to 3 attempts with error feedback)
+
+**Trigger patterns:** "prove", "verify", "derivation", "true that", "is it true"
+
+### EXPLORATORY Mode
+For open-ended data analysis and discovery:
+- Step-by-step execution with code generation
+- Creates intermediate tables for multi-step analysis
+- Supports follow-up questions with session context
+- Comparison to previous results available
+
+**Trigger patterns:** "analyze", "explore", "show me", "what is", general questions
+
+### KNOWLEDGE Mode
+For questions answerable from general knowledge without data access:
+- Direct response using LLM knowledge
+- No database or API calls required
+- Lower latency responses
+
+**Trigger patterns:** "explain", "how does", "what is a", conceptual questions
+
+### Mode Preservation for Redo Requests
+
+When users request to "redo" an analysis, the system preserves the previous mode:
+- Detects redo patterns: "redo", "re-do", "re-run", "rerun", "again", "repeat", "retry"
+- If previous session was AUDITABLE, redo stays in AUDITABLE mode
+- Extracts any new values from the redo request (e.g., "redo, but change my age to 50")
+- Updates facts before re-running the analysis
+
+To explicitly change modes on redo, specify the mode:
+- "redo in exploratory mode" - switches to EXPLORATORY for comparison
+- "redo and compare to previous" - implies EXPLORATORY
+
+### Mode-Aware Clarification
+
+Personal values (e.g., age, preferences) are handled differently by mode:
+- **AUDITABLE mode:** Defers personal values to lazy resolution during premise evaluation
+- **EXPLORATORY mode:** Asks for personal values upfront in clarifications (no lazy resolution)
+
+This ensures AUDITABLE proofs never assume personal values - they must be explicitly provided by the user.
+
+---
+
 ## Token Savings Estimate
 
 | Scenario | Current | Proposed | Savings |

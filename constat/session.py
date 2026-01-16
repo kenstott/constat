@@ -3046,17 +3046,63 @@ NEW_REQUEST: <the new request, or NONE>
         if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
             return self._solve_knowledge(question, mode_selection)
 
+        # Check for "redo" patterns first - these should preserve previous mode
+        redo_patterns = ["redo", "re-do", "re-run", "rerun", "again", "repeat", "retry"]
+        question_lower = question.lower()
+        is_redo = any(pattern in question_lower for pattern in redo_patterns)
+
+        # If this is a redo request, check if previous session was auditable
+        if is_redo and self.datastore:
+            previous_mode = self.datastore.get_session_meta("mode")
+            if previous_mode == "auditable":
+                # Force auditable mode for redo
+                mode_selection = ModeSelection(
+                    mode=ExecutionMode.AUDITABLE,
+                    reasoning="Re-running previous auditable analysis with modifications",
+                    confidence=0.9,
+                    matched_keywords=["redo"],
+                )
+
         # AUDITABLE mode: check if this is a "redo" request or a verification question
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
-            # Check for "redo" patterns - re-run original problem in auditable mode
-            redo_patterns = ["redo", "re-do", "re-run", "rerun", "again", "repeat", "retry"]
-            question_lower = question.lower()
-            is_redo = any(pattern in question_lower for pattern in redo_patterns)
 
             if is_redo and self.datastore:
                 # Get original problem and re-run in auditable mode
                 original_problem = self.datastore.get_session_meta("problem")
                 if original_problem:
+                    # Load previously resolved facts from datastore
+                    import json
+                    saved_facts_json = self.datastore.get_session_meta("resolved_facts")
+                    if saved_facts_json:
+                        try:
+                            saved_facts = json.loads(saved_facts_json)
+                            self.fact_resolver.import_cache(saved_facts)
+                            self._emit_event(StepEvent(
+                                event_type="facts_restored",
+                                step_number=0,
+                                data={
+                                    "count": len(saved_facts),
+                                    "fact_names": [f.get("name") for f in saved_facts],
+                                }
+                            ))
+                        except json.JSONDecodeError:
+                            pass  # Skip invalid JSON
+
+                    # Extract any new values from the redo request (e.g., "change my age to 50")
+                    # These will override previously cached facts
+                    extracted_facts = self.fact_resolver.add_user_facts_from_text(question)
+                    if extracted_facts:
+                        for fact in extracted_facts:
+                            self._emit_event(StepEvent(
+                                event_type="fact_update",
+                                step_number=0,
+                                data={
+                                    "fact_name": fact.name,
+                                    "value": fact.value,
+                                    "source": "user_update",
+                                }
+                            ))
+
                     self._emit_event(StepEvent(
                         event_type="mode_switch",
                         step_number=0,
@@ -3379,6 +3425,10 @@ User feedback: {approval.suggestion}
         """
         import time
         start_time = time.time()
+
+        # Save mode to datastore for follow-up handling
+        if self.datastore:
+            self.datastore.set_session_meta("mode", "auditable")
 
         # Emit mode selection event
         self._emit_event(StepEvent(
@@ -4580,6 +4630,12 @@ Verification request: {question}
                 duration_ms=duration_ms,
                 answer=final_output,
             )
+
+            # Save resolved facts for redo operations
+            if self.datastore:
+                import json
+                cached_facts = self.fact_resolver.export_cache()
+                self.datastore.set_session_meta("resolved_facts", json.dumps(cached_facts))
 
             return {
                 "success": True,
