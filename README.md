@@ -290,8 +290,18 @@ Constat automatically detects whether the LLM model supports tool calling:
 
 **Tool-based discovery** (modern models):
 - Minimal system prompt (~500 tokens)
-- LLM uses tools to discover relevant tables, APIs, documents
+- LLM uses tools to discover relevant schema, APIs, and documents on-demand
 - On-demand loading reduces token usage by 80-95%
+
+Discovery tools include:
+- **Schema**: `list_tables`, `get_table_schema`, `search_tables`, `get_sample_values`
+- **APIs**: `list_api_operations`, `get_operation_details`, `search_operations`
+- **Documents**: `list_documents`, `search_documents`, `get_document`, `get_document_section`
+
+Document discovery supports:
+- **Unstructured docs**: Markdown, text files with semantic search (sentence-transformers)
+- **Structured files**: CSV, JSON, JSONL, Parquet with automatic schema inference
+- **Section extraction**: Retrieve specific sections from large documents
 
 **Full prompt mode** (legacy models):
 - Comprehensive system prompt with all metadata
