@@ -518,95 +518,82 @@ def ollama_base_url(ollama_container) -> str:
 
 
 # =============================================================================
-# Mistral Fixtures (via Ollama with Mistral Nemo)
+# Mistral Fixtures (via Ollama - prefers local, falls back to Docker)
 # =============================================================================
 
 @pytest.fixture(scope="session")
 def mistral_container(docker_available) -> Generator[dict, None, None]:
-    """Start Mistral Nemo via Ollama container for the test session.
+    """Provide Mistral Nemo via Ollama for the test session.
 
     Yields connection info dict with keys: host, port, base_url, model
 
-    Uses the shared Ollama container with mistral-nemo model:
-    - Container name: constat_ollama_shared
-    - Port: 11434
-    - Model: mistral-nemo (12B open-weight model)
+    Strategy:
+    1. Check if Ollama is running locally (preferred - no Docker overhead)
+    2. If not, start Ollama via Docker as fallback
+
+    Model: mistral-nemo (12B open-weight model)
 
     Note: First run will download the model (~7GB) which can take a few minutes.
     """
-    if not docker_available:
-        pytest.skip("Docker not available")
-
-    # Use fixed name/port for shared Ollama instance
-    container_name = "constat_ollama_shared"
     port = 11434
-    test_model = "mistral-nemo"
+    test_model = os.environ.get("MISTRAL_TEST_MODEL", "mistral")  # Default to 7B
+    container_name = "constat_ollama_shared"
+    started_docker = False
 
-    # Check if Ollama is already running
+    # Strategy 1: Check for local Ollama (preferred)
     if is_ollama_running(port):
+        print("Using local Ollama instance")
+    else:
+        # Strategy 2: Fall back to Docker
+        if not docker_available:
+            pytest.skip("Ollama not running locally and Docker not available")
+
+        print("Local Ollama not found, starting via Docker...")
+
+        # Remove any stopped container with same name
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+            timeout=30,
+        )
+
+        # Start Ollama container
+        cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "-p", f"{port}:11434",
+            "-v", "ollama_test_data:/root/.ollama",
+            "ollama/ollama"
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                pytest.skip(f"Failed to start Ollama container: {result.stderr}")
+            started_docker = True
+        except subprocess.TimeoutExpired:
+            pytest.skip("Ollama container start timed out")
+        except FileNotFoundError as e:
+            pytest.skip(f"Error starting Ollama container: {e}")
+
+        # Wait for Ollama to be ready
+        if not wait_for_ollama(port, timeout=60):
+            stop_container(container_name)
+            pytest.skip("Ollama container failed to start")
+
+    # Now Ollama is running (either local or Docker)
+    models = get_ollama_models(port)
+
+    # Check if mistral-nemo is available, pull if needed
+    if test_model not in models and not any(m.startswith(test_model) for m in models):
+        print(f"Pulling {test_model} model... (this may take a few minutes)")
+        if not pull_ollama_model(test_model, port, timeout=600):
+            if started_docker:
+                stop_container(container_name)
+            pytest.skip(f"Failed to pull Ollama model: {test_model}")
         models = get_ollama_models(port)
 
-        # Check if mistral-nemo is available, pull if needed
-        if test_model not in models and not any(m.startswith(test_model) for m in models):
-            print(f"Pulling {test_model} model... (this may take a few minutes)")
-            if not pull_ollama_model(test_model, port, timeout=600):
-                pytest.skip(f"Failed to pull Ollama model: {test_model}")
-            models = get_ollama_models(port)
-
-        # Find actual model name (might have tag)
-        actual_model = test_model
-        for m in models:
-            if m.startswith(test_model):
-                actual_model = m
-                break
-
-        yield {
-            "host": "localhost",
-            "port": port,
-            "base_url": f"http://localhost:{port}/v1",
-            "model": actual_model,
-            "models": models,
-            "container_name": container_name,
-        }
-        return
-
-    # Ollama not running - start it
-    subprocess.run(
-        ["docker", "rm", "-f", container_name],
-        capture_output=True,
-        timeout=30,
-    )
-
-    # Start Ollama container
-    cmd = [
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-p", f"{port}:11434",
-        "-v", "ollama_test_data:/root/.ollama",
-        "ollama/ollama"
-    ]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            pytest.skip(f"Failed to start Ollama container: {result.stderr}")
-    except subprocess.TimeoutExpired:
-        pytest.skip("Ollama container start timed out")
-    except FileNotFoundError as e:
-        pytest.skip(f"Error starting Ollama container: {e}")
-
-    # Wait for Ollama to be ready
-    if not wait_for_ollama(port, timeout=60):
-        stop_container(container_name)
-        pytest.skip("Ollama container failed to start")
-
-    # Pull mistral-nemo model
-    print(f"Pulling {test_model} model... (this may take a few minutes)")
-    if not pull_ollama_model(test_model, port, timeout=600):
-        stop_container(container_name)
-        pytest.skip(f"Failed to pull Ollama model: {test_model}")
-
-    models = get_ollama_models(port)
+    # Find actual model name (might have tag)
     actual_model = test_model
     for m in models:
         if m.startswith(test_model):
@@ -619,10 +606,12 @@ def mistral_container(docker_available) -> Generator[dict, None, None]:
         "base_url": f"http://localhost:{port}/v1",
         "model": actual_model,
         "models": models,
-        "container_name": container_name,
+        "container_name": container_name if started_docker else None,
+        "is_docker": started_docker,
     }
 
-    # NOTE: Do NOT stop container - leave running for future tests
+    # Only stop container if we started it via Docker
+    # Leave local Ollama running
 
 
 @pytest.fixture

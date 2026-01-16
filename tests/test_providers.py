@@ -1105,15 +1105,17 @@ class TestCodestralProvider:
 
 
 # =============================================================================
-# Mistral Nemo Integration Tests (Docker-based via Ollama)
+# Mistral Nemo Integration Tests (via Ollama - local or Docker)
 # =============================================================================
 
-@pytest.mark.requires_docker
 class TestMistralNemoIntegration:
-    """Integration tests for Mistral Nemo via Ollama Docker.
+    """Integration tests for Mistral Nemo via Ollama.
 
-    These tests require Docker to run Ollama with mistral-nemo model.
-    Mistral Nemo is a 12B open-weight model that runs locally.
+    These tests use the mistral_container fixture which:
+    1. Prefers local Ollama if running
+    2. Falls back to Docker if local not available
+
+    Mistral Nemo is a 12B open-weight model.
     """
 
     def test_generate_simple(self, mistral_container):
