@@ -3808,18 +3808,10 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
                     fact = None
 
                     # First, check if this fact is already cached (from previous queries)
-                    cached_fact = self.fact_resolver._cache.get(fact_name)
+                    # get_fact() handles table verification automatically
+                    cached_fact = self.fact_resolver.get_fact(fact_name)
                     if cached_fact and cached_fact.value is not None:
-                        # For table facts (has table_name), verify table exists in datastore
-                        if cached_fact.table_name and self.datastore:
-                            # Check if the table exists in datastore
-                            existing_tables = [t["name"] for t in self.datastore.list_tables()]
-                            if cached_fact.table_name in existing_tables:
-                                fact = cached_fact
-                            # else: table doesn't exist, need to re-resolve
-                        else:
-                            # Non-table fact, use cached value directly
-                            fact = cached_fact
+                        fact = cached_fact
                     # If we extracted an embedded value, use it directly
                     elif embedded_value is not None:
                         from constat.execution.fact_resolver import Fact, FactSource

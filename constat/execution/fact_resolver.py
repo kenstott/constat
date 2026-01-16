@@ -597,17 +597,28 @@ class FactResolver:
         param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
         return f"{fact_name}({param_str})"
 
-    def get_fact(self, name: str) -> Optional[Fact]:
+    def get_fact(self, name: str, verify_tables: bool = True) -> Optional[Fact]:
         """
-        Get a specific fact by name.
+        Get a specific fact by name, optionally verifying table existence.
 
         Args:
             name: The fact name to retrieve
+            verify_tables: If True, verify table facts have their tables in datastore
 
         Returns:
-            The Fact object if found, None otherwise
+            The Fact object if found and valid, None otherwise
         """
-        return self._cache.get(name)
+        cached = self._cache.get(name)
+        if cached and verify_tables:
+            # For table facts, verify the table still exists in datastore
+            if cached.table_name and self._datastore:
+                try:
+                    existing_tables = [t["name"] for t in self._datastore.list_tables()]
+                    if cached.table_name not in existing_tables:
+                        return None  # Table doesn't exist, fact is invalid
+                except Exception:
+                    pass  # If we can't check, assume it's valid
+        return cached
 
     def get_all_facts(self) -> dict[str, Fact]:
         """
@@ -1202,6 +1213,15 @@ Respond with ONLY the JSON object, no explanation."""
         if source == FactSource.CACHE:
             cached = self._cache.get(cache_key)
             if cached:
+                # For table facts, verify the table still exists in datastore
+                if cached.table_name and self._datastore:
+                    try:
+                        existing_tables = [t["name"] for t in self._datastore.list_tables()]
+                        if cached.table_name not in existing_tables:
+                            logger.debug(f"[_try_resolve] CACHE table {cached.table_name} no longer exists")
+                            return None  # Table doesn't exist, need to re-resolve
+                    except Exception:
+                        pass  # If we can't check, assume it's valid
                 logger.debug(f"[_try_resolve] CACHE hit for {cache_key}")
             return cached
 
