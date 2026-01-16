@@ -382,7 +382,9 @@ class DocumentDiscoveryTools:
     """
 
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    CHUNK_SIZE = 500  # Characters per chunk for embedding
+    # all-MiniLM-L6-v2 has max_seq_length=256 tokens (~1024 chars)
+    # Use 800 chars to stay within limit while maximizing context
+    CHUNK_SIZE = 800
     CACHE_FILENAME = "doc_index_cache.json"
 
     def __init__(self, config: Config, cache_dir: Optional[Path] = None):
@@ -1342,17 +1344,24 @@ class DocumentDiscoveryTools:
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.
 
-        Chunks are split only on paragraph boundaries (double newlines).
-        Each paragraph becomes its own chunk to preserve semantic units.
-        Very short paragraphs (< 50 chars) are merged with the next paragraph.
+        Chunks are split only on paragraph/line boundaries - never mid-paragraph.
+        Paragraphs are combined until hitting CHUNK_SIZE, then a new chunk starts.
+        A chunk may exceed CHUNK_SIZE if a single paragraph is larger (we don't split it).
         """
         chunks = []
         current_section = None
 
-        # Split by paragraphs (double newlines)
-        paragraphs = content.split("\n\n")
+        # Determine paragraph separator based on content
+        # Use double newline if present, otherwise single newline
+        if "\n\n" in content:
+            paragraphs = content.split("\n\n")
+            separator = "\n\n"
+        else:
+            paragraphs = content.split("\n")
+            separator = "\n"
+
         chunk_index = 0
-        pending_chunk = ""
+        current_chunk = ""
 
         for para in paragraphs:
             para = para.strip()
@@ -1363,30 +1372,31 @@ class DocumentDiscoveryTools:
             if para.startswith("#"):
                 current_section = para.lstrip("#").strip()
 
-            # Merge very short paragraphs with pending content
-            if pending_chunk:
-                para = pending_chunk + "\n\n" + para
-                pending_chunk = ""
+            # Check if adding this paragraph would exceed chunk size
+            potential_chunk = (current_chunk + separator + para).strip() if current_chunk else para
 
-            # If paragraph is very short, hold it for merging
-            if len(para) < 50 and not para.startswith("#"):
-                pending_chunk = para
-                continue
+            if len(potential_chunk) <= self.CHUNK_SIZE:
+                # Fits in current chunk - add it
+                current_chunk = potential_chunk
+            else:
+                # Would exceed chunk size
+                if current_chunk:
+                    # Save current chunk first
+                    chunks.append(DocumentChunk(
+                        document_name=name,
+                        content=current_chunk,
+                        section=current_section,
+                        chunk_index=chunk_index,
+                    ))
+                    chunk_index += 1
+                # Start new chunk with this paragraph (even if it exceeds CHUNK_SIZE)
+                current_chunk = para
 
-            # Create chunk for this paragraph
+        # Save final chunk
+        if current_chunk:
             chunks.append(DocumentChunk(
                 document_name=name,
-                content=para,
-                section=current_section,
-                chunk_index=chunk_index,
-            ))
-            chunk_index += 1
-
-        # Save any remaining pending content
-        if pending_chunk:
-            chunks.append(DocumentChunk(
-                document_name=name,
-                content=pending_chunk,
+                content=current_chunk,
                 section=current_section,
                 chunk_index=chunk_index,
             ))
