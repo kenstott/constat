@@ -1398,7 +1398,7 @@ Do not include any explanation or extra text."""
         # and then compute/transform/act on the results
         return QuestionType.DATA_ANALYSIS
 
-    def _analyze_question(self, problem: str) -> QuestionAnalysis:
+    def _analyze_question(self, problem: str, previous_problem: str = None) -> QuestionAnalysis:
         """
         Analyze a question in a single LLM call: extract facts, classify type, check cached facts.
 
@@ -1406,6 +1406,10 @@ Do not include any explanation or extra text."""
         1. Extract embedded facts (e.g., "my role as CFO" -> user_role: CFO)
         2. Classify question type (meta-question vs data analysis)
         3. Check if question can be answered from cached facts
+
+        Args:
+            problem: The question to analyze
+            previous_problem: If this is a follow-up, the original problem for context
 
         Returns:
             QuestionAnalysis with question_type, extracted_facts, and optional cached_fact_answer
@@ -1445,11 +1449,23 @@ Do not include any explanation or extra text."""
         if data_sources:
             source_context = f"\nAvailable data sources: {', '.join(data_sources)}"
 
+        # Build follow-up context if this is a continuation of a previous analysis
+        followup_context = ""
+        if previous_problem:
+            followup_context = f"""
+This is a FOLLOW-UP to a previous analysis.
+Previous question: "{previous_problem}"
+
+IMPORTANT: Any reference to changing a value, assumption, or "what if" scenario
+implies the user wants to MODIFY_FACT and re-run the previous analysis with
+the changed value. Look for references to known facts being changed."""
+
         prompt = f"""Analyze this user question in one pass:
 
 Question: "{problem}"
 {source_context}
 {fact_context}
+{followup_context}
 
 Perform these analyses:
 
@@ -3143,6 +3159,12 @@ NEW_REQUEST: <the new request, or NONE>
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
 
+        # Get previous problem for follow-up context
+        previous_problem = self.datastore.get_session_meta("problem")
+
+        # Use LLM to analyze the question and detect intents (with follow-up context)
+        analysis = self._analyze_question(question, previous_problem=previous_problem)
+
         # Check if this follow-up suggests a different mode
         mode_selection = suggest_mode(question)
 
@@ -3150,21 +3172,39 @@ NEW_REQUEST: <the new request, or NONE>
         if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
             return self._solve_knowledge(question, mode_selection)
 
-        # Check for "redo" patterns first - these should preserve previous mode
-        redo_patterns = ["redo", "re-do", "re-run", "rerun", "again", "repeat", "retry"]
-        question_lower = question.lower()
-        is_redo = any(pattern in question_lower for pattern in redo_patterns)
+        # Check intents detected by LLM for redo-like behavior
+        # REDO, PREDICT (what-if), and MODIFY_FACT all imply re-running the previous analysis
+        redo_intents = {"REDO", "PREDICT", "MODIFY_FACT", "REFINE_SCOPE", "STEER_PLAN"}
+        detected_intent_names = {i.intent.upper() for i in analysis.intents}
+        is_redo = bool(detected_intent_names & redo_intents)
+        is_predict = "PREDICT" in detected_intent_names
+        is_modify_fact = "MODIFY_FACT" in detected_intent_names
+        has_explicit_mode_switch = "MODE_SWITCH" in detected_intent_names
 
-        # If this is a redo request, check if previous session was auditable
-        if is_redo and self.datastore:
-            previous_mode = self.datastore.get_session_meta("mode")
-            if previous_mode == "auditable":
-                # Force auditable mode for redo
+        # If LLM detected a redo-like intent, preserve the previous mode
+        # (unless there's an explicit MODE_SWITCH intent, which takes precedence)
+        if is_redo and self.datastore and not has_explicit_mode_switch:
+            previous_mode_str = self.datastore.get_session_meta("mode")
+            if previous_mode_str:
+                # Map string to ExecutionMode enum
+                try:
+                    preserved_mode = ExecutionMode(previous_mode_str)
+                except ValueError:
+                    preserved_mode = ExecutionMode.AUDITABLE  # fallback
+
+                # Build reasoning based on intent type
+                if is_predict:
+                    reasoning = f"What-if analysis: re-running previous {previous_mode_str} analysis with modified assumptions"
+                elif is_modify_fact:
+                    reasoning = f"Fact modification: re-running previous {previous_mode_str} analysis with updated values"
+                else:
+                    reasoning = f"Re-running previous {previous_mode_str} analysis"
+
                 mode_selection = ModeSelection(
-                    mode=ExecutionMode.AUDITABLE,
-                    reasoning="Re-running previous auditable analysis with modifications",
+                    mode=preserved_mode,
+                    reasoning=reasoning,
                     confidence=0.9,
-                    matched_keywords=["redo"],
+                    matched_keywords=list(detected_intent_names & redo_intents),
                 )
 
         # AUDITABLE mode: check if this is a "redo" request or a verification question
@@ -3206,8 +3246,38 @@ NEW_REQUEST: <the new request, or NONE>
                     else:
                         logger.warning("[REDO] No saved_facts_json found in datastore")
 
-                    # Extract any new values from the redo request (e.g., "change my age to 50")
+                    # Apply fact modifications detected by LLM (e.g., "what if my age were 50")
                     # These will override previously cached facts
+                    if analysis.fact_modifications:
+                        for mod in analysis.fact_modifications:
+                            fact_name = mod.get("fact_name", "")
+                            new_value = mod.get("new_value", "")
+                            if fact_name and new_value:
+                                # Parse numeric values
+                                try:
+                                    parsed_value = float(new_value)
+                                    if parsed_value == int(parsed_value):
+                                        parsed_value = int(parsed_value)
+                                except ValueError:
+                                    parsed_value = new_value
+
+                                fact = self.fact_resolver.add_user_fact(
+                                    fact_name=fact_name,
+                                    value=parsed_value,
+                                    reasoning=f"User specified in what-if: {question}",
+                                )
+                                if fact:
+                                    self._emit_event(StepEvent(
+                                        event_type="fact_update",
+                                        step_number=0,
+                                        data={
+                                            "fact_name": fact.name,
+                                            "value": fact.value,
+                                            "source": "user_update",
+                                        }
+                                    ))
+
+                    # Also try regex extraction for facts not detected by LLM
                     extracted_facts = self.fact_resolver.add_user_facts_from_text(question)
                     if extracted_facts:
                         for fact in extracted_facts:
@@ -3226,8 +3296,8 @@ NEW_REQUEST: <the new request, or NONE>
                         step_number=0,
                         data={
                             "mode": "auditable",
-                            "reasoning": "Re-running original analysis in auditable mode",
-                            "matched_keywords": ["redo", "auditable"],
+                            "reasoning": mode_selection.reasoning,
+                            "detected_intents": list(detected_intent_names & redo_intents),
                         }
                     ))
                     # Pass cached fact hints to help LLM use consistent names

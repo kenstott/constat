@@ -7,6 +7,12 @@ provides the intent enum and helper classes/constants for intent handling.
 A single prompt can express multiple intents (e.g., "change this assumption and redo").
 The LLM preserves the natural order of intents for sequential execution.
 
+Mode Preservation:
+When a follow-up question contains a redo-like intent (REDO, PREDICT, MODIFY_FACT,
+REFINE_SCOPE, or STEER_PLAN), the previous execution mode is preserved. This ensures
+that "what if" questions and fact modifications stay in the same mode as the original
+analysis. An explicit MODE_SWITCH intent overrides this behavior.
+
 Intent Categories:
 - REDO: Re-run the previous analysis
 - MODIFY_FACT: Change, add, or remove a fact/assumption
@@ -16,7 +22,7 @@ Intent Categories:
 - CHALLENGE: Verify or question a conclusion
 - EXPORT: Save or export results
 - EXTEND: Continue with additional analysis
-- MODE_SWITCH: Change execution mode
+- MODE_SWITCH: Change execution mode (overrides mode preservation)
 - PROVENANCE: Show derivation or audit trail
 - CREATE_ARTIFACT: Create a new artifact (dashboard, document, file)
 - NEW_QUESTION: A completely new, unrelated question
