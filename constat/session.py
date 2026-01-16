@@ -3408,36 +3408,53 @@ PREMISES:
 P1: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
 P2: <fact_name> = ? (<description>) [source: knowledge]
 P3: <fact_name> = <known_value> (<description>) [source: knowledge]
-(list ALL base data needed - use "database" for data queries, "knowledge" for general facts)
 
-IMPORTANT: For well-known facts (like scientific constants, geography, etc.), you can either:
-- Use [source: knowledge] and the system will ask an LLM
-- Or embed the value directly: P3: planet_count = 8 (Number of planets in solar system) [source: knowledge]
+PREMISE RULES:
+- Premises are DATA only (tables, records, values) - NOT functions or operations
+- Every premise MUST be referenced by at least one inference
+- Use "database" for SQL queries, "knowledge" for constants/facts
+- For known values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: knowledge]
 
 INFERENCE:
 I1: <result_name> = <operation>(P1, P2) -- <explanation>
 I2: <result_name> = <operation>(I1) -- <explanation>
-(each step references premises P1/P2/etc or prior inferences I1/I2/etc)
+
+INFERENCE RULES:
+- Each inference must reference at least one premise (P1/P2/etc) or prior inference (I1/I2/etc)
+- Operations like date extraction, filtering, grouping belong HERE, not in premises
+- Keep operations simple: filter, join, group_sum, count, etc.
 
 CONCLUSION:
 C: <final sentence answering the question using the inferences>
 
-EXAMPLE for "What is revenue multiplied by Pi?":
-
-QUESTION: What is revenue multiplied by Pi?
+EXAMPLE 1 - "What is revenue multiplied by Pi?":
 
 PREMISES:
-P1: total_revenue = ? (Sum of all order amounts) [source: database:sales_db]
-P2: pi_value = 3.14159 (Mathematical constant Pi) [source: knowledge]
+P1: orders = ? (All orders with amounts) [source: database:sales_db]
+P2: pi_value = 3.14159 (Mathematical constant) [source: knowledge]
 
 INFERENCE:
-I1: adjusted_revenue = multiply(P1, P2) -- Multiply revenue by Pi
+I1: total_revenue = sum(P1.amount) -- Sum all order amounts
+I2: adjusted_revenue = multiply(I1, P2) -- Multiply by Pi
 
 CONCLUSION:
-C: The revenue multiplied by Pi is provided by I1.
+C: The revenue multiplied by Pi is I2.
 
-Now generate the derivation for the actual question. Use P1:, P2:, I1:, I2: prefixes EXACTLY as shown.
-For world knowledge (planets, constants, geography), embed the value directly or use [source: knowledge].
+EXAMPLE 2 - "Monthly revenue trend for last 12 months":
+
+PREMISES:
+P1: orders = ? (All orders with date and amount) [source: database:sales_db]
+
+INFERENCE:
+I1: recent_orders = filter(P1, last_12_months) -- Filter to last 12 months
+I2: monthly_revenue = group_sum(I1, month, amount) -- Group by month, sum amounts
+I3: trend = analyze(I2) -- Calculate trend direction
+
+CONCLUSION:
+C: Monthly revenue trend is provided by I3.
+
+Now generate the derivation. Use P1:, P2:, I1:, I2: prefixes EXACTLY as shown.
+Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
 """
 
         result = self.router.execute(
