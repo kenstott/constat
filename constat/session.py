@@ -4118,34 +4118,70 @@ IMPORTANT: Use store.save_dataframe(name, df) to save results if needed.
 
 Return ONLY executable Python code, no explanations."""
 
-                    code_result = self.router.execute(
-                        task_type=TaskType.SQL_GENERATION,
-                        system="You generate Python code for data operations. Return only executable code.",
-                        user_message=inference_prompt,
-                        max_tokens=800,
-                    )
+                    # Retry loop for code generation
+                    max_retries = 3
+                    last_error = None
+                    code = None
+                    inference_output = ""
 
-                    # Extract code
-                    code = code_result.content.strip()
-                    if code.startswith("```"):
-                        code = re.sub(r'^```\w*\n?', '', code)
-                        code = re.sub(r'\n?```$', '', code)
+                    for attempt in range(max_retries):
+                        if attempt == 0:
+                            prompt_to_use = inference_prompt
+                        else:
+                            # Retry with error feedback
+                            prompt_to_use = f"""Your previous code failed with this error:
 
-                    # Execute the inference code (capture stdout to avoid disrupting display)
-                    import io
-                    import sys
-                    exec_globals = {
-                        "store": self.datastore,
-                        "pd": __import__("pandas"),
-                    }
-                    captured_output = io.StringIO()
-                    old_stdout = sys.stdout
-                    try:
-                        sys.stdout = captured_output
-                        exec(code, exec_globals)
-                    finally:
-                        sys.stdout = old_stdout
-                    inference_output = captured_output.getvalue()
+ERROR: {last_error}
+
+Previous code:
+```python
+{code}
+```
+
+{inference_prompt}
+
+Fix the error and return corrected code. Common fixes:
+- Use pd.to_datetime() to convert string columns to datetime
+- Check column names exist in the DataFrame
+- Use proper DuckDB SQL syntax for store.query()"""
+
+                        code_result = self.router.execute(
+                            task_type=TaskType.SQL_GENERATION,
+                            system="You generate Python code for data operations. Return only executable code.",
+                            user_message=prompt_to_use,
+                            max_tokens=800,
+                        )
+
+                        # Extract code
+                        code = code_result.content.strip()
+                        if code.startswith("```"):
+                            code = re.sub(r'^```\w*\n?', '', code)
+                            code = re.sub(r'\n?```$', '', code)
+
+                        # Execute the inference code (capture stdout to avoid disrupting display)
+                        import io
+                        import sys
+                        exec_globals = {
+                            "store": self.datastore,
+                            "pd": __import__("pandas"),
+                        }
+                        captured_output = io.StringIO()
+                        old_stdout = sys.stdout
+                        try:
+                            sys.stdout = captured_output
+                            exec(code, exec_globals)
+                            inference_output = captured_output.getvalue()
+                            last_error = None  # Success
+                            break  # Exit retry loop on success
+                        except Exception as exec_err:
+                            last_error = str(exec_err)
+                            inference_output = ""
+                        finally:
+                            sys.stdout = old_stdout
+
+                    # If all retries failed, raise the last error
+                    if last_error:
+                        raise Exception(last_error)
 
                     # Check if result was stored
                     result_table = f"{inf_id.lower()}_result"
