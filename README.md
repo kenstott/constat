@@ -299,9 +299,13 @@ Discovery tools include:
 - **Documents**: `list_documents`, `search_documents`, `get_document`, `get_document_section`
 
 Document discovery supports:
-- **Unstructured docs**: Markdown, text files with semantic search (sentence-transformers)
+- **Unstructured docs**: Markdown, text, PDF files with semantic search (sentence-transformers)
 - **Structured files**: CSV, JSON, JSONL, Parquet with automatic schema inference
 - **Section extraction**: Retrieve specific sections from large documents
+
+Documents are indexed into an in-memory vector index (lazy, on first access). During fact
+resolution and knowledge synthesis, relevant document excerpts are automatically retrieved
+via semantic search - no explicit discovery step required.
 
 **Full prompt mode** (legacy models):
 - Comprehensive system prompt with all metadata
