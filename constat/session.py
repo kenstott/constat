@@ -4235,12 +4235,18 @@ Generate code that:
 1. Uses scalar values directly (they are already resolved numbers)
 2. For tables, loads data using store.query()
 3. Performs the operation (divide, compare, join, filter, aggregate, etc.)
-4. Prints a clear summary of the result
+4. MUST set _result = <computed_value> with the actual numeric/boolean result
+5. Optionally print a summary for debugging
 
 For scalar operations like divide(P1, P2), use the actual values directly:
-Example: ratio = 12 / 15  # Using P1=12, P2=15
+Example:
+ratio = 12 / 15  # Using P1=12, P2=15
+_result = ratio  # REQUIRED: set _result to the computed value
 
-IMPORTANT: Use store.save_dataframe(name, df) to save results if needed.
+IMPORTANT:
+- ALWAYS set _result = <the_computed_value> at the end
+- _result should be the actual value (number, boolean, etc.), not a string description
+- Use store.save_dataframe(name, df) to save DataFrames if needed
 
 Return ONLY executable Python code, no explanations."""
 
@@ -4309,30 +4315,34 @@ Fix the error and return corrected code. Common fixes:
                     if last_error:
                         raise Exception(last_error)
 
-                    # Check if result was stored
+                    # Get the computed result from _result variable
+                    computed_result = exec_globals.get('_result')
+
+                    # Check if result was stored as a table
                     result_table = f"{inf_id.lower()}_result"
                     if self.datastore and result_table in [t['name'] for t in self.datastore.list_tables()]:
                         result_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {result_table}")
                         row_count = result_df.iloc[0, 0] if len(result_df) > 0 else 0
-                        resolved_inferences[inf_id] = f"{row_count} rows computed"
+                        resolved_inferences[inf_id] = f"{row_count} rows"
                         inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} rows ✓")
+                    elif computed_result is not None:
+                        # Use the actual computed value
+                        resolved_inferences[inf_id] = computed_result
+                        inference_lines.append(f"- {inf_id}: {inf_name} = {computed_result} ✓")
                     else:
-                        resolved_inferences[inf_id] = "computed (inline)"
+                        # Fallback to output parsing if _result wasn't set
+                        resolved_inferences[inf_id] = inference_output.strip() if inference_output.strip() else "computed"
                         inference_lines.append(f"- {inf_id}: {inf_name} = computed ✓")
 
-                    # Include captured output if any
+                    # Include captured output for debugging display
                     if inference_output.strip():
-                        inference_lines.append(f"  Output: {inference_output.strip()}")
-                        # Also update resolved_inferences so synthesis gets the actual value
-                        resolved_inferences[inf_id] = inference_output.strip()
+                        inference_lines.append(f"    {inference_output.strip()}")
 
-                    # Store the inference result as a fact so it appears in /facts
-                    inference_value = resolved_inferences[inf_id]
-                    if inference_output.strip():
-                        inference_value = inference_output.strip()
+                    # Store the inference result as a fact with the ACTUAL computed value
+                    actual_value = computed_result if computed_result is not None else resolved_inferences[inf_id]
                     self.fact_resolver.add_user_fact(
                         fact_name=inf_name if inf_name else inf_id,  # Just the name, no I1: prefix
-                        value=inference_value,
+                        value=actual_value,
                         reasoning=f"Computed: {operation}",  # Include the operation formula
                         source=FactSource.DERIVED,
                     )
