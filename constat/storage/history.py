@@ -117,11 +117,12 @@ class SessionHistory:
         path.mkdir(parents=True, exist_ok=True)
 
     def _generate_session_id(self) -> str:
-        """Generate a unique session ID with timestamp prefix."""
+        """Generate a unique session ID with full timestamp (sortable)."""
         now = datetime.now(timezone.utc)
+        # Format: YYYY-MM-DD_HHMMSS_mmm (milliseconds for uniqueness and sortability)
         timestamp = now.strftime("%Y-%m-%d_%H%M%S")
-        suffix = uuid.uuid4().hex[:8]
-        return f"{timestamp}_{suffix}"
+        milliseconds = f"{now.microsecond // 1000:03d}"
+        return f"{timestamp}_{milliseconds}"
 
     def _hash_config(self, config_dict: dict) -> str:
         """Generate hash of config for change detection."""

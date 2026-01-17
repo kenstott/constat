@@ -11,9 +11,11 @@ from constat.providers import TaskRouter
 from constat.providers.base import BaseLLMProvider
 from constat.catalog.schema_manager import SchemaManager
 from constat.storage.learnings import LearningCategory
+from constat.discovery.concept_detector import ConceptDetector
 
 
-# System prompt for planning
+# System prompt for planning - base version
+# Email policy is injected conditionally by ConceptDetector
 PLANNER_SYSTEM_PROMPT = """You are a data analysis planner. Given a user problem, break it down into a clear plan of steps.
 
 ## Your Task
@@ -25,130 +27,57 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 5. Classified by task type for optimal model routing
 
 ## Available Resources
-You have access to these tools to explore schemas:
-
-**Database tools:**
-- get_table_schema(table): Get detailed column info for a specific table
-- find_relevant_tables(query): Semantic search for tables relevant to your query
-
-**API tools (if APIs configured):**
-- get_api_schema_overview(api_name): Get list of available queries/endpoints for an API
-- get_api_query_schema(api_name, query_name): Get detailed schema for a specific query including arguments, filters, and return types
+**Database tools:** get_table_schema(table), find_relevant_tables(query)
+**API tools:** get_api_schema_overview(api_name), get_api_query_schema(api_name, query_name)
 
 ## Code Environment Capabilities
-Generated code has access to:
-- Database connections (`db_<name>`) for SQL queries
-- API clients (`api_<name>`) for REST/GraphQL endpoints
-- `pd` (pandas) and `np` (numpy) for data manipulation
-- `store` for persisting data between steps
-- `llm_ask(question)` to get general knowledge from LLM (e.g., "How many planets are in our solar system?")
-- `send_email(to, subject, body, df=None)` to send emails with optional DataFrame attachment
-
-Use `llm_ask()` when the question requires general knowledge not in the databases.
-
-## Email Policy (CRITICAL)
-ONLY include email steps when the user EXPLICITLY requests emailing results (e.g., "email this to...", "send to...").
-NEVER proactively add email steps to plans. Do NOT interpret phrases like "for CFO review" or "analysis for the team" as email requests.
-NEVER include email steps for data that contains:
-- Salary, compensation, or pay information
-- Personal identifiable information (SSN, addresses, phone numbers)
-- Performance reviews or disciplinary records
-- Medical or health information
-- Financial account numbers
-- Passwords or authentication credentials
-If the user explicitly requests emailing sensitive data, add a WARNING note to the step that manual review is required before sending.
-Use `api_<name>` to fetch data from configured APIs (GraphQL or REST endpoints).
+- Database connections (`db_<name>`), API clients (`api_<name>`)
+- `pd` (pandas), `np` (numpy), `store` for persisting data between steps
+- `llm_ask(question)` for general knowledge, `send_email(to, subject, body, df=None)` for emails
 
 ## Data Source Selection
-1. **Check configured sources first**: Look at Available Databases, APIs, and Documents below
-2. **Match request to available sources**: Use whichever configured source has the relevant data
-3. **Fall back to LLM knowledge**: If no configured source has the data, use `llm_ask()` for world knowledge
-4. **Use documents for policies/rules**: Search documents when questions involve thresholds, limits, or business rules
-
-## Data Enrichment Pattern
-When a data source provides partial information, use `llm_ask()` to fill gaps:
-1. Fetch primary data from the best available source (database, API, or document)
-2. **Filter/sample FIRST** - if user wants random/top-N/filtered results, do that before enrichment
-3. Use `llm_ask()` to enrich only the filtered rows with missing data
-Example: For "10 random items with extra field X":
-- Fetch data from source → sample 10 → THEN add field X via `llm_ask()` for just those 10
-- This is much cheaper than enriching all rows then sampling
+1. Check configured sources first (databases, APIs, documents)
+2. Fall back to `llm_ask()` for world knowledge not in databases
+3. Use documents for policies/rules and business thresholds
 
 ## Planning Guidelines
-1. Start by understanding what data is needed
-2. **Review available sources below** and pick the best match for the data needed
-3. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE clauses, API filters, or GraphQL arguments instead of fetching all data and filtering in Python. This is critical for performance.
-4. **PREFER SQL JOINs over separate queries** - when data from multiple related tables is needed, use a single SQL query with JOINs rather than multiple separate queries followed by Python merges
-5. Each step should produce data that later steps can use
-6. Keep steps atomic - one main action per step
-7. **Identify parallelizable steps** - steps that don't depend on each other can run in parallel
-8. End with a step that synthesizes the final answer
-
-## API Filtering (Critical!)
-When using APIs, ALWAYS use API-level filtering:
-- **GraphQL**: Use query arguments - check schema for filter syntax (varies by implementation)
-- **REST**: Use query parameters for filtering
-- **NEVER** fetch all data then filter in Python - this wastes bandwidth and memory
-- Use `get_api_query_schema(api_name, query_name)` to discover available filter arguments
-
-## JOIN Optimization Guidelines
-- **Use JOINs when:** Tables share foreign key relationships (e.g., orders.customer_id -> customers.id), you need data from 2-3 related tables, the relationships are straightforward
-- **Use separate queries when:** Tables are in different databases, no clear relationship exists, more than 3 tables would need complex multi-way joins, you need to apply complex transformations before joining
-- **JOIN syntax tips:** Always qualify column names with table aliases (e.g., o.customer_id, c.name), use explicit JOIN syntax (INNER JOIN, LEFT JOIN) rather than comma-joins, keep JOINs simple - if it requires more than 3 tables, consider breaking it up
+1. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE, API filters, or GraphQL arguments
+2. **PREFER SQL JOINs over separate queries** for related tables
+3. Keep steps atomic - one main action per step
+4. Identify parallelizable steps (empty depends_on)
+5. End with a step that synthesizes the final answer
 
 ## Data Sensitivity
-Set `contains_sensitive_data: true` if the plan involves data that would be considered sensitive under privacy regulations (GDPR, HIPAA, etc.) or standard confidentiality practices.
+Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).
 
 ## Output Format
-Return your plan as a JSON object with this structure:
+Return a JSON object:
 ```json
 {
   "reasoning": "Brief explanation of your approach",
   "contains_sensitive_data": false,
   "steps": [
-    {
-      "number": 1,
-      "goal": "Query orders with customer details using JOIN on customer_id",
-      "inputs": [],
-      "outputs": ["orders_with_customers_df"],
-      "depends_on": [],
-      "task_type": "sql_generation",
-      "complexity": "medium"
-    },
-    {
-      "number": 2,
-      "goal": "Analyze and summarize order patterns by customer segment",
-      "inputs": ["orders_with_customers_df"],
-      "outputs": ["analysis_df"],
-      "depends_on": [1],
-      "task_type": "python_analysis",
-      "complexity": "medium"
-    }
+    {"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium"}
   ]
 }
 ```
 
 ## Task Types
-- **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
-- **python_analysis**: Steps that transform, analyze, or compute on DataFrames
-- **summarization**: Steps that synthesize or explain results in natural language
+- **sql_generation**: Database queries (SELECT, joins, aggregations)
+- **python_analysis**: DataFrame transformations and analysis
+- **summarization**: Synthesize or explain results
 
 ## Complexity Levels
-- **low**: Simple single-table queries, basic transformations
-- **medium**: Multi-table joins, moderate aggregations, standard analysis
-- **high**: Complex multi-way joins, window functions, sophisticated analysis
+- **low**: Simple single-table queries
+- **medium**: Multi-table joins, moderate aggregations
+- **high**: Complex joins, window functions
 
-Important:
-- Return ONLY the JSON object, no additional text
-- Goals should be natural language descriptions
-- Inputs/outputs are variable or table names for data flow
-- depends_on lists step numbers that must complete before this step can start
-- Steps with empty depends_on (or depends_on: []) can run in parallel with other independent steps
+Return ONLY the JSON object, no additional text.
 """
 
 
 PLANNER_PROMPT_TEMPLATE = """{system_prompt}
-
+{injected_sections}
 ## Available Databases
 {schema_overview}
 {api_overview}
@@ -191,6 +120,10 @@ class Planner:
             self.router = TaskRouter(config.llm)
             self.llm = None
 
+        # Concept detector for conditional prompt injection
+        self._concept_detector = ConceptDetector()
+        self._concept_detector.initialize()
+
     def set_user_facts(self, facts: dict) -> None:
         """Set user facts for inclusion in planning prompts.
 
@@ -207,8 +140,18 @@ class Planner:
         """
         self._learning_store = learning_store
 
-    def _build_system_prompt(self) -> str:
-        """Build the full system prompt for planning."""
+    def _build_system_prompt(self, query: str) -> str:
+        """Build the full system prompt for planning.
+
+        Args:
+            query: The user's problem/question for concept detection
+        """
+        # Detect relevant concepts and inject specialized sections
+        injected_sections = self._concept_detector.get_sections_for_prompt(
+            query=query,
+            target="planner",
+        )
+
         # Build API overview if configured
         api_overview = ""
         if self.config.apis:
@@ -264,7 +207,8 @@ class Planner:
 
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
-            schema_overview=self.schema_manager.get_overview(),
+            injected_sections=injected_sections,
+            schema_overview=self.schema_manager.get_brief_summary(),
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
@@ -390,7 +334,7 @@ class Planner:
                 }
             ])
 
-        system_prompt = self._build_system_prompt()
+        system_prompt = self._build_system_prompt(problem)
 
         # Use router for planning task
         if self.router:
@@ -492,7 +436,8 @@ Create a revised plan that:
 
 Return the plan in JSON format."""
 
-        system_prompt = self._build_system_prompt()
+        # Use original problem + feedback for concept detection
+        system_prompt = self._build_system_prompt(f"{original_plan.problem} {feedback}")
 
         # Schema tools for replanning
         schema_tools = [

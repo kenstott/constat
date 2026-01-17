@@ -1,6 +1,7 @@
 """Live feedback system for terminal output using rich."""
 
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -752,12 +753,23 @@ class FeedbackDisplay:
                 for j, suggestion in enumerate(suggestions, 1):
                     self.console.print(f"      [dim]{j})[/dim] [yellow]{suggestion}[/yellow]")
 
+            # Flush output to ensure prompt is visible
+            sys.stdout.flush()
+            sys.stderr.flush()
+
             # Get answer - show first suggestion as default hint if available
-            if suggestions:
-                default_hint = suggestions[0]
-                answer = Prompt.ask(f"     [dim]>[/dim]", default=default_hint)
-            else:
-                answer = Prompt.ask("     [dim]>[/dim]", default="", show_default=False)
+            try:
+                if suggestions:
+                    default_hint = suggestions[0]
+                    # Show clear prompt line with default
+                    answer = Prompt.ask(f"     > [dim]({default_hint})[/dim]", default=default_hint, show_default=False)
+                else:
+                    # Show clear prompt line for custom input
+                    answer = Prompt.ask("     >", default="", show_default=False)
+            except Exception:
+                # Fallback to basic input if Rich Prompt fails
+                print("     > ", end="", flush=True)
+                answer = input()
             answer = answer.strip()
 
             # Process the answer
@@ -1293,6 +1305,7 @@ class SessionFeedbackHandler:
         elif event_type == "inference_complete":
             # Show completed inference step
             inference_id = data.get("inference_id", "?")
+            inference_name = data.get("inference_name", "")
             result = data.get("result", "computed")
             output = data.get("output", "")
             step = data.get("step", 0)
@@ -1305,6 +1318,9 @@ class SessionFeedbackHandler:
                 output_preview = output[:100] + "..." if len(output) > 100 else output
                 result_summary = f"{result} ({output_preview})"
 
+            # Build display label with ID and name
+            display_label = f"{inference_id}: {inference_name}" if inference_name else inference_id
+
             # Update proof tree if active
             if self.display._proof_tree:
                 self.display.update_proof_resolved(
@@ -1315,7 +1331,7 @@ class SessionFeedbackHandler:
                     resolution_summary=output if output else None,
                 )
             else:
-                self.display.console.print(f"  [green]✓[/green] {inference_id} = {result}")
+                self.display.console.print(f"  [green]✓[/green] {display_label} = {result}")
                 if output:
                     # Show captured output
                     for line in output.split("\n"):

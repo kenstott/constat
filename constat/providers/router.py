@@ -206,6 +206,21 @@ class TaskRouter:
 
                 elapsed_ms = int((time.time() - start_time) * 1000)
 
+                # Log prompt for analysis (fire-and-forget, don't block on errors)
+                try:
+                    from constat.providers.prompt_logger import log_prompt
+                    log_prompt(
+                        task_type=task_type.value,
+                        model=spec.model,
+                        provider=provider_name,
+                        system_prompt=system,
+                        user_message=user_message,
+                        response_time_ms=elapsed_ms,
+                        success=True,
+                    )
+                except Exception:
+                    pass  # Don't fail task execution due to logging
+
                 return TaskResult(
                     success=True,
                     content=content,

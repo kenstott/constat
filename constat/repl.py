@@ -12,6 +12,7 @@ import re
 import random
 from pathlib import Path
 from constat.session import Session, SessionConfig
+from constat.execution.mode import ExecutionMode
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
@@ -462,6 +463,7 @@ class InteractiveREPL:
             ("/forget-learning <id>", "Delete a learning by ID"),
             ("/audit", "Re-derive last result with full audit trail"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
+            ("/mode [mode]", "Set default mode: audit|explore|knowledge|auto"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -1080,6 +1082,74 @@ class InteractiveREPL:
             self.display.stop_spinner()
             self.console.print(f"[red]Error during audit:[/red] {e}")
 
+    def _handle_mode(self, arg: str) -> None:
+        """Handle /mode command - set or show default execution mode.
+
+        Usage:
+            /mode                - Show current mode and prompt for new one
+            /mode audit          - Set default to auditable mode
+            /mode explore        - Set default to exploratory mode
+            /mode knowledge      - Set default to knowledge mode
+            /mode auto           - Clear default (let LLM decide)
+        """
+        # Map user-friendly names to ExecutionMode
+        mode_aliases = {
+            "audit": ExecutionMode.AUDITABLE,
+            "auditable": ExecutionMode.AUDITABLE,
+            "a": ExecutionMode.AUDITABLE,
+            "explore": ExecutionMode.EXPLORATORY,
+            "exploratory": ExecutionMode.EXPLORATORY,
+            "e": ExecutionMode.EXPLORATORY,
+            "knowledge": ExecutionMode.KNOWLEDGE,
+            "k": ExecutionMode.KNOWLEDGE,
+            "auto": None,
+            "none": None,
+            "clear": None,
+        }
+
+        # Get current mode
+        current = self.session_config.default_mode
+        current_name = current.value if current else "auto (LLM decides)"
+
+        if not arg:
+            # Show current mode and prompt for new one
+            self.console.print(f"[bold]Current default mode:[/bold] {current_name}")
+            self.console.print()
+            self.console.print("[dim]Available modes:[/dim]")
+            self.console.print("  [cyan]audit[/cyan]     - Full derivation with audit trail")
+            self.console.print("  [cyan]explore[/cyan]   - Multi-step data exploration")
+            self.console.print("  [cyan]knowledge[/cyan] - Document/knowledge lookup")
+            self.console.print("  [cyan]auto[/cyan]      - Let LLM decide (clear default)")
+            self.console.print()
+
+            try:
+                from rich.prompt import Prompt
+                choice = Prompt.ask(
+                    "Set default mode",
+                    choices=["audit", "explore", "knowledge", "auto"],
+                    default="auto" if current is None else current.value.lower()
+                )
+                arg = choice
+            except (EOFError, KeyboardInterrupt):
+                self.console.print("[dim]Cancelled.[/dim]")
+                return
+
+        # Parse the argument
+        arg_lower = arg.lower().strip()
+        if arg_lower not in mode_aliases:
+            self.console.print(f"[yellow]Unknown mode: {arg}[/yellow]")
+            self.console.print("[dim]Valid modes: audit, explore, knowledge, auto[/dim]")
+            return
+
+        new_mode = mode_aliases[arg_lower]
+        self.session_config.default_mode = new_mode
+
+        if new_mode is None:
+            self.console.print("[green]Default mode cleared - LLM will decide execution mode.[/green]")
+        else:
+            self.console.print(f"[green]Default mode set to:[/green] {new_mode.value}")
+            self.console.print(f"[dim]All queries will now use {new_mode.value} mode unless overridden.[/dim]")
+
     def _handle_summarize(self, arg: str) -> None:
         """Handle /summarize command - generate LLM summary of plan, session, facts, or table.
 
@@ -1683,10 +1753,10 @@ Provide a 2-3 sentence summary covering:
         table.add_row("insights", "on" if self.session_config.enable_insights else "off")
         table.add_row("user", self.user_id)
 
-        # Show mode if session exists
-        if self.session:
-            mode = self.session_config.mode.value if hasattr(self.session_config, 'mode') else "default"
-            table.add_row("mode", mode)
+        # Show default execution mode
+        default_mode = self.session_config.default_mode
+        mode_display = default_mode.value if default_mode else "auto (LLM decides)"
+        table.add_row("default_mode", mode_display)
 
         self.console.print(table)
 
@@ -1998,6 +2068,8 @@ Provide a 2-3 sentence summary covering:
             self._handle_audit()
         elif cmd == "/summarize":
             self._handle_summarize(arg)
+        elif cmd == "/mode":
+            self._handle_mode(arg)
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 

@@ -49,6 +49,13 @@ class FactSource(Enum):
     UNRESOLVED = "unresolved"
 
 
+class Tier2Strategy(Enum):
+    """Result of Tier 2 LLM assessment for unresolved facts."""
+    DERIVABLE = "derivable"  # Can be computed from 2+ inputs
+    KNOWN = "known"  # LLM can provide directly (general knowledge)
+    USER_REQUIRED = "user_required"  # Needs human input
+
+
 # Sources that represent ground truth (raw data from sources)
 # These can be reused in audit mode since data is immutable
 GROUND_TRUTH_SOURCES = {
@@ -232,9 +239,19 @@ class Fact:
         """Serialize for storage/API."""
         import datetime as dt
 
+        def _convert_numpy(obj):
+            """Convert numpy types to native Python for JSON serialization."""
+            if hasattr(obj, 'item'):  # numpy scalar (int64, float64, etc.)
+                return obj.item()
+            elif isinstance(obj, dict):
+                return {k: _convert_numpy(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_convert_numpy(v) for v in obj]
+            return obj
+
         # Determine value type for proper restoration
         # Types: boolean, integer, float, string, date, datetime, time, table, array, object
-        value = self.value
+        value = _convert_numpy(self.value)  # Convert numpy types
         value_type = "string"  # default
 
         if self.table_name:
@@ -262,6 +279,13 @@ class Fact:
             value_type = "object"
         elif isinstance(self.value, str):
             value_type = "string"
+        elif hasattr(self.value, 'to_dict'):
+            # DataFrame or similar - convert to serializable form
+            value_type = "dataframe"
+            try:
+                value = f"{len(self.value)} rows"  # Store summary, not full data
+            except Exception:
+                value = str(self.value)[:500]
 
         result = {
             "name": self.name,
@@ -422,15 +446,38 @@ RuleFunction = Callable[["FactResolver", dict], Fact]
 
 @dataclass
 class ResolutionStrategy:
-    """Configuration for how facts should be resolved."""
-    # Try these sources in order of certainty:
-    # 1. Cache - already resolved this session
-    # 2. Rule - pre-registered derivation functions (deterministic code)
-    # 3. Database - direct source data (most authoritative)
-    # 4. Sub-plan - decompose into smaller facts (resolved recursively through this hierarchy)
-    # 5. Document - reference documents
-    # 6. LLM Knowledge - world knowledge (less certain)
-    # 7. User-provided - fallback (facts user explicitly provided)
+    """Configuration for how facts should be resolved.
+
+    Tiered Resolution Architecture:
+
+    TIER 1: Local Sources (parallel, cheap, fast)
+        - Cache, Config, Rules, Documents, Database
+        - All run in parallel with timeout window
+        - First successful result with sufficient confidence wins
+
+    TIER 2: LLM Assessment (expensive, gated)
+        - Single LLM call to assess best strategy
+        - DERIVABLE: Can compute from 2+ inputs (triggers sub-plan)
+        - KNOWN: LLM provides general knowledge directly
+        - USER_REQUIRED: Needs human input
+
+    TIER 3: User Prompt (fallback)
+        - Handled by session layer, not fact resolver
+    """
+    # Tier 1 sources - all run in parallel
+    tier1_sources: list[FactSource] = field(default_factory=lambda: [
+        FactSource.CACHE,
+        FactSource.CONFIG,
+        FactSource.RULE,
+        FactSource.DOCUMENT,
+        FactSource.DATABASE,
+    ])
+
+    # Tier 1 timeout in seconds - collect results within this window
+    tier1_timeout: float = 15.0
+
+    # Legacy: source_priority kept for backward compatibility
+    # New code should use tier1_sources + tiered resolution
     source_priority: list[FactSource] = field(default_factory=lambda: [
         FactSource.CACHE,
         FactSource.RULE,
@@ -445,15 +492,86 @@ class ResolutionStrategy:
     min_confidence: float = 0.0  # Accept any confidence
     prefer_database: bool = True  # Prefer DB over LLM when both possible
 
-    # Sub-plan settings
+    # Sub-plan / Derivation settings
     allow_sub_plans: bool = True
     max_sub_plan_depth: int = 3  # Prevent infinite recursion
+    require_multi_input_derivation: bool = True  # Derivation must have 2+ inputs (no synonyms)
 
-    # Parallel I/O optimization for cheap sources (DATABASE, DOCUMENT).
-    # When enabled, runs these in parallel and picks best result.
-    # LLM_KNOWLEDGE is NOT included in parallel - it's expensive (cost + time)
-    # and only used as fallback if cheap sources fail.
+    # Legacy: parallel_io_sources - now always parallel in tiered mode
     parallel_io_sources: bool = False
+
+    # Use new tiered resolution (vs legacy sequential)
+    use_tiered_resolution: bool = True
+
+
+@dataclass
+class Tier2AssessmentResult:
+    """Result of Tier 2 LLM assessment."""
+    strategy: Tier2Strategy
+    confidence: float
+    reasoning: str
+    # For DERIVABLE
+    formula: Optional[str] = None
+    inputs: Optional[list[tuple[str, str]]] = None  # [(input_name, source), ...]
+    # For KNOWN
+    value: Optional[Any] = None
+    caveat: Optional[str] = None
+    # For USER_REQUIRED
+    question: Optional[str] = None
+
+
+# Tier 2 Assessment Prompt Template
+TIER2_ASSESSMENT_PROMPT = """
+Tier 1 resolution failed for: {fact_name}
+Description: {fact_description}
+
+Resolved premises in current plan:
+{resolved_premises}
+
+Pending premises in current plan:
+{pending_premises}
+
+Available data sources (already searched, fact not found directly):
+{available_sources}
+
+Assess the best resolution strategy:
+
+STRATEGY: DERIVABLE | KNOWN | USER_REQUIRED
+
+CRITICAL: DERIVABLE requires a plan with 2+ DISTINCT inputs being composed.
+- Valid: "X = A / B" (two inputs composed with formula)
+- Valid: "X = filter(A, condition from B)" (two inputs)
+- INVALID: "try looking up synonym Y instead" (single lookup, REJECTED)
+- INVALID: "search for alternative_name" (synonym hunting, REJECTED)
+
+If you cannot devise a formula with 2+ distinct inputs, do NOT use DERIVABLE.
+
+CONFIDENCE: 0.0-1.0
+REASONING: <brief explanation of why this strategy>
+
+If DERIVABLE:
+  FORMULA: <computation formula, must reference 2+ inputs>
+  INPUTS: <list of (input_name, source) tuples, e.g., [("salaries", "premise:P1"), ("industry_avg", "llm_knowledge")]>
+
+If KNOWN:
+  VALUE: <the answer - only use for general/industry knowledge you're confident about>
+  CAVEAT: <any limitations or uncertainty>
+
+If USER_REQUIRED:
+  QUESTION: <clear question to ask the user>
+
+Respond in valid JSON format:
+{{
+  "strategy": "DERIVABLE" | "KNOWN" | "USER_REQUIRED",
+  "confidence": 0.0-1.0,
+  "reasoning": "...",
+  "formula": "..." or null,
+  "inputs": [["name", "source"], ...] or null,
+  "value": ... or null,
+  "caveat": "..." or null,
+  "question": "..." or null
+}}
+"""
 
 
 # Thresholds for storing arrays as tables (to avoid context bloat)
@@ -513,6 +631,9 @@ class FactResolver:
         # Resolution state (for sub-plan depth tracking)
         self._resolution_depth: int = 0
 
+        # Deadline for Tier 1 parallel resolution (None = no deadline)
+        self._resolution_deadline: Optional[float] = None
+
         # All resolutions this session (for audit)
         self.resolution_log: list[Fact]  = []
 
@@ -538,6 +659,470 @@ class FactResolver:
         """Register a rule function programmatically."""
         self._rules[fact_pattern] = func
 
+    def set_resolution_context(
+        self,
+        resolved_premises: Optional[dict[str, "Fact"]] = None,
+        pending_premises: Optional[list[dict]] = None,
+        available_sources: Optional[str] = None,
+    ) -> None:
+        """Set context for Tier 2 LLM assessment.
+
+        Called by session before resolving premises to provide context about
+        the current plan's premises.
+
+        Args:
+            resolved_premises: Dict of fact_id -> Fact for already resolved premises
+            pending_premises: List of premise dicts still to be resolved
+            available_sources: Description of available data sources
+        """
+        self._resolution_context = {
+            "resolved_premises": resolved_premises or {},
+            "pending_premises": pending_premises or [],
+            "available_sources": available_sources or "",
+        }
+
+    def resolve_tiered(
+        self,
+        fact_name: str,
+        fact_description: str = "",
+        **params,
+    ) -> tuple[Fact, Optional[Tier2AssessmentResult]]:
+        """
+        Resolve a fact using the tiered resolution architecture.
+
+        Tier 1: Parallel local sources (cache, config, rules, docs, database)
+        Tier 2: LLM assessment (DERIVABLE, KNOWN, or USER_REQUIRED)
+
+        Args:
+            fact_name: The fact to resolve
+            fact_description: Human-readable description of what this fact represents
+            **params: Parameters for the fact
+
+        Returns:
+            Tuple of (Fact, Tier2AssessmentResult or None)
+            - If Tier 1 succeeds: (resolved_fact, None)
+            - If Tier 2 needed: (fact_or_unresolved, assessment_result)
+        """
+        import logging
+        import time
+        logger = logging.getLogger(__name__)
+
+        cache_key = self._cache_key(fact_name, params)
+        logger.info(f"[TIERED] Starting tiered resolution for: {cache_key}")
+        print(f"[DEBUG] resolve_tiered called for: {fact_name}, tier1_sources: {[s.value for s in self.strategy.tier1_sources]}")
+
+        # Quick cache check BEFORE parallel race (avoids unnecessary work)
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            if cached and cached.is_resolved and cached.confidence >= self.strategy.min_confidence:
+                logger.info(f"[TIERED] Cache hit for {cache_key}")
+                self.resolution_log.append(cached)  # Log cache hits for audit trail
+                return cached, None
+            elif cached and cached.is_resolved:
+                logger.debug(f"[TIERED] Cache hit but confidence {cached.confidence} < {self.strategy.min_confidence}")
+                # Fall through to try other sources
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 1: Parallel Local Sources
+        # ═══════════════════════════════════════════════════════════════════
+        tier1_start = time.time()
+        tier1_result = self._resolve_tier1_parallel(fact_name, params, cache_key)
+        tier1_elapsed = time.time() - tier1_start
+
+        if tier1_result and tier1_result.is_resolved:
+            logger.info(f"[TIERED] Tier 1 resolved {cache_key} in {tier1_elapsed:.2f}s: {tier1_result.value}")
+            return tier1_result, None
+
+        logger.info(f"[TIERED] Tier 1 failed for {cache_key} after {tier1_elapsed:.2f}s, proceeding to Tier 2")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 2: LLM Assessment
+        # ═══════════════════════════════════════════════════════════════════
+        assessment = self._assess_tier2_strategy(fact_name, fact_description, params)
+
+        if assessment is None:
+            # LLM assessment failed - return unresolved
+            logger.warning(f"[TIERED] Tier 2 assessment failed for {cache_key}")
+            unresolved = Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning="Tier 1 failed, Tier 2 assessment failed",
+            )
+            self.resolution_log.append(unresolved)  # Log unresolved facts too
+            return unresolved, None
+
+        logger.info(f"[TIERED] Tier 2 assessment: {assessment.strategy.value} (confidence: {assessment.confidence})")
+
+        # Handle based on assessment strategy
+        if assessment.strategy == Tier2Strategy.KNOWN:
+            # LLM provided the answer directly
+            fact = Fact(
+                name=cache_key,
+                value=assessment.value,
+                confidence=assessment.confidence,
+                source=FactSource.LLM_KNOWLEDGE,
+                reasoning=f"LLM knowledge: {assessment.reasoning}",
+                context=assessment.caveat,
+            )
+            self._cache[cache_key] = fact
+            self.resolution_log.append(fact)
+            return fact, assessment
+
+        elif assessment.strategy == Tier2Strategy.DERIVABLE:
+            # Attempt derivation with the formula
+            derived_fact = self._execute_derivation(
+                fact_name, params, cache_key, assessment
+            )
+            if derived_fact and derived_fact.is_resolved:
+                return derived_fact, assessment
+            # Derivation failed - return assessment for caller to handle
+            unresolved = Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning=f"Derivation failed: {assessment.formula}",
+            )
+            return unresolved, assessment
+
+        elif assessment.strategy == Tier2Strategy.USER_REQUIRED:
+            # Return unresolved with assessment - session layer handles user prompt
+            unresolved = Fact(
+                name=cache_key,
+                value=None,
+                confidence=0.0,
+                source=FactSource.UNRESOLVED,
+                reasoning=f"User input required: {assessment.question}",
+            )
+            return unresolved, assessment
+
+        # Fallback
+        unresolved = Fact(
+            name=cache_key,
+            value=None,
+            confidence=0.0,
+            source=FactSource.UNRESOLVED,
+            reasoning=f"Unknown Tier 2 strategy: {assessment.strategy}",
+        )
+        return unresolved, assessment
+
+    def _resolve_tier1_parallel(
+        self,
+        fact_name: str,
+        params: dict,
+        cache_key: str,
+    ) -> Optional[Fact]:
+        """
+        Tier 1: Race all local sources in parallel with timeout.
+
+        Sources: cache, config, rules, documents, database
+        All run concurrently, first successful result wins.
+        """
+        import logging
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+        import time
+        logger = logging.getLogger(__name__)
+
+        timeout = self.strategy.tier1_timeout
+        sources = self.strategy.tier1_sources
+        logger.debug(f"[TIER1] Racing sources: {[s.value for s in sources]} with {timeout}s timeout")
+
+        def try_source(source: FactSource) -> tuple[FactSource, Optional[Fact], float]:
+            """Try a single source, return (source, fact, elapsed_time)."""
+            start = time.time()
+            try:
+                fact = self._try_resolve(source, fact_name, params, cache_key)
+                elapsed = time.time() - start
+                if fact:
+                    logger.info(f"[TIER1] {source.value} returned fact: resolved={fact.is_resolved}, value_type={type(fact.value).__name__}")
+                else:
+                    logger.info(f"[TIER1] {source.value} returned None")
+                return (source, fact, elapsed)
+            except Exception as e:
+                elapsed = time.time() - start
+                import traceback
+                logger.warning(f"[TIER1] {source.value} raised {type(e).__name__}: {e}")
+                logger.debug(f"[TIER1] {source.value} traceback: {traceback.format_exc()}")
+                return (source, None, elapsed)
+
+        results: list[tuple[FactSource, Fact, float]] = []
+        sources_tried: list[str] = []
+
+        with ThreadPoolExecutor(max_workers=len(sources)) as executor:
+            futures = {executor.submit(try_source, s): s for s in sources}
+
+            try:
+                for future in as_completed(futures, timeout=timeout):
+                    source, fact, elapsed = future.result()
+
+                    if fact is None:
+                        sources_tried.append(f"{source.value}:no_result({elapsed:.2f}s)")
+                        logger.debug(f"[TIER1] {source.value}: no result in {elapsed:.2f}s")
+                    elif not fact.is_resolved:
+                        sources_tried.append(f"{source.value}:unresolved({elapsed:.2f}s)")
+                        logger.debug(f"[TIER1] {source.value}: unresolved in {elapsed:.2f}s")
+                    elif fact.confidence < self.strategy.min_confidence:
+                        sources_tried.append(f"{source.value}:low_conf({fact.confidence:.2f})")
+                        logger.debug(f"[TIER1] {source.value}: low confidence {fact.confidence}")
+                    else:
+                        # Valid result
+                        sources_tried.append(f"{source.value}:SUCCESS({elapsed:.2f}s)")
+                        results.append((source, fact, elapsed))
+                        logger.debug(f"[TIER1] {source.value}: success in {elapsed:.2f}s, conf={fact.confidence}")
+
+            except TimeoutError:
+                logger.warning(f"[TIER1] Timeout after {timeout}s, using available results")
+                # Cancel remaining futures
+                for future in futures:
+                    if not future.done():
+                        future.cancel()
+
+        if not results:
+            logger.debug(f"[TIER1] No valid results. Tried: {' → '.join(sources_tried)}")
+            return None
+
+        # Pick best result: highest confidence, then by source priority
+        source_priority = {s: i for i, s in enumerate(sources)}
+        results.sort(key=lambda x: (-x[1].confidence, source_priority.get(x[0], 999)))
+
+        best_source, best_fact, best_elapsed = results[0]
+        logger.info(f"[TIER1] Selected {best_source.value} (conf={best_fact.confidence:.2f}, {best_elapsed:.2f}s)")
+
+        # Cache and log
+        self._cache[cache_key] = best_fact
+        self.resolution_log.append(best_fact)
+        return best_fact
+
+    def _assess_tier2_strategy(
+        self,
+        fact_name: str,
+        fact_description: str,
+        params: dict,
+    ) -> Optional[Tier2AssessmentResult]:
+        """
+        Tier 2: LLM assessment of best resolution strategy.
+
+        Returns DERIVABLE (with formula), KNOWN (with value), or USER_REQUIRED.
+        """
+        import logging
+        import json
+        logger = logging.getLogger(__name__)
+
+        if not self.llm:
+            logger.warning("[TIER2] No LLM configured, cannot assess")
+            return None
+
+        # Build context from resolution context (set by session)
+        ctx = getattr(self, "_resolution_context", {})
+        resolved_premises = ctx.get("resolved_premises", {})
+        pending_premises = ctx.get("pending_premises", [])
+        available_sources = ctx.get("available_sources", "")
+
+        # Format resolved premises
+        resolved_str = "\n".join([
+            f"  - {pid}: {fact.name} = {str(fact.value)[:100]} (source: {fact.source.value})"
+            for pid, fact in resolved_premises.items()
+        ]) or "  (none yet)"
+
+        # Format pending premises
+        pending_str = "\n".join([
+            f"  - {p.get('id', '?')}: {p.get('name', '?')} ({p.get('description', '')})"
+            for p in pending_premises
+        ]) or "  (none)"
+
+        # Build prompt
+        prompt = TIER2_ASSESSMENT_PROMPT.format(
+            fact_name=fact_name,
+            fact_description=fact_description or fact_name,
+            resolved_premises=resolved_str,
+            pending_premises=pending_str,
+            available_sources=available_sources or "(see system context)",
+        )
+
+        logger.debug(f"[TIER2] Assessment prompt:\n{prompt}")
+
+        try:
+            response = self.llm.generate(
+                system="You assess fact resolution strategies. Respond only with valid JSON.",
+                user_message=prompt,
+                max_tokens=500,
+            )
+
+            # Parse JSON response
+            # Handle markdown code blocks if present
+            response_text = response.strip()
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
+            data = json.loads(response_text)
+
+            strategy_str = data.get("strategy", "").upper()
+            if strategy_str == "DERIVABLE":
+                strategy = Tier2Strategy.DERIVABLE
+            elif strategy_str == "KNOWN":
+                strategy = Tier2Strategy.KNOWN
+            elif strategy_str == "USER_REQUIRED":
+                strategy = Tier2Strategy.USER_REQUIRED
+            else:
+                logger.warning(f"[TIER2] Unknown strategy: {strategy_str}")
+                return None
+
+            # Validate DERIVABLE has 2+ inputs
+            if strategy == Tier2Strategy.DERIVABLE:
+                inputs = data.get("inputs", [])
+                if self.strategy.require_multi_input_derivation and len(inputs) < 2:
+                    logger.warning(f"[TIER2] DERIVABLE rejected: only {len(inputs)} inputs (need 2+)")
+                    # Downgrade to USER_REQUIRED
+                    return Tier2AssessmentResult(
+                        strategy=Tier2Strategy.USER_REQUIRED,
+                        confidence=0.5,
+                        reasoning=f"Derivation rejected: needs 2+ inputs, got {len(inputs)}. User input required.",
+                        question=f"What is the value for '{fact_name}'? ({fact_description})",
+                    )
+
+            return Tier2AssessmentResult(
+                strategy=strategy,
+                confidence=float(data.get("confidence", 0.5)),
+                reasoning=data.get("reasoning", ""),
+                formula=data.get("formula"),
+                inputs=data.get("inputs"),
+                value=data.get("value"),
+                caveat=data.get("caveat"),
+                question=data.get("question"),
+            )
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[TIER2] Failed to parse JSON: {e}\nResponse: {response}")
+            return None
+        except Exception as e:
+            logger.error(f"[TIER2] Assessment failed: {e}")
+            return None
+
+    def _execute_derivation(
+        self,
+        fact_name: str,
+        params: dict,
+        cache_key: str,
+        assessment: Tier2AssessmentResult,
+    ) -> Optional[Fact]:
+        """
+        Execute a derivation based on Tier 2 assessment.
+
+        Resolves the input facts and applies the formula.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not assessment.formula or not assessment.inputs:
+            logger.warning("[DERIVATION] No formula or inputs provided")
+            return None
+
+        if len(assessment.inputs) < 2:
+            logger.warning("[DERIVATION] Derivation requires 2+ inputs")
+            return None
+
+        logger.info(f"[DERIVATION] Executing: {assessment.formula}")
+        logger.info(f"[DERIVATION] Inputs: {assessment.inputs}")
+
+        # Resolve each input
+        resolved_inputs: dict[str, Fact] = {}
+        ctx = getattr(self, "_resolution_context", {})
+        resolved_premises = ctx.get("resolved_premises", {})
+
+        for input_name, source in assessment.inputs:
+            # Check if it's a reference to an existing premise
+            if source.startswith("premise:"):
+                premise_id = source.split(":")[1]
+                if premise_id in resolved_premises:
+                    resolved_inputs[input_name] = resolved_premises[premise_id]
+                    continue
+
+            # Check if it's LLM knowledge
+            if source == "llm_knowledge":
+                # Resolve via LLM knowledge
+                knowledge_fact = self._resolve_from_llm(input_name, params)
+                if knowledge_fact:
+                    resolved_inputs[input_name] = knowledge_fact
+                    continue
+
+            # Try to resolve from other sources
+            # Use non-tiered resolve to avoid infinite recursion
+            self._resolution_depth += 1
+            try:
+                fact = self._resolve_legacy(input_name, params)
+                if fact and fact.is_resolved:
+                    resolved_inputs[input_name] = fact
+            finally:
+                self._resolution_depth -= 1
+
+        # Check if all inputs resolved
+        missing = [name for name, _ in assessment.inputs if name not in resolved_inputs]
+        if missing:
+            logger.warning(f"[DERIVATION] Failed to resolve inputs: {missing}")
+            return None
+
+        # Execute the formula
+        # Build execution context with resolved values
+        exec_context = {
+            name: fact.value for name, fact in resolved_inputs.items()
+        }
+
+        try:
+            # Simple formula evaluation
+            # Security: only allow basic math operations
+            allowed_names = {"__builtins__": {"min": min, "max": max, "sum": sum, "len": len, "abs": abs}}
+            allowed_names.update(exec_context)
+
+            result = eval(assessment.formula, allowed_names)
+
+            # Calculate confidence as min of inputs
+            min_confidence = min(f.confidence for f in resolved_inputs.values())
+
+            fact = Fact(
+                name=cache_key,
+                value=result,
+                confidence=min_confidence * 0.95,  # Slight reduction for derivation
+                source=FactSource.DERIVED,
+                reasoning=f"Derived: {assessment.formula}",
+                because=list(resolved_inputs.values()),
+            )
+
+            self._cache[cache_key] = fact
+            self.resolution_log.append(fact)
+            return fact
+
+        except Exception as e:
+            logger.error(f"[DERIVATION] Formula execution failed: {e}")
+            return None
+
+    def _resolve_legacy(self, fact_name: str, params: dict) -> Fact:
+        """Legacy sequential resolution (used by derivation to avoid recursion)."""
+        cache_key = self._cache_key(fact_name, params)
+
+        # Try each source in order
+        for source in self.strategy.source_priority:
+            if source == FactSource.SUB_PLAN:
+                continue  # Skip sub-plan in legacy mode to avoid recursion
+            try:
+                fact = self._try_resolve(source, fact_name, params, cache_key)
+                if fact and fact.is_resolved:
+                    return fact
+            except Exception:
+                continue
+
+        return Fact(
+            name=cache_key,
+            value=None,
+            confidence=0.0,
+            source=FactSource.UNRESOLVED,
+            reasoning="Legacy resolution failed",
+        )
+
     def resolve(self, fact_name: str, **params) -> Fact:
         """
         Resolve a fact by name, trying sources in priority order.
@@ -553,6 +1138,14 @@ class FactResolver:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         logger = logging.getLogger(__name__)
 
+        # Use tiered resolution if enabled
+        if self.strategy.use_tiered_resolution:
+            fact, assessment = self.resolve_tiered(fact_name, **params)
+            # Note: assessment contains Tier 2 result if needed by caller
+            # For backward compatibility, just return the fact
+            return fact
+
+        # Legacy sequential resolution below
         # Build cache key from name + params
         cache_key = self._cache_key(fact_name, params)
         logger.debug(f"[FACT_RESOLVER] Resolving: {cache_key}")
@@ -1371,14 +1964,18 @@ Respond with ONLY the JSON object, no explanation."""
             return result
 
         elif source == FactSource.DATABASE:
+            print(f"[DEBUG] _try_resolve DATABASE attempting for {fact_name}")
             logger.debug(f"[_try_resolve] DATABASE attempting for {fact_name}")
             result = self._resolve_from_database(fact_name, params)
+            print(f"[DEBUG] _try_resolve DATABASE for {fact_name}: result={result is not None}")
             logger.debug(f"[_try_resolve] DATABASE for {fact_name}: {result is not None}")
             return result
 
         elif source == FactSource.DOCUMENT:
+            print(f"[DEBUG] _try_resolve DOCUMENT attempting for {fact_name}")
             logger.debug(f"[_try_resolve] DOCUMENT attempting for {fact_name}")
             result = self._resolve_from_document(fact_name, params)
+            print(f"[DEBUG] _try_resolve DOCUMENT for {fact_name}: result={result is not None}")
             logger.debug(f"[_try_resolve] DOCUMENT for {fact_name}: {result is not None}")
             return result
 
@@ -1504,7 +2101,11 @@ Respond with ONLY the JSON object, no explanation."""
         from constat.execution.executor import PythonExecutor, format_error_for_retry
         logger = logging.getLogger(__name__)
 
+        print(f"[DEBUG DB] _resolve_from_database called for: {fact_name}")
+        print(f"[DEBUG DB] llm={self.llm is not None}, schema_manager={self.schema_manager is not None}, config={self.config is not None}")
+
         if not self.llm or not self.schema_manager:
+            print(f"[DEBUG DB] MISSING: LLM={self.llm is not None}, schema_manager={self.schema_manager is not None}")
             logger.debug(f"[_resolve_from_database] Missing LLM ({self.llm is not None}) "
                         f"or schema_manager ({self.schema_manager is not None})")
             return None
@@ -1548,9 +2149,12 @@ Respond with ONLY the JSON object, no explanation."""
                 source_hints.append(f"- {db_name} ({dialect}): use pd.read_sql(query, db_{db_name})")
 
         source_hints_text = "\n".join(source_hints) if source_hints else "No data sources configured."
+        print(f"[DEBUG DB] source_hints_text: {source_hints_text[:200]}...")
+        print(f"[DEBUG DB] db_names: {db_names}")
 
         # Get schema overview
         schema_overview = self.schema_manager.get_overview()
+        print(f"[DEBUG DB] schema_overview length: {len(schema_overview)}")
 
         # Build prompt for code generation
         prompt = f"""Generate Python code to resolve this fact from the available data sources.
@@ -1587,7 +2191,14 @@ def get_result():
     return df[df['page'] == 'home']['visitors'].sum()
 ```
 
-If this fact cannot be resolved from the available sources, respond with "NOT_POSSIBLE: <reason>".
+CRITICAL - When to respond NOT_POSSIBLE:
+- If the fact asks for POLICY, RULES, GUIDELINES, or THRESHOLDS but no such table/config exists in the schema
+- If you would need to ANALYZE PATTERNS or DERIVE rules from transactional data - that is NOT the same as having actual rules
+- If the schema only has operational/transactional data (reviews, orders, etc.) but the fact asks for policy/rules ABOUT that data
+- Statistical summaries of data (avg rating, count, distribution) are NOT policies - policies are prescriptive rules like "rating 5 = 10% raise"
+- Do NOT return approximations, pattern analysis, or inferred rules as substitutes for explicitly stored policies
+
+If this fact cannot be DIRECTLY resolved from the available sources, respond with "NOT_POSSIBLE: <reason>".
 """
 
         # Use PythonExecutor for consistent execution (DRY with exploratory mode)
@@ -1626,7 +2237,9 @@ Original request:
                     max_tokens=600,
                 )
 
+            print(f"[DEBUG DB] LLM response (first 300 chars): {response[:300]}...")
             if "NOT_POSSIBLE" in response:
+                print(f"[DEBUG DB] LLM said NOT_POSSIBLE: {response}")
                 logger.debug(f"[_resolve_from_database] LLM said not possible: {response}")
                 return None
 
@@ -1742,78 +2355,63 @@ Original request:
         import logging
         logger = logging.getLogger(__name__)
 
+        print(f"[DEBUG DOC] _resolve_from_document called for: {fact_name}")
+
         if not self.llm:
+            print(f"[DEBUG DOC] No LLM configured")
             logger.debug(f"[_resolve_from_document] No LLM configured")
             return None
 
         # Check if we have document tools configured
         doc_tools = getattr(self, '_doc_tools', None)
+        print(f"[DEBUG DOC] doc_tools={doc_tools is not None}")
         if not doc_tools:
+            print(f"[DEBUG DOC] No doc_tools configured - returning None")
             logger.debug(f"[_resolve_from_document] No doc_tools configured")
             return None
 
         cache_key = self._cache_key(fact_name, params)
 
         try:
-            # Build a more descriptive search query
+            # Build search query from fact name and params
             param_str = ' '.join(str(v) for v in params.values() if v)
-            # Clean up fact_name for better semantic matching
             fact_readable = fact_name.replace('_', ' ')
             search_query = f"{fact_readable} {param_str}".strip()
 
+            print(f"[DEBUG DOC] Searching for: {search_query}")
             logger.debug(f"[_resolve_from_document] Searching for: {search_query}")
-            search_results = doc_tools.search_documents(search_query, limit=5)
+
+            # Get more results (top 10) and let the LLM evaluate relevance
+            # Don't filter by score - semantic search scores can be misleading
+            search_results = doc_tools.search_documents(search_query, limit=10)
+            print(f"[DEBUG DOC] Search returned {len(search_results) if search_results else 0} results")
 
             if not search_results:
+                print(f"[DEBUG DOC] No search results - returning None")
                 logger.debug(f"[_resolve_from_document] No search results")
                 return None
 
-            # Check relevance scores - search_documents returns: document, excerpt, relevance, section
             best_relevance = max(r.get('relevance', 0) for r in search_results)
+            print(f"[DEBUG DOC] Best relevance: {best_relevance}")
             logger.debug(f"[_resolve_from_document] Best relevance: {best_relevance}")
 
-            # Filter to results with reasonable relevance (> 0.3)
-            relevant_results = [r for r in search_results if r.get('relevance', 0) > 0.3]
-
-            context = ""
-            if relevant_results:
-                # Use chunk excerpts
-                context = "\n\n".join([
-                    f"From {r.get('document', 'document')} (section: {r.get('section', 'unknown')}, relevance: {r.get('relevance', 0):.2f}):\n{r.get('excerpt', '')}"
-                    for r in relevant_results
-                ])
-            else:
-                # Low relevance - try loading full document sections
-                logger.debug(f"[_resolve_from_document] Low relevance, trying full sections")
-                seen_sections = set()
-                section_contents = []
-
-                for r in search_results[:3]:
-                    doc_name = r.get('document')
-                    section = r.get('section')
-                    if doc_name and section and (doc_name, section) not in seen_sections:
-                        seen_sections.add((doc_name, section))
-                        section_result = doc_tools.get_document_section(doc_name, section)
-                        if 'content' in section_result:
-                            section_contents.append(
-                                f"From {doc_name} - {section}:\n{section_result['content']}"
-                            )
-
-                if section_contents:
-                    context = "\n\n".join(section_contents)
-                else:
-                    # Fall back to whatever we found
-                    context = "\n\n".join([
-                        f"From {r.get('document', 'document')}:\n{r.get('excerpt', '')}"
-                        for r in search_results[:3]
-                    ])
+            # Include ALL results - let the LLM decide what's relevant
+            # Semantic search scores are not reliable for filtering
+            context = "\n\n".join([
+                f"From {r.get('document', 'document')} (section: {r.get('section', 'unknown')}, relevance: {r.get('relevance', 0):.2f}):\n{r.get('excerpt', '')}"
+                for r in search_results
+            ])
 
             if not context.strip():
+                print(f"[DEBUG DOC] No context built - returning None")
                 logger.debug(f"[_resolve_from_document] No context built")
                 return None
 
+            print(f"[DEBUG DOC] Context built, length: {len(context)}")
+            print(f"[DEBUG DOC] Context preview: {context[:300]}...")
+
             # Ask LLM to extract the fact from document context
-            prompt = f"""Extract the value for this fact from the document content:
+            prompt = f"""Extract information for this fact from the document content:
 
 Fact needed: {fact_name}
 Parameters: {params}
@@ -1821,25 +2419,34 @@ Parameters: {params}
 Document content:
 {context}
 
-If the fact can be found in the documents, respond with:
-VALUE: <the value>
+If relevant information is found, respond with:
+VALUE: <extract the relevant content - table, paragraph, rules, or data as-is>
 CONFIDENCE: <0.0-1.0>
-SOURCE: <which document>
+SOURCE: <which document/section>
 REASONING: <brief explanation>
 
-If the fact is not in the documents, respond with:
+The VALUE can be:
+- A number or string for simple facts
+- A table or list for structured policies
+- A paragraph or multiple paragraphs for descriptive policies
+- JSON if that best represents the data
+
+If no relevant information is found, respond with:
 NOT_FOUND
 """
 
+            print(f"[DEBUG DOC] Calling LLM to extract fact...")
             response = self.llm.generate(
-                system="You extract specific facts from document content.",
+                system="You extract facts and policies from documents. Return content in its natural format.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=800,
             )
 
+            print(f"[DEBUG DOC] LLM response: {response[:300]}...")
             logger.debug(f"[_resolve_from_document] LLM response: {response[:200]}...")
 
             if "NOT_FOUND" in response:
+                print(f"[DEBUG DOC] LLM returned NOT_FOUND - returning None")
                 logger.debug(f"[_resolve_from_document] LLM returned NOT_FOUND")
                 return None
 
@@ -1849,14 +2456,31 @@ NOT_FOUND
             source_name = None
             reasoning = None
 
-            for line in response.split("\n"):
-                if line.startswith("VALUE:"):
-                    value_str = line.split(":", 1)[1].strip()
+            # Extract VALUE - may be JSON spanning multiple lines
+            if "VALUE:" in response:
+                value_start = response.index("VALUE:") + len("VALUE:")
+                # Find where VALUE ends (next field or end)
+                value_end = len(response)
+                for marker in ["CONFIDENCE:", "SOURCE:", "REASONING:"]:
+                    if marker in response[value_start:]:
+                        marker_pos = response.index(marker, value_start)
+                        if marker_pos < value_end:
+                            value_end = marker_pos
+                value_str = response[value_start:value_end].strip()
+
+                # Try to parse as JSON first, then number, then string
+                import json
+                try:
+                    value = json.loads(value_str)
+                except (json.JSONDecodeError, ValueError):
                     try:
                         value = float(value_str)
                     except ValueError:
                         value = value_str
-                elif line.startswith("CONFIDENCE:"):
+
+            # Parse other fields
+            for line in response.split("\n"):
+                if line.startswith("CONFIDENCE:"):
                     try:
                         confidence = float(line.split(":", 1)[1].strip())
                     except ValueError:
@@ -1866,7 +2490,9 @@ NOT_FOUND
                 elif line.startswith("REASONING:"):
                     reasoning = line.split(":", 1)[1].strip()
 
+            print(f"[DEBUG DOC] Parsed value: {value}, confidence: {confidence}, source: {source_name}")
             if value is not None:
+                print(f"[DEBUG DOC] SUCCESS! Resolved {fact_name} = {value}")
                 logger.debug(f"[_resolve_from_document] Resolved {fact_name} = {value} from {source_name}")
                 return Fact(
                     name=cache_key,
@@ -1876,9 +2502,15 @@ NOT_FOUND
                     source_name=source_name,
                     reasoning=reasoning,
                 )
+            else:
+                print(f"[DEBUG DOC] No VALUE found in LLM response")
         except Exception as e:
+            print(f"[DEBUG DOC] Exception resolving {fact_name}: {e}")
+            import traceback
+            print(f"[DEBUG DOC] Traceback: {traceback.format_exc()}")
             logger.warning(f"[_resolve_from_document] Error resolving {fact_name}: {e}")
 
+        print(f"[DEBUG DOC] Returning None for {fact_name}")
         return None
 
     def _resolve_from_llm(self, fact_name: str, params: dict) -> Optional[Fact]:
@@ -1965,7 +2597,11 @@ UNKNOWN
         return None
 
     def _resolve_from_sub_plan(self, fact_name: str, params: dict) -> Optional[Fact]:
-        """Generate a mini-plan to derive a complex fact with parallel resolution."""
+        """Generate a mini-plan to derive a complex fact with parallel resolution.
+
+        IMPORTANT: This method enforces the 2+ inputs requirement.
+        Derivation must compose multiple DISTINCT facts - not just try synonyms.
+        """
         import logging
         logger = logging.getLogger(__name__)
 
@@ -1981,6 +2617,12 @@ UNKNOWN
             logger.debug(f"[_resolve_from_sub_plan] No LLM configured")
             return None
 
+        # NEW: With tiered resolution enabled, sub-plan is handled by Tier 2 assessment
+        # This legacy method should only run if tiered resolution is disabled
+        if self.strategy.use_tiered_resolution:
+            logger.debug(f"[_resolve_from_sub_plan] Skipping - tiered resolution handles sub-plans via Tier 2")
+            return None
+
         logger.debug(f"[_resolve_from_sub_plan] Attempting sub-plan for {fact_name} at depth {self._resolution_depth}")
 
         # Emit event: starting sub-plan expansion
@@ -1991,63 +2633,52 @@ UNKNOWN
         })
 
         # Ask LLM to create a plan to derive this fact
-        # Key: use resolve_many_sync() for parallel resolution of independent facts
+        # CRITICAL: Enforce 2+ distinct inputs requirement to prevent synonym hunting
         prompt = f"""I need to derive this fact, but it's not directly available:
 Fact: {fact_name}
 Parameters: {params}
 
-This fact needs to be computed from other facts.
-Create a Python function that:
-1. Identifies which facts are needed
-2. Groups INDEPENDENT facts and resolves them in PARALLEL using resolve_many_sync()
-3. Resolves DEPENDENT facts sequentially (when one depends on another)
-4. Computes the final value
-5. Returns a Fact with proper confidence (min of dependencies)
+This fact needs to be COMPUTED from 2 or more OTHER facts using a formula.
 
-IMPORTANT: Use resolve_many_sync() for parallel resolution of independent facts!
+CRITICAL REQUIREMENTS:
+1. You MUST resolve 2+ DISTINCT facts and COMPOSE them with a formula
+2. Valid: "result = fact_A / fact_B" (two inputs, mathematical composition)
+3. Valid: "result = filter(fact_A, condition from fact_B)" (two inputs)
+4. INVALID: Just resolving the same fact with a different name (synonym hunting)
+5. INVALID: Trying to look up "alternative_name" or "similar_concept" - this is NOT derivation
 
-Example with PARALLEL resolution:
+If this fact CANNOT be computed from 2+ other facts, respond with:
 ```python
 def derive(resolver, params):
-    # These are INDEPENDENT - resolve in PARALLEL
-    facts = resolver.resolve_many_sync([
-        ("total_revenue", {{"customer_id": params["customer_id"]}}),
-        ("order_count", {{"customer_id": params["customer_id"]}}),
-        ("return_count", {{"customer_id": params["customer_id"]}}),
-    ])
-    revenue, orders, returns = facts
+    # NOT_DERIVABLE: This fact cannot be computed from other facts
+    return None
+```
 
-    # Compute from parallel-resolved facts
-    net_orders = orders.value - returns.value
-    avg = revenue.value / net_orders if net_orders else 0
+Example with VALID derivation (2+ inputs):
+```python
+def derive(resolver, params):
+    # Resolve 2+ DISTINCT facts
+    facts = resolver.resolve_many_sync([
+        ("employee_salaries", {{}}),  # Input 1: from database
+        ("industry_benchmark", {{}}),  # Input 2: general knowledge
+    ])
+    salaries, benchmark = facts
+
+    # COMPOSE with formula
+    avg_salary = sum(s["salary"] for s in salaries.value) / len(salaries.value)
+    competitive_ratio = avg_salary / benchmark.value
 
     return Fact(
-        name=f"avg_order_value(customer_id={{params['customer_id']}})",
-        value=avg,
+        name="{fact_name}",
+        value=competitive_ratio,
         confidence=min(f.confidence for f in facts),
-        source=FactSource.SUB_PLAN,
+        source=FactSource.DERIVED,
         because=facts
     )
 ```
 
-Example with SEQUENTIAL resolution (when facts depend on each other):
-```python
-def derive(resolver, params):
-    # start_date must be resolved first
-    start = resolver.resolve("start_date")
-    # end_date depends on start_date
-    end = resolver.resolve("end_date", start=start.value)
-
-    return Fact(
-        name="date_range",
-        value={{"start": start.value, "end": end.value}},
-        confidence=min(start.confidence, end.confidence),
-        source=FactSource.SUB_PLAN,
-        because=[start, end]
-    )
-```
-
-Generate the derivation function for {fact_name}. Use resolve_many_sync() when facts are independent:
+Generate the derivation function for {fact_name}.
+Remember: 2+ DISTINCT inputs with a FORMULA, or return None if not derivable.
 """
 
         max_retries = 3
@@ -3758,8 +4389,13 @@ Parameters: {params}
 Available schema:
 {schema_overview}
 
-If this fact can be resolved with a SQL query, provide the query.
-If not possible from database, respond with "NOT_POSSIBLE".
+If this fact can be DIRECTLY resolved with a SQL query, provide the query.
+
+CRITICAL - When to respond NOT_POSSIBLE:
+- If the fact asks for POLICY, RULES, GUIDELINES, or THRESHOLDS but no such table/config exists
+- If you would need to ANALYZE PATTERNS or DERIVE rules from transactional data - that is NOT the same as having actual rules
+- Statistical summaries (avg, count, distribution) are NOT policies - policies are prescriptive rules like "rating 5 = 10% raise"
+- Do NOT return approximations or inferred rules as substitutes for explicitly stored policies
 
 Respond in this format:
 SQL: <your query here>

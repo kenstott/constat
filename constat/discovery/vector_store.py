@@ -199,7 +199,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         if db_path:
             self._db_path = Path(db_path).expanduser()
         else:
-            self._db_path = Path.home() / ".constat" / "vectors.duckdb"
+            self._db_path = Path.cwd() / ".constat" / "vectors.duckdb"
 
         # Ensure parent directory exists
         self._db_path.parent.mkdir(parents=True, exist_ok=True)

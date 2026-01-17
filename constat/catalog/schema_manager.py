@@ -622,10 +622,46 @@ class SchemaManager:
         self._overview = "\n".join(lines)
 
     def get_overview(self) -> str:
-        """Return token-optimized schema overview for system prompt."""
+        """Return token-optimized schema overview for system prompt.
+
+        WARNING: This can be very large for databases with many tables.
+        Consider using get_brief_summary() + discovery tools instead.
+        """
         if self._overview is None:
             self._generate_overview()
         return self._overview or ""
+
+    def get_brief_summary(self) -> str:
+        """Return a brief summary of databases without listing all tables.
+
+        Use this instead of get_overview() when table count is potentially large.
+        The LLM can use discovery tools (find_relevant_tables, get_table_schema)
+        to explore specific tables as needed.
+        """
+        lines = ["Available databases:"]
+
+        # Build a lookup for database descriptions
+        db_descriptions = {
+            db_name: db_config.description
+            for db_name, db_config in self.config.databases.items()
+            if db_config.description
+        }
+
+        # Group tables by database
+        by_db: dict[str, list[TableMetadata]] = {}
+        for table_meta in self.metadata_cache.values():
+            by_db.setdefault(table_meta.database, []).append(table_meta)
+
+        for db_name, tables in sorted(by_db.items()):
+            total_rows = sum(t.row_count for t in tables)
+
+            if db_name in db_descriptions:
+                lines.append(f"  {db_name}: {db_descriptions[db_name]} ({len(tables)} tables, ~{total_rows:,} rows)")
+            else:
+                lines.append(f"  {db_name}: {len(tables)} tables, ~{total_rows:,} rows")
+
+        lines.append("\nUse discovery tools to explore: find_relevant_tables(query), get_table_schema(table)")
+        return "\n".join(lines)
 
     def get_table_schema(self, table: str) -> dict:
         """

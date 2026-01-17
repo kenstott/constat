@@ -16,7 +16,12 @@ from constat.storage.registry_datastore import RegistryAwareDataStore
 from constat.execution.executor import ExecutionResult, PythonExecutor, format_error_for_retry
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
-from constat.execution.fact_resolver import FactResolver, FactSource
+from constat.execution.fact_resolver import (
+    FactResolver,
+    FactSource,
+    Tier2Strategy,
+    Tier2AssessmentResult,
+)
 from constat.execution.mode import (
     ExecutionMode,
     ModeSelection,
@@ -31,6 +36,7 @@ from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
 from constat.catalog.preload_cache import MetadataPreloadCache
 from constat.discovery.doc_tools import DocumentDiscoveryTools
+from constat.discovery.concept_detector import ConceptDetector
 from constat.email import create_send_email
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 from constat.visualization import create_viz_helper
@@ -123,7 +129,9 @@ class QuestionAnalysis:
     mode_reasoning: Optional[str] = None  # Why this mode was recommended
 
 
-# System prompt for step code generation
+# System prompt for step code generation - base version
+# Specialized sections (dashboard, visualization, etc.) are injected conditionally
+# by ConceptDetector based on query semantics
 STEP_SYSTEM_PROMPT = """You are a data analyst executing a step in a multi-step plan.
 
 ## Your Task
@@ -137,266 +145,42 @@ Your code has access to:
 - `pd`: pandas (imported as pd)
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
-- `llm_ask`: a function to query the LLM for general knowledge
+- `llm_ask`: a function to query the LLM for general knowledge (batch calls, never loop)
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
-- `viz`: visualization helper for saving interactive maps and charts to files
+- `viz`: visualization helper for saving maps and charts to files
 
-## API Clients (api_<name>)
+## API Usage
+- `api_<name>('query { ... }')` for GraphQL - returns data payload directly (no 'data' wrapper)
+- `api_<name>('GET /endpoint', {params})` for REST
+- **Always filter at the source** - use API filters, not Python post-filtering
 
-**IMPORTANT: Always filter at the source!**
-- Use API filters/arguments instead of fetching all data and filtering in Python
-- This is faster and uses less memory
-- Check the API schema for available filter parameters
-
-For GraphQL APIs:
-```python
-# Query a GraphQL API - pass the GraphQL query string
-result = api_<name>('query { ... }')
-# result is the 'data' payload directly (outer wrapper stripped)
-df = pd.DataFrame(result['<field>'])  # NOT result['data']['<field>']
-
-# GOOD - filter in the query (check schema for exact filter syntax):
-result = api_orders('{ orders(status: "pending") { id total } }')
-
-# BAD - fetching all then filtering in Python:
-result = api_orders('{ orders { id total status } }')
-df = pd.DataFrame(result['orders'])
-df = df[df['status'] == 'pending']  # Don't do this!
-```
-
-For REST APIs:
-```python
-# Call a REST endpoint with query parameters for filtering
-result = api_<name>('GET /endpoint', {'param': 'value', 'filter': 'active'})
-# result is the parsed JSON response
-```
-
-## LLM Knowledge (via llm_ask)
-Use `llm_ask(question)` to get general knowledge not available in databases:
-```python
-# Single fact lookup
-definition = llm_ask("What qualifies as a 'high-value customer' in e-commerce?")
-```
-
-**IMPORTANT: Batch LLM calls for multiple items!**
-NEVER call llm_ask() in a loop - it's extremely slow. Instead, batch all questions into ONE call:
-```python
-# BAD - 10 separate LLM calls (very slow!)
-for country in countries:
-    attractions[country] = llm_ask(f"Tourist attractions in {country}")
-
-# GOOD - 1 batched LLM call (fast!)
-countries_list = ", ".join(df['name'].tolist())
-result = llm_ask(f"For each country, list 2-3 tourist attractions. Countries: {countries_list}. Format: Country: attraction1, attraction2")
-# Then parse the result
-```
-Note: llm_ask returns a string. Parse numeric values or structured data if needed.
-
-## State Management (via store)
-Each step runs in complete isolation. The ONLY way to share data between steps is through `store`.
-
-For DataFrames:
-```python
-# Save a DataFrame for later steps
-store.save_dataframe('customers', df, step_number=1, description='Customer data')
-
-# Load a DataFrame from a previous step
-customers = store.load_dataframe('customers')
-
-# Query saved data with SQL (DuckDB syntax)
-result = store.query('SELECT * FROM customers WHERE revenue > 1000')
-
-# List available tables
-tables = store.list_tables()
-```
-
-For simple values (numbers, strings, lists, dicts):
-```python
-# Save a state variable (NOTE: set_state does NOT have a 'description' parameter)
-store.set_state('total_revenue', total, step_number=1)
-store.set_state('top_genres', ['Rock', 'Latin', 'Metal'], step_number=1)
-
-# Load a state variable - ALWAYS check for None!
-total = store.get_state('total_revenue')
-if total is None:
-    # Handle missing value - query fresh or use default
-    total = 0
-
-genres = store.get_state('top_genres')
-
-# Get all state variables
-all_state = store.get_all_state()
-```
+## State Management
+Share data between steps ONLY via `store`:
+- `store.save_dataframe('name', df, step_number=N)` / `store.load_dataframe('name')`
+- `store.set_state('key', value, step_number=N)` / `store.get_state('key')` (check for None!)
+- `store.query('SELECT ... FROM table')` for SQL on saved data
 
 ## Common Pitfalls
-**Check columns before accessing:**
-```python
-df = store.load_dataframe('customers')
-# BAD: df['tier'].nunique()  # May fail if 'tier' doesn't exist
-# GOOD:
-if 'tier' in df.columns:
-    result = df['tier'].nunique()
-else:
-    # Try alternative column names or handle gracefully
-    tier_cols = [c for c in df.columns if 'tier' in c.lower()]
-    if tier_cols:
-        result = df[tier_cols[0]].nunique()
-```
+- Check `if 'col' in df.columns` before accessing columns
+- For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
+- NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 
-**DuckDB date filtering (for store.query):**
-```python
-# BAD: strftime('%Y', date_col)  # May fail with type errors
-# GOOD: Use CAST and date comparisons
-result = store.query('''
-    SELECT * FROM orders
-    WHERE CAST(order_date AS DATE) >= '2024-01-01'
-    AND CAST(order_date AS DATE) < '2025-01-01'
-''')
-```
-
-## File Output & Visualizations (via viz)
-Save files and interactive visualizations. Files are saved to ~/.constat/outputs/ with clickable file:// URIs.
-
-**Documents and Data Files:**
-```python
-# Save a markdown document (report, letter, etc.)
-viz.save_file('quarterly_report', markdown_content, ext='md', title='Q4 Report')
-
-# Save CSV data
-viz.save_file('export', df.to_csv(index=False), ext='csv', title='Data Export')
-
-# Save JSON
-viz.save_file('config', json.dumps(data, indent=2), ext='json')
-```
-
-**Interactive Maps (using folium):**
-```python
-import folium
-
-# Create a map centered on Europe
-m = folium.Map(location=[50, 10], zoom_start=4)
-
-# Add markers for each country
-for _, row in df.iterrows():
-    folium.Marker(
-        location=[row['latitude'], row['longitude']],
-        popup=row['name'],
-        tooltip=row['name']
-    ).add_to(m)
-
-# Save the map - prints clickable file:// URI
-viz.save_map('euro_countries', m, title='Countries Using Euro')
-```
-
-**Interactive Charts (using Plotly):**
-```python
-import plotly.express as px
-
-# Create an interactive bar chart
-fig = px.bar(df, x='country', y='population', title='Population by Country')
-
-# Save the chart - prints clickable file:// URI
-viz.save_chart('population_chart', fig, title='Population by Country')
-```
-
-**Other Plotly chart types:**
-```python
-# Pie chart
-fig = px.pie(df, values='count', names='category')
-
-# Line chart
-fig = px.line(df, x='date', y='value', color='series')
-
-# Scatter plot
-fig = px.scatter(df, x='x', y='y', color='category', size='value')
-
-# Choropleth map
-fig = px.choropleth(df, locations='iso_code', color='value',
-                    locationmode='ISO-3', title='World Map')
-```
-
-## Dashboard Generation Rules
-
-When the user requests a "dashboard":
-
-### Default Layout (2x2)
-Generate 4 complementary visualizations arranged in a 2x2 grid using `make_subplots(rows=2, cols=2)`:
-- Top-left: Primary metric over time (line/bar)
-- Top-right: Breakdown/composition (pie/bar)
-- Bottom-left: Comparison or ranking (bar/table)
-- Bottom-right: Trend or KPI summary
-
-### Layout Variations
-Adjust based on data characteristics:
-
-| Data Available | Layout | Panels |
-|----------------|--------|--------|
-| Single metric, time series | 1x2 | Trend + Summary stats |
-| Multiple categories | 2x2 | Overview, breakdown, comparison, detail |
-| Hierarchical data | 1x3 | High-level → Mid → Detail |
-| KPI-focused | 3x2 | Top row: KPI cards, Bottom: supporting charts |
-
-### Panel Selection Priority
-1. **Critical/requested metrics** - Always include
-2. **Time-based trends** - If temporal data exists
-3. **Comparisons** - If categorical groupings exist
-4. **Distributions** - If numerical spread is relevant
-
-### Code Pattern
-Always use:
-```python
-from plotly.subplots import make_subplots
-fig = make_subplots(rows=R, cols=C, subplot_titles=(...))
-# Add traces to specific positions
-fig.add_trace(go.Bar(...), row=1, col=1)
-fig.add_trace(go.Pie(...), row=1, col=2)
-fig.update_layout(height=600, showlegend=True)
-viz.save_chart('dashboard', fig, title='Dashboard Title')
-```
-
-## Variable vs Hardcoded Values (for replay determinism)
-Plans can be saved and replayed. Use dynamic expressions for relative terms, hardcode explicit values.
-
-**Relative/variable terms → compute dynamically:**
-```python
-# "today", "this month", "last 30 days" → use datetime
-from datetime import datetime, timedelta
-today = datetime.now().date()
-last_30_days = datetime.now() - timedelta(days=30)
-
-# "within policy", "above threshold" → look up dynamically
-policy_threshold = store.get_state('inventory_policy_min') or lookup_policy()
-```
-
-**Explicit values → hardcode:**
-```python
-# "January 1st, 2006" → hardcode the date
-start_date = '2006-01-01'
-
-# "above 100 units" → hardcode the number
-threshold = 100
-```
-
-This ensures replayed plans behave correctly: "today's orders" shows fresh data, "2006 orders" always shows 2006.
+## Variable vs Hardcoded Values
+- Relative terms ("today", "last month") → compute dynamically with datetime
+- Explicit values ("January 2006", "above 100") → hardcode
 
 ## Code Rules
-1. Use pandas `pd.read_sql(query, db_<name>)` to query source databases
-2. For cross-database queries, load from each DB and join in pandas
-3. **ALWAYS save results to store** - this is the ONLY way to share data between steps:
-   - Any DataFrame result MUST be saved with `store.save_dataframe()`
-   - Any list, dict, or computed value MUST be saved with `store.set_state()`
-   - Nothing in local variables persists between steps!
-4. Print informative output about what was done
-5. Keep code focused on the current step's goal
-6. When asked for interactive visualizations (maps, charts), use the `viz` helper
+1. Use `pd.read_sql(query, db_<name>)` for source databases
+2. **ALWAYS save results to store** - nothing in local variables persists!
+3. Print informative output about what was done
 
 ## Output Format
-Return ONLY the Python code wrapped in ```python ... ``` markers.
+Return ONLY Python code wrapped in ```python ... ``` markers.
 """
 
 
 STEP_PROMPT_TEMPLATE = """{system_prompt}
-
+{injected_sections}
 ## Available Databases
 {schema_overview}
 {api_overview}
@@ -468,6 +252,9 @@ class SessionConfig:
     # Insight/synthesis settings
     enable_insights: bool = True  # If True, synthesize answer and generate suggestions
     show_raw_output: bool = True  # If True, show raw step output before synthesis
+
+    # Default execution mode (overrides LLM mode selection if set)
+    default_mode: Optional[ExecutionMode] = None  # If set, always use this mode
 
 
 @dataclass
@@ -556,6 +343,7 @@ class Session:
             schema_manager=self.schema_manager,
             config=self.config,
             event_callback=self._handle_fact_resolver_event,
+            doc_tools=self.doc_tools,  # Enable document-based fact resolution
         )
 
         # Learning store for corrections and patterns
@@ -575,6 +363,10 @@ class Session:
 
         # Tool response cache for schema tools (cleared on refresh)
         self._tool_cache: dict[str, any] = {}
+
+        # Concept detector for conditional prompt injection
+        self._concept_detector = ConceptDetector()
+        self._concept_detector.initialize()
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         """
@@ -701,8 +493,15 @@ class Session:
         except Exception:
             pass
 
+        # Detect relevant concepts and inject specialized sections
+        injected_sections = self._concept_detector.get_sections_for_prompt(
+            query=step.goal,
+            target="step",
+        )
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
+            injected_sections=injected_sections,
             schema_overview=ctx["schema_overview"],
             api_overview=ctx["api_overview"],
             domain_context=self.config.system_prompt or "No additional context.",
@@ -875,6 +674,41 @@ class Session:
         """Get the number of tables in the preload cache."""
         return len(self.preload_cache.get_cached_tables())
 
+    def _get_brief_schema_summary(self) -> str:
+        """Get a brief summary of available databases without listing all tables.
+
+        This is used when no preload config is set. It provides enough context
+        for the LLM to know what databases exist without bloating the prompt
+        with potentially hundreds of tables.
+        """
+        lines = ["Available databases:"]
+
+        # Group tables by database to get counts
+        by_db: dict[str, int] = {}
+        total_rows_by_db: dict[str, int] = {}
+        for table_meta in self.schema_manager.metadata_cache.values():
+            by_db[table_meta.database] = by_db.get(table_meta.database, 0) + 1
+            total_rows_by_db[table_meta.database] = (
+                total_rows_by_db.get(table_meta.database, 0) + table_meta.row_count
+            )
+
+        # Build database descriptions with descriptions if available
+        db_descriptions = {
+            db_name: db_config.description
+            for db_name, db_config in self.config.databases.items()
+            if db_config.description
+        }
+
+        for db_name in sorted(by_db.keys()):
+            table_count = by_db[db_name]
+            row_count = total_rows_by_db[db_name]
+            if db_name in db_descriptions:
+                lines.append(f"  {db_name}: {db_descriptions[db_name]} ({table_count} tables, ~{row_count:,} rows)")
+            else:
+                lines.append(f"  {db_name}: {table_count} tables, ~{row_count:,} rows")
+
+        return "\n".join(lines)
+
     def _get_schema_tools(self) -> list[dict]:
         """Get schema tool definitions."""
         tools = [
@@ -1030,10 +864,16 @@ YOUR JSON RESPONSE:"""
         Returns:
             dict with keys: schema_overview, api_overview, doc_overview, user_facts
         """
-        # Schema overview
-        schema_overview = self.schema_manager.get_overview()
+        # Schema overview - prefer preloaded hot tables over full listing
+        # Full table listings can be huge; use discovery tools for on-demand access
         if self._preloaded_context:
-            schema_overview = f"{self._preloaded_context}\n\n{schema_overview}"
+            # Use preloaded hot tables + brief summary of other databases
+            schema_overview = self._preloaded_context
+            schema_overview += "\n\nUse `find_relevant_tables(query)` or `get_table_schema(table)` for other tables."
+        else:
+            # No preload config - use brief database summary only
+            schema_overview = self._get_brief_schema_summary()
+            schema_overview += "\n\nUse discovery tools to explore schemas: `find_relevant_tables(query)`, `get_table_schema(table)`"
 
         # API overview
         api_overview = ""
@@ -1073,6 +913,48 @@ YOUR JSON RESPONSE:"""
             "doc_overview": doc_overview,
             "user_facts": user_facts,
         }
+
+    def _build_available_sources_description(self) -> str:
+        """Build a concise description of available data sources for Tier 2 assessment.
+
+        This is used by the fact resolver's Tier 2 LLM assessment to understand
+        what sources are available without providing full schema details.
+        """
+        lines = []
+
+        # Databases (names + descriptions, not full schema)
+        if self.config.databases:
+            lines.append("Databases:")
+            for name, db_config in self.config.databases.items():
+                desc = db_config.description or db_config.type or "SQL database"
+                lines.append(f"  - {name}: {desc}")
+
+        # Documents
+        if self.config.documents:
+            lines.append("Documents:")
+            for name, doc_config in self.config.documents.items():
+                desc = doc_config.description or doc_config.type
+                lines.append(f"  - {name}: {desc}")
+
+        # APIs
+        if self.config.apis:
+            lines.append("APIs:")
+            for name, api_config in self.config.apis.items():
+                desc = api_config.description or f"{api_config.type} endpoint"
+                lines.append(f"  - {name}: {desc}")
+
+        # Config values
+        if self.config.system_prompt:
+            lines.append("Config: Domain context available in system prompt")
+
+        # Hot tables (preloaded schema)
+        if self._preloaded_context:
+            lines.append("Hot tables (schema preloaded): See system context")
+
+        # Tool calling documentation
+        lines.append("Discovery tools available: find_relevant_tables(), get_table_schema(), search_documents()")
+
+        return "\n".join(lines) if lines else "(no sources configured)"
 
     def _create_llm_ask_helper(self) -> callable:
         """Create a helper function for step code to query LLM for general knowledge."""
@@ -1776,12 +1658,14 @@ Perform these analyses:
    - KNOWLEDGE: Pure explanation/lookup - user wants to UNDERSTAND something without data analysis
      Examples: "What is our policy?", "Explain how X works", "What does term Y mean?"
    - EXPLORATORY: Data analysis and creation - user wants to CREATE, ANALYZE, BUILD, or COMPUTE
-     Examples: "Create an analysis...", "Show sales by region", "Suggest salary increases based on..."
-     NOTE: If user mentions policy but wants to APPLY it to data, use EXPLORATORY (policy resolved during execution)
-   - AUDITABLE: Verification with provenance - user needs PROOF or DEFENSIBLE conclusions
-     Examples: "Prove that X", "Verify compliance", "Why did decision Y happen?"
+     Examples: "Create an analysis...", "Show sales by region", "Build a dashboard"
+   - AUDITABLE: Verification with provenance - user needs PROOF, DEFENSIBLE conclusions, or AUDIT TRAIL
+     Examples: "Prove that X", "Verify compliance", "Run in audit mode", "With full provenance"
 
-   CRITICAL: "Apply policy to data" = EXPLORATORY, "What is the policy?" = KNOWLEDGE
+   CRITICAL PRIORITY:
+   1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "with provenance" → AUDITABLE
+   2. EXPLICIT MODE REQUEST: If user says "exploratory mode" → EXPLORATORY
+   3. Otherwise infer from task type
 
 Respond in this exact format:
 ---
@@ -2924,18 +2808,28 @@ Please create a revised plan that addresses this feedback."""
             }
 
         # Build mode selection from analysis result (determined in single LLM call above)
-        mode_map = {
-            "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
-            "EXPLORATORY": ExecutionMode.EXPLORATORY,
-            "AUDITABLE": ExecutionMode.AUDITABLE,
-        }
-        mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
-        mode_selection = ModeSelection(
-            mode=mode,
-            confidence=0.8,  # High confidence since LLM determined this
-            reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
-            matched_keywords=[],
-        )
+        # Check for user-configured default mode first
+        if self.session_config.default_mode is not None:
+            mode = self.session_config.default_mode
+            mode_selection = ModeSelection(
+                mode=mode,
+                confidence=1.0,  # Maximum confidence for user-specified default
+                reasoning=f"User default mode: {mode.value}",
+                matched_keywords=["default_mode"],
+            )
+        else:
+            mode_map = {
+                "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
+                "EXPLORATORY": ExecutionMode.EXPLORATORY,
+                "AUDITABLE": ExecutionMode.AUDITABLE,
+            }
+            mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
+            mode_selection = ModeSelection(
+                mode=mode,
+                confidence=0.8,  # High confidence since LLM determined this
+                reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
+                matched_keywords=[],
+            )
 
         # Branch based on execution mode
         if mode_selection.mode == ExecutionMode.KNOWLEDGE:
@@ -2944,7 +2838,7 @@ Please create a revised plan that addresses this feedback."""
 
         if mode_selection.mode == ExecutionMode.AUDITABLE:
             # Use fact-based derivation planning for auditable mode
-            return self._solve_auditable(problem, mode_selection)
+            return self._solve_auditable_with_steer_handling(problem, mode_selection)
 
         # Generate plan with approval loop (EXPLORATORY mode)
         current_problem = problem
@@ -3044,7 +2938,7 @@ Please create a revised plan that addresses this feedback."""
                             reasoning="User requested auditable mode",
                             matched_keywords=["user request"],
                         )
-                        return self._solve_auditable(problem, mode_selection)
+                        return self._solve_auditable_with_steer_handling(problem, mode_selection)
 
                     # If switching to knowledge mode, use the knowledge solver
                     if target_mode == ExecutionMode.KNOWLEDGE:
@@ -3447,6 +3341,72 @@ NEW_REQUEST: <the new request, or NONE>
                 "new_request": user_text,
             }
 
+    def _classify_premise_response(self, user_response: str, fact_name: str, question: str) -> dict:
+        """
+        Classify a user's response to a premise clarification question.
+
+        Determines if the response is:
+        - VALUE: An actual value/answer (e.g., "5% for rating 4, 3% for rating 3")
+        - STEER: Guidance on where/how to find the answer (e.g., "Look in the HR policy document")
+
+        Args:
+            user_response: The user's response text
+            fact_name: The name of the fact being resolved
+            question: The original clarification question asked
+
+        Returns:
+            Dict with:
+                - type: "VALUE" or "STEER"
+                - value: The parsed value if VALUE type
+                - steer: The guidance/direction if STEER type
+        """
+        prompt = f"""Classify this user response to a data clarification question.
+
+Question asked: "{question}"
+Fact needed: {fact_name}
+User response: "{user_response}"
+
+Is this response:
+A) VALUE - A direct answer providing the actual data/value/information requested
+   Examples: "5%", "use 10000 as threshold", "rating 5 gets 10%, rating 4 gets 6%"
+
+B) STEER - Guidance on WHERE or HOW to find the answer (not the answer itself)
+   Examples: "Look in the HR policy", "Check the business_rules document",
+   "Use the performance review guidelines", "It should be in the config"
+
+Respond in this exact format:
+TYPE: <VALUE or STEER>
+CONTENT: <the value if VALUE, or the guidance/direction if STEER>
+"""
+
+        try:
+            response = self.llm.generate(
+                system="You classify user responses precisely. Distinguish between direct answers and guidance about where to find answers.",
+                user_message=prompt,
+                max_tokens=200,
+            )
+
+            result = {"type": "VALUE", "value": user_response, "steer": None}
+
+            for line in response.split("\n"):
+                line = line.strip()
+                if line.startswith("TYPE:"):
+                    resp_type = line.split(":", 1)[1].strip().upper()
+                    if resp_type == "STEER":
+                        result["type"] = "STEER"
+                elif line.startswith("CONTENT:"):
+                    content = line.split(":", 1)[1].strip()
+                    if result["type"] == "VALUE":
+                        result["value"] = content
+                    else:
+                        result["steer"] = content
+
+            return result
+
+        except Exception:
+            # Default to treating as value
+            return {"type": "VALUE", "value": user_response, "steer": None}
+
     def follow_up(self, question: str, auto_classify: bool = True) -> dict:
         """
         Ask a follow-up question that builds on the current session's context.
@@ -3479,18 +3439,28 @@ NEW_REQUEST: <the new request, or NONE>
         analysis = self._analyze_question(question, previous_problem=previous_problem)
 
         # Build mode selection from analysis result (mode determined in single LLM call above)
-        mode_map = {
-            "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
-            "EXPLORATORY": ExecutionMode.EXPLORATORY,
-            "AUDITABLE": ExecutionMode.AUDITABLE,
-        }
-        mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
-        mode_selection = ModeSelection(
-            mode=mode,
-            confidence=0.8,  # High confidence since LLM determined this
-            reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
-            matched_keywords=[],
-        )
+        # Check for user-configured default mode first
+        if self.session_config.default_mode is not None:
+            mode = self.session_config.default_mode
+            mode_selection = ModeSelection(
+                mode=mode,
+                confidence=1.0,  # Maximum confidence for user-specified default
+                reasoning=f"User default mode: {mode.value}",
+                matched_keywords=["default_mode"],
+            )
+        else:
+            mode_map = {
+                "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
+                "EXPLORATORY": ExecutionMode.EXPLORATORY,
+                "AUDITABLE": ExecutionMode.AUDITABLE,
+            }
+            mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
+            mode_selection = ModeSelection(
+                mode=mode,
+                confidence=0.8,  # High confidence since LLM determined this
+                reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
+                matched_keywords=[],
+            )
 
         # KNOWLEDGE mode: explanation/knowledge requests don't need data analysis
         if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
@@ -3642,7 +3612,7 @@ NEW_REQUEST: <the new request, or NONE>
                         }
                     ))
                     # Pass cached fact hints to help LLM use consistent names
-                    return self._solve_auditable(original_problem, mode_selection, cached_fact_hints=saved_facts)
+                    return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=saved_facts)
 
             # Otherwise treat as verification question
             return self._follow_up_auditable(question, mode_selection)
@@ -3753,6 +3723,50 @@ Follow-up question: {question}
                     "command": approval.command,
                     "message": "Slash command entered during approval.",
                 }
+
+            elif approval.decision == PlanApproval.MODE_SWITCH:
+                # User wants to switch execution mode
+                target_mode = approval.target_mode
+
+                # Emit mode switch event
+                self._emit_event(StepEvent(
+                    event_type="mode_switch",
+                    step_number=0,
+                    data={
+                        "mode": target_mode.value,
+                        "matched_keywords": ["user request"],
+                    }
+                ))
+
+                # If switching to auditable mode, use the auditable solver
+                if target_mode == ExecutionMode.AUDITABLE:
+                    mode_selection = ModeSelection(
+                        mode=ExecutionMode.AUDITABLE,
+                        confidence=1.0,
+                        reasoning="User requested auditable mode",
+                        matched_keywords=["user request"],
+                    )
+                    # Use original problem from datastore if this is a redo
+                    original_problem = self.datastore.get_session_meta("problem") or question
+                    return self._solve_auditable_with_steer_handling(original_problem, mode_selection)
+
+                # If switching to knowledge mode, use the knowledge solver
+                if target_mode == ExecutionMode.KNOWLEDGE:
+                    mode_selection = ModeSelection(
+                        mode=ExecutionMode.KNOWLEDGE,
+                        confidence=1.0,
+                        reasoning="User requested knowledge mode",
+                        matched_keywords=["user request"],
+                    )
+                    return self._solve_knowledge(question, mode_selection)
+
+                # Otherwise continue with exploratory mode (will be handled below)
+                mode_selection = ModeSelection(
+                    mode=ExecutionMode.EXPLORATORY,
+                    confidence=1.0,
+                    reasoning="User requested exploratory mode",
+                    matched_keywords=["user request"],
+                )
 
             elif approval.decision == PlanApproval.SUGGEST:
                 # For follow-ups, replan with feedback
@@ -3939,6 +3953,56 @@ User feedback: {approval.suggestion}
             "scratchpad": self.scratchpad.to_markdown(),
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
         }
+
+    def _solve_auditable_with_steer_handling(
+        self, problem: str, mode_selection, cached_fact_hints: list[dict] = None
+    ) -> dict:
+        """
+        Wrapper for _solve_auditable that handles user steers.
+
+        If a user provides guidance (steer) instead of a value when asked for
+        a premise, this re-plans with the steer added to the problem context.
+
+        Args:
+            problem: The original problem
+            mode_selection: Mode selection info
+            cached_fact_hints: Optional cached fact hints
+
+        Returns:
+            Result dict from _solve_auditable
+        """
+        max_steer_attempts = 3
+        steer_attempt = 0
+        augmented_problem = problem
+
+        while steer_attempt < max_steer_attempts:
+            result = self._solve_auditable(augmented_problem, mode_selection, cached_fact_hints)
+
+            # Check if we need to re-plan due to user steer
+            if result.get("status") == "replan_needed":
+                steer_attempt += 1
+                steer = result.get("steer", "")
+                fact_name = result.get("fact_name", "")
+                print(f"[DEBUG SESSION] Re-planning with steer: {steer}")
+
+                # Augment the problem with the user's guidance
+                augmented_problem = f"{problem}\n\nAdditional context: For {fact_name}, {steer}"
+
+                # Clear cached plan to force re-planning
+                self._last_plan = None
+
+                # Emit event so user sees the message
+                self._emit_event(StepEvent(
+                    event_type="steer_detected",
+                    step_number=0,
+                    data={"message": result.get("message", "Re-planning with your guidance...")}
+                ))
+                continue
+
+            return result
+
+        # Max attempts reached
+        return {"error": "Max re-planning attempts reached", "status": "failed"}
 
     def _solve_auditable(self, problem: str, mode_selection, cached_fact_hints: list[dict] = None) -> dict:
         """
@@ -4301,11 +4365,24 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
             derivation_lines = ["**Premise Resolution:**", ""]
             total_premises = len(premises)
 
+            # Build available sources description for Tier 2 assessment
+            available_sources_desc = self._build_available_sources_description()
+
             for idx, premise in enumerate(premises):
+                print(f"[DEBUG PREMISE] Processing premise {idx}: {premise}")
+                # Update resolution context for Tier 2 LLM assessment
+                # This tells the LLM what's already resolved and what's pending
+                pending_premises = [p for i, p in enumerate(premises) if i > idx]
+                self.fact_resolver.set_resolution_context(
+                    resolved_premises=resolved_premises,
+                    pending_premises=pending_premises,
+                    available_sources=available_sources_desc,
+                )
                 fact_id = premise["id"]  # P1, P2, etc.
                 fact_name = premise["name"]
-                fact_desc = premise["description"]
-                source = premise["source"]
+                fact_desc = premise.get("description", "")
+                source = premise.get("source", "")  # Default to empty string if not specified
+                print(f"[DEBUG PREMISE] fact_id={fact_id}, fact_name={fact_name}, source='{source}'")
 
                 # Check if the premise name contains an embedded value (e.g., "name = 8")
                 # This happens when the LLM provides a known constant at planning time
@@ -4368,6 +4445,8 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
                         )
                     elif source.startswith("database") or source == "database":
                         # Generate and execute SQL for database premises
+                        # Build source context for SQL generation
+                        ctx = self._build_source_context(include_user_facts=False)
                         db_name = source.split(":", 1)[1].strip() if ":" in source else None
 
                         # If no database specified, use the first available SQL database
@@ -4378,82 +4457,121 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
                             else:
                                 raise Exception("No SQL databases configured")
 
-                        # Use LLM to generate SQL from premise description
-                        sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
-
-The result should be stored as '{fact_name}'.
-Available schema:
-{ctx["schema_overview"]}
-
-Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
-
-                        sql_result = self.router.execute(
-                            task_type=TaskType.SQL_GENERATION,
-                            system="You generate SQL queries. Return only the SQL, no explanation.",
-                            user_message=sql_prompt,
-                            max_tokens=500,
-                        )
-
-                        # Extract SQL from response
-                        sql = sql_result.content.strip()
-                        if sql.startswith("```"):
-                            sql = re.sub(r'^```\w*\n?', '', sql)
-                            sql = re.sub(r'\n?```$', '', sql)
-
-                        # Execute the query using SQLAlchemy engine
+                        # Use LLM to generate SQL from premise description with retry on error
                         from constat.execution.fact_resolver import Fact, FactSource
                         import pandas as pd
-                        try:
-                            engine = self.schema_manager.get_sql_connection(db_name)
+
+                        engine = self.schema_manager.get_sql_connection(db_name)
+                        max_retries = 3
+                        last_error = None
+
+                        # Get detailed schema with column names for SQL generation
+                        detailed_schema = self.schema_manager.get_overview()
+                        print(f"[DEBUG SQL] Using detailed schema:\n{detailed_schema}")
+
+                        for attempt in range(max_retries):
+                            # Build prompt with error feedback if retrying
+                            error_context = ""
+                            if last_error:
+                                error_context = f"\n\nPREVIOUS ATTEMPT FAILED with error:\n{last_error}\n\nFix the query to avoid this error."
+
+                            # Include learnings from previous SQL errors
+                            sql_learnings = self._get_codegen_learnings(fact_desc)
+
+                            sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
+
+Schema (column names are listed in parentheses - USE THESE EXACT NAMES):
+{detailed_schema}
+{sql_learnings}
+{error_context}
+RULE: Always SELECT the primary key column (usually table_id or id) - required for joins."""
+
+                            sql_result = self.router.execute(
+                                task_type=TaskType.SQL_GENERATION,
+                                system="Output raw SQL only. No markdown. Always include primary key columns in SELECT.",
+                                user_message=sql_prompt,
+                                max_tokens=500,
+                            )
+
+                            # Extract SQL from response - handle code blocks anywhere
+                            sql = sql_result.content.strip()
+                            # Look for SQL in code block first
+                            code_block_match = re.search(r'```(?:sql)?\s*\n?(.*?)\n?```', sql, re.DOTALL | re.IGNORECASE)
+                            if code_block_match:
+                                sql = code_block_match.group(1).strip()
+                            elif sql.startswith("```"):
+                                sql = re.sub(r'^```\w*\n?', '', sql)
+                                sql = re.sub(r'\n?```$', '', sql)
 
                             # For SQLite, strip database prefix from table names
-                            # (SQLite doesn't support schema.table syntax)
                             if "sqlite" in str(engine.url):
                                 sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
 
-                            result_df = pd.read_sql(sql, engine)
-                            row_count = len(result_df) if result_df is not None else 0
+                            try:
+                                result_df = pd.read_sql(sql, engine)
+                                row_count = len(result_df) if result_df is not None else 0
 
-                            # For scalar results (1 row, 1 col), extract the actual value
-                            if row_count == 1 and len(result_df.columns) == 1:
-                                scalar_value = result_df.iloc[0, 0]
-                                # Convert numpy types to Python native
-                                if hasattr(scalar_value, 'item'):
-                                    scalar_value = scalar_value.item()
-                                fact_value = scalar_value
-                            else:
-                                fact_value = f"{row_count} rows"
+                                # For scalar results (1 row, 1 col), extract the actual value
+                                if row_count == 1 and len(result_df.columns) == 1:
+                                    scalar_value = result_df.iloc[0, 0]
+                                    if hasattr(scalar_value, 'item'):
+                                        scalar_value = scalar_value.item()
+                                    fact_value = scalar_value
+                                else:
+                                    fact_value = f"{row_count} rows"
 
-                            # For multi-row results, store as table reference
-                            if row_count > 1 or (row_count == 1 and len(result_df.columns) > 1):
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=fact_value,
-                                    confidence=0.9,
-                                    source=FactSource.DATABASE,
-                                    query=sql,
-                                    table_name=fact_name,  # Reference to datastore table
-                                    row_count=row_count,
+                                # For multi-row results, store as table reference
+                                if row_count > 1 or (row_count == 1 and len(result_df.columns) > 1):
+                                    fact = Fact(
+                                        name=fact_name,
+                                        value=fact_value,
+                                        confidence=0.9,
+                                        source=FactSource.DATABASE,
+                                        query=sql,
+                                        table_name=fact_name,
+                                        row_count=row_count,
+                                    )
+                                else:
+                                    fact = Fact(
+                                        name=fact_name,
+                                        value=fact_value,
+                                        confidence=0.9,
+                                        source=FactSource.DATABASE,
+                                        query=sql,
+                                    )
+                                # Store result in datastore for later use
+                                if self.datastore and result_df is not None and len(result_df) > 0:
+                                    self.datastore.save_dataframe(fact_name, result_df, step_number=idx + 1)
+                                break  # Success - exit retry loop
+
+                            except Exception as sql_err:
+                                failed_sql = sql
+                                last_error = str(sql_err)
+                                print(f"[SQL RETRY {attempt + 1}/{max_retries}] {sql_err}")
+                                if attempt == max_retries - 1:
+                                    # Final attempt failed
+                                    fact = Fact(
+                                        name=fact_name,
+                                        value=None,
+                                        confidence=0.0,
+                                        source=FactSource.UNRESOLVED,
+                                        reasoning=f"SQL error after {max_retries} attempts: {sql_err}",
+                                    )
+                        else:
+                            # Success after retry - save learning if we had errors
+                            if last_error and self.learning_store:
+                                self.learning_store.save_learning(
+                                    category=LearningCategory.CODEGEN_ERROR,
+                                    context={
+                                        "table": fact_name,
+                                        "failed_sql": failed_sql,
+                                        "error": last_error,
+                                        "corrected_sql": sql,
+                                        "schema_hint": ctx["schema_overview"][:500],
+                                    },
+                                    correction=f"SQL query for '{fact_name}' failed with '{last_error}'. Corrected query: {sql}",
+                                    source=LearningSource.AUTO_CAPTURE,
                                 )
-                            else:
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=fact_value,
-                                    confidence=0.9,
-                                    source=FactSource.DATABASE,
-                                    query=sql,
-                                )
-                            # Store result in datastore for later use
-                            if self.datastore and result_df is not None and len(result_df) > 0:
-                                self.datastore.save_dataframe(fact_name, result_df, step_number=idx + 1)
-                        except Exception as sql_err:
-                            fact = Fact(
-                                name=fact_name,
-                                value=None,
-                                confidence=0.0,
-                                source=FactSource.UNRESOLVED,
-                                reasoning=f"SQL error: {sql_err}",
-                            )
                     elif source.startswith("document:"):
                         # Resolve from document
                         fact = self.fact_resolver.resolve(fact_name)
@@ -4524,8 +4642,79 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                 reasoning=f"No way to ask user for {fact_name}",
                             )
                     else:
-                        # Generic resolution
-                        fact = self.fact_resolver.resolve(fact_name)
+                        # Generic resolution using tiered approach
+                        # Use resolve_tiered directly to get Tier 2 assessment for better user prompts
+                        from constat.execution.fact_resolver import Fact
+                        print(f"[DEBUG SESSION] Calling resolve_tiered for: {fact_name}")
+                        fact, tier2_assessment = self.fact_resolver.resolve_tiered(
+                            fact_name,
+                            fact_description=fact_desc,
+                        )
+                        print(f"[DEBUG SESSION] resolve_tiered returned: fact.value={fact.value if fact else None}, fact.source={fact.source if fact else None}")
+                        print(f"[DEBUG SESSION] tier2_assessment: {tier2_assessment.strategy if tier2_assessment else None}")
+
+                        # Handle Tier 2 USER_REQUIRED - prompt user with specific question
+                        if (tier2_assessment
+                            and tier2_assessment.strategy == Tier2Strategy.USER_REQUIRED
+                            and self._clarification_callback):
+                            question_text = tier2_assessment.question or f"What is the value for '{fact_name}'?"
+                            request = ClarificationRequest(
+                                original_question=problem,
+                                ambiguity_reason=tier2_assessment.reasoning or f"Could not resolve: {fact_name}",
+                                questions=[
+                                    ClarificationQuestion(
+                                        text=question_text,
+                                        suggestions=[]
+                                    )
+                                ]
+                            )
+                            response = self._clarification_callback(request)
+                            if not response.skip and response.answers:
+                                user_value_str = list(response.answers.values())[0]
+
+                                # Classify response as VALUE or STEER
+                                classification = self._classify_premise_response(
+                                    user_value_str, fact_name, question_text
+                                )
+                                print(f"[DEBUG SESSION] Response classification: {classification}")
+
+                                if classification["type"] == "STEER":
+                                    # User provided guidance, not a value - trigger re-planning
+                                    steer_guidance = classification["steer"] or user_value_str
+                                    print(f"[DEBUG SESSION] STEER detected: {steer_guidance}")
+
+                                    # Add steer to context for re-planning
+                                    steer_context = f"User guidance for {fact_name}: {steer_guidance}"
+                                    if not hasattr(self, '_steer_context'):
+                                        self._steer_context = []
+                                    self._steer_context.append(steer_context)
+
+                                    # Signal that we need to re-plan
+                                    return {
+                                        "status": "replan_needed",
+                                        "steer": steer_guidance,
+                                        "fact_name": fact_name,
+                                        "message": f"I'll look for {fact_name} using your guidance: {steer_guidance}",
+                                    }
+
+                                # VALUE response - parse and use as fact
+                                user_value = classification["value"]
+                                # Try to parse as number
+                                try:
+                                    if "." in str(user_value):
+                                        user_value = float(str(user_value).replace(",", ""))
+                                    else:
+                                        user_value = int(str(user_value).replace(",", ""))
+                                except ValueError:
+                                    pass  # Keep as string
+
+                                fact = Fact(
+                                    name=fact_name,
+                                    value=user_value,
+                                    confidence=1.0,
+                                    source=FactSource.USER_PROVIDED,
+                                    reasoning=f"User provided: {user_value_str}",
+                                )
 
                     if fact and fact.value:
                         resolved_premises[fact_id] = fact
@@ -4592,6 +4781,11 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         }
                     ))
                 except Exception as e:
+                    # Log the actual error so we can debug
+                    import traceback
+                    print(f"[ERROR] Failed to resolve {fact_name}: {e}")
+                    print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
+
                     # Try to ask the user for the value as last resort
                     if self._clarification_callback:
                         try:
@@ -4665,6 +4859,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
 
             # Step 3: Execute inferences using the resolved premises
             resolved_inferences = {}
+            inference_names = {}  # Map inference ID to English name for table naming
             inference_lines = ["**Inference Execution:**", ""]
 
             for idx, inf in enumerate(inferences):
@@ -4672,6 +4867,9 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                 operation = inf['operation']
                 explanation = inf.get('explanation', '')
                 inf_name = inf.get('name', inf_id)
+                # Sanitize name for table naming (lowercase, underscores)
+                table_name = inf_name.lower().replace(' ', '_').replace('-', '_')
+                inference_names[inf_id] = table_name
 
                 self._emit_event(StepEvent(
                     event_type="inference_executing",
@@ -4702,11 +4900,15 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                 scalar_values.append(f"- {pid} ({premises[int(pid[1:])-1]['name']}): {fact.value}")
 
                     for prior_id, prior_result in resolved_inferences.items():
-                        if prior_result:
-                            if "rows" in str(prior_result):
-                                available_tables.append(f"- {prior_id}: stored as table '{prior_id.lower()}_result'")
-                            else:
-                                scalar_values.append(f"- {prior_id}: {prior_result}")
+                        # Use explicit None check to avoid DataFrame truth value errors
+                        if prior_result is None:
+                            continue
+                        prior_str = str(prior_result)
+                        prior_table_name = inference_names.get(prior_id, prior_id.lower())
+                        if "rows" in prior_str:
+                            available_tables.append(f"- {prior_id}: stored as table '{prior_table_name}'")
+                        else:
+                            scalar_values.append(f"- {prior_id}: {prior_str}")
 
                     # Build context strings
                     scalars_context = "\n".join(scalar_values) if scalar_values else "(none)"
@@ -4718,10 +4920,10 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                         ref_match = re.match(r'verify_exists\((\w+)\)', operation)
                         if ref_match:
                             ref_id = ref_match.group(1)
-                            # Find the referenced table
+                            # Find the referenced table using English name
                             ref_table = None
                             if ref_id.startswith("I"):
-                                ref_table = f"{ref_id.lower()}_result"
+                                ref_table = inference_names.get(ref_id, ref_id.lower())
                             elif ref_id.startswith("P"):
                                 p_idx = int(ref_id[1:]) - 1
                                 if p_idx < len(premises):
@@ -4751,6 +4953,7 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                         step_number=len(premises) + idx + 1,
                                         data={
                                             "inference_id": inf_id,
+                                            "inference_name": inf_name,  # English variable name
                                             "result": f"{row_count} records verified",
                                             "output": f"Data verification: {row_count} records in {ref_table}",
                                             "step": idx + 1,
@@ -4763,6 +4966,9 @@ Return ONLY the SQL query, nothing else. Use appropriate JOINs if needed."""
                                     inference_lines.append(f"- {inf_id}: {inf_name} = verification error")
 
                     # Generate code to execute the inference
+                    # Include learnings from previous errors
+                    inference_learnings = self._get_codegen_learnings(f"inference {operation}")
+
                     inference_prompt = f"""Generate Python code to execute this inference step:
 
 Inference: {inf_id}: {inf_name} = {operation}
@@ -4773,38 +4979,60 @@ SCALAR VALUES (substitute these literal values in your code):
 
 TABLES in datastore (query with store.query()):
 {tables_context}
+{inference_learnings}
 
-The datastore is available as 'store' with methods:
-- store.query(sql) -> pd.DataFrame  # Query using SQL
-- store.list_tables() -> list of table dicts with 'name' key
-- store.save_dataframe(name, df)  # Save a DataFrame to the store
+## Available APIs
+- store.query(sql) -> pd.DataFrame  # Query tables using DuckDB SQL
+- store.list_tables() -> list of table dicts
+- store.save_dataframe(name, df)  # Save DataFrame for later use
 
-CRITICAL: Identifiers like I1, I2, P1, P2 in the operation ARE NOT Python variables!
-You MUST substitute the actual numeric values from SCALAR VALUES above.
-
-Example - if operation is "divide(I1, I2)" and scalars show "I1: 12" and "I2: 4":
+## Code Pattern to Follow
 ```python
-# WRONG - will fail with "name 'I1' is not defined":
-ratio = I1 / I2
+# 1. Load data from tables
+df = store.query("SELECT * FROM table_name")
 
-# CORRECT - use the actual numbers:
-ratio = 12 / 4  # I1=12, I2=4
-_result = ratio
+# 2. Process data (filter, join, aggregate, etc.)
+# IMPORTANT: Check DataFrame emptiness correctly
+if len(df) > 0:  # CORRECT way to check if DataFrame has rows
+    # process...
+    pass
+
+# 3. MUST end with _result assignment
+_result = computed_value  # number, boolean, string, or DataFrame
 ```
 
-Generate code that:
-1. SUBSTITUTES the actual scalar values (do NOT use I1, I2, P1, P2 as variables)
-2. For tables, loads data using store.query()
-3. Performs the operation (divide, compare, join, filter, aggregate, etc.)
-4. MUST set _result = <computed_value> with the actual numeric/boolean result
-5. Optionally print a summary for debugging
+## Critical Rules
 
-IMPORTANT:
-- ALWAYS set _result = <the_computed_value> at the end
-- _result should be the actual value (number, boolean, etc.), not a string description
-- Use store.save_dataframe(name, df) to save DataFrames if needed
+RULE 1 - Variable substitution:
+Identifiers like I1, I2, P1, P2 in the operation are REFERENCES to scalar values above.
+Replace them with the actual values: `ratio = 12 / 4` not `ratio = I1 / I2`
 
-Return ONLY executable Python code, no explanations."""
+RULE 2 - DataFrame emptiness checks:
+```python
+# WRONG (crashes with "truth value of DataFrame is ambiguous"):
+if df:
+if not df:
+if result:
+
+# CORRECT:
+if len(df) > 0:      # has rows
+if len(df) == 0:     # empty
+if not df.empty:     # has rows (alternative)
+if df.empty:         # empty (alternative)
+```
+
+RULE 3 - Always set _result:
+Your code MUST end with `_result = <value>` where value is the computed result.
+
+RULE 4 - Save DataFrames for later use:
+If your result is a DataFrame that subsequent steps will need, SAVE IT:
+```python
+store.save_dataframe('{table_name}', result_df)
+_result = result_df
+```
+This makes it queryable as '{table_name}' in later inferences.
+
+Return ONLY executable Python code, no markdown fences, no explanations."""
 
                     # Retry loop for code generation with learning capture
                     max_retries = 3
@@ -4818,6 +5046,7 @@ Return ONLY executable Python code, no explanations."""
                         if attempt == 0:
                             prompt_to_use = inference_prompt
                         else:
+                            print(f"[RETRY] {inf_id} attempt {attempt+1}/{max_retries}: {last_error[:80]}...")
                             # Track error context for learning capture
                             pending_learning_context = {
                                 "error_message": last_error[:500] if last_error else "",
@@ -4834,16 +5063,17 @@ Return ONLY executable Python code, no explanations."""
 
 {inference_prompt}
 
-Common fixes:
-- Use pd.to_datetime() to convert string columns to datetime
-- Check column names exist in the DataFrame
-- Use proper DuckDB SQL syntax for store.query()"""
+Common fixes for this error:
+- "truth value of DataFrame is ambiguous" -> use `if len(df) > 0:` not `if df:`
+- Column not found -> check exact column names in the table
+- Type error on datetime -> use `pd.to_datetime(df['col'])`
+- SQL syntax error -> use DuckDB SQL syntax for store.query()"""
 
                         code_result = self.router.execute(
                             task_type=TaskType.SQL_GENERATION,
                             system="You generate Python code for data operations. Return only executable code.",
                             user_message=prompt_to_use,
-                            max_tokens=800,
+                            max_tokens=1200,
                         )
 
                         # Extract code
@@ -4851,6 +5081,15 @@ Common fixes:
                         if code.startswith("```"):
                             code = re.sub(r'^```\w*\n?', '', code)
                             code = re.sub(r'\n?```$', '', code)
+
+                        # Auto-fix common DataFrame boolean errors (LLM often ignores warnings)
+                        # Only fix obvious DataFrame variable patterns to avoid breaking other code
+                        # Fix: `if df:` -> `if not df.empty:`  (and variants like result, data, employees)
+                        df_var_pattern = r'\bif\s+(df|result|data|employees|reviews|performance_reviews|merged|joined|filtered)\s*:'
+                        code = re.sub(df_var_pattern, r'if not \1.empty:', code)
+                        # Fix: `if not df:` -> `if df.empty:`
+                        df_not_pattern = r'\bif\s+not\s+(df|result|data|employees|reviews|performance_reviews|merged|joined|filtered)\s*:'
+                        code = re.sub(df_not_pattern, r'if \1.empty:', code)
 
                         # Track original code for learning capture
                         if attempt == 0:
@@ -4875,16 +5114,18 @@ Common fixes:
                                         pass
                                 exec_globals[pid] = val
                         # Add resolved inferences to exec context (e.g., I1, I2, I3)
+                        # Use explicit None check to avoid DataFrame truth value errors
                         for iid, ival in resolved_inferences.items():
-                            if ival is not None:
-                                val = ival
-                                # Extract numeric value from "X rows" strings
-                                if isinstance(val, str) and "rows" in val:
-                                    try:
-                                        val = int(val.split()[0])
-                                    except (ValueError, IndexError):
-                                        pass
-                                exec_globals[iid] = val
+                            if ival is None:
+                                continue
+                            val = ival
+                            # Extract numeric value from "X rows" strings
+                            if isinstance(val, str) and "rows" in val:
+                                try:
+                                    val = int(val.split()[0])
+                                except (ValueError, IndexError):
+                                    pass
+                            exec_globals[iid] = val
                         captured_output = io.StringIO()
                         old_stdout = sys.stdout
                         try:
@@ -4914,10 +5155,9 @@ Common fixes:
                     # Get the computed result from _result variable
                     computed_result = exec_globals.get('_result')
 
-                    # Check if result was stored as a table
-                    result_table = f"{inf_id.lower()}_result"
-                    if self.datastore and result_table in [t['name'] for t in self.datastore.list_tables()]:
-                        result_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {result_table}")
+                    # Check if result was stored as a table (using English name)
+                    if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
+                        result_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
                         row_count = result_df.iloc[0, 0] if len(result_df) > 0 else 0
                         resolved_inferences[inf_id] = f"{row_count} rows"
                         inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} rows ✓")
@@ -4949,6 +5189,7 @@ Common fixes:
                         step_number=len(premises) + idx + 1,
                         data={
                             "inference_id": inf_id,
+                            "inference_name": inf_name,  # English variable name
                             "result": resolved_inferences[inf_id],
                             "output": inference_output.strip(),
                             "step": idx + 1,
@@ -4979,13 +5220,34 @@ Common fixes:
                 data={"message": "Synthesizing answer from resolved facts..."}
             ))
 
-            # Build synthesis context
+            # Build synthesis context - use English names for clarity
             resolved_context = "\n".join([
-                f"- {pid}: {p.value}" for pid, p in resolved_premises.items() if p and p.value
+                f"- {pid} ({premises[int(pid[1:])-1]['name']}): {p.value}"
+                for pid, p in resolved_premises.items() if p and p.value
             ])
+            # Use English variable names (e.g., "budget_validated_raises") not IDs (e.g., "I6")
             inference_context = "\n".join([
-                f"- {inf_id}: {result}" for inf_id, result in resolved_inferences.items()
+                f"- {inf_id} ({inference_names.get(inf_id, inf_id)}): {result}"
+                for inf_id, result in resolved_inferences.items()
             ])
+
+            # Get the final result table data to include in synthesis
+            final_data_preview = ""
+            if inferences and self.datastore:
+                # Find the last inference that produced a table (skip verification steps)
+                for inf in reversed(inferences):
+                    inf_id = inf['id']
+                    table_name = inference_names.get(inf_id, inf_id.lower())
+                    result = resolved_inferences.get(inf_id, "")
+                    if "rows" in str(result) and "verified" not in str(result).lower():
+                        try:
+                            # Query the table and format as markdown for the LLM
+                            result_df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 20")
+                            if len(result_df) > 0:
+                                final_data_preview = f"\n\nFinal Result Data ({table_name}):\n{result_df.to_markdown(index=False)}"
+                                break
+                        except Exception:
+                            pass  # Table may not exist or have issues
 
             synthesis_prompt = f"""Based on the resolved premises and inference plan, provide the answer.
 
@@ -4998,8 +5260,15 @@ Inference Steps:
 {inference_context}
 
 Conclusion to derive: {conclusion}
+{final_data_preview}
 
-Provide a clear answer based on the available data. If premises are unresolved, explain what data is missing."""
+IMPORTANT INSTRUCTIONS:
+1. Always refer to data by its English variable name (e.g., "budget_validated_raises"), NEVER by ID (e.g., "I6")
+2. If final result data is provided above, present the key findings in a clear table or list
+3. If the user asked for recommendations/suggestions, list them with specific values from the data
+4. If premises are unresolved, explain what data is missing
+
+Provide a clear, actionable answer that shows the actual results."""
 
             synthesis_result = self.router.execute(
                 task_type=TaskType.SYNTHESIS,

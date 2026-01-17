@@ -95,12 +95,8 @@ class MetadataPreloadCache:
         if cache_dir:
             self.cache_dir = cache_dir
         else:
-            # Default to .constat in current directory, fall back to ~/.constat
-            local_cache = Path(".constat")
-            if local_cache.exists():
-                self.cache_dir = local_cache
-            else:
-                self.cache_dir = Path.home() / ".constat"
+            # Default to .constat in current directory
+            self.cache_dir = Path.cwd() / ".constat"
 
         self.cache_file = self.cache_dir / self.CACHE_FILENAME
         self._cache: Optional[PreloadCache] = None

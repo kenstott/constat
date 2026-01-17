@@ -359,6 +359,7 @@ Once in the interactive REPL, these commands are available:
 | `/insights [on\|off]` | Toggle insight synthesis |
 | `/preferences` | Show current settings |
 | `/verbose` | Toggle verbose mode |
+| `/mode [mode]` | Set default mode: audit\|explore\|knowledge\|auto |
 | `/save <name>` | Save plan for replay |
 | `/plans` | List saved plans |
 | `/replay <name>` | Replay a saved plan |

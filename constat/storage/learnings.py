@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+import threading
 import uuid
 import re
 
@@ -70,34 +71,41 @@ class LearningStore:
         self.user_id = user_id
         self.file_path = self.base_dir / user_id / "learnings.yaml"
         self._data: Optional[dict] = None
+        self._lock = threading.Lock()  # Thread-safe file access
 
     def _load(self) -> dict:
-        """Load learnings from YAML file."""
+        """Load learnings from YAML file (thread-safe)."""
         if self._data is not None:
             return self._data
 
-        if not self.file_path.exists():
-            self._data = {"raw_learnings": [], "rules": [], "archive": []}
+        with self._lock:
+            # Double-check after acquiring lock
+            if self._data is not None:
+                return self._data
+
+            if not self.file_path.exists():
+                self._data = {"raw_learnings": [], "rules": [], "archive": []}
+                return self._data
+
+            with open(self.file_path, "r") as f:
+                self._data = yaml.safe_load(f) or {}
+
+            # Ensure all sections exist
+            if "raw_learnings" not in self._data:
+                self._data["raw_learnings"] = []
+            if "rules" not in self._data:
+                self._data["rules"] = []
+            if "archive" not in self._data:
+                self._data["archive"] = []
+
             return self._data
 
-        with open(self.file_path, "r") as f:
-            self._data = yaml.safe_load(f) or {}
-
-        # Ensure all sections exist
-        if "raw_learnings" not in self._data:
-            self._data["raw_learnings"] = []
-        if "rules" not in self._data:
-            self._data["rules"] = []
-        if "archive" not in self._data:
-            self._data["archive"] = []
-
-        return self._data
-
     def _save(self) -> None:
-        """Save learnings to YAML file."""
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.file_path, "w") as f:
-            yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
+        """Save learnings to YAML file (thread-safe)."""
+        with self._lock:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.file_path, "w") as f:
+                yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
 
     def _generate_id(self, prefix: str = "learn") -> str:
         """Generate a unique ID."""

@@ -9,6 +9,7 @@ from . import RETRY_PROMPT_TEMPLATE
 from constat.providers.anthropic import AnthropicProvider
 from constat.catalog.schema_manager import SchemaManager
 from constat.discovery.doc_tools import DocumentDiscoveryTools, DOC_TOOL_SCHEMAS
+from constat.discovery.concept_detector import ConceptDetector
 from constat.email import create_send_email
 
 
@@ -65,122 +66,46 @@ SCHEMA_TOOLS = [
 ENGINE_TOOLS = SCHEMA_TOOLS + DOC_TOOL_SCHEMAS
 
 
-# Engine system prompt (constat-owned) - controls code generation behavior
+# Engine system prompt (constat-owned) - base version
+# API filtering details are injected conditionally by ConceptDetector
 ENGINE_SYSTEM_PROMPT = """You are a data analyst assistant. Answer questions by writing Python code that queries data sources and prints the answer.
 
 ## Discovery Tools
-Use these tools to explore available data sources BEFORE writing code:
-
-**Database Discovery:**
-- get_table_schema(table): Get column info for a table (e.g., "sales.customers", "metrics.web_metrics")
+Use these tools FIRST to explore available data:
+- get_table_schema(table): Get column info (e.g., "sales.customers")
 - find_relevant_tables(query): Semantic search for relevant tables
-
-**Document Discovery:**
-- list_documents(): List all available reference documents
-- search_documents(query, limit=5): Semantic search for relevant document content
-- get_document(name): Get full document content
-- get_document_section(name, section): Get specific section from a document
-
-IMPORTANT: Use discovery tools FIRST to understand what data is available.
-Use document search when questions involve business rules, policies, or domain knowledge.
+- list_documents(), search_documents(query): Find reference documents
+- get_document(name), get_document_section(name, section): Read documents
 
 ## Code Environment
-Your code has access to:
-- `pd`: pandas (pre-imported)
-- `np`: numpy (pre-imported)
-- SQL database connections: `db_<name>` (e.g., `db_sales`)
-- API clients: `api_<name>` for GraphQL/REST APIs (e.g., `api_countries`)
-- File data source paths: `file_<name>` (e.g., `file_web_metrics`)
-- `send_email(to, subject, body, df=None)`: Send email with optional DataFrame attachment
+- `pd`: pandas, `np`: numpy (pre-imported)
+- `db_<name>`: SQL database connections
+- `api_<name>`: GraphQL/REST API clients (response is data payload directly, no 'data' wrapper)
+- `file_<name>`: File paths for CSV/JSON/Parquet
+- `send_email(to, subject, body, df=None)`: Email with optional attachment
 
-## API Best Practices
-When using APIs (`api_<name>`):
-
-**IMPORTANT - Response format:**
-The `api_<name>()` functions return the GraphQL `data` payload DIRECTLY - the outer `{"data": ...}` wrapper is already stripped.
-
-```python
-# GraphQL returns: {"data": {"countries": [...]}}
-# But api_countries() returns JUST: {"countries": [...]}
-
-result = api_countries('{ countries { name } }')
-print(result.keys())  # dict_keys(['countries'])
-
-# CORRECT:
-countries = result['countries']
-
-# WRONG - will fail with KeyError:
-countries = result['data']['countries']  # NO! 'data' wrapper is stripped
-```
-
-**Filtering:**
-1. **Use filters at the source** - Always filter in the API call rather than fetching all data and filtering in Python. Check the API schema for supported filter parameters.
-
-2. **GraphQL** - Filter syntax varies by implementation. Check the Available APIs section below for implementation-specific hints. Common patterns:
-   - Query arguments: `query { orders(status: "pending") { id } }`
-   - Variables: `query($s: String!) { orders(status: $s) { id } }` with `variables={"s": "pending"}`
-
-3. **REST filters** - Use query parameters:
-   - `api_orders({"params": {"status": "active", "since": "2024-01-01"}})`
-
-4. **Only fetch needed fields** - In GraphQL, request only the fields you need.
-
-## Data Source Types
-
-Data sources appear in schema discovery. Check the `database_type` field:
-- `postgresql`, `mysql`, `sqlite`: SQL databases → use `pd.read_sql()`
-- `mongodb`, `elasticsearch`, etc.: NoSQL → use connector methods
-- `csv`: CSV files → use `pd.read_csv(file_<name>)`
-- `json`: JSON files → use `pd.read_json(file_<name>)`
-- `jsonl`: JSON Lines → use `pd.read_json(file_<name>, lines=True)`
-- `parquet`: Parquet files → use `pd.read_parquet(file_<name>)`
-- `arrow`, `feather`: Arrow files → use `pd.read_feather(file_<name>)`
-
-## Data Loading Examples
-
-**SQL Databases:**
-```python
-df = pd.read_sql("SELECT * FROM customers", db_sales)
-```
-
-**CSV Files:**
-```python
-df = pd.read_csv(file_web_metrics)  # file_<name> contains the path
-```
-
-**JSON Files:**
-```python
-df = pd.read_json(file_events)
-```
-
-**Parquet Files:**
-```python
-df = pd.read_parquet(file_transactions)
-```
+## Data Loading
+- SQL: `pd.read_sql("SELECT ...", db_<name>)`
+- CSV: `pd.read_csv(file_<name>)`
+- JSON: `pd.read_json(file_<name>)`
+- Parquet: `pd.read_parquet(file_<name>)`
 
 ## Variable vs Hardcoded Values
-Use dynamic expressions for relative terms, hardcode explicit user-provided values.
+- Relative terms ("today", "last month") → use `datetime.now()`, relative calculations
+- Explicit values ("January 2006", "above 100") → hardcode
 
-- "today", "last month", "this quarter" → `datetime.now()`, relative calculations
-- "January 2006", "Q3 2024" → hardcode `'2006-01-01'`
-- "within policy", "above threshold" → look up policy dynamically
-- "above 100 units" → hardcode `100`
-
-## Code Generation Rules
-1. Use discovery tools to find relevant data sources and their types
-2. Check the database_type to determine how to load the data
-3. For SQL: use pd.read_sql() with db_<name> connection
-4. For files: use pd.read_csv/json/parquet() with file_<name> path
-5. Print a clear, formatted answer at the end
+## Code Rules
+1. Use discovery tools first to understand available data
+2. For SQL use pd.read_sql(), for files use appropriate pd.read_* function
+3. Print a clear, formatted answer at the end
 
 ## Output Format
-Return ONLY the Python code wrapped in ```python ... ``` markers.
-Do not include explanations outside the code block."""
+Return ONLY Python code wrapped in ```python ... ``` markers."""
 
 
 # Template combining engine prompt with schema and domain context
 SYSTEM_PROMPT_TEMPLATE = """{engine_prompt}
-
+{injected_sections}
 ## Available Databases
 {schema_overview}
 {api_overview}
@@ -220,16 +145,30 @@ class QueryEngine:
         # Initialize document discovery tools
         self.doc_tools = DocumentDiscoveryTools(config) if config.documents else None
 
-    def _build_system_prompt(self) -> str:
+        # Concept detector for conditional prompt injection
+        self._concept_detector = ConceptDetector()
+        self._concept_detector.initialize()
+
+    def _build_system_prompt(self, query: str) -> str:
         """Build the full system prompt.
+
+        Args:
+            query: The user's question for concept detection
 
         Combines:
         - Engine prompt (constat-owned): code generation rules, tool usage
+        - Injected sections: conditionally added based on query semantics
         - Schema overview (auto-generated): databases, tables, relationships
         - API overview (from config): available GraphQL/REST APIs
         - Document overview (from config): reference documents
         - Domain context (user-owned): business context, terminology
         """
+        # Detect relevant concepts and inject specialized sections
+        injected_sections = self._concept_detector.get_sections_for_prompt(
+            query=query,
+            target="engine",
+        )
+
         # Build API overview if configured
         api_overview = ""
         if self.config.apis:
@@ -309,7 +248,8 @@ class QueryEngine:
 
         return SYSTEM_PROMPT_TEMPLATE.format(
             engine_prompt=ENGINE_SYSTEM_PROMPT,
-            schema_overview=self.schema_manager.get_overview() + sql_hints,
+            injected_sections=injected_sections,
+            schema_overview=self.schema_manager.get_brief_summary() + sql_hints,
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
@@ -389,7 +329,7 @@ class QueryEngine:
         Returns:
             QueryResult with answer, code, and attempt history
         """
-        system_prompt = self._build_system_prompt()
+        system_prompt = self._build_system_prompt(question)
         tool_handlers = self._get_tool_handlers()
         exec_globals = self._get_execution_globals()
 

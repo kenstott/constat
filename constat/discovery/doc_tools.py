@@ -355,8 +355,7 @@ class DocumentDiscoveryTools:
         if cache_dir:
             self._cache_dir = cache_dir
         else:
-            local_cache = Path(".constat")
-            self._cache_dir = local_cache if local_cache.exists() else Path.home() / ".constat"
+            self._cache_dir = Path.cwd() / ".constat"
         self._cache_file = self._cache_dir / self.CACHE_FILENAME
 
         # Initialize vector store
@@ -672,7 +671,9 @@ class DocumentDiscoveryTools:
         for chunk_id, similarity, chunk in search_results:
             results.append({
                 "document": chunk.document_name,
-                "excerpt": chunk.content[:500] + ("..." if len(chunk.content) > 500 else ""),
+                # Return full chunk content (already sized at CHUNK_SIZE=800)
+                # Truncating at 500 chars can cut content mid-sentence
+                "excerpt": chunk.content,
                 "relevance": round(similarity, 3),
                 "section": chunk.section,
             })
