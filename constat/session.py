@@ -5039,14 +5039,15 @@ _result = result_df
 This makes it queryable as '{table_name}' in later inferences.
 
 RULE 5 - Parse range values:
-When values contain ranges (like "8-12%", "5% to 8%", "0%-2%"), extract numeric boundaries.
+When values contain ranges, extract numeric boundaries.
 Pattern: <number>[unit]<separator><number>[unit] where separator is -, to, through, up to
+Examples: "1-5", "10% to 20%", "3in-6in", "100 through 200"
 ```python
 import re
 def parse_range(value_str):
     # Remove common units (%, in, etc.) and extract numbers
     cleaned = re.sub(r'[%a-zA-Z]', '', str(value_str)).strip()
-    # Match: number separator number (e.g., "8-12", "5 to 8")
+    # Match: number separator number
     match = re.match(r'([0-9.]+)\\s*(?:[-]|to|through|up\\s*to)\\s*([0-9.]+)', cleaned, re.I)
     if match:
         return float(match.group(1)), float(match.group(2))
@@ -5054,9 +5055,9 @@ def parse_range(value_str):
     nums = re.findall(r'[0-9.]+', cleaned)
     return (float(nums[0]), float(nums[0])) if nums else (0.0, 0.0)
 
-# Use midpoint of range for raise calculation
-min_pct, max_pct = parse_range("8-12%")  # Returns (8.0, 12.0)
-raise_pct = (min_pct + max_pct) / 2 / 100  # 0.10 (10% midpoint)
+# Example usage - use midpoint of range
+min_val, max_val = parse_range(range_string)
+midpoint = (min_val + max_val) / 2
 ```
 
 Return ONLY executable Python code, no markdown fences, no explanations."""
