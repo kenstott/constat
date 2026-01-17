@@ -5055,9 +5055,16 @@ def parse_range(value_str):
     nums = re.findall(r'[0-9.]+', cleaned)
     return (float(nums[0]), float(nums[0])) if nums else (0.0, 0.0)
 
-# Example usage - use midpoint of range
+# Usage options:
 min_val, max_val = parse_range(range_string)
-midpoint = (min_val + max_val) / 2
+
+# Option 1: Midpoint (when no additional precision available)
+result = (min_val + max_val) / 2
+
+# Option 2: Interpolate within range (when you have fractional precision)
+# E.g., rating 4.2 on scale where 4 maps to range: interpolate 20% into range
+fraction = rating - int(rating)  # 0.2
+result = min_val + fraction * (max_val - min_val)
 ```
 
 Return ONLY executable Python code, no markdown fences, no explanations."""
