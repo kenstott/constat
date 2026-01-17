@@ -4368,6 +4368,10 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
             # Build available sources description for Tier 2 assessment
             available_sources_desc = self._build_available_sources_description()
 
+            # Import Fact and FactSource at the start of premise resolution
+            # to ensure they're available in all code paths
+            from constat.execution.fact_resolver import Fact, FactSource
+
             for idx, premise in enumerate(premises):
                 print(f"[DEBUG PREMISE] Processing premise {idx}: {premise}")
                 # Update resolution context for Tier 2 LLM assessment
@@ -4742,6 +4746,8 @@ RULE: Always SELECT the primary key column (usually table_id or id) - required f
                         except NameError:
                             db_source_name = None
                         # Preserve the fact's original source type
+                        # Import FactSource here in case it wasn't imported in the resolution branch
+                        from constat.execution.fact_resolver import FactSource
                         fact_source = fact.source
                         if source.startswith("database") and fact_source == FactSource.DATABASE:
                             fact_source = FactSource.DATABASE
@@ -5032,6 +5038,27 @@ _result = result_df
 ```
 This makes it queryable as '{table_name}' in later inferences.
 
+RULE 5 - Parse range values:
+When values contain ranges (like "8-12%", "5% to 8%", "0%-2%"), extract numeric boundaries.
+Pattern: <number>[unit]<separator><number>[unit] where separator is -, to, through, up to
+```python
+import re
+def parse_range(value_str):
+    # Remove common units (%, in, etc.) and extract numbers
+    cleaned = re.sub(r'[%a-zA-Z]', '', str(value_str)).strip()
+    # Match: number separator number (e.g., "8-12", "5 to 8")
+    match = re.match(r'([0-9.]+)\\s*(?:[-]|to|through|up\\s*to)\\s*([0-9.]+)', cleaned, re.I)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    # Single number - use as both min and max
+    nums = re.findall(r'[0-9.]+', cleaned)
+    return (float(nums[0]), float(nums[0])) if nums else (0.0, 0.0)
+
+# Use midpoint of range for raise calculation
+min_pct, max_pct = parse_range("8-12%")  # Returns (8.0, 12.0)
+raise_pct = (min_pct + max_pct) / 2 / 100  # 0.10 (10% midpoint)
+```
+
 Return ONLY executable Python code, no markdown fences, no explanations."""
 
                     # Retry loop for code generation with learning capture
@@ -5235,19 +5262,39 @@ Common fixes for this error:
             final_data_preview = ""
             if inferences and self.datastore:
                 # Find the last inference that produced a table (skip verification steps)
+                # Work backwards from I8, I7, etc. skipping verification steps like I9
+                available_tables = {t['name'] for t in self.datastore.list_tables()}
+                print(f"[DEBUG SYNTHESIS] Available tables: {available_tables}")
+                print(f"[DEBUG SYNTHESIS] Inference names: {inference_names}")
+                print(f"[DEBUG SYNTHESIS] Resolved inferences: {resolved_inferences}")
+
                 for inf in reversed(inferences):
                     inf_id = inf['id']
                     table_name = inference_names.get(inf_id, inf_id.lower())
                     result = resolved_inferences.get(inf_id, "")
-                    if "rows" in str(result) and "verified" not in str(result).lower():
-                        try:
-                            # Query the table and format as markdown for the LLM
-                            result_df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 20")
-                            if len(result_df) > 0:
-                                final_data_preview = f"\n\nFinal Result Data ({table_name}):\n{result_df.to_markdown(index=False)}"
-                                break
-                        except Exception:
-                            pass  # Table may not exist or have issues
+                    print(f"[DEBUG SYNTHESIS] Checking {inf_id}: table={table_name}, result={result}")
+
+                    # Skip verification steps and failed inferences
+                    if "rows" in str(result) and "verified" not in str(result).lower() and "FAILED" not in str(result):
+                        if table_name in available_tables:
+                            try:
+                                # Query the table and format for the LLM
+                                result_df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 20")
+                                print(f"[DEBUG SYNTHESIS] Queried {table_name}: {len(result_df)} rows, columns={list(result_df.columns)}")
+                                if len(result_df) > 0:
+                                    # Try to_markdown first, fall back to to_string
+                                    try:
+                                        table_str = result_df.to_markdown(index=False)
+                                    except Exception:
+                                        table_str = result_df.to_string(index=False)
+                                    final_data_preview = f"\n\nFinal Result Data ({table_name}):\n{table_str}"
+                                    print(f"[DEBUG SYNTHESIS] Selected table {table_name} for synthesis")
+                                    break
+                            except Exception as e:
+                                # Log but continue looking for other tables
+                                print(f"[DEBUG SYNTHESIS] Failed to query {table_name}: {e}")
+                        else:
+                            print(f"[DEBUG SYNTHESIS] Table {table_name} not in available tables")
 
             synthesis_prompt = f"""Based on the resolved premises and inference plan, provide the answer.
 
