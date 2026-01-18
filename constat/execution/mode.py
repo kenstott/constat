@@ -153,8 +153,8 @@ class ModeSelection:
     confidence: float
     reasoning: str
 
-    # Keywords that influenced the decision
-    matched_keywords: list[str]
+    # Keywords that influenced the decision (legacy, optional)
+    matched_keywords: list[str] | None = None
 
 
 def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -> ModeSelection:

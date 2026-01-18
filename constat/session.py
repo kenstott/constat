@@ -3828,6 +3828,12 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         redo_intents = {"REDO", "PREDICT", "MODIFY_FACT", "REFINE_SCOPE", "STEER_PLAN"}
         detected_intent_names = {i.intent.upper() for i in analysis.intents}
         is_redo = bool(detected_intent_names & redo_intents)
+
+        # Explicit pattern-based detection for "redo" commands from REPL
+        # This ensures /redo works reliably even if LLM doesn't detect REDO intent
+        query_lower = question.strip().lower()
+        if query_lower == "redo" or query_lower.startswith("redo.") or query_lower.startswith("redo "):
+            is_redo = True
         is_predict = "PREDICT" in detected_intent_names
         is_modify_fact = "MODIFY_FACT" in detected_intent_names
         has_explicit_mode_switch = "MODE_SWITCH" in detected_intent_names
@@ -3857,23 +3863,20 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                     confidence=0.9,
                     matched_keywords=list(detected_intent_names & redo_intents),
                 )
-        # Fallback: even if no redo intent detected, preserve mode if it's a follow-up
-        # This ensures "Unclear intent" doesn't override the previous session's mode
+        # Fallback: preserve mode for true follow-ups (when previous problem exists)
         elif self.datastore and not has_explicit_mode_switch:
+            previous_problem = self.datastore.get_session_meta("problem")
             previous_mode_str = self.datastore.get_session_meta("mode")
-            if previous_mode_str:
+            if previous_mode_str and previous_problem:
                 try:
                     previous_mode = ExecutionMode(previous_mode_str)
-                    # If previous mode matches current default mode, use better reasoning
-                    if mode_selection.mode == previous_mode and mode_selection.confidence < 0.6:
-                        mode_selection = ModeSelection(
-                            mode=previous_mode,
-                            reasoning=f"Continuing in {previous_mode_str} mode from previous query",
-                            confidence=0.7,  # Higher than fallback but lower than explicit redo
-                            matched_keywords=[],
-                        )
+                    mode_selection = ModeSelection(
+                        mode=previous_mode,
+                        confidence=0.8,
+                        reasoning=f"Continuing in {previous_mode_str} mode",
+                    )
                 except ValueError:
-                    pass  # Keep original mode_selection
+                    pass
 
         # AUDITABLE mode: check if this is a "redo" request or a verification question
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
