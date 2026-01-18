@@ -941,6 +941,36 @@ YOUR JSON RESPONSE:"""
                     else:
                         raise Exception("No SQL databases configured")
 
+                # Check if fact_name matches a table name - return table reference instead of loading
+                fact_name_lower = fact_name.lower().strip()
+                cache_keys = list(self.schema_manager.metadata_cache.keys())
+                logger.debug(f"[DAG] Checking table match for '{fact_name_lower}' in {len(cache_keys)} tables: {cache_keys[:5]}")
+                for full_name, table_meta in self.schema_manager.metadata_cache.items():
+                    if table_meta.name.lower() == fact_name_lower:
+                        # Table match - return reference without loading data
+                        columns = [c.name for c in table_meta.columns]
+                        row_info = f"{table_meta.row_count:,} rows" if table_meta.row_count else "table"
+                        # Use parentheses instead of brackets (Rich interprets [] as markup)
+                        value_str = f"({table_meta.database}.{table_meta.name}) {row_info}"
+                        fact = Fact(
+                            name=fact_name,
+                            value=value_str,
+                            source=FactSource.DATABASE,
+                            source_name=table_meta.database,
+                            reasoning=f"Table '{table_meta.name}' from database '{table_meta.database}'. Columns: {columns}",
+                            confidence=0.95,
+                            table_name=table_meta.name,
+                            row_count=table_meta.row_count,
+                        )
+                        resolved_premises[fact_id] = fact
+                        self.fact_resolver.add_user_fact(
+                            fact_name=fact_name,
+                            value=value_str,
+                            reasoning=f"Table reference: {table_meta.database}.{table_meta.name}",
+                            source=FactSource.DATABASE,
+                        )
+                        return value_str, 0.95
+
                 engine = self.schema_manager.get_sql_connection(db_name)
                 max_retries = 3
                 last_error = None
@@ -1077,21 +1107,24 @@ RULE: Always SELECT primary key columns for joins."""
             for dep_name in node.dependencies:
                 dep_node = dag.get_node(dep_name)
                 if dep_node and dep_node.value is not None:
-                    val_str = str(dep_node.value).lower()
-                    is_table = "rows" in val_str or (dep_node.row_count and dep_node.row_count > 1)
-                    is_referenced = val_str == "referenced"
+                    val_str = str(dep_node.value)
+                    val_lower = val_str.lower()
+                    # Check if this is a loaded table (value contains row count)
+                    is_loaded_table = "rows" in val_lower or (dep_node.row_count and dep_node.row_count > 1)
+                    # Check if this is a referenced table (format: (db.table) X rows)
+                    is_referenced = val_str.startswith("(") and ")" in val_str and "." in val_str
 
-                    if is_table or is_referenced:
+                    if is_loaded_table or is_referenced:
                         dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
                         columns_info = ""
 
                         if is_referenced:
                             # Referenced table: get metadata from original database
-                            # Look up the premise to get source info
-                            premise_fact = resolved_premises.get(dep_node.fact_id)
-                            source_db = None
-                            if premise_fact and hasattr(premise_fact, 'source_name'):
-                                source_db = premise_fact.source_name
+                            # Extract table name from the value format (db.table)
+                            match = re.match(r'\(([^.]+)\.([^)]+)\)', val_str)
+                            if match:
+                                ref_db, ref_table = match.groups()
+                                dep_table = ref_table  # Use actual table name
 
                             # Try to get column info from the original database table
                             if self.schema_manager:
@@ -2008,9 +2041,18 @@ Do not include any explanation or extra text."""
 This is a FOLLOW-UP to a previous analysis.
 Previous question: "{previous_problem}"
 
-IMPORTANT: Any reference to changing a value, assumption, or "what if" scenario
-implies the user wants to MODIFY_FACT and re-run the previous analysis with
-the changed value. Look for references to known facts being changed."""
+CRITICAL INTENT RULES (apply in order):
+1. RE-EXECUTION language ANYWHERE in message = REDO intent, NOT NEW_QUESTION:
+   "redo", "again", "retry", "rerun", "try again", "this time", "instead", "once more", etc.
+
+2. Requests to CHANGE how something is computed/calculated = STEER_PLAN + REDO:
+   "change X to use Y", "use average instead", "compute it differently", "use the 2 most recent"
+
+3. Simple value changes (literal numbers/strings) = MODIFY_FACT:
+   "change age to 50", "use $100k instead", "set threshold to 10"
+
+4. NEW_QUESTION is ONLY for completely unrelated questions about different topics.
+   If the message references the previous analysis AT ALL, it is NOT NEW_QUESTION."""
 
         prompt = f"""Analyze this user question in one pass:
 
@@ -2044,9 +2086,12 @@ Perform these analyses:
    - Dependencies matter: if B requires A's result, A comes first
 
    Possible intents:
-   - REDO: Re-run analysis ("redo", "run again", "try again")
-   - MODIFY_FACT: Change a value ("change X to Y", "use $50k", "actually it's...")
-   - STEER_PLAN: Modify plan ("skip step", "different approach", "don't use that table")
+   - REDO: Re-run analysis. Triggered by re-execution language ANYWHERE in message:
+     "redo", "again", "retry", "rerun", "try again", "this time", "instead", etc.
+     Also implicit when user requests changes to a previous analysis.
+   - MODIFY_FACT: Change a LITERAL VALUE ("change age to 50", "use $100k", "set to 10")
+   - STEER_PLAN: Change METHODOLOGY/COMPUTATION ("use average of last 2", "compute X differently",
+     "skip step", "different approach", "don't use that table", "change how X is calculated")
    - DRILL_DOWN: Explain ("why?", "show details", "break down")
    - REFINE_SCOPE: Filter ("only California", "exclude X", "just Q4")
    - CHALLENGE: Verify ("are you sure?", "double check", "confirm")
@@ -2117,6 +2162,11 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
 
             response = result.content.strip()
 
+            # Debug logging for intent classification
+            import logging
+            _intent_logger = logging.getLogger(__name__)
+            _intent_logger.debug(f"[INTENT CLASSIFICATION] Raw LLM response:\n{response}")
+
             # Parse response
             question_type = QuestionType.DATA_ANALYSIS
             extracted_facts = []
@@ -2175,12 +2225,15 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                     cached_answer = answer_section
 
             # Parse INTENTS (preserving order)
+            _intent_logger.debug(f"[INTENT PARSING] Starting intent parsing, response length: {len(response)}")
             intents = []
             if "INTENTS:" in response:
                 intents_section = response.split("INTENTS:", 1)[1].split("---")[0].strip()
+                _intent_logger.debug(f"[INTENT PARSING] intents_section: '{intents_section}'")
                 if intents_section and intents_section.upper() != "NONE":
                     for line in intents_section.split("\n"):
                         line = line.strip().lstrip("-").strip()
+                        _intent_logger.debug(f"[INTENT PARSING] processing line: '{line}'")
                         if line and line.upper() != "NONE":
                             # Parse "INTENT_NAME | extracted_value" or just "INTENT_NAME"
                             if "|" in line:
@@ -2190,11 +2243,16 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                             else:
                                 intent_name = line.strip().upper()
                                 extracted = None
+                            _intent_logger.debug(f"[INTENT PARSING] extracted intent: '{intent_name}'")
                             intents.append(DetectedIntent(
                                 intent=intent_name,
                                 confidence=0.8,
                                 extracted_value=extracted,
                             ))
+                else:
+                    _intent_logger.debug(f"[INTENT PARSING] intents_section was empty or NONE")
+            else:
+                _intent_logger.debug(f"[INTENT PARSING] 'INTENTS:' not found in response")
 
             # Default to NEW_QUESTION if no intents detected
             if not intents:
@@ -2248,8 +2306,10 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                 if reason_section and reason_section.upper() != "NONE":
                     mode_reasoning = reason_section.split("\n")[0].strip()
 
-            # Store intent in datastore for debugging
-            if self.datastore:
+            _intent_logger.debug(f"[INTENT PARSING] Final parsed intents: {[i.intent for i in intents]}")
+
+            # Store intent in datastore for debugging (if method exists)
+            if self.datastore and hasattr(self.datastore, 'set_query_intent'):
                 self.datastore.set_query_intent(
                     query_text=problem,
                     intents=[{"intent": i.intent, "confidence": i.confidence, "value": i.extracted_value} for i in intents],
@@ -2268,8 +2328,9 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                 mode_reasoning=mode_reasoning,
             )
 
-        except Exception:
+        except Exception as e:
             # On error, fall back to regex-based classification
+            _intent_logger.exception(f"[INTENT PARSING] Exception during question analysis: {e}")
             return QuestionAnalysis(
                 question_type=QuestionType.META_QUESTION if is_meta_question(problem) else QuestionType.DATA_ANALYSIS,
                 extracted_facts=[],
@@ -3885,11 +3946,18 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         detected_intent_names = {i.intent.upper() for i in analysis.intents}
         is_redo = bool(detected_intent_names & redo_intents)
 
-        # Explicit pattern-based detection for "redo" commands from REPL
-        # This ensures /redo works reliably even if LLM doesn't detect REDO intent
+        # Debug: Log detected intents and is_redo decision
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.debug(f"[FOLLOW_UP] Question: {question[:100]}...")
+        _logger.debug(f"[FOLLOW_UP] Detected intents: {detected_intent_names}")
+        _logger.debug(f"[FOLLOW_UP] Redo intents to check: {redo_intents}")
+        _logger.debug(f"[FOLLOW_UP] Intersection: {detected_intent_names & redo_intents}")
+        _logger.debug(f"[FOLLOW_UP] is_redo = {is_redo}")
+
+        # Note: Intent detection is done by the LLM in QueryAnalysis, not keywords
+        # If the LLM misclassifies "redo" commands, improve the intent prompt instead
         query_lower = question.strip().lower()
-        if query_lower == "redo" or query_lower.startswith("redo.") or query_lower.startswith("redo "):
-            is_redo = True
         is_predict = "PREDICT" in detected_intent_names
         is_modify_fact = "MODIFY_FACT" in detected_intent_names
         has_explicit_mode_switch = "MODE_SWITCH" in detected_intent_names
@@ -3934,10 +4002,22 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 except ValueError:
                     pass
 
-        # AUDITABLE mode: check if this is a "redo" request or a verification question
+        # AUDITABLE mode: for follow-ups, default to replanning (safer) unless explicitly a verification request
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
 
-            if is_redo and self.datastore:
+            # Define verification-only intents: only these should trigger verification mode
+            verification_only_intents = {"CHALLENGE", "PROVENANCE"}
+            is_explicit_verification = bool(detected_intent_names & verification_only_intents)
+
+            # If this is explicitly a verification request (e.g., "are you sure?", "show the proof")
+            # then use verification mode
+            if is_explicit_verification and not is_redo:
+                _logger.debug(f"[FOLLOW_UP] Explicit verification request detected: {detected_intent_names & verification_only_intents}")
+                return self._follow_up_auditable(question, mode_selection)
+
+            # Default: for ALL other auditable follow-ups, replan (safer option)
+            # This handles: redo, modifications, new approaches, or even ambiguous follow-ups
+            if self.datastore:
                 # Get original problem and re-run in auditable mode
                 original_problem = self.datastore.get_session_meta("problem")
                 if original_problem:
@@ -4020,16 +4100,84 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
 
                     # Note: Don't emit mode_switch - we're already in auditable mode for redo
                     # Pass cached fact hints to help LLM use consistent names
-                    # Filter to only include data facts, not clarification/meta facts
-                    data_sources = {"database", "document", "derived", "api"}
+                    # Only include SOURCE facts (premises), NOT derived facts (inference outputs)
+                    # Derived facts should be recomputed, not treated as premises
+                    source_types = {"database", "document", "api", "knowledge", "user"}
                     data_facts = [
                         f for f in saved_facts
-                        if f.get("source") in data_sources or f.get("value_type") == "table"
+                        if f.get("source") in source_types
                     ]
+                    logger.debug(f"[REDO FILTER] All saved facts: {[f.get('name') + ':' + str(f.get('source')) for f in saved_facts]}")
+                    logger.debug(f"[REDO FILTER] Filtered data_facts (source premises only): {[f.get('name') for f in data_facts]}")
+
+                    # For modification intents: incorporate user's changes into the problem
+                    # This includes STEER_PLAN, MODIFY_FACT, REFINE_SCOPE - any intent that modifies the analysis
+                    modification_intents = {"STEER_PLAN", "MODIFY_FACT", "REFINE_SCOPE"}
+                    has_modification = bool(detected_intent_names & modification_intents)
+                    logger.debug(f"[REDO STEER] detected_intent_names: {detected_intent_names}")
+                    logger.debug(f"[REDO STEER] has_modification: {has_modification}")
+                    logger.debug(f"[REDO STEER] question: {question[:100]}")
+                    logger.debug(f"[REDO STEER] original_problem: {original_problem[:100] if original_problem else 'None'}")
+
+                    # Build original plan context for modification
+                    original_plan_context = ""
+                    has_proof = hasattr(self, "_current_proof") and self._current_proof
+                    logger.debug(f"[REDO STEER] has _current_proof: {has_proof}")
+                    if has_proof:
+                        proof = self._current_proof
+                        plan_lines = ["ORIGINAL PLAN (modify this based on user request):"]
+                        plan_lines.append("\nPREMISES:")
+                        for p in proof.get("premises", []):
+                            plan_lines.append(f"  {p['id']}: {p['name']} = ? ({p['description']}) [source: {p['source']}]")
+                        plan_lines.append("\nINFERENCE:")
+                        for i in proof.get("inferences", []):
+                            inf_line = f"  {i['id']}: {i['name']} = {i['operation']}"
+                            if i.get("explanation"):
+                                inf_line += f" -- {i['explanation']}"
+                            plan_lines.append(inf_line)
+                        plan_lines.append(f"\nCONCLUSION: {proof.get('conclusion', '')}")
+
+                        # Add cached premises list with instruction to reuse
+                        if data_facts:
+                            plan_lines.append("\n\nCACHED PREMISES (REUSE these exact names - data already loaded):")
+                            for f in data_facts:
+                                name = f.get("name", "")
+                                value_type = f.get("value_type", "")
+                                if value_type == "table":
+                                    plan_lines.append(f"  - {name} (table, {f.get('row_count', '?')} rows)")
+                                else:
+                                    plan_lines.append(f"  - {name}")
+                            plan_lines.append("\nIMPORTANT: Reuse these premise names exactly. Only add new premises if the user's modification requires additional data.")
+
+                        original_plan_context = "\n".join(plan_lines)
+
+                    # If user provided modification AND it's different from original problem
+                    if has_modification and question != original_problem:
+                        # Combine original problem + original plan + modification request
+                        enhanced_problem = f"{original_problem}\n\n{original_plan_context}\n\nUser modification: {question}"
+                        logger.debug(f"[REDO STEER] Taking PATH 1: has_modification=True, using enhanced_problem")
+                        return self._solve_auditable_with_steer_handling(enhanced_problem, mode_selection, cached_fact_hints=data_facts)
+
+                    # Even for plain REDO, if the user added any text beyond just "redo", incorporate it
+                    redo_in_intents = "REDO" in detected_intent_names
+                    question_not_just_redo = question.lower().strip() != "redo"
+                    logger.debug(f"[REDO STEER] redo_in_intents: {redo_in_intents}, question_not_just_redo: {question_not_just_redo}")
+                    if redo_in_intents and question_not_just_redo:
+                        # User said more than just "redo" - treat the extra text as modification
+                        redo_stripped = question.lower().replace("redo", "").replace(".", "").strip()
+                        logger.debug(f"[REDO STEER] redo_stripped: '{redo_stripped}'")
+                        if redo_stripped:
+                            enhanced_problem = f"{original_problem}\n\n{original_plan_context}\n\nUser modification: {question}"
+                            logger.debug(f"[REDO STEER] Taking PATH 2: REDO with extra text, using enhanced_problem")
+                            return self._solve_auditable_with_steer_handling(enhanced_problem, mode_selection, cached_fact_hints=data_facts)
+
+                    logger.debug(f"[REDO STEER] Taking PATH 3: plain redo, using original_problem only")
                     return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=data_facts)
 
-            # Otherwise treat as verification question
-            return self._follow_up_auditable(question, mode_selection)
+            # No previous problem to replan - treat as new auditable query
+            # (This only happens if datastore or original_problem is missing)
+            _logger.debug(f"[FOLLOW_UP] No original_problem found, treating as new auditable query")
+            return self._solve_auditable(question, mode_selection)
 
         # Otherwise proceed with EXPLORATORY mode (planning + execution)
         # Check for unresolved facts and try to extract facts from user message
@@ -4507,12 +4655,16 @@ I2: <result_name> = <operation>(I1) -- <explanation>
 
 INFERENCE RULES:
 - Each inference must reference at least one premise (P1/P2/etc) or prior inference (I1/I2/etc)
-- CRITICAL: Each inference result_name MUST be unique - never reuse the same name (e.g., don't have two "data_verified" inferences)
+- CRITICAL: ALL premises MUST be used in the inference chain. Never define a premise that isn't referenced.
+- CRITICAL: Each inference result_name MUST be GLOBALLY UNIQUE. NEVER reuse any name. BAD: two inferences both named "data_verified". GOOD: "validation_result" then "final_verification".
+- CRITICAL: The final inference(s) should COMPUTE THE ACTUAL ANSWER, not just verify data exists. If the user asks for recommendations, calculate them. If they ask for comparisons, compute them.
+- CRITICAL: Only ONE verify_exists() at the very end, referencing the computed answer. Do NOT add validate() or verify() steps before it.
 - Operations like date extraction, filtering, grouping belong HERE, not in premises
-- Keep operations simple: filter, join, group_sum, count, etc.
+- Keep operations simple: filter, join, group_sum, count, apply_rules, calculate, etc.
 
 CONCLUSION:
-C: <final sentence answering the question using the inferences>
+C: <final sentence describing what the final inference contains - use ENGLISH NAMES not I1/I2 references>
+IMPORTANT: In the conclusion, ALWAYS use the English result_name (e.g., "raise_recommendations") NOT the ID (e.g., "I4")
 
 EXAMPLE 1 - "What is revenue multiplied by Pi?":
 
@@ -4525,7 +4677,7 @@ I1: total_revenue = sum(P1.amount) -- Sum all order amounts
 I2: adjusted_revenue = multiply(I1, P2) -- Multiply by Pi
 
 CONCLUSION:
-C: The revenue multiplied by Pi is I2.
+C: The revenue multiplied by Pi is provided in adjusted_revenue, calculated by multiplying total_revenue by pi_value.
 
 EXAMPLE 2 - "Monthly revenue trend for last 12 months":
 
@@ -4538,10 +4690,27 @@ I2: monthly_revenue = group_sum(I1, month, amount) -- Group by month, sum amount
 I3: trend = analyze(I2) -- Calculate trend direction
 
 CONCLUSION:
-C: Monthly revenue trend is provided by I3.
+C: Monthly revenue trend is provided in trend, showing direction based on monthly_revenue analysis.
+
+EXAMPLE 3 - "Recommend raises based on performance reviews and guidelines":
+
+PREMISES:
+P1: employees = ? (All employees with current salary) [source: database:hr]
+P2: performance_reviews = ? (Performance review records with ratings) [source: database:hr]
+P3: raise_guidelines = ? (Business rules for raise percentages by rating) [source: document]
+
+INFERENCE:
+I1: recent_reviews = filter(P2, most_recent_per_employee) -- Get most recent review per employee
+I2: employee_data = join(P1, I1, employee_id) -- Join employees with their reviews
+I3: raises_with_rules = apply_guidelines(I2, P3) -- Apply raise guidelines based on rating (NOTE: P3 is USED here)
+I4: raise_recommendations = calculate(I3, salary * raise_percentage) -- Calculate actual raise amounts
+
+CONCLUSION:
+C: Raise recommendations with calculated amounts are provided in raise_recommendations, derived by applying raise_guidelines to employee performance ratings.
 
 Now generate the derivation. Use P1:, P2:, I1:, I2: prefixes EXACTLY as shown.
-Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
+Premises are DATA. Operations (filter, extract, group, apply_guidelines) go in INFERENCE.
+IMPORTANT: ALL premises must appear in at least one inference. The final inference must compute the answer.
 """
 
         result = self.router.execute(
@@ -4656,15 +4825,138 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
         if is_collection_query and inferences:
             last_inf_id = inferences[-1]["id"]
             verify_id = f"I{len(inferences) + 1}"
+            # Use a unique name that won't conflict with LLM-generated names
+            existing_names = {inf.get("name", "") for inf in inferences}
+            verify_name = "final_data_verification"
+            suffix = 1
+            while verify_name in existing_names:
+                verify_name = f"final_data_verification_{suffix}"
+                suffix += 1
             inferences.append({
                 "id": verify_id,
-                "name": "data_verified",
+                "name": verify_name,
                 "operation": f"verify_exists({last_inf_id})",
                 "explanation": "Verify result has data (count > 0) to confirm derivation succeeded",
             })
             # Update conclusion to emphasize provenance
             if not conclusion.lower().startswith("the data"):
                 conclusion = f"The data is verified to exist with provenance: {conclusion}"
+
+        # Validate plan structure by attempting to parse as DAG
+        # This catches duplicate names early, before approval
+        from constat.execution.dag import parse_plan_to_dag as validate_dag
+        try:
+            validate_dag(premises, inferences)
+        except ValueError as e:
+            error_msg = str(e)
+            if "Duplicate" in error_msg:
+                # Plan has duplicate names - regenerate with feedback
+                self._emit_event(StepEvent(
+                    event_type="plan_retry",
+                    step_number=0,
+                    data={"reason": error_msg, "attempt": 1}
+                ))
+
+                # Retry with explicit feedback about the error
+                retry_prompt = f"""{fact_plan_prompt}
+
+CRITICAL ERROR IN PREVIOUS ATTEMPT: {error_msg}
+Each premise name (P1, P2, etc.) and each inference result_name (I1, I2, etc.) MUST be GLOBALLY UNIQUE.
+Do NOT reuse names like 'data_verified' or 'result' multiple times.
+Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_calculations', 'final_verification'.
+"""
+                retry_result = self.router.execute(
+                    task_type=TaskType.INTENT_CLASSIFICATION,
+                    system="You analyze questions and decompose them into premises and inferences for auditable answers. CRITICAL: Each result name must be unique.",
+                    user_message=retry_prompt,
+                    max_tokens=1500,
+                )
+
+                # Re-parse the retried plan
+                fact_plan_text = retry_result.content
+                claim = ""
+                premises = []
+                inferences = []
+                conclusion = ""
+
+                lines = fact_plan_text.split("\n")
+                current_section = None
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("QUESTION:"):
+                        claim = line.split("QUESTION:", 1)[1].strip()
+                    elif line.startswith("PREMISES:"):
+                        current_section = "premises"
+                    elif line.startswith("INFERENCE:"):
+                        current_section = "inference"
+                    elif line.startswith("CONCLUSION:"):
+                        current_section = "conclusion"
+                    elif current_section == "premises" and re.match(r'^P\d+:', line):
+                        match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*\?\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
+                        if match:
+                            premises.append({
+                                "id": match.group(1),
+                                "name": match.group(2).strip(),
+                                "description": match.group(3).strip(),
+                                "source": match.group(4).strip() if match.group(4) else "database",
+                            })
+                        else:
+                            value_match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*([^\s(]+)\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
+                            if value_match:
+                                fact_name = value_match.group(2).strip()
+                                embedded_val = value_match.group(3).strip()
+                                premises.append({
+                                    "id": value_match.group(1),
+                                    "name": f"{fact_name} = {embedded_val}",
+                                    "description": value_match.group(4).strip(),
+                                    "source": value_match.group(5).strip() if value_match.group(5) else "knowledge",
+                                })
+                            else:
+                                simple_match = re.match(r'^(P\d+):\s*(.+?)\s*\(([^)]+)\)', line)
+                                if simple_match:
+                                    premises.append({
+                                        "id": simple_match.group(1),
+                                        "name": simple_match.group(2).strip().rstrip('=?').strip(),
+                                        "description": simple_match.group(3).strip(),
+                                        "source": "database",
+                                    })
+                    elif current_section == "inference" and re.match(r'^I\d+:', line):
+                        match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+?)\s*--\s*(.+)$', line)
+                        if match:
+                            inferences.append({
+                                "id": match.group(1),
+                                "name": match.group(2).strip(),
+                                "operation": match.group(3).strip(),
+                                "explanation": match.group(4).strip(),
+                            })
+                        else:
+                            simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
+                            if simple_match:
+                                inferences.append({
+                                    "id": simple_match.group(1),
+                                    "name": "",
+                                    "operation": simple_match.group(2).strip(),
+                                    "explanation": "",
+                                })
+                    elif current_section == "conclusion" and line:
+                        if line.startswith("C:"):
+                            conclusion = line.split("C:", 1)[1].strip()
+                        elif not conclusion:
+                            conclusion = line
+
+                # Validate again
+                try:
+                    validate_dag(premises, inferences)
+                except ValueError as e2:
+                    # Still failing after retry - raise with helpful message
+                    raise ValueError(
+                        f"Plan generation failed after retry. Error: {e2}. "
+                        f"The LLM is generating duplicate inference names. "
+                        f"Try rephrasing your question or reducing complexity."
+                    )
+            else:
+                # Non-duplicate error, re-raise
+                raise
 
         # Emit planning complete
         total_steps = len(premises) + len(inferences) + 1  # +1 for conclusion
