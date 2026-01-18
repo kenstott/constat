@@ -3962,17 +3962,15 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                                 }
                             ))
 
-                    self._emit_event(StepEvent(
-                        event_type="mode_switch",
-                        step_number=0,
-                        data={
-                            "mode": "auditable",
-                            "reasoning": mode_selection.reasoning,
-                            "detected_intents": list(detected_intent_names & redo_intents),
-                        }
-                    ))
+                    # Note: Don't emit mode_switch - we're already in auditable mode for redo
                     # Pass cached fact hints to help LLM use consistent names
-                    return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=saved_facts)
+                    # Filter to only include data facts, not clarification/meta facts
+                    data_sources = {"database", "document", "derived", "api"}
+                    data_facts = [
+                        f for f in saved_facts
+                        if f.get("source") in data_sources or f.get("value_type") == "table"
+                    ]
+                    return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=data_facts)
 
             # Otherwise treat as verification question
             return self._follow_up_auditable(question, mode_selection)
@@ -4407,15 +4405,16 @@ User feedback: {approval.suggestion}
         # Build hint about cached facts for redo (helps LLM use consistent names)
         cached_facts_hint = ""
         if cached_fact_hints:
-            hint_lines = ["IMPORTANT - REDO MODE:", "The following facts are already cached from a previous run. Use these EXACT names for corresponding premises:"]
+            hint_lines = [
+                "REDO MODE - These data facts are already cached. Use these EXACT premise names:",
+            ]
             for fact in cached_fact_hints:
                 name = fact.get("name", "")
-                value = fact.get("value", "?")
                 value_type = fact.get("value_type", "")
                 if value_type == "table":
                     hint_lines.append(f"  - {name} (table, {fact.get('row_count', '?')} rows)")
                 else:
-                    hint_lines.append(f"  - {name} = {value}")
+                    hint_lines.append(f"  - {name}")
             hint_lines.append("")
             cached_facts_hint = "\n".join(hint_lines) + "\n"
 
@@ -4452,6 +4451,7 @@ I2: <result_name> = <operation>(I1) -- <explanation>
 
 INFERENCE RULES:
 - Each inference must reference at least one premise (P1/P2/etc) or prior inference (I1/I2/etc)
+- CRITICAL: Each inference result_name MUST be unique - never reuse the same name (e.g., don't have two "data_verified" inferences)
 - Operations like date extraction, filtering, grouping belong HERE, not in premises
 - Keep operations simple: filter, join, group_sum, count, etc.
 
