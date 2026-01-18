@@ -72,15 +72,23 @@ class TestMultiStepSession:
     """Test multi-step plan execution."""
 
     def test_simple_multi_step_query(self, session: Session):
-        """Test a simple multi-step query."""
+        """Test a simple multi-step query.
+
+        Uses cross-database query to ensure multi-step planning.
+        Single-database queries can often be optimized into one step.
+        """
         result = session.solve(
-            "List the top 3 music genres by number of tracks in Chinook. "
-            "Then analyze what percentage of total tracks each represents."
+            "Get the top 3 music genres by track count from Chinook. "
+            "Then check if Northwind has any product categories with more items than "
+            "the top Chinook genre has tracks."
         )
 
         assert result["success"], f"Query failed: {result.get('error')}"
         assert result["plan"] is not None
-        assert len(result["plan"].steps) >= 2  # At least 2 steps
+        # Cross-database queries require at least 2 steps (one per database)
+        assert len(result["plan"].steps) >= 2, (
+            f"Expected >= 2 steps for cross-database query, got {len(result['plan'].steps)}"
+        )
 
         print(f"\n--- Multi-Step Query ---")
         print(f"Plan: {len(result['plan'].steps)} steps")

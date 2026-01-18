@@ -25,12 +25,15 @@ which provides:
 """
 
 import asyncio
+import logging
 import random
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional, Union
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class FactSource(Enum):
@@ -709,7 +712,7 @@ class FactResolver:
 
         cache_key = self._cache_key(fact_name, params)
         logger.info(f"[TIERED] Starting tiered resolution for: {cache_key}")
-        print(f"[DEBUG] resolve_tiered called for: {fact_name}, tier1_sources: {[s.value for s in self.strategy.tier1_sources]}")
+        logger.debug(f"resolve_tiered called for: {fact_name}, tier1_sources: {[s.value for s in self.strategy.tier1_sources]}")
 
         # Quick cache check BEFORE parallel race (avoids unnecessary work)
         if cache_key in self._cache:
@@ -1319,10 +1322,18 @@ class FactResolver:
         return best_fact
 
     def _cache_key(self, fact_name: str, params: dict) -> str:
-        """Generate cache key from fact name and params."""
+        """Generate cache key from fact name and params.
+
+        Note: Excludes metadata-only params (fact_description) from cache key
+        since they don't affect the resolved value.
+        """
         if not params:
             return fact_name
-        param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
+        # Exclude metadata params that don't affect resolution
+        cache_params = {k: v for k, v in params.items() if k not in ("fact_description",)}
+        if not cache_params:
+            return fact_name
+        param_str = ",".join(f"{k}={v}" for k, v in sorted(cache_params.items()))
         return f"{fact_name}({param_str})"
 
     def get_fact(self, name: str, verify_tables: bool = True) -> Optional[Fact]:
@@ -1964,18 +1975,18 @@ Respond with ONLY the JSON object, no explanation."""
             return result
 
         elif source == FactSource.DATABASE:
-            print(f"[DEBUG] _try_resolve DATABASE attempting for {fact_name}")
+            logger.debug(f"_try_resolve DATABASE attempting for {fact_name}")
             logger.debug(f"[_try_resolve] DATABASE attempting for {fact_name}")
             result = self._resolve_from_database(fact_name, params)
-            print(f"[DEBUG] _try_resolve DATABASE for {fact_name}: result={result is not None}")
+            logger.debug(f"_try_resolve DATABASE for {fact_name}: result={result is not None}")
             logger.debug(f"[_try_resolve] DATABASE for {fact_name}: {result is not None}")
             return result
 
         elif source == FactSource.DOCUMENT:
-            print(f"[DEBUG] _try_resolve DOCUMENT attempting for {fact_name}")
+            logger.debug(f"_try_resolve DOCUMENT attempting for {fact_name}")
             logger.debug(f"[_try_resolve] DOCUMENT attempting for {fact_name}")
             result = self._resolve_from_document(fact_name, params)
-            print(f"[DEBUG] _try_resolve DOCUMENT for {fact_name}: result={result is not None}")
+            logger.debug(f"_try_resolve DOCUMENT for {fact_name}: result={result is not None}")
             logger.debug(f"[_try_resolve] DOCUMENT for {fact_name}: {result is not None}")
             return result
 
@@ -2101,11 +2112,11 @@ Respond with ONLY the JSON object, no explanation."""
         from constat.execution.executor import PythonExecutor, format_error_for_retry
         logger = logging.getLogger(__name__)
 
-        print(f"[DEBUG DB] _resolve_from_database called for: {fact_name}")
-        print(f"[DEBUG DB] llm={self.llm is not None}, schema_manager={self.schema_manager is not None}, config={self.config is not None}")
+        logger.debug(f"DB: _resolve_from_database called for: {fact_name}")
+        logger.debug(f"DB: llm={self.llm is not None}, schema_manager={self.schema_manager is not None}, config={self.config is not None}")
 
         if not self.llm or not self.schema_manager:
-            print(f"[DEBUG DB] MISSING: LLM={self.llm is not None}, schema_manager={self.schema_manager is not None}")
+            logger.debug(f"DB: MISSING: LLM={self.llm is not None}, schema_manager={self.schema_manager is not None}")
             logger.debug(f"[_resolve_from_database] Missing LLM ({self.llm is not None}) "
                         f"or schema_manager ({self.schema_manager is not None})")
             return None
@@ -2149,12 +2160,12 @@ Respond with ONLY the JSON object, no explanation."""
                 source_hints.append(f"- {db_name} ({dialect}): use pd.read_sql(query, db_{db_name})")
 
         source_hints_text = "\n".join(source_hints) if source_hints else "No data sources configured."
-        print(f"[DEBUG DB] source_hints_text: {source_hints_text[:200]}...")
-        print(f"[DEBUG DB] db_names: {db_names}")
+        logger.debug(f"DB: source_hints_text: {source_hints_text[:200]}...")
+        logger.debug(f"DB: db_names: {db_names}")
 
         # Get schema overview
         schema_overview = self.schema_manager.get_overview()
-        print(f"[DEBUG DB] schema_overview length: {len(schema_overview)}")
+        logger.debug(f"DB: schema_overview length: {len(schema_overview)}")
 
         # Build prompt for code generation
         prompt = f"""Generate Python code to resolve this fact from the available data sources.
@@ -2237,9 +2248,9 @@ Original request:
                     max_tokens=600,
                 )
 
-            print(f"[DEBUG DB] LLM response (first 300 chars): {response[:300]}...")
+            logger.debug(f"DB: LLM response (first 300 chars): {response[:300]}...")
             if "NOT_POSSIBLE" in response:
-                print(f"[DEBUG DB] LLM said NOT_POSSIBLE: {response}")
+                logger.debug(f"DB: LLM said NOT_POSSIBLE: {response}")
                 logger.debug(f"[_resolve_from_database] LLM said not possible: {response}")
                 return None
 
@@ -2355,18 +2366,18 @@ Original request:
         import logging
         logger = logging.getLogger(__name__)
 
-        print(f"[DEBUG DOC] _resolve_from_document called for: {fact_name}")
+        logger.debug(f"DOC: _resolve_from_document called for: {fact_name}")
 
         if not self.llm:
-            print(f"[DEBUG DOC] No LLM configured")
+            logger.debug(f"DOC: No LLM configured")
             logger.debug(f"[_resolve_from_document] No LLM configured")
             return None
 
         # Check if we have document tools configured
         doc_tools = getattr(self, '_doc_tools', None)
-        print(f"[DEBUG DOC] doc_tools={doc_tools is not None}")
+        logger.debug(f"DOC: doc_tools={doc_tools is not None}")
         if not doc_tools:
-            print(f"[DEBUG DOC] No doc_tools configured - returning None")
+            logger.debug(f"DOC: No doc_tools configured - returning None")
             logger.debug(f"[_resolve_from_document] No doc_tools configured")
             return None
 
@@ -2378,21 +2389,21 @@ Original request:
             fact_readable = fact_name.replace('_', ' ')
             search_query = f"{fact_readable} {param_str}".strip()
 
-            print(f"[DEBUG DOC] Searching for: {search_query}")
+            logger.debug(f"DOC: Searching for: {search_query}")
             logger.debug(f"[_resolve_from_document] Searching for: {search_query}")
 
             # Get more results (top 10) and let the LLM evaluate relevance
             # Don't filter by score - semantic search scores can be misleading
             search_results = doc_tools.search_documents(search_query, limit=10)
-            print(f"[DEBUG DOC] Search returned {len(search_results) if search_results else 0} results")
+            logger.debug(f"DOC: Search returned {len(search_results) if search_results else 0} results")
 
             if not search_results:
-                print(f"[DEBUG DOC] No search results - returning None")
+                logger.debug(f"DOC: No search results - returning None")
                 logger.debug(f"[_resolve_from_document] No search results")
                 return None
 
             best_relevance = max(r.get('relevance', 0) for r in search_results)
-            print(f"[DEBUG DOC] Best relevance: {best_relevance}")
+            logger.debug(f"DOC: Best relevance: {best_relevance}")
             logger.debug(f"[_resolve_from_document] Best relevance: {best_relevance}")
 
             # Include ALL results - let the LLM decide what's relevant
@@ -2403,12 +2414,12 @@ Original request:
             ])
 
             if not context.strip():
-                print(f"[DEBUG DOC] No context built - returning None")
+                logger.debug(f"DOC: No context built - returning None")
                 logger.debug(f"[_resolve_from_document] No context built")
                 return None
 
-            print(f"[DEBUG DOC] Context built, length: {len(context)}")
-            print(f"[DEBUG DOC] Context preview: {context[:300]}...")
+            logger.debug(f"DOC: Context built, length: {len(context)}")
+            logger.debug(f"DOC: Context preview: {context[:300]}...")
 
             # Ask LLM to extract the fact from document context
             prompt = f"""Extract information for this fact from the document content:
@@ -2435,18 +2446,18 @@ If no relevant information is found, respond with:
 NOT_FOUND
 """
 
-            print(f"[DEBUG DOC] Calling LLM to extract fact...")
+            logger.debug(f"DOC: Calling LLM to extract fact...")
             response = self.llm.generate(
                 system="You extract facts and policies from documents. Return content in its natural format.",
                 user_message=prompt,
                 max_tokens=800,
             )
 
-            print(f"[DEBUG DOC] LLM response: {response[:300]}...")
+            logger.debug(f"DOC: LLM response: {response[:300]}...")
             logger.debug(f"[_resolve_from_document] LLM response: {response[:200]}...")
 
             if "NOT_FOUND" in response:
-                print(f"[DEBUG DOC] LLM returned NOT_FOUND - returning None")
+                logger.debug(f"DOC: LLM returned NOT_FOUND - returning None")
                 logger.debug(f"[_resolve_from_document] LLM returned NOT_FOUND")
                 return None
 
@@ -2490,9 +2501,9 @@ NOT_FOUND
                 elif line.startswith("REASONING:"):
                     reasoning = line.split(":", 1)[1].strip()
 
-            print(f"[DEBUG DOC] Parsed value: {value}, confidence: {confidence}, source: {source_name}")
+            logger.debug(f"DOC: Parsed value: {value}, confidence: {confidence}, source: {source_name}")
             if value is not None:
-                print(f"[DEBUG DOC] SUCCESS! Resolved {fact_name} = {value}")
+                logger.debug(f"DOC: SUCCESS! Resolved {fact_name} = {value}")
                 logger.debug(f"[_resolve_from_document] Resolved {fact_name} = {value} from {source_name}")
                 return Fact(
                     name=cache_key,
@@ -2503,14 +2514,14 @@ NOT_FOUND
                     reasoning=reasoning,
                 )
             else:
-                print(f"[DEBUG DOC] No VALUE found in LLM response")
+                logger.debug(f"DOC: No VALUE found in LLM response")
         except Exception as e:
-            print(f"[DEBUG DOC] Exception resolving {fact_name}: {e}")
+            logger.debug(f"DOC: Exception resolving {fact_name}: {e}")
             import traceback
-            print(f"[DEBUG DOC] Traceback: {traceback.format_exc()}")
+            logger.debug(f"DOC: Traceback: {traceback.format_exc()}")
             logger.warning(f"[_resolve_from_document] Error resolving {fact_name}: {e}")
 
-        print(f"[DEBUG DOC] Returning None for {fact_name}")
+        logger.debug(f"DOC: Returning None for {fact_name}")
         return None
 
     def _resolve_from_llm(self, fact_name: str, params: dict) -> Optional[Fact]:

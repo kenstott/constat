@@ -81,6 +81,205 @@ class StepDisplay:
     status_message: str = ""  # Current status message for live display
 
 
+@dataclass
+class PlanItem:
+    """A single item (premise or inference) in the execution plan."""
+    fact_id: str  # P1, P2, I1, I2, etc.
+    name: str
+    item_type: str  # "premise" or "inference"
+    status: str = "pending"  # pending, running, resolved, failed
+    value: Optional[str] = None
+    error: Optional[str] = None
+    confidence: float = 0.0
+
+
+class LivePlanExecutionDisplay:
+    """
+    Live-updating display for plan execution.
+
+    Shows all premises and inferences upfront with status indicators:
+    - ○ pending
+    - ⠋ running (animated spinner)
+    - ✓ resolved
+    - ✗ failed
+    """
+
+    def __init__(self, console: Console, premises: list[dict], inferences: list[dict]):
+        self.console = console
+        self.premises = premises
+        self.inferences = inferences
+        self._lock = threading.Lock()
+        self._live: Optional[Live] = None
+        self._spinner_frame: int = 0
+        self._animation_thread: Optional[threading.Thread] = None
+        self._animation_running: bool = False
+
+        # Initialize plan items
+        self.items: dict[str, PlanItem] = {}
+        for p in premises:
+            fact_id = p.get("id", "")
+            self.items[fact_id] = PlanItem(
+                fact_id=fact_id,
+                name=p.get("name", fact_id),
+                item_type="premise",
+            )
+        for inf in inferences:
+            fact_id = inf.get("id", "")
+            self.items[fact_id] = PlanItem(
+                fact_id=fact_id,
+                name=inf.get("name", "") or fact_id,
+                item_type="inference",
+            )
+
+    def start(self) -> None:
+        """Start the live display."""
+        self._live = Live(
+            self._build_display(),
+            console=self.console,
+            refresh_per_second=10,
+            transient=False,
+        )
+        self._live.start()
+        self._start_animation()
+
+    def stop(self) -> None:
+        """Stop the live display."""
+        self._stop_animation()
+        if self._live:
+            self._live.stop()
+            self._live = None
+
+    def _start_animation(self) -> None:
+        """Start background animation thread."""
+        self._animation_running = True
+        self._animation_thread = threading.Thread(
+            target=self._animation_loop,
+            daemon=True,
+        )
+        self._animation_thread.start()
+
+    def _stop_animation(self) -> None:
+        """Stop animation thread."""
+        self._animation_running = False
+        if self._animation_thread:
+            self._animation_thread.join(timeout=0.5)
+            self._animation_thread = None
+
+    def _animation_loop(self) -> None:
+        """Background loop for spinner animation."""
+        while self._animation_running:
+            with self._lock:
+                self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+                if self._live:
+                    try:
+                        self._live.update(self._build_display())
+                    except Exception:
+                        pass
+            time.sleep(0.1)
+
+    def update_status(self, fact_id: str, status: str, value: str = None,
+                      error: str = None, confidence: float = 0.0) -> None:
+        """Update the status of a plan item."""
+        with self._lock:
+            if fact_id in self.items:
+                item = self.items[fact_id]
+                item.status = status
+                if value is not None:
+                    item.value = value
+                if error is not None:
+                    item.error = error
+                item.confidence = confidence
+            # Also check by name (for DAG events that use names)
+            else:
+                for item in self.items.values():
+                    if item.name == fact_id or fact_id in item.name:
+                        item.status = status
+                        if value is not None:
+                            item.value = value
+                        if error is not None:
+                            item.error = error
+                        item.confidence = confidence
+                        break
+
+    def _get_status_indicator(self, item: PlanItem) -> str:
+        """Get the status indicator for an item."""
+        if item.status == "pending":
+            return "[dim]○[/dim]"
+        elif item.status == "running":
+            return f"[cyan]{SPINNER_FRAMES[self._spinner_frame]}[/cyan]"
+        elif item.status == "resolved":
+            return "[green]✓[/green]"
+        elif item.status == "failed":
+            return "[red]✗[/red]"
+        return "[dim]?[/dim]"
+
+    def _format_value(self, item: PlanItem) -> str:
+        """Format the value/result for display."""
+        if item.status == "pending":
+            return "[dim]pending[/dim]"
+        elif item.status == "running":
+            return "[cyan]resolving...[/cyan]"
+        elif item.status == "resolved":
+            if item.value:
+                val_str = str(item.value)
+                # Collapse and truncate
+                val_str = val_str.replace("\n", " ")
+                if len(val_str) > 50:
+                    val_str = val_str[:47] + "..."
+                conf_str = f" [dim]({item.confidence:.0%})[/dim]" if item.confidence else ""
+                return f"[green]{val_str}[/green]{conf_str}"
+            return "[green]done[/green]"
+        elif item.status == "failed":
+            err = item.error or "error"
+            if len(err) > 40:
+                err = err[:37] + "..."
+            return f"[red]{err}[/red]"
+        return ""
+
+    def _build_display(self) -> Table:
+        """Build the display table."""
+        table = Table(
+            show_header=False,
+            box=None,
+            padding=(0, 1),
+            collapse_padding=True,
+        )
+        table.add_column("status", width=2)
+        table.add_column("id", width=4)
+        table.add_column("name", min_width=20)
+        table.add_column("result", min_width=30)
+
+        # Add premises
+        for p in self.premises:
+            fact_id = p.get("id", "")
+            if fact_id in self.items:
+                item = self.items[fact_id]
+                table.add_row(
+                    self._get_status_indicator(item),
+                    f"[bold]{fact_id}[/bold]",
+                    item.name,
+                    self._format_value(item),
+                )
+
+        # Separator
+        if self.premises and self.inferences:
+            table.add_row("", "", "[dim]───────────────────[/dim]", "")
+
+        # Add inferences
+        for inf in self.inferences:
+            fact_id = inf.get("id", "")
+            if fact_id in self.items:
+                item = self.items[fact_id]
+                table.add_row(
+                    self._get_status_indicator(item),
+                    f"[bold]{fact_id}[/bold]",
+                    item.name,
+                    self._format_value(item),
+                )
+
+        return table
+
+
 class FeedbackDisplay:
     """
     Rich-based terminal display for session execution.
@@ -125,6 +324,31 @@ class FeedbackDisplay:
         self._auditable_mode: bool = False
         self._proof_outputs: list[tuple[str, str]] = []  # (fact_name, output) for resolved facts
 
+        # Live plan execution display for DAG-based execution
+        self._live_plan_display: Optional[LivePlanExecutionDisplay] = None
+
+    def start_live_plan_display(self, premises: list[dict], inferences: list[dict]) -> None:
+        """Start the live plan execution display showing all P/I items."""
+        self.stop_spinner()  # Stop any existing spinner
+        self._live_plan_display = LivePlanExecutionDisplay(
+            console=self.console,
+            premises=premises,
+            inferences=inferences,
+        )
+        self._live_plan_display.start()
+
+    def stop_live_plan_display(self) -> None:
+        """Stop the live plan execution display."""
+        if self._live_plan_display:
+            self._live_plan_display.stop()
+            self._live_plan_display = None
+
+    def update_plan_item_status(self, fact_id: str, status: str, value: str = None,
+                                 error: str = None, confidence: float = 0.0) -> None:
+        """Update a plan item's status in the live display."""
+        if self._live_plan_display:
+            self._live_plan_display.update_status(fact_id, status, value, error, confidence)
+
     def start_proof_tree(self, conclusion_name: str, conclusion_description: str = "") -> None:
         """Start tracking a proof tree for auditable mode."""
         self._proof_tree = ProofTree(conclusion_name, conclusion_description)
@@ -160,6 +384,8 @@ class FeedbackDisplay:
             # Store output for intermediate display - use resolution summary
             if value is not None:
                 summary = resolution_summary or str(value)
+                # Collapse newlines for compact single-line display
+                summary = summary.replace("\n", " ").replace("  ", " ")
                 if len(summary) > 100:
                     summary = summary[:97] + "..."
                 self._proof_outputs.append((fact_name, summary))
@@ -200,11 +426,24 @@ class FeedbackDisplay:
         self._live.start()
 
     def stop(self) -> None:
-        """Stop the live display."""
+        """Stop all animations and live displays."""
         self._stop_animation_thread()
+        self.stop_spinner()  # Also stop any standalone spinner
         if self._live:
             self._live.stop()
             self._live = None
+
+    def _ensure_live(self) -> None:
+        """Ensure the live display is started if configured to use it.
+
+        This lazy initialization ensures consistent display behavior regardless
+        of which code path triggers step events.
+        """
+        if self._use_live_display and not self._live:
+            self.start()
+            self._start_animation_thread()
+            if self._start_time is None:
+                self._start_time = time.time()
 
     def _start_animation_thread(self) -> None:
         """Start background thread for smooth spinner animation."""
@@ -478,8 +717,9 @@ class FeedbackDisplay:
             # Show last few resolved facts
             recent_outputs = self._proof_outputs[-5:]  # Last 5
             for fact_name, value in recent_outputs:
-                # Truncate value for display
-                val_display = value[:60] + "..." if len(value) > 60 else value
+                # Truncate value for display - collapse newlines for compact display
+                val_clean = value.replace("\n", " ").replace("  ", " ")
+                val_display = val_clean[:60] + "..." if len(val_clean) > 60 else val_clean
                 all_parts.append(Text.from_markup(f"  [green]✓[/green] [cyan]{fact_name}[/cyan] = {val_display}"))
             if len(self._proof_outputs) > 5:
                 all_parts.append(Text.from_markup(f"  [dim]... and {len(self._proof_outputs) - 5} more[/dim]"))
@@ -602,6 +842,8 @@ class FeedbackDisplay:
                 elif step_type == "inference":
                     self.console.print("\n  [bold yellow]INFERENCES[/bold yellow] [dim](facts derived from premises)[/dim]")
                 elif step_type == "conclusion":
+                    # Show data flow DAG before conclusion
+                    self._show_data_flow_dag(steps)
                     self.console.print("\n  [bold yellow]CONCLUSION[/bold yellow]")
 
             # Format dependency info with remapped step numbers
@@ -619,6 +861,73 @@ class FeedbackDisplay:
                 self.console.print(f"  [dim]{fact_id}:[/dim] {goal}")
             else:
                 self.console.print(f"  [dim]{display_num}.[/dim] {goal}{dep_str}")
+
+        self.console.print()
+
+    def _show_data_flow_dag(self, steps: list[dict]) -> None:
+        """Display an ASCII data flow DAG using phart library.
+
+        Args:
+            steps: List of proof steps with type, fact_id, goal, etc.
+        """
+        import re
+
+        try:
+            import networkx as nx
+            from phart import ASCIIRenderer
+        except ImportError:
+            # phart not available, skip diagram
+            return
+
+        # Build NetworkX graph from steps
+        G = nx.DiGraph()
+
+        for s in steps:
+            step_type = s.get("type")
+            fact_id = s.get("fact_id", "")
+            goal = s.get("goal", "")
+
+            if step_type == "premise":
+                G.add_node(fact_id)
+            elif step_type == "inference":
+                G.add_node(fact_id)
+                # Extract dependencies from the operation
+                inf_match = re.match(r'^(\w+)\s*=\s*(.+)', goal)
+                if inf_match:
+                    operation = inf_match.group(2)
+                else:
+                    operation = goal
+                deps = re.findall(r'[PI]\d+', operation)
+                for dep in deps:
+                    if G.has_node(dep):
+                        G.add_edge(dep, fact_id)
+
+        if G.number_of_nodes() == 0:
+            return
+
+        # Find terminal inference and add conclusion
+        inferences = [n for n in G.nodes() if n.startswith('I')]
+        if inferences:
+            # Find the one with no outgoing edges to other inferences
+            terminal = None
+            for inf in inferences:
+                successors = list(G.successors(inf))
+                if not any(s.startswith('I') for s in successors):
+                    terminal = inf
+                    break
+            if terminal is None:
+                terminal = inferences[-1]
+            G.add_node("C")
+            G.add_edge(terminal, "C")
+
+        self.console.print("\n  [bold yellow]DATA FLOW[/bold yellow]")
+
+        renderer = ASCIIRenderer(G)
+        diagram = renderer.render()
+
+        for line in diagram.split('\n'):
+            if line.strip():
+                self.console.print(f"  [dim]{line}[/dim]")
 
         self.console.print()
 
@@ -669,11 +978,10 @@ class FeedbackDisplay:
 
         # Prompt for approval - allow direct steering input
         self.console.print()
-        self.console.print("[dim]Enter to execute, 'n' to cancel, 'k/a/e' to switch mode, or type changes[/dim]")
 
         while True:
             try:
-                response = self.console.input("[bold]> [/bold]").strip()
+                response = self.console.input("[dim]Enter to execute, 'n' to cancel, 'k/a/e' to switch mode, or type changes >[/dim] ").strip()
             except (EOFError, KeyboardInterrupt):
                 self.console.print("\n[red]Cancelled.[/red]")
                 return PlanApprovalResponse.reject("User cancelled")
@@ -753,16 +1061,20 @@ class FeedbackDisplay:
                 for j, suggestion in enumerate(suggestions, 1):
                     self.console.print(f"      [dim]{j})[/dim] [yellow]{suggestion}[/yellow]")
 
-            # Flush output to ensure prompt is visible
+            # Flush all output to ensure suggestions are visible before prompt
             sys.stdout.flush()
             sys.stderr.flush()
+            # Force Rich console to flush as well
+            self.console.file.flush() if hasattr(self.console, 'file') else None
 
             # Get answer - show first suggestion as default hint if available
             try:
                 if suggestions:
                     default_hint = suggestions[0]
                     # Show clear prompt line with default
-                    answer = Prompt.ask(f"     > [dim]({default_hint})[/dim]", default=default_hint, show_default=False)
+                    # Print the prompt prefix separately to ensure visibility
+                    self.console.print(f"     > [dim]({default_hint})[/dim]: ", end="")
+                    answer = input() or default_hint
                 else:
                     # Show clear prompt line for custom input
                     answer = Prompt.ask("     >", default="", show_default=False)
@@ -853,13 +1165,9 @@ class FeedbackDisplay:
             step.status = "running"
             step.status_message = "starting..."
 
-        if self._live and self._use_live_display:
-            self._update_live()
-        else:
-            # Fallback to direct printing
-            total = len(self.plan_steps) if self.plan_steps else "?"
-            display_num = self._step_number_map.get(step_number, step_number)
-            self.console.print(f"\n[bold]Step {display_num}/{total}:[/bold] {goal}")
+        # Ensure live display is initialized
+        self._ensure_live()
+        self._update_live()
 
     def step_generating(self, step_number: int, attempt: int) -> None:
         """Show code generation in progress."""
@@ -869,13 +1177,9 @@ class FeedbackDisplay:
             step.status_message = f"retry #{attempt}..." if attempt > 1 else "working..."
             step.attempts = attempt
 
-        if self._live and self._use_live_display:
-            self._update_live()
-        else:
-            if attempt > 1:
-                self.console.print(f"  [yellow]retry #{attempt}...[/yellow]", end="\r")
-            else:
-                self.console.print("  [dim]working...[/dim]", end="\r")
+        # Ensure live display is initialized
+        self._ensure_live()
+        self._update_live()
 
     def step_executing(self, step_number: int, attempt: int, code: Optional[str] = None) -> None:
         """Show code execution in progress."""
@@ -885,9 +1189,12 @@ class FeedbackDisplay:
             step.status_message = "executing..."
             step.code = code
 
-        if self._live and self._use_live_display:
-            self._update_live()
-        elif self.verbose and code:
+        # Ensure live display is initialized
+        self._ensure_live()
+        self._update_live()
+
+        # In verbose mode, also show the code being executed
+        if self.verbose and code:
             self.console.print()
             self.console.print(Syntax(code, "python", theme="monokai", line_numbers=True))
 
@@ -928,27 +1235,11 @@ class FeedbackDisplay:
         # Clear active step goal after completion
         self._active_step_goal = ""
 
-        if self._live and self._use_live_display:
-            self._update_live()
-        else:
-            # Fallback to direct printing
-            self.console.print(" " * 60, end="\r")
-            retry_info = f" [yellow]({attempts} attempts)[/yellow]" if attempts > 1 else ""
-            time_info = f"[dim]{duration_ms/1000:.1f}s[/dim]"
+        # Ensure live display is initialized and update
+        self._ensure_live()
+        self._update_live()
 
-            if output:
-                lines = [l.strip() for l in output.strip().split("\n") if l.strip()]
-                if lines:
-                    summary_lines = lines[:3]
-                    summary = "\n  ".join(summary_lines)
-                    if len(lines) > 3:
-                        summary += f"\n  [dim]... ({len(lines) - 3} more lines)[/dim]"
-                    self.console.print(f"  [green]→[/green] {summary} {time_info}{retry_info}")
-                else:
-                    self.console.print(f"  [green]✓[/green] Done {time_info}{retry_info}")
-            else:
-                self.console.print(f"  [green]✓[/green] Done {time_info}{retry_info}")
-
+        # In verbose mode, show tables that were created
         if self.verbose and tables_created:
             self.console.print(f"  [dim]tables:[/dim] {', '.join(tables_created)}")
 
@@ -961,15 +1252,14 @@ class FeedbackDisplay:
         if step:
             step.status_message = f"retry #{attempt}... ({brief[:40]})"
 
-        if self._live and self._use_live_display:
-            self._update_live()
-        else:
-            self.console.print(" " * 60, end="\r")
-            self.console.print(f"  [yellow]retry...[/yellow]", end="\r")
+        # Ensure live display is initialized and update
+        self._ensure_live()
+        self._update_live()
 
-            if self.verbose:
-                self.console.print(f"  [red]Error:[/red] {brief[:80]}")
-                self.console.print(Panel(error, title="Full Error", border_style="red"))
+        # In verbose mode, show the full error details
+        if self.verbose:
+            self.console.print(f"  [red]Error:[/red] {brief[:80]}")
+            self.console.print(Panel(error, title="Full Error", border_style="red"))
 
     def step_failed(
         self,
@@ -992,12 +1282,9 @@ class FeedbackDisplay:
             step.error = error
             step.attempts = attempts
 
-        if self._live and self._use_live_display:
-            self._update_live()
-        else:
-            self.console.print(" " * 60, end="\r")
-            self.console.print(f"  [bold red]FAILED[/bold red] after {attempts} attempts")
-            self.console.print(Panel(error, title="Error", border_style="red"))
+        # Ensure live display is initialized and update
+        self._ensure_live()
+        self._update_live()
 
         # Show suggestions if available
         if suggestions:
@@ -1236,6 +1523,36 @@ class SessionFeedbackHandler:
             # Start animation thread for smooth spinner (same as exploratory mode)
             self.display._start_animation_thread()
 
+        elif event_type == "dag_execution_start":
+            # Start the live plan execution display with all P/I items
+            premises = data.get("premises", [])
+            inferences = data.get("inferences", [])
+            self.display.start_live_plan_display(premises, inferences)
+
+        elif event_type == "dag_execution_complete":
+            # Update any remaining items based on success/failure
+            success = data.get("success", True)
+            failed_nodes = data.get("failed_nodes", [])
+
+            if self.display._live_plan_display:
+                # Mark failed nodes
+                for node_name in failed_nodes:
+                    self.display.update_plan_item_status(node_name, "failed", error="execution failed")
+
+                # Mark any remaining pending/running items as resolved if success
+                if success:
+                    for item in self.display._live_plan_display.items.values():
+                        if item.status in ("pending", "running"):
+                            item.status = "resolved"
+                            if not item.value:
+                                item.value = "done"
+
+                # Give display a moment to render final state
+                time.sleep(0.3)
+
+            # Stop the live plan display
+            self.display.stop_live_plan_display()
+
         elif event_type == "premise_resolving":
             # Show which fact is being resolved
             fact_name = data.get("fact_name", "?")
@@ -1244,11 +1561,38 @@ class SessionFeedbackHandler:
             total = data.get("total", 0)
             parent = data.get("parent")  # Parent fact for tree structure
 
-            # Update proof tree if active
-            if self.display._proof_tree:
+            # Extract fact_id from "P1: name" format
+            fact_id = fact_name.split(":")[0].strip() if ":" in fact_name else fact_name
+
+            # Update live plan display if active
+            if self.display._live_plan_display:
+                self.display.update_plan_item_status(fact_id, "running")
+            elif self.display._proof_tree:
                 self.display.update_proof_resolving(fact_name, description, parent_name=parent)
             else:
                 self.display.update_spinner(f"Resolving {fact_name} ({step}/{total})...")
+
+        elif event_type == "premise_retry":
+            # Show retry info inline with the current premise being resolved
+            premise_id = data.get("premise_id", "?")
+            premise_name = data.get("premise_name", "?")
+            attempt = data.get("attempt", 2)
+            max_attempts = data.get("max_attempts", 3)
+            error_brief = data.get("error_brief", "")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+
+            # Format: "Resolving P2 (2/4)... [retry 2/3: syntax error]"
+            retry_info = f"retry {attempt}/{max_attempts}"
+            if error_brief:
+                # Truncate error and clean up for display
+                err_display = error_brief.replace('\n', ' ')[:40]
+                retry_info += f": {err_display}"
+
+            if self.display._proof_tree:
+                self.display.update_proof_resolving(premise_id, f"retrying... [{retry_info}]")
+            else:
+                self.display.update_spinner(f"Resolving {premise_id} ({step}/{total})... [yellow][{retry_info}][/yellow]")
 
         elif event_type == "premise_resolved":
             # Show resolved fact value
@@ -1260,9 +1604,22 @@ class SessionFeedbackHandler:
             confidence = data.get("confidence", 1.0)
             resolution_summary = data.get("resolution_summary")
             query = data.get("query")
+            error = data.get("error")
 
-            # Update proof tree if active
-            if self.display._proof_tree:
+            # Extract fact_id from "P1: name" format
+            fact_id = fact_name.split(":")[0].strip() if ":" in fact_name else fact_name
+
+            # Update live plan display if active
+            if self.display._live_plan_display:
+                if value is not None:
+                    self.display.update_plan_item_status(
+                        fact_id, "resolved", value=str(value), confidence=confidence
+                    )
+                else:
+                    self.display.update_plan_item_status(
+                        fact_id, "failed", error=error or "unresolved"
+                    )
+            elif self.display._proof_tree:
                 if value is not None:
                     from_cache = source == "cache"
                     self.display.update_proof_resolved(
@@ -1275,18 +1632,18 @@ class SessionFeedbackHandler:
                         query=query,
                     )
                 else:
-                    error = data.get("error", "unresolved")
-                    self.display.update_proof_failed(fact_name, error)
+                    self.display.update_proof_failed(fact_name, error or "unresolved")
             else:
                 # Fallback to simple console output
                 if value is not None:
                     val_str = str(value)
+                    # Collapse newlines for compact single-line display
+                    val_str = val_str.replace("\n", " ").replace("  ", " ")
                     if len(val_str) > 60:
                         val_str = val_str[:57] + "..."
                     conf_str = f" ({confidence:.0%})" if confidence else ""
                     self.display.console.print(f"  [green]✓[/green] {fact_name} = {val_str} [dim][{source}]{conf_str}[/dim]")
                 else:
-                    error = data.get("error", "unresolved")
                     self.display.console.print(f"  [red]✗[/red] {fact_name} = [red]UNRESOLVED[/red] [dim]({error})[/dim]")
 
         elif event_type == "inference_executing":
@@ -1296,11 +1653,34 @@ class SessionFeedbackHandler:
             step = data.get("step", 0)
             total = data.get("total", 0)
 
-            # Update proof tree if active
-            if self.display._proof_tree:
+            # Update live plan display if active
+            if self.display._live_plan_display:
+                self.display.update_plan_item_status(inference_id, "running")
+            elif self.display._proof_tree:
                 self.display.update_proof_resolving(inference_id, operation)
             else:
                 self.display.update_spinner(f"Executing {inference_id} ({step}/{total})...")
+
+        elif event_type == "inference_retry":
+            # Show retry info inline with the spinner (single line)
+            inference_id = data.get("inference_id", "?")
+            attempt = data.get("attempt", 2)
+            max_attempts = data.get("max_attempts", 3)
+            error_brief = data.get("error_brief", "")
+            step = data.get("step", 0)
+            total = data.get("total", 0)
+
+            # Format: "Executing I2 (2/4)... [retry 2/3: 'column not found']"
+            retry_info = f"retry {attempt}/{max_attempts}"
+            if error_brief:
+                # Truncate error and clean up for display
+                err_display = error_brief.replace('\n', ' ')[:40]
+                retry_info += f": {err_display}"
+
+            if self.display._proof_tree:
+                self.display.update_proof_resolving(inference_id, f"retrying... [{retry_info}]")
+            else:
+                self.display.update_spinner(f"Executing {inference_id} ({step}/{total})... [yellow][{retry_info}][/yellow]")
 
         elif event_type == "inference_complete":
             # Show completed inference step
@@ -1321,8 +1701,12 @@ class SessionFeedbackHandler:
             # Build display label with ID and name
             display_label = f"{inference_id}: {inference_name}" if inference_name else inference_id
 
-            # Update proof tree if active
-            if self.display._proof_tree:
+            # Update live plan display if active
+            if self.display._live_plan_display:
+                self.display.update_plan_item_status(
+                    inference_id, "resolved", value=str(result), confidence=0.9
+                )
+            elif self.display._proof_tree:
                 self.display.update_proof_resolved(
                     inference_id,
                     result,
@@ -1338,17 +1722,48 @@ class SessionFeedbackHandler:
                         self.display.console.print(f"    [dim]{line}[/dim]")
 
         elif event_type == "inference_failed":
-            # Show failed inference step
+            # Show failed inference step and stop animation
             inference_id = data.get("inference_id", "?")
             error = data.get("error", "unknown error")
             step = data.get("step", 0)
             total = data.get("total", 0)
 
-            # Update proof tree if active
-            if self.display._proof_tree:
+            # Update live plan display if active
+            if self.display._live_plan_display:
+                self.display.update_plan_item_status(inference_id, "failed", error=error)
+                # Stop the live display on failure
+                self.display.stop_live_plan_display()
+            elif self.display._proof_tree:
                 self.display.update_proof_failed(inference_id, error)
+                self.display.stop()
             else:
                 self.display.console.print(f"  [red]✗[/red] {inference_id} = [red]FAILED[/red] [dim]({error})[/dim]")
+                self.display.stop()
+
+            # Show error summary and suggestions
+            self.display.console.print(f"\n[red bold]Error:[/red bold] {error[:200]}")
+            self.display.console.print("\n[yellow]Suggestions:[/yellow]")
+            self.display.console.print("  • Try simplifying the request")
+            self.display.console.print("  • Check that the data sources have the required columns")
+            self.display.console.print("  • Use '/redo' to try again with modifications")
+
+        elif event_type == "data_warning":
+            name = data.get("name", "?")
+            row_count = data.get("row_count", 0)
+            threshold = data.get("threshold", 0)
+            data_type = data.get("type", "data")
+            self.display.console.print(
+                f"  [yellow]Warning:[/yellow] {name} has {row_count:,} rows "
+                f"(threshold: {threshold:,})"
+            )
+
+        elif event_type == "data_sampled":
+            name = data.get("name", "?")
+            original = data.get("original_rows", 0)
+            sampled = data.get("sampled_rows", 0)
+            self.display.console.print(
+                f"  [cyan]Sampled:[/cyan] {name}: {original:,} -> {sampled:,} rows"
+            )
 
         elif event_type == "synthesizing":
             # Stop Live display before printing synthesizing message

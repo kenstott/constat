@@ -103,10 +103,20 @@ class AnthropicProvider(BaseLLMProvider):
                                 "is_error": True
                             })
 
-                # Add assistant message with tool uses
-                messages.append({"role": "assistant", "content": assistant_content})
-                # Add tool results
-                messages.append({"role": "user", "content": tool_results})
+                # Add assistant message with tool uses (only if non-empty)
+                if assistant_content:
+                    messages.append({"role": "assistant", "content": assistant_content})
+                # Add tool results (only if non-empty to avoid API error)
+                if tool_results:
+                    messages.append({"role": "user", "content": tool_results})
+                else:
+                    # No tool results - edge case (stop_reason=tool_use but no tool blocks)
+                    # Extract any text from the response and return it
+                    text_parts = []
+                    for block in response.content:
+                        if block.type == "text":
+                            text_parts.append(block.text)
+                    return "\n".join(text_parts) if text_parts else ""
 
             else:
                 # No more tool calls, extract final text

@@ -1,10 +1,13 @@
 """Session orchestration for multi-step plan execution."""
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 from constat.core.config import Config
 from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType, TaskType
@@ -857,6 +860,360 @@ YOUR JSON RESPONSE:"""
             return raw_value
         else:
             return raw_value  # Other types (bool, etc.)
+
+    def _execute_dag_node(
+        self,
+        node: "FactNode",
+        dag: "ExecutionDAG",
+        problem: str,
+        detailed_schema: str,
+        premises: list[dict],
+        inferences: list[dict],
+        resolved_premises: dict,
+        resolved_inferences: dict,
+        inference_names: dict,
+    ) -> tuple[any, float]:
+        """Execute a single DAG node (premise or inference).
+
+        Called by DAGExecutor for each node. Handles both:
+        - Leaf nodes (premises): resolve from database/document/cache
+        - Internal nodes (inferences): execute Python code using dependency values
+
+        Args:
+            node: The FactNode to execute
+            dag: The full DAG (for accessing dependency values)
+            problem: The original problem being solved
+            detailed_schema: Schema info for SQL generation
+            premises: Original premise list for reference
+            inferences: Original inference list for reference
+            resolved_premises: Dict to store resolved premise facts
+            resolved_inferences: Dict to store resolved inference results
+            inference_names: Dict mapping inference ID to table name
+
+        Returns:
+            Tuple of (value, confidence)
+        """
+        import re
+        import pandas as pd
+        from constat.execution.fact_resolver import Fact, FactSource
+
+        if node.is_leaf:
+            # === PREMISE RESOLUTION ===
+            fact_id = node.fact_id
+            fact_name = node.name
+            fact_desc = node.description
+            source = f"{node.source}:{node.source_db}" if node.source_db else node.source or "database"
+
+            # Check for pre-resolved node (embedded values handled by DAG parser)
+            if node.value is not None:
+                fact = Fact(
+                    name=fact_name,
+                    value=node.value,
+                    confidence=node.confidence,
+                    source=FactSource.LLM_KNOWLEDGE,
+                    reasoning="Embedded value from plan",
+                )
+                resolved_premises[fact_id] = fact
+                self.fact_resolver.add_user_fact(
+                    fact_name=fact_name,
+                    value=node.value,
+                    reasoning="Embedded value",
+                    source=FactSource.LLM_KNOWLEDGE,
+                )
+                return node.value, node.confidence
+
+            # Check cache
+            cached_fact = self.fact_resolver.get_fact(fact_name)
+            if cached_fact and cached_fact.value is not None:
+                resolved_premises[fact_id] = cached_fact
+                return cached_fact.value, cached_fact.confidence
+
+            fact = None
+            sql = None
+
+            if source.startswith("database") or source == "database":
+                # Database resolution
+                db_name = source.split(":", 1)[1].strip() if ":" in source else None
+                if not db_name:
+                    available_dbs = list(self.schema_manager.connections.keys())
+                    if available_dbs:
+                        db_name = available_dbs[0]
+                    else:
+                        raise Exception("No SQL databases configured")
+
+                engine = self.schema_manager.get_sql_connection(db_name)
+                max_retries = 3
+                last_error = None
+
+                for attempt in range(max_retries):
+                    error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query." if last_error else ""
+                    sql_learnings = self._get_codegen_learnings(fact_desc)
+
+                    sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
+
+Schema:
+{detailed_schema}
+{sql_learnings}
+{error_context}
+RULE: Always SELECT primary key columns for joins."""
+
+                    sql_result = self.router.execute(
+                        task_type=TaskType.SQL_GENERATION,
+                        system="Output raw SQL only. No markdown.",
+                        user_message=sql_prompt,
+                        max_tokens=500,
+                    )
+
+                    sql = sql_result.content.strip()
+                    code_block = re.search(r'```(?:sql)?\s*\n?(.*?)\n?```', sql, re.DOTALL | re.IGNORECASE)
+                    if code_block:
+                        sql = code_block.group(1).strip()
+
+                    if "sqlite" in str(engine.url):
+                        sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
+
+                    try:
+                        result_df = pd.read_sql(sql, engine)
+                        row_count = len(result_df)
+                        node.sql_query = sql
+
+                        if row_count == 1 and len(result_df.columns) == 1:
+                            scalar_value = result_df.iloc[0, 0]
+                            if hasattr(scalar_value, 'item'):
+                                scalar_value = scalar_value.item()
+                            fact_value = scalar_value
+                        else:
+                            fact_value = f"{row_count} rows"
+
+                        table_name = fact_name.lower().replace(' ', '_').replace('-', '_')
+                        if row_count > 0 and self.datastore:
+                            self.datastore.save_dataframe(table_name, result_df)
+                            node.row_count = row_count
+
+                        fact = Fact(
+                            name=fact_name,
+                            value=fact_value,
+                            confidence=0.9,
+                            source=FactSource.DATABASE,
+                            query=sql,
+                            table_name=table_name if row_count > 1 else None,
+                            row_count=row_count if row_count > 1 else None,
+                        )
+                        break
+                    except Exception as sql_err:
+                        last_error = str(sql_err)
+                        if attempt == max_retries - 1:
+                            raise Exception(f"SQL error after {max_retries} attempts: {sql_err}")
+
+            elif source.startswith("knowledge") or source.startswith("llm"):
+                value = self._resolve_llm_knowledge(fact_desc)
+                fact = Fact(
+                    name=fact_name,
+                    value=value,
+                    confidence=0.7,
+                    source=FactSource.LLM_KNOWLEDGE,
+                    reasoning=f"LLM estimate: {fact_desc}",
+                )
+
+            else:
+                # Generic resolution
+                fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc)
+
+            if fact and fact.value is not None:
+                resolved_premises[fact_id] = fact
+                self.fact_resolver.add_user_fact(
+                    fact_name=fact_name,
+                    value=fact.value,
+                    query=sql,
+                    reasoning=fact.reasoning,
+                    source=fact.source,
+                    table_name=getattr(fact, 'table_name', None),
+                    row_count=getattr(fact, 'row_count', None),
+                    context=f"SQL: {sql}" if sql else None,
+                )
+                return fact.value, fact.confidence
+            else:
+                raise ValueError(f"Failed to resolve premise: {fact_name}")
+
+        else:
+            # === INFERENCE EXECUTION ===
+            inf_id = node.fact_id
+            operation = node.operation
+            explanation = node.description
+            inf_name = node.name
+            table_name = inf_name.lower().replace(' ', '_').replace('-', '_')
+            inference_names[inf_id] = table_name
+
+            # Handle verify_exists operation
+            if operation and operation.startswith("verify_exists("):
+                ref_match = re.match(r'verify_exists\((\w+)\)', operation)
+                if ref_match:
+                    ref_id = ref_match.group(1)
+                    ref_table = inference_names.get(ref_id, ref_id.lower())
+                    if ref_id.startswith("P"):
+                        p_idx = int(ref_id[1:]) - 1
+                        if p_idx < len(premises):
+                            ref_table = premises[p_idx]['name'].lower().replace(' ', '_')
+
+                    if self.datastore:
+                        try:
+                            count_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {ref_table}")
+                            row_count = int(count_df.iloc[0, 0])
+                            resolved_inferences[inf_id] = f"Verified: {row_count} records"
+                            self.fact_resolver.add_user_fact(
+                                fact_name=inf_name,
+                                value=f"{row_count} records verified",
+                                reasoning=f"Verified {ref_table} contains data",
+                                source=FactSource.DERIVED,
+                            )
+                            return f"Verified: {row_count} records", 0.95
+                        except Exception as ve:
+                            raise ValueError(f"Verification failed: {ve}")
+
+            # Build context from dependencies including column names
+            scalars = []
+            tables = []
+            for dep_name in node.dependencies:
+                dep_node = dag.get_node(dep_name)
+                if dep_node and dep_node.value is not None:
+                    val_str = str(dep_node.value)
+                    if "rows" in val_str or (dep_node.row_count and dep_node.row_count > 1):
+                        dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
+                        # Get actual column names from the table
+                        columns_info = ""
+                        if self.datastore:
+                            try:
+                                schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
+                                if len(schema_df) > 0:
+                                    cols = list(schema_df['column_name']) if 'column_name' in schema_df.columns else list(schema_df.iloc[:, 0])
+                                    columns_info = f" columns: {cols}"
+                            except Exception:
+                                try:
+                                    # Fallback: get columns from a sample query
+                                    sample = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
+                                    columns_info = f" columns: {list(sample.columns)}"
+                                except Exception:
+                                    pass
+                        tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}")
+                    else:
+                        scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
+
+            # Generate inference code
+            inference_prompt = f"""Generate Python code for this inference:
+
+Inference: {inf_id}: {inf_name} = {operation}
+Explanation: {explanation}
+
+SCALAR VALUES:
+{chr(10).join(scalars) if scalars else "(none)"}
+
+TABLES (query with store.query()):
+{chr(10).join(tables) if tables else "(none)"}
+
+APIs:
+- store.query(sql) -> pd.DataFrame
+- store.save_dataframe(name, df)
+
+Rules:
+1. Use `if len(df) > 0:` not `if df:` for DataFrame checks
+2. End with `_result = <value>`
+3. Save DataFrames: store.save_dataframe('{table_name}', result_df)
+
+Return ONLY Python code, no markdown."""
+
+            max_retries = 3
+            last_error = None
+            code = None
+
+            for attempt in range(max_retries):
+                prompt = inference_prompt
+                if last_error:
+                    prompt = f"PREVIOUS ERROR: {last_error}\n\n{inference_prompt}"
+
+                code_result = self.router.execute(
+                    task_type=TaskType.SQL_GENERATION,
+                    system="Generate Python code. Return only executable code.",
+                    user_message=prompt,
+                    max_tokens=1200,
+                )
+
+                code = code_result.content.strip()
+                if code.startswith("```"):
+                    code = re.sub(r'^```\w*\n?', '', code)
+                    code = re.sub(r'\n?```$', '', code)
+
+                # Auto-fix DataFrame boolean errors
+                code = re.sub(r'\bif\s+(df|result|data)\s*:', r'if not \1.empty:', code)
+                code = re.sub(r'\bif\s+not\s+(df|result|data)\s*:', r'if \1.empty:', code)
+
+                node.code = code
+
+                import io
+                import sys
+                exec_globals = {"store": self.datastore, "pd": pd}
+
+                # Add resolved values to context
+                for pid, fact in resolved_premises.items():
+                    if fact and fact.value is not None:
+                        val = fact.value
+                        if isinstance(val, str) and "rows" in val:
+                            try:
+                                val = int(val.split()[0])
+                            except (ValueError, IndexError):
+                                pass
+                        exec_globals[pid] = val
+
+                for iid, ival in resolved_inferences.items():
+                    if ival is not None:
+                        val = ival
+                        if isinstance(val, str) and "rows" in val:
+                            try:
+                                val = int(val.split()[0])
+                            except (ValueError, IndexError):
+                                pass
+                        exec_globals[iid] = val
+
+                captured = io.StringIO()
+                old_stdout = sys.stdout
+                try:
+                    sys.stdout = captured
+                    exec(code, exec_globals)
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                finally:
+                    sys.stdout = old_stdout
+
+            if last_error:
+                raise Exception(last_error)
+
+            computed = exec_globals.get('_result')
+
+            # Check if result was saved as table
+            if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
+                count_df = self.datastore.query(f"SELECT COUNT(*) FROM {table_name}")
+                row_count = int(count_df.iloc[0, 0])
+                node.row_count = row_count
+                resolved_inferences[inf_id] = f"{row_count} rows"
+                result_value = f"{row_count} rows"
+            elif computed is not None:
+                resolved_inferences[inf_id] = computed
+                result_value = computed
+            else:
+                output = captured.getvalue().strip()
+                resolved_inferences[inf_id] = output if output else "completed"
+                result_value = output if output else "completed"
+
+            self.fact_resolver.add_user_fact(
+                fact_name=inf_name,
+                value=result_value,
+                reasoning=f"Computed: {operation}",
+                source=FactSource.DERIVED,
+                context=f"Code:\n{code}" if code else None,
+            )
+
+            return result_value, 0.9
 
     def _build_source_context(self, include_user_facts: bool = True) -> dict:
         """Build context about available data sources (schema, APIs, documents, facts).
@@ -3983,7 +4340,7 @@ User feedback: {approval.suggestion}
                 steer_attempt += 1
                 steer = result.get("steer", "")
                 fact_name = result.get("fact_name", "")
-                print(f"[DEBUG SESSION] Re-planning with steer: {steer}")
+                logger.debug(f"Re-planning with steer: {steer}")
 
                 # Augment the problem with the user's guidance
                 augmented_problem = f"{problem}\n\nAdditional context: For {fact_name}, {steer}"
@@ -4081,9 +4438,10 @@ PREMISE RULES:
 - Premises are DATA only (tables, records, values) - NOT functions or operations
 - Every premise MUST be referenced by at least one inference
 - Use "database" for SQL queries, "knowledge" for universal facts (scientific constants, geography)
-- For known universal values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: knowledge]
+- For known universal values (mathematical constants like Pi, geographic facts), embed directly: P2: pi_value = 3.14159 (Pi constant) [source: knowledge]
 - NEVER ASSUME personal values (age, location, preferences) - use [source: user] and leave value as ?
 - Example: P4: my_age = ? (User's age) [source: user]
+- IMPORTANT: If the question mentions clarifications or user preferences (like "use guidelines from X"), treat these as DATA to be retrieved, NOT as embedded values. Always use = ? and resolve from the appropriate source.
 
 INFERENCE:
 I1: <result_name> = <operation>(P1, P2) -- <explanation>
@@ -4352,902 +4710,154 @@ Premises are DATA. Operations (filter, extract, group) go in INFERENCE.
                 # Replan with feedback - for now, just include feedback in context
                 problem = f"{problem}\n\nUser guidance: {approval.suggestion}"
 
-        # Step 2: Resolve premises from the approved plan
+        # Step 2: Execute plan using DAG-based parallel resolution
         self._emit_event(StepEvent(
             event_type="verifying",
             step_number=0,
-            data={"message": f"Resolving premises for: {claim or problem}"}
+            data={"message": f"Resolving facts for: {claim or problem}"}
         ))
 
         try:
-            # Resolve premises from the plan (not re-decomposing)
-            resolved_premises = {}
-            derivation_lines = ["**Premise Resolution:**", ""]
-            total_premises = len(premises)
-
-            # Build available sources description for Tier 2 assessment
-            available_sources_desc = self._build_available_sources_description()
-
-            # Import Fact and FactSource at the start of premise resolution
-            # to ensure they're available in all code paths
+            from constat.execution.dag import parse_plan_to_dag, DAGExecutor
             from constat.execution.fact_resolver import Fact, FactSource
+            import logging
+            logger = logging.getLogger(__name__)
 
-            for idx, premise in enumerate(premises):
-                print(f"[DEBUG PREMISE] Processing premise {idx}: {premise}")
-                # Update resolution context for Tier 2 LLM assessment
-                # This tells the LLM what's already resolved and what's pending
-                pending_premises = [p for i, p in enumerate(premises) if i > idx]
-                self.fact_resolver.set_resolution_context(
-                    resolved_premises=resolved_premises,
-                    pending_premises=pending_premises,
-                    available_sources=available_sources_desc,
-                )
-                fact_id = premise["id"]  # P1, P2, etc.
-                fact_name = premise["name"]
-                fact_desc = premise.get("description", "")
-                source = premise.get("source", "")  # Default to empty string if not specified
-                print(f"[DEBUG PREMISE] fact_id={fact_id}, fact_name={fact_name}, source='{source}'")
+            # Parse plan into DAG
+            dag = parse_plan_to_dag(premises, inferences)
 
-                # Check if the premise name contains an embedded value (e.g., "name = 8")
-                # This happens when the LLM provides a known constant at planning time
-                embedded_value = None
-                working_name = fact_name
+            # Get schema for SQL generation
+            detailed_schema = self.schema_manager.get_overview()
 
-                # Strip trailing " = ?" if present (LLM sometimes appends this)
-                if working_name.endswith(" = ?"):
-                    working_name = working_name[:-4].strip()
-
-                if " = " in working_name:
-                    # Extract the embedded value
-                    parts = working_name.rsplit(" = ", 1)
-                    if len(parts) == 2:
-                        clean_name = parts[0].strip()
-                        value_str = parts[1].strip()
-                        # Try to parse the value
-                        try:
-                            # Try numeric first
-                            if "." in value_str:
-                                embedded_value = float(value_str)
-                            else:
-                                embedded_value = int(value_str)
-                            fact_name = clean_name  # Use clean name without the value
-                        except ValueError:
-                            # Keep as string if not numeric
-                            embedded_value = value_str.strip("'\"")
-                            fact_name = clean_name
-
-                # Emit resolving event
-                self._emit_event(StepEvent(
-                    event_type="premise_resolving",
-                    step_number=idx + 1,
-                    data={
-                        "fact_name": f"{fact_id}: {fact_name}",
-                        "description": fact_desc,
-                        "step": idx + 1,
-                        "total": total_premises,
-                    }
-                ))
-
-                # Try to resolve based on source type
-                try:
-                    fact = None
-
-                    # First, check if this fact is already cached (from previous queries)
-                    # get_fact() handles table verification automatically
-                    cached_fact = self.fact_resolver.get_fact(fact_name)
-                    if cached_fact and cached_fact.value is not None:
-                        fact = cached_fact
-                    # If we extracted an embedded value, use it directly
-                    elif embedded_value is not None:
-                        from constat.execution.fact_resolver import Fact, FactSource
-                        fact = Fact(
-                            name=fact_name,
-                            value=embedded_value,
-                            confidence=0.95,  # High but not 100% - LLM knowledge can be wrong
-                            source=FactSource.LLM_KNOWLEDGE,
-                            reasoning="Value resolved from LLM knowledge during planning",
-                        )
-                    elif source.startswith("database") or source == "database":
-                        # Generate and execute SQL for database premises
-                        # Build source context for SQL generation
-                        ctx = self._build_source_context(include_user_facts=False)
-                        db_name = source.split(":", 1)[1].strip() if ":" in source else None
-
-                        # If no database specified, use the first available SQL database
-                        if not db_name:
-                            available_dbs = list(self.schema_manager.connections.keys())
-                            if available_dbs:
-                                db_name = available_dbs[0]
-                            else:
-                                raise Exception("No SQL databases configured")
-
-                        # Use LLM to generate SQL from premise description with retry on error
-                        from constat.execution.fact_resolver import Fact, FactSource
-                        import pandas as pd
-
-                        engine = self.schema_manager.get_sql_connection(db_name)
-                        max_retries = 3
-                        last_error = None
-
-                        # Get detailed schema with column names for SQL generation
-                        detailed_schema = self.schema_manager.get_overview()
-                        print(f"[DEBUG SQL] Using detailed schema:\n{detailed_schema}")
-
-                        for attempt in range(max_retries):
-                            # Build prompt with error feedback if retrying
-                            error_context = ""
-                            if last_error:
-                                error_context = f"\n\nPREVIOUS ATTEMPT FAILED with error:\n{last_error}\n\nFix the query to avoid this error."
-
-                            # Include learnings from previous SQL errors
-                            sql_learnings = self._get_codegen_learnings(fact_desc)
-
-                            sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
-
-Schema (column names are listed in parentheses - USE THESE EXACT NAMES):
-{detailed_schema}
-{sql_learnings}
-{error_context}
-RULE: Always SELECT the primary key column (usually table_id or id) - required for joins."""
-
-                            sql_result = self.router.execute(
-                                task_type=TaskType.SQL_GENERATION,
-                                system="Output raw SQL only. No markdown. Always include primary key columns in SELECT.",
-                                user_message=sql_prompt,
-                                max_tokens=500,
-                            )
-
-                            # Extract SQL from response - handle code blocks anywhere
-                            sql = sql_result.content.strip()
-                            # Look for SQL in code block first
-                            code_block_match = re.search(r'```(?:sql)?\s*\n?(.*?)\n?```', sql, re.DOTALL | re.IGNORECASE)
-                            if code_block_match:
-                                sql = code_block_match.group(1).strip()
-                            elif sql.startswith("```"):
-                                sql = re.sub(r'^```\w*\n?', '', sql)
-                                sql = re.sub(r'\n?```$', '', sql)
-
-                            # For SQLite, strip database prefix from table names
-                            if "sqlite" in str(engine.url):
-                                sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
-
-                            try:
-                                result_df = pd.read_sql(sql, engine)
-                                row_count = len(result_df) if result_df is not None else 0
-
-                                # For scalar results (1 row, 1 col), extract the actual value
-                                if row_count == 1 and len(result_df.columns) == 1:
-                                    scalar_value = result_df.iloc[0, 0]
-                                    if hasattr(scalar_value, 'item'):
-                                        scalar_value = scalar_value.item()
-                                    fact_value = scalar_value
-                                else:
-                                    fact_value = f"{row_count} rows"
-
-                                # For multi-row results, store as table reference
-                                if row_count > 1 or (row_count == 1 and len(result_df.columns) > 1):
-                                    fact = Fact(
-                                        name=fact_name,
-                                        value=fact_value,
-                                        confidence=0.9,
-                                        source=FactSource.DATABASE,
-                                        query=sql,
-                                        table_name=fact_name,
-                                        row_count=row_count,
-                                    )
-                                else:
-                                    fact = Fact(
-                                        name=fact_name,
-                                        value=fact_value,
-                                        confidence=0.9,
-                                        source=FactSource.DATABASE,
-                                        query=sql,
-                                    )
-                                # Store result in datastore for later use
-                                if self.datastore and result_df is not None and len(result_df) > 0:
-                                    self.datastore.save_dataframe(fact_name, result_df, step_number=idx + 1)
-                                break  # Success - exit retry loop
-
-                            except Exception as sql_err:
-                                failed_sql = sql
-                                last_error = str(sql_err)
-                                print(f"[SQL RETRY {attempt + 1}/{max_retries}] {sql_err}")
-                                if attempt == max_retries - 1:
-                                    # Final attempt failed
-                                    fact = Fact(
-                                        name=fact_name,
-                                        value=None,
-                                        confidence=0.0,
-                                        source=FactSource.UNRESOLVED,
-                                        reasoning=f"SQL error after {max_retries} attempts: {sql_err}",
-                                    )
-                        else:
-                            # Success after retry - save learning if we had errors
-                            if last_error and self.learning_store:
-                                self.learning_store.save_learning(
-                                    category=LearningCategory.CODEGEN_ERROR,
-                                    context={
-                                        "table": fact_name,
-                                        "failed_sql": failed_sql,
-                                        "error": last_error,
-                                        "corrected_sql": sql,
-                                        "schema_hint": ctx["schema_overview"][:500],
-                                    },
-                                    correction=f"SQL query for '{fact_name}' failed with '{last_error}'. Corrected query: {sql}",
-                                    source=LearningSource.AUTO_CAPTURE,
-                                )
-                    elif source.startswith("document:"):
-                        # Resolve from document
-                        fact = self.fact_resolver.resolve(fact_name)
-                    elif source.startswith("knowledge") or source.startswith("llm") or source == "general":
-                        # Knowledge-based fact - ask LLM directly
-                        try:
-                            value = self._resolve_llm_knowledge(fact_desc)
-                            fact = Fact(
-                                name=fact_name,
-                                value=value,
-                                confidence=0.7,  # Lower confidence for LLM estimates
-                                source=FactSource.LLM_KNOWLEDGE,
-                                reasoning=f"LLM estimate: {fact_desc}",
-                            )
-                        except Exception as llm_err:
-                            fact = Fact(
-                                name=fact_name,
-                                value=None,
-                                confidence=0.0,
-                                source=FactSource.UNRESOLVED,
-                                reasoning=f"Knowledge resolution failed: {llm_err}",
-                            )
-                    elif source.startswith("user"):
-                        # User-provided fact - MUST ask the user, never assume
-                        if self._clarification_callback:
-                            request = ClarificationRequest(
-                                original_question=problem,
-                                ambiguity_reason=f"Need your input for: {fact_name}",
-                                questions=[
-                                    ClarificationQuestion(
-                                        text=f"What is {fact_desc}?",
-                                        suggestions=[]
-                                    )
-                                ]
-                            )
-                            response = self._clarification_callback(request)
-                            if not response.skip and response.answers:
-                                user_value_str = list(response.answers.values())[0]
-                                # Try to parse as number
-                                try:
-                                    if "." in user_value_str:
-                                        user_value = float(user_value_str)
-                                    else:
-                                        user_value = int(user_value_str)
-                                except ValueError:
-                                    user_value = user_value_str
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=user_value,
-                                    confidence=1.0,  # User-provided = 100% confidence
-                                    source=FactSource.USER_PROVIDED,
-                                    reasoning=f"User provided: {user_value_str}",
-                                )
-                            else:
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=None,
-                                    confidence=0.0,
-                                    source=FactSource.UNRESOLVED,
-                                    reasoning=f"User skipped providing value for {fact_name}",
-                                )
-                        else:
-                            fact = Fact(
-                                name=fact_name,
-                                value=None,
-                                confidence=0.0,
-                                source=FactSource.UNRESOLVED,
-                                reasoning=f"No way to ask user for {fact_name}",
-                            )
-                    else:
-                        # Generic resolution using tiered approach
-                        # Use resolve_tiered directly to get Tier 2 assessment for better user prompts
-                        from constat.execution.fact_resolver import Fact
-                        print(f"[DEBUG SESSION] Calling resolve_tiered for: {fact_name}")
-                        fact, tier2_assessment = self.fact_resolver.resolve_tiered(
-                            fact_name,
-                            fact_description=fact_desc,
-                        )
-                        print(f"[DEBUG SESSION] resolve_tiered returned: fact.value={fact.value if fact else None}, fact.source={fact.source if fact else None}")
-                        print(f"[DEBUG SESSION] tier2_assessment: {tier2_assessment.strategy if tier2_assessment else None}")
-
-                        # Handle Tier 2 USER_REQUIRED - prompt user with specific question
-                        if (tier2_assessment
-                            and tier2_assessment.strategy == Tier2Strategy.USER_REQUIRED
-                            and self._clarification_callback):
-                            question_text = tier2_assessment.question or f"What is the value for '{fact_name}'?"
-                            request = ClarificationRequest(
-                                original_question=problem,
-                                ambiguity_reason=tier2_assessment.reasoning or f"Could not resolve: {fact_name}",
-                                questions=[
-                                    ClarificationQuestion(
-                                        text=question_text,
-                                        suggestions=[]
-                                    )
-                                ]
-                            )
-                            response = self._clarification_callback(request)
-                            if not response.skip and response.answers:
-                                user_value_str = list(response.answers.values())[0]
-
-                                # Classify response as VALUE or STEER
-                                classification = self._classify_premise_response(
-                                    user_value_str, fact_name, question_text
-                                )
-                                print(f"[DEBUG SESSION] Response classification: {classification}")
-
-                                if classification["type"] == "STEER":
-                                    # User provided guidance, not a value - trigger re-planning
-                                    steer_guidance = classification["steer"] or user_value_str
-                                    print(f"[DEBUG SESSION] STEER detected: {steer_guidance}")
-
-                                    # Add steer to context for re-planning
-                                    steer_context = f"User guidance for {fact_name}: {steer_guidance}"
-                                    if not hasattr(self, '_steer_context'):
-                                        self._steer_context = []
-                                    self._steer_context.append(steer_context)
-
-                                    # Signal that we need to re-plan
-                                    return {
-                                        "status": "replan_needed",
-                                        "steer": steer_guidance,
-                                        "fact_name": fact_name,
-                                        "message": f"I'll look for {fact_name} using your guidance: {steer_guidance}",
-                                    }
-
-                                # VALUE response - parse and use as fact
-                                user_value = classification["value"]
-                                # Try to parse as number
-                                try:
-                                    if "." in str(user_value):
-                                        user_value = float(str(user_value).replace(",", ""))
-                                    else:
-                                        user_value = int(str(user_value).replace(",", ""))
-                                except ValueError:
-                                    pass  # Keep as string
-
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=user_value,
-                                    confidence=1.0,
-                                    source=FactSource.USER_PROVIDED,
-                                    reasoning=f"User provided: {user_value_str}",
-                                )
-
-                    if fact and fact.value:
-                        resolved_premises[fact_id] = fact
-                        val_str = str(fact.value)[:100]
-                        derivation_lines.append(f"- {fact_id}: {fact_name} = {val_str} (confidence: {fact.confidence:.0%})")
-
-                        # Build detailed source info including query if available
-                        query_info = getattr(fact, 'query', None)
-                        try:
-                            query_info = query_info or sql
-                        except NameError:
-                            pass
-                        source_detail = source
-                        if query_info:
-                            source_detail = f"{source} | SQL: {query_info}"
-
-                        # Store the resolved fact so it appears in /facts
-                        try:
-                            desc = fact_desc
-                        except NameError:
-                            desc = None
-                        # Get database name for source attribution
-                        try:
-                            db_source_name = db_name
-                        except NameError:
-                            db_source_name = None
-                        # Preserve the fact's original source type
-                        # Import FactSource here in case it wasn't imported in the resolution branch
-                        from constat.execution.fact_resolver import FactSource
-                        fact_source = fact.source
-                        if source.startswith("database") and fact_source == FactSource.DATABASE:
-                            fact_source = FactSource.DATABASE
-                        elif source.startswith("knowledge") or source.startswith("llm"):
-                            fact_source = FactSource.LLM_KNOWLEDGE
-                        elif source.startswith("user"):
-                            fact_source = FactSource.USER_PROVIDED
-                        self.fact_resolver.add_user_fact(
-                            fact_name=fact_name,  # Just the fact name, no P1: prefix
-                            value=fact.value,
-                            query=query_info,  # SQL query for manual reproduction
-                            source_name=db_source_name,  # Database name
-                            reasoning=fact.reasoning,  # Preserve original reasoning
-                            description=desc,
-                            source=fact_source,
-                            table_name=fact.table_name,  # Preserve table reference for redo
-                            row_count=fact.row_count,  # Preserve row count for redo
-                            context=f"SQL Query:\n{query_info}" if query_info else fact.context,
-                        )
-                    elif fact and fact.reasoning:
-                        # Fact was created but has no value - include the reason
-                        raise Exception(fact.reasoning)
-                    else:
-                        raise Exception("No value resolved")
-
-                    # Emit resolved event
-                    self._emit_event(StepEvent(
-                        event_type="premise_resolved",
-                        step_number=idx + 1,
-                        data={
-                            "fact_name": f"{fact_id}: {fact_name}",
-                            "value": fact.value,
-                            "source": source,
-                            "confidence": fact.confidence,
-                            "step": idx + 1,
-                            "total": total_premises,
-                        }
-                    ))
-                except Exception as e:
-                    # Log the actual error so we can debug
-                    import traceback
-                    print(f"[ERROR] Failed to resolve {fact_name}: {e}")
-                    print(f"[ERROR] Traceback:\n{traceback.format_exc()}")
-
-                    # Try to ask the user for the value as last resort
-                    if self._clarification_callback:
-                        try:
-                            request = ClarificationRequest(
-                                original_question=problem,
-                                ambiguity_reason=f"Could not resolve fact: {fact_name}",
-                                questions=[
-                                    ClarificationQuestion(
-                                        text=f"What is the value for '{fact_name}' ({fact_desc})?",
-                                        suggestions=[]
-                                    )
-                                ]
-                            )
-                            response = self._clarification_callback(request)
-                            if not response.skip and response.answers:
-                                user_value_str = list(response.answers.values())[0]
-                                # Try to parse as number
-                                try:
-                                    if "." in user_value_str:
-                                        user_value = float(user_value_str.replace(",", ""))
-                                    else:
-                                        user_value = int(user_value_str.replace(",", ""))
-                                except ValueError:
-                                    user_value = user_value_str
-
-                                fact = Fact(
-                                    name=fact_name,
-                                    value=user_value,
-                                    confidence=1.0,
-                                    source=FactSource.USER_PROVIDED,
-                                    reasoning=f"User provided: {user_value_str}",
-                                )
-                                resolved_premises[fact_id] = fact
-                                derivation_lines.append(f"- {fact_id}: {fact_name} = {user_value} (user provided)")
-                                self.fact_resolver.add_user_fact(
-                                    fact_name=fact_name,
-                                    value=user_value,
-                                    reasoning=f"User provided for {fact_desc}",
-                                    source=FactSource.USER_PROVIDED,
-                                    context=f"User prompt: {user_value_str}",
-                                )
-                                self._emit_event(StepEvent(
-                                    event_type="premise_resolved",
-                                    step_number=idx + 1,
-                                    data={
-                                        "fact_name": f"{fact_id}: {fact_name}",
-                                        "value": user_value,
-                                        "source": "user_provided",
-                                        "confidence": 1.0,
-                                        "step": idx + 1,
-                                        "total": total_premises,
-                                    }
-                                ))
-                                continue  # Successfully resolved via user, skip the error path
-                        except Exception:
-                            pass  # Fall through to error handling
-
-                    derivation_lines.append(f"- {fact_id}: {fact_name} = UNRESOLVED ({e})")
-                    self._emit_event(StepEvent(
-                        event_type="premise_resolved",
-                        step_number=idx + 1,
-                        data={
-                            "fact_name": f"{fact_id}: {fact_name}",
-                            "value": None,
-                            "source": "unresolved",
-                            "error": str(e),
-                            "step": idx + 1,
-                            "total": total_premises,
-                        }
-                    ))
-
-            # Step 3: Execute inferences using the resolved premises
+            # Shared state for node execution
+            resolved_premises = {}
             resolved_inferences = {}
-            inference_names = {}  # Map inference ID to English name for table naming
-            inference_lines = ["**Inference Execution:**", ""]
+            inference_names = {}
+            derivation_lines = ["**Premise Resolution:**", ""]
 
-            for idx, inf in enumerate(inferences):
-                inf_id = inf['id']
-                operation = inf['operation']
-                explanation = inf.get('explanation', '')
-                inf_name = inf.get('name', inf_id)
-                # Sanitize name for table naming (lowercase, underscores)
-                table_name = inf_name.lower().replace(' ', '_').replace('-', '_')
-                inference_names[inf_id] = table_name
+            # Define node executor that calls back to Session
+            def execute_node(node):
+                return self._execute_dag_node(
+                    node=node,
+                    dag=dag,
+                    problem=problem,
+                    detailed_schema=detailed_schema,
+                    premises=premises,
+                    inferences=inferences,
+                    resolved_premises=resolved_premises,
+                    resolved_inferences=resolved_inferences,
+                    inference_names=inference_names,
+                )
 
-                self._emit_event(StepEvent(
-                    event_type="inference_executing",
-                    step_number=len(premises) + idx + 1,
-                    data={
-                        "inference_id": inf_id,
-                        "operation": operation,
-                        "step": idx + 1,
-                        "total": len(inferences),
-                    }
-                ))
+            # Define event callback for progress reporting
+            def dag_event_callback(event_type, data):
+                node_name = data.get("name", "")
+                fact_id = data.get("fact_id", "")
+                level = data.get("level", 0)
 
-                try:
-                    # Build context of available data (premises + prior inferences)
-                    # Separate scalar values from tables
-                    scalar_values = []
-                    available_tables = []
-                    for pid, fact in resolved_premises.items():
-                        if fact and fact.value:
-                            val_str = str(fact.value)
-                            if "rows" in val_str:
-                                # Table data stored in datastore
-                                premise_idx = int(pid[1:]) - 1
-                                fact_name = premises[premise_idx]['name'] if premise_idx < len(premises) else pid.lower()
-                                available_tables.append(f"- {pid}: stored as table '{fact_name}'")
-                            else:
-                                # Scalar value - provide directly
-                                scalar_values.append(f"- {pid} ({premises[int(pid[1:])-1]['name']}): {fact.value}")
-
-                    for prior_id, prior_result in resolved_inferences.items():
-                        # Use explicit None check to avoid DataFrame truth value errors
-                        if prior_result is None:
-                            continue
-                        prior_str = str(prior_result)
-                        prior_table_name = inference_names.get(prior_id, prior_id.lower())
-                        if "rows" in prior_str:
-                            available_tables.append(f"- {prior_id}: stored as table '{prior_table_name}'")
-                        else:
-                            scalar_values.append(f"- {prior_id}: {prior_str}")
-
-                    # Build context strings
-                    scalars_context = "\n".join(scalar_values) if scalar_values else "(none)"
-                    tables_context = "\n".join(available_tables) if available_tables else "(none)"
-
-                    # Handle special verify_exists operation for collection queries
-                    if operation.startswith("verify_exists("):
-                        # Extract the reference (e.g., "I2" from "verify_exists(I2)")
-                        ref_match = re.match(r'verify_exists\((\w+)\)', operation)
-                        if ref_match:
-                            ref_id = ref_match.group(1)
-                            # Find the referenced table using English name
-                            ref_table = None
-                            if ref_id.startswith("I"):
-                                ref_table = inference_names.get(ref_id, ref_id.lower())
-                            elif ref_id.startswith("P"):
-                                p_idx = int(ref_id[1:]) - 1
-                                if p_idx < len(premises):
-                                    ref_table = premises[p_idx]['name']
-
-                            if ref_table and self.datastore:
-                                try:
-                                    count_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {ref_table}")
-                                    row_count = int(count_df.iloc[0, 0]) if len(count_df) > 0 else 0
-                                    verified = row_count > 0
-
-                                    resolved_inferences[inf_id] = f"Verified: {row_count} records exist"
-                                    inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} records ✓" if verified else f"- {inf_id}: {inf_name} = EMPTY (0 records)")
-
-                                    # Store as fact
-                                    verify_sql = f"SELECT COUNT(*) as cnt FROM {ref_table}"
-                                    self.fact_resolver.add_user_fact(
-                                        fact_name=inf_name if inf_name else inf_id,
-                                        value=f"{row_count} records verified",
-                                        reasoning=f"Verified {ref_table} contains {row_count} records",
-                                        source=FactSource.DERIVED,
-                                        context=f"SQL Query:\n{verify_sql}",
-                                    )
-
-                                    self._emit_event(StepEvent(
-                                        event_type="inference_complete",
-                                        step_number=len(premises) + idx + 1,
-                                        data={
-                                            "inference_id": inf_id,
-                                            "inference_name": inf_name,  # English variable name
-                                            "result": f"{row_count} records verified",
-                                            "output": f"Data verification: {row_count} records in {ref_table}",
-                                            "step": idx + 1,
-                                            "total": len(inferences),
-                                        }
-                                    ))
-                                    continue  # Skip LLM code generation for verify_exists
-                                except Exception as ve:
-                                    resolved_inferences[inf_id] = f"Verification failed: {ve}"
-                                    inference_lines.append(f"- {inf_id}: {inf_name} = verification error")
-
-                    # Generate code to execute the inference
-                    # Include learnings from previous errors
-                    inference_learnings = self._get_codegen_learnings(f"inference {operation}")
-
-                    inference_prompt = f"""Generate Python code to execute this inference step:
-
-Inference: {inf_id}: {inf_name} = {operation}
-Explanation: {explanation}
-
-SCALAR VALUES (substitute these literal values in your code):
-{scalars_context}
-
-TABLES in datastore (query with store.query()):
-{tables_context}
-{inference_learnings}
-
-## Available APIs
-- store.query(sql) -> pd.DataFrame  # Query tables using DuckDB SQL
-- store.list_tables() -> list of table dicts
-- store.save_dataframe(name, df)  # Save DataFrame for later use
-
-## Code Pattern to Follow
-```python
-# 1. Load data from tables
-df = store.query("SELECT * FROM table_name")
-
-# 2. Process data (filter, join, aggregate, etc.)
-# IMPORTANT: Check DataFrame emptiness correctly
-if len(df) > 0:  # CORRECT way to check if DataFrame has rows
-    # process...
-    pass
-
-# 3. MUST end with _result assignment
-_result = computed_value  # number, boolean, string, or DataFrame
-```
-
-## Critical Rules
-
-RULE 1 - Variable substitution:
-Identifiers like I1, I2, P1, P2 in the operation are REFERENCES to scalar values above.
-Replace them with the actual values: `ratio = 12 / 4` not `ratio = I1 / I2`
-
-RULE 2 - DataFrame emptiness checks:
-```python
-# WRONG (crashes with "truth value of DataFrame is ambiguous"):
-if df:
-if not df:
-if result:
-
-# CORRECT:
-if len(df) > 0:      # has rows
-if len(df) == 0:     # empty
-if not df.empty:     # has rows (alternative)
-if df.empty:         # empty (alternative)
-```
-
-RULE 3 - Always set _result:
-Your code MUST end with `_result = <value>` where value is the computed result.
-
-RULE 4 - Save DataFrames for later use:
-If your result is a DataFrame that subsequent steps will need, SAVE IT:
-```python
-store.save_dataframe('{table_name}', result_df)
-_result = result_df
-```
-This makes it queryable as '{table_name}' in later inferences.
-
-RULE 5 - Parse range values:
-When values contain ranges, extract numeric boundaries.
-Pattern: <number>[unit]<separator><number>[unit] where separator is -, to, through, up to
-Examples: "1-5", "10% to 20%", "3in-6in", "100 through 200"
-```python
-import re
-def parse_range(value_str):
-    # Remove common units (%, in, etc.) and extract numbers
-    cleaned = re.sub(r'[%a-zA-Z]', '', str(value_str)).strip()
-    # Match: number separator number
-    match = re.match(r'([0-9.]+)\\s*(?:[-]|to|through|up\\s*to)\\s*([0-9.]+)', cleaned, re.I)
-    if match:
-        return float(match.group(1)), float(match.group(2))
-    # Single number - use as both min and max
-    nums = re.findall(r'[0-9.]+', cleaned)
-    return (float(nums[0]), float(nums[0])) if nums else (0.0, 0.0)
-
-# Usage options:
-min_val, max_val = parse_range(range_string)
-
-# Option 1: Midpoint (when no additional precision available)
-result = (min_val + max_val) / 2
-
-# Option 2: Interpolate within range (when you have fractional precision)
-# E.g., rating 4.2 on scale where 4 maps to range: interpolate 20% into range
-fraction = rating - int(rating)  # 0.2
-result = min_val + fraction * (max_val - min_val)
-```
-
-Return ONLY executable Python code, no markdown fences, no explanations."""
-
-                    # Retry loop for code generation with learning capture
-                    max_retries = 3
-                    last_error = None
-                    code = None
-                    original_code = None  # Track original code for learning capture
-                    inference_output = ""
-                    pending_learning_context = None
-
-                    for attempt in range(max_retries):
-                        if attempt == 0:
-                            prompt_to_use = inference_prompt
-                        else:
-                            print(f"[RETRY] {inf_id} attempt {attempt+1}/{max_retries}: {last_error[:80]}...")
-                            # Track error context for learning capture
-                            pending_learning_context = {
-                                "error_message": last_error[:500] if last_error else "",
-                                "original_code": original_code[:500] if original_code else "",
-                                "step_goal": f"Inference {inf_id}: {operation}",
-                                "attempt": attempt + 1,
-                            }
-                            # Use shared retry template with context-specific hints
-                            retry_prompt = RETRY_PROMPT_TEMPLATE.format(
-                                error_details=f"ERROR: {last_error}",
-                                previous_code=code,
-                            )
-                            prompt_to_use = f"""{retry_prompt}
-
-{inference_prompt}
-
-Common fixes for this error:
-- "truth value of DataFrame is ambiguous" -> use `if len(df) > 0:` not `if df:`
-- Column not found -> check exact column names in the table
-- Type error on datetime -> use `pd.to_datetime(df['col'])`
-- SQL syntax error -> use DuckDB SQL syntax for store.query()"""
-
-                        code_result = self.router.execute(
-                            task_type=TaskType.SQL_GENERATION,
-                            system="You generate Python code for data operations. Return only executable code.",
-                            user_message=prompt_to_use,
-                            max_tokens=1200,
-                        )
-
-                        # Extract code
-                        code = code_result.content.strip()
-                        if code.startswith("```"):
-                            code = re.sub(r'^```\w*\n?', '', code)
-                            code = re.sub(r'\n?```$', '', code)
-
-                        # Auto-fix common DataFrame boolean errors (LLM often ignores warnings)
-                        # Only fix obvious DataFrame variable patterns to avoid breaking other code
-                        # Fix: `if df:` -> `if not df.empty:`  (and variants like result, data, employees)
-                        df_var_pattern = r'\bif\s+(df|result|data|employees|reviews|performance_reviews|merged|joined|filtered)\s*:'
-                        code = re.sub(df_var_pattern, r'if not \1.empty:', code)
-                        # Fix: `if not df:` -> `if df.empty:`
-                        df_not_pattern = r'\bif\s+not\s+(df|result|data|employees|reviews|performance_reviews|merged|joined|filtered)\s*:'
-                        code = re.sub(df_not_pattern, r'if \1.empty:', code)
-
-                        # Track original code for learning capture
-                        if attempt == 0:
-                            original_code = code
-
-                        # Execute the inference code (capture stdout to avoid disrupting display)
-                        import io
-                        import sys
-                        exec_globals = {
-                            "store": self.datastore,
-                            "pd": __import__("pandas"),
-                        }
-                        # Add resolved premises to exec context (e.g., P1, P2)
-                        for pid, fact in resolved_premises.items():
-                            if fact and fact.value is not None:
-                                val = fact.value
-                                # Extract numeric value from "X rows" strings
-                                if isinstance(val, str) and "rows" in val:
-                                    try:
-                                        val = int(val.split()[0])
-                                    except (ValueError, IndexError):
-                                        pass
-                                exec_globals[pid] = val
-                        # Add resolved inferences to exec context (e.g., I1, I2, I3)
-                        # Use explicit None check to avoid DataFrame truth value errors
-                        for iid, ival in resolved_inferences.items():
-                            if ival is None:
-                                continue
-                            val = ival
-                            # Extract numeric value from "X rows" strings
-                            if isinstance(val, str) and "rows" in val:
-                                try:
-                                    val = int(val.split()[0])
-                                except (ValueError, IndexError):
-                                    pass
-                            exec_globals[iid] = val
-                        captured_output = io.StringIO()
-                        old_stdout = sys.stdout
-                        try:
-                            sys.stdout = captured_output
-                            exec(code, exec_globals)
-                            inference_output = captured_output.getvalue()
-
-                            # Capture learning if this was a successful retry
-                            if attempt > 0 and pending_learning_context:
-                                self._capture_error_learning(
-                                    context=pending_learning_context,
-                                    fixed_code=code,
-                                )
-
-                            last_error = None  # Success
-                            break  # Exit retry loop on success
-                        except Exception as exec_err:
-                            last_error = str(exec_err)
-                            inference_output = ""
-                        finally:
-                            sys.stdout = old_stdout
-
-                    # If all retries failed, raise the last error
-                    if last_error:
-                        raise Exception(last_error)
-
-                    # Get the computed result from _result variable
-                    computed_result = exec_globals.get('_result')
-
-                    # Check if result was stored as a table (using English name)
-                    if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
-                        result_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
-                        row_count = result_df.iloc[0, 0] if len(result_df) > 0 else 0
-                        resolved_inferences[inf_id] = f"{row_count} rows"
-                        inference_lines.append(f"- {inf_id}: {inf_name} = {row_count} rows ✓")
-                    elif computed_result is not None:
-                        # Use the actual computed value
-                        resolved_inferences[inf_id] = computed_result
-                        inference_lines.append(f"- {inf_id}: {inf_name} = {computed_result} ✓")
+                if event_type == "node_running":
+                    # Determine if premise or inference
+                    is_premise = fact_id.startswith("P") if fact_id else level == 0
+                    if is_premise:
+                        self._emit_event(StepEvent(
+                            event_type="premise_resolving",
+                            step_number=level + 1,
+                            data={"fact_name": f"{fact_id}: {node_name}", "step": level + 1}
+                        ))
                     else:
-                        # Fallback to output parsing if _result wasn't set
-                        resolved_inferences[inf_id] = inference_output.strip() if inference_output.strip() else "computed"
-                        inference_lines.append(f"- {inf_id}: {inf_name} = computed ✓")
+                        self._emit_event(StepEvent(
+                            event_type="inference_executing",
+                            step_number=level + 1,
+                            data={"inference_id": fact_id, "operation": node_name}
+                        ))
 
-                    # Include captured output for debugging display
-                    if inference_output.strip():
-                        inference_lines.append(f"    {inference_output.strip()}")
+                elif event_type == "node_resolved":
+                    value = data.get("value")
+                    confidence = data.get("confidence", 0.9)
+                    is_premise = fact_id.startswith("P") if fact_id else level == 0
+                    if is_premise:
+                        derivation_lines.append(f"- {fact_id}: {node_name} = {str(value)[:100]} (confidence: {confidence:.0%})")
+                        self._emit_event(StepEvent(
+                            event_type="premise_resolved",
+                            step_number=level + 1,
+                            data={"fact_name": f"{fact_id}: {node_name}", "value": value, "confidence": confidence}
+                        ))
+                    else:
+                        self._emit_event(StepEvent(
+                            event_type="inference_complete",
+                            step_number=level + 1,
+                            data={"inference_id": fact_id, "inference_name": node_name, "result": value}
+                        ))
 
-                    # Store the inference result as a fact with the ACTUAL computed value
-                    actual_value = computed_result if computed_result is not None else resolved_inferences[inf_id]
-                    self.fact_resolver.add_user_fact(
-                        fact_name=inf_name if inf_name else inf_id,  # Just the name, no I1: prefix
-                        value=actual_value,
-                        reasoning=f"Computed: {operation}",  # Include the operation formula
-                        source=FactSource.DERIVED,
-                        context=f"Code:\n{code}" if code else None,  # Include the executed code
-                    )
-
+                elif event_type == "node_failed":
+                    error = data.get("error", "Unknown error")
+                    logger.error(f"DAG node {fact_id} failed: {error}")
                     self._emit_event(StepEvent(
-                        event_type="inference_complete",
-                        step_number=len(premises) + idx + 1,
-                        data={
-                            "inference_id": inf_id,
-                            "inference_name": inf_name,  # English variable name
-                            "result": resolved_inferences[inf_id],
-                            "output": inference_output.strip(),
-                            "step": idx + 1,
-                            "total": len(inferences),
-                        }
+                        event_type="premise_resolved" if fact_id.startswith("P") else "inference_failed",
+                        step_number=level + 1,
+                        data={"fact_name": f"{fact_id}: {node_name}", "error": error}
                     ))
 
-                except Exception as e:
-                    resolved_inferences[inf_id] = f"FAILED: {str(e)[:100]}"
-                    inference_lines.append(f"- {inf_id}: {inf_name} = FAILED ({str(e)[:50]})")
-                    self._emit_event(StepEvent(
-                        event_type="inference_failed",
-                        step_number=len(premises) + idx + 1,
-                        data={
-                            "inference_id": inf_id,
-                            "error": str(e),
-                            "step": idx + 1,
-                            "total": len(inferences),
-                        }
-                    ))
+                elif event_type == "node_started":
+                    # Log actual thread start for parallelism diagnosis
+                    start_time = data.get("start_time_ms", 0)
+                    logger.debug(f"DAG node {fact_id} STARTED at {start_time}ms")
+
+                elif event_type == "node_timing":
+                    # Log timing for parallelism analysis
+                    start_ms = data.get("start_ms", 0)
+                    end_ms = data.get("end_ms", 0)
+                    duration_ms = data.get("duration_ms", 0)
+                    failed = data.get("failed", False)
+                    status = "FAILED" if failed else "COMPLETED"
+                    logger.info(f"DAG timing: {fact_id} {status} - start:{start_ms} end:{end_ms} duration:{duration_ms}ms")
+
+            # Execute DAG with parallel resolution
+            executor = DAGExecutor(
+                dag=dag,
+                node_executor=execute_node,
+                max_workers=min(10, len(premises) + len(inferences)),
+                event_callback=dag_event_callback,
+                fail_fast=True,
+            )
+
+            # Emit event to start live plan display
+            self._emit_event(StepEvent(
+                event_type="dag_execution_start",
+                step_number=0,
+                data={"premises": premises, "inferences": inferences}
+            ))
+
+            logger.info(f"Executing DAG with {len(premises)} premises and {len(inferences)} inferences")
+            result = executor.execute()
+
+            # Emit event to stop live plan display
+            self._emit_event(StepEvent(
+                event_type="dag_execution_complete",
+                step_number=0,
+                data={"success": result.success, "failed_nodes": result.failed_nodes}
+            ))
+
+            if not result.success:
+                failed = ", ".join(result.failed_nodes)
+                raise Exception(f"DAG execution failed. Failed nodes: {failed}")
+
+            # Build inference lines from results
+            inference_lines = ["", "**Inference Execution:**", ""]
+            for inf in inferences:
+                inf_id = inf['id']
+                inf_name = inf.get('name', inf_id)
+                if inf_id in resolved_inferences:
+                    val = resolved_inferences[inf_id]
+                    inference_lines.append(f"- {inf_id}: {inf_name} = {val} ✓")
+                else:
+                    # Check DAG node for value
+                    node = dag.get_node(inf_name)
+                    if node and node.value is not None:
+                        inference_lines.append(f"- {inf_id}: {inf_name} = {node.value} ✓")
+                        resolved_inferences[inf_id] = node.value
 
             derivation_lines.extend(inference_lines)
-
             # Step 4: Synthesize answer from resolved premises and inferences
             self._emit_event(StepEvent(
                 event_type="synthesizing",
@@ -5272,15 +4882,15 @@ Common fixes for this error:
                 # Find the last inference that produced a table (skip verification steps)
                 # Work backwards from I8, I7, etc. skipping verification steps like I9
                 available_tables = {t['name'] for t in self.datastore.list_tables()}
-                print(f"[DEBUG SYNTHESIS] Available tables: {available_tables}")
-                print(f"[DEBUG SYNTHESIS] Inference names: {inference_names}")
-                print(f"[DEBUG SYNTHESIS] Resolved inferences: {resolved_inferences}")
+                logger.debug(f"Synthesis: available tables={available_tables}")
+                logger.debug(f"Synthesis: inference_names={inference_names}")
+                logger.debug(f"Synthesis: resolved_inferences={resolved_inferences}")
 
                 for inf in reversed(inferences):
                     inf_id = inf['id']
                     table_name = inference_names.get(inf_id, inf_id.lower())
                     result = resolved_inferences.get(inf_id, "")
-                    print(f"[DEBUG SYNTHESIS] Checking {inf_id}: table={table_name}, result={result}")
+                    logger.debug(f"Synthesis: checking {inf_id}: table={table_name}, result={result}")
 
                     # Skip verification steps and failed inferences
                     if "rows" in str(result) and "verified" not in str(result).lower() and "FAILED" not in str(result):
@@ -5288,7 +4898,7 @@ Common fixes for this error:
                             try:
                                 # Query the table and format for the LLM
                                 result_df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 20")
-                                print(f"[DEBUG SYNTHESIS] Queried {table_name}: {len(result_df)} rows, columns={list(result_df.columns)}")
+                                logger.debug(f"Synthesis: queried {table_name}: {len(result_df)} rows")
                                 if len(result_df) > 0:
                                     # Try to_markdown first, fall back to to_string
                                     try:
@@ -5296,13 +4906,13 @@ Common fixes for this error:
                                     except Exception:
                                         table_str = result_df.to_string(index=False)
                                     final_data_preview = f"\n\nFinal Result Data ({table_name}):\n{table_str}"
-                                    print(f"[DEBUG SYNTHESIS] Selected table {table_name} for synthesis")
+                                    logger.debug(f"Synthesis: selected table {table_name}")
                                     break
                             except Exception as e:
                                 # Log but continue looking for other tables
-                                print(f"[DEBUG SYNTHESIS] Failed to query {table_name}: {e}")
+                                logger.debug(f"Synthesis: failed to query {table_name}: {e}")
                         else:
-                            print(f"[DEBUG SYNTHESIS] Table {table_name} not in available tables")
+                            logger.debug(f"Synthesis: table {table_name} not in available tables")
 
             synthesis_prompt = f"""Based on the resolved premises and inference plan, provide the answer.
 

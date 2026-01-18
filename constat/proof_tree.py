@@ -66,7 +66,7 @@ class ProofNode:
             return spinner_char
         icons = {
             NodeStatus.PENDING: "○",
-            NodeStatus.RESOLVING: "⋯",  # Static fallback (dots instead of hourglass)
+            NodeStatus.RESOLVING: "⋯",
             NodeStatus.RESOLVED: "✓",
             NodeStatus.FAILED: "✗",
             NodeStatus.CACHED: "⚡",
@@ -214,6 +214,8 @@ class ProofTree:
                     return value  # Already formatted nicely like "20 rows (table: fact_xxx)"
                 # Raw table reference - show as simple indicator
                 return "[table result]"
+            # Collapse newlines for compact single-line display
+            value = value.replace("\n", " ").replace("  ", " ")
             if len(value) > max_len:
                 return value[:max_len] + "..."
             return value

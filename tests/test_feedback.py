@@ -467,7 +467,7 @@ class TestFeedbackDisplayOutput:
         assert "Generate report" in result
 
     def test_step_start_shows_step_header(self, captured_console, sample_steps):
-        """step_start displays step number and goal."""
+        """step_start displays step goal in live display."""
         console, output = captured_console
         display = FeedbackDisplay(console=console)
         display.show_plan(sample_steps)
@@ -475,19 +475,24 @@ class TestFeedbackDisplayOutput:
         display.step_start(1, "Load customer data")
 
         result = strip_ansi(output.getvalue())
-        assert "Step 1" in result
+        # Live display shows goal in animated checklist format
         assert "Load customer data" in result
+        # Step is marked as running with spinner/working status
+        assert "starting" in result or "working" in result
 
     def test_step_complete_shows_ok_indicator(self, captured_console, sample_steps):
-        """step_complete shows Done indicator."""
+        """step_complete marks step as completed in live display."""
         console, output = captured_console
         display = FeedbackDisplay(console=console)
         display.show_plan(sample_steps)
 
-        display.step_complete(1, "", 1, 500)  # Empty output shows Done
+        display.step_complete(1, "", 1, 500)
 
+        # Verify step state is updated to completed
+        assert display.plan_steps[0].status == "completed"
+        # Live display shows the goal with completed status
         result = strip_ansi(output.getvalue())
-        assert "Done" in result  # Now shows Done instead of OK
+        assert "Load customer data" in result
 
     def test_step_complete_shows_duration(self, captured_console, sample_steps):
         """step_complete shows duration."""
@@ -509,7 +514,8 @@ class TestFeedbackDisplayOutput:
         display.step_complete(1, "Done", 3, 1000)
 
         result = strip_ansi(output.getvalue())
-        assert "3 attempts" in result
+        # Live display shows retry count as "(3 tries)"
+        assert "3 tries" in result
 
     def test_step_complete_no_retry_count_for_single_attempt(self, captured_console, sample_steps):
         """step_complete does not show attempt count when == 1."""
@@ -574,37 +580,40 @@ class TestFeedbackDisplayOutput:
         assert "test_table" in result  # Verbose shows tables
 
     def test_step_failed_shows_failed_indicator(self, captured_console, sample_steps):
-        """step_failed shows FAILED indicator."""
+        """step_failed marks step as failed in live display."""
         console, output = captured_console
         display = FeedbackDisplay(console=console)
         display.show_plan(sample_steps)
 
         display.step_failed(1, "Something went wrong", 3)
 
-        result = output.getvalue()
-        assert "FAILED" in result
+        # Verify step state is updated to failed
+        assert display.plan_steps[0].status == "failed"
+        # Live display shows the goal (which will be styled red for failed)
+        result = strip_ansi(output.getvalue())
+        assert "Load customer data" in result
 
-    def test_step_failed_shows_attempt_count(self, captured_console, sample_steps):
-        """step_failed shows attempt count."""
+    def test_step_failed_records_attempt_count(self, captured_console, sample_steps):
+        """step_failed records attempt count in step state."""
         console, output = captured_console
         display = FeedbackDisplay(console=console)
         display.show_plan(sample_steps)
 
         display.step_failed(1, "Error", 5)
 
-        result = strip_ansi(output.getvalue())
-        assert "5 attempts" in result
+        # Verify attempts are recorded in step state
+        assert display.plan_steps[0].attempts == 5
 
-    def test_step_failed_shows_error(self, captured_console, sample_steps):
-        """step_failed displays error message."""
+    def test_step_failed_records_error(self, captured_console, sample_steps):
+        """step_failed records error message in step state."""
         console, output = captured_console
         display = FeedbackDisplay(console=console)
         display.show_plan(sample_steps)
 
         display.step_failed(1, "NameError: undefined variable 'x'", 3)
 
-        result = output.getvalue()
-        assert "NameError" in result
+        # Error is stored in step state
+        assert display.plan_steps[0].error == "NameError: undefined variable 'x'"
 
     def test_step_error_shows_brief_error(self, captured_console, sample_steps):
         """step_error shows brief error (last line) in verbose mode."""
@@ -922,8 +931,11 @@ class TestFeedbackDisplayEdgeCases:
         # Should not raise
         display.step_complete(1, "", 1, 500)
 
-        result = output.getvalue()
-        assert "Done" in result  # Shows Done for empty output
+        # Verify step is marked as completed
+        assert display.plan_steps[0].status == "completed"
+        # Live display shows the goal with completed status
+        result = strip_ansi(output.getvalue())
+        assert "Load customer data" in result
 
     def test_handles_empty_error(self, captured_console, sample_steps):
         """Empty string error is handled."""
