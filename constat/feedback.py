@@ -327,8 +327,12 @@ class FeedbackDisplay:
         # Live plan execution display for DAG-based execution
         self._live_plan_display: Optional[LivePlanExecutionDisplay] = None
 
+        # Stopped flag to prevent updates after interruption
+        self._stopped: bool = False
+
     def start_live_plan_display(self, premises: list[dict], inferences: list[dict]) -> None:
         """Start the live plan execution display showing all P/I items."""
+        self._stopped = False  # Reset stopped flag when starting new display
         self.stop_spinner()  # Stop any existing spinner
         self._live_plan_display = LivePlanExecutionDisplay(
             console=self.console,
@@ -346,6 +350,8 @@ class FeedbackDisplay:
     def update_plan_item_status(self, fact_id: str, status: str, value: str = None,
                                  error: str = None, confidence: float = 0.0) -> None:
         """Update a plan item's status in the live display."""
+        if self._stopped:
+            return  # Ignore updates after stop
         if self._live_plan_display:
             self._live_plan_display.update_status(fact_id, status, value, error, confidence)
 
@@ -407,6 +413,7 @@ class FeedbackDisplay:
 
     def start(self) -> None:
         """Start the live display."""
+        self._stopped = False  # Reset stopped flag when starting new display
         # Create a wrapper that implements __rich__() so Live calls our builder on each refresh
         class AnimatedDisplayWrapper:
             def __init__(wrapper_self, display: "FeedbackDisplay"):
@@ -427,8 +434,10 @@ class FeedbackDisplay:
 
     def stop(self) -> None:
         """Stop all animations and live displays."""
+        self._stopped = True  # Prevent further updates
         self._stop_animation_thread()
         self.stop_spinner()  # Also stop any standalone spinner
+        self.stop_live_plan_display()  # Stop DAG execution display
         if self._live:
             self._live.stop()
             self._live = None
