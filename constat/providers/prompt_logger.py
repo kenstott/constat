@@ -38,6 +38,10 @@ class PromptLogEntry:
     concepts_detected: list[str] = field(default_factory=list)
     injected_sections: int = 0
 
+    # Full prompt text (for debugging)
+    system_prompt_full: str = ""
+    user_message_full: str = ""
+
     # Performance
     response_time_ms: Optional[int] = None
     success: bool = True
@@ -139,6 +143,8 @@ class PromptLogger:
             query_preview=user_message[:100].replace("\n", " "),
             concepts_detected=concepts_detected or [],
             injected_sections=injected_sections,
+            system_prompt_full=system_prompt,
+            user_message_full=user_message,
             response_time_ms=response_time_ms,
             success=success,
         )

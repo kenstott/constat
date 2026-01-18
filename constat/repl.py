@@ -184,7 +184,7 @@ CORRECTION_PATTERNS = [
 # Commands available in the REPL
 REPL_COMMANDS = [
     "/help", "/h", "/tables", "/show", "/query", "/code", "/state",
-    "/update", "/refresh", "/reset", "/user", "/save", "/share", "/sharewith",
+    "/update", "/refresh", "/reset", "/redo", "/user", "/save", "/share", "/sharewith",
     "/plans", "/replay", "/history", "/sessions", "/resume", "/restore",
     "/context", "/compact", "/facts", "/remember", "/forget",
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
@@ -431,6 +431,7 @@ class InteractiveREPL:
             ("/state", "Show session state"),
             ("/update, /refresh", "Refresh metadata and rebuild preload cache"),
             ("/reset", "Clear session state and start fresh"),
+            ("/redo [instruction]", "Retry last query (optionally with modifications)"),
             ("/user [name]", "Show or set current user"),
             ("/save <name>", "Save current plan for replay"),
             ("/share <name>", "Save plan as shared (all users)"),
@@ -951,6 +952,9 @@ class InteractiveREPL:
         )
         self.console.print(f"[green]Learned:[/green] {arg[:60]}{'...' if len(arg) > 60 else ''}")
 
+        # Auto-compact if threshold reached
+        self._maybe_auto_compact()
+
     def _show_learnings(self, arg: str = "") -> None:
         """Handle /learnings [category] - show learnings and rules."""
         # Parse optional category filter
@@ -1024,6 +1028,33 @@ class InteractiveREPL:
         except Exception as e:
             self.display.stop_spinner()
             self.console.print(f"[red]Error:[/red] {e}")
+
+    def _maybe_auto_compact(self) -> None:
+        """Check if auto-compaction should trigger and run it."""
+        from constat.learning.compactor import LearningCompactor
+
+        if not self.session:
+            return  # No session, can't get LLM
+
+        stats = self.learning_store.get_stats()
+        unpromoted = stats.get("unpromoted", 0)
+
+        if unpromoted >= LearningCompactor.AUTO_COMPACT_THRESHOLD:
+            self.console.print(
+                f"[dim]Auto-compacting {unpromoted} learnings...[/dim]"
+            )
+            try:
+                llm = self.session.router._get_provider(self.session.router.models["planning"])
+                compactor = LearningCompactor(self.learning_store, llm)
+                result = compactor.compact()
+
+                if result.rules_created > 0:
+                    self.console.print(
+                        f"[green]Created {result.rules_created} rules from "
+                        f"{result.learnings_archived} learnings[/green]"
+                    )
+            except Exception as e:
+                self.console.print(f"[dim]Auto-compact failed: {e}[/dim]")
 
     def _forget_learning(self, learning_id: str) -> None:
         """Handle /forget-learning <id> - delete a learning."""
@@ -1464,6 +1495,33 @@ Provide a 2-3 sentence summary covering:
         self.suggestions = []
 
         self.console.print("[green]Session reset. State cleared.[/green]")
+
+    def _handle_redo(self, arg: str) -> None:
+        """Handle /redo command - retry last query with optional modifications.
+
+        Args:
+            arg: Optional modification instruction (e.g., "only use Q1 data")
+        """
+        if not self.last_problem:
+            self.console.print("[yellow]No previous query to redo.[/yellow]")
+            return
+
+        if not self.session or not self.session.session_id:
+            self.console.print("[yellow]No active session. Use the original query.[/yellow]")
+            return
+
+        # Build the redo query
+        if arg:
+            # Redo with modification instruction
+            redo_query = f"redo. {arg}"
+            self.console.print(f"[dim]Retrying with: {arg}[/dim]")
+        else:
+            # Simple retry (for transient errors)
+            redo_query = "redo"
+            self.console.print("[dim]Retrying last query...[/dim]")
+
+        # Execute as a follow-up (will be detected as redo intent)
+        self._solve(redo_query)
 
     def _show_context(self) -> None:
         """Show context size and token usage statistics."""
@@ -2016,6 +2074,8 @@ Provide a 2-3 sentence summary covering:
             self._refresh_metadata()
         elif cmd == "/reset":
             self._reset_session()
+        elif cmd == "/redo":
+            self._handle_redo(arg)
         elif cmd == "/user":
             self._show_user(arg)
         elif cmd == "/save" and arg:

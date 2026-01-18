@@ -965,6 +965,9 @@ class FeedbackDisplay:
         Returns:
             PlanApprovalResponse with user's decision
         """
+        # Stop any running animation/spinner before prompting for input
+        self.stop_spinner()
+
         # Show mode selection
         self.show_mode_selection(request.mode, request.mode_reasoning)
 
