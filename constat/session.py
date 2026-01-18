@@ -1073,30 +1073,72 @@ RULE: Always SELECT primary key columns for joins."""
             # Build context from dependencies including column names
             scalars = []
             tables = []
+            referenced_tables = []  # Tables that need to be queried from original source
             for dep_name in node.dependencies:
                 dep_node = dag.get_node(dep_name)
                 if dep_node and dep_node.value is not None:
-                    val_str = str(dep_node.value)
-                    if "rows" in val_str or (dep_node.row_count and dep_node.row_count > 1):
+                    val_str = str(dep_node.value).lower()
+                    is_table = "rows" in val_str or (dep_node.row_count and dep_node.row_count > 1)
+                    is_referenced = val_str == "referenced"
+
+                    if is_table or is_referenced:
                         dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
-                        # Get actual column names from the table
                         columns_info = ""
-                        if self.datastore:
-                            try:
-                                schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
-                                if len(schema_df) > 0:
-                                    cols = list(schema_df['column_name']) if 'column_name' in schema_df.columns else list(schema_df.iloc[:, 0])
-                                    columns_info = f" columns: {cols}"
-                            except Exception:
+
+                        if is_referenced:
+                            # Referenced table: get metadata from original database
+                            # Look up the premise to get source info
+                            premise_fact = resolved_premises.get(dep_node.fact_id)
+                            source_db = None
+                            if premise_fact and hasattr(premise_fact, 'source_name'):
+                                source_db = premise_fact.source_name
+
+                            # Try to get column info from the original database table
+                            if self.schema_manager:
                                 try:
-                                    # Fallback: get columns from a sample query
-                                    sample = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
-                                    columns_info = f" columns: {list(sample.columns)}"
+                                    # Find matching table in schema
+                                    for db_name in self.schema_manager.connections.keys():
+                                        table_meta = self.schema_manager.get_table_metadata(db_name, dep_table)
+                                        if table_meta:
+                                            cols = [c.name for c in table_meta.columns]
+                                            columns_info = f" columns: {cols}"
+                                            referenced_tables.append(
+                                                f"- {dep_node.fact_id}: query from database table '{dep_table}'{columns_info}"
+                                            )
+                                            break
                                 except Exception:
                                     pass
-                        tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}")
+
+                            if not columns_info:
+                                # Fallback: still mark as referenced
+                                referenced_tables.append(
+                                    f"- {dep_node.fact_id}: referenced table '{dep_table}' (query from database)"
+                                )
+                        else:
+                            # Regular table in datastore
+                            if self.datastore:
+                                try:
+                                    schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
+                                    if len(schema_df) > 0:
+                                        cols = list(schema_df['column_name']) if 'column_name' in schema_df.columns else list(schema_df.iloc[:, 0])
+                                        columns_info = f" columns: {cols}"
+                                except Exception:
+                                    try:
+                                        sample = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
+                                        columns_info = f" columns: {list(sample.columns)}"
+                                    except Exception:
+                                        pass
+                            tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}")
                     else:
                         scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
+
+            # Build referenced tables section for prompt
+            referenced_section = ""
+            if referenced_tables:
+                referenced_section = f"""
+REFERENCED TABLES (query from database with db_query()):
+{chr(10).join(referenced_tables)}
+"""
 
             # Generate inference code
             inference_prompt = f"""Generate Python code for this inference:
@@ -1107,17 +1149,19 @@ Explanation: {explanation}
 SCALAR VALUES:
 {chr(10).join(scalars) if scalars else "(none)"}
 
-TABLES (query with store.query()):
+TABLES (already in datastore, query with store.query()):
 {chr(10).join(tables) if tables else "(none)"}
-
+{referenced_section}
 APIs:
-- store.query(sql) -> pd.DataFrame
+- store.query(sql) -> pd.DataFrame (for datastore tables)
+- db_query(sql) -> pd.DataFrame (for referenced database tables)
 - store.save_dataframe(name, df)
 
 Rules:
 1. Use `if len(df) > 0:` not `if df:` for DataFrame checks
 2. End with `_result = <value>`
 3. Save DataFrames: store.save_dataframe('{table_name}', result_df)
+4. For REFERENCED tables, use db_query() to query from database directly
 
 Return ONLY Python code, no markdown."""
 
@@ -1150,7 +1194,19 @@ Return ONLY Python code, no markdown."""
 
                 import io
                 import sys
-                exec_globals = {"store": self.datastore, "pd": pd}
+
+                # Create db_query function for referenced tables
+                def db_query(sql: str) -> pd.DataFrame:
+                    """Query the original database directly (for referenced tables)."""
+                    for db_name in self.schema_manager.connections.keys():
+                        engine = self.schema_manager.get_sql_connection(db_name)
+                        try:
+                            return pd.read_sql(sql, engine)
+                        except Exception:
+                            continue
+                    raise Exception("No database connection available")
+
+                exec_globals = {"store": self.datastore, "pd": pd, "db_query": db_query}
 
                 # Add resolved values to context
                 for pid, fact in resolved_premises.items():

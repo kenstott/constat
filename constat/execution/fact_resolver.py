@@ -2503,14 +2503,6 @@ NOT_FOUND
 
             logger.debug(f"DOC: Parsed value: {value}, confidence: {confidence}, source: {source_name}")
             if value is not None:
-                # Validate that value is actual data, not just a reference
-                # If the value is just "referenced" or similar, reject it
-                value_str = str(value).lower().strip()
-                reference_indicators = ["referenced", "see table", "refer to", "lookup", "foreign key"]
-                if value_str in reference_indicators or any(ind in value_str for ind in reference_indicators if len(value_str) < 50):
-                    logger.debug(f"DOC: Rejected - value appears to be a reference, not data: {value}")
-                    return None
-
                 logger.debug(f"DOC: SUCCESS! Resolved {fact_name} = {value}")
                 logger.debug(f"[_resolve_from_document] Resolved {fact_name} = {value} from {source_name}")
                 return Fact(
