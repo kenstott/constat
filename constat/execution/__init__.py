@@ -19,7 +19,7 @@ from .engine import QueryEngine
 from .scratchpad import Scratchpad
 from .fact_resolver import Fact, FactSource, FactResolver, ResolutionStrategy
 from .mode import (
-    ExecutionMode,
+    Mode,
     ModeSelection,
     ExecutionConfig,
     suggest_mode,
@@ -53,7 +53,7 @@ __all__ = [
     "FactResolver",
     "ResolutionStrategy",
     # Execution modes
-    "ExecutionMode",
+    "Mode",
     "ModeSelection",
     "ExecutionConfig",
     "suggest_mode",

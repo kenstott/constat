@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from dataclasses import dataclass
 
 from constat.execution.mode import (
-    ExecutionMode,
+    Mode,
     PlanApproval,
     PlanApprovalRequest,
     PlanApprovalResponse,
@@ -61,13 +61,13 @@ class TestPlanApprovalModels:
         ]
         request = PlanApprovalRequest(
             problem="Analyze customer data",
-            mode=ExecutionMode.EXPLORATORY,
+            mode=Mode.EXPLORATORY,
             mode_reasoning="Query suggests exploratory analysis",
             steps=steps,
             reasoning="Two-step approach for data analysis",
         )
         assert request.problem == "Analyze customer data"
-        assert request.mode == ExecutionMode.EXPLORATORY
+        assert request.mode == Mode.EXPLORATORY
         assert len(request.steps) == 2
 
     def test_plan_approval_request_format_for_display(self):
@@ -78,13 +78,13 @@ class TestPlanApprovalModels:
         ]
         request = PlanApprovalRequest(
             problem="Test problem",
-            mode=ExecutionMode.AUDITABLE,
+            mode=Mode.PROOF,
             mode_reasoning="Compliance query",
             steps=steps,
             reasoning="Step-by-step approach",
         )
         display = request.format_for_display()
-        assert "AUDITABLE" in display
+        assert "PROOF" in display
         assert "Load data" in display
         assert "Process data" in display
         assert "Step-by-step approach" in display
@@ -103,7 +103,7 @@ class TestModeSelection:
         ]
         for query in queries:
             selection = suggest_mode(query)
-            assert selection.mode == ExecutionMode.AUDITABLE, f"Query '{query}' should be AUDITABLE"
+            assert selection.mode == Mode.PROOF, f"Query '{query}' should be AUDITABLE"
             assert len(selection.matched_keywords) > 0
 
     def test_suggest_mode_exploratory_keywords(self):
@@ -116,13 +116,13 @@ class TestModeSelection:
         ]
         for query in queries:
             selection = suggest_mode(query)
-            assert selection.mode == ExecutionMode.EXPLORATORY, f"Query '{query}' should be EXPLORATORY"
+            assert selection.mode == Mode.EXPLORATORY, f"Query '{query}' should be EXPLORATORY"
             assert len(selection.matched_keywords) > 0
 
     def test_suggest_mode_default_auditable(self):
         """Test that ambiguous queries default to AUDITABLE."""
         selection = suggest_mode("Get customer data")
-        assert selection.mode == ExecutionMode.AUDITABLE
+        assert selection.mode == Mode.PROOF
         assert selection.confidence == 0.5
 
     def test_suggest_mode_confidence_increases_with_matches(self):
@@ -209,7 +209,7 @@ class TestFeedbackDisplayApproval:
         from constat.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
-        display.show_mode_selection(ExecutionMode.EXPLORATORY, "Query suggests analysis")
+        display.show_mode_selection(Mode.EXPLORATORY, "Query suggests analysis")
 
         mock_console.print.assert_called()
 
@@ -218,7 +218,7 @@ class TestFeedbackDisplayApproval:
         from constat.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
-        display.show_mode_selection(ExecutionMode.AUDITABLE, "Compliance required")
+        display.show_mode_selection(Mode.PROOF, "Compliance required")
 
         mock_console.print.assert_called()
 
@@ -244,7 +244,7 @@ class TestApprovalWorkflow:
         steps = [{"number": 1, "goal": "Test step"}]
         request = PlanApprovalRequest(
             problem="Test problem",
-            mode=ExecutionMode.EXPLORATORY,
+            mode=Mode.EXPLORATORY,
             mode_reasoning="Test reasoning",
             steps=steps,
             reasoning="Test plan reasoning",
@@ -261,7 +261,7 @@ class TestApprovalWorkflow:
         steps = [{"number": 1, "goal": "Basic step"}]
         request = PlanApprovalRequest(
             problem="Test problem",
-            mode=ExecutionMode.EXPLORATORY,
+            mode=Mode.EXPLORATORY,
             mode_reasoning="Test",
             steps=steps,
             reasoning="Initial plan",
@@ -279,7 +279,7 @@ class TestApprovalWorkflow:
         ]
         new_request = PlanApprovalRequest(
             problem="Test problem",
-            mode=ExecutionMode.EXPLORATORY,
+            mode=Mode.EXPLORATORY,
             mode_reasoning="Test",
             steps=new_steps,
             reasoning="Revised plan with validation",
@@ -293,7 +293,7 @@ class TestApprovalWorkflow:
         """Test the rejection workflow."""
         request = PlanApprovalRequest(
             problem="Delete all data",
-            mode=ExecutionMode.EXPLORATORY,
+            mode=Mode.EXPLORATORY,
             mode_reasoning="Exploratory",
             steps=[{"number": 1, "goal": "Delete everything"}],
             reasoning="Deletion plan",
@@ -312,24 +312,24 @@ class TestModeSystemPrompts:
         """Test that exploratory mode has a system prompt."""
         from constat.execution.mode import MODE_SYSTEM_PROMPTS
 
-        assert ExecutionMode.EXPLORATORY in MODE_SYSTEM_PROMPTS
-        prompt = MODE_SYSTEM_PROMPTS[ExecutionMode.EXPLORATORY]
+        assert Mode.EXPLORATORY in MODE_SYSTEM_PROMPTS
+        prompt = MODE_SYSTEM_PROMPTS[Mode.EXPLORATORY]
         assert "data analyst" in prompt.lower()
 
     def test_auditable_prompt_exists(self):
         """Test that auditable mode has a system prompt."""
         from constat.execution.mode import MODE_SYSTEM_PROMPTS
 
-        assert ExecutionMode.AUDITABLE in MODE_SYSTEM_PROMPTS
-        prompt = MODE_SYSTEM_PROMPTS[ExecutionMode.AUDITABLE]
+        assert Mode.PROOF in MODE_SYSTEM_PROMPTS
+        prompt = MODE_SYSTEM_PROMPTS[Mode.PROOF]
         assert "audit" in prompt.lower() or "proof" in prompt.lower()
 
     def test_get_mode_system_prompt(self):
         """Test getting mode system prompt."""
         from constat.execution.mode import get_mode_system_prompt
 
-        exploratory_prompt = get_mode_system_prompt(ExecutionMode.EXPLORATORY)
-        auditable_prompt = get_mode_system_prompt(ExecutionMode.AUDITABLE)
+        exploratory_prompt = get_mode_system_prompt(Mode.EXPLORATORY)
+        auditable_prompt = get_mode_system_prompt(Mode.PROOF)
 
         assert exploratory_prompt != auditable_prompt
         assert len(exploratory_prompt) > 0
@@ -344,7 +344,7 @@ class TestDomainPresets:
         from constat.execution.mode import get_domain_preset
 
         config = get_domain_preset("financial")
-        assert config.default_mode == ExecutionMode.AUDITABLE
+        assert config.default_mode == Mode.PROOF
         assert config.allow_mode_override is False
         assert config.min_confidence >= 0.8
 
@@ -353,7 +353,7 @@ class TestDomainPresets:
         from constat.execution.mode import get_domain_preset
 
         config = get_domain_preset("healthcare")
-        assert config.default_mode == ExecutionMode.AUDITABLE
+        assert config.default_mode == Mode.PROOF
         assert config.allow_mode_override is False
         assert config.require_provenance is True
 
@@ -362,7 +362,7 @@ class TestDomainPresets:
         from constat.execution.mode import get_domain_preset
 
         config = get_domain_preset("analytics")
-        assert config.default_mode == ExecutionMode.EXPLORATORY
+        assert config.default_mode == Mode.EXPLORATORY
         assert config.allow_mode_override is True
 
     def test_unknown_domain_returns_default(self):

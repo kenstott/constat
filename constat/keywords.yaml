@@ -47,14 +47,12 @@ en:
 
   # Mode switch patterns
   mode_switch:
-    knowledge:
-      - ^k$          # Exact match only (single char)
-      - use knowledge
-      - switch to knowledge
-      - knowledge mode
-      - explanation mode
-      - just explain
-      - no data
+    proof:
+      - ^p$          # Exact match only (single char)
+      - use proof
+      - switch to proof
+      - proof mode
+      - prove
 
     auditable:
       - ^a$          # Exact match only (single char)
@@ -91,10 +89,10 @@ es:
     - resumen
 
   mode_switch:
-    knowledge:
-      - ^k$
-      - modo conocimiento
-      - solo explicar
+    proof:
+      - ^p$
+      - modo prueba
+      - probar
 
     auditable:
       - ^a$

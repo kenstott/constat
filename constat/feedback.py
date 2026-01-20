@@ -32,7 +32,7 @@ def _left_align_markdown(text: str) -> str:
     return text
 
 from constat.execution.mode import (
-    ExecutionMode,
+    Mode,
     PlanApproval,
     PlanApprovalRequest,
     PlanApprovalResponse,
@@ -40,31 +40,136 @@ from constat.execution.mode import (
 from constat.keywords import detect_mode_switch as _detect_mode_switch_str
 
 
-def detect_mode_switch(text: str) -> ExecutionMode | None:
+def detect_mode_switch(text: str) -> Mode | None:
     """Detect if the user is requesting a mode switch.
 
     Args:
         text: User input text
 
     Returns:
-        Target ExecutionMode if a switch is requested, None otherwise
+        Target Mode if a switch is requested, None otherwise
     """
     mode_name = _detect_mode_switch_str(text)
     if mode_name is None:
         return None
 
-    # Map mode name string to ExecutionMode enum
+    # Map mode name string to Mode enum
     mode_map = {
-        "knowledge": ExecutionMode.KNOWLEDGE,
-        "auditable": ExecutionMode.AUDITABLE,
-        "exploratory": ExecutionMode.EXPLORATORY,
+        "auditable": Mode.PROOF,
+        "proof": Mode.PROOF,
+        "exploratory": Mode.EXPLORATORY,
     }
     return mode_map.get(mode_name)
 from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
+from constat.execution.mode import Phase, ConversationState
 
 
 # Spinner frames for animation
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+class StatusLine:
+    """
+    Persistent status line showing current conversation state.
+
+    Shows mode, phase, and contextual information:
+    - [PROOF] idle
+    - [EXPLORE] planning "Analyze revenue by region"
+    - [PROOF] executing step 2/5 "Loading sales data"
+    - [PROOF] failed "Database connection error" [retry/replan/abandon]
+    """
+
+    def __init__(self):
+        self._mode: Mode = Mode.EXPLORATORY
+        self._phase: Phase = Phase.IDLE
+        self._plan_name: str | None = None
+        self._step_current: int = 0
+        self._step_total: int = 0
+        self._step_description: str = ""
+        self._queue_count: int = 0
+        self._error_message: str | None = None
+        self._spinner_frame: int = 0
+
+    def render(self) -> str:
+        """Render current status line as a formatted string."""
+        parts = []
+
+        # Mode badge with color
+        if self._mode == Mode.PROOF:
+            mode_badge = "[bold yellow][PROOF][/bold yellow]"
+        else:
+            mode_badge = "[bold cyan][EXPLORE][/bold cyan]"
+        parts.append(mode_badge)
+
+        # Phase with context
+        if self._phase == Phase.IDLE:
+            parts.append("[dim]idle[/dim]")
+
+        elif self._phase == Phase.PLANNING:
+            spinner = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
+            parts.append(f"[dim]planning[/dim] [cyan]{spinner}[/cyan]")
+            if self._plan_name:
+                truncated = self._plan_name[:40] + "..." if len(self._plan_name) > 40 else self._plan_name
+                parts.append(f'[dim]"{truncated}"[/dim]')
+
+        elif self._phase == Phase.AWAITING_APPROVAL:
+            parts.append("[dim]awaiting_approval[/dim]")
+            if self._plan_name:
+                truncated = self._plan_name[:30] + "..." if len(self._plan_name) > 30 else self._plan_name
+                parts.append(f'plan: "{truncated}"')
+            if self._step_total > 0:
+                parts.append(f"({self._step_total} steps)")
+            parts.append("[dim][y/n/suggest][/dim]")
+
+        elif self._phase == Phase.EXECUTING:
+            spinner = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
+            parts.append(f"[green]executing[/green] [cyan]{spinner}[/cyan]")
+            if self._step_total > 0:
+                parts.append(f"step {self._step_current}/{self._step_total}")
+            if self._step_description:
+                truncated = self._step_description[:30] + "..." if len(self._step_description) > 30 else self._step_description
+                parts.append(f'"{truncated}"')
+            if self._queue_count > 0:
+                parts.append(f"[dim][queued: {self._queue_count}][/dim]")
+
+        elif self._phase == Phase.FAILED:
+            parts.append("[red]failed[/red] [red]x[/red]")
+            if self._step_current > 0:
+                parts.append(f"step {self._step_current}")
+            if self._error_message:
+                truncated = self._error_message[:40] + "..." if len(self._error_message) > 40 else self._error_message
+                parts.append(f'[red]"{truncated}"[/red]')
+            parts.append("[dim][retry/replan/abandon][/dim]")
+
+        return "    ".join(parts)
+
+    def update(self, state: ConversationState) -> None:
+        """Update from conversation state."""
+        self._mode = state.mode
+        self._phase = state.phase
+        self._error_message = state.failure_context
+
+        # Extract plan info if available
+        if state.active_plan:
+            plan = state.active_plan
+            if hasattr(plan, 'goal'):
+                self._plan_name = plan.goal
+            if hasattr(plan, 'steps'):
+                self._step_total = len(plan.steps)
+
+    def set_step_progress(self, current: int, total: int, description: str = "") -> None:
+        """Update step progress during execution."""
+        self._step_current = current
+        self._step_total = total
+        self._step_description = description
+
+    def set_queue_count(self, count: int) -> None:
+        """Update the queued intent count."""
+        self._queue_count = count
+
+    def advance_spinner(self) -> None:
+        """Advance the spinner animation frame."""
+        self._spinner_frame += 1
 
 
 @dataclass
@@ -984,9 +1089,9 @@ class FeedbackDisplay:
             self._start_animation_thread()  # Start background animation
             self._update_live()
 
-    def show_mode_selection(self, mode: ExecutionMode, reasoning: str) -> None:
+    def show_mode_selection(self, mode: Mode, reasoning: str) -> None:
         """Display the selected execution mode."""
-        mode_style = "cyan" if mode == ExecutionMode.EXPLORATORY else "yellow"
+        mode_style = "cyan" if mode == Mode.EXPLORATORY else "yellow"
         self.console.print(
             f"[bold]Mode:[/bold] [{mode_style}]{mode.value.upper()}[/{mode_style}]"
         )
@@ -999,6 +1104,14 @@ class FeedbackDisplay:
 
         Displays the plan with mode selection and prompts for approval.
         Returns user's decision with optional feedback.
+
+        Approval flow (simplified):
+        - approve: Execute the plan as-is
+        - reject: Cancel execution
+        - suggest: User provides feedback for replanning
+
+        Note: Mode switching removed from approval flow. Use /proof or /explore
+        commands instead to change modes.
 
         Args:
             request: PlanApprovalRequest with full context
@@ -1020,12 +1133,13 @@ class FeedbackDisplay:
             self.console.print("[bold]Reasoning:[/bold]")
             self.console.print(Panel(request.reasoning, border_style="dim"))
 
-        # Prompt for approval - allow direct steering input
+        # Prompt for approval - simplified to approve/reject/suggest
+        # Mode switching should be done via /proof or /explore commands
         self.console.print()
 
         while True:
             try:
-                response = self.console.input("[dim]Enter to execute, 'n' to cancel, 'k/a/e' to switch mode, or type changes >[/dim] ").strip()
+                response = self.console.input("[dim]Enter to execute, 'n' to cancel, or type changes >[/dim] ").strip()
             except (EOFError, KeyboardInterrupt):
                 self.console.print("\n[red]Cancelled.[/red]")
                 return PlanApprovalResponse.reject("User cancelled")
@@ -1041,21 +1155,11 @@ class FeedbackDisplay:
                 return PlanApprovalResponse.reject()
 
             # Slash commands - pass through to REPL for global handling
+            # This includes /proof and /explore for mode switching
             elif response.startswith("/"):
                 return PlanApprovalResponse.pass_command(response)
 
-            # Check for mode switch request
-            target_mode = detect_mode_switch(response)
-            if target_mode is not None:
-                # Check if already in this mode
-                if target_mode == request.mode:
-                    self.console.print(f"[dim]Already in {target_mode.value} mode.[/dim]")
-                    continue  # Ask again
-                else:
-                    # Mode switch message will be shown by the mode_switch event
-                    return PlanApprovalResponse.switch_mode(target_mode)
-
-            # Anything else is steering feedback
+            # Anything else is steering feedback (suggest)
             else:
                 self.console.print("[yellow]Incorporating feedback and replanning...[/yellow]\n")
                 return PlanApprovalResponse.suggest(response)
@@ -1458,6 +1562,66 @@ class FeedbackDisplay:
             f"[bold cyan]Switching to {mode.upper()} mode[/bold cyan] "
             f"[dim](triggered by: {keyword_str})[/dim]"
         )
+
+    def request_failure_recovery(self, error_message: str, step_info: str = "") -> str:
+        """
+        Request user decision on how to handle execution failure.
+
+        Displays the failure context and prompts for recovery action:
+        - retry: Re-run the failed step (for transient/probabilistic failures)
+        - replan: Return to planning with failure context
+        - abandon: Return to idle state
+
+        Args:
+            error_message: The error that caused the failure
+            step_info: Optional context about which step failed
+
+        Returns:
+            One of: "retry", "replan", "abandon"
+        """
+        # Stop any running animation/spinner before prompting
+        self.stop_spinner()
+        self.stop_live_plan_display()
+
+        self.console.print()
+        self.console.print(Rule("[bold red]Execution Failed[/bold red]", align="left"))
+
+        # Show step context if available
+        if step_info:
+            self.console.print(f"[dim]Step: {step_info}[/dim]")
+
+        # Show error message (truncated if very long)
+        error_display = error_message
+        if len(error_display) > 200:
+            error_display = error_display[:197] + "..."
+        self.console.print(f"[red]Error:[/red] {error_display}")
+
+        self.console.print()
+        self.console.print("[bold]What would you like to do?[/bold]")
+        self.console.print("  [cyan]1.[/cyan] [bold]retry[/bold]   - Try again (transient errors)")
+        self.console.print("  [cyan]2.[/cyan] [bold]replan[/bold]  - Modify the plan")
+        self.console.print("  [cyan]3.[/cyan] [bold]abandon[/bold] - Start over")
+        self.console.print()
+
+        while True:
+            try:
+                response = self.console.input("[dim]Enter choice (1/2/3 or retry/replan/abandon) >[/dim] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                self.console.print("\n[dim]Abandoning...[/dim]")
+                return "abandon"
+
+            # Parse response
+            if response in ("1", "retry", "r", "try", "again"):
+                self.console.print("[yellow]Retrying...[/yellow]\n")
+                return "retry"
+            elif response in ("2", "replan", "modify", "change", "m"):
+                self.console.print("[yellow]Returning to planning...[/yellow]\n")
+                return "replan"
+            elif response in ("3", "abandon", "cancel", "quit", "a", "q", ""):
+                self.console.print("[dim]Abandoned.[/dim]\n")
+                return "abandon"
+            else:
+                self.console.print("[dim]Please enter 1/2/3 or retry/replan/abandon[/dim]")
 
 
 class SessionFeedbackHandler:

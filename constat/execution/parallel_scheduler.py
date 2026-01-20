@@ -30,6 +30,29 @@ class SchedulerResult:
     step_results: dict[int, StepResult]
     execution_waves: list[list[int]]  # Which steps ran in each wave
     total_duration_ms: int = 0
+    cancelled: bool = False  # True if execution was cancelled
+
+
+@dataclass
+class ExecutionContext:
+    """Execution context with cancellation support.
+
+    This context is passed through execution and can be checked by step
+    executors to determine if cancellation has been requested.
+    """
+    _cancelled: bool = False
+
+    def cancel(self) -> None:
+        """Request cancellation of execution."""
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        """Check if cancellation has been requested."""
+        return self._cancelled
+
+    def reset(self) -> None:
+        """Reset cancellation state for reuse."""
+        self._cancelled = False
 
 
 class ParallelStepScheduler:
@@ -70,6 +93,23 @@ class ParallelStepScheduler:
         self.config = config or SchedulerConfig()
         self._executor = executor or ThreadPoolExecutor(max_workers=10)
         self._semaphore: Optional[asyncio.Semaphore] = None
+        self._execution_context: ExecutionContext = ExecutionContext()
+
+    def get_execution_context(self) -> ExecutionContext:
+        """Get the execution context for external cancellation control.
+
+        Returns:
+            The ExecutionContext that can be used to request cancellation.
+        """
+        return self._execution_context
+
+    def cancel(self) -> None:
+        """Request cancellation of the current execution.
+
+        This sets the cancellation flag, which will be checked between
+        steps and waves. Completed steps are preserved.
+        """
+        self._execution_context.cancel()
 
     async def execute_plan(
         self,
@@ -82,6 +122,9 @@ class ParallelStepScheduler:
         Steps are executed in waves based on dependencies.
         Each wave runs steps concurrently.
 
+        Cancellation: The execution context is checked before each wave starts.
+        If cancelled, execution stops and completed steps are preserved.
+
         Args:
             plan: The plan to execute
             initial_namespace: Initial variables available to all steps
@@ -93,6 +136,9 @@ class ParallelStepScheduler:
 
         start_time = time.time()
 
+        # Reset cancellation state for this execution
+        self._execution_context.reset()
+
         # Initialize semaphore for concurrency control
         self._semaphore = asyncio.Semaphore(self.config.max_concurrent_steps)
 
@@ -103,6 +149,7 @@ class ParallelStepScheduler:
         step_results: dict[int, StepResult] = {}
         execution_waves: list[list[int]] = []
         failed = False
+        cancelled = False
 
         # Ensure dependencies are set (infer if needed)
         if all(not step.depends_on for step in plan.steps):
@@ -112,6 +159,11 @@ class ParallelStepScheduler:
         waves = plan.get_execution_order()
 
         for wave_num, wave_steps in enumerate(waves):
+            # Check for cancellation before starting each wave
+            if self._execution_context.is_cancelled():
+                cancelled = True
+                break
+
             if failed and self.config.fail_fast:
                 break
 
@@ -120,10 +172,18 @@ class ParallelStepScheduler:
             # Execute all steps in this wave in parallel
             tasks = []
             for step_num in wave_steps:
+                # Check for cancellation before starting each step
+                if self._execution_context.is_cancelled():
+                    cancelled = True
+                    break
+
                 step = plan.get_step(step_num)
                 if step and step.status == StepStatus.PENDING:
                     step.status = StepStatus.RUNNING
                     tasks.append(self._execute_step_async(step, namespace))
+
+            if cancelled:
+                break
 
             # Wait for all steps in this wave to complete
             if tasks:
@@ -167,12 +227,13 @@ class ParallelStepScheduler:
         total_duration = int((time.time() - start_time) * 1000)
 
         return SchedulerResult(
-            success=not failed and plan.is_complete,
+            success=not failed and not cancelled and plan.is_complete,
             completed_steps=list(plan.completed_steps),
             failed_steps=list(plan.failed_steps),
             step_results=step_results,
             execution_waves=execution_waves,
             total_duration_ms=total_duration,
+            cancelled=cancelled,
         )
 
     async def _execute_step_async(

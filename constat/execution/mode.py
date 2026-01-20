@@ -1,45 +1,43 @@
 """Execution mode selection for traceability guarantees.
 
-Three execution modes with different purposes:
+Two execution modes with different purposes:
 
-KNOWLEDGE (Document lookup + LLM synthesis):
-- Searches configured documents for relevant content
-- LLM synthesizes explanation from documents + world knowledge
-- No code execution, no planning needed
-- Good for: explanations, definitions, process descriptions, policy lookups
-- Audit answer: "Based on [document], the process works as follows..."
+PROOF (Fact resolver):
+- Generates a plan with assumed facts, resolves lazily
+- Trace = formal derivation chain (proof)
+- Plans must be complete and self-contained
+- Every conclusion has a provenance chain
+- Good for: decisions, compliance, defensible conclusions
+- Audit answer: "X is true BECAUSE Y AND Z, where Y came from..."
 
 EXPLORATORY (Multi-step planner):
 - Generates a plan, executes steps sequentially
 - Trace = narrative log of what was done
+- Plans can reference facts/data from previous plans
+- Session builds up a working context
 - Good for: dashboards, reports, data exploration
 - Audit answer: "I ran these queries and computed this"
 
-AUDITABLE (Fact resolver):
-- Generates a plan with assumed facts, resolves lazily
-- Trace = formal derivation chain (proof)
-- Good for: decisions, compliance, defensible conclusions
-- Audit answer: "X is true BECAUSE Y AND Z, where Y came from..."
-
 The LLM can suggest a mode based on the query, or the user can specify.
-For regulated domains, AUDITABLE should be the default.
+For regulated domains, PROOF should be the default.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
-class ExecutionMode(Enum):
+class Mode(Enum):
     """Execution mode determines traceability guarantees."""
 
-    KNOWLEDGE = "knowledge"
-    """Document lookup and LLM synthesis for explanations.
+    PROOF = "proof"
+    """Fact resolver for traceable, defensible conclusions.
 
-    - Searches configured documents for relevant content
-    - LLM synthesizes explanation from documents + world knowledge
-    - No code execution, no multi-step planning
-    - Shows sources consulted
+    - Plan is generated with assumed facts
+    - Facts are resolved lazily with provenance
+    - Trace is a formal derivation chain
+    - Every conclusion has a proof
+    - Plans are self-contained (no implicit dependencies on prior session state)
     """
 
     EXPLORATORY = "exploratory"
@@ -49,47 +47,144 @@ class ExecutionMode(Enum):
     - Each step can run arbitrary Python/SQL
     - Trace is a narrative log
     - Fast, flexible, good for building things
-    """
-
-    AUDITABLE = "auditable"
-    """Fact resolver for traceable, defensible conclusions.
-
-    - Plan is generated with assumed facts
-    - Facts are resolved lazily with provenance
-    - Trace is a formal derivation chain
-    - Every conclusion has a proof
+    - Plans can reference facts/data from previous plans
+    - Session builds up a working context
     """
 
 
-# Keywords that suggest knowledge/explanation mode (no data analysis needed)
-# NOTE: Be VERY conservative here - false positives send data questions to
-# knowledge mode which can't answer them. Better to miss some knowledge
-# questions than to break data queries.
-KNOWLEDGE_KEYWORDS = [
-    # Explicit explanation requests (with articles suggesting conceptual questions)
-    "explain what",
-    "explain how",
-    "explain the concept",
-    "what is a ",  # Note trailing space: "what is a X" (definition) not "what is the X" (data)
-    "what is an ",
-    "what are the differences",
-    "what does .* mean",
-    "tell me about the concept",
-    "definition of",
-    # Policy/rule lookups (specific enough to not match data questions)
-    "company policy",
-    "our policy",
-    "the policy",
-    "guideline for",
-    "guidelines for",
-    # Overview requests (with "the" to avoid matching data queries)
-    "overview of the",
-    "introduction to the",
-    "background on the",
-]
+class Phase(Enum):
+    """Task lifecycle state tracking phase transitions."""
 
-# Keywords that suggest auditable mode is needed
-AUDITABLE_KEYWORDS = [
+    IDLE = "idle"
+    """No active plan, waiting for user input."""
+
+    PLANNING = "planning"
+    """Generating or revising a plan."""
+
+    AWAITING_APPROVAL = "awaiting_approval"
+    """Plan generated, waiting for user approval."""
+
+    EXECUTING = "executing"
+    """Plan approved, execution in progress."""
+
+    FAILED = "failed"
+    """Execution failed, awaiting user decision (retry/replan/abandon)."""
+
+
+class PrimaryIntent(Enum):
+    """Primary intent determines the code path for a user turn."""
+
+    QUERY = "query"
+    """Answer from knowledge or current context. No approval required."""
+
+    PLAN_NEW = "plan_new"
+    """Start planning a new task. Requires approval before execution."""
+
+    PLAN_CONTINUE = "plan_continue"
+    """Refine or extend the active plan. No approval required (still planning)."""
+
+    CONTROL = "control"
+    """System/session commands. No approval required."""
+
+
+class SubIntent(Enum):
+    """Sub-intent refines behavior within a primary intent handler."""
+
+    # Query sub-intents
+    DETAIL = "detail"
+    """Drill down, explain further."""
+
+    PROVENANCE = "provenance"
+    """Show proof chain / how we got here."""
+
+    SUMMARY = "summary"
+    """Condense results."""
+
+    LOOKUP = "lookup"
+    """Simple fact retrieval."""
+
+    # Plan new sub-intents
+    COMPARE = "compare"
+    """Evaluate alternatives."""
+
+    PREDICT = "predict"
+    """What-if / forecast."""
+
+    # Control sub-intents (session management)
+    MODE_SWITCH = "mode_switch"
+    """Change execution mode (/proof, /explore)."""
+
+    RESET = "reset"
+    """Clear session state (/reset)."""
+
+    REDO_CMD = "redo_cmd"
+    """Re-execute last plan (/redo)."""
+
+    HELP = "help"
+    """Show available commands (/help)."""
+
+    STATUS = "status"
+    """Show current state (/status)."""
+
+    EXIT = "exit"
+    """End session (/exit, /quit)."""
+
+    # Control sub-intents (execution management)
+    CANCEL = "cancel"
+    """Stop execution entirely."""
+
+    REPLAN = "replan"
+    """Stop and revise the plan."""
+
+
+@dataclass
+class TurnIntent:
+    """Classified intent for a single user turn."""
+
+    primary: PrimaryIntent
+    """Primary intent determines the code path."""
+
+    sub: Optional[SubIntent] = None
+    """Optional sub-intent refines behavior within the primary handler."""
+
+    target: Optional[str] = None
+    """What to modify, drill into, etc."""
+
+
+@dataclass
+class ConversationState:
+    """Combined state tracking for conversation flow."""
+
+    mode: Mode
+    """Current execution mode (proof or exploratory)."""
+
+    phase: Phase
+    """Current task lifecycle phase."""
+
+    active_plan: Optional[Any] = None
+    """Current plan if any (Plan object when available)."""
+
+    session_facts: dict[str, Any] = field(default_factory=dict)
+    """Accumulated facts (used in exploratory mode)."""
+
+    failure_context: Optional[str] = None
+    """Error details when phase == FAILED."""
+
+    def can_execute(self) -> bool:
+        """Check if we can transition to executing."""
+        return self.phase == Phase.AWAITING_APPROVAL
+
+    def can_retry(self) -> bool:
+        """Check if we can retry execution."""
+        return self.phase == Phase.FAILED
+
+    def is_planning(self) -> bool:
+        """Check if we're in a planning-related phase."""
+        return self.phase in (Phase.PLANNING, Phase.AWAITING_APPROVAL)
+
+
+# Keywords that suggest proof mode is needed
+PROOF_KEYWORDS = [
     # Verification keywords
     "verify",
     "validate",
@@ -149,29 +244,26 @@ EXPLORATORY_KEYWORDS = [
 @dataclass
 class ModeSelection:
     """Result of mode selection with reasoning."""
-    mode: ExecutionMode
+    mode: Mode
     confidence: float
     reasoning: str
-
-    # Keywords that influenced the decision (legacy, optional)
     matched_keywords: list[str] | None = None
 
 
-def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -> ModeSelection:
+def suggest_mode(query: str, default: Mode = Mode.PROOF) -> ModeSelection:
     """
     Suggest an execution mode based on query analysis.
 
     Uses keyword matching as a heuristic. For production use,
     the LLM should make this decision with full context.
 
-    Priority: KNOWLEDGE > EXPLORATORY > AUDITABLE
-    - KNOWLEDGE: Pure explanation/lookup, no data analysis
+    Priority: PROOF > EXPLORATORY
+    - PROOF: Verification with fact-based provenance
     - EXPLORATORY: Data analysis with multi-step execution
-    - AUDITABLE: Verification with fact-based provenance
 
     Args:
         query: The user's natural language query
-        default: Default mode if unclear (AUDITABLE for safety)
+        default: Default mode if unclear (PROOF for safety)
 
     Returns:
         ModeSelection with mode, confidence, and reasoning
@@ -188,52 +280,38 @@ def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -
         return kw in text
 
     # Patterns that indicate action requests, not verification
-    # e.g., "verify you are doing X" = action, "verify that the total is X" = verification
     action_patterns = [
         r'\bverify\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
         r'\bcheck\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
         r'\bconfirm\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
-        r'\bmake\s+sure\b',  # "make sure you are doing X" is action, not verification
-        r'\bensure\b',  # "ensure you are" is action
-        r'\btry\s+(?:the|this|it|again)\b',  # "try the api again" suggests retry/action
+        r'\bmake\s+sure\b',
+        r'\bensure\b',
+        r'\btry\s+(?:the|this|it|again)\b',
     ]
 
-    # Check if query matches action patterns - if so, reduce auditable score
     is_action_request = any(re.search(p, query_lower) for p in action_patterns)
 
-    knowledge_matches = [kw for kw in KNOWLEDGE_KEYWORDS if match_with_boundary(kw, query_lower)]
-    auditable_matches = [kw for kw in AUDITABLE_KEYWORDS if match_with_boundary(kw, query_lower)]
+    proof_matches = [kw for kw in PROOF_KEYWORDS if match_with_boundary(kw, query_lower)]
     exploratory_matches = [kw for kw in EXPLORATORY_KEYWORDS if match_with_boundary(kw, query_lower)]
 
-    knowledge_score = len(knowledge_matches)
-    auditable_score = len(auditable_matches)
+    proof_score = len(proof_matches)
     exploratory_score = len(exploratory_matches)
 
-    # If this looks like an action request (e.g., "verify you are doing X"),
-    # heavily discount auditable keywords - they're being used imperatively
+    # If this looks like an action request, discount proof keywords
     if is_action_request:
-        auditable_score = 0  # Treat as exploratory/default instead
-        exploratory_score = max(exploratory_score, 1)  # Boost exploratory
+        proof_score = 0
+        exploratory_score = max(exploratory_score, 1)
 
-    # Knowledge mode takes priority when it has matches and no strong
-    # data analysis signals (exploratory keywords suggest actual data work)
-    if knowledge_score > 0 and knowledge_score >= exploratory_score and auditable_score == 0:
+    if proof_score > exploratory_score:
         return ModeSelection(
-            mode=ExecutionMode.KNOWLEDGE,
-            confidence=min(0.9, 0.5 + knowledge_score * 0.1),
-            reasoning=f"Query is an explanation/knowledge request (matched: {knowledge_matches})",
-            matched_keywords=knowledge_matches,
+            mode=Mode.PROOF,
+            confidence=min(0.9, 0.5 + proof_score * 0.1),
+            reasoning=f"Query suggests need for proof-based reasoning (matched: {proof_matches})",
+            matched_keywords=proof_matches,
         )
-    elif auditable_score > exploratory_score:
+    elif exploratory_score > proof_score:
         return ModeSelection(
-            mode=ExecutionMode.AUDITABLE,
-            confidence=min(0.9, 0.5 + auditable_score * 0.1),
-            reasoning=f"Query suggests need for auditable reasoning (matched: {auditable_matches})",
-            matched_keywords=auditable_matches,
-        )
-    elif exploratory_score > auditable_score:
-        return ModeSelection(
-            mode=ExecutionMode.EXPLORATORY,
+            mode=Mode.EXPLORATORY,
             confidence=min(0.9, 0.5 + exploratory_score * 0.1),
             reasoning=f"Query suggests exploratory analysis (matched: {exploratory_matches})",
             matched_keywords=exploratory_matches,
@@ -249,20 +327,7 @@ def suggest_mode(query: str, default: ExecutionMode = ExecutionMode.AUDITABLE) -
 
 # System prompts for each mode
 MODE_SYSTEM_PROMPTS = {
-    ExecutionMode.KNOWLEDGE: """You are a knowledgeable assistant providing explanations.
-
-Answer the user's question by synthesizing information from available documents
-and your general knowledge. Focus on clear, accurate explanations.
-
-When referencing documents:
-- Cite the specific document by name
-- Quote relevant sections when helpful
-- Distinguish between document content and general knowledge
-
-Keep explanations concise but complete. If you don't have enough information,
-say so rather than guessing.""",
-
-    ExecutionMode.EXPLORATORY: """You are a data analyst assistant.
+    Mode.EXPLORATORY: """You are a data analyst assistant.
 
 Execute the user's request by creating a step-by-step plan and running each step.
 Each step can query databases, transform data, create visualizations, etc.
@@ -270,7 +335,7 @@ Each step can query databases, transform data, create visualizations, etc.
 Your trace should document WHAT you did at each step.
 Focus on getting results efficiently.""",
 
-    ExecutionMode.AUDITABLE: """You are a reasoning assistant for auditable decisions.
+    Mode.PROOF: """You are a reasoning assistant for auditable decisions.
 
 For the user's request, identify the key facts needed to reach a conclusion.
 Express your reasoning as a set of facts and rules that derive the answer.
@@ -285,7 +350,7 @@ Every conclusion must be defensible with a formal proof.""",
 }
 
 
-def get_mode_system_prompt(mode: ExecutionMode) -> str:
+def get_mode_system_prompt(mode: Mode) -> str:
     """Get the system prompt addition for an execution mode."""
     return MODE_SYSTEM_PROMPTS.get(mode, "")
 
@@ -295,12 +360,12 @@ class ExecutionConfig:
     """Configuration for execution behavior."""
 
     # Default execution mode
-    default_mode: ExecutionMode = ExecutionMode.AUDITABLE
+    default_mode: Mode = Mode.PROOF
 
     # Allow LLM to override mode selection
     allow_mode_override: bool = True
 
-    # For auditable mode
+    # For proof mode
     min_confidence: float = 0.0  # Minimum confidence to accept a fact
     require_provenance: bool = True  # All facts must have source
     max_resolution_depth: int = 5  # Max recursive fact resolution
@@ -313,31 +378,31 @@ class ExecutionConfig:
 # Domain presets for common use cases
 DOMAIN_PRESETS = {
     "financial": ExecutionConfig(
-        default_mode=ExecutionMode.AUDITABLE,
-        allow_mode_override=False,  # Always auditable
+        default_mode=Mode.PROOF,
+        allow_mode_override=False,
         min_confidence=0.8,
         require_provenance=True,
     ),
     "healthcare": ExecutionConfig(
-        default_mode=ExecutionMode.AUDITABLE,
+        default_mode=Mode.PROOF,
         allow_mode_override=False,
         min_confidence=0.9,
         require_provenance=True,
     ),
     "compliance": ExecutionConfig(
-        default_mode=ExecutionMode.AUDITABLE,
+        default_mode=Mode.PROOF,
         allow_mode_override=False,
         min_confidence=0.85,
         require_provenance=True,
     ),
     "analytics": ExecutionConfig(
-        default_mode=ExecutionMode.EXPLORATORY,
+        default_mode=Mode.EXPLORATORY,
         allow_mode_override=True,
         min_confidence=0.0,
         require_provenance=False,
     ),
     "reporting": ExecutionConfig(
-        default_mode=ExecutionMode.EXPLORATORY,
+        default_mode=Mode.EXPLORATORY,
         allow_mode_override=True,
     ),
 }
@@ -363,22 +428,15 @@ class PlanApproval(Enum):
     COMMAND = "command"
     """User entered a slash command - pass back to REPL for handling."""
 
-    MODE_SWITCH = "mode_switch"
-    """User wants to switch execution mode (e.g., exploratory <-> auditable)."""
-
 
 @dataclass
 class PlanApprovalRequest:
-    """Request for user approval of a generated plan.
-
-    This is sent to the approval callback with all context needed
-    for the user to make an informed decision.
-    """
+    """Request for user approval of a generated plan."""
     problem: str
-    mode: ExecutionMode
+    mode: Mode
     mode_reasoning: str
-    steps: list[dict]  # List of step dicts with number, goal, inputs, outputs
-    reasoning: str  # Planner's reasoning for this approach
+    steps: list[dict]
+    reasoning: str
 
     def format_for_display(self) -> str:
         """Format the approval request for display."""
@@ -401,10 +459,10 @@ class PlanApprovalRequest:
 class PlanApprovalResponse:
     """User's response to plan approval request."""
     decision: PlanApproval
-    suggestion: Optional[str] = None  # Feedback if decision is SUGGEST
-    reason: Optional[str] = None  # Optional explanation for rejection
-    command: Optional[str] = None  # Slash command if decision is COMMAND
-    target_mode: Optional[ExecutionMode] = None  # Target mode if decision is MODE_SWITCH
+    suggestion: Optional[str] = None
+    reason: Optional[str] = None
+    command: Optional[str] = None
+    target_mode: Optional[Mode] = None
 
     @classmethod
     def approve(cls) -> "PlanApprovalResponse":
@@ -425,8 +483,3 @@ class PlanApprovalResponse:
     def pass_command(cls, command: str) -> "PlanApprovalResponse":
         """Create a command pass-through response."""
         return cls(decision=PlanApproval.COMMAND, command=command)
-
-    @classmethod
-    def switch_mode(cls, target_mode: ExecutionMode) -> "PlanApprovalResponse":
-        """Create a mode switch response."""
-        return cls(decision=PlanApproval.MODE_SWITCH, target_mode=target_mode)

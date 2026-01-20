@@ -28,14 +28,20 @@ from constat.execution.fact_resolver import (
     Tier2AssessmentResult,
 )
 from constat.execution.mode import (
-    ExecutionMode,
+    Mode,
     ModeSelection,
     suggest_mode,
     PlanApproval,
     PlanApprovalRequest,
     PlanApprovalResponse,
+    Phase,
+    PrimaryIntent,
+    SubIntent,
+    TurnIntent,
+    ConversationState,
 )
-from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig
+from constat.execution.intent_classifier import IntentClassifier
+from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig, ExecutionContext
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
@@ -130,7 +136,7 @@ class QuestionAnalysis:
     fact_modifications: list = field(default_factory=list)  # [{fact_name, new_value, action}]
     scope_refinements: list = field(default_factory=list)  # ["California", "Q4"]
     wants_brief: bool = False  # User wants brief/concise output (skip insights)
-    recommended_mode: Optional[str] = None  # KNOWLEDGE, EXPLORATORY, or AUDITABLE
+    recommended_mode: Optional[str] = None  # EXPLORATORY or PROOF
     mode_reasoning: Optional[str] = None  # Why this mode was recommended
 
 
@@ -259,7 +265,7 @@ class SessionConfig:
     show_raw_output: bool = True  # If True, show raw step output before synthesis
 
     # Default execution mode (overrides LLM mode selection if set)
-    default_mode: Optional[ExecutionMode] = None  # If set, always use this mode
+    default_mode: Optional[Mode] = None  # If set, always use this mode
 
 
 @dataclass
@@ -379,6 +385,34 @@ class Session:
         # Concept detector for conditional prompt injection
         self._concept_detector = ConceptDetector()
         self._concept_detector.initialize()
+
+        # Phase 3: Conversation state and intent classifier
+        # Initialize conversation state with default mode and idle phase
+        self._conversation_state: ConversationState = ConversationState(
+            mode=Mode.EXPLORATORY,
+            phase=Phase.IDLE,
+        )
+
+        # Intent classifier for turn-level intent detection
+        # Pass router as LLM provider for fallback classification
+        self._intent_classifier: IntentClassifier = IntentClassifier(
+            llm_provider=self.router,
+        )
+
+        # Phase 4: Execution Control
+        # Cancellation flag for stopping execution mid-flight
+        self._cancelled: bool = False
+
+        # Intent queue for messages received during execution
+        # Queue behavior per intent type:
+        # - plan_new: Queue 1, latest wins (new request replaces queued)
+        # - control: Queue in order, process after execution
+        # - query: No queue, answered in parallel immediately
+        # Each entry is a tuple of (TurnIntent, user_input_string)
+        self._intent_queue: list[tuple[TurnIntent, str]] = []
+
+        # Execution context for cancellation signaling to scheduler
+        self._execution_context: ExecutionContext = ExecutionContext()
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         """
@@ -2307,15 +2341,13 @@ Perform these analyses:
 4. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
 
 5. EXECUTION MODE: Select the best mode for this request:
-   - KNOWLEDGE: Pure explanation/lookup - user wants to UNDERSTAND something without data analysis
-     Examples: "What is our policy?", "Explain how X works", "What does term Y mean?"
    - EXPLORATORY: Data analysis and creation - user wants to CREATE, ANALYZE, BUILD, or COMPUTE
      Examples: "Create an analysis...", "Show sales by region", "Build a dashboard"
-   - AUDITABLE: Verification with provenance - user needs PROOF, DEFENSIBLE conclusions, or AUDIT TRAIL
+   - PROOF: Verification with provenance - user needs PROOF, DEFENSIBLE conclusions, or AUDIT TRAIL
      Examples: "Prove that X", "Verify compliance", "Run in audit mode", "With full provenance"
 
    CRITICAL PRIORITY:
-   1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "with provenance" → AUDITABLE
+   1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "proof", "with provenance" → PROOF
    2. EXPLICIT MODE REQUEST: If user says "exploratory mode" → EXPLORATORY
    3. Otherwise infer from task type
 
@@ -2339,7 +2371,7 @@ WANTS_BRIEF: YES or NO
 (YES if user wants brief/concise output: "just show me", "quick answer", "bottom line", "tl;dr",
 "no explanation needed", "keep it short", "high-level view", etc. NO otherwise)
 ---
-EXECUTION_MODE: KNOWLEDGE | EXPLORATORY | AUDITABLE
+EXECUTION_MODE: EXPLORATORY | PROOF
 MODE_REASON: <brief explanation why this mode, max 20 words>
 ---
 CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
@@ -2489,10 +2521,8 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
             if "EXECUTION_MODE:" in response:
                 mode_section = response.split("EXECUTION_MODE:", 1)[1].split("\n")[0].strip()
                 mode_section = mode_section.split("---")[0].strip().upper()
-                if "KNOWLEDGE" in mode_section:
-                    recommended_mode = "KNOWLEDGE"
-                elif "AUDITABLE" in mode_section:
-                    recommended_mode = "AUDITABLE"
+                if "PROOF" in mode_section or "AUDITABLE" in mode_section:
+                    recommended_mode = "PROOF"
                 elif "EXPLORATORY" in mode_section:
                     recommended_mode = "EXPLORATORY"
             if "MODE_REASON:" in response:
@@ -3337,6 +3367,849 @@ Please create a revised plan that addresses this feedback."""
         self._sync_user_facts_to_planner()
         return self.planner.plan(enhanced_problem)
 
+    # =========================================================================
+    # Phase 3: Intent Classification and Handler Methods
+    # =========================================================================
+
+    def _classify_turn_intent(self, user_input: str) -> TurnIntent:
+        """
+        Classify the user's input into a TurnIntent using the IntentClassifier.
+
+        Builds context from current conversation state and delegates to the
+        embedding-based classifier (with LLM fallback for low confidence).
+
+        Args:
+            user_input: The user's natural language input.
+
+        Returns:
+            TurnIntent with primary intent, optional sub-intent, and optional target.
+        """
+        # Build context dict for the classifier
+        context = {
+            "phase": self._conversation_state.phase,
+            "has_plan": self._conversation_state.active_plan is not None,
+            "mode": self._conversation_state.mode,
+        }
+
+        # Delegate to the intent classifier
+        return self._intent_classifier.classify(user_input, context)
+
+    def _handle_query_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
+        """
+        Handle QUERY primary intent - answer from knowledge or current context.
+
+        This handles sub-intents:
+        - DETAIL: drill down into specific aspect
+        - PROVENANCE: show proof chain
+        - SUMMARY: condense results
+        - LOOKUP: simple fact retrieval
+        - Default: general answer using doc search + LLM fallback
+
+        Args:
+            turn_intent: The classified turn intent.
+            user_input: The user's original input.
+
+        Returns:
+            Result dict with output, success, and other metadata.
+        """
+        sub_intent = turn_intent.sub
+        target = turn_intent.target
+
+        # Handle PROVENANCE sub-intent - show proof chain
+        if sub_intent == SubIntent.PROVENANCE:
+            return self._handle_provenance_query(target, user_input)
+
+        # Handle DETAIL sub-intent - drill down into specific aspect
+        if sub_intent == SubIntent.DETAIL:
+            return self._handle_detail_query(target, user_input)
+
+        # Handle SUMMARY sub-intent - condense results
+        if sub_intent == SubIntent.SUMMARY:
+            return self._handle_summary_query(user_input)
+
+        # Handle LOOKUP sub-intent - simple fact retrieval
+        if sub_intent == SubIntent.LOOKUP:
+            return self._handle_lookup_query(target, user_input)
+
+        # Default: general answer using doc search + LLM fallback (KNOWLEDGE mode logic)
+        return self._handle_general_query(user_input)
+
+    def _handle_provenance_query(self, target: Optional[str], user_input: str) -> dict:
+        """Handle provenance/proof chain query."""
+        # Check if we have resolved facts with provenance
+        all_facts = self.fact_resolver.get_all_facts()
+
+        if not all_facts:
+            return {
+                "success": True,
+                "output": "No facts have been resolved yet. Please run an analysis first to establish a proof chain.",
+                "meta_response": True,
+            }
+
+        # Build provenance output
+        provenance_lines = ["**Fact Provenance:**\n"]
+
+        for name, fact in all_facts.items():
+            # Check if this fact matches the target (if specified)
+            if target and target.lower() not in name.lower():
+                continue
+
+            provenance_lines.append(f"**{name}**: {fact.display_value}")
+            if hasattr(fact, "source") and fact.source:
+                provenance_lines.append(f"  - Source: {fact.source}")
+            if hasattr(fact, "reasoning") and fact.reasoning:
+                provenance_lines.append(f"  - Reasoning: {fact.reasoning}")
+            if hasattr(fact, "confidence") and fact.confidence is not None:
+                provenance_lines.append(f"  - Confidence: {fact.confidence:.0%}")
+            provenance_lines.append("")
+
+        if len(provenance_lines) == 1:
+            return {
+                "success": True,
+                "output": f"No facts found matching '{target}'." if target else "No facts available.",
+                "meta_response": True,
+            }
+
+        return {
+            "success": True,
+            "output": "\n".join(provenance_lines),
+            "meta_response": True,
+        }
+
+    def _handle_detail_query(self, target: Optional[str], user_input: str) -> dict:
+        """Handle detail/drill-down query."""
+        # If we have a datastore with results, try to get details from there
+        if self.datastore:
+            tables = self.datastore.list_tables()
+            if tables:
+                # Use LLM to generate a detail explanation
+                table_info = "\n".join([f"- {t['name']}: {t['row_count']} rows" for t in tables])
+                scratchpad_context = self.datastore.get_scratchpad_as_markdown()
+
+                prompt = f"""The user wants more details about: {user_input}
+
+Available data:
+{table_info}
+
+Previous analysis context:
+{scratchpad_context}
+
+Provide a detailed explanation or suggest what specific data to examine."""
+
+                result = self.router.execute(
+                    task_type=TaskType.SYNTHESIS,
+                    system="You are a helpful data analyst providing detailed explanations.",
+                    user_message=prompt,
+                    max_tokens=1000,
+                )
+
+                return {
+                    "success": True,
+                    "output": result.content,
+                    "meta_response": True,
+                }
+
+        # Fallback to general query handling
+        return self._handle_general_query(user_input)
+
+    def _handle_summary_query(self, user_input: str) -> dict:
+        """Handle summary/condensation query."""
+        # Check if we have previous results to summarize
+        if self.datastore:
+            scratchpad_entries = self.datastore.get_scratchpad()
+            if scratchpad_entries:
+                # Combine all previous results
+                context = "\n\n".join([
+                    f"Step {e['step_number']}: {e['goal']}\n{e['narrative']}"
+                    for e in scratchpad_entries
+                ])
+
+                prompt = f"""Summarize these analysis results concisely:
+
+{context}
+
+User request: {user_input}
+
+Provide a brief, high-level summary of the key findings."""
+
+                result = self.router.execute(
+                    task_type=TaskType.SUMMARIZATION,
+                    system="You are a concise summarizer. Focus on key insights.",
+                    user_message=prompt,
+                    max_tokens=500,
+                )
+
+                return {
+                    "success": True,
+                    "output": result.content,
+                    "meta_response": True,
+                }
+
+        return {
+            "success": True,
+            "output": "No previous analysis results to summarize. Please run an analysis first.",
+            "meta_response": True,
+        }
+
+    def _handle_lookup_query(self, target: Optional[str], user_input: str) -> dict:
+        """Handle simple fact lookup query."""
+        # First, try to answer from cached facts
+        cached_result = self._answer_from_cached_facts(user_input)
+        if cached_result:
+            return cached_result
+
+        # If no cached facts match, try document search
+        return self._handle_general_query(user_input)
+
+    def _handle_general_query(self, user_input: str) -> dict:
+        """
+        Handle general query using document search + LLM fallback.
+
+        This uses document lookup and LLM synthesis for knowledge/explanation queries.
+        """
+        # Build a minimal mode selection for the _solve_knowledge method
+        mode_selection = ModeSelection(
+            mode=Mode.EXPLORATORY,  # Will use knowledge-style handling
+            confidence=0.8,
+            reasoning="Query intent - using document lookup and LLM synthesis",
+            matched_keywords=[],
+        )
+
+        # Use the existing _solve_knowledge method which does doc search + LLM synthesis
+        return self._solve_knowledge(user_input, mode_selection)
+
+    def _handle_plan_new_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
+        """
+        Handle PLAN_NEW primary intent - start planning a new task.
+
+        This handles sub-intents:
+        - COMPARE: evaluate alternatives
+        - PREDICT: what-if / forecast
+        - Default: standard new task planning
+
+        Args:
+            turn_intent: The classified turn intent.
+            user_input: The user's original input.
+
+        Returns:
+            Result dict from the planning/execution flow.
+        """
+        # Transition phase to PLANNING
+        self._apply_phase_transition("plan_new")
+
+        sub_intent = turn_intent.sub
+
+        # Enhance problem statement based on sub-intent
+        enhanced_problem = user_input
+
+        if sub_intent == SubIntent.COMPARE:
+            # Add comparison context to the problem
+            enhanced_problem = f"Compare and evaluate: {user_input}\n\nProvide a comparative analysis highlighting differences, pros/cons, and recommendations."
+
+        elif sub_intent == SubIntent.PREDICT:
+            # Add forecasting context to the problem
+            enhanced_problem = f"Forecast/What-if analysis: {user_input}\n\nProvide predictive analysis with assumptions clearly stated."
+
+        # Update active plan reference in conversation state
+        self._conversation_state.active_plan = None  # Clear any previous plan
+
+        # Delegate to existing solve() method which handles the full planning flow
+        result = self.solve(enhanced_problem)
+
+        # Update conversation state based on result
+        if result.get("success"):
+            if result.get("plan"):
+                self._conversation_state.active_plan = result["plan"]
+            self._apply_phase_transition("complete")
+        elif result.get("rejected"):
+            self._apply_phase_transition("abandon")
+        else:
+            self._apply_phase_transition("fail")
+            self._conversation_state.failure_context = result.get("error")
+
+        return result
+
+    def _handle_plan_continue_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
+        """
+        Handle PLAN_CONTINUE primary intent - refine or extend the active plan.
+
+        Uses the user's message as context for replanning.
+
+        Args:
+            turn_intent: The classified turn intent.
+            user_input: The user's original input (used as modification context).
+
+        Returns:
+            Result dict from the replanning flow.
+        """
+        # Transition phase to PLANNING
+        self._apply_phase_transition("plan_new")  # Returns to planning state
+
+        # Check if there's a previous problem to continue from
+        previous_problem = None
+        if self.datastore:
+            previous_problem = self.datastore.get_session_meta("problem")
+
+        if not previous_problem:
+            # No previous context - treat as a new plan
+            return self._handle_plan_new_intent(turn_intent, user_input)
+
+        # Build enhanced problem with user's modification context
+        enhanced_problem = f"""{previous_problem}
+
+User modification request:
+{user_input}
+
+Please revise the plan to incorporate this feedback."""
+
+        # Delegate to existing follow_up() method which handles replanning
+        result = self.follow_up(user_input, auto_classify=False)
+
+        # Update conversation state based on result
+        if result.get("success"):
+            if result.get("plan"):
+                self._conversation_state.active_plan = result["plan"]
+            self._apply_phase_transition("complete")
+        else:
+            self._apply_phase_transition("fail")
+            self._conversation_state.failure_context = result.get("error")
+
+        return result
+
+    def _handle_control_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
+        """
+        Handle CONTROL primary intent - system/session commands.
+
+        This handles sub-intents:
+        - MODE_SWITCH: change mode (PROOF/EXPLORATORY)
+        - RESET: clear session state
+        - REDO_CMD: re-execute last plan
+        - HELP: show available commands
+        - STATUS: show current state
+        - EXIT: end session (returns signal to caller)
+        - CANCEL: stop execution (if executing)
+        - REPLAN: stop execution, return to planning
+
+        Args:
+            turn_intent: The classified turn intent.
+            user_input: The user's original input.
+
+        Returns:
+            Result dict with output, success, and control signals.
+        """
+        sub_intent = turn_intent.sub
+        target = turn_intent.target
+
+        # MODE_SWITCH: change execution mode
+        if sub_intent == SubIntent.MODE_SWITCH:
+            return self._handle_mode_switch(target, user_input)
+
+        # RESET: clear session state
+        if sub_intent == SubIntent.RESET:
+            return self._handle_reset()
+
+        # REDO_CMD: re-execute last plan
+        if sub_intent == SubIntent.REDO_CMD:
+            return self._handle_redo()
+
+        # HELP: show available commands
+        if sub_intent == SubIntent.HELP:
+            return self._handle_help()
+
+        # STATUS: show current state
+        if sub_intent == SubIntent.STATUS:
+            return self._handle_status()
+
+        # EXIT: end session
+        if sub_intent == SubIntent.EXIT:
+            return {
+                "success": True,
+                "exit": True,
+                "output": "Ending session.",
+                "meta_response": True,
+            }
+
+        # CANCEL: stop execution
+        if sub_intent == SubIntent.CANCEL:
+            return self._handle_cancel()
+
+        # REPLAN: stop execution and return to planning
+        if sub_intent == SubIntent.REPLAN:
+            return self._handle_replan(user_input)
+
+        # Default: unknown control command
+        return {
+            "success": True,
+            "output": f"Unknown control command. Use /help to see available commands.",
+            "meta_response": True,
+        }
+
+    def _handle_mode_switch(self, target: Optional[str], user_input: str) -> dict:
+        """Handle mode switch control command."""
+        input_lower = user_input.lower()
+
+        # Determine target mode from input
+        if target:
+            target_lower = target.lower()
+        else:
+            target_lower = input_lower
+
+        if "proof" in target_lower or "auditable" in target_lower or "audit" in target_lower:
+            new_mode = Mode.PROOF
+            self.session_config.default_mode = Mode.PROOF
+        elif "explore" in target_lower or "exploratory" in target_lower:
+            new_mode = Mode.EXPLORATORY
+            self.session_config.default_mode = Mode.EXPLORATORY
+        else:
+            # Toggle mode
+            if self._conversation_state.mode == Mode.PROOF:
+                new_mode = Mode.EXPLORATORY
+                self.session_config.default_mode = Mode.EXPLORATORY
+            else:
+                new_mode = Mode.PROOF
+                self.session_config.default_mode = Mode.PROOF
+
+        old_mode = self._conversation_state.mode
+        self._conversation_state.mode = new_mode
+
+        return {
+            "success": True,
+            "output": f"Switched from {old_mode.value.upper()} mode to {new_mode.value.upper()} mode.",
+            "meta_response": True,
+            "mode_switch": True,
+            "new_mode": new_mode.value,
+        }
+
+    def _handle_reset(self) -> dict:
+        """Handle reset control command - clear session state."""
+        # Clear conversation state
+        self._conversation_state = ConversationState(
+            mode=self._conversation_state.mode,  # Preserve mode
+            phase=Phase.IDLE,
+        )
+
+        # Clear fact resolver
+        self.fact_resolver.clear_all_facts()
+
+        # Clear plan
+        self.plan = None
+
+        # Clear scratchpad
+        self.scratchpad = Scratchpad()
+
+        # Clear session_id to indicate fresh start
+        old_session_id = self.session_id
+        self.session_id = None
+        self.datastore = None
+
+        self._apply_phase_transition("abandon")
+
+        return {
+            "success": True,
+            "output": "Session reset. All facts and context cleared. Ready for a new question.",
+            "meta_response": True,
+            "reset": True,
+        }
+
+    def _handle_redo(self) -> dict:
+        """Handle redo control command - re-execute last plan."""
+        if not self.datastore:
+            return {
+                "success": False,
+                "output": "No previous session to redo. Please run an analysis first.",
+                "meta_response": True,
+            }
+
+        # Get the original problem
+        problem = self.datastore.get_session_meta("problem")
+        if not problem:
+            return {
+                "success": False,
+                "output": "No previous problem found to redo.",
+                "meta_response": True,
+            }
+
+        # Use replay to re-execute stored code
+        try:
+            result = self.replay(problem)
+            return result
+        except ValueError as e:
+            return {
+                "success": False,
+                "output": f"Cannot redo: {e}",
+                "meta_response": True,
+            }
+
+    def _handle_help(self) -> dict:
+        """Handle help control command - show available commands."""
+        help_text = """**Available Commands:**
+
+**Mode Control:**
+- `/proof` or `/auditable` - Switch to proof mode (fact-based derivation)
+- `/explore` or `/exploratory` - Switch to exploratory mode (step-by-step analysis)
+
+**Session Control:**
+- `/reset` - Clear all facts and start fresh
+- `/redo` - Re-execute the last plan
+- `/status` - Show current session state
+
+**Query Commands:**
+- `/provenance` or "show proof" - Display fact derivation chain
+- Ask questions naturally to analyze data
+
+**Exit:**
+- `/exit` or `/quit` - End the session
+
+**Tips:**
+- In proof mode, every conclusion has a traceable derivation
+- In exploratory mode, you can build up analysis iteratively
+- Use "why?" or "explain" to drill down into results
+"""
+        return {
+            "success": True,
+            "output": help_text,
+            "meta_response": True,
+        }
+
+    def _handle_status(self) -> dict:
+        """Handle status control command - show current state."""
+        state = self._conversation_state
+
+        status_lines = [
+            "**Current Session State:**",
+            "",
+            f"**Mode:** {state.mode.value.upper()}",
+            f"**Phase:** {state.phase.value}",
+        ]
+
+        if state.active_plan:
+            status_lines.append(f"**Active Plan:** {len(state.active_plan.steps)} steps")
+
+        if state.session_facts:
+            status_lines.append(f"**Session Facts:** {len(state.session_facts)} facts")
+
+        # Add cached facts info
+        all_facts = self.fact_resolver.get_all_facts()
+        if all_facts:
+            status_lines.append(f"**Resolved Facts:** {len(all_facts)}")
+            for name, fact in list(all_facts.items())[:5]:  # Show first 5
+                status_lines.append(f"  - {name}: {fact.display_value}")
+            if len(all_facts) > 5:
+                status_lines.append(f"  ... and {len(all_facts) - 5} more")
+
+        if state.failure_context:
+            status_lines.append(f"**Last Error:** {state.failure_context}")
+
+        if self.datastore:
+            tables = self.datastore.list_tables()
+            if tables:
+                status_lines.append(f"**Data Tables:** {len(tables)}")
+                for t in tables[:5]:
+                    status_lines.append(f"  - {t['name']}: {t['row_count']} rows")
+
+        return {
+            "success": True,
+            "output": "\n".join(status_lines),
+            "meta_response": True,
+        }
+
+    def _handle_cancel(self) -> dict:
+        """Handle cancel control command - stop execution.
+
+        Uses the Phase 4 cancel_execution() method to set the cancellation
+        flag which will be checked between steps. Completed facts are preserved.
+        """
+        # Request cancellation (signals the execution loop to stop)
+        self.cancel_execution()
+
+        # Transition to IDLE
+        self._apply_phase_transition("abandon")
+
+        # Clear any queued intents
+        cleared = self.clear_intent_queue()
+
+        output = "Execution cancelled. Returned to idle state."
+        if cleared > 0:
+            output += f" ({cleared} queued intent(s) cleared.)"
+
+        return {
+            "success": True,
+            "output": output,
+            "meta_response": True,
+            "cancelled": True,
+        }
+
+    def _handle_replan(self, user_input: str) -> dict:
+        """Handle replan control command - stop and revise the plan.
+
+        Uses the Phase 4 cancel_execution() method to stop execution
+        and preserve completed facts.
+        """
+        # Request cancellation
+        self.cancel_execution()
+
+        # Transition to PLANNING
+        self._apply_phase_transition("replan")
+
+        return {
+            "success": True,
+            "output": "Ready to revise the plan. Please provide your modifications or ask a new question.",
+            "meta_response": True,
+            "replan": True,
+        }
+
+    def _apply_phase_transition(self, trigger: str) -> None:
+        """
+        Apply a phase transition based on the trigger.
+
+        Valid triggers and their effects:
+        - plan_new: IDLE -> PLANNING (or any -> PLANNING for plan_continue)
+        - plan_ready: PLANNING -> AWAITING_APPROVAL
+        - approve: AWAITING_APPROVAL -> EXECUTING
+        - reject: AWAITING_APPROVAL -> PLANNING
+        - complete: EXECUTING -> IDLE
+        - fail: EXECUTING -> FAILED
+        - retry: FAILED -> EXECUTING
+        - replan: FAILED/EXECUTING -> PLANNING
+        - abandon: any -> IDLE
+
+        Args:
+            trigger: The transition trigger name.
+        """
+        current_phase = self._conversation_state.phase
+
+        if trigger == "plan_new":
+            self._conversation_state.phase = Phase.PLANNING
+
+        elif trigger == "plan_ready":
+            if current_phase == Phase.PLANNING:
+                self._conversation_state.phase = Phase.AWAITING_APPROVAL
+
+        elif trigger == "approve":
+            if current_phase == Phase.AWAITING_APPROVAL:
+                self._conversation_state.phase = Phase.EXECUTING
+
+        elif trigger == "reject":
+            if current_phase == Phase.AWAITING_APPROVAL:
+                self._conversation_state.phase = Phase.PLANNING
+
+        elif trigger == "complete":
+            self._conversation_state.phase = Phase.IDLE
+            self._conversation_state.failure_context = None
+
+        elif trigger == "fail":
+            self._conversation_state.phase = Phase.FAILED
+
+        elif trigger == "retry":
+            if current_phase == Phase.FAILED:
+                self._conversation_state.phase = Phase.EXECUTING
+
+        elif trigger == "replan":
+            if current_phase in (Phase.FAILED, Phase.EXECUTING):
+                self._conversation_state.phase = Phase.PLANNING
+
+        elif trigger == "abandon":
+            self._conversation_state.phase = Phase.IDLE
+            self._conversation_state.failure_context = None
+            self._conversation_state.active_plan = None
+
+        else:
+            logger.warning(f"Unknown phase transition trigger: {trigger}")
+
+        logger.debug(f"Phase transition: {current_phase.value} --({trigger})--> {self._conversation_state.phase.value}")
+
+    def get_conversation_state(self) -> ConversationState:
+        """
+        Get the current conversation state.
+
+        Returns:
+            The current ConversationState object.
+        """
+        return self._conversation_state
+
+    def set_mode(self, mode: Mode) -> None:
+        """
+        Set the execution mode explicitly.
+
+        Args:
+            mode: The Mode to set (PROOF or EXPLORATORY).
+        """
+        self._conversation_state.mode = mode
+
+        # Also update session_config
+        self.session_config.default_mode = mode
+
+    # =========================================================================
+    # Phase 4: Execution Control
+    # =========================================================================
+
+    def cancel_execution(self) -> None:
+        """
+        Cancel the current execution.
+
+        Sets the cancellation flag which will be checked between steps.
+        Completed facts and results are preserved; only pending steps are cancelled.
+
+        This method is thread-safe and can be called from another thread
+        (e.g., in response to Ctrl+C or user typing "stop").
+        """
+        self._cancelled = True
+        self._execution_context.cancel()
+
+        # Emit cancellation event
+        self._emit_event(StepEvent(
+            event_type="execution_cancelled",
+            step_number=0,
+            data={"message": "Execution cancelled by user"}
+        ))
+
+        logger.debug("Execution cancellation requested")
+
+    def is_cancelled(self) -> bool:
+        """
+        Check if cancellation has been requested.
+
+        Returns:
+            True if cancellation has been requested.
+        """
+        return self._cancelled
+
+    def reset_cancellation(self) -> None:
+        """
+        Reset the cancellation flag.
+
+        Called at the start of a new execution to clear any previous
+        cancellation state.
+        """
+        self._cancelled = False
+        self._execution_context.reset()
+
+    def queue_intent(self, intent: TurnIntent, user_input: str) -> bool:
+        """
+        Queue an intent for processing after current execution completes.
+
+        Queue behavior depends on intent type:
+        - plan_new: Queue 1, latest wins (new request replaces queued)
+        - control: Queue in order, process after execution
+        - query: Not queued - should be handled in parallel immediately
+
+        Args:
+            intent: The TurnIntent to queue.
+            user_input: The original user input (stored with intent for later processing).
+
+        Returns:
+            True if the intent was queued, False if it should be handled immediately.
+        """
+        if intent.primary == PrimaryIntent.QUERY:
+            # Query intents are not queued - they're answered in parallel
+            return False
+
+        if intent.primary == PrimaryIntent.PLAN_NEW:
+            # Queue 1, latest wins - replace any existing queued plan_new
+            self._intent_queue = [
+                (i, inp) for i, inp in self._intent_queue
+                if i.primary != PrimaryIntent.PLAN_NEW
+            ]
+            self._intent_queue.append((intent, user_input))
+            logger.debug(f"Queued plan_new intent (latest wins), queue size: {len(self._intent_queue)}")
+            return True
+
+        if intent.primary == PrimaryIntent.CONTROL:
+            # Control intents queue in order
+            self._intent_queue.append((intent, user_input))
+            logger.debug(f"Queued control intent, queue size: {len(self._intent_queue)}")
+            return True
+
+        if intent.primary == PrimaryIntent.PLAN_CONTINUE:
+            # Plan continue triggers replan - cancel current and queue
+            self.cancel_execution()
+            self._intent_queue.append((intent, user_input))
+            logger.debug(f"Queued plan_continue intent (triggers replan), queue size: {len(self._intent_queue)}")
+            return True
+
+        return False
+
+    def get_queued_intents_count(self) -> int:
+        """
+        Get the number of queued intents.
+
+        Returns:
+            The number of intents waiting to be processed.
+        """
+        return len(self._intent_queue)
+
+    def process_queued_intents(self) -> list[dict]:
+        """
+        Process all queued intents after execution completes.
+
+        Intents are processed in queue order. The queue is cleared
+        after processing.
+
+        Returns:
+            List of result dicts from processing each queued intent.
+        """
+        if not self._intent_queue:
+            return []
+
+        results = []
+        queued = list(self._intent_queue)
+        self._intent_queue = []
+
+        logger.debug(f"Processing {len(queued)} queued intents")
+
+        for intent, user_input in queued:
+            try:
+                if intent.primary == PrimaryIntent.PLAN_NEW:
+                    result = self._handle_plan_new_intent(intent, user_input)
+                elif intent.primary == PrimaryIntent.PLAN_CONTINUE:
+                    result = self._handle_plan_continue_intent(intent, user_input)
+                elif intent.primary == PrimaryIntent.CONTROL:
+                    result = self._handle_control_intent(intent, user_input)
+                else:
+                    result = {
+                        "success": False,
+                        "error": f"Unexpected queued intent type: {intent.primary}",
+                    }
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing queued intent: {e}")
+                results.append({
+                    "success": False,
+                    "error": str(e),
+                })
+
+        return results
+
+    def clear_intent_queue(self) -> int:
+        """
+        Clear all queued intents.
+
+        Returns:
+            The number of intents that were cleared.
+        """
+        count = len(self._intent_queue)
+        self._intent_queue = []
+        logger.debug(f"Cleared {count} queued intents")
+        return count
+
+    def get_execution_context(self) -> ExecutionContext:
+        """
+        Get the execution context for external monitoring.
+
+        Returns:
+            The ExecutionContext that can be used to check/request cancellation.
+        """
+        return self._execution_context
+
+    def is_executing(self) -> bool:
+        """
+        Check if execution is currently in progress.
+
+        Returns:
+            True if the session is in EXECUTING phase.
+        """
+        return self._conversation_state.phase == Phase.EXECUTING
+
     def solve(self, problem: str) -> dict:
         """
         Solve a problem with multi-step planning and execution.
@@ -3493,11 +4366,11 @@ Please create a revised plan that addresses this feedback."""
             )
         else:
             mode_map = {
-                "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
-                "EXPLORATORY": ExecutionMode.EXPLORATORY,
-                "AUDITABLE": ExecutionMode.AUDITABLE,
+                "EXPLORATORY": Mode.EXPLORATORY,
+                "AUDITABLE": Mode.PROOF,
+                "PROOF": Mode.PROOF,
             }
-            mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
+            mode = mode_map.get(analysis.recommended_mode, Mode.EXPLORATORY)
             mode_selection = ModeSelection(
                 mode=mode,
                 confidence=0.8,  # High confidence since LLM determined this
@@ -3506,11 +4379,7 @@ Please create a revised plan that addresses this feedback."""
             )
 
         # Branch based on execution mode
-        if mode_selection.mode == ExecutionMode.KNOWLEDGE:
-            # Use document lookup + LLM synthesis for knowledge/explanation requests
-            return self._solve_knowledge(problem, mode_selection)
-
-        if mode_selection.mode == ExecutionMode.AUDITABLE:
+        if mode_selection.mode == Mode.PROOF:
             # Use fact-based derivation planning for auditable mode
             return self._solve_auditable_with_steer_handling(problem, mode_selection)
 
@@ -3604,29 +4473,19 @@ Please create a revised plan that addresses this feedback."""
                         }
                     ))
 
-                    # If switching to auditable mode, use the auditable solver
-                    if target_mode == ExecutionMode.AUDITABLE:
+                    # If switching to proof mode, use the auditable solver
+                    if target_mode == Mode.PROOF:
                         mode_selection = ModeSelection(
-                            mode=ExecutionMode.AUDITABLE,
+                            mode=Mode.PROOF,
                             confidence=1.0,
-                            reasoning="User requested auditable mode",
+                            reasoning="User requested proof mode",
                             matched_keywords=["user request"],
                         )
                         return self._solve_auditable_with_steer_handling(problem, mode_selection)
 
-                    # If switching to knowledge mode, use the knowledge solver
-                    if target_mode == ExecutionMode.KNOWLEDGE:
-                        mode_selection = ModeSelection(
-                            mode=ExecutionMode.KNOWLEDGE,
-                            confidence=1.0,
-                            reasoning="User requested knowledge mode",
-                            matched_keywords=["user request"],
-                        )
-                        return self._solve_knowledge(problem, mode_selection)
-
                     # Otherwise continue with exploratory mode (replan)
                     mode_selection = ModeSelection(
-                        mode=ExecutionMode.EXPLORATORY,
+                        mode=Mode.EXPLORATORY,
                         confidence=1.0,
                         reasoning="User requested exploratory mode",
                         matched_keywords=["user request"],
@@ -3666,10 +4525,27 @@ Please create a revised plan that addresses this feedback."""
         ))
 
         # Execute steps in parallel waves based on dependencies
+        # Phase 4: Reset cancellation state before starting execution
+        self.reset_cancellation()
         all_results = []
         execution_waves = self.plan.get_execution_order()
+        cancelled = False
 
         for wave_num, wave_step_nums in enumerate(execution_waves):
+            # Phase 4: Check for cancellation before starting each wave
+            if self.is_cancelled():
+                cancelled = True
+                self._emit_event(StepEvent(
+                    event_type="execution_cancelled",
+                    step_number=0,
+                    data={
+                        "message": "Execution cancelled between waves",
+                        "wave": wave_num,
+                        "completed_steps": len(all_results),
+                    }
+                ))
+                break
+
             # Get steps for this wave
             wave_steps = [self.plan.get_step(num) for num in wave_step_nums]
             wave_steps = [s for s in wave_steps if s is not None]
@@ -3680,6 +4556,11 @@ Please create a revised plan that addresses this feedback."""
                 # Submit all steps in wave
                 future_to_step = {}
                 for step in wave_steps:
+                    # Phase 4: Check for cancellation before starting each step
+                    if self.is_cancelled():
+                        cancelled = True
+                        break
+
                     step.status = StepStatus.RUNNING
                     self.datastore.update_plan_step(step.number, status="running")
                     self._emit_event(StepEvent(
@@ -3690,12 +4571,29 @@ Please create a revised plan that addresses this feedback."""
                     future = executor.submit(self._execute_step, step)
                     future_to_step[future] = step
 
+                if cancelled:
+                    # Cancel any pending futures
+                    for future in future_to_step:
+                        future.cancel()
+                    break
+
                 # Collect results as they complete
                 wave_failed = False
                 for future in concurrent.futures.as_completed(future_to_step):
+                    # Phase 4: Check for cancellation while collecting results
+                    # Note: We still collect completed results even if cancelled
                     step = future_to_step[future]
                     try:
                         result = future.result()
+                    except concurrent.futures.CancelledError:
+                        # Step was cancelled before it started
+                        result = StepResult(
+                            success=False,
+                            stdout="",
+                            error="Step cancelled",
+                            attempts=0,
+                        )
+                        cancelled = True
                     except Exception as e:
                         result = StepResult(
                             success=False,
@@ -3733,14 +4631,18 @@ Please create a revised plan that addresses this feedback."""
                         if self.datastore:
                             self.datastore.update_plan_step(
                                 step.number,
-                                status="failed",
+                                status="failed" if not cancelled else "cancelled",
                                 code=step.code,
                                 error=result.error,
                                 attempts=result.attempts,
                                 duration_ms=result.duration_ms,
                             )
-                        wave_failed = True
+                        if not cancelled:  # Only mark as failed if not cancelled
+                            wave_failed = True
                         all_results.append(result)
+
+                if cancelled:
+                    break
 
                 # If any step in wave failed, stop execution
                 if wave_failed:
@@ -3761,6 +4663,32 @@ Please create a revised plan that addresses this feedback."""
                         "error": failed_result.error,
                         "completed_steps": self.plan.completed_steps,
                     }
+
+        # Phase 4: Handle cancellation - return with completed results preserved
+        if cancelled:
+            self.datastore.set_session_meta("status", "cancelled")
+            self.history.complete_session(self.session_id, status="cancelled")
+
+            # Combine output from completed steps
+            completed_output = ""
+            if all_results:
+                completed_output = "\n\n".join([
+                    f"Step {i+1}: {self.plan.steps[i].goal}\n{r.stdout}"
+                    for i, r in enumerate(all_results) if r.success
+                ])
+
+            # Process any queued intents
+            queued_results = self.process_queued_intents()
+
+            return {
+                "success": False,
+                "cancelled": True,
+                "plan": self.plan,
+                "completed_steps": self.plan.completed_steps,
+                "partial_output": completed_output,
+                "queued_intent_results": queued_results,
+                "message": f"Execution cancelled. {len(self.plan.completed_steps)} step(s) completed.",
+            }
 
         # Record successful completion
         total_duration = sum(r.duration_ms for r in all_results)
@@ -4132,21 +5060,17 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             )
         else:
             mode_map = {
-                "KNOWLEDGE": ExecutionMode.KNOWLEDGE,
-                "EXPLORATORY": ExecutionMode.EXPLORATORY,
-                "AUDITABLE": ExecutionMode.AUDITABLE,
+                "EXPLORATORY": Mode.EXPLORATORY,
+                "AUDITABLE": Mode.PROOF,
+                "PROOF": Mode.PROOF,
             }
-            mode = mode_map.get(analysis.recommended_mode, ExecutionMode.EXPLORATORY)
+            mode = mode_map.get(analysis.recommended_mode, Mode.EXPLORATORY)
             mode_selection = ModeSelection(
                 mode=mode,
                 confidence=0.8,  # High confidence since LLM determined this
                 reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
                 matched_keywords=[],
             )
-
-        # KNOWLEDGE mode: explanation/knowledge requests don't need data analysis
-        if mode_selection.mode == ExecutionMode.KNOWLEDGE and mode_selection.confidence >= 0.6:
-            return self._solve_knowledge(question, mode_selection)
 
         # Check intents detected by LLM for redo-like behavior
         # REDO, PREDICT (what-if), and MODIFY_FACT all imply re-running the previous analysis
@@ -4175,11 +5099,11 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         if is_redo and self.datastore and not has_explicit_mode_switch:
             previous_mode_str = self.datastore.get_session_meta("mode")
             if previous_mode_str:
-                # Map string to ExecutionMode enum
+                # Map string to Mode enum
                 try:
-                    preserved_mode = ExecutionMode(previous_mode_str)
+                    preserved_mode = Mode(previous_mode_str)
                 except ValueError:
-                    preserved_mode = ExecutionMode.AUDITABLE  # fallback
+                    preserved_mode = Mode.PROOF  # fallback
 
                 # Build reasoning based on intent type
                 if is_predict:
@@ -4201,7 +5125,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             previous_mode_str = self.datastore.get_session_meta("mode")
             if previous_mode_str and previous_problem:
                 try:
-                    previous_mode = ExecutionMode(previous_mode_str)
+                    previous_mode = Mode(previous_mode_str)
                     mode_selection = ModeSelection(
                         mode=previous_mode,
                         confidence=0.8,
@@ -4210,9 +5134,9 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 except ValueError:
                     pass
 
-        # AUDITABLE mode: ALL follow-ups go through proper DAG-based replanning
+        # PROOF mode: ALL follow-ups go through proper DAG-based replanning
         # This includes verification requests, redo, modifications, new questions - everything
-        if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
+        if mode_selection.mode == Mode.PROOF and mode_selection.confidence >= 0.6:
 
             # All auditable follow-ups replan with proper P/I structure and approval
             # This handles: redo, modifications, new approaches, or even ambiguous follow-ups
@@ -4505,31 +5429,21 @@ Follow-up question: {question}
                     }
                 ))
 
-                # If switching to auditable mode, use the auditable solver
-                if target_mode == ExecutionMode.AUDITABLE:
+                # If switching to proof mode, use the auditable solver
+                if target_mode == Mode.PROOF:
                     mode_selection = ModeSelection(
-                        mode=ExecutionMode.AUDITABLE,
+                        mode=Mode.PROOF,
                         confidence=1.0,
-                        reasoning="User requested auditable mode",
+                        reasoning="User requested proof mode",
                         matched_keywords=["user request"],
                     )
                     # Use original problem from datastore if this is a redo
                     original_problem = self.datastore.get_session_meta("problem") or question
                     return self._solve_auditable_with_steer_handling(original_problem, mode_selection)
 
-                # If switching to knowledge mode, use the knowledge solver
-                if target_mode == ExecutionMode.KNOWLEDGE:
-                    mode_selection = ModeSelection(
-                        mode=ExecutionMode.KNOWLEDGE,
-                        confidence=1.0,
-                        reasoning="User requested knowledge mode",
-                        matched_keywords=["user request"],
-                    )
-                    return self._solve_knowledge(question, mode_selection)
-
                 # Otherwise continue with exploratory mode (will be handled below)
                 mode_selection = ModeSelection(
-                    mode=ExecutionMode.EXPLORATORY,
+                    mode=Mode.EXPLORATORY,
                     confidence=1.0,
                     reasoning="User requested exploratory mode",
                     matched_keywords=["user request"],
@@ -4588,8 +5502,25 @@ User feedback: {approval.suggestion}
                     }
 
         # Execute each step
+        # Phase 4: Reset cancellation state before starting execution
+        self.reset_cancellation()
         all_results = []
+        cancelled = False
+
         for step in follow_up_plan.steps:
+            # Phase 4: Check for cancellation before starting each step
+            if self.is_cancelled():
+                cancelled = True
+                self._emit_event(StepEvent(
+                    event_type="execution_cancelled",
+                    step_number=step.number,
+                    data={
+                        "message": "Execution cancelled",
+                        "completed_steps": len([r for r in all_results if r.success]),
+                    }
+                ))
+                break
+
             step.status = StepStatus.RUNNING
 
             result = self._execute_step(step)
@@ -4628,6 +5559,29 @@ User feedback: {approval.suggestion}
                 }
 
             all_results.append(result)
+
+        # Phase 4: Handle cancellation - return with completed results preserved
+        if cancelled:
+            # Combine output from completed steps
+            completed_output = ""
+            if all_results:
+                completed_output = "\n\n".join([
+                    f"Step {step.number}: {step.goal}\n{r.stdout}"
+                    for step, r in zip(follow_up_plan.steps, all_results) if r.success
+                ])
+
+            # Process any queued intents
+            queued_results = self.process_queued_intents()
+
+            return {
+                "success": False,
+                "cancelled": True,
+                "plan": follow_up_plan,
+                "completed_steps": follow_up_plan.completed_steps,
+                "partial_output": completed_output,
+                "queued_intent_results": queued_results,
+                "message": f"Execution cancelled. {len(follow_up_plan.completed_steps)} step(s) completed.",
+            }
 
         # Record successful follow-up
         total_duration = sum(r.duration_ms for r in all_results)
@@ -5402,6 +6356,9 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                     status = "FAILED" if failed else "COMPLETED"
                     logger.info(f"DAG timing: {fact_id} {status} - start:{start_ms} end:{end_ms} duration:{duration_ms}ms")
 
+            # Phase 4: Reset cancellation state before starting execution
+            self.reset_cancellation()
+
             # Execute DAG with parallel resolution
             executor = DAGExecutor(
                 dag=dag,
@@ -5417,6 +6374,20 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                 step_number=0,
                 data={"premises": premises, "inferences": inferences}
             ))
+
+            # Phase 4: Check for cancellation before starting DAG execution
+            if self.is_cancelled():
+                self._emit_event(StepEvent(
+                    event_type="execution_cancelled",
+                    step_number=0,
+                    data={"message": "Execution cancelled before DAG execution started"}
+                ))
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": "Execution cancelled before fact resolution started.",
+                    "queued_intent_results": self.process_queued_intents(),
+                }
 
             logger.info(f"Executing DAG with {len(premises)} premises and {len(inferences)} inferences")
             result = executor.execute()
@@ -5757,9 +6728,12 @@ Be direct and specific. No fluff."""
             data={"message": "Synthesizing explanation..."}
         ))
 
-        # Get the knowledge mode system prompt
-        from constat.execution.mode import get_mode_system_prompt
-        system_prompt = get_mode_system_prompt(ExecutionMode.KNOWLEDGE)
+        # System prompt for knowledge/explanation queries
+        system_prompt = """You are a knowledgeable assistant for explanation and lookup requests.
+
+Answer questions using configured reference documents and your general knowledge.
+Be accurate and cite your sources when referencing specific documents.
+If you don't have enough information, say so rather than guessing."""
 
         # Add context about the configuration
         if self.config.system_prompt:

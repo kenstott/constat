@@ -12,7 +12,7 @@ import re
 import random
 from pathlib import Path
 from constat.session import Session, SessionConfig
-from constat.execution.mode import ExecutionMode
+from constat.execution.mode import Mode
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
@@ -190,7 +190,7 @@ REPL_COMMANDS = [
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
     "/database", "/databases", "/db", "/file", "/files",
     "/correct", "/learnings", "/compact-learnings", "/forget-learning",
-    "/audit", "/summarize",
+    "/audit", "/summarize", "/proof", "/explore",
     "/quit", "/exit", "/q"
 ]
 
@@ -255,6 +255,10 @@ class InteractiveREPL:
         self.suggestions: list[str] = []  # Follow-up suggestions
         self.fact_store = FactStore(user_id=user_id)  # Persistent facts
         self.learning_store = LearningStore(user_id=user_id)  # Learnings/corrections
+
+        # Eagerly create session to trigger document indexing at startup
+        self.session = self._create_session()
+        # Note: auto-compact is called in run() after spinner stops
 
         # Setup readline for tab completion
         self._readline_available = False
@@ -443,7 +447,7 @@ class InteractiveREPL:
             ("/context", "Show context size and token usage"),
             ("/compact", "Compact context to reduce token usage"),
             ("/facts", "Show cached facts from this session"),
-            ("/remember <fact>", "Remember a fact (e.g., /remember my role is CFO)"),
+            ("/remember <fact> [as name]", "Persist a session fact or extract from text"),
             ("/forget <name>", "Forget a remembered fact by name"),
             ("/verbose [on|off]", "Toggle or set verbose mode (step details)"),
             ("/raw [on|off]", "Toggle or set raw output display"),
@@ -464,7 +468,9 @@ class InteractiveREPL:
             ("/forget-learning <id>", "Delete a learning by ID"),
             ("/audit", "Re-derive last result with full audit trail"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
-            ("/mode [mode]", "Set default mode: audit|explore|knowledge|auto"),
+            ("/mode [mode]", "Set default mode: audit|explore|auto"),
+            ("/proof", "Switch to proof mode (auditable, defensible)"),
+            ("/explore", "Switch to exploratory mode (iterative analysis)"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -1044,7 +1050,9 @@ class InteractiveREPL:
                 f"[dim]Auto-compacting {unpromoted} learnings...[/dim]"
             )
             try:
-                llm = self.session.router._get_provider(self.session.router.models["planning"])
+                # Get a model for compaction (use general task routing)
+                model_spec = self.session.router.routing_config.get_models_for_task("general")[0]
+                llm = self.session.router._get_provider(model_spec)
                 compactor = LearningCompactor(self.learning_store, llm)
                 result = compactor.compact()
 
@@ -1052,6 +1060,10 @@ class InteractiveREPL:
                     self.console.print(
                         f"[green]Created {result.rules_created} rules from "
                         f"{result.learnings_archived} learnings[/green]"
+                    )
+                else:
+                    self.console.print(
+                        f"[dim]No new rules created (reviewed {unpromoted} learnings)[/dim]"
                     )
             except Exception as e:
                 self.console.print(f"[dim]Auto-compact failed: {e}[/dim]")
@@ -1118,21 +1130,21 @@ class InteractiveREPL:
 
         Usage:
             /mode                - Show current mode and prompt for new one
-            /mode audit          - Set default to auditable mode
+            /mode audit          - Set default to proof mode (auditable)
+            /mode proof          - Set default to proof mode
             /mode explore        - Set default to exploratory mode
-            /mode knowledge      - Set default to knowledge mode
             /mode auto           - Clear default (let LLM decide)
         """
-        # Map user-friendly names to ExecutionMode
+        # Map user-friendly names to Mode
         mode_aliases = {
-            "audit": ExecutionMode.AUDITABLE,
-            "auditable": ExecutionMode.AUDITABLE,
-            "a": ExecutionMode.AUDITABLE,
-            "explore": ExecutionMode.EXPLORATORY,
-            "exploratory": ExecutionMode.EXPLORATORY,
-            "e": ExecutionMode.EXPLORATORY,
-            "knowledge": ExecutionMode.KNOWLEDGE,
-            "k": ExecutionMode.KNOWLEDGE,
+            "audit": Mode.PROOF,
+            "auditable": Mode.PROOF,
+            "proof": Mode.PROOF,
+            "a": Mode.PROOF,
+            "p": Mode.PROOF,
+            "explore": Mode.EXPLORATORY,
+            "exploratory": Mode.EXPLORATORY,
+            "e": Mode.EXPLORATORY,
             "auto": None,
             "none": None,
             "clear": None,
@@ -1147,9 +1159,8 @@ class InteractiveREPL:
             self.console.print(f"[bold]Current default mode:[/bold] {current_name}")
             self.console.print()
             self.console.print("[dim]Available modes:[/dim]")
-            self.console.print("  [cyan]audit[/cyan]     - Full derivation with audit trail")
+            self.console.print("  [cyan]proof[/cyan]     - Full derivation with audit trail")
             self.console.print("  [cyan]explore[/cyan]   - Multi-step data exploration")
-            self.console.print("  [cyan]knowledge[/cyan] - Document/knowledge lookup")
             self.console.print("  [cyan]auto[/cyan]      - Let LLM decide (clear default)")
             self.console.print()
 
@@ -1157,7 +1168,7 @@ class InteractiveREPL:
                 from rich.prompt import Prompt
                 choice = Prompt.ask(
                     "Set default mode",
-                    choices=["audit", "explore", "knowledge", "auto"],
+                    choices=["proof", "explore", "auto"],
                     default="auto" if current is None else current.value.lower()
                 )
                 arg = choice
@@ -1169,7 +1180,7 @@ class InteractiveREPL:
         arg_lower = arg.lower().strip()
         if arg_lower not in mode_aliases:
             self.console.print(f"[yellow]Unknown mode: {arg}[/yellow]")
-            self.console.print("[dim]Valid modes: audit, explore, knowledge, auto[/dim]")
+            self.console.print("[dim]Valid modes: proof, explore, auto[/dim]")
             return
 
         new_mode = mode_aliases[arg_lower]
@@ -1180,6 +1191,52 @@ class InteractiveREPL:
         else:
             self.console.print(f"[green]Default mode set to:[/green] {new_mode.value}")
             self.console.print(f"[dim]All queries will now use {new_mode.value} mode unless overridden.[/dim]")
+
+    def _handle_proof_mode(self) -> None:
+        """Handle /proof command - switch to proof mode.
+
+        Proof mode provides:
+        - Full derivation with audit trail
+        - Plans must be complete and self-contained
+        - Every conclusion has a provenance chain
+        - Output is auditable/defensible
+        """
+        self.session_config.default_mode = Mode.PROOF
+        self.console.print("[green]Switched to:[/green] [bold yellow]PROOF[/bold yellow] mode")
+        self.console.print("[dim]Plans will be complete and self-contained with full provenance.[/dim]")
+
+        # Update conversation state if session exists
+        if self.session:
+            self.session._conversation_state.mode = Mode.PROOF
+            self._emit_mode_switch_event(Mode.PROOF)
+
+    def _handle_explore_mode(self) -> None:
+        """Handle /explore command - switch to exploratory mode.
+
+        Exploratory mode provides:
+        - Multi-step data exploration
+        - Plans can reference facts/data from previous plans
+        - Iterative refinement encouraged
+        - Session builds up a working context
+        """
+        self.session_config.default_mode = Mode.EXPLORATORY
+        self.console.print("[green]Switched to:[/green] [bold cyan]EXPLORATORY[/bold cyan] mode")
+        self.console.print("[dim]Plans can build on prior work, facts accumulate across plans.[/dim]")
+
+        # Update conversation state if session exists
+        if self.session:
+            self.session._conversation_state.mode = Mode.EXPLORATORY
+            self._emit_mode_switch_event(Mode.EXPLORATORY)
+
+    def _emit_mode_switch_event(self, mode: Mode) -> None:
+        """Emit a mode switch event for display feedback."""
+        if self.session:
+            from constat.session import StepEvent
+            self.session._emit_event(StepEvent(
+                event_type="mode_switch",
+                step_number=0,
+                data={"mode": mode.value},
+            ))
 
     def _handle_summarize(self, arg: str) -> None:
         """Handle /summarize command - generate LLM summary of plan, session, facts, or table.
@@ -1421,6 +1478,8 @@ Provide a 2-3 sentence summary covering:
             correction=full_text,
             source=LearningSource.NL_DETECTION,
         )
+        # Auto-compact if threshold reached
+        self._maybe_auto_compact()
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""
@@ -1658,13 +1717,87 @@ Provide a 2-3 sentence summary covering:
                 pass  # Silent fail - facts table is optional
 
     def _remember_fact(self, fact_text: str) -> None:
-        """Remember a fact persistently (survives across sessions)."""
+        """Remember a fact persistently (survives across sessions).
+
+        Supports two modes:
+        1. Promote session fact: /remember <fact-name> [as <new-name>]
+           Looks up a resolved fact from the current session and persists it.
+        2. Extract from text: /remember my role is CFO
+           Parses natural language to extract and persist a new fact.
+        """
+        import re
+
         if not fact_text.strip():
             self.console.print("[yellow]Usage: /remember <fact>[/yellow]")
-            self.console.print("[dim]Example: /remember my role is CFO[/dim]")
+            self.console.print("[dim]Examples:[/dim]")
+            self.console.print("[dim]  /remember enterprise_churn_rate    - persist a session fact[/dim]")
+            self.console.print("[dim]  /remember churn_rate as baseline   - persist with new name[/dim]")
+            self.console.print("[dim]  /remember my role is CFO           - extract from text[/dim]")
             return
 
-        # Use session's fact resolver if available, otherwise use a lightweight LLM call
+        # Check if this is a session fact reference with optional rename
+        # Pattern: <fact_name> [as <new_name>]
+        session_fact_match = re.match(r'^(\S+)(?:\s+as\s+(\S+))?$', fact_text.strip())
+
+        if session_fact_match and self.session:
+            fact_name = session_fact_match.group(1)
+            new_name = session_fact_match.group(2)  # May be None
+
+            # Try to find this fact in the session's resolver cache
+            session_facts = self.session.fact_resolver.get_all_facts()
+
+            # Look for exact match or match with empty params (e.g., "fact_name()")
+            matching_fact = None
+            matching_key = None
+
+            for key, fact in session_facts.items():
+                # Match by cache key (e.g., "churn_rate()" or "customer_ltv(id=ACME)")
+                if key == fact_name or key == f"{fact_name}()":
+                    matching_fact = fact
+                    matching_key = key
+                    break
+                # Also match by fact.name property
+                if fact.name == fact_name:
+                    matching_fact = fact
+                    matching_key = key
+                    break
+
+            if matching_fact:
+                # Persist this session fact
+                persist_name = new_name if new_name else matching_fact.name
+
+                # Build context string from provenance
+                context_parts = [f"Source: {matching_fact.source.value}"]
+                if matching_fact.source_name:
+                    context_parts.append(f"From: {matching_fact.source_name}")
+                if matching_fact.query:
+                    context_parts.append(f"Query: {matching_fact.query}")
+                if matching_fact.reasoning:
+                    context_parts.append(f"Reasoning: {matching_fact.reasoning}")
+                if matching_fact.api_endpoint:
+                    context_parts.append(f"API: {matching_fact.api_endpoint}")
+                if matching_fact.resolved_at:
+                    context_parts.append(f"Resolved: {matching_fact.resolved_at.isoformat()}")
+                context = "\n".join(context_parts)
+
+                # Build description from fact metadata
+                description = matching_fact.description or f"Persisted from session (originally: {matching_key})"
+
+                self.fact_store.save_fact(
+                    name=persist_name,
+                    value=matching_fact.value,
+                    description=description,
+                    context=context,
+                )
+
+                self.console.print(f"[green]Remembered:[/green] {persist_name} = {matching_fact.display_value}")
+                self.console.print(f"[dim]Source: {matching_fact.source.value}[/dim]")
+                if new_name:
+                    self.console.print(f"[dim]Renamed from: {matching_fact.name}[/dim]")
+                self.console.print("[dim]This fact will persist across sessions.[/dim]")
+                return
+
+        # Fall back to existing behavior: extract fact from natural language
         self.display.start_spinner("Extracting fact...")
         try:
             extracted = []
@@ -1690,8 +1823,14 @@ Provide a 2-3 sentence summary covering:
                     self.console.print(f"[green]Remembered:[/green] {name} = {value}")
                     self.console.print("[dim]This fact will persist across sessions.[/dim]")
             else:
-                self.console.print("[yellow]Could not extract a fact from that text.[/yellow]")
-                self.console.print("[dim]Try being more explicit, e.g., 'my role is CFO'[/dim]")
+                # Check if it looked like a fact name but wasn't found
+                if session_fact_match and self.session:
+                    fact_name = session_fact_match.group(1)
+                    self.console.print(f"[yellow]No session fact named '{fact_name}' found.[/yellow]")
+                    self.console.print("[dim]Use /facts to see available facts, or provide natural language.[/dim]")
+                else:
+                    self.console.print("[yellow]Could not extract a fact from that text.[/yellow]")
+                    self.console.print("[dim]Try being more explicit, e.g., 'my role is CFO'[/dim]")
 
         except Exception as e:
             self.display.stop_spinner()
@@ -2130,6 +2269,10 @@ Provide a 2-3 sentence summary covering:
             self._handle_summarize(arg)
         elif cmd == "/mode":
             self._handle_mode(arg)
+        elif cmd == "/proof":
+            self._handle_proof_mode()
+        elif cmd == "/explore":
+            self._handle_explore_mode()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 
@@ -2179,15 +2322,9 @@ Provide a 2-3 sentence summary covering:
                 if self.suggestions:
                     self.display.show_suggestions(self.suggestions)
                 self.display.show_summary(success=True, total_steps=0, duration_ms=0)
-            elif result.get("mode") == "knowledge":
-                # KNOWLEDGE mode - display output directly (no step artifacts)
-                self.display.show_output(result.get("output", ""))
-                self.suggestions = result.get("suggestions", [])
-                if self.suggestions:
-                    self.display.show_suggestions(self.suggestions)
-                self.display.show_summary(success=True, total_steps=0, duration_ms=0)
-            elif result.get("mode") == "auditable":
+            elif result.get("mode") == "proof" and result.get("success", True):
                 # AUDITABLE mode - display full output with answer, derivation, and insights
+                # Note: success=True default since older code paths may not set it explicitly
                 self.display.show_output(result.get("output", ""))
                 tables = result.get("datastore_tables", [])
                 self.display.show_tables(tables, force_show=False)
@@ -2212,9 +2349,15 @@ Provide a 2-3 sentence summary covering:
 
                 # Check context size and warn if needed
                 self._check_context_warning()
-            else:
+            elif result.get("mode") != "proof":
+                # Only show generic error for non-auditable modes
+                # Auditable mode errors are already displayed via verification_error event
                 self.console.print(f"[red]Error:[/red] {result.get('error', 'Unknown error')}")
         except KeyboardInterrupt:
+            # Cancel execution via session's cancel_execution() method
+            # This properly signals the execution context and emits events
+            if self.session:
+                self.session.cancel_execution()
             # Clean up display state on interrupt
             self.display.stop()
             self.display.stop_spinner()
@@ -2242,6 +2385,9 @@ Provide a 2-3 sentence summary covering:
 
     def _run_repl_body(self, initial_problem: Optional[str] = None) -> None:
         """Run the REPL body (banner + loop)."""
+        # Auto-compact learnings on startup (after spinner stops, before banner)
+        self._maybe_auto_compact()
+
         # Handle auto-resume before banner
         if self.auto_resume:
             self._handle_auto_resume()

@@ -1,0 +1,222 @@
+# Intent classification exemplars for embedding-based matching.
+#
+# Each exemplar is a short phrase representing typical user input for that intent.
+# The IntentClassifier uses cosine similarity between the user input embedding
+# and these exemplar embeddings to classify intent.
+#
+# Guidelines:
+# - Keep exemplars short (< 10 words) for better embedding specificity
+# - Include variations in phrasing and formality
+# - Avoid overlap between categories
+# - Manual review required before adding new exemplars
+
+primary_intents:
+  query:
+    # Questions about existing results, knowledge, or current context
+    - "what does this mean"
+    - "explain the results"
+    - "how did you get that"
+    - "show me the proof"
+    - "what's the current status"
+    - "why is that the answer"
+    - "can you clarify"
+    - "what does that value represent"
+    - "tell me more about"
+    - "how was this calculated"
+
+  plan_new:
+    # Starting a new analysis or task from scratch
+    - "analyze the sales data"
+    - "build a dashboard for"
+    - "verify that revenue"
+    - "compare these two options"
+    - "calculate the total"
+    - "find all customers who"
+    - "what is the average"
+    - "determine whether"
+    - "check if the policy applies"
+    - "run an analysis on"
+
+  plan_continue:
+    # Modifying or extending the current plan
+    - "actually, also include"
+    - "change that to use"
+    - "narrow it down to"
+    - "run it again with"
+    - "use a different approach"
+    - "add another step"
+    - "instead of that"
+    - "but only for Q4"
+    - "wait, also consider"
+    - "modify the filter to"
+
+  control:
+    # Session and system management commands
+    - "switch to proof mode"
+    - "start over"
+    - "let's reset"
+    - "help me understand commands"
+    - "quit"
+    - "exit the session"
+    - "show available commands"
+    - "clear the session"
+    - "what mode am I in"
+    - "stop the execution"
+
+sub_intents:
+  query:
+    detail:
+      # Drilling down into specific aspects
+      - "drill down into"
+      - "explain more about"
+      - "what specifically"
+      - "give me the details on"
+      - "break down the"
+      - "expand on"
+      - "elaborate on"
+      - "what are the components of"
+
+    provenance:
+      # Asking about derivation and proof chains
+      - "how did you determine"
+      - "show me the proof"
+      - "where did that come from"
+      - "what's the derivation"
+      - "trace the reasoning"
+      - "show the audit trail"
+      - "what evidence supports"
+      - "how do you know"
+
+    summary:
+      # Requesting condensed information
+      - "summarize the findings"
+      - "give me the key points"
+      - "what's the bottom line"
+      - "tl;dr"
+      - "in brief"
+      - "high level overview"
+      - "main takeaways"
+      - "quick summary"
+
+    lookup:
+      # Simple fact retrieval
+      - "what is the value of"
+      - "what did we find for"
+      - "show me the"
+      - "what was the result for"
+      - "look up"
+      - "retrieve the"
+      - "get the"
+      - "find the"
+
+  plan_new:
+    compare:
+      # Comparison analysis
+      - "compare these two"
+      - "what's the difference between"
+      - "how does X compare to Y"
+      - "which one is better"
+      - "side by side comparison"
+      - "contrast"
+      - "versus"
+      - "evaluate the alternatives"
+
+    predict:
+      # What-if and forecasting
+      - "what if we changed"
+      - "forecast for next"
+      - "predict the outcome"
+      - "project the"
+      - "what would happen if"
+      - "scenario analysis"
+      - "estimate the impact"
+      - "simulate"
+
+  control:
+    mode_switch:
+      # Changing execution mode
+      - "switch to proof mode"
+      - "let's be more exploratory"
+      - "use auditable mode"
+      - "change to exploration mode"
+      - "go to proof mode"
+      - "enable formal verification"
+      - "use strict mode"
+      - "switch to explore"
+
+    reset:
+      # Clearing session state
+      - "start over"
+      - "clear everything"
+      - "reset the session"
+      - "fresh start"
+      - "begin again"
+      - "wipe the slate"
+      - "clear history"
+      - "new session"
+
+    redo_cmd:
+      # Re-executing the last plan
+      - "redo"
+      - "run it again"
+      - "do that again"
+      - "repeat the last"
+      - "execute again"
+      - "rerun"
+      - "same again"
+      - "try again"
+
+    help:
+      # Getting help and command information
+      - "what can you do"
+      - "show me commands"
+      - "how do I"
+      - "help"
+      - "what commands are available"
+      - "show options"
+      - "usage"
+      - "instructions"
+
+    status:
+      # Checking current state
+      - "where are we"
+      - "what's the current plan"
+      - "show current state"
+      - "what's happening"
+      - "status update"
+      - "what phase"
+      - "current progress"
+      - "show status"
+
+    exit:
+      # Ending the session
+      - "quit"
+      - "exit"
+      - "goodbye"
+      - "bye"
+      - "close session"
+      - "end session"
+      - "stop"
+      - "done for now"
+
+    cancel:
+      # Stopping execution
+      - "stop"
+      - "cancel"
+      - "never mind"
+      - "abort"
+      - "halt"
+      - "stop execution"
+      - "cancel that"
+      - "don't do that"
+
+    replan:
+      # Stopping to revise the plan
+      - "actually, let's change"
+      - "wait, I want to modify"
+      - "stop, different approach"
+      - "hold on, revise"
+      - "pause and reconsider"
+      - "let me rethink"
+      - "change of plans"
+      - "let's go back and"
