@@ -1,5 +1,7 @@
 """Live feedback system for terminal output using rich."""
 
+from __future__ import annotations
+
 import re
 import sys
 import time
@@ -87,10 +89,11 @@ class PlanItem:
     fact_id: str  # P1, P2, I1, I2, etc.
     name: str
     item_type: str  # "premise" or "inference"
-    status: str = "pending"  # pending, running, resolved, failed
+    status: str = "pending"  # pending, running, resolved, failed, blocked
     value: Optional[str] = None
     error: Optional[str] = None
     confidence: float = 0.0
+    dependencies: list[str] = field(default_factory=list)  # List of fact_ids this depends on
 
 
 class LivePlanExecutionDisplay:
@@ -125,10 +128,14 @@ class LivePlanExecutionDisplay:
             )
         for inf in inferences:
             fact_id = inf.get("id", "")
+            # Extract dependencies from operation (P1, P2, I1, etc.)
+            operation = inf.get("operation", "")
+            deps = re.findall(r'\b([PI]\d+)\b', operation)
             self.items[fact_id] = PlanItem(
                 fact_id=fact_id,
                 name=inf.get("name", "") or fact_id,
                 item_type="inference",
+                dependencies=deps,
             )
 
     def start(self) -> None:
@@ -143,11 +150,15 @@ class LivePlanExecutionDisplay:
         self._start_animation()
 
     def stop(self) -> None:
-        """Stop the live display."""
+        """Stop the live display, ensuring cleanup even on error."""
         self._stop_animation()
         if self._live:
-            self._live.stop()
-            self._live = None
+            try:
+                self._live.stop()
+            except Exception:
+                pass  # Ensure we don't fail during cleanup
+            finally:
+                self._live = None
 
     def _start_animation(self) -> None:
         """Start background animation thread."""
@@ -181,6 +192,7 @@ class LivePlanExecutionDisplay:
                       error: str = None, confidence: float = 0.0) -> None:
         """Update the status of a plan item."""
         with self._lock:
+            matched_fact_id = None
             if fact_id in self.items:
                 item = self.items[fact_id]
                 item.status = status
@@ -189,7 +201,8 @@ class LivePlanExecutionDisplay:
                 if error is not None:
                     item.error = error
                 item.confidence = confidence
-            # Also check by name (for DAG events that use names)
+                matched_fact_id = fact_id
+            # Also check by name (for events that use names)
             else:
                 for item in self.items.values():
                     if item.name == fact_id or fact_id in item.name:
@@ -199,7 +212,25 @@ class LivePlanExecutionDisplay:
                         if error is not None:
                             item.error = error
                         item.confidence = confidence
+                        matched_fact_id = item.fact_id
                         break
+
+            # If a node failed or blocked, cascade to all dependent nodes
+            if status in ("failed", "blocked") and matched_fact_id:
+                failed_name = self.items[matched_fact_id].name if matched_fact_id in self.items else matched_fact_id
+                self._cascade_blocked(matched_fact_id, failed_name)
+
+    def _cascade_blocked(self, blocked_id: str, root_cause: str) -> None:
+        """Recursively mark all nodes depending on blocked_id as blocked."""
+        newly_blocked = []
+        for item in self.items.values():
+            if item.status == "pending" and blocked_id in item.dependencies:
+                item.status = "blocked"
+                item.error = f"blocked: {root_cause} failed"
+                newly_blocked.append(item.fact_id)
+        # Recursively block dependents of newly blocked nodes
+        for fact_id in newly_blocked:
+            self._cascade_blocked(fact_id, root_cause)
 
     def _get_status_indicator(self, item: PlanItem) -> str:
         """Get the status indicator for an item."""
@@ -211,6 +242,8 @@ class LivePlanExecutionDisplay:
             return "[green]✓[/green]"
         elif item.status == "failed":
             return "[red]✗[/red]"
+        elif item.status == "blocked":
+            return "[yellow]⊘[/yellow]"
         return "[dim]?[/dim]"
 
     def _format_value(self, item: PlanItem) -> str:
@@ -234,6 +267,11 @@ class LivePlanExecutionDisplay:
             if len(err) > 40:
                 err = err[:37] + "..."
             return f"[red]{err}[/red]"
+        elif item.status == "blocked":
+            err = item.error or "blocked by failed dependency"
+            if len(err) > 50:
+                err = err[:47] + "..."
+            return f"[yellow]{err}[/yellow]"
         return ""
 
     def _build_display(self) -> Table:
@@ -433,14 +471,18 @@ class FeedbackDisplay:
         self._live.start()
 
     def stop(self) -> None:
-        """Stop all animations and live displays."""
+        """Stop all animations and live displays, ensuring cleanup even on error."""
         self._stopped = True  # Prevent further updates
         self._stop_animation_thread()
         self.stop_spinner()  # Also stop any standalone spinner
         self.stop_live_plan_display()  # Stop DAG execution display
         if self._live:
-            self._live.stop()
-            self._live = None
+            try:
+                self._live.stop()
+            except Exception:
+                pass  # Ensure we don't fail during cleanup
+            finally:
+                self._live = None
 
     def _ensure_live(self) -> None:
         """Ensure the live display is started if configured to use it.
@@ -720,21 +762,8 @@ class FeedbackDisplay:
         all_parts.append(header)
         all_parts.append(Text(""))
 
-        # Show intermediate outputs from resolved facts (like exploratory mode)
-        if self._proof_outputs:
-            all_parts.append(Text.from_markup("[dim]─── Resolved Facts ───[/dim]"))
-            # Show last few resolved facts
-            recent_outputs = self._proof_outputs[-5:]  # Last 5
-            for fact_name, value in recent_outputs:
-                # Truncate value for display - collapse newlines for compact display
-                val_clean = value.replace("\n", " ").replace("  ", " ")
-                val_display = val_clean[:60] + "..." if len(val_clean) > 60 else val_clean
-                all_parts.append(Text.from_markup(f"  [green]✓[/green] [cyan]{fact_name}[/cyan] = {val_display}"))
-            if len(self._proof_outputs) > 5:
-                all_parts.append(Text.from_markup(f"  [dim]... and {len(self._proof_outputs) - 5} more[/dim]"))
-            all_parts.append(Text(""))
-
         # Show the proof tree structure (with animated spinner for resolving nodes)
+        # Note: Removed "Resolved Facts" section - duplicative with tree display
         if self._proof_tree:
             tree = self._proof_tree.render(spinner_char=spinner_char)
             all_parts.append(tree)
@@ -874,7 +903,7 @@ class FeedbackDisplay:
         self.console.print()
 
     def _show_data_flow_dag(self, steps: list[dict]) -> None:
-        """Display an ASCII data flow DAG using phart library.
+        """Display an ASCII data flow DAG with proper box-drawing characters.
 
         Args:
             steps: List of proof steps with type, fact_id, goal, etc.
@@ -883,9 +912,9 @@ class FeedbackDisplay:
 
         try:
             import networkx as nx
-            from phart import ASCIIRenderer
+            from constat.visualization.box_dag import render_dag
         except ImportError:
-            # phart not available, skip diagram
+            # networkx not available, skip diagram
             return
 
         # Build NetworkX graph from steps
@@ -931,12 +960,15 @@ class FeedbackDisplay:
 
         self.console.print("\n  [bold yellow]DATA FLOW[/bold yellow]")
 
-        renderer = ASCIIRenderer(G)
-        diagram = renderer.render()
-
-        for line in diagram.split('\n'):
-            if line.strip():
-                self.console.print(f"  [dim]{line}[/dim]")
+        try:
+            from constat.visualization.box_dag import render_dag
+            diagram = render_dag(G, style='rounded')
+            for line in diagram.split('\n'):
+                if line.strip():
+                    self.console.print(f"      [dim]{line}[/dim]")
+        except Exception:
+            # Fallback: just list the edges
+            self.console.print("      [dim](diagram rendering failed)[/dim]")
 
         self.console.print()
 
@@ -1000,7 +1032,7 @@ class FeedbackDisplay:
 
             # Empty or affirmative = approve
             if not response or response.lower() in ("y", "yes", "ok", "go", "execute"):
-                self.console.print("[green]Executing...[/green]\n")
+                # Don't print "Executing..." - proof tree display shows "Resolving proof..."
                 return PlanApprovalResponse.approve()
 
             # Reject
@@ -1523,22 +1555,124 @@ class SessionFeedbackHandler:
             )
 
         elif event_type == "proof_start":
-            # Stop any running spinner before starting proof tree display
+            # Start the proof tree as the live display for auditable mode
+            # This replaces the table-based live plan display with a tree view
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"[PROOF_START] Starting proof tree display")
             self.display.stop_spinner()
-            # Start the proof tree display for auditable mode
             conclusion_fact = data.get("conclusion_fact", "answer")
             conclusion_desc = data.get("conclusion_description", "")
             self.display.start_proof_tree(conclusion_fact, conclusion_desc)
-            # Start live display for the proof tree (like exploratory mode does)
+            # start_proof_tree sets _auditable_mode and _proof_tree
+            logger.debug(f"[PROOF_START] _auditable_mode={self.display._auditable_mode}, _proof_tree={self.display._proof_tree is not None}")
+            # Start live display with proof tree
             self.display.start()
             self.display._start_time = time.time()
-            # Start animation thread for smooth spinner (same as exploratory mode)
             self.display._start_animation_thread()
+            logger.debug(f"[PROOF_START] Live display started, _live={self.display._live is not None}")
 
         elif event_type == "dag_execution_start":
             # Start the live plan execution display with all P/I items
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"[DAG_EXECUTION_START] _proof_tree={self.display._proof_tree is not None}")
+
             premises = data.get("premises", [])
             inferences = data.get("inferences", [])
+
+            if self.display._proof_tree:
+                # Pre-build the proof tree structure from the DAG
+                # Tree shows: each node's children are what it REQUIRES (dependencies)
+                # Root (answer) -> terminal inference -> ... -> premises (leaves)
+                logger.debug(f"[DAG_EXECUTION_START] Pre-building proof tree structure")
+
+                # Build name -> fact_id and fact_id -> dependencies maps
+                name_to_id = {}
+                id_to_deps = {}
+
+                for p in premises:
+                    fact_id = p.get("id", "")
+                    name = p.get("name", fact_id)
+                    name_to_id[name] = fact_id
+                    id_to_deps[fact_id] = []  # Premises have no dependencies
+
+                for inf in inferences:
+                    fact_id = inf.get("id", "")
+                    name = inf.get("name", "") or fact_id
+                    op = inf.get("operation", "")
+                    name_to_id[name] = fact_id
+                    # Extract dependencies from operation (P1, P2, I1, etc.)
+                    import re
+                    deps = re.findall(r'[PI]\d+', op)
+                    id_to_deps[fact_id] = deps
+
+                # Find terminal inference (feeds into answer)
+                all_deps = set()
+                for deps in id_to_deps.values():
+                    all_deps.update(deps)
+                inference_ids = [inf.get("id") for inf in inferences]
+                terminal = None
+                for iid in reversed(inference_ids):
+                    if iid not in all_deps:
+                        terminal = iid
+                        break
+                if not terminal and inference_ids:
+                    terminal = inference_ids[-1]
+
+                # Add terminal inference as child of root
+                if terminal:
+                    terminal_name = next((inf.get("name", inf.get("id")) for inf in inferences if inf.get("id") == terminal), terminal)
+                    self.display._proof_tree.add_fact(f"{terminal}: {terminal_name}", "", parent_name="answer")
+                    logger.debug(f"[DAG_EXECUTION_START] Added terminal {terminal} under root")
+
+                # BFS from terminal to build tree (each node's children are its dependencies)
+                added = {"answer", terminal}
+                queue = [terminal]
+                while queue:
+                    current_id = queue.pop(0)
+                    current_deps = id_to_deps.get(current_id, [])
+                    for dep_id in current_deps:
+                        if dep_id not in added:
+                            # Find name for this dep
+                            dep_name = None
+                            for p in premises:
+                                if p.get("id") == dep_id:
+                                    dep_name = p.get("name", dep_id)
+                                    break
+                            if not dep_name:
+                                for inf in inferences:
+                                    if inf.get("id") == dep_id:
+                                        dep_name = inf.get("name", "") or dep_id
+                                        break
+                            if not dep_name:
+                                dep_name = dep_id
+
+                            # Find parent in tree (what uses this dep)
+                            # Current_id uses dep_id, so dep is child of current
+                            current_name = None
+                            for p in premises:
+                                if p.get("id") == current_id:
+                                    current_name = p.get("name", current_id)
+                                    break
+                            if not current_name:
+                                for inf in inferences:
+                                    if inf.get("id") == current_id:
+                                        current_name = inf.get("name", "") or current_id
+                                        break
+                            if not current_name:
+                                current_name = current_id
+
+                            parent_key = f"{current_id}: {current_name}"
+                            self.display._proof_tree.add_fact(f"{dep_id}: {dep_name}", "", parent_name=parent_key)
+                            logger.debug(f"[DAG_EXECUTION_START] Added {dep_id} under {current_id}")
+                            added.add(dep_id)
+                            queue.append(dep_id)
+
+                logger.debug(f"[DAG_EXECUTION_START] Proof tree pre-built with {len(added)} nodes")
+                return
+
+            logger.debug(f"[DAG_EXECUTION_START] Starting table display")
             self.display.start_live_plan_display(premises, inferences)
 
         elif event_type == "dag_execution_complete":
@@ -1562,7 +1696,12 @@ class SessionFeedbackHandler:
                 # Give display a moment to render final state
                 time.sleep(0.3)
 
-            # Stop the live plan display
+            # Note: Don't update proof tree here - failed nodes are already marked
+            # by premise_resolved or inference_failed events. Adding them again
+            # would create duplicates with different names (e.g., "raise_guidelines"
+            # vs "P3: raise_guidelines").
+
+            # Stop the live plan display (safe even if not started)
             self.display.stop_live_plan_display()
 
         elif event_type == "premise_resolving":
@@ -1571,7 +1710,6 @@ class SessionFeedbackHandler:
             description = data.get("description", "")
             step = data.get("step", 0)
             total = data.get("total", 0)
-            parent = data.get("parent")  # Parent fact for tree structure
 
             # Extract fact_id from "P1: name" format
             fact_id = fact_name.split(":")[0].strip() if ":" in fact_name else fact_name
@@ -1579,9 +1717,11 @@ class SessionFeedbackHandler:
             # Update live plan display if active
             if self.display._live_plan_display:
                 self.display.update_plan_item_status(fact_id, "running")
-            elif self.display._proof_tree:
-                self.display.update_proof_resolving(fact_name, description, parent_name=parent)
-            else:
+            # Update proof tree status (tree structure is pre-built)
+            if self.display._proof_tree:
+                # Just mark as resolving - node already exists from pre-build
+                self.display.update_proof_resolving(fact_name, description)
+            elif not self.display._live_plan_display:
                 self.display.update_spinner(f"Resolving {fact_name} ({step}/{total})...")
 
         elif event_type == "premise_retry":
@@ -1631,7 +1771,8 @@ class SessionFeedbackHandler:
                     self.display.update_plan_item_status(
                         fact_id, "failed", error=error or "unresolved"
                     )
-            elif self.display._proof_tree:
+            # Also update proof tree (for final proof display)
+            if self.display._proof_tree:
                 if value is not None:
                     from_cache = source == "cache"
                     self.display.update_proof_resolved(
@@ -1645,7 +1786,7 @@ class SessionFeedbackHandler:
                     )
                 else:
                     self.display.update_proof_failed(fact_name, error or "unresolved")
-            else:
+            elif not self.display._live_plan_display:
                 # Fallback to simple console output
                 if value is not None:
                     val_str = str(value)
@@ -1661,16 +1802,21 @@ class SessionFeedbackHandler:
         elif event_type == "inference_executing":
             # Show which inference step is being executed
             inference_id = data.get("inference_id", "?")
-            operation = data.get("operation", "")
+            operation = data.get("operation", "")  # This is the inference variable name
             step = data.get("step", 0)
             total = data.get("total", 0)
+
+            # Format inference name like premises: "I1: recent_reviews"
+            inference_display = f"{inference_id}: {operation}" if operation else inference_id
 
             # Update live plan display if active
             if self.display._live_plan_display:
                 self.display.update_plan_item_status(inference_id, "running")
-            elif self.display._proof_tree:
-                self.display.update_proof_resolving(inference_id, operation)
-            else:
+            # Update proof tree status (tree structure is pre-built)
+            if self.display._proof_tree:
+                # Just mark as resolving - node already exists from pre-build
+                self.display.update_proof_resolving(inference_display, operation)
+            elif not self.display._live_plan_display:
                 self.display.update_spinner(f"Executing {inference_id} ({step}/{total})...")
 
         elif event_type == "inference_retry":
@@ -1710,7 +1856,7 @@ class SessionFeedbackHandler:
                 output_preview = output[:100] + "..." if len(output) > 100 else output
                 result_summary = f"{result} ({output_preview})"
 
-            # Build display label with ID and name
+            # Build display label with ID and name (like premises: "I1: recent_reviews")
             display_label = f"{inference_id}: {inference_name}" if inference_name else inference_id
 
             # Update live plan display if active
@@ -1718,15 +1864,16 @@ class SessionFeedbackHandler:
                 self.display.update_plan_item_status(
                     inference_id, "resolved", value=str(result), confidence=0.9
                 )
-            elif self.display._proof_tree:
+            # Also update proof tree (for final proof display)
+            if self.display._proof_tree:
                 self.display.update_proof_resolved(
-                    inference_id,
+                    display_label,  # Use full name like "I1: recent_reviews"
                     result,
                     source="derived",
                     confidence=1.0,
                     resolution_summary=output if output else None,
                 )
-            else:
+            elif not self.display._live_plan_display:
                 self.display.console.print(f"  [green]✓[/green] {display_label} = {result}")
                 if output:
                     # Show captured output
@@ -1735,21 +1882,29 @@ class SessionFeedbackHandler:
 
         elif event_type == "inference_failed":
             # Show failed inference step and stop animation
+            # Event data may have fact_name (with full name) or inference_id
+            fact_name = data.get("fact_name", "")
             inference_id = data.get("inference_id", "?")
+            # Use fact_name if available (includes name like "I1: recent_reviews"), else fallback
+            display_name = fact_name if fact_name else inference_id
+            # Extract just the ID for live plan display
+            id_only = fact_name.split(":")[0].strip() if ":" in fact_name else inference_id
             error = data.get("error", "unknown error")
             step = data.get("step", 0)
             total = data.get("total", 0)
 
             # Update live plan display if active
             if self.display._live_plan_display:
-                self.display.update_plan_item_status(inference_id, "failed", error=error)
+                self.display.update_plan_item_status(id_only, "failed", error=error)
                 # Stop the live display on failure
                 self.display.stop_live_plan_display()
-            elif self.display._proof_tree:
-                self.display.update_proof_failed(inference_id, error)
-                self.display.stop()
-            else:
-                self.display.console.print(f"  [red]✗[/red] {inference_id} = [red]FAILED[/red] [dim]({error})[/dim]")
+            # Also update proof tree (for final proof display)
+            if self.display._proof_tree:
+                self.display.update_proof_failed(display_name, error)
+                if not self.display._live_plan_display:
+                    self.display.stop()
+            elif not self.display._live_plan_display:
+                self.display.console.print(f"  [red]✗[/red] {display_name} = [red]FAILED[/red] [dim]({error})[/dim]")
                 self.display.stop()
 
             # Show error summary and suggestions
@@ -1778,8 +1933,36 @@ class SessionFeedbackHandler:
             )
 
         elif event_type == "synthesizing":
+            # Update root node to RESOLVED before stopping live display
+            if self.display._proof_tree:
+                from constat.proof_tree import NodeStatus
+                # Stop animation thread first
+                self.display._animation_running = False
+                if self.display._animation_thread:
+                    self.display._animation_thread.join(timeout=0.5)
+                    self.display._animation_thread = None
+                # Mark root as resolved (all premises/inferences completed)
+                self.display._proof_tree.root.status = NodeStatus.RESOLVED
+                # Calculate confidence as minimum of all resolved nodes with confidence
+                # (answer is only as confident as its weakest premise)
+                # Need to collect recursively since premises may be nested deep
+                def collect_confidences(node):
+                    confidences = []
+                    if node.status == NodeStatus.RESOLVED and node.confidence > 0:
+                        confidences.append(node.confidence)
+                    for child in node.children:
+                        confidences.extend(collect_confidences(child))
+                    return confidences
+                all_confidences = collect_confidences(self.display._proof_tree.root)
+                if all_confidences:
+                    self.display._proof_tree.root.confidence = min(all_confidences)
+                # Force final refresh to show completed state
+                if self.display._live:
+                    self.display._live.refresh()
+                    time.sleep(0.1)
             # Stop Live display before printing synthesizing message
             self.display.stop()
+            self.display.stop_proof_tree()
             self.display.console.print(f"\n[dim]{data.get('message', 'Synthesizing...')}[/dim]")
 
         elif event_type == "raw_results_ready":
@@ -1818,22 +2001,72 @@ class SessionFeedbackHandler:
             self.display.start_spinner(message)
 
         elif event_type == "verifying":
-            message = data.get("message", "Verifying...")
-            self.display.start_spinner(message)
+            # Don't start spinner if proof tree is already active (it has its own display)
+            if not self.display._proof_tree:
+                message = data.get("message", "Verifying...")
+                self.display.start_spinner(message)
 
         elif event_type == "verification_complete":
-            # Stop proof tree display if active
+            # Stop proof tree display if active (don't reprint - already shown during execution)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"[VERIFICATION_COMPLETE] proof_tree={self.display._proof_tree is not None}, live={self.display._live is not None}")
             if self.display._proof_tree:
+                # Mark root node as resolved before stopping
+                # Use lock to prevent race with animation thread
+                from constat.proof_tree import NodeStatus
+                confidence = data.get("confidence", 0.0)
+                logger.debug(f"[VERIFICATION_COMPLETE] Root status BEFORE: {self.display._proof_tree.root.status}")
+
+                # Stop animation thread first to prevent it from overwriting our update
+                self.display._animation_running = False
+                if self.display._animation_thread:
+                    self.display._animation_thread.join(timeout=0.5)
+                    self.display._animation_thread = None
+
+                # Now update root status and refresh
+                self.display._proof_tree.root.status = NodeStatus.RESOLVED
+                self.display._proof_tree.root.confidence = confidence
+                logger.debug(f"[VERIFICATION_COMPLETE] Root status AFTER: {self.display._proof_tree.root.status}")
+
+                # Force final refresh
+                if self.display._live:
+                    logger.debug("[VERIFICATION_COMPLETE] Calling refresh()")
+                    self.display._live.refresh()
+                    time.sleep(0.1)  # Brief pause for render
+
+                logger.debug("[VERIFICATION_COMPLETE] Stopping display")
                 self.display.stop()
                 self.display.stop_proof_tree()
             else:
                 self.display.stop_spinner()
-            confidence = data.get("confidence", 0.0)
-            self.display.console.print(
-                f"[green]Verification complete[/green] [dim](confidence: {confidence:.0%})[/dim]"
-            )
 
         elif event_type == "verification_error":
-            self.display.stop_spinner()
+            # Stop proof tree display if active (don't reprint - already shown during execution)
+            import logging
+            logger = logging.getLogger(__name__)
+            if self.display._proof_tree:
+                # Mark root node as failed before stopping
+                from constat.proof_tree import NodeStatus
+
+                # Stop animation thread first to prevent it from overwriting our update
+                self.display._animation_running = False
+                if self.display._animation_thread:
+                    self.display._animation_thread.join(timeout=0.5)
+                    self.display._animation_thread = None
+
+                # Now update root status and refresh
+                self.display._proof_tree.root.status = NodeStatus.FAILED
+                logger.debug(f"[VERIFICATION_ERROR] Root status set to FAILED")
+
+                # Force final refresh
+                if self.display._live:
+                    self.display._live.refresh()
+                    time.sleep(0.1)
+
+                self.display.stop()
+                self.display.stop_proof_tree()
+            else:
+                self.display.stop_spinner()
             error = data.get("error", "Unknown error")
             self.display.console.print(f"[red]Verification failed:[/red] {error}")

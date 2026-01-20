@@ -164,7 +164,7 @@ class ExecutionDAG:
                 # Find the problematic nodes for better error message
                 stuck_nodes = list(remaining)[:3]
                 raise ValueError(
-                    f"Cycle detected in DAG. Stuck nodes: {stuck_nodes}"
+                    f"Circular dependency detected in plan. Affected facts: {stuck_nodes}"
                 )
             levels.append(sorted(level))  # Sort for deterministic ordering
             resolved.update(level)
@@ -216,15 +216,28 @@ def parse_plan_to_dag(
 
     Returns:
         ExecutionDAG ready for parallel execution
+
+    Raises:
+        ValueError: If duplicate names are detected in premises or inferences
     """
     nodes = []
     name_to_id: dict[str, str] = {}  # Map names to P/I IDs for dependency resolution
+
+    # Track names for duplicate detection
+    premise_names: dict[str, str] = {}  # name -> fact_id for error messages
+    inference_names: dict[str, str] = {}  # name -> fact_id for error messages
 
     # Parse premises as leaf nodes
     for p in premises:
         fact_id = p.get("id", "")  # P1, P2, etc.
         name = p.get("name", fact_id)
-        source = p.get("source", "database")
+        source = p.get("source")
+
+        if not source:
+            raise ValueError(
+                f"Premise {fact_id} ('{name}') is missing required 'source' field. "
+                f"Must specify source: database:<db_name>, document, or knowledge"
+            )
 
         # Parse source type and database name
         source_type = source
@@ -240,14 +253,25 @@ def parse_plan_to_dag(
         if " = " in name and not name.endswith(" = ?"):
             parts = name.rsplit(" = ", 1)
             clean_name = parts[0].strip()
-            try:
-                value_str = parts[1].strip()
-                if "." in value_str:
-                    embedded_value = float(value_str)
-                else:
-                    embedded_value = int(value_str)
-            except ValueError:
-                embedded_value = parts[1].strip().strip("'\"")
+            value_str = parts[1].strip()
+            # Skip if value equals name (malformed plan, not actual embedded value)
+            if value_str != clean_name:
+                try:
+                    if "." in value_str:
+                        embedded_value = float(value_str)
+                    else:
+                        embedded_value = int(value_str)
+                except ValueError:
+                    embedded_value = value_str.strip("'\"")
+
+        # Check for duplicate premise names
+        if clean_name in premise_names:
+            existing_id = premise_names[clean_name]
+            raise ValueError(
+                f"Duplicate premise name '{clean_name}': defined in both {existing_id} and {fact_id}. "
+                f"Each premise must have a unique name."
+            )
+        premise_names[clean_name] = fact_id
 
         node = FactNode(
             name=clean_name,
@@ -273,6 +297,23 @@ def parse_plan_to_dag(
         fact_id = inf.get("id", "")  # I1, I2, etc.
         name = inf.get("name", "") or fact_id
         operation = inf.get("operation", "")
+
+        # Check for duplicate inference names
+        if name in inference_names:
+            existing_id = inference_names[name]
+            raise ValueError(
+                f"Duplicate inference name '{name}': defined in both {existing_id} and {fact_id}. "
+                f"Each inference must have a unique result_name. "
+                f"Consider using distinct names like '{name}_intermediate' and '{name}_final'."
+            )
+        # Check if inference name conflicts with a premise name
+        if name in premise_names:
+            conflicting_id = premise_names[name]
+            raise ValueError(
+                f"Inference name '{name}' in {fact_id} conflicts with premise {conflicting_id}. "
+                f"Inference result names must be distinct from premise names."
+            )
+        inference_names[name] = fact_id
 
         # Extract dependencies from operation
         # Look for P1, P2, I1, I2, etc. and also named references
@@ -565,4 +606,54 @@ def dag_to_display_format(dag: ExecutionDAG) -> str:
         sections.append("INFERENCES:")
         sections.extend(f"  {line}" for line in inference_lines)
 
+    return "\n".join(sections)
+
+
+def dag_to_proof_format(dag: ExecutionDAG, conclusion: str = "") -> str:
+    """Convert completed DAG to proof format showing resolved values.
+
+    Args:
+        dag: The executed DAG with resolved nodes
+        conclusion: The conclusion statement
+
+    Returns:
+        Formatted proof string showing premises, inferences, and conclusion
+    """
+    premise_lines = []
+    inference_lines = []
+
+    for level in dag.get_execution_order():
+        for name in level:
+            node = dag.nodes[name]
+            status_icon = "✓" if node.status == NodeStatus.RESOLVED else "✗"
+
+            if node.is_leaf:
+                # Premise - show resolved value
+                value_str = str(node.value)[:60] + "..." if node.value and len(str(node.value)) > 60 else str(node.value) if node.value else "?"
+                source_str = f"[{node.source or 'database'}]" if node.source else ""
+                premise_lines.append(
+                    f"{status_icon} {node.fact_id}: {node.name} = {value_str} {source_str}"
+                )
+            else:
+                # Inference - show result
+                value_str = str(node.value)[:60] + "..." if node.value and len(str(node.value)) > 60 else str(node.value) if node.value else "?"
+                inference_lines.append(
+                    f"{status_icon} {node.fact_id}: {node.name} = {value_str}"
+                )
+
+    sections = ["", "═══ PROOF ═══", ""]
+    if premise_lines:
+        sections.append("Premises:")
+        sections.extend(f"  {line}" for line in premise_lines)
+
+    if inference_lines:
+        sections.append("")
+        sections.append("Inferences:")
+        sections.extend(f"  {line}" for line in inference_lines)
+
+    if conclusion:
+        sections.append("")
+        sections.append(f"Conclusion: {conclusion}")
+
+    sections.append("═════════════")
     return "\n".join(sections)

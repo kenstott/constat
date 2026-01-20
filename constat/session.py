@@ -1,5 +1,7 @@
 """Session orchestration for multi-step plan execution."""
 
+from __future__ import annotations
+
 import json
 import logging
 import time
@@ -308,7 +310,12 @@ class Session:
         self._load_preloaded_context()
 
         # Document discovery tools (for reference documents)
-        self.doc_tools = DocumentDiscoveryTools(config) if config.documents else None
+        # Pass schema entities at initialization to avoid race conditions during index build
+        if config.documents:
+            schema_entities = self.schema_manager.get_entity_names()
+            self.doc_tools = DocumentDiscoveryTools(config, schema_entities=schema_entities)
+        else:
+            self.doc_tools = None
 
         # Task router for model routing with escalation
         self.router = TaskRouter(config.llm)
@@ -318,7 +325,9 @@ class Session:
             self.router.routing_config.get_models_for_task("general")[0]
         )
 
-        self.planner = Planner(config, self.schema_manager, self.router)
+        self.planner = Planner(
+            config, self.schema_manager, self.router, doc_tools=self.doc_tools
+        )
 
         self.executor = PythonExecutor(
             timeout_seconds=config.execution.timeout_seconds,
@@ -417,8 +426,8 @@ class Session:
             # Convert Fact objects to simple name -> value dict
             facts_dict = {name: fact.value for name, fact in all_facts.items()}
             self.planner.set_user_facts(facts_dict)
-        except Exception:
-            pass  # Continue without facts if there's an error
+        except Exception as e:
+            logger.debug(f"Failed to sync user facts to planner: {e}")
 
     def _is_unclear_input(self, text: str) -> bool:
         """Check if input appears to be unclear, garbage, or a copy-paste error.
@@ -493,8 +502,8 @@ class Session:
         learnings_text = ""
         try:
             learnings_text = self._get_codegen_learnings(step.goal)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get codegen learnings: {e}")
 
         # Detect relevant concepts and inject specialized sections
         injected_sections = self._concept_detector.get_sections_for_prompt(
@@ -599,17 +608,26 @@ class Session:
         return self._tool_cache[cache_key]
 
     def _cached_find_relevant_tables(self, query: str, top_k: int = 5) -> list[dict]:
-        """Find relevant tables with caching."""
+        """Find relevant tables with caching and document enrichment."""
         cache_key = f"relevant:{query}:{top_k}"
         if cache_key not in self._tool_cache:
-            self._tool_cache[cache_key] = self.schema_manager.find_relevant_tables(query, top_k)
+            self._tool_cache[cache_key] = self.schema_manager.find_relevant_tables(
+                query, top_k, doc_tools=self.doc_tools
+            )
         return self._tool_cache[cache_key]
+
+    def _find_entity(self, name: str, limit: int = 3) -> dict:
+        """Find all occurrences of an entity across schema and documents."""
+        from constat.discovery.schema_tools import SchemaDiscoveryTools
+        tools = SchemaDiscoveryTools(self.schema_manager, self.doc_tools)
+        return tools.find_entity(name, limit)
 
     def _get_tool_handlers(self) -> dict:
         """Get schema tool handlers with caching."""
         handlers = {
             "get_table_schema": self._cached_get_table_schema,
             "find_relevant_tables": self._cached_find_relevant_tables,
+            "find_entity": self._find_entity,
         }
 
         # Add API schema tools if APIs are configured
@@ -648,6 +666,11 @@ class Session:
         """
         self._tool_cache.clear()
         self.schema_manager.refresh()
+
+        # Pass schema entities to doc_tools for entity extraction
+        if self.doc_tools:
+            schema_entities = self.schema_manager.get_entity_names()
+            self.doc_tools.set_schema_entities(schema_entities)
 
         # Refresh document vector index (incremental by default)
         doc_stats = {}
@@ -736,6 +759,18 @@ class Session:
                         "top_k": {"type": "integer", "default": 5}
                     },
                     "required": ["query"]
+                }
+            },
+            {
+                "name": "find_entity",
+                "description": "Find all occurrences of an entity across schema and documents. Returns matching tables, columns, and document excerpts that mention the entity.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Entity name to search for (e.g., 'Customer', 'order_id')"},
+                        "limit": {"type": "integer", "default": 3, "description": "Maximum document excerpts to return"}
+                    },
+                    "required": ["name"]
                 }
             }
         ]
@@ -931,6 +966,8 @@ YOUR JSON RESPONSE:"""
             fact = None
             sql = None
 
+            # Route based on source type (source is required, validated by DAG parser)
+            logger.debug(f"[DAG] Premise {fact_id} '{fact_name}' routing with source='{source}'")
             if source.startswith("database") or source == "database":
                 # Database resolution
                 db_name = source.split(":", 1)[1].strip() if ":" in source else None
@@ -972,7 +1009,7 @@ YOUR JSON RESPONSE:"""
                         return value_str, 0.95
 
                 engine = self.schema_manager.get_sql_connection(db_name)
-                max_retries = 3
+                max_retries = 7
                 last_error = None
 
                 for attempt in range(max_retries):
@@ -1046,7 +1083,8 @@ RULE: Always SELECT primary key columns for joins."""
                 )
 
             else:
-                # Generic resolution
+                # Generic resolution (document, or other non-database/knowledge sources)
+                logger.debug(f"[DAG] Using tiered resolution for {fact_id} '{fact_name}' (source={source})")
                 fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc)
 
             if fact and fact.value is not None:
@@ -1106,64 +1144,71 @@ RULE: Always SELECT primary key columns for joins."""
             referenced_tables = []  # Tables that need to be queried from original source
             for dep_name in node.dependencies:
                 dep_node = dag.get_node(dep_name)
-                if dep_node and dep_node.value is not None:
-                    val_str = str(dep_node.value)
-                    val_lower = val_str.lower()
-                    # Check if this is a loaded table (value contains row count)
-                    is_loaded_table = "rows" in val_lower or (dep_node.row_count and dep_node.row_count > 1)
-                    # Check if this is a referenced table (format: (db.table) X rows)
-                    is_referenced = val_str.startswith("(") and ")" in val_str and "." in val_str
+                if not dep_node:
+                    raise ValueError(f"Dependency '{dep_name}' not found in DAG")
+                if dep_node.value is None:
+                    raise ValueError(
+                        f"Dependency '{dep_name}' ({dep_node.fact_id}) has no value. "
+                        f"Status: {dep_node.status}, Error: {dep_node.error}"
+                    )
+                val_str = str(dep_node.value)
+                val_lower = val_str.lower()
+                # Check if this is a loaded table (value contains row count)
+                is_loaded_table = "rows" in val_lower or (dep_node.row_count and dep_node.row_count > 1)
+                # Check if this is a referenced table (format: (db.table) X rows)
+                is_referenced = val_str.startswith("(") and ")" in val_str and "." in val_str
 
-                    if is_loaded_table or is_referenced:
-                        dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
-                        columns_info = ""
+                if is_loaded_table or is_referenced:
+                    dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
+                    columns_info = ""
 
-                        if is_referenced:
-                            # Referenced table: get metadata from original database
-                            # Extract table name from the value format (db.table)
-                            match = re.match(r'\(([^.]+)\.([^)]+)\)', val_str)
-                            if match:
-                                ref_db, ref_table = match.groups()
-                                dep_table = ref_table  # Use actual table name
+                    if is_referenced:
+                        # Referenced table: get metadata from original database
+                        # Extract table name from the value format (db.table)
+                        match = re.match(r'\(([^.]+)\.([^)]+)\)', val_str)
+                        if match:
+                            ref_db, ref_table = match.groups()
+                            dep_table = ref_table  # Use actual table name
 
-                            # Try to get column info from the original database table
-                            if self.schema_manager:
-                                try:
-                                    # Find matching table in schema
-                                    for db_name in self.schema_manager.connections.keys():
-                                        table_meta = self.schema_manager.get_table_metadata(db_name, dep_table)
-                                        if table_meta:
-                                            cols = [c.name for c in table_meta.columns]
-                                            columns_info = f" columns: {cols}"
-                                            referenced_tables.append(
-                                                f"- {dep_node.fact_id}: query from database table '{dep_table}'{columns_info}"
-                                            )
-                                            break
-                                except Exception:
-                                    pass
-
-                            if not columns_info:
-                                # Fallback: still mark as referenced
-                                referenced_tables.append(
-                                    f"- {dep_node.fact_id}: referenced table '{dep_table}' (query from database)"
-                                )
-                        else:
-                            # Regular table in datastore
-                            if self.datastore:
-                                try:
-                                    schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
-                                    if len(schema_df) > 0:
-                                        cols = list(schema_df['column_name']) if 'column_name' in schema_df.columns else list(schema_df.iloc[:, 0])
+                        # Try to get column info from the original database table
+                        if self.schema_manager:
+                            try:
+                                # Find matching table in schema
+                                for db_name in self.schema_manager.connections.keys():
+                                    table_meta = self.schema_manager.get_table_metadata(db_name, dep_table)
+                                    if table_meta:
+                                        cols = [c.name for c in table_meta.columns]
                                         columns_info = f" columns: {cols}"
-                                except Exception:
-                                    try:
-                                        sample = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
-                                        columns_info = f" columns: {list(sample.columns)}"
-                                    except Exception:
-                                        pass
-                            tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}")
+                                        referenced_tables.append(
+                                            f"- {dep_node.fact_id}: query from database table '{dep_table}'{columns_info}"
+                                        )
+                                        break
+                            except Exception as e:
+                                logger.debug(f"Failed to get table metadata for {dep_table}: {e}")
+
+                        if not columns_info:
+                            # Fallback: still mark as referenced
+                            referenced_tables.append(
+                                f"- {dep_node.fact_id}: referenced table '{dep_table}' (query from database)"
+                            )
                     else:
-                        scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
+                        # Regular table in datastore
+                        if self.datastore:
+                            try:
+                                schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
+                                if len(schema_df) > 0:
+                                    cols = list(schema_df['column_name']) if 'column_name' in schema_df.columns else list(schema_df.iloc[:, 0])
+                                    columns_info = f" columns: {cols}"
+                            except Exception as e:
+                                logger.debug(f"DESCRIBE failed for {dep_table}, trying SELECT: {e}")
+                                try:
+                                    sample = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
+                                    columns_info = f" columns: {list(sample.columns)}"
+                                except Exception as e2:
+                                    logger.debug(f"Failed to get columns for {dep_table}: {e2}")
+                        tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}")
+                else:
+                    scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
 
             # Build referenced tables section for prompt
             referenced_section = ""
@@ -1190,17 +1235,24 @@ APIs:
 - db_query(sql) -> pd.DataFrame (for referenced database tables)
 - store.save_dataframe(name, df)
 
-Rules:
-1. Use `if len(df) > 0:` not `if df:` for DataFrame checks
-2. End with `_result = <value>`
-3. Save DataFrames: store.save_dataframe('{table_name}', result_df)
-4. For REFERENCED tables, use db_query() to query from database directly
+CRITICAL Rules:
+1. PRESERVE ALL ROWS - Do NOT aggregate to a single row unless explicitly asked
+   - For joins: keep all matching rows (use LEFT JOIN to preserve all from left table)
+   - For filters: return all rows that match the condition
+   - WRONG: Getting only the MAX/MIN/first row
+   - RIGHT: Getting all rows that meet criteria
+2. Use `if len(df) > 0:` not `if df:` for DataFrame checks
+3. End with `_result = <value>`
+4. ALWAYS save result: store.save_dataframe('{table_name}', result_df)
+5. For REFERENCED tables, use db_query() to query from database directly
 
 Return ONLY Python code, no markdown."""
 
-            max_retries = 3
+            max_retries = 7
             last_error = None
             code = None
+            first_error = None  # Track for learning capture
+            first_code = None
 
             for attempt in range(max_retries):
                 prompt = inference_prompt
@@ -1219,6 +1271,8 @@ Return ONLY Python code, no markdown."""
                     code = re.sub(r'^```\w*\n?', '', code)
                     code = re.sub(r'\n?```$', '', code)
 
+                logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}: code length={len(code)} chars")
+
                 # Auto-fix DataFrame boolean errors
                 code = re.sub(r'\bif\s+(df|result|data)\s*:', r'if not \1.empty:', code)
                 code = re.sub(r'\bif\s+not\s+(df|result|data)\s*:', r'if \1.empty:', code)
@@ -1235,7 +1289,8 @@ Return ONLY Python code, no markdown."""
                         engine = self.schema_manager.get_sql_connection(db_name)
                         try:
                             return pd.read_sql(sql, engine)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"db_query failed on {db_name}: {e}")
                             continue
                     raise Exception("No database connection available")
 
@@ -1268,16 +1323,37 @@ Return ONLY Python code, no markdown."""
                     sys.stdout = captured
                     exec(code, exec_globals)
                     last_error = None
+                    # Capture learning if this was a successful retry
+                    if attempt > 0 and first_error and self.learning_store:
+                        try:
+                            self._capture_error_learning(
+                                context={
+                                    "error_message": first_error,
+                                    "original_code": first_code[:500] if first_code else "",
+                                    "step_goal": f"inference {inf_id}: {operation}",
+                                },
+                                fixed_code=code,
+                            )
+                        except Exception as le:
+                            logger.debug(f"Learning capture failed: {le}")
                     break
                 except Exception as e:
                     last_error = str(e)
+                    if first_error is None:
+                        first_error = last_error
+                        first_code = code
                 finally:
                     sys.stdout = old_stdout
 
             if last_error:
+                logger.error(f"[INFERENCE_CODE] {inf_id} all attempts failed: {last_error}")
+                logger.debug(f"[INFERENCE_CODE] Failed code for {inf_id}:\n{code}")
                 raise Exception(last_error)
 
             computed = exec_globals.get('_result')
+            # Log execution results for debugging
+            tables_after = [t['name'] for t in self.datastore.list_tables()] if self.datastore else []
+            logger.debug(f"[INFERENCE_CODE] {inf_id} exec complete: _result={computed is not None}, tables={tables_after}, expected={table_name}")
 
             # Check if result was saved as table
             if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
@@ -1286,13 +1362,34 @@ Return ONLY Python code, no markdown."""
                 node.row_count = row_count
                 resolved_inferences[inf_id] = f"{row_count} rows"
                 result_value = f"{row_count} rows"
+
+                # Warn if row count is suspiciously low compared to inputs
+                if row_count <= 1 and node.dependencies:
+                    # Check if any dependency had more rows
+                    for dep_name in node.dependencies:
+                        dep_node = dag.get_node(dep_name)
+                        if dep_node and dep_node.row_count and dep_node.row_count > 5:
+                            logger.warning(
+                                f"[INFERENCE_CODE] {inf_id} produced only {row_count} row(s) but "
+                                f"dependency '{dep_name}' had {dep_node.row_count} rows. "
+                                f"This may indicate incorrect aggregation."
+                            )
             elif computed is not None:
                 resolved_inferences[inf_id] = computed
                 result_value = computed
             else:
                 output = captured.getvalue().strip()
-                resolved_inferences[inf_id] = output if output else "completed"
-                result_value = output if output else "completed"
+                if output:
+                    resolved_inferences[inf_id] = output
+                    result_value = output
+                else:
+                    # No table created, no _result, no output - this is likely a failure
+                    # Check if operation suggests a table should have been created
+                    if any(kw in operation.lower() for kw in ['join', 'filter', 'merge', 'apply', 'calculate', 'select']):
+                        logger.error(f"[INFERENCE_CODE] {inf_id} ({inf_name}) produced no output. Code:\n{code[:500]}...")
+                        raise ValueError(f"Inference {inf_id} ({inf_name}) did not produce expected table '{table_name}'")
+                    resolved_inferences[inf_id] = "completed"
+                    result_value = "completed"
 
             self.fact_resolver.add_user_fact(
                 fact_name=inf_name,
@@ -1350,8 +1447,8 @@ Return ONLY Python code, no markdown."""
                     for name, fact in all_facts.items():
                         fact_lines.append(f"- **{name}**: {fact.value}")
                     user_facts = "\n".join(fact_lines)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to get user facts for context: {e}")
 
         return {
             "schema_overview": schema_overview,
@@ -1509,8 +1606,8 @@ Return ONLY Python code, no markdown."""
                 if existing is None:
                     try:
                         self.datastore.set_state(var_name, value, step_number)
-                    except Exception:
-                        pass  # Skip if not JSON-serializable
+                    except Exception as e:
+                        logger.debug(f"Skip auto-save of {var_name}: not JSON-serializable: {e}")
 
     def _execute_step(self, step: Step) -> StepResult:
         """
@@ -1700,8 +1797,8 @@ Return ONLY Python code, no markdown."""
                 correction=summary,
                 source=LearningSource.AUTO_CAPTURE,
             )
-        except Exception:
-            pass  # Don't let learning capture failures affect execution
+        except Exception as e:
+            logger.debug(f"Learning capture failed (non-fatal): {e}")
 
     def _generate_failure_suggestions(
         self, step: "Step", error: str, code: str
@@ -1903,8 +2000,10 @@ Do not include any explanation or extra text."""
                 user_message=prompt,
                 max_tokens=100,
             )
-            return response.content.strip()
-        except Exception:
+            # generate() returns string directly
+            return response.strip()
+        except Exception as e:
+            logger.debug(f"Failed to summarize learning (non-fatal): {e}")
             return ""
 
     def _request_approval(
@@ -1978,6 +2077,101 @@ Do not include any explanation or extra text."""
         # The generated code can use llm_ask() for general knowledge
         # and then compute/transform/act on the results
         return QuestionType.DATA_ANALYSIS
+
+    def _try_show_existing_data(self, question: str) -> Optional[dict]:
+        """Fast path for 'show me X' requests that display existing tables.
+
+        Detects simple data display requests and handles them directly without
+        going through LLM intent classification. This is much faster for
+        simple lookups like 'show me the raise_recommendations table'.
+
+        Args:
+            question: The user's question
+
+        Returns:
+            Result dict if this was a show request, None otherwise
+        """
+        import re
+
+        if not self.datastore:
+            return None
+
+        # Get available table names
+        tables = self.datastore.list_tables()
+        if not tables:
+            return None
+
+        table_names = {t['name'].lower(): t['name'] for t in tables}
+
+        # Patterns for "show me X" type requests
+        # Match: "show me X", "display X", "what's in X", "view X", "print X"
+        show_patterns = [
+            r"^(?:show\s+(?:me\s+)?(?:the\s+)?|display\s+(?:the\s+)?|view\s+(?:the\s+)?|print\s+(?:the\s+)?|what(?:'s| is)\s+in\s+(?:the\s+)?)(.+?)(?:\s+table)?(?:\s+data)?$",
+            r"^(.+?)(?:\s+table|\s+data)$",  # "raise_recommendations table"
+        ]
+
+        question_lower = question.lower().strip()
+
+        for pattern in show_patterns:
+            match = re.match(pattern, question_lower, re.IGNORECASE)
+            if match:
+                candidate = match.group(1).strip()
+                # Check if candidate matches a table name
+                if candidate in table_names:
+                    actual_table = table_names[candidate]
+                    return self._quick_table_display(actual_table)
+
+        # Also check if the entire question is just a table name
+        if question_lower in table_names:
+            return self._quick_table_display(table_names[question_lower])
+
+        return None
+
+    def _quick_table_display(self, table_name: str) -> dict:
+        """Display a table quickly without going through planning.
+
+        Args:
+            table_name: The name of the table to display
+
+        Returns:
+            Result dict with table data
+        """
+        try:
+            # Query the table
+            df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 50")
+
+            # Format output
+            try:
+                table_str = df.to_markdown(index=False)
+            except Exception:
+                table_str = df.to_string(index=False)
+
+            row_count = len(df)
+            total_rows = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {table_name}").iloc[0]['cnt']
+
+            output = f"**{table_name}** ({total_rows} rows)\n\n{table_str}"
+            if row_count < total_rows:
+                output += f"\n\n_Showing first {row_count} of {total_rows} rows_"
+
+            self._emit_event(StepEvent(
+                event_type="quick_display",
+                step_number=0,
+                data={"table": table_name, "rows": row_count}
+            ))
+
+            return {
+                "success": True,
+                "mode": "quick_display",
+                "output": output,
+                "datastore_tables": self.datastore.list_tables(),
+                "suggestions": [
+                    f"Run SQL query on {table_name}",
+                    "Ask a question about this data",
+                ],
+            }
+        except Exception as e:
+            # If table query fails, return None to fall through to normal processing
+            return None
 
     def _analyze_question(self, problem: str, previous_problem: str = None) -> QuestionAnalysis:
         """
@@ -2486,8 +2680,9 @@ DOCUMENT-AWARE SUGGESTIONS:
 
             return None
 
-        except Exception:
+        except Exception as e:
             # On error, proceed without clarification
+            logger.debug(f"Clarification detection failed (proceeding without): {e}")
             return None
 
     def _request_clarification(self, request: ClarificationRequest) -> Optional[str]:
@@ -2612,8 +2807,8 @@ Examples:
                     "output": answer,
                     "plan": None,
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Meta question handling failed: {e}")
 
         return None
 
@@ -2841,8 +3036,8 @@ Unlike chat-based AI tools, I don't just generate text — I execute real querie
             role_fact = self.fact_resolver.get_fact("user_role")
             if role_fact:
                 user_role = role_fact.value
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get user_role fact: {e}")
 
         role_context = f"\nThe user's role is: {user_role}" if user_role else ""
 
@@ -2966,6 +3161,9 @@ Create a clear, direct answer to the user's question. Include:
             max_tokens=1000,
         )
 
+        if not result.success:
+            logger.warning(f"Answer synthesis failed: {result.content}")
+            return "Analysis completed but answer synthesis failed. See step outputs above."
         return result.content
 
     def _extract_facts_from_response(self, problem: str, answer: str) -> list:
@@ -3062,7 +3260,8 @@ If no concrete facts to extract, respond with: NO_FACTS"""
 
             return extracted_facts
 
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to extract facts from response: {e}")
             return []
 
     def _generate_suggestions(self, problem: str, answer: str, tables: list[dict]) -> list[str]:
@@ -3113,8 +3312,9 @@ Return ONLY the suggestions, one per line, no numbering or bullets."""
                 if s.strip() and len(s.strip()) > 5
             ]
             return suggestions[:3]  # Max 3 suggestions
-        except Exception:
-            return []  # Fail silently - suggestions are optional
+        except Exception as e:
+            logger.debug(f"Failed to generate suggestions (non-fatal): {e}")
+            return []
 
     def _replan_with_feedback(self, problem: str, feedback: str) -> PlannerResponse:
         """
@@ -3806,8 +4006,9 @@ NEW_REQUEST: <the new request, or NONE>
 
             return result
 
-        except Exception:
+        except Exception as e:
             # Default to treating as new request
+            logger.debug(f"Conversational intent classification failed: {e}")
             return {
                 "intent": "NEW_REQUEST",
                 "facts": [],
@@ -3877,8 +4078,9 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
 
             return result
 
-        except Exception:
+        except Exception as e:
             # Default to treating as value
+            logger.debug(f"Premise response classification failed: {e}")
             return {"type": "VALUE", "value": user_response, "steer": None}
 
     def follow_up(self, question: str, auto_classify: bool = True) -> dict:
@@ -3904,6 +4106,12 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
 
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
+
+        # Fast path: check if this is a simple "show me X" request for existing data
+        # This avoids expensive LLM classification for simple data lookups
+        show_result = self._try_show_existing_data(question)
+        if show_result:
+            return show_result
 
         # Get previous problem for follow-up context
         previous_problem = self.datastore.get_session_meta("problem")
@@ -4002,20 +4210,11 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 except ValueError:
                     pass
 
-        # AUDITABLE mode: for follow-ups, default to replanning (safer) unless explicitly a verification request
+        # AUDITABLE mode: ALL follow-ups go through proper DAG-based replanning
+        # This includes verification requests, redo, modifications, new questions - everything
         if mode_selection.mode == ExecutionMode.AUDITABLE and mode_selection.confidence >= 0.6:
 
-            # Define verification-only intents: only these should trigger verification mode
-            verification_only_intents = {"CHALLENGE", "PROVENANCE"}
-            is_explicit_verification = bool(detected_intent_names & verification_only_intents)
-
-            # If this is explicitly a verification request (e.g., "are you sure?", "show the proof")
-            # then use verification mode
-            if is_explicit_verification and not is_redo:
-                _logger.debug(f"[FOLLOW_UP] Explicit verification request detected: {detected_intent_names & verification_only_intents}")
-                return self._follow_up_auditable(question, mode_selection)
-
-            # Default: for ALL other auditable follow-ups, replan (safer option)
+            # All auditable follow-ups replan with proper P/I structure and approval
             # This handles: redo, modifications, new approaches, or even ambiguous follow-ups
             if self.datastore:
                 # Get original problem and re-run in auditable mode
@@ -4027,6 +4226,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                     logger = logging.getLogger(__name__)
                     saved_facts_json = self.datastore.get_session_meta("resolved_facts")
                     logger.debug(f"[REDO] saved_facts_json exists: {saved_facts_json is not None}")
+                    saved_facts = []  # Initialize to empty list in case no saved facts exist
                     if saved_facts_json:
                         logger.debug(f"[REDO] saved_facts_json length: {len(saved_facts_json)}")
                         try:
@@ -4110,69 +4310,74 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                     logger.debug(f"[REDO FILTER] All saved facts: {[f.get('name') + ':' + str(f.get('source')) for f in saved_facts]}")
                     logger.debug(f"[REDO FILTER] Filtered data_facts (source premises only): {[f.get('name') for f in data_facts]}")
 
-                    # For modification intents: incorporate user's changes into the problem
-                    # This includes STEER_PLAN, MODIFY_FACT, REFINE_SCOPE - any intent that modifies the analysis
-                    modification_intents = {"STEER_PLAN", "MODIFY_FACT", "REFINE_SCOPE"}
-                    has_modification = bool(detected_intent_names & modification_intents)
-                    logger.debug(f"[REDO STEER] detected_intent_names: {detected_intent_names}")
-                    logger.debug(f"[REDO STEER] has_modification: {has_modification}")
-                    logger.debug(f"[REDO STEER] question: {question[:100]}")
-                    logger.debug(f"[REDO STEER] original_problem: {original_problem[:100] if original_problem else 'None'}")
+                    logger.debug(f"[AUDITABLE FOLLOW-UP] detected_intent_names: {detected_intent_names}")
+                    logger.debug(f"[AUDITABLE FOLLOW-UP] question: {question[:100]}")
+                    logger.debug(f"[AUDITABLE FOLLOW-UP] original_problem: {original_problem[:100] if original_problem else 'None'}")
 
-                    # Build original plan context for modification
-                    original_plan_context = ""
+                    # Check if this is a plain REDO (just "redo" with no other text)
+                    is_plain_redo = (
+                        "REDO" in detected_intent_names and
+                        question.lower().strip() == "redo"
+                    )
+
+                    if is_plain_redo:
+                        # PATH 1: Plain REDO - re-run original problem exactly as-is
+                        logger.debug(f"[AUDITABLE FOLLOW-UP] PATH 1: plain redo, re-running original problem")
+                        return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=data_facts)
+
+                    # PATH 2: Everything else - show existing proof context, let LLM handle the request
+                    # This handles: modifications, extensions, new questions, redo with changes
+                    logger.debug(f"[AUDITABLE FOLLOW-UP] PATH 2: extending/modifying existing proof")
+
+                    # Build context showing what we've already proved
+                    context_lines = []
                     has_proof = hasattr(self, "_current_proof") and self._current_proof
-                    logger.debug(f"[REDO STEER] has _current_proof: {has_proof}")
                     if has_proof:
                         proof = self._current_proof
-                        plan_lines = ["ORIGINAL PLAN (modify this based on user request):"]
-                        plan_lines.append("\nPREMISES:")
+                        context_lines.append("EXISTING PROOF (reuse these resolved facts):")
+                        context_lines.append("\nRESOLVED PREMISES:")
                         for p in proof.get("premises", []):
-                            plan_lines.append(f"  {p['id']}: {p['name']} = ? ({p['description']}) [source: {p['source']}]")
-                        plan_lines.append("\nINFERENCE:")
+                            context_lines.append(f"  {p['id']}: {p['name']} [source: {p['source']}]")
+                        context_lines.append("\nCOMPLETED INFERENCES:")
                         for i in proof.get("inferences", []):
-                            inf_line = f"  {i['id']}: {i['name']} = {i['operation']}"
-                            if i.get("explanation"):
-                                inf_line += f" -- {i['explanation']}"
-                            plan_lines.append(inf_line)
-                        plan_lines.append(f"\nCONCLUSION: {proof.get('conclusion', '')}")
+                            context_lines.append(f"  {i['id']}: {i['name']} = {i['operation']}")
+                        context_lines.append(f"\nPREVIOUS CONCLUSION: {proof.get('conclusion', '')}")
 
-                        # Add cached premises list with instruction to reuse
-                        if data_facts:
-                            plan_lines.append("\n\nCACHED PREMISES (REUSE these exact names - data already loaded):")
-                            for f in data_facts:
-                                name = f.get("name", "")
-                                value_type = f.get("value_type", "")
-                                if value_type == "table":
-                                    plan_lines.append(f"  - {name} (table, {f.get('row_count', '?')} rows)")
-                                else:
-                                    plan_lines.append(f"  - {name}")
-                            plan_lines.append("\nIMPORTANT: Reuse these premise names exactly. Only add new premises if the user's modification requires additional data.")
+                    # List available computed tables
+                    existing_tables = self.datastore.list_tables() if self.datastore else []
+                    if existing_tables:
+                        context_lines.append("\nAVAILABLE DATA (already computed):")
+                        for t in existing_tables:
+                            context_lines.append(f"  - {t['name']} ({t.get('row_count', '?')} rows)")
 
-                        original_plan_context = "\n".join(plan_lines)
+                    # List cached premises
+                    if data_facts:
+                        context_lines.append("\nCACHED PREMISES (data already loaded):")
+                        for f in data_facts:
+                            name = f.get("name", "")
+                            value_type = f.get("value_type", "")
+                            if value_type == "table":
+                                context_lines.append(f"  - {name} (table, {f.get('row_count', '?')} rows)")
+                            else:
+                                context_lines.append(f"  - {name}")
 
-                    # If user provided modification AND it's different from original problem
-                    if has_modification and question != original_problem:
-                        # Combine original problem + original plan + modification request
-                        enhanced_problem = f"{original_problem}\n\n{original_plan_context}\n\nUser modification: {question}"
-                        logger.debug(f"[REDO STEER] Taking PATH 1: has_modification=True, using enhanced_problem")
-                        return self._solve_auditable_with_steer_handling(enhanced_problem, mode_selection, cached_fact_hints=data_facts)
+                    proof_context = "\n".join(context_lines)
 
-                    # Even for plain REDO, if the user added any text beyond just "redo", incorporate it
-                    redo_in_intents = "REDO" in detected_intent_names
-                    question_not_just_redo = question.lower().strip() != "redo"
-                    logger.debug(f"[REDO STEER] redo_in_intents: {redo_in_intents}, question_not_just_redo: {question_not_just_redo}")
-                    if redo_in_intents and question_not_just_redo:
-                        # User said more than just "redo" - treat the extra text as modification
-                        redo_stripped = question.lower().replace("redo", "").replace(".", "").strip()
-                        logger.debug(f"[REDO STEER] redo_stripped: '{redo_stripped}'")
-                        if redo_stripped:
-                            enhanced_problem = f"{original_problem}\n\n{original_plan_context}\n\nUser modification: {question}"
-                            logger.debug(f"[REDO STEER] Taking PATH 2: REDO with extra text, using enhanced_problem")
-                            return self._solve_auditable_with_steer_handling(enhanced_problem, mode_selection, cached_fact_hints=data_facts)
+                    # Build the problem: original question + context + new request
+                    extended_problem = f"""Original question: {original_problem}
 
-                    logger.debug(f"[REDO STEER] Taking PATH 3: plain redo, using original_problem only")
-                    return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=data_facts)
+{proof_context}
+
+User request: {question}
+
+INSTRUCTIONS:
+- Reuse existing resolved premises where applicable
+- Only add NEW premises if the request requires data not already loaded
+- Reference existing computed tables by name (e.g., raise_recommendations)
+- If this modifies the original analysis, adjust the plan accordingly
+- If this is a new question, extend the proof with additional premises/inferences"""
+
+                    return self._solve_auditable_with_steer_handling(extended_problem, mode_selection, cached_fact_hints=data_facts)
 
             # No previous problem to replan - treat as new auditable query
             # (This only happens if datastore or original_problem is missing)
@@ -5062,6 +5267,16 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                 problem = f"{problem}\n\nUser guidance: {approval.suggestion}"
 
         # Step 2: Execute plan using DAG-based parallel resolution
+        # Start proof tree display for auditable mode (will print at end)
+        self._emit_event(StepEvent(
+            event_type="proof_start",
+            step_number=0,
+            data={
+                "conclusion_fact": "answer",
+                "conclusion_description": conclusion,
+            }
+        ))
+
         self._emit_event(StepEvent(
             event_type="verifying",
             step_number=0,
@@ -5109,17 +5324,41 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                 if event_type == "node_running":
                     # Determine if premise or inference
                     is_premise = fact_id.startswith("P") if fact_id else level == 0
+
+                    # INVERTED TREE: Find what this node FEEDS INTO (not what it depends on)
+                    # This shows derivation flow: premises -> inferences -> answer
+                    def find_consumer(source_name: str) -> str | None:
+                        """Find the first node that uses this node as input."""
+                        for other_node in dag.nodes.values():
+                            if source_name in other_node.dependencies:
+                                return other_node.name
+                        return None
+
                     if is_premise:
+                        # Parent = what inference uses this premise
+                        consumer = find_consumer(node_name)
+                        logger.debug(f"[DAG] {fact_id} (premise) feeds into: {consumer}")
                         self._emit_event(StepEvent(
                             event_type="premise_resolving",
                             step_number=level + 1,
-                            data={"fact_name": f"{fact_id}: {node_name}", "step": level + 1}
+                            data={
+                                "fact_name": f"{fact_id}: {node_name}",
+                                "step": level + 1,
+                                "parent": consumer,  # What this premise feeds into
+                            }
                         ))
                     else:
+                        # Parent = what inference uses this inference (or root if terminal)
+                        consumer = find_consumer(node_name)
+                        logger.debug(f"[DAG] {fact_id} (inference) feeds into: {consumer}")
                         self._emit_event(StepEvent(
                             event_type="inference_executing",
                             step_number=level + 1,
-                            data={"inference_id": fact_id, "operation": node_name}
+                            data={
+                                "inference_id": fact_id,
+                                "operation": node_name,
+                                "parent": consumer,  # What this inference feeds into
+                            }
                         ))
 
                 elif event_type == "node_resolved":
@@ -5142,7 +5381,7 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
 
                 elif event_type == "node_failed":
                     error = data.get("error", "Unknown error")
-                    logger.error(f"DAG node {fact_id} failed: {error}")
+                    logger.error(f"{fact_id} ({node_name}) failed: {error}")
                     self._emit_event(StepEvent(
                         event_type="premise_resolved" if fact_id.startswith("P") else "inference_failed",
                         step_number=level + 1,
@@ -5191,7 +5430,7 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
 
             if not result.success:
                 failed = ", ".join(result.failed_nodes)
-                raise Exception(f"DAG execution failed. Failed nodes: {failed}")
+                raise Exception(f"Plan execution failed. Could not resolve: {failed}")
 
             # Build inference lines from results
             inference_lines = ["", "**Inference Execution:**", ""]
@@ -5217,13 +5456,18 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
             ))
 
             # Build synthesis context - use English names for clarity
+            # Truncate values to prevent token overflow
+            def truncate_value(val, max_chars=500):
+                s = str(val)
+                return s[:max_chars] + "..." if len(s) > max_chars else s
+
             resolved_context = "\n".join([
-                f"- {pid} ({premises[int(pid[1:])-1]['name']}): {p.value}"
+                f"- {pid} ({premises[int(pid[1:])-1]['name']}): {truncate_value(p.value)}"
                 for pid, p in resolved_premises.items() if p and p.value
             ])
             # Use English variable names (e.g., "budget_validated_raises") not IDs (e.g., "I6")
             inference_context = "\n".join([
-                f"- {inf_id} ({inference_names.get(inf_id, inf_id)}): {result}"
+                f"- {inf_id} ({inference_names.get(inf_id, inf_id)}): {truncate_value(result, 200)}"
                 for inf_id, result in resolved_inferences.items()
             ])
 
@@ -5254,7 +5498,8 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                                     # Try to_markdown first, fall back to to_string
                                     try:
                                         table_str = result_df.to_markdown(index=False)
-                                    except Exception:
+                                    except Exception as e:
+                                        logger.debug(f"to_markdown failed, using to_string: {e}")
                                         table_str = result_df.to_string(index=False)
                                     final_data_preview = f"\n\nFinal Result Data ({table_name}):\n{table_str}"
                                     logger.debug(f"Synthesis: selected table {table_name}")
@@ -5293,7 +5538,11 @@ Provide a clear, actionable answer that shows the actual results."""
                 max_tokens=1500,
             )
 
-            answer = synthesis_result.content
+            if not synthesis_result.success:
+                logger.warning(f"Synthesis failed: {synthesis_result.content}")
+                answer = f"Verification completed but answer synthesis failed. See derivation below."
+            else:
+                answer = synthesis_result.content
             confidence = sum(p.confidence for p in resolved_premises.values() if p) / max(len(resolved_premises), 1)
             derivation_trace = "\n".join(derivation_lines)
 
@@ -5349,8 +5598,9 @@ Be direct and specific. No fluff."""
                         max_tokens=500,
                     )
                     insights = insights_result.content
-                except Exception:
-                    insights = ""  # Silent fail - insights are optional
+                except Exception as e:
+                    logger.debug(f"Failed to generate insights (non-fatal): {e}")
+                    insights = ""
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -5421,148 +5671,6 @@ Be direct and specific. No fluff."""
                     "What assumptions were made in this analysis?",
                 ],
                 "datastore_tables": self.datastore.list_tables() if self.datastore else [],
-            }
-
-        except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            self._emit_event(StepEvent(
-                event_type="verification_error",
-                step_number=0,
-                data={"error": str(e)}
-            ))
-
-            return {
-                "success": False,
-                "mode": "auditable",
-                "error": str(e),
-                "output": f"Verification failed: {e}",
-            }
-
-    def _follow_up_auditable(self, question: str, mode_selection) -> dict:
-        """
-        Handle a follow-up question in auditable mode using the fact resolver.
-
-        This is called when the follow-up question suggests verification/validation
-        (e.g., "verify", "validate", "prove", "check").
-
-        Args:
-            question: The verification question
-            mode_selection: The mode selection result with reasoning
-
-        Returns:
-            Dict with verification result and derivation trace
-        """
-        import time
-        start_time = time.time()
-
-        # Emit event indicating mode switch
-        self._emit_event(StepEvent(
-            event_type="mode_switch",
-            step_number=0,
-            data={
-                "mode": "auditable",
-                "reasoning": mode_selection.reasoning,
-                "matched_keywords": mode_selection.matched_keywords,
-            }
-        ))
-
-        # Get context from previous work for the fact resolver
-        existing_tables = self.datastore.list_tables() if self.datastore else []
-        scratchpad_context = self.datastore.get_scratchpad_as_markdown() if self.datastore else ""
-
-        # Prepare context for fact resolver
-        context = f"""Previous analysis results:
-
-{scratchpad_context}
-
-Available tables: {', '.join(t['name'] for t in existing_tables) if existing_tables else '(none)'}
-
-Verification request: {question}
-"""
-
-        # Use fact resolver to derive the answer with provenance
-        self._emit_event(StepEvent(
-            event_type="deriving",
-            step_number=0,
-            data={"message": f"Deriving answer: {question}"}
-        ))
-
-        try:
-            # Resolve the question as a fact with full derivation
-            result = self.fact_resolver.resolve_question(context)
-
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            # Format the derivation trace
-            derivation_trace = result.get("derivation", "")
-            answer = result.get("answer", "")
-            confidence = result.get("confidence", 0.0)
-            sources = result.get("sources", [])
-
-            # Build verification output
-            output_parts = [
-                f"**Verification Result** (confidence: {confidence:.0%})",
-                "",
-                answer,
-            ]
-
-            if derivation_trace:
-                output_parts.extend([
-                    "",
-                    "**Derivation Trace:**",
-                    derivation_trace,
-                ])
-
-            if sources:
-                output_parts.extend([
-                    "",
-                    "**Sources:**",
-                ])
-                for src in sources:
-                    output_parts.append(f"- {src.get('type', 'unknown')}: {src.get('description', '')}")
-
-            final_output = "\n".join(output_parts)
-
-            self._emit_event(StepEvent(
-                event_type="verification_complete",
-                step_number=0,
-                data={
-                    "answer": answer,
-                    "confidence": confidence,
-                    "has_derivation": bool(derivation_trace),
-                }
-            ))
-
-            # Record in history
-            self.history.record_query(
-                session_id=self.session_id,
-                question=question,
-                success=True,
-                attempts=1,
-                duration_ms=duration_ms,
-                answer=final_output,
-            )
-
-            # Save resolved facts for redo operations
-            if self.datastore:
-                import json
-                cached_facts = self.fact_resolver.export_cache()
-                self.datastore.set_session_meta("resolved_facts", json.dumps(cached_facts))
-
-            return {
-                "success": True,
-                "mode": "auditable",
-                "output": final_output,
-                "final_answer": answer,
-                "confidence": confidence,
-                "derivation": derivation_trace,
-                "sources": sources,
-                "suggestions": [
-                    "Show me the supporting data for this verification",
-                    "What assumptions were made in this analysis?",
-                ],
-                "datastore_tables": existing_tables,
             }
 
         except Exception as e:
@@ -5921,6 +6029,8 @@ If you don't have enough information, say so rather than guessing."""
         """Add a database to the current session.
 
         The database will be available as `db_<name>` in code execution.
+        The schema is introspected and table/column names are added as
+        ephemeral entities for entity extraction.
 
         Args:
             name: Database name (used as db_<name> variable)
@@ -5936,6 +6046,53 @@ If you don't have enough information, say so rather than guessing."""
             "uri": uri,
             "description": description,
         }
+
+        # Add schema entities to vector store as ephemeral
+        if self.doc_tools and db_type in ("sql", "sqlite", "postgresql", "mysql"):
+            try:
+                # Connect and introspect schema
+                import duckdb
+                from constat.discovery.entity_extractor import create_schema_entities_from_catalog
+
+                # Use DuckDB to connect and introspect
+                conn = duckdb.connect(":memory:")
+                if db_type == "sqlite" or uri.endswith(".db") or uri.endswith(".sqlite"):
+                    conn.execute(f"ATTACH '{uri}' AS session_db (TYPE SQLITE)")
+                    tables = conn.execute(
+                        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'session_db'"
+                    ).fetchall()
+                else:
+                    # For other SQL databases, try direct connection
+                    conn.close()
+                    tables = []
+
+                if tables:
+                    table_names = [t[0] for t in tables]
+                    # Get column names
+                    column_names = []
+                    for table in table_names:
+                        try:
+                            cols = conn.execute(
+                                f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"
+                            ).fetchall()
+                            column_names.extend([c[0] for c in cols])
+                        except Exception:
+                            pass
+
+                    # Create and store entities as ephemeral
+                    entities = create_schema_entities_from_catalog(table_names, column_names)
+                    if entities and hasattr(self.doc_tools._vector_store, 'add_entities'):
+                        self.doc_tools._vector_store.add_entities(entities, ephemeral=True)
+
+                    # Also update schema entities for future document indexing
+                    current_entities = self.doc_tools._schema_entities or []
+                    new_entities = list(set(current_entities + table_names + column_names))
+                    self.doc_tools._schema_entities = new_entities
+
+                conn.close()
+            except Exception:
+                pass  # Non-fatal - database still added to session
+
         return True
 
     def add_file(
@@ -5949,6 +6106,8 @@ If you don't have enough information, say so rather than guessing."""
 
         The file will be available as `file_<name>` in code execution.
         For local files, this is a Path. For HTTP files, content is fetched on-demand.
+        Document files (md, txt, pdf, docx) are also indexed in the vector store
+        as ephemeral (cleaned up on restart).
 
         Args:
             name: File name (used as file_<name> variable)
@@ -5964,6 +6123,48 @@ If you don't have enough information, say so rather than guessing."""
             "auth": auth,
             "description": description,
         }
+
+        # Index document files in the vector store as ephemeral
+        if self.doc_tools:
+            doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
+            from pathlib import Path
+
+            # Handle file:// URIs
+            file_path = uri
+            if uri.startswith("file://"):
+                file_path = uri[7:]
+
+            path = Path(file_path)
+            if path.suffix.lower() in doc_extensions and path.exists():
+                try:
+                    # Read file content
+                    if path.suffix.lower() == '.pdf':
+                        from pypdf import PdfReader
+                        reader = PdfReader(path)
+                        content = "\n\n".join(
+                            page.extract_text() for page in reader.pages if page.extract_text()
+                        )
+                    elif path.suffix.lower() == '.docx':
+                        from docx import Document
+                        doc = Document(path)
+                        content = "\n\n".join(para.text for para in doc.paragraphs if para.text)
+                    else:
+                        content = path.read_text()
+
+                    # Detect format
+                    format_map = {'.md': 'markdown', '.txt': 'text', '.html': 'html', '.htm': 'html'}
+                    doc_format = format_map.get(path.suffix.lower(), 'text')
+
+                    # Add as ephemeral document
+                    self.doc_tools.add_ephemeral_document(
+                        name=f"session:{name}",
+                        content=content,
+                        doc_format=doc_format,
+                        description=description,
+                    )
+                except Exception:
+                    pass  # Non-fatal - file still added to session
+
         return True
 
     def get_all_databases(self) -> dict[str, dict]:
@@ -6355,7 +6556,8 @@ If you don't have enough information, say so rather than guessing."""
             return {}
         try:
             return json.loads(plans_file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug(f"Could not load user plans from {plans_file}: {e}")
             return {}
 
     @classmethod
@@ -6373,7 +6575,8 @@ If you don't have enough information, say so rather than guessing."""
             return {}
         try:
             return json.loads(plans_file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug(f"Could not load shared plans from {plans_file}: {e}")
             return {}
 
     @classmethod
