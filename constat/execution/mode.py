@@ -428,6 +428,9 @@ class PlanApproval(Enum):
     COMMAND = "command"
     """User entered a slash command - pass back to REPL for handling."""
 
+    MODE_SWITCH = "mode_switch"
+    """User wants to switch mode and replan."""
+
 
 @dataclass
 class PlanApprovalRequest:
@@ -483,3 +486,8 @@ class PlanApprovalResponse:
     def pass_command(cls, command: str) -> "PlanApprovalResponse":
         """Create a command pass-through response."""
         return cls(decision=PlanApproval.COMMAND, command=command)
+
+    @classmethod
+    def mode_switch(cls, target_mode: Mode) -> "PlanApprovalResponse":
+        """Create a mode switch response to replan in a different mode."""
+        return cls(decision=PlanApproval.MODE_SWITCH, target_mode=target_mode)

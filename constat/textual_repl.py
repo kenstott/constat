@@ -1213,9 +1213,12 @@ class ConstatREPLApp(App):
             self._show_dfd_in_side_panel(request.steps)
 
         log.write("")
-        log.write(Text("  [y/Enter] Approve  [n] Reject  [or type feedback to modify plan]", style="green"))
+        # Show mode switch option
+        other_mode = Mode.EXPLORATORY if mode == Mode.PROOF else Mode.PROOF
+        other_mode_name = "explore" if other_mode == Mode.EXPLORATORY else "proof"
+        log.write(Text(f"  [y/Enter] Approve  [n] Reject  [m] Switch to {other_mode_name}  [or type feedback]", style="green"))
 
-        input_widget.placeholder = "Approve? [y/n or type feedback] (Enter=yes)"
+        input_widget.placeholder = f"Approve? [y/n/m or type feedback] (Enter=yes)"
         input_widget.value = ""
         input_widget.disabled = False  # Ensure input is enabled
         # Set status_message=None so phase-based display is used (no spinner for AWAITING_APPROVAL)
@@ -1529,6 +1532,20 @@ class ConstatREPLApp(App):
             side_panel.remove_class("visible")
 
             self._approval_response = PlanApprovalResponse.reject(reason="User rejected")
+            self._approval_event.set()
+
+        # 'm' or 'mode' = switch mode and replan
+        elif lower in ('m', 'mode', 'switch', 'switch mode'):
+            current_mode = self._approval_request.mode if self._approval_request else Mode.PROOF
+            target_mode = Mode.EXPLORATORY if current_mode == Mode.PROOF else Mode.PROOF
+            target_name = "explore" if target_mode == Mode.EXPLORATORY else "proof"
+            log.write(Text(f"Switching to {target_name} mode and replanning...", style="cyan"))
+            input_widget.placeholder = "Ask a question or type /help"
+            status_bar.update_status(status_message=f"Replanning in {target_name} mode...", phase=Phase.PLANNING)
+            # Hide side panel while replanning
+            side_panel.remove_class("visible")
+
+            self._approval_response = PlanApprovalResponse.mode_switch(target_mode)
             self._approval_event.set()
 
         # Any other input = treat as feedback/suggestion
