@@ -237,7 +237,7 @@ class SidePanelContent(Static):
     MODE_ARTIFACTS = "artifacts"
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
+        super().__init__("", **kwargs)  # Initialize with empty content
         self._mode = self.MODE_DFD
         self._proof_tree: Optional[ProofTree] = None  # Use actual ProofTree class
         self._dag_lines: list[str] = []
@@ -654,7 +654,10 @@ class TextualFeedbackHandler:
             # Events use inference_id/inference_name and result
             inference_id = data.get("inference_id", "") or data.get("fact_id", "")
             inference_name = data.get("inference_name", "") or data.get("operation", "")
-            result = data.get("result", "") or data.get("value", "")
+            # Handle result carefully - it may be a DataFrame which can't use 'or'
+            result = data.get("result")
+            if result is None:
+                result = data.get("value", "")
             display_name = f"{inference_id}: {inference_name}" if inference_name else inference_id
             logger.debug(f"inference_complete: {display_name}, result={str(result)[:30]}")
             # Update proof tree - mark as resolved
