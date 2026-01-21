@@ -1641,7 +1641,7 @@ class ConstatREPLApp(App):
             await self._export_table(args)
         elif cmd == "/summarize" and args:
             await self._handle_summarize(args)
-        elif cmd == "/audit":
+        elif cmd == "/prove":
             await self._handle_audit()
         elif cmd == "/user":
             log.write(Text(f"Current user: {self.user_id}", style="dim"))
@@ -1689,7 +1689,7 @@ class ConstatREPLApp(App):
             ("/files", "List all data files"),
             ("/correct <text>", "Record a correction for future reference"),
             ("/learnings", "Show learnings and rules"),
-            ("/audit", "Re-derive last result with full audit trail"),
+            ("/prove", "Re-derive last result with full proof trail"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
             ("/mode [mode]", "Set default mode: proof|explore|auto"),
             ("/proof", "Switch to proof mode (auditable)"),
