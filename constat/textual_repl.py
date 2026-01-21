@@ -1620,29 +1620,29 @@ class ConstatREPLApp(App):
         elif cmd == "/learnings":
             await self._show_learnings()
         elif cmd == "/compact":
-            log.write(Text("Context compaction not yet implemented in Textual REPL.", style="yellow"))
+            await self._compact_context()
         elif cmd == "/remember" and args:
-            log.write(Text("Remember not yet implemented in Textual REPL.", style="yellow"))
+            await self._remember_fact(args)
         elif cmd == "/forget" and args:
-            log.write(Text("Forget not yet implemented in Textual REPL.", style="yellow"))
+            await self._forget_fact(args)
         elif cmd == "/correct" and args:
-            log.write(Text("Correct not yet implemented in Textual REPL.", style="yellow"))
+            await self._handle_correct(args)
         elif cmd == "/save" and args:
-            log.write(Text("Save not yet implemented in Textual REPL.", style="yellow"))
+            await self._save_plan(args)
         elif cmd == "/share" and args:
-            log.write(Text("Share not yet implemented in Textual REPL.", style="yellow"))
+            await self._save_plan(args, shared=True)
         elif cmd == "/plans":
-            log.write(Text("Plans not yet implemented in Textual REPL.", style="yellow"))
+            await self._list_plans()
         elif cmd == "/replay" and args:
-            log.write(Text("Replay not yet implemented in Textual REPL.", style="yellow"))
+            await self._replay_plan(args)
         elif cmd == "/resume" and args:
-            log.write(Text("Resume not yet implemented in Textual REPL.", style="yellow"))
+            await self._resume_session(args)
         elif cmd == "/export" and args:
-            log.write(Text("Export not yet implemented in Textual REPL.", style="yellow"))
+            await self._export_table(args)
         elif cmd == "/summarize" and args:
-            log.write(Text("Summarize not yet implemented in Textual REPL.", style="yellow"))
+            await self._handle_summarize(args)
         elif cmd == "/audit":
-            log.write(Text("Audit trail not yet implemented in Textual REPL.", style="yellow"))
+            await self._handle_audit()
         elif cmd == "/user":
             log.write(Text(f"Current user: {self.user_id}", style="dim"))
         else:
@@ -1972,11 +1972,6 @@ class ConstatREPLApp(App):
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
 
-    async def _show_files(self) -> None:
-        """Show data files."""
-        log = self.query_one("#output-log", OutputLog)
-        log.write(Text("Data files not yet implemented in Textual REPL.", style="yellow"))
-
     async def _show_context(self) -> None:
         """Show context size and token usage."""
         log = self.query_one("#output-log", OutputLog)
@@ -2052,14 +2047,419 @@ class ConstatREPLApp(App):
         log = self.query_one("#output-log", OutputLog)
 
         try:
-            learnings = self.learning_store.list_learnings(limit=20)
-            if not learnings:
+            # Show rules first
+            rules = self.learning_store.list_rules()
+            if rules:
+                log.write(Text(f"Rules ({len(rules)})", style="bold"))
+                for r in rules[:10]:
+                    conf = r.get("confidence", 0) * 100
+                    applied = r.get("applied_count", 0)
+                    log.write(Text(f"  [{conf:.0f}%] {r.get('summary', '')[:60]} (applied {applied}x)", style="dim"))
+
+            # Show pending learnings
+            raw = self.learning_store.list_raw_learnings(limit=20)
+            pending = [l for l in raw if not l.get("promoted_to")]
+            if pending:
+                log.write(Text(f"Pending Learnings ({len(pending)})", style="bold"))
+                for l in pending[:10]:
+                    cat = l.get("category", "")[:10]
+                    lid = l.get("id", "")[:12]
+                    log.write(Text(f"  {lid} [{cat}] {l.get('correction', '')[:50]}...", style="dim"))
+
+            if not rules and not pending:
                 log.write(Text("No learnings yet.", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _compact_context(self) -> None:
+        """Compact context to reduce token usage."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        status_bar.update_status(status_message="Compacting context...")
+        try:
+            stats_before = self.session.get_context_stats()
+            if stats_before:
+                log.write(Text(f"Before: ~{stats_before.total_tokens:,} tokens", style="dim"))
+
+            result = self.session.compact_context(
+                summarize_scratchpad=True,
+                sample_tables=True,
+                clear_old_state=False,
+                keep_recent_steps=3,
+            )
+
+            if result:
+                log.write(Text(f"{result.message}", style="green"))
+                log.write(Text(result.summary(), style="dim"))
+            else:
+                log.write(Text("Compaction returned no result.", style="yellow"))
+        except Exception as e:
+            log.write(Text(f"Error during compaction: {e}", style="red"))
+        finally:
+            status_bar.update_status(status_message=None)
+
+    async def _remember_fact(self, fact_text: str) -> None:
+        """Remember a fact persistently."""
+        log = self.query_one("#output-log", OutputLog)
+        import re
+
+        if not fact_text.strip():
+            log.write(Text("Usage: /remember <fact>", style="yellow"))
+            log.write(Text("  /remember churn_rate        - persist a session fact", style="dim"))
+            log.write(Text("  /remember churn as baseline - persist with new name", style="dim"))
+            return
+
+        # Check if this is a session fact reference with optional rename
+        session_fact_match = re.match(r'^(\S+)(?:\s+as\s+(\S+))?$', fact_text.strip())
+
+        if session_fact_match and self.session:
+            fact_name = session_fact_match.group(1)
+            new_name = session_fact_match.group(2)
+
+            session_facts = self.session.fact_resolver.get_all_facts()
+
+            # Look for matching fact
+            matching_fact = None
+            matching_key = None
+            for key, fact in session_facts.items():
+                if key == fact_name or key == f"{fact_name}()":
+                    matching_fact = fact
+                    matching_key = key
+                    break
+                if hasattr(fact, 'name') and fact.name == fact_name:
+                    matching_fact = fact
+                    matching_key = key
+                    break
+
+            if matching_fact:
+                persist_name = new_name if new_name else (matching_fact.name if hasattr(matching_fact, 'name') else fact_name)
+
+                # Build context from provenance
+                context_parts = []
+                if hasattr(matching_fact, 'source'):
+                    context_parts.append(f"Source: {matching_fact.source.value}")
+                if hasattr(matching_fact, 'source_name') and matching_fact.source_name:
+                    context_parts.append(f"From: {matching_fact.source_name}")
+                context = "\n".join(context_parts)
+
+                description = matching_fact.description if hasattr(matching_fact, 'description') else f"Persisted from session"
+
+                self.fact_store.save_fact(
+                    name=persist_name,
+                    value=matching_fact.value if hasattr(matching_fact, 'value') else str(matching_fact),
+                    description=description,
+                    context=context,
+                )
+
+                display_value = matching_fact.display_value if hasattr(matching_fact, 'display_value') else str(matching_fact)[:50]
+                log.write(Text(f"Remembered: {persist_name} = {display_value}", style="green"))
+                log.write(Text("This fact will persist across sessions.", style="dim"))
                 return
 
-            log.write(Text(f"Learnings ({len(learnings)})", style="bold"))
-            for learning in learnings:
-                log.write(Text(f"  • {learning.get('content', '')[:60]}...", style="dim"))
+        # Not a session fact - treat as natural language
+        log.write(Text(f"Fact '{fact_text[:30]}...' not found in session.", style="yellow"))
+        log.write(Text("Use /facts to see available session facts.", style="dim"))
+
+    async def _forget_fact(self, fact_name: str) -> None:
+        """Forget a fact by name."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not fact_name.strip():
+            log.write(Text("Usage: /forget <fact_name>", style="yellow"))
+            return
+
+        fact_name = fact_name.strip()
+        found = False
+
+        # Check persistent facts
+        if self.fact_store.delete_fact(fact_name):
+            log.write(Text(f"Forgot persistent fact: {fact_name}", style="green"))
+            found = True
+
+        # Check session facts
+        if self.session:
+            facts = self.session.fact_resolver.get_all_facts()
+            if fact_name in facts:
+                self.session.fact_resolver._cache.pop(fact_name, None)
+                if not found:
+                    log.write(Text(f"Forgot session fact: {fact_name}", style="green"))
+                found = True
+
+        if not found:
+            log.write(Text(f"Fact '{fact_name}' not found.", style="yellow"))
+            log.write(Text("Use /facts to see available facts.", style="dim"))
+
+    async def _handle_correct(self, correction: str) -> None:
+        """Handle /correct command - record user correction."""
+        log = self.query_one("#output-log", OutputLog)
+        from constat.learning.store import LearningCategory, LearningSource
+
+        if not correction.strip():
+            log.write(Text("Usage: /correct <correction>", style="yellow"))
+            log.write(Text("  /correct 'active users' means logged in within 30 days", style="dim"))
+            return
+
+        self.learning_store.save_learning(
+            category=LearningCategory.USER_CORRECTION,
+            context={
+                "previous_question": self.last_problem,
+                "correction_text": correction,
+            },
+            correction=correction,
+            source=LearningSource.EXPLICIT_COMMAND,
+        )
+        log.write(Text(f"Learned: {correction[:60]}{'...' if len(correction) > 60 else ''}", style="green"))
+
+    async def _save_plan(self, name: str, shared: bool = False) -> None:
+        """Save current plan for replay."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+        if not self.last_problem:
+            log.write(Text("No problem executed yet.", style="yellow"))
+            return
+
+        try:
+            self.session.save_plan(name, self.last_problem, user_id=self.user_id, shared=shared)
+            if shared:
+                log.write(Text(f"Plan saved as shared: {name}", style="green"))
+            else:
+                log.write(Text(f"Plan saved: {name}", style="green"))
+        except Exception as e:
+            log.write(Text(f"Error saving plan: {e}", style="red"))
+
+    async def _list_plans(self) -> None:
+        """List saved plans."""
+        log = self.query_one("#output-log", OutputLog)
+
+        try:
+            plans = Session.list_saved_plans(user_id=self.user_id)
+            if not plans:
+                log.write(Text("No saved plans.", style="dim"))
+                return
+
+            table = Table(title="Saved Plans", show_header=True, box=None)
+            table.add_column("Name", style="cyan")
+            table.add_column("Problem")
+            table.add_column("Steps", justify="right")
+            table.add_column("Type")
+
+            for p in plans:
+                plan_type = "shared" if p.get("shared") else "private"
+                problem = p.get("problem", "")[:50]
+                if len(p.get("problem", "")) > 50:
+                    problem += "..."
+                table.add_row(p["name"], problem, str(p.get("steps", 0)), plan_type)
+
+            log.write(table)
+        except Exception as e:
+            log.write(Text(f"Error listing plans: {e}", style="red"))
+
+    async def _replay_plan(self, name: str) -> None:
+        """Replay a saved plan."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            plan_data = Session.load_saved_plan(name, user_id=self.user_id)
+            self.last_problem = plan_data["problem"]
+            log.write(Text(f"Replaying: {self.last_problem[:50]}...", style="dim"))
+            await self._solve(self.last_problem)
+        except Exception as e:
+            log.write(Text(f"Error replaying plan: {e}", style="red"))
+
+    async def _resume_session(self, session_id: str) -> None:
+        """Resume a previous session."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            # Find matching session (partial ID match)
+            sessions = self.session.history.list_sessions(limit=50)
+            match = None
+            for s in sessions:
+                if s.session_id.startswith(session_id) or session_id in s.session_id:
+                    match = s.session_id
+                    break
+
+            if not match:
+                log.write(Text(f"Session not found: {session_id}", style="red"))
+                return
+
+            if self.session.resume(match):
+                log.write(Text(f"Resumed session: {match[:30]}...", style="green"))
+                tables = self.session.datastore.list_tables() if self.session.datastore else []
+                if tables:
+                    log.write(Text(f"{len(tables)} tables available - use /tables to view", style="dim"))
+            else:
+                log.write(Text(f"Failed to resume session: {match}", style="red"))
+        except Exception as e:
+            log.write(Text(f"Error resuming session: {e}", style="red"))
+
+    async def _export_table(self, arg: str) -> None:
+        """Export a table to CSV or XLSX file."""
+        log = self.query_one("#output-log", OutputLog)
+        from pathlib import Path
+
+        if not arg.strip():
+            log.write(Text("Usage: /export <table> [filename]", style="yellow"))
+            log.write(Text("  /export orders           - Export to orders.csv", style="dim"))
+            log.write(Text("  /export orders data.xlsx - Export to data.xlsx", style="dim"))
+            return
+
+        if not self.session or not self.session.datastore:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        parts = arg.strip().split(maxsplit=1)
+        table_name = parts[0]
+        filename = parts[1] if len(parts) > 1 else f"{table_name}.csv"
+
+        ext = Path(filename).suffix.lower()
+        if ext not in (".csv", ".xlsx"):
+            log.write(Text(f"Unsupported format: {ext}. Use .csv or .xlsx", style="yellow"))
+            return
+
+        try:
+            df = self.session.datastore.query(f"SELECT * FROM {table_name}")
+
+            output_path = Path(filename).resolve()
+            if ext == ".csv":
+                df.to_csv(output_path, index=False)
+            else:
+                df.to_excel(output_path, index=False)
+
+            log.write(Text(f"Exported {len(df)} rows to:", style="green"))
+            log.write(Text(f"  {output_path.as_uri()}", style="dim underline"))
+        except Exception as e:
+            log.write(Text(f"Export failed: {e}", style="red"))
+
+    async def _handle_summarize(self, arg: str) -> None:
+        """Generate LLM summary of plan, session, facts, or table."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if not arg.strip():
+            log.write(Text("Usage: /summarize plan|session|facts|<table>", style="yellow"))
+            return
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        target = arg.strip().lower()
+        status_bar.update_status(status_message=f"Summarizing {target}...")
+
+        try:
+            llm = self.session.router._get_provider(self.session.router.models["planning"])
+
+            if target == "plan":
+                if not self.session.plan:
+                    log.write(Text("No plan to summarize.", style="yellow"))
+                    return
+                plan_text = str(self.session.plan)
+                prompt = f"Summarize this execution plan concisely:\n\n{plan_text}"
+            elif target == "session":
+                tables = self.session.datastore.list_tables() if self.session.datastore else []
+                facts = self.session.fact_resolver.get_all_facts() if hasattr(self.session, 'fact_resolver') else {}
+                session_text = f"Tables: {len(tables)}, Facts: {len(facts)}"
+                prompt = f"Summarize this session state:\n\n{session_text}"
+            elif target == "facts":
+                facts = self.session.fact_resolver.get_all_facts() if hasattr(self.session, 'fact_resolver') else {}
+                if not facts:
+                    log.write(Text("No facts to summarize.", style="yellow"))
+                    return
+                facts_text = "\n".join([f"{k}: {v}" for k, v in list(facts.items())[:20]])
+                prompt = f"Summarize these facts concisely:\n\n{facts_text}"
+            else:
+                # Assume table name
+                df = self.session.datastore.query(f"SELECT * FROM {target} LIMIT 100")
+                if df.empty:
+                    log.write(Text(f"Table '{target}' is empty.", style="yellow"))
+                    return
+                table_text = df.to_string()[:2000]
+                prompt = f"Summarize this table data concisely:\n\n{table_text}"
+
+            response = llm.complete(prompt, max_tokens=500)
+            summary = response.content if hasattr(response, 'content') else str(response)
+
+            log.write(Text(f"Summary: {target}", style="bold"))
+            log.write(Text(summary, style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error generating summary: {e}", style="red"))
+        finally:
+            status_bar.update_status(status_message=None)
+
+    async def _handle_audit(self) -> None:
+        """Re-derive last result with full audit trail."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if not self.session:
+            log.write(Text("No active session. Ask a question first.", style="yellow"))
+            return
+
+        status_bar.update_status(status_message="Re-deriving with audit trail...")
+        try:
+            result = self.session.audit()
+
+            if result.get("success"):
+                output = result.get("output", "")
+                if output:
+                    log.write(Text("Audit Result", style="bold green"))
+                    log.write(Text(output, style="dim"))
+
+                verification = result.get("verification")
+                if verification:
+                    status = verification.get("verified", False)
+                    msg = verification.get("message", "")
+                    if status:
+                        log.write(Text(f"Verified: {msg}", style="green"))
+                    else:
+                        log.write(Text(f"Discrepancy: {msg}", style="yellow"))
+            else:
+                error = result.get("error", "Unknown error")
+                log.write(Text(f"Audit failed: {error}", style="red"))
+        except Exception as e:
+            log.write(Text(f"Error during audit: {e}", style="red"))
+        finally:
+            status_bar.update_status(status_message=None)
+
+    async def _show_files(self) -> None:
+        """Show data files."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            # Get files from config
+            files = getattr(self.session.config, 'files', [])
+            if not files:
+                log.write(Text("No data files configured.", style="dim"))
+                return
+
+            log.write(Text(f"Data Files ({len(files)})", style="bold"))
+            for f in files:
+                name = f.get('name', 'unknown') if isinstance(f, dict) else str(f)
+                uri = f.get('uri', '') if isinstance(f, dict) else ''
+                log.write(Text(f"  {name}", style="cyan"))
+                if uri:
+                    log.write(Text(f"    {uri}", style="dim underline"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
 
