@@ -69,6 +69,42 @@ class StatusBar(Static):
     tables_count: reactive[int] = reactive(0)
     facts_count: reactive[int] = reactive(0)
     spinner_frame: reactive[int] = reactive(0)
+    elapsed_time: reactive[str] = reactive("")  # Timer display
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._timer_start: float | None = None
+        self._timer_interval = None
+        self._final_time: str | None = None  # Stores final time after stop
+
+    def start_timer(self) -> None:
+        """Start the elapsed time timer."""
+        import time
+        self._timer_start = time.time()
+        self._final_time = None
+        self.elapsed_time = "0.0s"
+        # Update timer every 100ms
+        if self._timer_interval is None:
+            self._timer_interval = self.set_interval(0.1, self._update_timer)
+
+    def stop_timer(self) -> None:
+        """Stop the timer and show final time."""
+        import time
+        if self._timer_start is not None:
+            elapsed = time.time() - self._timer_start
+            self._final_time = f"{elapsed:.1f}s"
+            self.elapsed_time = self._final_time
+        if self._timer_interval is not None:
+            self._timer_interval.stop()
+            self._timer_interval = None
+        self._timer_start = None
+
+    def _update_timer(self) -> None:
+        """Update the elapsed time display."""
+        import time
+        if self._timer_start is not None:
+            elapsed = time.time() - self._timer_start
+            self.elapsed_time = f"{elapsed:.1f}s"
 
     DEFAULT_CSS = """
     StatusBar {
@@ -120,9 +156,14 @@ class StatusBar(Static):
         elif self.phase == Phase.FAILED:
             parts.append(Text(" failed", style="bold red"))
 
-        # Add interrupt hint when processing
+        # Add timer and interrupt hint when processing
         if is_processing:
+            if self.elapsed_time:
+                parts.append(Text(f"  [{self.elapsed_time}]", style="bold cyan"))
             parts.append(Text("  (Ctrl+C or ESC to interrupt)", style="dim"))
+        elif self._final_time:
+            # Show final time after processing completes
+            parts.append(Text(f"  [{self._final_time}]", style="dim green"))
 
         # Stats
         stats_parts = []
@@ -1127,8 +1168,9 @@ class ConstatREPLApp(App):
                     (s, "cyan"),
                 ))
 
-        # Stop spinner and reset status to Ready
+        # Stop spinner/timer and reset status to Ready
         await self._stop_spinner()
+        status_bar.stop_timer()
         logger.debug("on_solve_complete: resetting status bar to IDLE")
         status_bar.update_status(status_message=None, phase=Phase.IDLE)
         status_bar.refresh()  # Force refresh to ensure update is visible
@@ -2474,7 +2516,8 @@ class ConstatREPLApp(App):
         self.last_problem = problem
         self.suggestions = []
 
-        # Start spinner
+        # Start spinner and timer
+        status_bar.start_timer()
         status_bar.update_status(status_message="Analyzing question...")
         await self._start_spinner()
 
