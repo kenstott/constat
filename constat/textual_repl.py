@@ -399,7 +399,9 @@ class SidePanelContent(Static):
                 if file_uri:
                     if not file_uri.startswith("file://"):
                         file_uri = f"file://{file_uri}"
-                    content.append(f"   {file_uri}\n", style="cyan underline")
+                    # Use separate Text with no_wrap to prevent breaking the URI
+                    uri_text = Text(f"   {file_uri}\n", style="cyan underline", no_wrap=True, overflow="ellipsis")
+                    content.append_text(uri_text)
                 elif command:
                     content.append(f"   → {command}\n", style="cyan")
 
@@ -1061,6 +1063,21 @@ class ConstatREPLApp(App):
         artifacts = []
         logger.debug(f"on_solve_complete: result keys = {list(result.keys())}")
 
+        # Get table file paths from registry for file:// URIs
+        table_file_paths = {}
+        try:
+            from constat.storage.registry import ConstatRegistry
+            from pathlib import Path
+            registry = ConstatRegistry()
+            registry_tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+            registry.close()
+            for t in registry_tables:
+                file_path = Path(t.file_path)
+                if file_path.exists():
+                    table_file_paths[t.name] = file_path.resolve().as_uri()
+        except Exception as e:
+            logger.debug(f"on_solve_complete: failed to get table file paths: {e}")
+
         # Add tables as artifacts
         datastore_tables = result.get("datastore_tables", [])
         logger.debug(f"on_solve_complete: datastore_tables = {datastore_tables}")
@@ -1071,6 +1088,7 @@ class ConstatREPLApp(App):
                     "name": table,
                     "description": "",
                     "command": f"/show {table}",
+                    "file_uri": table_file_paths.get(table, ""),
                 })
             elif isinstance(table, dict) and "name" in table:
                 # Dict with name key (from datastore)
@@ -1081,6 +1099,7 @@ class ConstatREPLApp(App):
                     "name": table_name,
                     "description": f"{row_count} rows" if row_count else "",
                     "command": f"/show {table_name}",
+                    "file_uri": table_file_paths.get(table_name, ""),
                 })
             elif hasattr(table, "name"):
                 artifacts.append({
@@ -1088,6 +1107,7 @@ class ConstatREPLApp(App):
                     "name": table.name,
                     "description": f"{table.row_count} rows" if hasattr(table, "row_count") else "",
                     "command": f"/show {table.name}",
+                    "file_uri": table_file_paths.get(table.name, ""),
                 })
 
         # Add any visualizations/outputs
@@ -1773,11 +1793,11 @@ class ConstatREPLApp(App):
                     (t.name, "cyan"),
                     (f" ({t.row_count} rows)", "dim"),
                 ))
-                # Show file:// URI for the Parquet file
+                # Show file:// URI for the Parquet file (no wrap to keep clickable)
                 file_path = Path(t.file_path)
                 if file_path.exists():
                     file_uri = file_path.resolve().as_uri()
-                    log.write(Text(f"    {file_uri}", style="dim underline"))
+                    log.write(Text(f"    {file_uri}", style="dim underline", no_wrap=True, overflow="ellipsis"))
         except Exception as e:
             log.write(Text(f"Error listing tables: {e}", style="red"))
 
