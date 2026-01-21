@@ -505,7 +505,14 @@ class TextualFeedbackHandler:
             status_bar.update_status(status_message="Resolving proof tree...", phase=Phase.EXECUTING)
             log.write(Text("Proof Execution:", style="bold yellow"))
             if conclusion_desc:
-                log.write(Text(f"  Conclusion: {conclusion_desc[:60]}...", style="dim"))
+                # Wrap conclusion text to fit terminal width
+                import textwrap
+                wrap_width = max(40, shutil.get_terminal_size().columns - 15)
+                prefix = "  Conclusion: "
+                indent = " " * len(prefix)
+                wrapped = textwrap.fill(conclusion_desc, width=wrap_width,
+                                        initial_indent=prefix, subsequent_indent=indent)
+                log.write(Text(wrapped, style="dim"))
 
             # Switch to proof tree mode (replaces DFD)
             side_panel = self._get_side_panel()
@@ -1216,9 +1223,9 @@ class ConstatREPLApp(App):
         # Show mode switch option
         other_mode = Mode.EXPLORATORY if mode == Mode.PROOF else Mode.PROOF
         other_mode_name = "explore" if other_mode == Mode.EXPLORATORY else "proof"
-        log.write(Text(f"  [y/Enter] Approve  [n] Reject  [m] Switch to {other_mode_name}  [or type feedback]", style="green"))
+        log.write(Text(f"  [yes/Enter] Approve  [no] Reject  [mode-switch] Replan as {other_mode_name}  [or type feedback]", style="green"))
 
-        input_widget.placeholder = f"Approve? [y/n/m or type feedback] (Enter=yes)"
+        input_widget.placeholder = f"Approve? [yes/no/mode-switch or feedback] (Enter=yes)"
         input_widget.value = ""
         input_widget.disabled = False  # Ensure input is enabled
         # Set status_message=None so phase-based display is used (no spinner for AWAITING_APPROVAL)
@@ -1534,8 +1541,8 @@ class ConstatREPLApp(App):
             self._approval_response = PlanApprovalResponse.reject(reason="User rejected")
             self._approval_event.set()
 
-        # 'm' or 'mode' = switch mode and replan
-        elif lower in ('m', 'mode', 'switch', 'switch mode'):
+        # 'mode-switch' or variants = switch mode and replan
+        elif lower in ('m', 'mode', 'mode-switch', 'switch', 'switch mode'):
             current_mode = self._approval_request.mode if self._approval_request else Mode.PROOF
             target_mode = Mode.EXPLORATORY if current_mode == Mode.PROOF else Mode.PROOF
             target_name = "explore" if target_mode == Mode.EXPLORATORY else "proof"
