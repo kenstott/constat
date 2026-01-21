@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Directed Acyclic Graph for parallel fact resolution in auditable mode.
 
 This module provides DAG data structures and parallel execution for auditable mode.
@@ -15,7 +24,10 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from constat.execution.parallel_scheduler import ExecutionContext
 
 
 class NodeStatus(Enum):
@@ -207,19 +219,26 @@ class ExecutionDAG:
 def parse_plan_to_dag(
     premises: list[dict],
     inferences: list[dict],
+    validate: bool = True,
 ) -> ExecutionDAG:
     """Parse auditable mode plan into an executable DAG.
 
     Args:
         premises: List of premise dicts with keys: id, name, description, source
         inferences: List of inference dicts with keys: id, name, operation, explanation
+        validate: If True, validate plan before parsing (recommended)
 
     Returns:
         ExecutionDAG ready for parallel execution
 
     Raises:
-        ValueError: If duplicate names are detected in premises or inferences
+        ValueError: If validation fails or duplicate names are detected
     """
+    # Validate plan first if requested
+    if validate:
+        validation = validate_proof_plan(premises, inferences)
+        if not validation.valid:
+            raise ValueError(validation.format_for_retry())
     nodes = []
     name_to_id: dict[str, str] = {}  # Map names to P/I IDs for dependency resolution
 
@@ -333,6 +352,169 @@ def parse_plan_to_dag(
     return ExecutionDAG(nodes)
 
 
+@dataclass
+class PlanValidationError:
+    """A single validation error in a proof plan."""
+    fact_id: str  # The fact ID where error occurred (e.g., "I2")
+    error_type: str  # "unknown_reference", "unused_premise", "circular_dependency", etc.
+    message: str  # Human-readable error message
+    invalid_refs: list[str] = field(default_factory=list)  # The invalid references found
+
+
+@dataclass
+class PlanValidationResult:
+    """Result of validating a proof plan."""
+    valid: bool
+    errors: list[PlanValidationError] = field(default_factory=list)
+
+    def format_for_retry(self) -> str:
+        """Format errors as feedback for LLM retry."""
+        if self.valid:
+            return ""
+        lines = ["PLAN VALIDATION FAILED - Please fix the following errors:\n"]
+        for err in self.errors:
+            lines.append(f"  [{err.fact_id}] {err.error_type}: {err.message}")
+            if err.invalid_refs:
+                lines.append(f"      Invalid references: {', '.join(err.invalid_refs)}")
+        lines.append("\nEnsure all fact references (P1, P2, I1, etc.) exist in the plan.")
+        return "\n".join(lines)
+
+
+def validate_proof_plan(
+    premises: list[dict],
+    inferences: list[dict],
+) -> PlanValidationResult:
+    """Validate a proof plan for internal consistency before execution.
+
+    Checks:
+    1. All P/I references in operations exist in the plan
+    2. All premises are used by at least one inference
+    3. Inference dependencies form a valid DAG (no forward references)
+    4. No duplicate names
+
+    Args:
+        premises: List of premise dicts with keys: id, name, description, source
+        inferences: List of inference dicts with keys: id, name, operation, explanation
+
+    Returns:
+        PlanValidationResult with valid=True if plan is consistent, or errors if not
+    """
+    errors: list[PlanValidationError] = []
+
+    # Build set of valid fact IDs and names
+    valid_ids: set[str] = set()
+    valid_names: set[str] = set()
+    id_to_name: dict[str, str] = {}
+
+    # Track premise usage
+    premise_ids: set[str] = set()
+    used_premises: set[str] = set()
+
+    # Parse premises
+    premise_name_to_id: dict[str, str] = {}
+    for p in premises:
+        fact_id = p.get("id", "")
+        name = p.get("name", fact_id)
+
+        # Clean embedded values from name
+        clean_name = name
+        if " = " in name and not name.endswith(" = ?"):
+            clean_name = name.rsplit(" = ", 1)[0].strip()
+
+        # Check for duplicate premise names
+        if clean_name in premise_name_to_id:
+            errors.append(PlanValidationError(
+                fact_id=fact_id,
+                error_type="duplicate_premise",
+                message=f"Premise name '{clean_name}' already defined in {premise_name_to_id[clean_name]}",
+            ))
+        else:
+            premise_name_to_id[clean_name] = fact_id
+
+        valid_ids.add(fact_id)
+        valid_names.add(clean_name)
+        id_to_name[fact_id] = clean_name
+        premise_ids.add(fact_id)
+
+    # Parse inferences and validate references
+    inference_name_to_id: dict[str, str] = {}
+    defined_inferences: set[str] = set()  # Track which inferences are defined (for forward ref check)
+
+    for inf in inferences:
+        fact_id = inf.get("id", "")
+        name = inf.get("name", "") or fact_id
+        operation = inf.get("operation", "")
+
+        # Check for duplicate inference names
+        if name in inference_name_to_id:
+            errors.append(PlanValidationError(
+                fact_id=fact_id,
+                error_type="duplicate_inference",
+                message=f"Inference name '{name}' already defined in {inference_name_to_id[name]}",
+            ))
+        elif name in premise_name_to_id:
+            errors.append(PlanValidationError(
+                fact_id=fact_id,
+                error_type="name_conflict",
+                message=f"Inference name '{name}' conflicts with premise {premise_name_to_id[name]}",
+            ))
+        else:
+            inference_name_to_id[name] = fact_id
+
+        # Find all P/I references in operation
+        pi_refs = re.findall(r'\b([PI]\d+)\b', operation)
+        invalid_refs = []
+        forward_refs = []
+
+        for ref in pi_refs:
+            if ref not in valid_ids and ref not in defined_inferences:
+                invalid_refs.append(ref)
+            elif ref.startswith("I") and ref not in defined_inferences:
+                # Forward reference to inference not yet defined
+                forward_refs.append(ref)
+            elif ref.startswith("P"):
+                used_premises.add(ref)
+
+        if invalid_refs:
+            errors.append(PlanValidationError(
+                fact_id=fact_id,
+                error_type="unknown_reference",
+                message=f"Operation '{operation}' references unknown facts",
+                invalid_refs=invalid_refs,
+            ))
+
+        if forward_refs:
+            errors.append(PlanValidationError(
+                fact_id=fact_id,
+                error_type="forward_reference",
+                message=f"Operation '{operation}' references inferences not yet defined",
+                invalid_refs=forward_refs,
+            ))
+
+        # Mark inference and its name as defined for subsequent inferences
+        valid_ids.add(fact_id)
+        valid_names.add(name)
+        id_to_name[fact_id] = name
+        defined_inferences.add(fact_id)
+
+    # Check for unused premises
+    unused_premises = premise_ids - used_premises
+    if unused_premises:
+        unused_list = sorted(unused_premises)
+        unused_names = [f"{pid} ({id_to_name.get(pid, '?')})" for pid in unused_list]
+        errors.append(PlanValidationError(
+            fact_id="PLAN",
+            error_type="unused_premises",
+            message=f"Premises not used in any inference: {', '.join(unused_names)}",
+            invalid_refs=list(unused_premises),
+        ))
+
+    return PlanValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+    )
+
+
 def extract_dependencies(operation: str, known_names: dict[str, str]) -> list[str]:
     """Extract fact names referenced in an operation.
 
@@ -342,6 +524,9 @@ def extract_dependencies(operation: str, known_names: dict[str, str]) -> list[st
 
     Returns:
         List of dependency names (canonical names, not IDs)
+
+    Note: This function assumes the plan has already been validated.
+    Unknown references are silently skipped (validation catches these).
 
     Examples:
         "join(P1, P2)" with known_names={"P1": "employees", "P2": "reviews"}
@@ -380,6 +565,7 @@ class ExecutionResult:
     execution_levels: list[list[str]]
     failed_nodes: list[str] = field(default_factory=list)
     total_duration_ms: int = 0
+    cancelled: bool = False
 
 
 class DAGExecutor:
@@ -397,6 +583,7 @@ class DAGExecutor:
         max_workers: int = 10,
         event_callback: Optional[Callable] = None,
         fail_fast: bool = True,
+        execution_context: Optional["ExecutionContext"] = None,
     ):
         """Initialize the DAG executor.
 
@@ -406,12 +593,14 @@ class DAGExecutor:
             max_workers: Maximum parallel workers
             event_callback: Optional callback for progress events
             fail_fast: If True, stop on first failure
+            execution_context: Optional context for cancellation support
         """
         self.dag = dag
         self.node_executor = node_executor
         self.max_workers = max_workers
         self.event_callback = event_callback
         self.fail_fast = fail_fast
+        self._execution_context = execution_context
 
     def execute(self) -> ExecutionResult:
         """Execute the DAG with parallel node resolution.
@@ -424,9 +613,20 @@ class DAGExecutor:
 
         execution_levels = self.dag.get_execution_order()
         failed_nodes = []
+        cancelled = False
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             for level_idx, level in enumerate(execution_levels):
+                # Check for cancellation before each level
+                if self._execution_context and self._execution_context.is_cancelled():
+                    cancelled = True
+                    if self.event_callback:
+                        self.event_callback("execution_cancelled", {
+                            "level": level_idx,
+                            "message": "Execution cancelled by user",
+                        })
+                    break
+
                 if self.fail_fast and failed_nodes:
                     break
 
@@ -458,6 +658,19 @@ class DAGExecutor:
 
                 # Wait for all to complete
                 for future in as_completed(futures):
+                    # Check for cancellation while waiting
+                    if self._execution_context and self._execution_context.is_cancelled():
+                        cancelled = True
+                        # Cancel remaining futures
+                        for f in futures:
+                            f.cancel()
+                        if self.event_callback:
+                            self.event_callback("execution_cancelled", {
+                                "level": level_idx,
+                                "message": "Execution cancelled by user",
+                            })
+                        break
+
                     node = futures[future]
                     try:
                         value, confidence = future.result()
@@ -484,14 +697,18 @@ class DAGExecutor:
                                 "error": str(e),
                             })
 
+                if cancelled:
+                    break
+
         total_duration = int((time.time() - start_time) * 1000)
 
         return ExecutionResult(
-            success=len(failed_nodes) == 0,
+            success=len(failed_nodes) == 0 and not cancelled,
             nodes=self.dag.nodes,
             execution_levels=execution_levels,
             failed_nodes=failed_nodes,
             total_duration_ms=total_duration,
+            cancelled=cancelled,
         )
 
     def _execute_node(self, node: FactNode) -> tuple[Any, float]:

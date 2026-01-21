@@ -102,6 +102,12 @@ apis:
       Public GraphQL API for country data. Query countries by code,
       get continents, languages, currencies. Useful for geo-enrichment.
 
+  catfacts:
+    type: openapi
+    url: https://catfact.ninja
+    spec_url: https://catfact.ninja/docs
+    description: Cat facts and breeds API with endpoints for random facts and breed information
+
 execution:
   timeout_seconds: 120
   max_retries: 5

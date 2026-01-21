@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Interactive REPL for refinement loop."""
 
 from typing import Optional
@@ -199,7 +208,7 @@ REPL_COMMANDS = [
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
     "/database", "/databases", "/db", "/file", "/files",
     "/correct", "/learnings", "/compact-learnings", "/forget-learning",
-    "/audit", "/summarize", "/proof", "/explore",
+    "/audit", "/summarize", "/prove",
     "/quit", "/exit", "/q"
 ]
 
@@ -552,9 +561,7 @@ class InteractiveREPL:
             ("/forget-learning <id>", "Delete a learning by ID"),
             ("/audit", "Re-derive last result with full audit trail"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
-            ("/mode [mode]", "Set default mode: audit|explore|auto"),
-            ("/proof", "Switch to proof mode (auditable, defensible)"),
-            ("/explore", "Switch to exploratory mode (iterative analysis)"),
+            ("/prove", "Verify conversation claims with auditable proof"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -1209,124 +1216,54 @@ class InteractiveREPL:
             self.display.stop_spinner()
             self.console.print(f"[red]Error during audit:[/red] {e}")
 
-    def _handle_mode(self, arg: str) -> None:
-        """Handle /mode command - set or show default execution mode.
+    def _handle_prove(self) -> None:
+        """Handle /prove command - verify conversation claims with auditable proof.
 
-        Usage:
-            /mode                - Show current mode and prompt for new one
-            /mode audit          - Set default to proof mode (auditable)
-            /mode proof          - Set default to proof mode
-            /mode explore        - Set default to exploratory mode
-            /mode auto           - Clear default (let LLM decide)
+        This command:
+        1. Collects claims from the conversation history
+        2. Generates an auditable proof for each claim
+        3. Reports any discrepancies with original answers
         """
-        # Map user-friendly names to Mode
-        mode_aliases = {
-            "audit": Mode.PROOF,
-            "auditable": Mode.PROOF,
-            "proof": Mode.PROOF,
-            "a": Mode.PROOF,
-            "p": Mode.PROOF,
-            "explore": Mode.EXPLORATORY,
-            "exploratory": Mode.EXPLORATORY,
-            "e": Mode.EXPLORATORY,
-            "auto": None,
-            "none": None,
-            "clear": None,
-        }
-
-        # Get current mode
-        current = self.session_config.default_mode
-        current_name = current.value if current else "auto (LLM decides)"
-
-        if not arg:
-            # Show current mode and prompt for new one
-            self.console.print(f"[bold]Current default mode:[/bold] {current_name}")
-            self.console.print()
-            self.console.print("[dim]Available modes:[/dim]")
-            self.console.print("  [cyan]proof[/cyan]     - Full derivation with audit trail")
-            self.console.print("  [cyan]explore[/cyan]   - Multi-step data exploration")
-            self.console.print("  [cyan]auto[/cyan]      - Let LLM decide (clear default)")
-            self.console.print()
-
-            try:
-                from rich.prompt import Prompt
-                choice = Prompt.ask(
-                    "Set default mode",
-                    choices=["proof", "explore", "auto"],
-                    default="auto" if current is None else current.value.lower()
-                )
-                arg = choice
-            except (EOFError, KeyboardInterrupt):
-                self.console.print("[dim]Cancelled.[/dim]")
-                return
-
-        # Parse the argument
-        arg_lower = arg.lower().strip()
-        if arg_lower not in mode_aliases:
-            self.console.print(f"[yellow]Unknown mode: {arg}[/yellow]")
-            self.console.print("[dim]Valid modes: proof, explore, auto[/dim]")
+        if not self.session:
+            self.console.print("[yellow]No active session. Ask questions first, then use /prove to verify.[/yellow]")
             return
 
-        new_mode = mode_aliases[arg_lower]
-        self.session_config.default_mode = new_mode
+        if not self.session.session_id:
+            self.console.print("[yellow]No conversation to prove. Ask questions first.[/yellow]")
+            return
 
-        if new_mode is None:
-            self.console.print("[green]Default mode cleared - LLM will decide execution mode.[/green]")
-        else:
-            self.console.print(f"[green]Default mode set to:[/green] {new_mode.value}")
-            self.console.print(f"[dim]All queries will now use {new_mode.value} mode unless overridden.[/dim]")
+        self.console.print("[cyan]Generating auditable proof for conversation claims...[/cyan]")
+        self.display.start_spinner("Analyzing conversation...")
 
-    def _handle_proof_mode(self) -> None:
-        """Handle /proof command - switch to proof mode.
+        try:
+            result = self.session.prove_conversation()
 
-        Proof mode provides:
-        - Full derivation with audit trail
-        - Plans must be complete and self-contained
-        - Every conclusion has a provenance chain
-        - Output is auditable/defensible
-        """
-        self.session_config.default_mode = Mode.PROOF
-        self.console.print("[green]Switched to:[/green] [bold yellow]PROOF[/bold yellow] mode")
-        self.console.print("[dim]Plans will be complete and self-contained with full provenance.[/dim]")
+            self.display.stop_spinner()
 
-        # Update status bar
-        self.display._status_bar.update(mode=Mode.PROOF)
+            if result.get("error"):
+                self.console.print(f"[red]Error:[/red] {result['error']}")
+                return
 
-        # Update conversation state if session exists
-        if self.session:
-            self.session._conversation_state.mode = Mode.PROOF
-            self._emit_mode_switch_event(Mode.PROOF)
+            if result.get("no_claims"):
+                self.console.print("[yellow]No verifiable claims found in conversation.[/yellow]")
+                self.console.print("[dim]Try asking data-related questions first, then use /prove.[/dim]")
+                return
 
-    def _handle_explore_mode(self) -> None:
-        """Handle /explore command - switch to exploratory mode.
+            # Display proof results
+            claims = result.get("claims", [])
+            self.console.print(f"\n[bold]Verified {len(claims)} claim(s):[/bold]\n")
 
-        Exploratory mode provides:
-        - Multi-step data exploration
-        - Plans can reference facts/data from previous plans
-        - Iterative refinement encouraged
-        - Session builds up a working context
-        """
-        self.session_config.default_mode = Mode.EXPLORATORY
-        self.console.print("[green]Switched to:[/green] [bold cyan]EXPLORATORY[/bold cyan] mode")
-        self.console.print("[dim]Plans can build on prior work, facts accumulate across plans.[/dim]")
+            for i, claim in enumerate(claims, 1):
+                status = "[green]VERIFIED[/green]" if claim.get("verified") else "[red]UNVERIFIED[/red]"
+                self.console.print(f"  {i}. {status} {claim.get('claim', '')}")
+                if claim.get("proof"):
+                    self.console.print(f"     [dim]Proof: {claim['proof'][:100]}...[/dim]")
+                if claim.get("discrepancy"):
+                    self.console.print(f"     [yellow]Discrepancy: {claim['discrepancy']}[/yellow]")
 
-        # Update status bar
-        self.display._status_bar.update(mode=Mode.EXPLORATORY)
-
-        # Update conversation state if session exists
-        if self.session:
-            self.session._conversation_state.mode = Mode.EXPLORATORY
-            self._emit_mode_switch_event(Mode.EXPLORATORY)
-
-    def _emit_mode_switch_event(self, mode: Mode) -> None:
-        """Emit a mode switch event for display feedback."""
-        if self.session:
-            from constat.session import StepEvent
-            self.session._emit_event(StepEvent(
-                event_type="mode_switch",
-                step_number=0,
-                data={"mode": mode.value},
-            ))
+        except Exception as e:
+            self.display.stop_spinner()
+            self.console.print(f"[red]Error during proof generation:[/red] {e}")
 
     def _handle_summarize(self, arg: str) -> None:
         """Handle /summarize command - generate LLM summary of plan, session, facts, or table.
@@ -2357,12 +2294,8 @@ Provide a 2-3 sentence summary covering:
             self._handle_audit()
         elif cmd == "/summarize":
             self._handle_summarize(arg)
-        elif cmd == "/mode":
-            self._handle_mode(arg)
-        elif cmd == "/proof":
-            self._handle_proof_mode()
-        elif cmd == "/explore":
-            self._handle_explore_mode()
+        elif cmd == "/prove":
+            self._handle_prove()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
 

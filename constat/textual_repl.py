@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Textual-based interactive REPL with persistent status bar."""
 
 from __future__ import annotations
@@ -30,8 +39,9 @@ from textual.containers import ScrollableContainer, Vertical, Horizontal
 from textual.widgets import Static, Input, RichLog, Footer
 from textual.reactive import reactive
 from textual.message import Message
-from textual import work
+from textual import events, work
 from textual.worker import Worker, get_current_worker
+from textual.suggester import Suggester
 
 from constat.session import Session, SessionConfig, ClarificationRequest, ClarificationResponse
 from constat.execution.mode import Mode, Phase, PlanApprovalRequest, PlanApprovalResponse, PlanApproval
@@ -60,16 +70,154 @@ def get_vera_adjectives() -> tuple[str, str]:
     return (random.choice(RELIABLE_ADJECTIVES), random.choice(HONEST_ADJECTIVES))
 
 
+def terminal_supports_hyperlinks() -> bool:
+    """Check if the terminal supports OSC 8 hyperlinks.
+
+    Returns True for terminals known to support OSC 8 hyperlinks:
+    - iTerm2
+    - Windows Terminal
+    - Konsole
+    - GNOME Terminal 3.26+
+    - kitty
+    - WezTerm
+    - Alacritty
+    - foot
+    """
+    # Check for specific terminal emulators via environment variables
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    term = os.environ.get("TERM", "").lower()
+
+    # iTerm2
+    if term_program == "iterm.app" or os.environ.get("ITERM_SESSION_ID"):
+        return True
+
+    # Windows Terminal
+    if os.environ.get("WT_SESSION"):
+        return True
+
+    # kitty
+    if term_program == "kitty" or term == "xterm-kitty":
+        return True
+
+    # WezTerm
+    if term_program == "wezterm":
+        return True
+
+    # Alacritty (supports hyperlinks since 0.11)
+    if term_program == "alacritty" or term == "alacritty":
+        return True
+
+    # Konsole (check for KONSOLE_VERSION)
+    if os.environ.get("KONSOLE_VERSION"):
+        return True
+
+    # GNOME Terminal (check for VTE_VERSION >= 5000 which is 3.26+)
+    vte_version = os.environ.get("VTE_VERSION", "")
+    if vte_version:
+        try:
+            if int(vte_version) >= 5000:
+                return True
+        except ValueError:
+            pass
+
+    # foot terminal
+    if term == "foot" or term_program == "foot":
+        return True
+
+    # tmux passes through hyperlinks if the outer terminal supports them
+    # Check if we're in tmux and the outer terminal supports hyperlinks
+    if os.environ.get("TMUX"):
+        # tmux itself may or may not pass through hyperlinks
+        # We'll be conservative and return False
+        return False
+
+    # Default: assume no hyperlink support
+    return False
+
+
+# Cache the result since it won't change during runtime
+_HYPERLINKS_SUPPORTED: bool | None = None
+
+
+def supports_hyperlinks() -> bool:
+    """Cached check for terminal hyperlink support."""
+    global _HYPERLINKS_SUPPORTED
+    if _HYPERLINKS_SUPPORTED is None:
+        _HYPERLINKS_SUPPORTED = terminal_supports_hyperlinks()
+        logger.debug(f"[HYPERLINK] Terminal support check: {_HYPERLINKS_SUPPORTED}, TERM_PROGRAM={os.environ.get('TERM_PROGRAM')}, ITERM_SESSION_ID={os.environ.get('ITERM_SESSION_ID')}")
+    return _HYPERLINKS_SUPPORTED
+
+
+def make_file_link_markup(file_uri: str, style: str = "cyan underline", indent: str = "") -> str:
+    """Create Textual markup for a clickable file link.
+
+    Uses Textual's @click action syntax to make the filename clickable.
+    When clicked, opens the file with the system's default application.
+
+    Use this for writing to RichLog (which has markup=True).
+    For Static widgets, use make_file_text() instead.
+
+    Args:
+        file_uri: The file:// URI to open
+        style: Rich style to apply (default: "cyan underline")
+        indent: Optional indentation prefix
+
+    Returns:
+        Markup string with clickable filename
+    """
+    if not file_uri.startswith("file://"):
+        file_uri = f"file://{file_uri}"
+
+    # Extract filename for display
+    try:
+        filepath = file_uri.replace("file://", "")
+        filename = Path(filepath).name
+    except Exception:
+        filename = file_uri.split("/")[-1]
+
+    # Escape single quotes in the path for the action parameter
+    escaped_uri = file_uri.replace("'", "\\'")
+
+    # Create clickable markup using Textual's @click syntax
+    # Format: [@click=app.open_file('path')][style]text[/style][/]
+    return f"{indent}[@click=app.open_file('{escaped_uri}')][{style}]{filename}[/{style}][/]"
+
+
+def make_file_text(file_uri: str, style: str = "cyan underline", indent: str = "") -> Text:
+    """Create a Text object for a file URI display (for Static widgets).
+
+    For RichLog with clickable links, use make_file_link_markup() instead.
+
+    Args:
+        file_uri: The file:// URI to display
+        style: Rich style to apply
+        indent: Optional indentation prefix
+
+    Returns:
+        Text object with filename
+    """
+    if not file_uri.startswith("file://"):
+        file_uri = f"file://{file_uri}"
+
+    try:
+        filepath = file_uri.replace("file://", "")
+        filename = Path(filepath).name
+    except Exception:
+        filename = file_uri.split("/")[-1]
+
+    return Text(f"{indent}{filename}", style=style)
+
+
 class StatusBar(Static):
     """Persistent status bar widget at the bottom of the terminal."""
 
-    mode: reactive[Mode] = reactive(Mode.EXPLORATORY)
     phase: reactive[Phase] = reactive(Phase.IDLE)
     status_message: reactive[str | None] = reactive(None)
     tables_count: reactive[int] = reactive(0)
     facts_count: reactive[int] = reactive(0)
     spinner_frame: reactive[int] = reactive(0)
     elapsed_time: reactive[str] = reactive("")  # Timer display
+    panel_ratio: reactive[str] = reactive("4:1")  # Panel ratio display
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -124,65 +272,66 @@ class StatusBar(Static):
     """
 
     def render(self) -> RenderableType:
-        """Render the status bar."""
-        # Build the content
-        parts = []
+        """Render the status bar.
 
-        # Mode badge
-        if self.mode == Mode.PROOF:
-            mode_text = Text(" PROOF ", style="bold black on yellow")
+        Layout: <interrupt hint> <timer> <status>
+        - Interrupt hint: "(Ctrl+C to interrupt)" when processing, blank otherwise
+        - Timer: fixed width (10 chars) showing elapsed/final time
+        - Status: remaining space for status message
+        """
+        content = Text()
+
+        # Determine if processing
+        is_processing = bool(self.status_message) or self.phase in (Phase.PLANNING, Phase.EXECUTING)
+
+        # 1. Interrupt hint (shown only when processing)
+        if is_processing:
+            content.append(" (Ctrl+C to interrupt)", style="dim")
         else:
-            mode_text = Text(" EXPLORE ", style="bold black on cyan")
-        parts.append(mode_text)
+            content.append(" " * 22)  # Same width as hint for alignment
 
-        # Status/phase text with interrupt hint during processing
-        is_processing = False
+        # 3. Timer (fixed width: 10 chars including brackets)
+        if self.elapsed_time:
+            timer_str = f"[{self.elapsed_time}]"
+            style = "bold cyan" if is_processing else "dim green"
+            content.append(f" {timer_str:>9}", style=style)
+        elif self._final_time:
+            timer_str = f"[{self._final_time}]"
+            content.append(f" {timer_str:>9}", style="dim green")
+        else:
+            content.append(" " * 10)  # Blank timer space
+
+        # 4. Status message (remaining space)
+        content.append(" ")
         if self.status_message:
             spinner = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
-            parts.append(Text(f" {spinner} {self.status_message}", style="cyan"))
-            is_processing = True
+            content.append(f"{spinner} {self.status_message}", style="cyan")
         elif self.phase == Phase.IDLE:
-            parts.append(Text(" ready", style="dim"))
+            content.append("ready", style="dim")
         elif self.phase == Phase.PLANNING:
             spinner = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
-            parts.append(Text(f" {spinner} planning", style="cyan"))
-            is_processing = True
+            content.append(f"{spinner} planning", style="cyan")
         elif self.phase == Phase.EXECUTING:
             spinner = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
-            parts.append(Text(f" {spinner} executing", style="green"))
-            is_processing = True
+            content.append(f"{spinner} executing", style="green")
         elif self.phase == Phase.AWAITING_APPROVAL:
-            parts.append(Text(" awaiting approval", style="yellow"))
+            content.append("awaiting approval", style="yellow")
         elif self.phase == Phase.FAILED:
-            parts.append(Text(" failed", style="bold red"))
+            content.append("failed", style="bold red")
 
-        # Add timer and interrupt hint when processing
-        if is_processing:
-            if self.elapsed_time:
-                parts.append(Text(f"  [{self.elapsed_time}]", style="bold cyan"))
-            parts.append(Text("  (Ctrl+C or ESC to interrupt)", style="dim"))
-        elif self._final_time:
-            # Show final time after processing completes
-            parts.append(Text(f"  [{self._final_time}]", style="dim green"))
-
-        # Stats
-        stats_parts = []
-        if self.tables_count > 0:
-            stats_parts.append(f"tables: {self.tables_count}")
-        if self.facts_count > 0:
-            stats_parts.append(f"facts: {self.facts_count}")
-        if stats_parts:
-            stats_text = "  ".join(stats_parts)
-            parts.append(Text(f"    {stats_text}", style="dim"))
-
-        # Combine into single line
-        content = Text()
-        for part in parts:
-            content.append_text(part)
-
-        # Create the full display with rule line
+        # Calculate space for right-aligned panel controls
         terminal_width = shutil.get_terminal_size().columns
         rule_line = "─" * terminal_width
+
+        # Panel controls: [◀ 3:1 ▶]
+        panel_controls = f" [◀ {self.panel_ratio} ▶]"
+        controls_len = len(panel_controls)
+
+        # Calculate padding to right-align controls
+        current_len = len(content.plain)
+        padding_needed = max(0, terminal_width - current_len - controls_len)
+        content.append(" " * padding_needed)
+        content.append(panel_controls, style="dim cyan")
 
         return Text.assemble(
             (rule_line, "dim"),
@@ -195,7 +344,6 @@ class StatusBar(Static):
 
     def update_status(
         self,
-        mode: Mode = None,
         phase: Phase = None,
         status_message: str | None = _NOT_PROVIDED,
         tables_count: int = None,
@@ -206,8 +354,6 @@ class StatusBar(Static):
         Note: Pass status_message=None to explicitly clear the message (show phase-based status).
         Omit status_message to leave it unchanged.
         """
-        if mode is not None:
-            self.mode = mode
         if phase is not None:
             self.phase = phase
         # Use sentinel to distinguish "not provided" from "explicitly None"
@@ -223,9 +369,81 @@ class StatusBar(Static):
         self.spinner_frame = (self.spinner_frame + 1) % len(SPINNER_FRAMES)
         self.refresh()
 
+    def on_click(self, event) -> None:
+        """Handle clicks on panel resize controls."""
+        # Check if click is in the panel controls region (right side)
+        terminal_width = shutil.get_terminal_size().columns
+        controls_text = f" [◀ {self.panel_ratio} ▶]"
+        controls_start = terminal_width - len(controls_text)
+
+        # event.x is the click position
+        if event.x >= controls_start:
+            # Clicked in controls region
+            relative_x = event.x - controls_start
+            # [◀ 3:1 ▶] - ◀ is at position 1, ▶ is near the end
+            if relative_x <= 3:  # Left arrow region
+                self.app.action_shrink_panel()
+            elif relative_x >= len(controls_text) - 3:  # Right arrow region
+                self.app.action_expand_panel()
+
+
+class CommandSuggester(Suggester):
+    """Provides auto-complete suggestions for REPL commands."""
+
+    # All available commands
+    COMMANDS = [
+        "/help", "/h",
+        "/tables",
+        "/show",
+        "/query",
+        "/facts",
+        "/state",
+        "/reset",
+        "/redo",
+        "/artifacts",
+        "/code",
+        "/prove", "/audit",
+        "/preferences",
+        "/databases", "/database", "/db",
+        "/files", "/file",
+        "/context",
+        "/history", "/sessions",
+        "/verbose",
+        "/raw",
+        "/insights",
+        "/update", "/refresh",
+        "/learnings",
+        "/consolidate",
+        "/compact",
+        "/remember",
+        "/forget",
+        "/correct",
+        "/save",
+        "/share",
+        "/plans",
+        "/replay",
+        "/resume",
+        "/export",
+        "/summarize",
+        "/prove",
+        "/user",
+        "/quit", "/q",
+    ]
+
+    async def get_suggestion(self, value: str) -> str | None:
+        """Get a suggestion for the current input value."""
+        if not value or not value.startswith("/"):
+            return None
+
+        value_lower = value.lower()
+        for cmd in self.COMMANDS:
+            if cmd.startswith(value_lower) and cmd != value_lower:
+                return cmd
+        return None
+
 
 class ConstatInput(Input):
-    """Input widget styled for Constat REPL."""
+    """Input widget styled for Constat REPL with history and auto-complete."""
 
     DEFAULT_CSS = """
     ConstatInput {
@@ -241,11 +459,165 @@ class ConstatInput(Input):
     }
     """
 
-    class Submitted(Message):
-        """Message sent when input is submitted."""
-        def __init__(self, value: str) -> None:
-            self.value = value
-            super().__init__()
+    # Maximum history size
+    MAX_HISTORY = 100
+
+    def __init__(self, *args, **kwargs) -> None:
+        # Initialize with command suggester for auto-complete
+        kwargs.setdefault("suggester", CommandSuggester(use_cache=False, case_sensitive=False))
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int = -1  # -1 means not browsing history
+        self._current_input: str = ""  # Stores current input when browsing history
+
+    def add_to_history(self, command: str) -> None:
+        """Add a command to history (called after submission)."""
+        if command and command.strip():
+            # Don't add duplicates of the last command
+            if not self._history or self._history[-1] != command:
+                self._history.append(command)
+                # Trim to max size
+                if len(self._history) > self.MAX_HISTORY:
+                    self._history = self._history[-self.MAX_HISTORY:]
+        # Reset history navigation
+        self._history_index = -1
+        self._current_input = ""
+
+    def _on_key(self, event: events.Key) -> None:
+        """Handle key events for history navigation."""
+        if event.key == "up":
+            self._navigate_history(-1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down":
+            self._navigate_history(1)
+            event.prevent_default()
+            event.stop()
+        else:
+            # Any other key resets history navigation
+            if self._history_index != -1:
+                self._history_index = -1
+                self._current_input = ""
+
+    def _navigate_history(self, direction: int) -> None:
+        """Navigate through command history.
+
+        Args:
+            direction: -1 for older (up), 1 for newer (down)
+        """
+        if not self._history:
+            return
+
+        # Save current input when starting to browse
+        if self._history_index == -1 and direction == -1:
+            self._current_input = self.value
+            self._history_index = len(self._history)
+
+        # Calculate new index
+        new_index = self._history_index + direction
+
+        if new_index < 0:
+            # Already at oldest
+            return
+        elif new_index >= len(self._history):
+            # Return to current input
+            self._history_index = -1
+            self.value = self._current_input
+            self.cursor_position = len(self.value)
+            return
+
+        # Update to history entry
+        self._history_index = new_index
+        self.value = self._history[new_index]
+        self.cursor_position = len(self.value)
+
+    # Note: Uses Input.Submitted from parent class
+
+
+class CopyButton(Static):
+    """A clickable copy button for panel headers."""
+
+    DEFAULT_CSS = """
+    CopyButton {
+        width: 5;
+        height: 1;
+        dock: right;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    CopyButton:hover {
+        color: $text;
+        background: $primary;
+    }
+    """
+
+    def __init__(self, target_id: str, **kwargs) -> None:
+        super().__init__(" ⎘ ", **kwargs)  # Copy icon (U+2398)
+        self.target_id = target_id
+
+    def on_click(self) -> None:
+        """Copy the target panel's content to clipboard."""
+        try:
+            target = self.app.query_one(f"#{self.target_id}")
+            # Extract plain text from the RichLog
+            if hasattr(target, 'lines'):
+                # RichLog stores content in lines
+                text_lines = []
+                for line in target.lines:
+                    if hasattr(line, 'plain'):
+                        text_lines.append(line.plain)
+                    else:
+                        text_lines.append(str(line))
+                content = "\n".join(text_lines)
+            else:
+                content = str(target.render())
+
+            if content.strip():
+                self.app.copy_to_clipboard(content)
+                # Show feedback in status bar
+                status_bar = self.app.query_one("#status-bar", StatusBar)
+                status_bar.update_status(status_message="Copied to clipboard")
+            else:
+                status_bar = self.app.query_one("#status-bar", StatusBar)
+                status_bar.update_status(status_message="Nothing to copy")
+        except Exception as e:
+            logger.debug(f"Copy failed: {e}")
+
+
+class PanelHeader(Horizontal):
+    """Header bar for panels with title and copy button."""
+
+    DEFAULT_CSS = """
+    PanelHeader {
+        height: 1;
+        width: 100%;
+        background: $surface-darken-1;
+        border-bottom: solid $primary;
+    }
+    PanelHeader > .panel-title {
+        width: 1fr;
+        color: $text;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, title: str, target_id: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._title = title
+        self.target_id = target_id
+
+    def compose(self) -> ComposeResult:
+        yield Static(f" {self._title}", classes="panel-title", id=f"{self.id}-title")
+        yield CopyButton(self.target_id)
+
+    def set_title(self, title: str) -> None:
+        """Update the header title."""
+        self._title = title
+        try:
+            title_widget = self.query_one(f"#{self.id}-title", Static)
+            title_widget.update(f" {title}")
+        except Exception:
+            pass
 
 
 class OutputLog(RichLog):
@@ -255,13 +627,15 @@ class OutputLog(RichLog):
     OutputLog {
         scrollbar-gutter: stable;
         padding: 0 1;
+        overflow-x: auto;  /* Enable horizontal scrolling for long URIs */
     }
     """
 
 
-class SidePanelContent(Static):
+class SidePanelContent(RichLog):
     """Panel that shows DFD during approval, proof tree during execution, artifacts after.
 
+    Uses RichLog to support clickable file links via Textual's @click action syntax.
     Uses the actual ProofTree class from constat.proof_tree for proper hierarchical display.
     """
 
@@ -269,6 +643,7 @@ class SidePanelContent(Static):
     SidePanelContent {
         width: 100%;
         height: 100%;
+        scrollbar-gutter: stable;
     }
     """
 
@@ -276,13 +651,18 @@ class SidePanelContent(Static):
     MODE_DFD = "dfd"
     MODE_PROOF_TREE = "proof_tree"
     MODE_ARTIFACTS = "artifacts"
+    MODE_STEPS = "steps"  # Exploratory mode step tracking
 
     def __init__(self, **kwargs) -> None:
-        super().__init__("", **kwargs)  # Initialize with empty content
+        # Initialize RichLog with markup support for clickable links
+        super().__init__(highlight=False, markup=True, wrap=True, **kwargs)
         self._mode = self.MODE_DFD
         self._proof_tree: Optional[ProofTree] = None  # Use actual ProofTree class
         self._dag_lines: list[str] = []
         self._artifacts: list[dict] = []  # {type, name, description, command}
+        # Exploratory mode step tracking
+        self._steps: list[dict] = []  # {number, goal, status, result}
+        self._current_step: int = 0
 
     def show_dfd(self, dag_lines: list[str]) -> None:
         """Show only the DFD diagram (during approval)."""
@@ -327,12 +707,14 @@ class SidePanelContent(Static):
             if self._mode == self.MODE_PROOF_TREE:
                 self._update_display()
 
-    def clear(self) -> None:
-        """Clear the panel."""
+    def clear_panel(self) -> None:
+        """Clear the panel content and state."""
         self._proof_tree = None
         self._dag_lines = []
         self._artifacts = []
-        self.update("")
+        self._steps = []
+        self._current_step = 0
+        super().clear()  # RichLog.clear()
 
     def show_artifacts(self, artifacts: list[dict]) -> None:
         """Show artifacts after execution completes."""
@@ -340,37 +722,132 @@ class SidePanelContent(Static):
         self._mode = self.MODE_ARTIFACTS
         self._update_display()
 
+    # Exploratory mode step tracking
+    def start_steps(self, steps: list[dict]) -> None:
+        """Initialize step tracking for exploratory mode."""
+        import time
+        self._steps = []
+        for i, step in enumerate(steps):
+            self._steps.append({
+                "number": step.get("number", i + 1),
+                "goal": step.get("goal", ""),
+                "status": "pending",  # pending, executing, complete, failed
+                "result": None,
+                "start_time": None,
+                "elapsed": None,
+                "retries": 0,
+            })
+        self._current_step = 0
+        self._mode = self.MODE_STEPS
+        self._update_display()
+
+    def update_step_executing(self, step_num: int, retry: bool = False) -> None:
+        """Mark a step as currently executing."""
+        import time
+        self._current_step = step_num
+        for step in self._steps:
+            if step["number"] == step_num:
+                step["status"] = "executing"
+                if retry:
+                    step["retries"] = step.get("retries", 0) + 1
+                else:
+                    step["start_time"] = time.time()
+                break
+        if self._mode == self.MODE_STEPS:
+            self._update_display()
+
+    def update_step_complete(self, step_num: int, result: str = "") -> None:
+        """Mark a step as complete with optional result."""
+        import time
+        for step in self._steps:
+            if step["number"] == step_num:
+                step["status"] = "complete"
+                step["result"] = result
+                if step["start_time"]:
+                    step["elapsed"] = time.time() - step["start_time"]
+                break
+        if self._mode == self.MODE_STEPS:
+            self._update_display()
+
+    def update_step_failed(self, step_num: int, error: str = "") -> None:
+        """Mark a step as failed."""
+        import time
+        for step in self._steps:
+            if step["number"] == step_num:
+                step["status"] = "failed"
+                step["result"] = f"Error: {error}"
+                if step["start_time"]:
+                    step["elapsed"] = time.time() - step["start_time"]
+                break
+        if self._mode == self.MODE_STEPS:
+            self._update_display()
+
     def _update_display(self) -> None:
         """Update panel content based on mode."""
+        # Update header title based on mode
+        mode_titles = {
+            self.MODE_DFD: "Data Flow",
+            self.MODE_PROOF_TREE: "Proof Tree",
+            self.MODE_ARTIFACTS: "Artifacts",
+            self.MODE_STEPS: "Steps",
+        }
+        try:
+            header = self.app.query_one("#side-header", PanelHeader)
+            header.set_title(mode_titles.get(self._mode, "Panel"))
+        except Exception:
+            pass
+
         if self._mode == self.MODE_ARTIFACTS:
             self._render_artifacts()
         elif self._mode == self.MODE_DFD:
             self._render_dfd()
+        elif self._mode == self.MODE_STEPS:
+            self._render_steps()
         else:
             self._render_proof_tree()
 
     def _render_dfd(self) -> None:
-        """Render only the DFD diagram."""
-        content = Text()
-        content.append("DATA FLOW\n", style="bold cyan")
-        content.append("\n")
+        """Render only the DFD diagram in a centered box."""
+        from rich.panel import Panel
+        from rich.align import Align
+        from rich.console import Group
 
         if self._dag_lines:
+            # Build the DFD content
+            dfd_text = Text()
             for line in self._dag_lines:
-                content.append(f"{line}\n", style="white")
-        else:
-            content.append("No data flow diagram.\n", style="dim")
+                dfd_text.append(f"{line}\n", style="white")
 
-        self.update(content)
+            # Create a panel (box) around the DFD
+            panel = Panel(
+                dfd_text,
+                title="DATA FLOW",
+                title_align="center",
+                border_style="cyan",
+                padding=(0, 1),
+            )
+
+            # Center the panel
+            centered = Align.center(panel)
+            super().clear()
+            self.write(centered)
+        else:
+            content = Text()
+            content.append("DATA FLOW\n", style="bold cyan")
+            content.append("\n")
+            content.append("No data flow diagram.\n", style="dim")
+            super().clear()
+            self.write(content)
 
     def _render_artifacts(self) -> None:
         """Render artifact links with clickable file:// URIs."""
-        content = Text()
-        content.append("ARTIFACTS\n", style="bold cyan")
-        content.append("\n")
+        super().clear()
+
+        self.write(Text("ARTIFACTS", style="bold cyan"))
+        self.write("")
 
         if not self._artifacts:
-            content.append("No artifacts created.\n", style="dim")
+            self.write(Text("No artifacts created.", style="dim"))
         else:
             for artifact in self._artifacts:
                 artifact_type = artifact.get("type", "unknown")
@@ -389,38 +866,95 @@ class SidePanelContent(Static):
                 else:
                     icon = "📦"
 
-                content.append(f"{icon} ", style="")
-                content.append(f"{name}\n", style="bold green")
+                self.write(Text(f"{icon} {name}", style="bold green"))
 
                 if description:
-                    content.append(f"   {description}\n", style="dim")
+                    self.write(Text(f"   {description}", style="dim"))
 
-                # Show file URI directly - terminals make these clickable
+                # Show clickable file link (RichLog supports @click markup)
                 if file_uri:
-                    if not file_uri.startswith("file://"):
-                        file_uri = f"file://{file_uri}"
-                    # Use separate Text with no_wrap to prevent breaking the URI
-                    uri_text = Text(f"   {file_uri}\n", style="cyan underline", no_wrap=True, overflow="ellipsis")
-                    content.append_text(uri_text)
+                    link_markup = make_file_link_markup(file_uri, style="cyan underline", indent="   ")
+                    self.write(link_markup)
                 elif command:
-                    content.append(f"   → {command}\n", style="cyan")
+                    self.write(Text(f"   → {command}", style="cyan"))
 
-                content.append("\n")
-
-        self.update(content)
+                self.write("")
 
     def _render_proof_tree(self) -> None:
         """Render the proof tree using the actual ProofTree class."""
+        super().clear()
+
         if not self._proof_tree:
-            content = Text()
-            content.append("PROOF TREE\n", style="bold yellow")
-            content.append("\nWaiting for resolution...\n", style="dim")
-            self.update(content)
+            self.write(Text("PROOF TREE", style="bold yellow"))
+            self.write(Text("\nWaiting for resolution...", style="dim"))
             return
 
         # Use ProofTree's render method - it returns a proper Rich Tree
         tree = self._proof_tree.render()
-        self.update(tree)
+        self.write(tree)
+
+    def _render_steps(self) -> None:
+        """Render exploratory mode step progress."""
+        super().clear()
+
+        self.write(Text("EXECUTION STEPS", style="bold cyan"))
+        self.write("")
+
+        if not self._steps:
+            self.write(Text("Waiting for plan...", style="dim"))
+            return
+
+        for step in self._steps:
+            num = step["number"]
+            goal = step["goal"]
+            status = step["status"]
+            result = step.get("result", "")
+            elapsed = step.get("elapsed")
+            retries = step.get("retries", 0)
+
+            # Status icon
+            if status == "pending":
+                icon = "○"
+                style = "dim"
+            elif status == "executing":
+                icon = "⠸"  # Spinner frame
+                style = "cyan"
+            elif status == "complete":
+                icon = "✓"
+                style = "green"
+            elif status == "failed":
+                icon = "✗"
+                style = "red"
+            else:
+                icon = "?"
+                style = "dim"
+
+            # Step header: icon, number, goal
+            goal_display = goal[:40] + "..." if len(goal) > 40 else goal
+            step_text = Text()
+            step_text.append(f"{icon} ", style=style)
+            step_text.append(f"Step {num}: ", style=f"bold {style}")
+            step_text.append(goal_display, style=style)
+            self.write(step_text)
+
+            # Show timing and retries for non-pending steps
+            meta_parts = []
+            if elapsed is not None:
+                meta_parts.append(f"{elapsed:.1f}s")
+            if retries > 0:
+                meta_parts.append(f"{retries} retries")
+            if meta_parts:
+                self.write(Text(f"   [{', '.join(meta_parts)}]", style="dim"))
+
+            # Show result summary for complete/failed steps
+            if result and status in ("complete", "failed"):
+                result_display = str(result)[:60]
+                if len(str(result)) > 60:
+                    result_display += "..."
+                result_style = "dim green" if status == "complete" else "dim red"
+                self.write(Text(f"   → {result_display}", style=result_style))
+
+            self.write("")
 
 
 # Alias for backwards compatibility
@@ -469,6 +1003,8 @@ class TextualFeedbackHandler:
         self._proof_items: dict[str, dict] = {}  # Track proof tree items
         self._current_step = 0
         self._total_steps = 0
+        self._plan_steps: list[dict] = []  # Store plan steps for exploratory mode
+        self._steps_initialized = False  # Track if steps panel has been initialized
 
     def _get_log(self) -> OutputLog:
         """Get the output log widget."""
@@ -503,16 +1039,6 @@ class TextualFeedbackHandler:
             message = data.get("message", "Processing...")
             status_bar.update_status(status_message=message)
 
-        # Mode switch events
-        elif event_type == "mode_switch":
-            new_mode = data.get("mode", "")
-            reason = data.get("reason", "")
-            if new_mode == "proof":
-                status_bar.update_status(mode=Mode.PROOF, status_message="Switched to audit mode")
-                log.write(Text(f"Mode: AUDIT (proof-based reasoning)", style="bold yellow"))
-            else:
-                status_bar.update_status(mode=Mode.EXPLORATORY, status_message="Switched to explore mode")
-
         # Clarification events
         elif event_type == "clarification_needed":
             status_bar.update_status(status_message="Clarification needed...")
@@ -522,12 +1048,59 @@ class TextualFeedbackHandler:
             status_bar.update_status(status_message="Planning approach...", phase=Phase.PLANNING)
 
         elif event_type == "planning_complete":
-            status_bar.update_status(status_message="Plan complete, preparing execution...")
+            status_bar.update_status(status_message="Plan complete, validating...")
+
+        # Plan validation events
+        elif event_type == "plan_validating":
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 3)
+            premises = data.get("premises_count", 0)
+            inferences = data.get("inferences_count", 0)
+            if attempt == 1:
+                status_bar.update_status(status_message=f"Validating plan ({premises} premises, {inferences} inferences)...")
+            else:
+                status_bar.update_status(status_message=f"Validating plan (attempt {attempt}/{max_attempts})...")
+
+        elif event_type == "plan_validated":
+            premises = data.get("premises_count", 0)
+            inferences = data.get("inferences_count", 0)
+            status_bar.update_status(status_message=f"Plan validated ({premises}P, {inferences}I)")
+
+        elif event_type == "plan_validation_failed":
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 3)
+            error_count = data.get("error_count", 0)
+            error_summary = data.get("error_summary", "errors")
+            will_retry = data.get("will_retry", False)
+
+            if will_retry:
+                status_bar.update_status(
+                    status_message=f"Plan validation failed ({error_count} errors: {error_summary}), will retry..."
+                )
+                log.write(Text(f"  Plan validation failed (attempt {attempt}/{max_attempts}): {error_summary}", style="yellow"))
+            else:
+                status_bar.update_status(status_message=f"Plan validation failed after {max_attempts} attempts")
+                log.write(Text(f"  Plan validation failed after {max_attempts} attempts: {error_summary}", style="red"))
+
+        elif event_type == "plan_regenerating":
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 3)
+            reason = data.get("reason", "validation errors")
+            fixing = data.get("fixing_errors", [])
+            fixing_str = ", ".join(fixing[:3]) if fixing else reason
+
+            status_bar.update_status(
+                status_message=f"Regenerating plan (attempt {attempt}/{max_attempts}) - fixing: {fixing_str}"
+            )
+            log.write(Text(f"  Regenerating plan to fix: {fixing_str}", style="cyan"))
 
         elif event_type == "plan_ready":
             plan = data.get("plan", {})
             goal = plan.get("goal", "")
             steps = plan.get("steps", [])
+            # Store steps for exploratory mode step tracking
+            self._plan_steps = [{"number": i + 1, "goal": s.get("goal", str(s))} for i, s in enumerate(steps)]
+            self._steps_initialized = False  # Reset for new plan
             # Don't set status_message here - the approval UI will handle it
             # Just update phase (approval callback will clear spinner)
             status_bar.update_status(phase=Phase.AWAITING_APPROVAL)
@@ -542,17 +1115,9 @@ class TextualFeedbackHandler:
             logger.debug(f"Handling proof_start event: {data}")
             conclusion_fact = data.get("conclusion_fact", "")
             conclusion_desc = data.get("conclusion_description", "")
+            # Restart timer for execution phase
+            status_bar.start_timer()
             status_bar.update_status(status_message="Resolving proof tree...", phase=Phase.EXECUTING)
-            log.write(Text("Proof Execution:", style="bold yellow"))
-            if conclusion_desc:
-                # Wrap conclusion text to fit terminal width
-                import textwrap
-                wrap_width = max(40, shutil.get_terminal_size().columns - 15)
-                prefix = "  Conclusion: "
-                indent = " " * len(prefix)
-                wrapped = textwrap.fill(conclusion_desc, width=wrap_width,
-                                        initial_indent=prefix, subsequent_indent=indent)
-                log.write(Text(wrapped, style="dim"))
 
             # Switch to proof tree mode (replaces DFD)
             side_panel = self._get_side_panel()
@@ -670,6 +1235,51 @@ class TextualFeedbackHandler:
             panel_content = self._get_panel_content()
             panel_content.update_resolving(fact_name, description)
 
+        # SQL generation events (for database premises)
+        elif event_type == "sql_generating":
+            fact_name = data.get("fact_name", "")
+            db = data.get("database", "")
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 7)
+            is_retry = data.get("is_retry", False)
+            retry_reason = data.get("retry_reason", "")
+
+            if is_retry:
+                reason_short = retry_reason[:25] + "..." if retry_reason and len(retry_reason) > 25 else retry_reason or "error"
+                status_bar.update_status(
+                    status_message=f"Regenerating SQL for {fact_name[:25]}... (attempt {attempt}/{max_attempts}: {reason_short})"
+                )
+            else:
+                status_bar.update_status(status_message=f"Generating SQL for {fact_name[:30]}... ({db})")
+
+        elif event_type == "sql_executing":
+            fact_name = data.get("fact_name", "")
+            db = data.get("database", "")
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 7)
+
+            if attempt > 1:
+                status_bar.update_status(status_message=f"Executing SQL retry {attempt}/{max_attempts} for {fact_name[:25]}...")
+            else:
+                status_bar.update_status(status_message=f"Executing SQL for {fact_name[:30]}...")
+
+        elif event_type == "sql_error":
+            fact_name = data.get("fact_name", "")
+            error = data.get("error", "")
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 7)
+            will_retry = data.get("will_retry", False)
+
+            error_short = error[:40] + "..." if len(error) > 40 else error
+            if will_retry:
+                status_bar.update_status(
+                    status_message=f"SQL error for {fact_name[:20]} (attempt {attempt}/{max_attempts}), retrying..."
+                )
+                log.write(Text(f"  SQL attempt {attempt} failed for {fact_name}: {error_short}", style="yellow"))
+            else:
+                status_bar.update_status(status_message=f"SQL failed for {fact_name[:25]} after {max_attempts} attempts")
+                log.write(Text(f"  SQL failed after {max_attempts} attempts: {error_short}", style="red"))
+
         elif event_type == "premise_resolved":
             # Events use fact_name and value
             fact_name = data.get("fact_name", "") or data.get("fact_id", "")
@@ -708,7 +1318,7 @@ class TextualFeedbackHandler:
             panel_content.update_resolved(display_name, result, source="derived", confidence=1.0)
 
         elif event_type == "proof_tree_complete":
-            status_bar.update_status(status_message="Synthesizing answer...", phase=Phase.EXECUTING)
+            status_bar.update_status(status_message="Generating insights...", phase=Phase.EXECUTING)
             # Keep side panel visible until solve complete
 
         # Step execution events (for exploratory mode)
@@ -721,27 +1331,90 @@ class TextualFeedbackHandler:
                 phase=Phase.EXECUTING
             )
 
+            # Initialize steps panel on first step
+            panel_content = self._get_panel_content()
+            side_panel = self._get_side_panel()
+            if not self._steps_initialized and self._plan_steps:
+                panel_content.start_steps(self._plan_steps)
+                side_panel.add_class("visible")
+                self._steps_initialized = True
+
+            # Update step status in panel
+            panel_content.update_step_executing(step_num)
+
         elif event_type == "step_complete":
             step_num = event.step_number or 0
+            result = data.get("result", data.get("stdout", ""))
+            # Truncate result for display
+            result_summary = str(result)[:100] if result else ""
             log.write(Text(f"  Step {step_num} complete", style="green"))
+
+            # Update step status in panel
+            panel_content = self._get_panel_content()
+            panel_content.update_step_complete(step_num, result_summary)
 
         elif event_type == "step_failed":
             step_num = event.step_number or 0
             error = data.get("error", "Unknown error")
             log.write(Text(f"  Step {step_num} failed: {error}", style="red"))
 
+            # Update step status in panel
+            panel_content = self._get_panel_content()
+            panel_content.update_step_failed(step_num, error[:100] if error else "")
+
         # Code generation/execution events
         elif event_type == "generating":
             step_num = event.step_number or 0
-            status_bar.update_status(status_message=f"Step {step_num}: Generating code...")
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 10)
+            is_retry = data.get("is_retry", False)
+            retry_reason = data.get("retry_reason", "")
+
+            if is_retry:
+                # Show detailed retry message
+                reason_short = retry_reason[:30] + "..." if retry_reason and len(retry_reason) > 30 else retry_reason
+                status_bar.update_status(
+                    status_message=f"Step {step_num}: Regenerating code (attempt {attempt}/{max_attempts}) - {reason_short}" if reason_short
+                    else f"Step {step_num}: Regenerating code (attempt {attempt}/{max_attempts})"
+                )
+                # Track retry in panel
+                panel_content = self._get_panel_content()
+                panel_content.update_step_executing(step_num, retry=True)
+            else:
+                status_bar.update_status(status_message=f"Step {step_num}: Generating code...")
 
         elif event_type == "executing":
             step_num = event.step_number or 0
-            status_bar.update_status(status_message=f"Step {step_num}: Executing...")
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 10)
+            is_retry = data.get("is_retry", False)
+            code_lines = data.get("code_lines", 0)
+
+            if is_retry:
+                status_bar.update_status(status_message=f"Step {step_num}: Executing retry {attempt}/{max_attempts} ({code_lines} lines)")
+            else:
+                status_bar.update_status(status_message=f"Step {step_num}: Executing code ({code_lines} lines)")
+
+        elif event_type == "step_error":
+            step_num = event.step_number or 0
+            error_type = data.get("error_type", "Error")
+            attempt = data.get("attempt", 1)
+            max_attempts = data.get("max_attempts", 10)
+            will_retry = data.get("will_retry", False)
+
+            if will_retry:
+                next_attempt = data.get("next_attempt", attempt + 1)
+                status_bar.update_status(
+                    status_message=f"Step {step_num}: {error_type} on attempt {attempt}/{max_attempts}, retrying..."
+                )
+                log.write(Text(f"  Step {step_num} attempt {attempt} failed: {error_type}, will retry", style="yellow"))
+            else:
+                status_bar.update_status(status_message=f"Step {step_num}: {error_type} - max retries exceeded")
+                log.write(Text(f"  Step {step_num} failed after {max_attempts} attempts: {error_type}", style="red"))
 
         # Synthesis events
         elif event_type == "synthesizing":
-            status_bar.update_status(status_message="Synthesizing answer...")
+            status_bar.update_status(status_message="Generating insights...")
 
         elif event_type == "answer_ready":
             status_bar.update_status(status_message="Answer ready")
@@ -786,8 +1459,18 @@ class ConstatREPLApp(App):
         width: 100%;
     }
 
-    #output-log {
+    #output-container {
         width: 2fr;
+        height: 100%;
+    }
+
+    #output-header {
+        background: $surface;
+        border-bottom: solid $primary-darken-2;
+    }
+
+    #output-log {
+        height: 1fr;
     }
 
     #side-panel {
@@ -795,11 +1478,20 @@ class ConstatREPLApp(App):
         background: $surface;
         display: none;
         border-left: solid $primary;
-        padding: 1;
     }
 
     #side-panel.visible {
         display: block;
+    }
+
+    #side-header {
+        background: $surface;
+        border-bottom: solid $primary-darken-2;
+    }
+
+    #proof-tree-panel {
+        height: 1fr;
+        padding: 1;
     }
 
     #input-rule {
@@ -832,7 +1524,13 @@ class ConstatREPLApp(App):
         Binding("ctrl+c", "interrupt", "Interrupt", show=False),
         Binding("escape", "interrupt", "Interrupt", show=False),
         Binding("ctrl+d", "quit", "Quit", show=False),
+        Binding("ctrl+left", "shrink_panel", "Shrink panel", show=False),
+        Binding("ctrl+right", "expand_panel", "Expand panel", show=False),
     ]
+
+    # Panel width ratios (output_log : side_panel)
+    PANEL_RATIOS = [(4, 1), (3, 1), (2, 1), (1, 1), (1, 2), (1, 3)]
+    DEFAULT_RATIO_INDEX = 2  # 2:1 ratio
 
     def __init__(
         self,
@@ -884,16 +1582,22 @@ class ConstatREPLApp(App):
         self._app_running = True
         self._pending_result = None  # Result from worker
 
+        # Panel sizing state
+        self._panel_ratio_index = self.DEFAULT_RATIO_INDEX
+
     def compose(self) -> ComposeResult:
         """Compose the UI layout."""
         with Horizontal(id="content-area"):
-            yield OutputLog(id="output-log", highlight=True, markup=True, wrap=True)
+            with Vertical(id="output-container"):
+                yield PanelHeader("Output", "output-log", id="output-header")
+                yield OutputLog(id="output-log", highlight=True, markup=True, wrap=True)
             with SidePanel(id="side-panel"):
+                yield PanelHeader("Panel", "proof-tree-panel", id="side-header")
                 yield ProofTreePanel(id="proof-tree-panel")
         yield Static("─" * 80, id="input-rule")
         with Horizontal(id="input-container"):
             yield Static("> ", id="input-prompt")
-            yield Input(placeholder="Ask a question or type /help", id="user-input")
+            yield ConstatInput(placeholder="Ask a question or type /help", id="user-input")
         yield StatusBar(id="status-bar")
 
     async def on_mount(self) -> None:
@@ -1046,7 +1750,15 @@ class ConstatREPLApp(App):
 
     def on_session_event(self, message: SessionEvent) -> None:
         """Handle SessionEvent message - runs on main thread."""
-        logger.debug(f"on_session_event: {message.event.event_type}")
+        event = message.event
+        event_type = event.event_type
+        # Log error details for debugging
+        if event_type in ("step_error", "step_failed") and event.data:
+            error = event.data.get("error", "")
+            error_type = event.data.get("error_type", "")
+            logger.debug(f"on_session_event: {event_type} - {error_type}: {error[:500] if error else 'no error message'}")
+        else:
+            logger.debug(f"on_session_event: {event_type}")
         if hasattr(self, '_feedback_handler'):
             self._feedback_handler._handle_event_on_main(message.event)
 
@@ -1058,6 +1770,21 @@ class ConstatREPLApp(App):
         status_bar = self.query_one("#status-bar", StatusBar)
         side_panel = self.query_one("#side-panel", SidePanel)
         panel_content = self.query_one("#proof-tree-panel", SidePanelContent)
+
+        # Extract and store code blocks from results for /code command
+        results = result.get("results", [])
+        if results and self.session and self.session.datastore:
+            code_blocks = []
+            for i, r in enumerate(results):
+                if hasattr(r, "code") and r.code:
+                    code_blocks.append({
+                        "step": i + 1,
+                        "code": r.code,
+                        "success": getattr(r, "success", True),
+                    })
+            if code_blocks:
+                self.session.datastore.set_session_meta("code_blocks", code_blocks)
+                logger.debug(f"on_solve_complete: stored {len(code_blocks)} code blocks")
 
         # Build artifacts list from result
         artifacts = []
@@ -1216,7 +1943,10 @@ class ConstatREPLApp(App):
         logger.debug("_show_approval_ui complete")
 
     def _show_approval_prompt(self) -> None:
-        """Show plan approval prompt in the UI (called on main thread)."""
+        """Show plan approval prompt in the UI (called on main thread).
+
+        Shows step summary in main panel and DFD in side panel.
+        """
         if not self._approval_request:
             return
 
@@ -1225,72 +1955,52 @@ class ConstatREPLApp(App):
         status_bar = self.query_one("#status-bar", StatusBar)
 
         request = self._approval_request
-        mode = request.mode
 
-        # Update status bar mode
-        status_bar.update_status(mode=mode)
-
+        # Show plan summary in main panel
         log.write("")
-        log.write(Text("Plan ready for approval:", style="bold yellow"))
+        log.write(Text("Plan ready:", style="bold yellow"))
 
-        # Show mode
-        mode_str = "PROOF (auditable reasoning)" if mode == Mode.PROOF else "EXPLORE (iterative)"
-        log.write(Text(f"  Mode: {mode_str}", style="cyan"))
-        if request.mode_reasoning:
-            log.write(Text(f"    {request.mode_reasoning}", style="dim"))
-
-        # Show problem
-        if request.problem:
-            log.write(Text(f"  Problem: {request.problem}", style="white"))
-
-        # Show steps (works for both proof and explore mode)
+        # Show premises and inferences
         if request.steps:
-            log.write(Text(f"  Steps ({len(request.steps)}):", style="dim"))
+            premises = [s for s in request.steps if s.get("type") == "premise"]
+            inferences = [s for s in request.steps if s.get("type") == "inference"]
 
-            # Get approximate width for wrapping (leave room for indent)
-            import textwrap
-            wrap_width = max(40, shutil.get_terminal_size().columns - 10)
+            if premises:
+                log.write(Text(f"  Premises ({len(premises)}):", style="cyan"))
+                for s in premises:
+                    fact_id = s.get("fact_id", "")
+                    goal = s.get("goal", "")
+                    # Extract just the variable name
+                    if "=" in goal:
+                        var_name = goal.split("=", 1)[0].strip()
+                    else:
+                        var_name = goal[:50]
+                    log.write(Text(f"    {fact_id}: {var_name}", style="dim"))
 
-            for step in request.steps:
-                step_num = step.get('number', '?')
-                goal = step.get('goal', 'Unknown')
-                step_type = step.get('type', '')
+            if inferences:
+                log.write(Text(f"  Inferences ({len(inferences)}):", style="green"))
+                for s in inferences:
+                    fact_id = s.get("fact_id", "")
+                    goal = s.get("goal", "")
+                    # Extract just the variable name
+                    if "=" in goal:
+                        var_name = goal.split("=", 1)[0].strip()
+                    else:
+                        var_name = goal[:50]
+                    log.write(Text(f"    {fact_id}: {var_name}", style="dim"))
 
-                # Format based on type (premise, inference, conclusion)
-                if step_type == 'premise':
-                    fact_id = step.get('fact_id', '')
-                    prefix = f"    {fact_id}: "
-                    style = "dim cyan"
-                elif step_type == 'inference':
-                    fact_id = step.get('fact_id', '')
-                    prefix = f"    {fact_id}: "
-                    style = "dim green"
-                elif step_type == 'conclusion':
-                    prefix = "    C: "
-                    style = "dim yellow"
-                else:
-                    prefix = f"    {step_num}. "
-                    style = "dim"
-
-                # Wrap goal text to fit panel width
-                indent = " " * len(prefix)
-                wrapped = textwrap.fill(goal, width=wrap_width - len(prefix),
-                                        initial_indent="", subsequent_indent=indent)
-                log.write(Text(f"{prefix}{wrapped}", style=style))
-
-            # Show DFD in side panel only
+            # Show DFD in side panel
             self._show_dfd_in_side_panel(request.steps)
 
         log.write("")
-        # Show mode switch option
-        other_mode = Mode.EXPLORATORY if mode == Mode.PROOF else Mode.PROOF
-        other_mode_name = "explore" if other_mode == Mode.EXPLORATORY else "proof"
-        log.write(Text(f"  [yes/Enter] Approve  [no] Reject  [mode-switch] Replan as {other_mode_name}  [or type feedback]", style="green"))
 
-        input_widget.placeholder = f"Approve? [yes/no/mode-switch or feedback] (Enter=yes)"
+        # Configure input for approval
+        input_widget.placeholder = "[yes/Enter] Approve  [no] Reject  [or provide feedback]"
         input_widget.value = ""
         input_widget.disabled = False  # Ensure input is enabled
-        # Set status_message=None so phase-based display is used (no spinner for AWAITING_APPROVAL)
+
+        # Stop timer after planning completes (will restart when execution begins)
+        status_bar.stop_timer()
         status_bar.update_status(status_message=None, phase=Phase.AWAITING_APPROVAL)
 
     def _show_data_flow_dag(self, log: OutputLog, steps: list[dict]) -> None:
@@ -1353,25 +2063,65 @@ class ConstatREPLApp(App):
             log.write(Text("      (diagram rendering failed)", style="dim"))
 
     def _show_dfd_in_side_panel(self, steps: list[dict]) -> None:
-        """Show DFD diagram in the side panel."""
+        """Show DFD diagram in the side panel. Always shows side panel."""
+        side_panel = self.query_one("#side-panel", SidePanel)
+        panel_content = self.query_one("#proof-tree-panel", SidePanelContent)
+
+        # Always make side panel visible
+        side_panel.add_class("visible")
+
         try:
             import networkx as nx
             from constat.visualization.box_dag import render_dag
         except ImportError:
+            # Fallback: show simple step list if networkx not available
+            self._show_steps_fallback(steps, panel_content)
             return
 
-        # Build NetworkX graph from steps
+        # Calculate available panel width based on terminal width and ratio
+        try:
+            app_width = self.size.width
+            output_ratio, side_ratio = self.PANEL_RATIOS[self._panel_ratio_index]
+            total_ratio = output_ratio + side_ratio
+            # Side panel width minus border/padding (approx 4 chars)
+            panel_width = max(20, (app_width * side_ratio // total_ratio) - 4)
+        except Exception:
+            panel_width = 40  # Fallback width
+
+        # Scale node name length based on panel width
+        # Allow for ~3 nodes side by side with spacing
+        max_name_len = max(6, min(12, panel_width // 4))
+
+        # Build mapping from fact_id (P1, I1) to English variable name
+        fact_to_name: dict[str, str] = {}
+        for s in steps:
+            fact_id = s.get("fact_id", "")
+            goal = s.get("goal", "")
+            # Extract English name from BEFORE the first '='
+            # Premise format: "employees = ? (description) [source: xxx]"
+            # Inference format: "remaining_days = P1 - P2 -- explanation"
+            if "=" in goal:
+                english_name = goal.split("=", 1)[0].strip()
+                # Truncate to fit panel width
+                if len(english_name) > max_name_len:
+                    english_name = english_name[:max_name_len]
+                fact_to_name[fact_id] = english_name
+            elif fact_id:
+                fact_to_name[fact_id] = fact_id  # Fallback to fact_id
+
+        # Build NetworkX graph from steps using English names
         G = nx.DiGraph()
 
         for s in steps:
             step_type = s.get("type")
             fact_id = s.get("fact_id", "")
             goal = s.get("goal", "")
+            node_name = fact_to_name.get(fact_id, fact_id)
 
             if step_type == "premise":
-                G.add_node(fact_id)
+                G.add_node(node_name)
             elif step_type == "inference":
-                G.add_node(fact_id)
+                G.add_node(node_name)
                 # Extract dependencies from the operation
                 inf_match = re.match(r'^(\w+)\s*=\s*(.+)', goal)
                 if inf_match:
@@ -1380,39 +2130,49 @@ class ConstatREPLApp(App):
                     operation = goal
                 deps = re.findall(r'[PI]\d+', operation)
                 for dep in deps:
-                    if G.has_node(dep):
-                        G.add_edge(dep, fact_id)
+                    dep_name = fact_to_name.get(dep, dep)
+                    if G.has_node(dep_name):
+                        G.add_edge(dep_name, node_name)
 
         if G.number_of_nodes() == 0:
+            # Fallback: show simple step list if no graph nodes
+            self._show_steps_fallback(steps, panel_content)
             return
 
         # Find terminal inference and add conclusion
-        inferences = [n for n in G.nodes() if n.startswith('I')]
-        if inferences:
+        inference_names = [fact_to_name.get(f, f) for f in fact_to_name if f.startswith('I')]
+        if inference_names:
             terminal = None
-            for inf in inferences:
-                successors = list(G.successors(inf))
-                if not any(s.startswith('I') for s in successors):
-                    terminal = inf
+            for inf_name in inference_names:
+                successors = list(G.successors(inf_name))
+                if not any(s in inference_names for s in successors):
+                    terminal = inf_name
                     break
             if terminal is None:
-                terminal = inferences[-1]
-            G.add_node("C")
-            G.add_edge(terminal, "C")
+                terminal = inference_names[-1]
+            G.add_node("conclusion")
+            G.add_edge(terminal, "conclusion")
 
         try:
-            diagram = render_dag(G, style='rounded')
+            diagram = render_dag(G, style='rounded', max_width=panel_width)
             dag_lines = [line for line in diagram.split('\n') if line.strip()]
-
-            # Show ONLY DFD in side panel (no proof tree nodes yet)
-            side_panel = self.query_one("#side-panel", SidePanel)
-            panel_content = self.query_one("#proof-tree-panel", SidePanelContent)
-
             panel_content.show_dfd(dag_lines)
-            side_panel.add_class("visible")
-            logger.debug(f"_show_dfd_in_side_panel: dag_lines={len(dag_lines)}")
+            logger.debug(f"_show_dfd_in_side_panel: dag_lines={len(dag_lines)}, panel_width={panel_width}")
         except Exception as e:
-            logger.debug(f"_show_dfd_in_side_panel failed: {e}")
+            logger.debug(f"_show_dfd_in_side_panel render failed: {e}")
+            # Fallback: show simple step list
+            self._show_steps_fallback(steps, panel_content)
+
+    def _show_steps_fallback(self, steps: list[dict], panel_content: SidePanelContent) -> None:
+        """Show simple step list when DFD can't be rendered."""
+        lines = ["PLAN STEPS", ""]
+        for s in steps:
+            fact_id = s.get("fact_id", "")
+            goal = s.get("goal", "")
+            step_type = s.get("type", "")
+            prefix = "P" if step_type == "premise" else "I" if step_type == "inference" else "→"
+            lines.append(f"{prefix} {fact_id}: {goal[:40]}...")
+        panel_content.show_dfd(lines)
 
     def _focus_input(self) -> None:
         """Focus the input widget."""
@@ -1470,8 +2230,8 @@ class ConstatREPLApp(App):
         """Handle input submission."""
         user_input = event.value.strip()
 
-        # Clear input
-        input_widget = self.query_one("#user-input", Input)
+        # Clear input and add to history
+        input_widget = self.query_one("#user-input", ConstatInput)
         input_widget.value = ""
 
         log = self.query_one("#output-log", OutputLog)
@@ -1479,13 +2239,13 @@ class ConstatREPLApp(App):
 
         logger.debug(f"Input received: '{user_input}', awaiting_approval={self._awaiting_approval}, awaiting_clarification={self._awaiting_clarification}")
 
-        # Handle approval input
+        # Handle approval input (don't add to history - these are just y/n answers)
         if self._awaiting_approval and self._approval_request:
             logger.debug("Routing to approval handler")
             await self._handle_approval_answer(user_input)
             return
 
-        # Handle clarification input
+        # Handle clarification input (don't add to history)
         if self._awaiting_clarification and self._clarification_request:
             logger.debug("Routing to clarification handler")
             await self._handle_clarification_answer(user_input)
@@ -1493,6 +2253,9 @@ class ConstatREPLApp(App):
 
         if not user_input:
             return
+
+        # Add to command history (for regular commands and queries)
+        input_widget.add_to_history(user_input)
 
         # Echo user input with rule
         log.write(Rule("[bold green]YOU[/bold green]", align="right"))
@@ -1530,16 +2293,21 @@ class ConstatREPLApp(App):
         questions = self._clarification_request.questions
 
         current_q = questions[self._current_question_idx]
+        logger.debug(f"[CLARIFICATION] Handler received: answer={answer!r}, q_idx={self._current_question_idx}, q_text={current_q.text!r}, suggestions={current_q.suggestions}")
 
         # Handle empty input - use default (first suggestion)
         if not answer and current_q.suggestions:
             answer = current_q.suggestions[0]
+            logger.debug(f"[CLARIFICATION] Using default (empty input): {answer!r}")
             log.write(Text(f"  A{self._current_question_idx + 1}: {answer} (default)", style="dim green"))
         # Handle numbered suggestion selection
         elif answer.isdigit() and current_q.suggestions:
             idx = int(answer) - 1
             if 0 <= idx < len(current_q.suggestions):
                 answer = current_q.suggestions[idx]
+                logger.debug(f"[CLARIFICATION] Selected option {idx+1}: {answer!r}")
+            else:
+                logger.debug(f"[CLARIFICATION] Invalid index {idx+1}, keeping raw answer: {answer!r}")
             log.write(Text(f"  A{self._current_question_idx + 1}: {answer}", style="green"))
         elif answer:
             log.write(Text(f"  A{self._current_question_idx + 1}: {answer}", style="green"))
@@ -1547,6 +2315,7 @@ class ConstatREPLApp(App):
         # Store answer (use question text as key)
         if answer:
             self._clarification_answers[current_q.text] = answer
+            logger.debug(f"[CLARIFICATION] Stored: {current_q.text!r} -> {answer!r}")
 
         # Move to next question
         self._current_question_idx += 1
@@ -1567,6 +2336,7 @@ class ConstatREPLApp(App):
             input_widget.placeholder = "Ask a question or type /help"
             status_bar.update_status(status_message="Processing with clarifications...")
 
+            logger.debug(f"[CLARIFICATION] Creating response with answers: {self._clarification_answers}")
             self._clarification_response = ClarificationResponse(
                 answers=self._clarification_answers,
                 skip=False
@@ -1582,10 +2352,27 @@ class ConstatREPLApp(App):
 
         lower = answer.lower() if answer else ""
 
+        # Slash commands during approval - pass through to command handler
+        if answer.startswith("/"):
+            # Cancel approval state and handle command
+            self._awaiting_approval = False
+            self._approval_request = None
+            status_bar.update_status(status_message=None, phase=Phase.IDLE)
+            side_panel.remove_class("visible")
+            input_widget.placeholder = "Ask a question or type /help"
+            # Pass command through (signal to worker that we're abandoning this plan)
+            self._approval_response = PlanApprovalResponse.pass_command(answer)
+            self._approval_event.set()
+            # Handle the command directly
+            await self._handle_command(answer)
+            return
+
         # Empty or 'y' or 'yes' = approve
         if not answer or lower in ('y', 'yes', 'ok', 'approve'):
             log.write(Text("Plan approved, executing...", style="green"))
             input_widget.placeholder = "Ask a question or type /help"
+            # Restart timer for execution phase
+            status_bar.start_timer()
             status_bar.update_status(status_message="Executing plan...", phase=Phase.EXECUTING)
             # Keep side panel visible - will show proof tree during execution
 
@@ -1603,24 +2390,12 @@ class ConstatREPLApp(App):
             self._approval_response = PlanApprovalResponse.reject(reason="User rejected")
             self._approval_event.set()
 
-        # 'mode-switch' or variants = switch mode and replan
-        elif lower in ('m', 'mode', 'mode-switch', 'switch', 'switch mode'):
-            current_mode = self._approval_request.mode if self._approval_request else Mode.PROOF
-            target_mode = Mode.EXPLORATORY if current_mode == Mode.PROOF else Mode.PROOF
-            target_name = "explore" if target_mode == Mode.EXPLORATORY else "proof"
-            log.write(Text(f"Switching to {target_name} mode and replanning...", style="cyan"))
-            input_widget.placeholder = "Ask a question or type /help"
-            status_bar.update_status(status_message=f"Replanning in {target_name} mode...", phase=Phase.PLANNING)
-            # Hide side panel while replanning
-            side_panel.remove_class("visible")
-
-            self._approval_response = PlanApprovalResponse.mode_switch(target_mode)
-            self._approval_event.set()
-
         # Any other input = treat as feedback/suggestion
         else:
             log.write(Text(f"Suggestion noted: {answer}", style="dim"))
             input_widget.placeholder = "Ask a question or type /help"
+            # Restart timer for replanning phase
+            status_bar.start_timer()
             status_bar.update_status(status_message="Replanning with feedback...", phase=Phase.PLANNING)
             # Hide side panel while replanning
             side_panel.remove_class("visible")
@@ -1658,12 +2433,8 @@ class ConstatREPLApp(App):
             await self._show_artifacts()
         elif cmd == "/code":
             await self._show_code(args)
-        elif cmd in ("/proof", "/audit"):
-            await self._set_mode("proof")
-        elif cmd == "/explore":
-            await self._set_mode("explore")
-        elif cmd == "/mode":
-            await self._set_mode(args)
+        elif cmd in ("/prove", "/audit"):
+            await self._handle_prove()
         elif cmd == "/preferences":
             await self._show_preferences()
         elif cmd in ("/databases", "/database", "/db"):
@@ -1684,6 +2455,8 @@ class ConstatREPLApp(App):
             await self._refresh_metadata()
         elif cmd == "/learnings":
             await self._show_learnings()
+        elif cmd == "/consolidate":
+            await self._consolidate_learnings()
         elif cmd == "/compact":
             await self._compact_context()
         elif cmd == "/remember" and args:
@@ -1754,11 +2527,9 @@ class ConstatREPLApp(App):
             ("/files", "List all data files"),
             ("/correct <text>", "Record a correction for future reference"),
             ("/learnings", "Show learnings and rules"),
-            ("/prove", "Re-derive last result with full proof trail"),
+            ("/consolidate", "Promote similar learnings into rules"),
+            ("/prove", "Verify conversation claims with auditable proof"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
-            ("/mode [mode]", "Set default mode: proof|explore|auto"),
-            ("/proof", "Switch to proof mode (auditable)"),
-            ("/explore", "Switch to exploratory mode"),
             ("/quit, /q", "Exit"),
         ]
 
@@ -1766,6 +2537,25 @@ class ConstatREPLApp(App):
             table.add_row(cmd, desc)
 
         log.write(table)
+
+        # Keyboard shortcuts
+        log.write("")
+        shortcuts_table = Table(title="Keyboard Shortcuts", show_header=True, box=None)
+        shortcuts_table.add_column("Key", style="cyan")
+        shortcuts_table.add_column("Action")
+
+        shortcuts = [
+            ("Ctrl+Left", "Shrink side panel"),
+            ("Ctrl+Right", "Expand side panel"),
+            ("Up/Down", "Navigate command history"),
+            ("Ctrl+C / Esc", "Cancel current operation"),
+            ("Ctrl+D", "Exit"),
+        ]
+
+        for key, action in shortcuts:
+            shortcuts_table.add_row(key, action)
+
+        log.write(shortcuts_table)
 
     async def _show_tables(self) -> None:
         """Show available tables with file:// URIs."""
@@ -1793,11 +2583,12 @@ class ConstatREPLApp(App):
                     (t.name, "cyan"),
                     (f" ({t.row_count} rows)", "dim"),
                 ))
-                # Show file:// URI for the Parquet file (no wrap to keep clickable)
+                # Show clickable file link
                 file_path = Path(t.file_path)
                 if file_path.exists():
                     file_uri = file_path.resolve().as_uri()
-                    log.write(Text(f"    {file_uri}", style="dim underline", no_wrap=True, overflow="ellipsis"))
+                    link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="    ")
+                    log.write(link_markup)
         except Exception as e:
             log.write(Text(f"Error listing tables: {e}", style="red"))
 
@@ -1870,12 +2661,29 @@ class ConstatREPLApp(App):
 
             log.write(Text(f"Cached Facts ({len(facts)})", style="bold"))
             for fact_id, fact in facts.items():
-                status = "✓" if fact.get("resolved") else "○"
-                value = fact.get("value", "")
+                # Fact is a dataclass, not a dict
+                value = getattr(fact, 'value', None)
+                confidence = getattr(fact, 'confidence', 1.0)
+                source = getattr(fact, 'source', None)
+
+                # Format value
                 value_str = str(value)[:60] + "..." if len(str(value)) > 60 else str(value)
-                log.write(Text(f"  {status} {fact_id}: {value_str}", style="dim"))
+
+                # Show confidence as checkmark levels
+                if confidence >= 0.9:
+                    status = "✓"
+                elif confidence >= 0.5:
+                    status = "◐"
+                else:
+                    status = "○"
+
+                # Source info
+                source_str = f"[{source.value}]" if source and hasattr(source, 'value') else ""
+
+                log.write(Text(f"  {status} {fact_id}: {value_str} {source_str}", style="dim"))
         except Exception as e:
             log.write(Text(f"Error showing facts: {e}", style="red"))
+            logger.debug(f"_show_facts error: {e}", exc_info=True)
 
     async def _show_state(self) -> None:
         """Show session state."""
@@ -1883,7 +2691,6 @@ class ConstatREPLApp(App):
         status_bar = self.query_one("#status-bar", StatusBar)
 
         log.write(Text("Session State", style="bold"))
-        log.write(Text(f"  Mode: {status_bar.mode.value}", style="dim"))
         log.write(Text(f"  Phase: {status_bar.phase.value}", style="dim"))
         log.write(Text(f"  Verbose: {self.verbose}", style="dim"))
         log.write(Text(f"  User: {self.user_id}", style="dim"))
@@ -1898,7 +2705,7 @@ class ConstatREPLApp(App):
         status_bar = self.query_one("#status-bar", StatusBar)
 
         if self.session:
-            self.session.reset()
+            self.session.reset_context()
         status_bar.update_status(
             mode=Mode.PROOF,
             phase=Phase.IDLE,
@@ -1951,7 +2758,8 @@ class ConstatREPLApp(App):
                 if file_path.exists():
                     file_uri = file_path.resolve().as_uri()
                     log.write(Text(f"  📊 {t.name} ({t.row_count} rows)", style="cyan"))
-                    log.write(Text(f"     {file_uri}", style="dim underline"))
+                    link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
+                    log.write(link_markup)
 
             for output in outputs:
                 if isinstance(output, dict):
@@ -1962,12 +2770,13 @@ class ConstatREPLApp(App):
                         if file_path.exists():
                             file_uri = file_path.resolve().as_uri()
                             log.write(Text(f"  📄 {name}", style="cyan"))
-                            log.write(Text(f"     {file_uri}", style="dim underline"))
+                            link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
+                            log.write(link_markup)
         except Exception as e:
             log.write(Text(f"Error showing artifacts: {e}", style="red"))
 
     async def _show_code(self, step_arg: str = "") -> None:
-        """Show generated code."""
+        """Show generated code from execution history."""
         log = self.query_one("#output-log", OutputLog)
 
         if not self.session:
@@ -1975,41 +2784,95 @@ class ConstatREPLApp(App):
             return
 
         try:
-            code_blocks = self.session.datastore.get_session_meta("code_blocks") or []
-            if not code_blocks:
-                log.write(Text("No code generated yet.", style="dim"))
+            # Try execution_history table first (populated after solve)
+            history_df = None
+            if self.session.datastore:
+                history_df = self.session.datastore.get_execution_history_table()
+
+            if history_df is not None and len(history_df) > 0:
+                # Filter to rows with code
+                code_rows = history_df[history_df['code'].notna() & (history_df['code'] != '')]
+                if len(code_rows) == 0:
+                    log.write(Text("No code generated yet.", style="dim"))
+                    return
+
+                log.write(Text(f"Generated Code ({len(code_rows)} blocks)", style="bold"))
+                for _, row in code_rows.iterrows():
+                    step_num = row.get('step_number', 0)
+                    if step_arg and str(step_num) != step_arg:
+                        continue
+                    step_goal = row.get('step_goal', '')
+                    code = row.get('code', '')
+                    success = row.get('success', True)
+
+                    status = "✓" if success else "✗"
+                    log.write(Text(f"\n--- Step {step_num}: {step_goal[:50]} {status} ---", style="dim"))
+                    if code:
+                        # Show code with syntax highlighting
+                        syntax = Syntax(code, "python", theme="monokai", line_numbers=False)
+                        log.write(syntax)
                 return
 
-            log.write(Text(f"Generated Code ({len(code_blocks)} blocks)", style="bold"))
-            for i, block in enumerate(code_blocks):
-                if step_arg and str(i + 1) != step_arg:
-                    continue
-                log.write(Text(f"\n--- Step {i + 1} ---", style="dim"))
-                code = block.get("code", "") if isinstance(block, dict) else str(block)
-                log.write(Text(code[:500], style="green"))
-                if len(code) > 500:
-                    log.write(Text("... (truncated)", style="dim"))
+            # Fallback to code_blocks session meta
+            code_blocks = self.session.datastore.get_session_meta("code_blocks") if self.session.datastore else []
+            if code_blocks:
+                log.write(Text(f"Generated Code ({len(code_blocks)} blocks)", style="bold"))
+                for i, block in enumerate(code_blocks):
+                    if step_arg and str(i + 1) != step_arg:
+                        continue
+                    log.write(Text(f"\n--- Step {i + 1} ---", style="dim"))
+                    code = block.get("code", "") if isinstance(block, dict) else str(block)
+                    if code:
+                        syntax = Syntax(code, "python", theme="monokai", line_numbers=False)
+                        log.write(syntax)
+                return
+
+            log.write(Text("No code generated yet.", style="dim"))
         except Exception as e:
             log.write(Text(f"Error showing code: {e}", style="red"))
+            logger.debug(f"_show_code error: {e}", exc_info=True)
 
-    async def _set_mode(self, mode_str: str) -> None:
-        """Set execution mode."""
+    async def _handle_prove(self) -> None:
+        """Handle /prove command - verify conversation claims with auditable proof."""
         log = self.query_one("#output-log", OutputLog)
-        status_bar = self.query_one("#status-bar", StatusBar)
 
-        mode_str = mode_str.lower().strip() if mode_str else ""
+        if not self.session or not self.session.session_id:
+            log.write(Text("No active session. Ask questions first, then use /prove to verify.", style="yellow"))
+            return
 
-        if mode_str in ("proof", "audit"):
-            status_bar.update_status(mode=Mode.PROOF)
-            log.write(Text("Switched to PROOF mode (auditable, defensible).", style="cyan"))
-        elif mode_str in ("explore", "exploratory"):
-            status_bar.update_status(mode=Mode.EXPLORATORY)
-            log.write(Text("Switched to EXPLORATORY mode (iterative analysis).", style="cyan"))
-        elif mode_str == "auto" or not mode_str:
-            log.write(Text(f"Current mode: {status_bar.mode.value}", style="dim"))
-            log.write(Text("Use /proof or /explore to switch.", style="dim"))
-        else:
-            log.write(Text(f"Unknown mode: {mode_str}. Use proof, explore, or auto.", style="yellow"))
+        log.write(Text("Generating auditable proof for conversation claims...", style="cyan"))
+
+        try:
+            # Run in thread pool to avoid blocking
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, self.session.prove_conversation
+            )
+
+            if result.get("error"):
+                log.write(Text(f"Error: {result['error']}", style="red"))
+                return
+
+            if result.get("no_claims"):
+                log.write(Text("No verifiable claims found in conversation.", style="yellow"))
+                log.write(Text("Try asking data-related questions first, then use /prove.", style="dim"))
+                return
+
+            # Display proof results
+            claims = result.get("claims", [])
+            log.write(Text(f"\nVerified {len(claims)} claim(s):", style="bold"))
+
+            for i, claim in enumerate(claims, 1):
+                status = "VERIFIED" if claim.get("verified") else "UNVERIFIED"
+                status_style = "green" if claim.get("verified") else "red"
+                log.write(Text(f"  {i}. [{status}] {claim.get('claim', '')}", style=status_style))
+                if claim.get("proof"):
+                    log.write(Text(f"     Proof: {claim['proof'][:100]}...", style="dim"))
+                if claim.get("discrepancy"):
+                    log.write(Text(f"     Discrepancy: {claim['discrepancy']}", style="yellow"))
+
+        except Exception as e:
+            log.write(Text(f"Error during proof generation: {e}", style="red"))
+            logger.debug(f"_handle_prove error: {e}", exc_info=True)
 
     async def _show_preferences(self) -> None:
         """Show current preferences."""
@@ -2018,7 +2881,6 @@ class ConstatREPLApp(App):
 
         log.write(Text("Preferences", style="bold"))
         log.write(Text(f"  verbose: {self.verbose}", style="dim"))
-        log.write(Text(f"  mode: {status_bar.mode.value}", style="dim"))
         log.write(Text(f"  user: {self.user_id}", style="dim"))
 
     async def _show_databases(self) -> None:
@@ -2046,14 +2908,36 @@ class ConstatREPLApp(App):
             return
 
         try:
-            context_size = self.session.datastore.get_session_meta("context_tokens") or 0
-            log.write(Text("Context", style="bold"))
-            log.write(Text(f"  Tokens: {context_size}", style="dim"))
+            stats = self.session.get_context_stats()
+            if not stats:
+                log.write(Text("No context stats available.", style="dim"))
+                return
+
+            log.write(Text("Context Usage", style="bold"))
+            log.write(Text(f"  Total tokens: ~{stats.total_tokens:,}", style="dim"))
+
+            # Show breakdown if available
+            if hasattr(stats, 'scratchpad_tokens') and stats.scratchpad_tokens:
+                log.write(Text(f"  Scratchpad: ~{stats.scratchpad_tokens:,} tokens", style="dim"))
+            if hasattr(stats, 'tables_tokens') and stats.tables_tokens:
+                log.write(Text(f"  Tables: ~{stats.tables_tokens:,} tokens", style="dim"))
+            if hasattr(stats, 'state_tokens') and stats.state_tokens:
+                log.write(Text(f"  State: ~{stats.state_tokens:,} tokens", style="dim"))
+
+            # Show warning levels
+            if hasattr(stats, 'is_critical') and stats.is_critical:
+                log.write(Text("  ⚠️  Context is critical - consider /compact", style="yellow"))
+            elif hasattr(stats, 'is_warning') and stats.is_warning:
+                log.write(Text("  ⚡ Context is getting large", style="yellow"))
+            else:
+                log.write(Text("  ✓ Context size is healthy", style="green"))
+
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
+            logger.debug(f"_show_context error: {e}", exc_info=True)
 
     async def _show_history(self) -> None:
-        """Show recent sessions."""
+        """Show recent sessions with IDs and summaries."""
         log = self.query_one("#output-log", OutputLog)
 
         try:
@@ -2066,10 +2950,42 @@ class ConstatREPLApp(App):
                 return
 
             log.write(Text(f"Recent Sessions ({len(sessions)})", style="bold"))
+            log.write("")
+
             for s in sessions:
-                log.write(Text(f"  {s.session_id[:16]}... - {s.created_at[:16]} ({s.status})", style="dim"))
+                # Show session ID (enough to use with /resume)
+                short_id = s.session_id[:20]
+                status_style = "green" if s.status == "completed" else "yellow" if s.status == "active" else "dim"
+
+                # Format: ID | Date | Status | Queries
+                log.write(Text(f"  {short_id}", style="cyan bold"))
+
+                # Show date and stats on same line
+                date_str = s.created_at[:16] if s.created_at else "unknown"
+                stats = f"    {date_str}  |  {s.status}  |  {s.total_queries} queries"
+                log.write(Text(stats, style="dim"))
+
+                # Show summary if available, otherwise try to get first query
+                summary = s.summary
+                if not summary:
+                    # Try to get first query as summary
+                    try:
+                        detail = hist.get_session(s.session_id)
+                        if detail and detail.queries:
+                            first_q = detail.queries[0].question
+                            summary = first_q[:80] + "..." if len(first_q) > 80 else first_q
+                    except Exception:
+                        pass
+
+                if summary:
+                    log.write(Text(f"    {summary}", style="white"))
+
+                log.write("")  # Blank line between sessions
+
+            log.write(Text("Use /resume <id> to continue a session (can use partial ID)", style="dim"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
+            logger.debug(f"_show_history error: {e}", exc_info=True)
 
     async def _toggle_setting(self, setting: str, value: str = "") -> None:
         """Toggle or set a boolean setting."""
@@ -2121,20 +3037,66 @@ class ConstatREPLApp(App):
                     applied = r.get("applied_count", 0)
                     log.write(Text(f"  [{conf:.0f}%] {r.get('summary', '')[:60]} (applied {applied}x)", style="dim"))
 
-            # Show pending learnings
-            raw = self.learning_store.list_raw_learnings(limit=20)
+            # Show pending learnings (get all to show accurate count, but display limit)
+            raw = self.learning_store.list_raw_learnings(limit=None)
             pending = [l for l in raw if not l.get("promoted_to")]
             if pending:
-                log.write(Text(f"Pending Learnings ({len(pending)})", style="bold"))
+                log.write(Text(f"Pending Learnings ({len(pending)} total)", style="bold"))
                 for l in pending[:10]:
                     cat = l.get("category", "")[:10]
                     lid = l.get("id", "")[:12]
                     log.write(Text(f"  {lid} [{cat}] {l.get('correction', '')[:50]}...", style="dim"))
+                if len(pending) > 10:
+                    log.write(Text(f"  ... and {len(pending) - 10} more", style="dim"))
 
             if not rules and not pending:
                 log.write(Text("No learnings yet.", style="dim"))
+            elif len(pending) >= 5:
+                log.write(Text(f"  Tip: Use /consolidate to promote similar learnings to rules", style="dim cyan"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
+
+    async def _consolidate_learnings(self) -> None:
+        """Consolidate similar learnings into rules using LLM."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        status_bar.update_status(status_message="Consolidating learnings...")
+        try:
+            from constat.learning.compactor import LearningCompactor
+
+            compactor = LearningCompactor(self.learning_store, self.session.llm)
+            stats = self.learning_store.get_stats()
+            unpromoted = stats.get("unpromoted", 0)
+
+            if unpromoted < 2:
+                log.write(Text(f"Not enough learnings to consolidate ({unpromoted} pending, need at least 2).", style="yellow"))
+                status_bar.update_status(status_message=None)
+                return
+
+            log.write(Text(f"Analyzing {unpromoted} pending learnings...", style="dim"))
+
+            result = compactor.compact(dry_run=False)
+
+            if result.rules_created > 0:
+                log.write(Text(f"Created {result.rules_created} new rules from {result.learnings_archived} learnings.", style="green"))
+            elif result.groups_found > 0:
+                log.write(Text(f"Found {result.groups_found} potential groups but none met confidence threshold.", style="yellow"))
+            else:
+                log.write(Text("No similar patterns found to consolidate.", style="dim"))
+
+            if result.errors:
+                for err in result.errors[:3]:
+                    log.write(Text(f"  Error: {err}", style="red"))
+
+            status_bar.update_status(status_message=None)
+        except Exception as e:
+            log.write(Text(f"Error during consolidation: {e}", style="red"))
+            status_bar.update_status(status_message=None)
 
     async def _compact_context(self) -> None:
         """Compact context to reduce token usage."""
@@ -2408,7 +3370,8 @@ class ConstatREPLApp(App):
                 df.to_excel(output_path, index=False)
 
             log.write(Text(f"Exported {len(df)} rows to:", style="green"))
-            log.write(Text(f"  {output_path.as_uri()}", style="dim underline"))
+            link_markup = make_file_link_markup(output_path.as_uri(), style="cyan underline", indent="  ")
+            log.write(link_markup)
         except Exception as e:
             log.write(Text(f"Export failed: {e}", style="red"))
 
@@ -2607,6 +3570,58 @@ class ConstatREPLApp(App):
         self._approval_event.set()
         self._clarification_event.set()
         self.exit()
+
+    def action_open_file(self, file_path: str) -> None:
+        """Open a file with the system's default application."""
+        import subprocess
+        import platform
+
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        try:
+            # Handle file:// URI format
+            if file_path.startswith("file://"):
+                file_path = file_path[7:]  # Remove file:// prefix
+
+            system = platform.system()
+            if system == "Darwin":  # macOS
+                subprocess.run(["open", file_path], check=True)
+            elif system == "Windows":
+                subprocess.run(["start", "", file_path], shell=True, check=True)
+            else:  # Linux and others
+                subprocess.run(["xdg-open", file_path], check=True)
+
+            # Show in status bar (will clear on next action)
+            status_bar.update_status(status_message=f"Opened: {Path(file_path).name}")
+        except Exception as e:
+            status_bar.update_status(status_message=f"Failed to open: {e}")
+
+    def action_shrink_panel(self) -> None:
+        """Shrink the side panel (make output log larger)."""
+        if self._panel_ratio_index > 0:
+            self._panel_ratio_index -= 1
+            self._update_panel_sizes()
+
+    def action_expand_panel(self) -> None:
+        """Expand the side panel (make output log smaller)."""
+        if self._panel_ratio_index < len(self.PANEL_RATIOS) - 1:
+            self._panel_ratio_index += 1
+            self._update_panel_sizes()
+
+    def _update_panel_sizes(self) -> None:
+        """Update panel widths based on current ratio."""
+        output_ratio, side_ratio = self.PANEL_RATIOS[self._panel_ratio_index]
+
+        output_container = self.query_one("#output-container", Vertical)
+        side_panel = self.query_one("#side-panel", SidePanel)
+
+        # Update styles dynamically
+        output_container.styles.width = f"{output_ratio}fr"
+        side_panel.styles.width = f"{side_ratio}fr"
+
+        # Update panel ratio display in status bar
+        status_bar = self.query_one("#status-bar", StatusBar)
+        status_bar.panel_ratio = f"{output_ratio}:{side_ratio}"
 
 
 def run_textual_repl(

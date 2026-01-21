@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Tests for the Interactive REPL commands.
 
 Tests cover:
@@ -34,6 +43,7 @@ def mock_config():
     config.databases_description = None
     config.documents = None
     config.apis = None
+    config.context_preload = None  # For MetadataPreloadCache
     return config
 
 
@@ -107,8 +117,7 @@ class TestHelpCommand:
             "/raw",
             "/insights",
             "/artifacts",
-            "/proof",
-            "/explore",
+            "/prove",
             "/quit", "/q",
         ]
 
@@ -718,28 +727,33 @@ class TestReplInitialization:
     def test_repl_initializes_with_config(self, mock_config, mock_console):
         """Test REPL initializes correctly with config."""
         with patch('constat.repl.FeedbackDisplay'):
-            repl = InteractiveREPL(
-                config=mock_config,
-                verbose=True,
-                console=mock_console,
-            )
+            with patch('constat.repl.Session') as mock_session_class:
+                mock_session = Mock()
+                mock_session_class.return_value = mock_session
+                repl = InteractiveREPL(
+                    config=mock_config,
+                    verbose=True,
+                    console=mock_console,
+                )
 
         assert repl.config == mock_config
         assert repl.verbose is True
         assert repl.console == mock_console
-        assert repl.session is None
+        assert repl.session == mock_session  # Session is now eagerly created
 
     def test_repl_creates_default_console(self, mock_config):
         """Test REPL creates default console if none provided."""
         with patch('constat.repl.FeedbackDisplay'):
-            with patch('constat.repl.Console') as mock_console_class:
-                mock_console_instance = Mock()
-                mock_console_class.return_value = mock_console_instance
+            with patch('constat.repl.Session') as mock_session_class:
+                mock_session_class.return_value = Mock()
+                with patch('constat.repl.Console') as mock_console_class:
+                    mock_console_instance = Mock()
+                    mock_console_class.return_value = mock_console_instance
 
-                repl = InteractiveREPL(config=mock_config)
+                    repl = InteractiveREPL(config=mock_config)
 
-                mock_console_class.assert_called_once()
-                assert repl.console == mock_console_instance
+                    mock_console_class.assert_called_once()
+                    assert repl.console == mock_console_instance
 
 
 class TestCommandCaseInsensitivity:
@@ -1091,130 +1105,18 @@ class TestRememberCommand:
         assert "Remembered" in calls_str
 
 
-class TestProofExploreCommands:
-    """Tests for /proof and /explore mode switching commands (Phase 5)."""
-
-    def test_proof_command_sets_mode(self, repl, mock_console):
-        """Test /proof command sets mode to PROOF."""
-        from constat.execution.mode import Mode
-
-        # Set initial mode to EXPLORATORY
-        repl.session_config.default_mode = Mode.EXPLORATORY
-
-        # Execute /proof command
-        repl._handle_proof_mode()
-
-        # Verify mode was changed
-        assert repl.session_config.default_mode == Mode.PROOF
-
-        # Verify message was printed
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "PROOF" in calls_str
-        assert "Switched to" in calls_str
-
-    def test_explore_command_sets_mode(self, repl, mock_console):
-        """Test /explore command sets mode to EXPLORATORY."""
-        from constat.execution.mode import Mode
-
-        # Set initial mode to PROOF
-        repl.session_config.default_mode = Mode.PROOF
-
-        # Execute /explore command
-        repl._handle_explore_mode()
-
-        # Verify mode was changed
-        assert repl.session_config.default_mode == Mode.EXPLORATORY
-
-        # Verify message was printed
-        calls = [str(call) for call in mock_console.print.call_args_list]
-        calls_str = " ".join(calls)
-        assert "EXPLORATORY" in calls_str
-        assert "Switched to" in calls_str
-
-    def test_proof_command_updates_session_state(self, repl, mock_console):
-        """Test /proof command updates session conversation state."""
-        from constat.execution.mode import Mode, Phase, ConversationState
-
-        # Create mock session with conversation state
-        repl.session = Mock()
-        repl.session._conversation_state = ConversationState(
-            mode=Mode.EXPLORATORY,
-            phase=Phase.IDLE,
-        )
-        repl.session._emit_event = Mock()
-
-        # Execute /proof command
-        repl._handle_proof_mode()
-
-        # Verify session state was updated
-        assert repl.session._conversation_state.mode == Mode.PROOF
-
-    def test_explore_command_updates_session_state(self, repl, mock_console):
-        """Test /explore command updates session conversation state."""
-        from constat.execution.mode import Mode, Phase, ConversationState
-
-        # Create mock session with conversation state
-        repl.session = Mock()
-        repl.session._conversation_state = ConversationState(
-            mode=Mode.PROOF,
-            phase=Phase.IDLE,
-        )
-        repl.session._emit_event = Mock()
-
-        # Execute /explore command
-        repl._handle_explore_mode()
-
-        # Verify session state was updated
-        assert repl.session._conversation_state.mode == Mode.EXPLORATORY
-
-    def test_proof_command_without_session(self, repl, mock_console):
-        """Test /proof command works without active session."""
-        from constat.execution.mode import Mode
-
-        # No session
-        repl.session = None
-        repl.session_config.default_mode = Mode.EXPLORATORY
-
-        # Should not raise
-        repl._handle_proof_mode()
-
-        # Mode should still be set
-        assert repl.session_config.default_mode == Mode.PROOF
-
-    def test_commands_in_repl_commands_list(self, repl):
-        """Test /proof and /explore are in the REPL commands list."""
-        from constat.repl import REPL_COMMANDS
-
-        assert "/proof" in REPL_COMMANDS
-        assert "/explore" in REPL_COMMANDS
-
-
 class TestStatusLine:
     """Tests for StatusLine class (Phase 5)."""
 
     def test_status_line_initial_state(self):
         """Test StatusLine initial render."""
         from constat.feedback import StatusLine
-        from constat.execution.mode import Mode, Phase
 
         status = StatusLine()
 
-        # Should show EXPLORE mode and idle phase
+        # Should show idle phase (Ready is displayed for idle)
         rendered = status.render()
-        assert "[EXPLORE]" in rendered
-        assert "idle" in rendered
-
-    def test_status_line_proof_mode(self):
-        """Test StatusLine renders PROOF mode correctly."""
-        from constat.feedback import StatusLine
-        from constat.execution.mode import Mode, Phase
-
-        status = StatusLine()
-        status._mode = Mode.PROOF
-
-        rendered = status.render()
-        assert "[PROOF]" in rendered
+        assert "Ready" in rendered
 
     def test_status_line_planning_phase(self):
         """Test StatusLine renders planning phase correctly."""
@@ -1226,7 +1128,7 @@ class TestStatusLine:
         status._plan_name = "Analyze revenue"
 
         rendered = status.render()
-        assert "planning" in rendered
+        assert "Planning" in rendered
         assert "Analyze revenue" in rendered
 
     def test_status_line_executing_phase(self):
@@ -1241,8 +1143,8 @@ class TestStatusLine:
         status._step_description = "Loading data"
 
         rendered = status.render()
-        assert "executing" in rendered
-        assert "step 2/5" in rendered
+        assert "Executing" in rendered
+        assert "Step 2/5" in rendered
         assert "Loading data" in rendered
 
     def test_status_line_failed_phase(self):
@@ -1256,7 +1158,7 @@ class TestStatusLine:
         status._error_message = "Connection timeout"
 
         rendered = status.render()
-        assert "failed" in rendered
+        assert "Failed" in rendered
         assert "step 3" in rendered
         assert "Connection timeout" in rendered
         assert "retry/replan/abandon" in rendered
@@ -1272,25 +1174,23 @@ class TestStatusLine:
         status._step_total = 4
 
         rendered = status.render()
-        assert "awaiting_approval" in rendered
+        assert "Awaiting approval" in rendered
         assert "(4 steps)" in rendered
         assert "y/n/suggest" in rendered
 
     def test_status_line_update_from_state(self):
         """Test StatusLine.update() from ConversationState."""
         from constat.feedback import StatusLine
-        from constat.execution.mode import Mode, Phase, ConversationState
+        from constat.execution.mode import Phase, ConversationState
 
         status = StatusLine()
         state = ConversationState(
-            mode=Mode.PROOF,
             phase=Phase.EXECUTING,
             failure_context="Test error",
         )
 
         status.update(state)
 
-        assert status._mode == Mode.PROOF
         assert status._phase == Phase.EXECUTING
         assert status._error_message == "Test error"
 
@@ -1304,7 +1204,7 @@ class TestStatusLine:
         status._queue_count = 2
 
         rendered = status.render()
-        assert "queued: 2" in rendered
+        assert "Queued: 2" in rendered
 
     def test_status_line_spinner_advance(self):
         """Test StatusLine.advance_spinner() cycles through frames."""
@@ -1326,13 +1226,13 @@ class TestStatusLine:
         rendered = status.render()
         # Should show spinner and message instead of phase
         assert "Analyzing your question..." in rendered
-        assert "idle" not in rendered  # Phase should be hidden
+        assert "Ready" not in rendered  # Phase should be hidden when message is set
 
         # Clear message
         status.set_status_message(None)
         rendered = status.render()
         assert "Analyzing" not in rendered
-        assert "idle" in rendered  # Phase should be shown again
+        assert "Ready" in rendered  # Phase should be shown again
 
 
 class TestFailureRecovery:

@@ -1,25 +1,16 @@
-"""Execution mode selection for traceability guarantees.
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
 
-Two execution modes with different purposes:
+"""Execution phase and plan approval handling.
 
-PROOF (Fact resolver):
-- Generates a plan with assumed facts, resolves lazily
-- Trace = formal derivation chain (proof)
-- Plans must be complete and self-contained
-- Every conclusion has a provenance chain
-- Good for: decisions, compliance, defensible conclusions
-- Audit answer: "X is true BECAUSE Y AND Z, where Y came from..."
-
-EXPLORATORY (Multi-step planner):
-- Generates a plan, executes steps sequentially
-- Trace = narrative log of what was done
-- Plans can reference facts/data from previous plans
-- Session builds up a working context
-- Good for: dashboards, reports, data exploration
-- Audit answer: "I ran these queries and computed this"
-
-The LLM can suggest a mode based on the query, or the user can specify.
-For regulated domains, PROOF should be the default.
+All queries run in exploratory mode by default (fast, conversational, best-effort).
+Use the /prove command to verify claims from the conversation with auditable proofs.
 """
 
 from dataclasses import dataclass, field
@@ -28,28 +19,17 @@ from typing import Any, Optional
 
 
 class Mode(Enum):
-    """Execution mode determines traceability guarantees."""
+    """Execution mode - kept for backwards compatibility.
+
+    Note: Mode selection is no longer used. All queries run exploratory by default.
+    Use /prove to generate auditable proofs when needed.
+    """
 
     PROOF = "proof"
-    """Fact resolver for traceable, defensible conclusions.
-
-    - Plan is generated with assumed facts
-    - Facts are resolved lazily with provenance
-    - Trace is a formal derivation chain
-    - Every conclusion has a proof
-    - Plans are self-contained (no implicit dependencies on prior session state)
-    """
+    """Fact resolver for traceable, defensible conclusions."""
 
     EXPLORATORY = "exploratory"
-    """Multi-step planner for exploration and analysis.
-
-    - Plan is executed step-by-step
-    - Each step can run arbitrary Python/SQL
-    - Trace is a narrative log
-    - Fast, flexible, good for building things
-    - Plans can reference facts/data from previous plans
-    - Session builds up a working context
-    """
+    """Multi-step planner for exploration and analysis."""
 
 
 class Phase(Enum):
@@ -111,9 +91,6 @@ class SubIntent(Enum):
     """What-if / forecast."""
 
     # Control sub-intents (session management)
-    MODE_SWITCH = "mode_switch"
-    """Change execution mode (/proof, /explore)."""
-
     RESET = "reset"
     """Clear session state (/reset)."""
 
@@ -136,6 +113,9 @@ class SubIntent(Enum):
     REPLAN = "replan"
     """Stop and revise the plan."""
 
+    PROVE = "prove"
+    """Generate proof for conversation claims (/prove)."""
+
 
 @dataclass
 class TurnIntent:
@@ -155,9 +135,6 @@ class TurnIntent:
 class ConversationState:
     """Combined state tracking for conversation flow."""
 
-    mode: Mode
-    """Current execution mode (proof or exploratory)."""
-
     phase: Phase
     """Current task lifecycle phase."""
 
@@ -165,7 +142,7 @@ class ConversationState:
     """Current plan if any (Plan object when available)."""
 
     session_facts: dict[str, Any] = field(default_factory=dict)
-    """Accumulated facts (used in exploratory mode)."""
+    """Accumulated facts from session."""
 
     failure_context: Optional[str] = None
     """Error details when phase == FAILED."""
@@ -183,234 +160,18 @@ class ConversationState:
         return self.phase in (Phase.PLANNING, Phase.AWAITING_APPROVAL)
 
 
-# Keywords that suggest proof mode is needed
-PROOF_KEYWORDS = [
-    # Verification keywords
-    "verify",
-    "validate",
-    "confirm",
-    "check",
-    "prove",
-    "justify",
-    # Reasoning keywords
-    "why",
-    "because",
-    "reasoning",
-    "evidence",
-    # Decision/classification keywords
-    "conclude",
-    "determine",
-    "classify",
-    "approve",
-    "reject",
-    "flag",
-    "qualify",
-    "eligibility",
-    # Compliance/audit keywords
-    "compliance",
-    "audit",
-    "regulation",
-    "defensible",
-    "risk",
-    # Certainty keywords
-    "certain",
-    "accurate",
-    "correct",
-    "true",
-    "false",
-]
-
-# Keywords that suggest exploratory mode (data analysis)
-EXPLORATORY_KEYWORDS = [
-    "show",
-    "display",
-    "dashboard",
-    "report",
-    "chart",
-    "graph",
-    "visualize",
-    "explore",
-    "analyze",
-    "summarize",
-    "list",
-    "compare",
-    "trend",
-    "overview",
-    "build",
-    "create",
-]
-
-
-@dataclass
-class ModeSelection:
-    """Result of mode selection with reasoning."""
-    mode: Mode
-    confidence: float
-    reasoning: str
-    matched_keywords: list[str] | None = None
-
-
-def suggest_mode(query: str, default: Mode = Mode.PROOF) -> ModeSelection:
-    """
-    Suggest an execution mode based on query analysis.
-
-    Uses keyword matching as a heuristic. For production use,
-    the LLM should make this decision with full context.
-
-    Priority: PROOF > EXPLORATORY
-    - PROOF: Verification with fact-based provenance
-    - EXPLORATORY: Data analysis with multi-step execution
-
-    Args:
-        query: The user's natural language query
-        default: Default mode if unclear (PROOF for safety)
-
-    Returns:
-        ModeSelection with mode, confidence, and reasoning
-    """
-    import re
-    query_lower = query.lower()
-
-    # Helper to check word boundaries for certain keywords
-    def match_with_boundary(kw: str, text: str) -> bool:
-        # Keywords that should match as whole words only (not as substrings)
-        boundary_keywords = {"correct", "true", "false", "risk", "flag"}
-        if kw in boundary_keywords:
-            return bool(re.search(rf'\b{re.escape(kw)}\b', text))
-        return kw in text
-
-    # Patterns that indicate action requests, not verification
-    action_patterns = [
-        r'\bverify\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
-        r'\bcheck\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
-        r'\bconfirm\s+(?:you|i|we|that\s+you|that\s+i|that\s+we)\s+(?:are|am|is|were|was|have|has|had)\b',
-        r'\bmake\s+sure\b',
-        r'\bensure\b',
-        r'\btry\s+(?:the|this|it|again)\b',
-    ]
-
-    is_action_request = any(re.search(p, query_lower) for p in action_patterns)
-
-    proof_matches = [kw for kw in PROOF_KEYWORDS if match_with_boundary(kw, query_lower)]
-    exploratory_matches = [kw for kw in EXPLORATORY_KEYWORDS if match_with_boundary(kw, query_lower)]
-
-    proof_score = len(proof_matches)
-    exploratory_score = len(exploratory_matches)
-
-    # If this looks like an action request, discount proof keywords
-    if is_action_request:
-        proof_score = 0
-        exploratory_score = max(exploratory_score, 1)
-
-    if proof_score > exploratory_score:
-        return ModeSelection(
-            mode=Mode.PROOF,
-            confidence=min(0.9, 0.5 + proof_score * 0.1),
-            reasoning=f"Query suggests need for proof-based reasoning (matched: {proof_matches})",
-            matched_keywords=proof_matches,
-        )
-    elif exploratory_score > proof_score:
-        return ModeSelection(
-            mode=Mode.EXPLORATORY,
-            confidence=min(0.9, 0.5 + exploratory_score * 0.1),
-            reasoning=f"Query suggests exploratory analysis (matched: {exploratory_matches})",
-            matched_keywords=exploratory_matches,
-        )
-    else:
-        return ModeSelection(
-            mode=default,
-            confidence=0.5,
-            reasoning=f"Unclear intent, defaulting to {default.value} mode for safety",
-            matched_keywords=[],
-        )
-
-
-# System prompts for each mode
-MODE_SYSTEM_PROMPTS = {
-    Mode.EXPLORATORY: """You are a data analyst assistant.
-
-Execute the user's request by creating a step-by-step plan and running each step.
-Each step can query databases, transform data, create visualizations, etc.
-
-Your trace should document WHAT you did at each step.
-Focus on getting results efficiently.""",
-
-    Mode.PROOF: """You are a reasoning assistant for auditable decisions.
-
-For the user's request, identify the key facts needed to reach a conclusion.
-Express your reasoning as a set of facts and rules that derive the answer.
-
-Each fact must have:
-- A source (database query, business rule, domain knowledge)
-- A confidence level (1.0 for database facts, lower for heuristics)
-- A clear derivation chain
-
-Your trace must document WHY each conclusion is true, not just what you did.
-Every conclusion must be defensible with a formal proof.""",
-}
-
-
-def get_mode_system_prompt(mode: Mode) -> str:
-    """Get the system prompt addition for an execution mode."""
-    return MODE_SYSTEM_PROMPTS.get(mode, "")
-
-
 @dataclass
 class ExecutionConfig:
     """Configuration for execution behavior."""
 
-    # Default execution mode
-    default_mode: Mode = Mode.PROOF
-
-    # Allow LLM to override mode selection
-    allow_mode_override: bool = True
-
-    # For proof mode
+    # Proof verification settings
     min_confidence: float = 0.0  # Minimum confidence to accept a fact
     require_provenance: bool = True  # All facts must have source
     max_resolution_depth: int = 5  # Max recursive fact resolution
 
-    # For exploratory mode
+    # Step execution settings
     max_steps: int = 20  # Maximum plan steps
     step_timeout_seconds: int = 60  # Per-step timeout
-
-
-# Domain presets for common use cases
-DOMAIN_PRESETS = {
-    "financial": ExecutionConfig(
-        default_mode=Mode.PROOF,
-        allow_mode_override=False,
-        min_confidence=0.8,
-        require_provenance=True,
-    ),
-    "healthcare": ExecutionConfig(
-        default_mode=Mode.PROOF,
-        allow_mode_override=False,
-        min_confidence=0.9,
-        require_provenance=True,
-    ),
-    "compliance": ExecutionConfig(
-        default_mode=Mode.PROOF,
-        allow_mode_override=False,
-        min_confidence=0.85,
-        require_provenance=True,
-    ),
-    "analytics": ExecutionConfig(
-        default_mode=Mode.EXPLORATORY,
-        allow_mode_override=True,
-        min_confidence=0.0,
-        require_provenance=False,
-    ),
-    "reporting": ExecutionConfig(
-        default_mode=Mode.EXPLORATORY,
-        allow_mode_override=True,
-    ),
-}
-
-
-def get_domain_preset(domain: str) -> ExecutionConfig:
-    """Get execution config for a domain preset."""
-    return DOMAIN_PRESETS.get(domain, ExecutionConfig())
 
 
 class PlanApproval(Enum):
@@ -428,27 +189,17 @@ class PlanApproval(Enum):
     COMMAND = "command"
     """User entered a slash command - pass back to REPL for handling."""
 
-    MODE_SWITCH = "mode_switch"
-    """User wants to switch mode and replan."""
-
 
 @dataclass
 class PlanApprovalRequest:
     """Request for user approval of a generated plan."""
     problem: str
-    mode: Mode
-    mode_reasoning: str
     steps: list[dict]
     reasoning: str
 
     def format_for_display(self) -> str:
         """Format the approval request for display."""
-        lines = [
-            f"Mode: {self.mode.value.upper()}",
-            f"  {self.mode_reasoning}",
-            "",
-            "Plan:",
-        ]
+        lines = ["Plan:"]
         for step in self.steps:
             lines.append(f"  {step.get('number', '?')}. {step.get('goal', 'Unknown')}")
 
@@ -465,7 +216,6 @@ class PlanApprovalResponse:
     suggestion: Optional[str] = None
     reason: Optional[str] = None
     command: Optional[str] = None
-    target_mode: Optional[Mode] = None
 
     @classmethod
     def approve(cls) -> "PlanApprovalResponse":
@@ -486,8 +236,3 @@ class PlanApprovalResponse:
     def pass_command(cls, command: str) -> "PlanApprovalResponse":
         """Create a command pass-through response."""
         return cls(decision=PlanApproval.COMMAND, command=command)
-
-    @classmethod
-    def mode_switch(cls, target_mode: Mode) -> "PlanApprovalResponse":
-        """Create a mode switch response to replan in a different mode."""
-        return cls(decision=PlanApproval.MODE_SWITCH, target_mode=target_mode)

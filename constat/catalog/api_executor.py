@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """API executor for querying external GraphQL and REST APIs as data sources.
 
 This module provides the actual execution layer that was missing - it can
@@ -298,9 +307,9 @@ class APIExecutor:
         """
         api_config = self._get_api_config(api_name)
 
-        if api_config.type != "openapi":
+        if api_config.type not in ("openapi", "rest"):
             raise APIExecutionError(
-                f"API '{api_name}' is type '{api_config.type}', not 'openapi'"
+                f"API '{api_name}' is type '{api_config.type}', expected 'openapi' or 'rest'"
             )
 
         if not api_config.url:

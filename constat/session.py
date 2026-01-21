@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Session orchestration for multi-step plan execution."""
 
 from __future__ import annotations
@@ -29,8 +38,6 @@ from constat.execution.fact_resolver import (
 )
 from constat.execution.mode import (
     Mode,
-    ModeSelection,
-    suggest_mode,
     PlanApproval,
     PlanApprovalRequest,
     PlanApprovalResponse,
@@ -45,10 +52,12 @@ from constat.execution.parallel_scheduler import ParallelStepScheduler, Schedule
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
+from constat.catalog.api_schema_manager import APISchemaManager
 from constat.catalog.preload_cache import MetadataPreloadCache
 from constat.discovery.doc_tools import DocumentDiscoveryTools
 from constat.discovery.concept_detector import ConceptDetector
 from constat.email import create_send_email
+from constat.embedding_loader import EmbeddingModelLoader
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 from constat.visualization import create_viz_helper
 
@@ -306,22 +315,41 @@ class Session:
         self.session_config = session_config or SessionConfig()
         self.user_id = user_id or "default"
 
-        # Initialize components
+        # Start loading embedding model in background immediately
+        # This allows the model to load while other initialization happens
+        EmbeddingModelLoader.get_instance().start_loading()
+
+        # Initialize components with timing
+        t0 = time.time()
         self.schema_manager = SchemaManager(config)
         self.schema_manager.initialize(progress_callback=progress_callback)
+        logger.debug(f"Session init: SchemaManager took {time.time() - t0:.2f}s")
+
+        # API schema manager (GraphQL introspection, REST metadata)
+        t0 = time.time()
+        self.api_schema_manager = APISchemaManager(config)
+        if config.apis:
+            self.api_schema_manager.initialize(progress_callback=progress_callback)
+        logger.debug(f"Session init: APISchemaManager took {time.time() - t0:.2f}s")
 
         # Metadata preload cache for faster context loading
+        t0 = time.time()
         self.preload_cache = MetadataPreloadCache(config)
         self._preloaded_context: Optional[str] = None
         self._load_preloaded_context()
+        logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
 
         # Document discovery tools (for reference documents)
-        # Pass schema entities at initialization to avoid race conditions during index build
+        # Pass schema and API entities at initialization to avoid race conditions during index build
+        t0 = time.time()
         if config.documents:
-            schema_entities = self.schema_manager.get_entity_names()
-            self.doc_tools = DocumentDiscoveryTools(config, schema_entities=schema_entities)
+            schema_entities = set(self.schema_manager.get_entity_names())
+            api_entities = self._get_api_entity_names()
+            all_entities = schema_entities | api_entities
+            self.doc_tools = DocumentDiscoveryTools(config, schema_entities=all_entities)
         else:
             self.doc_tools = None
+        logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
         # Task router for model routing with escalation
         self.router = TaskRouter(config.llm)
@@ -332,7 +360,9 @@ class Session:
         )
 
         self.planner = Planner(
-            config, self.schema_manager, self.router, doc_tools=self.doc_tools
+            config, self.schema_manager, self.router,
+            doc_tools=self.doc_tools,
+            api_schema_manager=self.api_schema_manager,
         )
 
         self.executor = PythonExecutor(
@@ -383,13 +413,14 @@ class Session:
         self._tool_cache: dict[str, any] = {}
 
         # Concept detector for conditional prompt injection
+        t0 = time.time()
         self._concept_detector = ConceptDetector()
         self._concept_detector.initialize()
+        logger.debug(f"Session init: ConceptDetector took {time.time() - t0:.2f}s")
 
         # Phase 3: Conversation state and intent classifier
-        # Initialize conversation state with default mode and idle phase
+        # Initialize conversation state with idle phase
         self._conversation_state: ConversationState = ConversationState(
-            mode=Mode.EXPLORATORY,
             phase=Phase.IDLE,
         )
 
@@ -650,6 +681,95 @@ class Session:
             )
         return self._tool_cache[cache_key]
 
+    def _cached_find_relevant_apis(self, query: str, limit: int = 5) -> list[dict]:
+        """Find relevant APIs with caching."""
+        cache_key = f"apis:{query}:{limit}"
+        if cache_key not in self._tool_cache:
+            self._tool_cache[cache_key] = self.api_schema_manager.find_relevant_apis(
+                query, limit=limit
+            )
+        return self._tool_cache[cache_key]
+
+    def find_relevant_sources(
+        self,
+        query: str,
+        table_limit: int = 5,
+        doc_limit: int = 3,
+        api_limit: int = 3,
+        min_similarity: float = 0.3,
+    ) -> dict:
+        """Find all relevant sources (tables, documents, APIs) for a query.
+
+        Performs unified semantic search across all configured data sources
+        and returns ranked results from each category.
+
+        Args:
+            query: Natural language query
+            table_limit: Max tables to return
+            doc_limit: Max documents to return
+            api_limit: Max API endpoints to return
+            min_similarity: Minimum similarity threshold
+
+        Returns:
+            Dict with 'tables', 'documents', 'apis' keys, each containing
+            a list of relevant sources with similarity scores.
+        """
+        results = {
+            "tables": [],
+            "documents": [],
+            "apis": [],
+        }
+
+        # Find relevant tables (with doc enrichment)
+        tables = self._cached_find_relevant_tables(query, top_k=table_limit)
+        results["tables"] = [
+            {
+                "source_type": "table",
+                "name": t["full_name"],
+                "database": t["database"],
+                "summary": t["summary"],
+                "relevance": t["relevance"],
+                "documentation": t.get("documentation", []),
+            }
+            for t in tables
+            if t.get("relevance", 0) >= min_similarity
+        ]
+
+        # Find relevant documents
+        if self.doc_tools:
+            docs = self.doc_tools.search_documents(query, limit=doc_limit)
+            results["documents"] = [
+                {
+                    "source_type": "document",
+                    "name": d["document"],
+                    "section": d.get("section"),
+                    "excerpt": d.get("excerpt", ""),
+                    "relevance": d.get("relevance", 0),
+                }
+                for d in docs
+                if d.get("relevance", 0) >= min_similarity
+            ]
+
+        # Find relevant APIs
+        if self.config.apis:
+            apis = self._cached_find_relevant_apis(query, limit=api_limit)
+            results["apis"] = [
+                {
+                    "source_type": "api",
+                    "name": f"{a['api_name']}.{a['endpoint']}",
+                    "api_name": a["api_name"],
+                    "endpoint": a["endpoint"],
+                    "type": a["type"],
+                    "description": a.get("description"),
+                    "fields": a.get("fields", []),
+                    "relevance": a.get("similarity", 0),
+                }
+                for a in apis
+                if a.get("similarity", 0) >= min_similarity
+            ]
+
+        return results
+
     def _find_entity(self, name: str, limit: int = 3) -> dict:
         """Find all occurrences of an entity across schema and documents."""
         from constat.discovery.schema_tools import SchemaDiscoveryTools
@@ -668,6 +788,7 @@ class Session:
         if self.config.apis:
             handlers["get_api_schema_overview"] = self._get_api_schema_overview
             handlers["get_api_query_schema"] = self._get_api_query_schema
+            handlers["find_relevant_apis"] = self._cached_find_relevant_apis
 
         return handlers
 
@@ -690,7 +811,7 @@ class Session:
         return self._tool_cache[cache_key]
 
     def refresh_metadata(self, force_full: bool = False) -> dict:
-        """Refresh all metadata: schema, documents, and preload cache.
+        """Refresh all metadata: schema, documents, APIs, and preload cache.
 
         Args:
             force_full: If True, force full rebuild of all caches
@@ -701,10 +822,19 @@ class Session:
         self._tool_cache.clear()
         self.schema_manager.refresh()
 
+        # Refresh API schema manager
+        api_count = 0
+        if self.config.apis:
+            self.api_schema_manager.initialize()  # Re-introspect APIs
+            api_count = len(self.api_schema_manager.metadata_cache)
+
         # Pass schema entities to doc_tools for entity extraction
+        # Include API endpoints as entities
         if self.doc_tools:
-            schema_entities = self.schema_manager.get_entity_names()
-            self.doc_tools.set_schema_entities(schema_entities)
+            schema_entities = set(self.schema_manager.get_entity_names())
+            api_entities = self._get_api_entity_names()
+            all_entities = schema_entities | api_entities
+            self.doc_tools.set_schema_entities(all_entities)
 
         # Refresh document vector index (incremental by default)
         doc_stats = {}
@@ -717,7 +847,24 @@ class Session:
         return {
             "preloaded_tables": self.get_preloaded_tables_count(),
             "documents": doc_stats,
+            "api_endpoints": api_count,
         }
+
+    def _get_api_entity_names(self) -> set[str]:
+        """Get API endpoint names for entity extraction."""
+        if not self.config.apis:
+            return set()
+
+        entities = set()
+        for meta in self.api_schema_manager.metadata_cache.values():
+            # Add endpoint name
+            entities.add(meta.endpoint_name)
+            # Add API.endpoint as full name
+            entities.add(meta.full_name)
+            # Add field names
+            for field in meta.fields:
+                entities.add(field.name)
+        return entities
 
     def _load_preloaded_context(self) -> None:
         """Load preloaded metadata context from cache if available."""
@@ -845,6 +992,25 @@ class Session:
                             }
                         },
                         "required": ["api_name", "query_name"]
+                    }
+                },
+                {
+                    "name": "find_relevant_apis",
+                    "description": "Search for API endpoints relevant to a query using semantic similarity. Returns APIs that might have the data you need.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Natural language description of what API data is needed"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 5,
+                                "description": "Maximum number of results"
+                            }
+                        },
+                        "required": ["query"]
                     }
                 }
             ])
@@ -1047,6 +1213,20 @@ YOUR JSON RESPONSE:"""
                 last_error = None
 
                 for attempt in range(max_retries):
+                    # Emit SQL generation event
+                    self._emit_event(StepEvent(
+                        event_type="sql_generating",
+                        step_number=0,
+                        data={
+                            "fact_name": fact_name,
+                            "database": db_name,
+                            "attempt": attempt + 1,
+                            "max_attempts": max_retries,
+                            "is_retry": attempt > 0,
+                            "retry_reason": last_error[:50] if last_error else None,
+                        }
+                    ))
+
                     error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query." if last_error else ""
                     sql_learnings = self._get_codegen_learnings(fact_desc)
 
@@ -1072,6 +1252,18 @@ RULE: Always SELECT primary key columns for joins."""
 
                     if "sqlite" in str(engine.url):
                         sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
+
+                    # Emit SQL executing event
+                    self._emit_event(StepEvent(
+                        event_type="sql_executing",
+                        step_number=0,
+                        data={
+                            "fact_name": fact_name,
+                            "database": db_name,
+                            "attempt": attempt + 1,
+                            "max_attempts": max_retries,
+                        }
+                    ))
 
                     try:
                         result_df = pd.read_sql(sql, engine)
@@ -1103,6 +1295,19 @@ RULE: Always SELECT primary key columns for joins."""
                         break
                     except Exception as sql_err:
                         last_error = str(sql_err)
+                        # Emit SQL error event
+                        self._emit_event(StepEvent(
+                            event_type="sql_error",
+                            step_number=0,
+                            data={
+                                "fact_name": fact_name,
+                                "database": db_name,
+                                "error": str(sql_err)[:100],
+                                "attempt": attempt + 1,
+                                "max_attempts": max_retries,
+                                "will_retry": attempt < max_retries - 1,
+                            }
+                        ))
                         if attempt == max_retries - 1:
                             raise Exception(f"SQL error after {max_retries} attempts: {sql_err}")
 
@@ -1661,11 +1866,19 @@ Return ONLY Python code, no markdown."""
             data={"goal": step.goal}
         ))
 
-        for attempt in range(1, self.session_config.max_retries_per_step + 1):
+        max_attempts = self.session_config.max_retries_per_step
+        for attempt in range(1, max_attempts + 1):
+            # Emit detailed generating event
             self._emit_event(StepEvent(
                 event_type="generating",
                 step_number=step.number,
-                data={"attempt": attempt}
+                data={
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "is_retry": attempt > 1,
+                    "goal": step.goal[:50] + "..." if len(step.goal) > 50 else step.goal,
+                    "retry_reason": last_error[:100] if attempt > 1 and last_error else None,
+                }
             ))
 
             # Use router with step's task_type for automatic model selection/escalation
@@ -1712,7 +1925,12 @@ Return ONLY Python code, no markdown."""
             self._emit_event(StepEvent(
                 event_type="executing",
                 step_number=step.number,
-                data={"attempt": attempt, "code": code}
+                data={
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "is_retry": attempt > 1,
+                    "code_lines": len(code.split('\n')),
+                }
             ))
 
             # Track tables before execution
@@ -1769,10 +1987,35 @@ Return ONLY Python code, no markdown."""
             if self.datastore:
                 self.datastore.add_artifact(step.number, attempt, "error", last_error)
 
+            # Determine error type for better status messages
+            error_lower = last_error.lower() if last_error else ""
+            if "sql" in error_lower or "query" in error_lower:
+                error_type = "SQL error"
+            elif "name" in error_lower and "not defined" in error_lower:
+                error_type = "Variable not found"
+            elif "type" in error_lower:
+                error_type = "Type error"
+            elif "key" in error_lower:
+                error_type = "Key error"
+            elif "index" in error_lower:
+                error_type = "Index error"
+            elif "timeout" in error_lower:
+                error_type = "Timeout"
+            else:
+                error_type = "Runtime error"
+
+            will_retry = attempt < max_attempts
             self._emit_event(StepEvent(
                 event_type="step_error",
                 step_number=step.number,
-                data={"error": last_error, "attempt": attempt}
+                data={
+                    "error": last_error,
+                    "error_type": error_type,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "will_retry": will_retry,
+                    "next_attempt": attempt + 1 if will_retry else None,
+                }
             ))
 
         # Max retries exceeded - generate suggestions for alternative approaches
@@ -2044,7 +2287,6 @@ Do not include any explanation or extra text."""
         self,
         problem: str,
         planner_response: PlannerResponse,
-        mode_selection,
     ) -> PlanApprovalResponse:
         """
         Request approval for a plan.
@@ -2055,7 +2297,6 @@ Do not include any explanation or extra text."""
         Args:
             problem: The original problem
             planner_response: The planner's response with plan and reasoning
-            mode_selection: The selected execution mode
 
         Returns:
             PlanApprovalResponse with user's decision
@@ -2081,8 +2322,6 @@ Do not include any explanation or extra text."""
 
         request = PlanApprovalRequest(
             problem=problem,
-            mode=mode_selection.mode,
-            mode_reasoning=mode_selection.reasoning,
             steps=steps,
             reasoning=planner_response.reasoning,
         )
@@ -2325,7 +2564,6 @@ Perform these analyses:
    - CHALLENGE: Verify ("are you sure?", "double check", "confirm")
    - EXPORT: Save ("export to CSV", "download", "save")
    - EXTEND: Continue ("what about X?", "also check...")
-   - MODE_SWITCH: Change mode ("switch to auditable", "less formal")
    - PROVENANCE: Show proof ("where did that come from?", "audit trail")
    - CREATE_ARTIFACT: Create output ("create dashboard", "make chart", "generate report")
    - TRIGGER_ACTION: Execute action ("send email", "notify team")
@@ -2443,6 +2681,36 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                     question_type = QuestionType.META_QUESTION
                 elif "GENERAL" in type_line:
                     question_type = QuestionType.GENERAL_KNOWLEDGE
+
+            # Safety check: If classified as GENERAL_KNOWLEDGE but query mentions
+            # configured data sources, override to DATA_ANALYSIS
+            if question_type == QuestionType.GENERAL_KNOWLEDGE:
+                problem_lower = problem.lower()
+                # Check if query mentions any data source names or key terms from descriptions
+                source_keywords = []
+                if self.config.databases:
+                    for name, db in self.config.databases.items():
+                        source_keywords.append(name.lower())
+                        if db.description:
+                            # Extract key terms from description (nouns)
+                            for word in db.description.lower().split():
+                                if len(word) > 4 and word.isalpha():
+                                    source_keywords.append(word)
+                if self.config.documents:
+                    for name, doc in self.config.documents.items():
+                        source_keywords.append(name.lower().replace("_", " "))
+                        source_keywords.append(name.lower())
+                        if doc.description:
+                            for word in doc.description.lower().split():
+                                if len(word) > 4 and word.isalpha():
+                                    source_keywords.append(word)
+
+                # Check for matches
+                for keyword in source_keywords:
+                    if keyword in problem_lower:
+                        logger.debug(f"Overriding GENERAL_KNOWLEDGE to DATA_ANALYSIS: query mentions '{keyword}'")
+                        question_type = QuestionType.DATA_ANALYSIS
+                        break
 
             # Parse CACHED_ANSWER
             if "CACHED_ANSWER:" in response:
@@ -2749,12 +3017,16 @@ DOCUMENT-AWARE SUGGESTIONS:
 
         # Build enhanced question with clarifications
         clarifications = []
+        logger.debug(f"[CLARIFICATION] Response answers: {response.answers}")
         for question, answer in response.answers.items():
+            logger.debug(f"[CLARIFICATION] Q: {question!r} -> A: {answer!r}")
             if answer:
                 clarifications.append(f"{question}: {answer}")
 
         if clarifications:
-            return f"{request.original_question}\n\nClarifications:\n" + "\n".join(clarifications)
+            enhanced = f"{request.original_question}\n\nClarifications:\n" + "\n".join(clarifications)
+            logger.debug(f"[CLARIFICATION] Enhanced problem:\n{enhanced}")
+            return enhanced
 
         return None
 
@@ -3178,11 +3450,10 @@ Create a clear, direct answer to the user's question. Include:
 3. Any notable observations or caveats
 
 **Important formatting rules:**
-- If the user asked for data (list, table, enriched dataset), SHOW THE ACTUAL DATA in a markdown table
-- Don't just say "[data added]" or summarize - display the actual values
-- For enrichment requests, show the enriched table with all columns including new data
-- For small datasets (under 20 rows), show the complete table
-- Use markdown tables with proper formatting"""
+- Do NOT display tables inline - data is available in artifacts (user can view via /tables)
+- Reference artifact tables by name when mentioning results
+- Focus on key findings and conclusions, not raw data
+- Keep the response concise"""
 
         result = self.router.execute(
             task_type=TaskType.SUMMARIZATION,
@@ -3346,6 +3617,53 @@ Return ONLY the suggestions, one per line, no numbering or bullets."""
             logger.debug(f"Failed to generate suggestions (non-fatal): {e}")
             return []
 
+    def _run_post_synthesis_parallel(
+        self,
+        problem: str,
+        final_answer: str,
+        tables: list[dict],
+    ) -> tuple[list, list[str]]:
+        """
+        Run facts extraction and suggestions generation in parallel.
+
+        These two tasks are independent and can run concurrently to reduce
+        total synthesis time from ~3 LLM calls to ~2 (synthesis + max(facts, suggestions)).
+
+        Args:
+            problem: The original question
+            final_answer: The synthesized answer
+            tables: Available tables for suggestions context
+
+        Returns:
+            Tuple of (extracted_facts, suggestions)
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        response_facts = []
+        suggestions = []
+
+        def extract_facts():
+            return self._extract_facts_from_response(problem, final_answer)
+
+        def generate_suggestions():
+            return self._generate_suggestions(problem, final_answer, tables)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            facts_future = executor.submit(extract_facts)
+            suggestions_future = executor.submit(generate_suggestions)
+
+            # Wait for both to complete
+            for future in as_completed([facts_future, suggestions_future]):
+                try:
+                    if future == facts_future:
+                        response_facts = future.result()
+                    else:
+                        suggestions = future.result()
+                except Exception as e:
+                    logger.debug(f"Post-synthesis task failed (non-fatal): {e}")
+
+        return response_facts, suggestions
+
     def _replan_with_feedback(self, problem: str, feedback: str) -> PlannerResponse:
         """
         Generate a new plan incorporating user feedback.
@@ -3388,7 +3706,6 @@ Please create a revised plan that addresses this feedback."""
         context = {
             "phase": self._conversation_state.phase,
             "has_plan": self._conversation_state.active_plan is not None,
-            "mode": self._conversation_state.mode,
         }
 
         # Delegate to the intent classifier
@@ -3429,7 +3746,11 @@ Please create a revised plan that addresses this feedback."""
 
         # Handle LOOKUP sub-intent - simple fact retrieval
         if sub_intent == SubIntent.LOOKUP:
-            return self._handle_lookup_query(target, user_input)
+            result = self._handle_lookup_query(target, user_input)
+            # Check if lookup found data sources that need planning
+            if result.get("_route_to_planning"):
+                return result  # Signal will be handled by solve()
+            return result
 
         # Default: general answer using doc search + LLM fallback (KNOWLEDGE mode logic)
         return self._handle_general_query(user_input)
@@ -3552,13 +3873,39 @@ Provide a brief, high-level summary of the key findings."""
         }
 
     def _handle_lookup_query(self, target: Optional[str], user_input: str) -> dict:
-        """Handle simple fact lookup query."""
+        """Handle simple fact lookup query.
+
+        Checks all available sources: cached facts, APIs, databases, and documents.
+        Returns a signal to route to planning if data sources are found.
+        """
         # First, try to answer from cached facts
         cached_result = self._answer_from_cached_facts(user_input)
         if cached_result:
             return cached_result
 
-        # If no cached facts match, try document search
+        # Check if any data sources (APIs, tables) can answer this query
+        # Use a reasonable similarity threshold
+        sources = self.find_relevant_sources(
+            user_input,
+            table_limit=3,
+            doc_limit=3,
+            api_limit=3,
+            min_similarity=0.3,
+        )
+
+        # If we found relevant APIs or tables, signal to route to planning
+        has_data_sources = bool(sources.get("apis") or sources.get("tables"))
+        if has_data_sources:
+            # Log what we found for debugging
+            api_names = [a["name"] for a in sources.get("apis", [])]
+            table_names = [t["name"] for t in sources.get("tables", [])]
+            logger.debug(
+                f"[LOOKUP] Found data sources for query - APIs: {api_names}, Tables: {table_names}"
+            )
+            # Return signal to route to planning
+            return {"_route_to_planning": True}
+
+        # If no data sources match, fall back to document search + LLM synthesis
         return self._handle_general_query(user_input)
 
     def _handle_general_query(self, user_input: str) -> dict:
@@ -3567,16 +3914,8 @@ Provide a brief, high-level summary of the key findings."""
 
         This uses document lookup and LLM synthesis for knowledge/explanation queries.
         """
-        # Build a minimal mode selection for the _solve_knowledge method
-        mode_selection = ModeSelection(
-            mode=Mode.EXPLORATORY,  # Will use knowledge-style handling
-            confidence=0.8,
-            reasoning="Query intent - using document lookup and LLM synthesis",
-            matched_keywords=[],
-        )
-
         # Use the existing _solve_knowledge method which does doc search + LLM synthesis
-        return self._solve_knowledge(user_input, mode_selection)
+        return self._solve_knowledge(user_input)
 
     def _handle_plan_new_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
         """
@@ -3663,7 +4002,6 @@ Please revise the plan to incorporate this feedback."""
         Handle CONTROL primary intent - system/session commands.
 
         This handles sub-intents:
-        - MODE_SWITCH: change mode (PROOF/EXPLORATORY)
         - RESET: clear session state
         - REDO_CMD: re-execute last plan
         - HELP: show available commands
@@ -3681,10 +4019,6 @@ Please revise the plan to incorporate this feedback."""
         """
         sub_intent = turn_intent.sub
         target = turn_intent.target
-
-        # MODE_SWITCH: change execution mode
-        if sub_intent == SubIntent.MODE_SWITCH:
-            return self._handle_mode_switch(target, user_input)
 
         # RESET: clear session state
         if sub_intent == SubIntent.RESET:
@@ -3726,47 +4060,10 @@ Please revise the plan to incorporate this feedback."""
             "meta_response": True,
         }
 
-    def _handle_mode_switch(self, target: Optional[str], user_input: str) -> dict:
-        """Handle mode switch control command."""
-        input_lower = user_input.lower()
-
-        # Determine target mode from input
-        if target:
-            target_lower = target.lower()
-        else:
-            target_lower = input_lower
-
-        if "proof" in target_lower or "auditable" in target_lower or "audit" in target_lower:
-            new_mode = Mode.PROOF
-            self.session_config.default_mode = Mode.PROOF
-        elif "explore" in target_lower or "exploratory" in target_lower:
-            new_mode = Mode.EXPLORATORY
-            self.session_config.default_mode = Mode.EXPLORATORY
-        else:
-            # Toggle mode
-            if self._conversation_state.mode == Mode.PROOF:
-                new_mode = Mode.EXPLORATORY
-                self.session_config.default_mode = Mode.EXPLORATORY
-            else:
-                new_mode = Mode.PROOF
-                self.session_config.default_mode = Mode.PROOF
-
-        old_mode = self._conversation_state.mode
-        self._conversation_state.mode = new_mode
-
-        return {
-            "success": True,
-            "output": f"Switched from {old_mode.value.upper()} mode to {new_mode.value.upper()} mode.",
-            "meta_response": True,
-            "mode_switch": True,
-            "new_mode": new_mode.value,
-        }
-
     def _handle_reset(self) -> dict:
         """Handle reset control command - clear session state."""
         # Clear conversation state
         self._conversation_state = ConversationState(
-            mode=self._conversation_state.mode,  # Preserve mode
             phase=Phase.IDLE,
         )
 
@@ -4009,18 +4306,6 @@ Please revise the plan to incorporate this feedback."""
         """
         return self._conversation_state
 
-    def set_mode(self, mode: Mode) -> None:
-        """
-        Set the execution mode explicitly.
-
-        Args:
-            mode: The Mode to set (PROOF or EXPLORATORY).
-        """
-        self._conversation_state.mode = mode
-
-        # Also update session_config
-        self.session_config.default_mode = mode
-
     # =========================================================================
     # Phase 4: Execution Control
     # =========================================================================
@@ -4227,17 +4512,25 @@ Please revise the plan to incorporate this feedback."""
         turn_intent = self._classify_turn_intent(problem)
 
         # Route based on primary intent
+        route_to_planning = False
+
         if turn_intent.primary == PrimaryIntent.QUERY:
             # QUERY intent - answer from knowledge or current context
             # No approval required, no planning needed
-            return self._handle_query_intent(turn_intent, problem)
+            result = self._handle_query_intent(turn_intent, problem)
+            # Check if query handler found data sources that need planning
+            if not result.get("_route_to_planning"):
+                return result
+            # Data sources found - route to planning flow below
+            logger.info("[ROUTING] QUERY/LOOKUP found data sources, routing to planning")
+            route_to_planning = True
 
-        if turn_intent.primary == PrimaryIntent.CONTROL:
+        if turn_intent.primary == PrimaryIntent.CONTROL and not route_to_planning:
             # CONTROL intent - system/session commands
             # No approval required
             return self._handle_control_intent(turn_intent, problem)
 
-        # PLAN_NEW or PLAN_CONTINUE - continue with planning flow
+        # PLAN_NEW, PLAN_CONTINUE, or re-routed QUERY - continue with planning flow
         # Update conversation phase to PLANNING
         self._apply_phase_transition("plan_new")
 
@@ -4246,15 +4539,39 @@ Please revise the plan to incorporate this feedback."""
             enhancement = self._handle_plan_new_intent(turn_intent, problem)
             problem = enhancement.get("enhanced_problem", problem)
 
-        # Combined analysis: extract facts, classify, check cached facts in ONE LLM call
-        # This is more efficient than separate calls for each operation
+        # Run analysis and ambiguity detection in PARALLEL for faster response
+        # This saves ~1 LLM round-trip for DATA_ANALYSIS questions (the common case)
         self._emit_event(StepEvent(
             event_type="progress",
             step_number=0,
             data={"message": "Analyzing your question..."}
         ))
 
-        analysis = self._analyze_question(problem)
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run_analysis():
+            return self._analyze_question(problem)
+
+        def run_ambiguity():
+            # Default to auditable mode (safer - won't pre-ask for personal values)
+            # If actual mode is exploratory, we might miss some upfront questions
+            # but that's acceptable for the performance gain
+            return self._detect_ambiguity(problem, is_auditable_mode=True)
+
+        analysis = None
+        clarification_request = None
+
+        # Run both in parallel if clarifications are enabled
+        if self.session_config.ask_clarifications and self._clarification_callback:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                analysis_future = executor.submit(run_analysis)
+                ambiguity_future = executor.submit(run_ambiguity)
+
+                analysis = analysis_future.result()
+                clarification_request = ambiguity_future.result()
+        else:
+            # No clarifications - just run analysis
+            analysis = self._analyze_question(problem)
 
         # Emit facts if any were extracted
         if analysis.extracted_facts:
@@ -4293,20 +4610,8 @@ Please revise the plan to incorporate this feedback."""
             ))
             return self._answer_general_question(problem)
 
-        # Check for ambiguity and request clarification if needed
-        # Analyze the question to get intent, mode, and facts in a single LLM call
-        self._emit_event(StepEvent(
-            event_type="progress",
-            step_number=0,
-            data={"message": "Analyzing question..."}
-        ))
-        analysis = self._analyze_question(problem)
-
-        # Check for clarification (using mode from analysis)
-        if self.session_config.ask_clarifications and self._clarification_callback:
-            is_auditable = analysis.recommended_mode == "AUDITABLE"
-            clarification_request = self._detect_ambiguity(problem, is_auditable_mode=is_auditable)
-            if clarification_request:
+        # Check for clarification (clarification_request already computed in parallel above)
+        if clarification_request:
                 enhanced_problem = self._request_clarification(clarification_request)
                 if enhanced_problem:
                     problem = enhanced_problem
@@ -4368,36 +4673,10 @@ Please revise the plan to incorporate this feedback."""
                 ],
             }
 
-        # Build mode selection from analysis result (determined in single LLM call above)
-        # Check for user-configured default mode first
-        if self.session_config.default_mode is not None:
-            mode = self.session_config.default_mode
-            mode_selection = ModeSelection(
-                mode=mode,
-                confidence=1.0,  # Maximum confidence for user-specified default
-                reasoning=f"User default mode: {mode.value}",
-                matched_keywords=["default_mode"],
-            )
-        else:
-            mode_map = {
-                "EXPLORATORY": Mode.EXPLORATORY,
-                "AUDITABLE": Mode.PROOF,
-                "PROOF": Mode.PROOF,
-            }
-            mode = mode_map.get(analysis.recommended_mode, Mode.EXPLORATORY)
-            mode_selection = ModeSelection(
-                mode=mode,
-                confidence=0.8,  # High confidence since LLM determined this
-                reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
-                matched_keywords=[],
-            )
+        # All queries use exploratory mode by default
+        # Use /prove command to generate auditable proofs when needed
 
-        # Branch based on execution mode
-        if mode_selection.mode == Mode.PROOF:
-            # Use fact-based derivation planning for auditable mode
-            return self._solve_auditable_with_steer_handling(problem, mode_selection)
-
-        # Generate plan with approval loop (EXPLORATORY mode)
+        # Generate plan with approval loop
         current_problem = problem
         replan_attempt = 0
 
@@ -4425,7 +4704,7 @@ Please revise the plan to incorporate this feedback."""
 
             # Request approval if required
             if self.session_config.require_approval:
-                approval = self._request_approval(problem, planner_response, mode_selection)
+                approval = self._request_approval(problem, planner_response)
 
                 if approval.decision == PlanApproval.REJECT:
                     # User rejected the plan
@@ -4473,39 +4752,6 @@ Please revise the plan to incorporate this feedback."""
                     current_problem = f"{problem}\n\nUser feedback: {approval.suggestion}"
                     continue  # Go back to planning
 
-                elif approval.decision == PlanApproval.MODE_SWITCH:
-                    # User wants to switch execution mode
-                    target_mode = approval.target_mode
-
-                    # Emit mode switch event
-                    self._emit_event(StepEvent(
-                        event_type="mode_switch",
-                        step_number=0,
-                        data={
-                            "mode": target_mode.value,
-                            "matched_keywords": ["user request"],
-                        }
-                    ))
-
-                    # If switching to proof mode, use the auditable solver
-                    if target_mode == Mode.PROOF:
-                        mode_selection = ModeSelection(
-                            mode=Mode.PROOF,
-                            confidence=1.0,
-                            reasoning="User requested proof mode",
-                            matched_keywords=["user request"],
-                        )
-                        return self._solve_auditable_with_steer_handling(problem, mode_selection)
-
-                    # Otherwise continue with exploratory mode (replan)
-                    mode_selection = ModeSelection(
-                        mode=Mode.EXPLORATORY,
-                        confidence=1.0,
-                        reasoning="User requested exploratory mode",
-                        matched_keywords=["user request"],
-                    )
-                    continue  # Go back to planning with new mode
-
                 # APPROVE - proceed with execution
                 break
             else:
@@ -4514,7 +4760,7 @@ Please revise the plan to incorporate this feedback."""
 
         # Save plan to datastore (for UI restoration)
         self.datastore.set_session_meta("status", "executing")
-        self.datastore.set_session_meta("mode", mode_selection.mode.value)
+        self.datastore.set_session_meta("mode", "exploratory")
         for step in self.plan.steps:
             self.datastore.save_plan_step(
                 step_number=step.number,
@@ -4749,8 +4995,12 @@ Please revise the plan to incorporate this feedback."""
                 data={"answer": final_answer}
             ))
 
-            # Extract facts from the response to cache for follow-up questions
-            response_facts = self._extract_facts_from_response(problem, final_answer)
+            # Run facts extraction and suggestions generation in parallel
+            tables = self.datastore.list_tables() if self.datastore else []
+            response_facts, suggestions = self._run_post_synthesis_parallel(
+                problem, final_answer, tables
+            )
+
             if response_facts:
                 self._emit_event(StepEvent(
                     event_type="facts_extracted",
@@ -4761,9 +5011,6 @@ Please revise the plan to incorporate this feedback."""
                     }
                 ))
 
-            # Generate follow-up suggestions
-            tables = self.datastore.list_tables() if self.datastore else []
-            suggestions = self._generate_suggestions(problem, final_answer, tables)
             if suggestions:
                 self._emit_event(StepEvent(
                     event_type="suggestions_ready",
@@ -5062,267 +5309,8 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # This single call determines intent, facts, AND execution mode
         analysis = self._analyze_question(question, previous_problem=previous_problem)
 
-        # Build mode selection from analysis result (mode determined in single LLM call above)
-        # Check for user-configured default mode first
-        if self.session_config.default_mode is not None:
-            mode = self.session_config.default_mode
-            mode_selection = ModeSelection(
-                mode=mode,
-                confidence=1.0,  # Maximum confidence for user-specified default
-                reasoning=f"User default mode: {mode.value}",
-                matched_keywords=["default_mode"],
-            )
-        else:
-            mode_map = {
-                "EXPLORATORY": Mode.EXPLORATORY,
-                "AUDITABLE": Mode.PROOF,
-                "PROOF": Mode.PROOF,
-            }
-            mode = mode_map.get(analysis.recommended_mode, Mode.EXPLORATORY)
-            mode_selection = ModeSelection(
-                mode=mode,
-                confidence=0.8,  # High confidence since LLM determined this
-                reasoning=analysis.mode_reasoning or f"LLM selected {analysis.recommended_mode} mode",
-                matched_keywords=[],
-            )
-
-        # Check intents detected by LLM for redo-like behavior
-        # REDO, PREDICT (what-if), and MODIFY_FACT all imply re-running the previous analysis
-        redo_intents = {"REDO", "PREDICT", "MODIFY_FACT", "REFINE_SCOPE", "STEER_PLAN"}
-        detected_intent_names = {i.intent.upper() for i in analysis.intents}
-        is_redo = bool(detected_intent_names & redo_intents)
-
-        # Debug: Log detected intents and is_redo decision
-        import logging
-        _logger = logging.getLogger(__name__)
-        _logger.debug(f"[FOLLOW_UP] Question: {question[:100]}...")
-        _logger.debug(f"[FOLLOW_UP] Detected intents: {detected_intent_names}")
-        _logger.debug(f"[FOLLOW_UP] Redo intents to check: {redo_intents}")
-        _logger.debug(f"[FOLLOW_UP] Intersection: {detected_intent_names & redo_intents}")
-        _logger.debug(f"[FOLLOW_UP] is_redo = {is_redo}")
-
-        # Note: Intent detection is done by the LLM in QueryAnalysis, not keywords
-        # If the LLM misclassifies "redo" commands, improve the intent prompt instead
-        query_lower = question.strip().lower()
-        is_predict = "PREDICT" in detected_intent_names
-        is_modify_fact = "MODIFY_FACT" in detected_intent_names
-        has_explicit_mode_switch = "MODE_SWITCH" in detected_intent_names
-
-        # If LLM detected a redo-like intent, preserve the previous mode
-        # (unless there's an explicit MODE_SWITCH intent, which takes precedence)
-        if is_redo and self.datastore and not has_explicit_mode_switch:
-            previous_mode_str = self.datastore.get_session_meta("mode")
-            if previous_mode_str:
-                # Map string to Mode enum
-                try:
-                    preserved_mode = Mode(previous_mode_str)
-                except ValueError:
-                    preserved_mode = Mode.PROOF  # fallback
-
-                # Build reasoning based on intent type
-                if is_predict:
-                    reasoning = f"What-if analysis: re-running previous {previous_mode_str} analysis with modified assumptions"
-                elif is_modify_fact:
-                    reasoning = f"Fact modification: re-running previous {previous_mode_str} analysis with updated values"
-                else:
-                    reasoning = f"Re-running previous {previous_mode_str} analysis"
-
-                mode_selection = ModeSelection(
-                    mode=preserved_mode,
-                    reasoning=reasoning,
-                    confidence=0.9,
-                    matched_keywords=list(detected_intent_names & redo_intents),
-                )
-        # Fallback: preserve mode for true follow-ups (when previous problem exists)
-        elif self.datastore and not has_explicit_mode_switch:
-            previous_problem = self.datastore.get_session_meta("problem")
-            previous_mode_str = self.datastore.get_session_meta("mode")
-            if previous_mode_str and previous_problem:
-                try:
-                    previous_mode = Mode(previous_mode_str)
-                    mode_selection = ModeSelection(
-                        mode=previous_mode,
-                        confidence=0.8,
-                        reasoning=f"Continuing in {previous_mode_str} mode",
-                    )
-                except ValueError:
-                    pass
-
-        # PROOF mode: ALL follow-ups go through proper DAG-based replanning
-        # This includes verification requests, redo, modifications, new questions - everything
-        if mode_selection.mode == Mode.PROOF and mode_selection.confidence >= 0.6:
-
-            # All auditable follow-ups replan with proper P/I structure and approval
-            # This handles: redo, modifications, new approaches, or even ambiguous follow-ups
-            if self.datastore:
-                # Get original problem and re-run in auditable mode
-                original_problem = self.datastore.get_session_meta("problem")
-                if original_problem:
-                    # Load previously resolved facts from datastore
-                    import json
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    saved_facts_json = self.datastore.get_session_meta("resolved_facts")
-                    logger.debug(f"[REDO] saved_facts_json exists: {saved_facts_json is not None}")
-                    saved_facts = []  # Initialize to empty list in case no saved facts exist
-                    if saved_facts_json:
-                        logger.debug(f"[REDO] saved_facts_json length: {len(saved_facts_json)}")
-                        try:
-                            saved_facts = json.loads(saved_facts_json)
-                            # Log which facts have table references (critical for redo)
-                            table_facts = [f for f in saved_facts if f.get("value_type") == "table"]
-                            logger.debug(f"[REDO] Importing {len(saved_facts)} facts, {len(table_facts)} are table-type")
-                            for tf in table_facts:
-                                logger.debug(f"[REDO] Table fact: {tf.get('name')} (row_count={tf.get('row_count')})")
-                            self.fact_resolver.import_cache(saved_facts)
-                            # Log cache state after import
-                            logger.debug(f"[REDO] Cache keys after import: {list(self.fact_resolver._cache.keys())}")
-                            self._emit_event(StepEvent(
-                                event_type="facts_restored",
-                                step_number=0,
-                                data={
-                                    "count": len(saved_facts),
-                                    "fact_names": [f.get("name") for f in saved_facts],
-                                    "table_facts": [f.get("name") for f in table_facts],
-                                }
-                            ))
-                        except json.JSONDecodeError:
-                            logger.error("[REDO] Failed to parse saved_facts JSON")
-                    else:
-                        logger.warning("[REDO] No saved_facts_json found in datastore")
-
-                    # Apply fact modifications detected by LLM (e.g., "what if my age were 50")
-                    # These will override previously cached facts
-                    if analysis.fact_modifications:
-                        for mod in analysis.fact_modifications:
-                            fact_name = mod.get("fact_name", "")
-                            new_value = mod.get("new_value", "")
-                            if fact_name and new_value:
-                                # Parse numeric values
-                                try:
-                                    parsed_value = float(new_value)
-                                    if parsed_value == int(parsed_value):
-                                        parsed_value = int(parsed_value)
-                                except ValueError:
-                                    parsed_value = new_value
-
-                                fact = self.fact_resolver.add_user_fact(
-                                    fact_name=fact_name,
-                                    value=parsed_value,
-                                    reasoning=f"User specified in what-if: {question}",
-                                )
-                                if fact:
-                                    self._emit_event(StepEvent(
-                                        event_type="fact_update",
-                                        step_number=0,
-                                        data={
-                                            "fact_name": fact.name,
-                                            "value": fact.value,
-                                            "source": "user_update",
-                                        }
-                                    ))
-
-                    # Also try regex extraction for facts not detected by LLM
-                    extracted_facts = self.fact_resolver.add_user_facts_from_text(question)
-                    if extracted_facts:
-                        for fact in extracted_facts:
-                            self._emit_event(StepEvent(
-                                event_type="fact_update",
-                                step_number=0,
-                                data={
-                                    "fact_name": fact.name,
-                                    "value": fact.value,
-                                    "source": "user_update",
-                                }
-                            ))
-
-                    # Note: Don't emit mode_switch - we're already in auditable mode for redo
-                    # Pass cached fact hints to help LLM use consistent names
-                    # Only include SOURCE facts (premises), NOT derived facts (inference outputs)
-                    # Derived facts should be recomputed, not treated as premises
-                    source_types = {"database", "document", "api", "knowledge", "user"}
-                    data_facts = [
-                        f for f in saved_facts
-                        if f.get("source") in source_types
-                    ]
-                    logger.debug(f"[REDO FILTER] All saved facts: {[f.get('name') + ':' + str(f.get('source')) for f in saved_facts]}")
-                    logger.debug(f"[REDO FILTER] Filtered data_facts (source premises only): {[f.get('name') for f in data_facts]}")
-
-                    logger.debug(f"[AUDITABLE FOLLOW-UP] detected_intent_names: {detected_intent_names}")
-                    logger.debug(f"[AUDITABLE FOLLOW-UP] question: {question[:100]}")
-                    logger.debug(f"[AUDITABLE FOLLOW-UP] original_problem: {original_problem[:100] if original_problem else 'None'}")
-
-                    # Check if this is a plain REDO (just "redo" with no other text)
-                    is_plain_redo = (
-                        "REDO" in detected_intent_names and
-                        question.lower().strip() == "redo"
-                    )
-
-                    if is_plain_redo:
-                        # PATH 1: Plain REDO - re-run original problem exactly as-is
-                        logger.debug(f"[AUDITABLE FOLLOW-UP] PATH 1: plain redo, re-running original problem")
-                        return self._solve_auditable_with_steer_handling(original_problem, mode_selection, cached_fact_hints=data_facts)
-
-                    # PATH 2: Everything else - show existing proof context, let LLM handle the request
-                    # This handles: modifications, extensions, new questions, redo with changes
-                    logger.debug(f"[AUDITABLE FOLLOW-UP] PATH 2: extending/modifying existing proof")
-
-                    # Build context showing what we've already proved
-                    context_lines = []
-                    has_proof = hasattr(self, "_current_proof") and self._current_proof
-                    if has_proof:
-                        proof = self._current_proof
-                        context_lines.append("EXISTING PROOF (reuse these resolved facts):")
-                        context_lines.append("\nRESOLVED PREMISES:")
-                        for p in proof.get("premises", []):
-                            context_lines.append(f"  {p['id']}: {p['name']} [source: {p['source']}]")
-                        context_lines.append("\nCOMPLETED INFERENCES:")
-                        for i in proof.get("inferences", []):
-                            context_lines.append(f"  {i['id']}: {i['name']} = {i['operation']}")
-                        context_lines.append(f"\nPREVIOUS CONCLUSION: {proof.get('conclusion', '')}")
-
-                    # List available computed tables
-                    existing_tables = self.datastore.list_tables() if self.datastore else []
-                    if existing_tables:
-                        context_lines.append("\nAVAILABLE DATA (already computed):")
-                        for t in existing_tables:
-                            context_lines.append(f"  - {t['name']} ({t.get('row_count', '?')} rows)")
-
-                    # List cached premises
-                    if data_facts:
-                        context_lines.append("\nCACHED PREMISES (data already loaded):")
-                        for f in data_facts:
-                            name = f.get("name", "")
-                            value_type = f.get("value_type", "")
-                            if value_type == "table":
-                                context_lines.append(f"  - {name} (table, {f.get('row_count', '?')} rows)")
-                            else:
-                                context_lines.append(f"  - {name}")
-
-                    proof_context = "\n".join(context_lines)
-
-                    # Build the problem: original question + context + new request
-                    extended_problem = f"""Original question: {original_problem}
-
-{proof_context}
-
-User request: {question}
-
-INSTRUCTIONS:
-- Reuse existing resolved premises where applicable
-- Only add NEW premises if the request requires data not already loaded
-- Reference existing computed tables by name (e.g., raise_recommendations)
-- If this modifies the original analysis, adjust the plan accordingly
-- If this is a new question, extend the proof with additional premises/inferences"""
-
-                    return self._solve_auditable_with_steer_handling(extended_problem, mode_selection, cached_fact_hints=data_facts)
-
-            # No previous problem to replan - treat as new auditable query
-            # (This only happens if datastore or original_problem is missing)
-            _logger.debug(f"[FOLLOW_UP] No original_problem found, treating as new auditable query")
-            return self._solve_auditable(question, mode_selection)
-
-        # Otherwise proceed with EXPLORATORY mode (planning + execution)
+        # All follow-ups use exploratory mode (planning + execution)
+        # Use /prove command to generate auditable proofs when needed
         # Check for unresolved facts and try to extract facts from user message
         unresolved = self.fact_resolver.get_unresolved_facts()
         extracted_facts = []
@@ -5406,11 +5394,8 @@ Follow-up question: {question}
         ))
 
         # Request approval if required (same as solve())
-        # Note: mode_selection is already computed earlier in follow_up() and may have
-        # been updated for mode preservation (e.g., redo/what-if scenarios). Do NOT
-        # re-evaluate mode here as that would lose the preserved mode.
         if self.session_config.require_approval:
-            approval = self._request_approval(question, planner_response, mode_selection)
+            approval = self._request_approval(question, planner_response)
 
             if approval.decision == PlanApproval.REJECT:
                 return {
@@ -5428,40 +5413,6 @@ Follow-up question: {question}
                     "command": approval.command,
                     "message": "Slash command entered during approval.",
                 }
-
-            elif approval.decision == PlanApproval.MODE_SWITCH:
-                # User wants to switch execution mode
-                target_mode = approval.target_mode
-
-                # Emit mode switch event
-                self._emit_event(StepEvent(
-                    event_type="mode_switch",
-                    step_number=0,
-                    data={
-                        "mode": target_mode.value,
-                        "matched_keywords": ["user request"],
-                    }
-                ))
-
-                # If switching to proof mode, use the auditable solver
-                if target_mode == Mode.PROOF:
-                    mode_selection = ModeSelection(
-                        mode=Mode.PROOF,
-                        confidence=1.0,
-                        reasoning="User requested proof mode",
-                        matched_keywords=["user request"],
-                    )
-                    # Use original problem from datastore if this is a redo
-                    original_problem = self.datastore.get_session_meta("problem") or question
-                    return self._solve_auditable_with_steer_handling(original_problem, mode_selection)
-
-                # Otherwise continue with exploratory mode (will be handled below)
-                mode_selection = ModeSelection(
-                    mode=Mode.EXPLORATORY,
-                    confidence=1.0,
-                    reasoning="User requested exploratory mode",
-                    matched_keywords=["user request"],
-                )
 
             elif approval.decision == PlanApproval.SUGGEST:
                 # For follow-ups, replan with feedback
@@ -5499,7 +5450,7 @@ User feedback: {approval.suggestion}
                 ))
 
                 # Request approval again
-                approval = self._request_approval(question, planner_response, mode_selection)
+                approval = self._request_approval(question, planner_response)
                 if approval.decision == PlanApproval.REJECT:
                     return {
                         "success": False,
@@ -5644,8 +5595,12 @@ User feedback: {approval.suggestion}
                 data={"answer": final_answer}
             ))
 
-            # Extract facts from the response to cache for future follow-ups
-            response_facts = self._extract_facts_from_response(question, final_answer)
+            # Run facts extraction and suggestions generation in parallel
+            tables = self.datastore.list_tables() if self.datastore else []
+            response_facts, suggestions = self._run_post_synthesis_parallel(
+                question, final_answer, tables
+            )
+
             if response_facts:
                 self._emit_event(StepEvent(
                     event_type="facts_extracted",
@@ -5656,9 +5611,6 @@ User feedback: {approval.suggestion}
                     }
                 ))
 
-            # Generate follow-up suggestions
-            tables = self.datastore.list_tables() if self.datastore else []
-            suggestions = self._generate_suggestions(question, final_answer, tables)
             if suggestions:
                 self._emit_event(StepEvent(
                     event_type="suggestions_ready",
@@ -5690,7 +5642,7 @@ User feedback: {approval.suggestion}
         }
 
     def _solve_auditable_with_steer_handling(
-        self, problem: str, mode_selection, cached_fact_hints: list[dict] = None
+        self, problem: str, cached_fact_hints: list[dict] = None
     ) -> dict:
         """
         Wrapper for _solve_auditable that handles user steers.
@@ -5700,7 +5652,6 @@ User feedback: {approval.suggestion}
 
         Args:
             problem: The original problem
-            mode_selection: Mode selection info
             cached_fact_hints: Optional cached fact hints
 
         Returns:
@@ -5711,7 +5662,7 @@ User feedback: {approval.suggestion}
         augmented_problem = problem
 
         while steer_attempt < max_steer_attempts:
-            result = self._solve_auditable(augmented_problem, mode_selection, cached_fact_hints)
+            result = self._solve_auditable(augmented_problem, cached_fact_hints)
 
             # Check if we need to re-plan due to user steer
             if result.get("status") == "replan_needed":
@@ -5739,7 +5690,7 @@ User feedback: {approval.suggestion}
         # Max attempts reached
         return {"error": "Max re-planning attempts reached", "status": "failed"}
 
-    def _solve_auditable(self, problem: str, mode_selection, cached_fact_hints: list[dict] = None) -> dict:
+    def _solve_auditable(self, problem: str, cached_fact_hints: list[dict] = None) -> dict:
         """
         Solve a problem in auditable mode using fact-based derivation.
 
@@ -5752,7 +5703,6 @@ User feedback: {approval.suggestion}
 
         Args:
             problem: The problem/question to solve
-            mode_selection: The mode selection result with reasoning
             cached_fact_hints: Optional list of cached facts from previous run (for redo)
                                Each dict has 'name', 'value', 'value_type' keys
 
@@ -5765,9 +5715,6 @@ User feedback: {approval.suggestion}
         # Save mode to datastore for follow-up handling
         if self.datastore:
             self.datastore.set_session_meta("mode", "auditable")
-
-        # Note: mode_switch event is NOT emitted here because the approval callback
-        # will display the mode via show_mode_selection() in request_plan_approval()
 
         # Step 1: Generate fact-based plan (identify required facts)
         self._emit_event(StepEvent(
@@ -6015,121 +5962,168 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
             if not conclusion.lower().startswith("the data"):
                 conclusion = f"The data is verified to exist with provenance: {conclusion}"
 
-        # Validate plan structure by attempting to parse as DAG
-        # This catches duplicate names early, before approval
-        from constat.execution.dag import parse_plan_to_dag as validate_dag
-        try:
-            validate_dag(premises, inferences)
-        except ValueError as e:
-            error_msg = str(e)
-            if "Duplicate" in error_msg:
-                # Plan has duplicate names - regenerate with feedback
+        # Validate plan structure BEFORE execution
+        # This catches invalid references, unused premises, duplicates, etc.
+        from constat.execution.dag import validate_proof_plan
+
+        max_validation_retries = 3
+        for validation_attempt in range(1, max_validation_retries + 1):
+            # Emit validation start event
+            self._emit_event(StepEvent(
+                event_type="plan_validating",
+                step_number=0,
+                data={
+                    "attempt": validation_attempt,
+                    "max_attempts": max_validation_retries,
+                    "premises_count": len(premises),
+                    "inferences_count": len(inferences),
+                }
+            ))
+
+            validation_result = validate_proof_plan(premises, inferences)
+
+            if validation_result.valid:
+                # Emit validation success
                 self._emit_event(StepEvent(
-                    event_type="plan_retry",
+                    event_type="plan_validated",
                     step_number=0,
-                    data={"reason": error_msg, "attempt": 1}
+                    data={
+                        "attempt": validation_attempt,
+                        "premises_count": len(premises),
+                        "inferences_count": len(inferences),
+                    }
                 ))
+                break  # Plan is valid, proceed
 
-                # Retry with explicit feedback about the error
-                retry_prompt = f"""{fact_plan_prompt}
+            # Plan has validation errors - emit detailed error event
+            error_feedback = validation_result.format_for_retry()
+            error_types = list(set(e.error_type for e in validation_result.errors))
+            error_summary = ", ".join(error_types)
 
-CRITICAL ERROR IN PREVIOUS ATTEMPT: {error_msg}
-Each premise name (P1, P2, etc.) and each inference result_name (I1, I2, etc.) MUST be GLOBALLY UNIQUE.
-Do NOT reuse names like 'data_verified' or 'result' multiple times.
-Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_calculations', 'final_verification'.
-"""
-                retry_result = self.router.execute(
-                    task_type=TaskType.INTENT_CLASSIFICATION,
-                    system="You analyze questions and decompose them into premises and inferences for auditable answers. CRITICAL: Each result name must be unique.",
-                    user_message=retry_prompt,
-                    max_tokens=1500,
+            self._emit_event(StepEvent(
+                event_type="plan_validation_failed",
+                step_number=0,
+                data={
+                    "attempt": validation_attempt,
+                    "max_attempts": max_validation_retries,
+                    "error_count": len(validation_result.errors),
+                    "error_types": error_types,
+                    "error_summary": error_summary,
+                    "errors": [{"type": e.error_type, "fact_id": e.fact_id, "message": e.message}
+                               for e in validation_result.errors],
+                    "will_retry": validation_attempt < max_validation_retries,
+                }
+            ))
+
+            if validation_attempt >= max_validation_retries:
+                # Max retries reached - raise with helpful message
+                raise ValueError(
+                    f"Plan validation failed after {max_validation_retries} attempts.\n\n"
+                    f"{error_feedback}\n\n"
+                    f"Try rephrasing your question or reducing complexity."
                 )
 
-                # Re-parse the retried plan
-                fact_plan_text = retry_result.content
-                claim = ""
-                premises = []
-                inferences = []
-                conclusion = ""
+            # Emit retry event before regenerating
+            self._emit_event(StepEvent(
+                event_type="plan_regenerating",
+                step_number=0,
+                data={
+                    "attempt": validation_attempt + 1,
+                    "max_attempts": max_validation_retries,
+                    "reason": error_summary,
+                    "fixing_errors": error_types,
+                }
+            ))
 
-                lines = fact_plan_text.split("\n")
-                current_section = None
-                for line in lines:
-                    line = line.strip()
-                    if line.startswith("QUESTION:"):
-                        claim = line.split("QUESTION:", 1)[1].strip()
-                    elif line.startswith("PREMISES:"):
-                        current_section = "premises"
-                    elif line.startswith("INFERENCE:"):
-                        current_section = "inference"
-                    elif line.startswith("CONCLUSION:"):
-                        current_section = "conclusion"
-                    elif current_section == "premises" and re.match(r'^P\d+:', line):
-                        match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*\?\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
-                        if match:
+            # Retry with explicit feedback about the errors
+            retry_prompt = f"""{fact_plan_prompt}
+
+{error_feedback}
+
+REMEMBER:
+- Each premise (P1, P2) and inference (I1, I2) must have a UNIQUE name
+- ALL premises must be referenced in at least one inference operation
+- Inference operations must only reference EXISTING premises (P1, P2, ...) or PRIOR inferences (I1 before I2)
+- Do NOT reference facts that don't exist (e.g., P5 when only P1-P3 are defined)
+"""
+            retry_result = self.router.execute(
+                task_type=TaskType.INTENT_CLASSIFICATION,
+                system="You analyze questions and decompose them into premises and inferences for auditable answers. CRITICAL: Ensure all fact references are valid.",
+                user_message=retry_prompt,
+                max_tokens=1500,
+            )
+
+            # Re-parse the retried plan
+            fact_plan_text = retry_result.content
+            claim = ""
+            premises = []
+            inferences = []
+            conclusion = ""
+
+            lines = fact_plan_text.split("\n")
+            current_section = None
+            for line in lines:
+                line = line.strip()
+                if line.startswith("QUESTION:"):
+                    claim = line.split("QUESTION:", 1)[1].strip()
+                elif line.startswith("PREMISES:"):
+                    current_section = "premises"
+                elif line.startswith("INFERENCE:"):
+                    current_section = "inference"
+                elif line.startswith("CONCLUSION:"):
+                    current_section = "conclusion"
+                elif current_section == "premises" and re.match(r'^P\d+:', line):
+                    match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*\?\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
+                    if match:
+                        premises.append({
+                            "id": match.group(1),
+                            "name": match.group(2).strip(),
+                            "description": match.group(3).strip(),
+                            "source": match.group(4).strip() if match.group(4) else "database",
+                        })
+                    else:
+                        value_match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*([^\s(]+)\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
+                        if value_match:
+                            fact_name = value_match.group(2).strip()
+                            embedded_val = value_match.group(3).strip()
                             premises.append({
-                                "id": match.group(1),
-                                "name": match.group(2).strip(),
-                                "description": match.group(3).strip(),
-                                "source": match.group(4).strip() if match.group(4) else "database",
+                                "id": value_match.group(1),
+                                "name": f"{fact_name} = {embedded_val}",
+                                "description": value_match.group(4).strip(),
+                                "source": value_match.group(5).strip() if value_match.group(5) else "knowledge",
                             })
                         else:
-                            value_match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*([^\s(]+)\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
-                            if value_match:
-                                fact_name = value_match.group(2).strip()
-                                embedded_val = value_match.group(3).strip()
-                                premises.append({
-                                    "id": value_match.group(1),
-                                    "name": f"{fact_name} = {embedded_val}",
-                                    "description": value_match.group(4).strip(),
-                                    "source": value_match.group(5).strip() if value_match.group(5) else "knowledge",
-                                })
-                            else:
-                                simple_match = re.match(r'^(P\d+):\s*(.+?)\s*\(([^)]+)\)', line)
-                                if simple_match:
-                                    premises.append({
-                                        "id": simple_match.group(1),
-                                        "name": simple_match.group(2).strip().rstrip('=?').strip(),
-                                        "description": simple_match.group(3).strip(),
-                                        "source": "database",
-                                    })
-                    elif current_section == "inference" and re.match(r'^I\d+:', line):
-                        match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+?)\s*--\s*(.+)$', line)
-                        if match:
-                            inferences.append({
-                                "id": match.group(1),
-                                "name": match.group(2).strip(),
-                                "operation": match.group(3).strip(),
-                                "explanation": match.group(4).strip(),
-                            })
-                        else:
-                            simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
+                            simple_match = re.match(r'^(P\d+):\s*(.+?)\s*\(([^)]+)\)', line)
                             if simple_match:
-                                inferences.append({
+                                premises.append({
                                     "id": simple_match.group(1),
-                                    "name": "",
-                                    "operation": simple_match.group(2).strip(),
-                                    "explanation": "",
+                                    "name": simple_match.group(2).strip().rstrip('=?').strip(),
+                                    "description": simple_match.group(3).strip(),
+                                    "source": "database",
                                 })
-                    elif current_section == "conclusion" and line:
-                        if line.startswith("C:"):
-                            conclusion = line.split("C:", 1)[1].strip()
-                        elif not conclusion:
-                            conclusion = line
-
-                # Validate again
-                try:
-                    validate_dag(premises, inferences)
-                except ValueError as e2:
-                    # Still failing after retry - raise with helpful message
-                    raise ValueError(
-                        f"Plan generation failed after retry. Error: {e2}. "
-                        f"The LLM is generating duplicate inference names. "
-                        f"Try rephrasing your question or reducing complexity."
-                    )
-            else:
-                # Non-duplicate error, re-raise
-                raise
+                elif current_section == "inference" and re.match(r'^I\d+:', line):
+                    match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+?)\s*--\s*(.+)$', line)
+                    if match:
+                        inferences.append({
+                            "id": match.group(1),
+                            "name": match.group(2).strip(),
+                            "operation": match.group(3).strip(),
+                            "explanation": match.group(4).strip(),
+                        })
+                    else:
+                        simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
+                        if simple_match:
+                            inferences.append({
+                                "id": simple_match.group(1),
+                                "name": "",
+                                "operation": simple_match.group(2).strip(),
+                                "explanation": "",
+                            })
+                elif current_section == "conclusion" and line:
+                    if line.startswith("C:"):
+                        conclusion = line.split("C:", 1)[1].strip()
+                    elif not conclusion:
+                        conclusion = line
 
         # Emit planning complete
         total_steps = len(premises) + len(inferences) + 1  # +1 for conclusion
@@ -6206,8 +6200,6 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                 # Build approval request with full proof structure (preserves type, fact_id)
                 request = PlanApprovalRequest(
                     problem=problem,
-                    mode=mode_selection.mode,
-                    mode_reasoning=mode_selection.reasoning,
                     steps=proof_steps,  # Includes type, fact_id for proper display
                     reasoning=f"Question: {claim}",
                 )
@@ -6380,6 +6372,7 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                 max_workers=min(10, len(premises) + len(inferences)),
                 event_callback=dag_event_callback,
                 fail_fast=True,
+                execution_context=self._execution_context,
             )
 
             # Emit event to start live plan display
@@ -6410,8 +6403,22 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
             self._emit_event(StepEvent(
                 event_type="dag_execution_complete",
                 step_number=0,
-                data={"success": result.success, "failed_nodes": result.failed_nodes}
+                data={"success": result.success, "failed_nodes": result.failed_nodes, "cancelled": result.cancelled}
             ))
+
+            # Check for cancellation
+            if result.cancelled:
+                self._emit_event(StepEvent(
+                    event_type="execution_cancelled",
+                    step_number=0,
+                    data={"message": "Execution cancelled during DAG execution"}
+                ))
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "message": "Execution cancelled during fact resolution.",
+                    "queued_intent_results": self.process_queued_intents(),
+                }
 
             if not result.success:
                 failed = ", ".join(result.failed_nodes)
@@ -6456,44 +6463,24 @@ Use descriptive, unique names like: 'employee_data', 'filtered_reviews', 'raise_
                 for inf_id, result in resolved_inferences.items()
             ])
 
-            # Get the final result table data to include in synthesis
-            final_data_preview = ""
+            # Collect artifact table names for synthesis (don't include table data)
+            artifact_tables = []
             if inferences and self.datastore:
-                # Find the last inference that produced a table (skip verification steps)
-                # Work backwards from I8, I7, etc. skipping verification steps like I9
                 available_tables = {t['name'] for t in self.datastore.list_tables()}
-                logger.debug(f"Synthesis: available tables={available_tables}")
-                logger.debug(f"Synthesis: inference_names={inference_names}")
-                logger.debug(f"Synthesis: resolved_inferences={resolved_inferences}")
-
-                for inf in reversed(inferences):
+                for inf in inferences:
                     inf_id = inf['id']
                     table_name = inference_names.get(inf_id, inf_id.lower())
                     result = resolved_inferences.get(inf_id, "")
-                    logger.debug(f"Synthesis: checking {inf_id}: table={table_name}, result={result}")
-
-                    # Skip verification steps and failed inferences
+                    # Track tables that were created (skip verification steps)
                     if "rows" in str(result) and "verified" not in str(result).lower() and "FAILED" not in str(result):
                         if table_name in available_tables:
-                            try:
-                                # Query the table and format for the LLM
-                                result_df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 20")
-                                logger.debug(f"Synthesis: queried {table_name}: {len(result_df)} rows")
-                                if len(result_df) > 0:
-                                    # Try to_markdown first, fall back to to_string
-                                    try:
-                                        table_str = result_df.to_markdown(index=False)
-                                    except Exception as e:
-                                        logger.debug(f"to_markdown failed, using to_string: {e}")
-                                        table_str = result_df.to_string(index=False)
-                                    final_data_preview = f"\n\nFinal Result Data ({table_name}):\n{table_str}"
-                                    logger.debug(f"Synthesis: selected table {table_name}")
-                                    break
-                            except Exception as e:
-                                # Log but continue looking for other tables
-                                logger.debug(f"Synthesis: failed to query {table_name}: {e}")
-                        else:
-                            logger.debug(f"Synthesis: table {table_name} not in available tables")
+                            artifact_tables.append(table_name)
+
+            # Build artifact reference for synthesis
+            artifact_reference = ""
+            if artifact_tables:
+                artifact_reference = f"\n\nArtifact tables created: {', '.join(artifact_tables)}"
+                artifact_reference += "\n(User can view these via /tables command)"
 
             synthesis_prompt = f"""Based on the resolved premises and inference plan, provide the answer.
 
@@ -6506,15 +6493,16 @@ Inference Steps:
 {inference_context}
 
 Conclusion to derive: {conclusion}
-{final_data_preview}
+{artifact_reference}
 
 IMPORTANT INSTRUCTIONS:
 1. Always refer to data by its English variable name (e.g., "budget_validated_raises"), NEVER by ID (e.g., "I6")
-2. If final result data is provided above, present the key findings in a clear table or list
-3. If the user asked for recommendations/suggestions, list them with specific values from the data
-4. If premises are unresolved, explain what data is missing
+2. Do NOT display tables inline - the data is available in artifacts (user can view via /tables)
+3. Reference artifact tables by name when mentioning results (e.g., "see the budget_validated_raises table")
+4. Focus on the key findings and conclusions, not on showing raw data
+5. If the user asked for recommendations/suggestions, summarize them with key values
 
-Provide a clear, actionable answer that shows the actual results."""
+Provide a concise, clear answer that references the artifact tables for detailed data."""
 
             synthesis_result = self.router.execute(
                 task_type=TaskType.SYNTHESIS,
@@ -6554,7 +6542,7 @@ Provide a clear, actionable answer that shows the actual results."""
                     if p and p.source:
                         source_types.add(p.source.value if hasattr(p.source, 'value') else str(p.source))
 
-                insights_prompt = f"""Analyze this proof and provide insights.
+                insights_prompt = f"""Provide a brief summary of this analysis.
 
 Original question: {claim}
 
@@ -6568,12 +6556,9 @@ Conclusion: {conclusion}
 
 Sources used: {', '.join(source_types) if source_types else 'various'}
 
-Provide 2-3 concise insights about:
-1. What this proof tells us (implications, significance)
-2. Any assumptions or limitations in the reasoning
-3. What additional questions this raises
-
-Be direct and specific. No fluff."""
+Write a SHORT summary (2-3 sentences max) in plain prose explaining what this analysis shows.
+Do NOT use bullet points or numbered lists. Just a brief paragraph.
+Focus on the key finding and its significance."""
 
                 try:
                     insights_result = self.router.execute(
@@ -6595,23 +6580,17 @@ Be direct and specific. No fluff."""
             derivation_trace = verify_result.get("derivation", "")
             sources = verify_result.get("sources", [])
 
-            # Build final output
+            # Build final output (derivation details shown during execution, not in final answer)
             output_parts = [
                 f"**Verification Result** (confidence: {confidence:.0%})",
                 "",
                 answer,
             ]
 
-            if derivation_trace:
-                output_parts.extend([
-                    "",
-                    derivation_trace,
-                ])
-
             if insights:
                 output_parts.extend([
                     "",
-                    "**Insights:**",
+                    "**Summary:**",
                     insights,
                 ])
 
@@ -6674,7 +6653,7 @@ Be direct and specific. No fluff."""
                 "output": f"Verification failed: {e}",
             }
 
-    def _solve_knowledge(self, problem: str, mode_selection: ModeSelection) -> dict:
+    def _solve_knowledge(self, problem: str) -> dict:
         """
         Solve a problem in knowledge mode using document lookup + LLM synthesis.
 
@@ -6683,7 +6662,6 @@ Be direct and specific. No fluff."""
 
         Args:
             problem: The question/request to answer
-            mode_selection: The mode selection result with reasoning
 
         Returns:
             Dict with synthesized explanation and sources
@@ -6832,6 +6810,203 @@ If you don't have enough information, say so rather than guessing."""
                 "error": str(e),
                 "output": f"Failed to generate explanation: {e}",
             }
+
+    def prove_conversation(self) -> dict:
+        """
+        Verify claims from the conversation with auditable proof.
+
+        This command:
+        1. Collects conversation history and accumulated facts
+        2. Extracts verifiable claims via LLM
+        3. Reuses existing facts and their provenance
+        4. Creates new facts if needed to complete the proof
+        5. Runs the formal proof and computes a final confidence factor
+
+        Returns:
+            Dict with proof results:
+            - claims: List of verified/unverified claims
+            - confidence: Overall confidence factor
+            - proof: The formal proof structure
+            - no_claims: True if no verifiable claims found
+            - error: Error message if proof generation failed
+        """
+        import json
+
+        # Check if we have a session to prove
+        if not self.session_id:
+            return {"error": "No active session to prove"}
+
+        if not self.datastore:
+            return {"error": "No datastore available"}
+
+        # Step 1: Collect conversation context
+        # Get the original problem and any cached facts
+        original_problem = self.datastore.get_session_meta("problem")
+        if not original_problem:
+            return {"no_claims": True, "error": "No conversation to prove"}
+
+        # Get previously resolved facts from the datastore
+        saved_facts_json = self.datastore.get_session_meta("resolved_facts")
+        saved_facts = []
+        if saved_facts_json:
+            try:
+                saved_facts = json.loads(saved_facts_json)
+            except json.JSONDecodeError:
+                logger.warning("Could not parse saved facts for /prove")
+
+        # Import cached facts into the fact resolver
+        if saved_facts:
+            self.fact_resolver.import_cache(saved_facts)
+            self._emit_event(StepEvent(
+                event_type="facts_restored",
+                step_number=0,
+                data={
+                    "count": len(saved_facts),
+                    "fact_names": [f.get("name") for f in saved_facts],
+                }
+            ))
+
+        # Get existing tables that contain computed results
+        existing_tables = self.datastore.list_tables() if self.datastore else []
+
+        # Step 2: Extract verifiable claims from the conversation
+        # Use LLM to identify what claims can be verified
+        claims_prompt = f"""Analyze this question and any computed results to extract verifiable claims.
+
+Original Question:
+{original_problem}
+
+Available Data (already computed):
+{json.dumps([{"name": t["name"], "rows": t.get("row_count", "?")} for t in existing_tables], indent=2)}
+
+Cached Facts:
+{json.dumps([{"name": f.get("name"), "source": f.get("source")} for f in saved_facts], indent=2)}
+
+Extract a list of specific, verifiable claims that can be proven from this analysis.
+Each claim should be:
+- Testable (can be verified with data)
+- Specific (contains concrete values or conditions)
+- Derived from the analysis (not just restating the question)
+
+Return JSON array of claims:
+[
+  {{"claim": "description of claim", "verification_approach": "how to verify"}}
+]
+
+If there are no verifiable claims, return an empty array []."""
+
+        self._emit_event(StepEvent(
+            event_type="extracting_claims",
+            step_number=0,
+            data={"message": "Analyzing conversation for verifiable claims..."}
+        ))
+
+        try:
+            claims_result = self.router.chat(
+                system_prompt="You are a claims extraction assistant. Extract verifiable claims from analysis results.",
+                user_message=claims_prompt,
+                max_tokens=1000,
+            )
+            claims_text = claims_result.content
+
+            # Parse claims from LLM response
+            import re
+            json_match = re.search(r'\[.*\]', claims_text, re.DOTALL)
+            if json_match:
+                claims = json.loads(json_match.group())
+            else:
+                claims = []
+
+            if not claims:
+                return {"no_claims": True, "claims": []}
+
+        except Exception as e:
+            logger.error(f"Failed to extract claims: {e}")
+            return {"error": f"Failed to extract claims: {e}"}
+
+        # Step 3: Verify each claim using the auditable solver
+        verified_claims = []
+        total_confidence = 0.0
+
+        for i, claim_data in enumerate(claims):
+            claim_text = claim_data.get("claim", "")
+            verification = claim_data.get("verification_approach", "")
+
+            self._emit_event(StepEvent(
+                event_type="verifying_claim",
+                step_number=i + 1,
+                data={"claim": claim_text, "total": len(claims)}
+            ))
+
+            try:
+                # Build a verification problem that uses existing facts
+                verification_problem = f"""Verify this claim using the available data and facts.
+
+Claim: {claim_text}
+
+Verification approach: {verification}
+
+Available data tables: {[t["name"] for t in existing_tables]}
+
+Use existing computed tables and facts where possible.
+Create new facts only if needed to complete the verification.
+
+Provide a confidence score (0-1) for the verification."""
+
+                # Run auditable verification (reuses cached facts)
+                result = self._solve_auditable(verification_problem, cached_fact_hints=saved_facts)
+
+                if result.get("success"):
+                    confidence = result.get("confidence", 0.8)
+                    verified_claims.append({
+                        "claim": claim_text,
+                        "verified": True,
+                        "confidence": confidence,
+                        "proof": result.get("derivation_chain", ""),
+                    })
+                    total_confidence += confidence
+                else:
+                    verified_claims.append({
+                        "claim": claim_text,
+                        "verified": False,
+                        "confidence": 0.0,
+                        "discrepancy": result.get("error", "Could not verify"),
+                    })
+
+            except Exception as e:
+                logger.error(f"Failed to verify claim '{claim_text}': {e}")
+                verified_claims.append({
+                    "claim": claim_text,
+                    "verified": False,
+                    "confidence": 0.0,
+                    "discrepancy": str(e),
+                })
+
+        # Step 4: Compute final confidence factor
+        if verified_claims:
+            verified_count = sum(1 for c in verified_claims if c.get("verified"))
+            overall_confidence = total_confidence / len(verified_claims) if verified_claims else 0.0
+        else:
+            verified_count = 0
+            overall_confidence = 0.0
+
+        self._emit_event(StepEvent(
+            event_type="proof_complete",
+            step_number=0,
+            data={
+                "claims_count": len(verified_claims),
+                "verified_count": verified_count,
+                "confidence": overall_confidence,
+            }
+        ))
+
+        return {
+            "success": True,
+            "claims": verified_claims,
+            "confidence": overall_confidence,
+            "verified_count": verified_count,
+            "total_claims": len(verified_claims),
+        }
 
     def replay(self, problem: str) -> dict:
         """

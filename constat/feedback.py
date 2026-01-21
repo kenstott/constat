@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Live feedback system for terminal output using rich."""
 
 from __future__ import annotations
@@ -41,32 +50,10 @@ from constat.execution.mode import (
     PlanApproval,
     PlanApprovalRequest,
     PlanApprovalResponse,
+    Phase,
+    ConversationState,
 )
-from constat.keywords import detect_mode_switch as _detect_mode_switch_str
-
-
-def detect_mode_switch(text: str) -> Mode | None:
-    """Detect if the user is requesting a mode switch.
-
-    Args:
-        text: User input text
-
-    Returns:
-        Target Mode if a switch is requested, None otherwise
-    """
-    mode_name = _detect_mode_switch_str(text)
-    if mode_name is None:
-        return None
-
-    # Map mode name string to Mode enum
-    mode_map = {
-        "auditable": Mode.PROOF,
-        "proof": Mode.PROOF,
-        "exploratory": Mode.EXPLORATORY,
-    }
-    return mode_map.get(mode_name)
 from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
-from constat.execution.mode import Phase, ConversationState
 
 
 # Spinner frames for animation
@@ -77,15 +64,14 @@ class StatusLine:
     """
     Persistent status line showing current conversation state.
 
-    Shows mode, phase, and contextual information:
-    - [PROOF] idle
-    - [EXPLORE] planning "Analyze revenue by region"
-    - [PROOF] executing step 2/5 "Loading sales data"
-    - [PROOF] failed "Database connection error" [retry/replan/abandon]
+    Shows phase and contextual information:
+    - idle
+    - planning "Analyze revenue by region"
+    - executing step 2/5 "Loading sales data"
+    - failed "Database connection error" [retry/replan/abandon]
     """
 
     def __init__(self):
-        self._mode: Mode = Mode.EXPLORATORY
         self._phase: Phase = Phase.IDLE
         self._plan_name: str | None = None
         self._step_current: int = 0
@@ -100,13 +86,6 @@ class StatusLine:
         """Render current status line as a formatted string."""
         parts = []
 
-        # Mode badge with color
-        if self._mode == Mode.PROOF:
-            mode_badge = "[bold yellow][PROOF][/bold yellow]"
-        else:
-            mode_badge = "[bold cyan][EXPLORE][/bold cyan]"
-        parts.append(mode_badge)
-
         # If there's an explicit status message, show that instead of phase
         if self._status_message:
             spinner = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
@@ -115,37 +94,37 @@ class StatusLine:
 
         # Phase with context
         if self._phase == Phase.IDLE:
-            parts.append("[dim]idle[/dim]")
+            parts.append("[dim]Ready[/dim]")
 
         elif self._phase == Phase.PLANNING:
             spinner = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
-            parts.append(f"[dim]planning[/dim] [cyan]{spinner}[/cyan]")
+            parts.append(f"[dim]Planning[/dim] [cyan]{spinner}[/cyan]")
             if self._plan_name:
                 truncated = self._plan_name[:40] + "..." if len(self._plan_name) > 40 else self._plan_name
                 parts.append(f'[dim]"{truncated}"[/dim]')
 
         elif self._phase == Phase.AWAITING_APPROVAL:
-            parts.append("[dim]awaiting_approval[/dim]")
+            parts.append("[dim]Awaiting approval[/dim]")
             if self._plan_name:
                 truncated = self._plan_name[:30] + "..." if len(self._plan_name) > 30 else self._plan_name
-                parts.append(f'plan: "{truncated}"')
+                parts.append(f'Plan: "{truncated}"')
             if self._step_total > 0:
                 parts.append(f"({self._step_total} steps)")
             parts.append("[dim][y/n/suggest][/dim]")
 
         elif self._phase == Phase.EXECUTING:
             spinner = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
-            parts.append(f"[green]executing[/green] [cyan]{spinner}[/cyan]")
+            parts.append(f"[green]Executing[/green] [cyan]{spinner}[/cyan]")
             if self._step_total > 0:
-                parts.append(f"step {self._step_current}/{self._step_total}")
+                parts.append(f"Step {self._step_current}/{self._step_total}")
             if self._step_description:
                 truncated = self._step_description[:30] + "..." if len(self._step_description) > 30 else self._step_description
                 parts.append(f'"{truncated}"')
             if self._queue_count > 0:
-                parts.append(f"[dim][queued: {self._queue_count}][/dim]")
+                parts.append(f"[dim][Queued: {self._queue_count}][/dim]")
 
         elif self._phase == Phase.FAILED:
-            parts.append("[red]failed[/red] [red]x[/red]")
+            parts.append("[red]Failed[/red] [red]x[/red]")
             if self._step_current > 0:
                 parts.append(f"step {self._step_current}")
             if self._error_message:
@@ -157,7 +136,6 @@ class StatusLine:
 
     def update(self, state: ConversationState) -> None:
         """Update from conversation state."""
-        self._mode = state.mode
         self._phase = state.phase
         self._error_message = state.failure_context
 
@@ -217,14 +195,12 @@ class PersistentStatusBar:
         """No-op - display is handled by prompt_toolkit or Rich."""
         pass
 
-    def update(self, mode: Mode = None, phase: Phase = None,
+    def update(self, phase: Phase = None,
                plan_name: str = None, step_current: int = None,
                step_total: int = None, step_description: str = None,
                error_message: str = None, tables_count: int = None,
                facts_count: int = None, artifacts_count: int = None) -> None:
         """Update status bar values and refresh display."""
-        if mode is not None:
-            self._status_line._mode = mode
         if phase is not None:
             self._status_line._phase = phase
         if plan_name is not None:
@@ -637,15 +613,8 @@ class FeedbackDisplay:
 
         # Build status text
         status_line = self._status_bar.status_line
-        mode = status_line._mode
         status_msg = status_line._status_message
         phase = status_line._phase
-
-        # Mode badge
-        if mode == Mode.PROOF:
-            mode_str = "\033[30;43m PROOF \033[0m"  # Black on yellow
-        else:
-            mode_str = "\033[30;46m EXPLORE \033[0m"  # Black on cyan
 
         # Status text with spinner if active
         if status_msg:
@@ -663,7 +632,7 @@ class FeedbackDisplay:
 
         # Clear line and write status
         sys.stdout.write("\033[K")  # Clear line
-        sys.stdout.write(f"{mode_str} {status_text}  {stats}")
+        sys.stdout.write(f"{status_text}  {stats}")
 
         # Restore cursor position
         sys.stdout.write("\033[u")
@@ -693,13 +662,12 @@ class FeedbackDisplay:
         """Get the current status line for display (fallback for non-persistent mode)."""
         return self._status_bar.status_line.render()
 
-    def update_status_line(self, mode: Mode = None, phase: Phase = None,
+    def update_status_line(self, phase: Phase = None,
                            plan_name: str = None, step_current: int = None,
                            step_total: int = None, step_description: str = None,
                            error_message: str = None) -> None:
         """Update the status line/bar with new values."""
         self._status_bar.update(
-            mode=mode,
             phase=phase,
             plan_name=plan_name,
             step_current=step_current,
@@ -731,15 +699,8 @@ class FeedbackDisplay:
         import shutil
 
         status_line = self._status_bar.status_line
-        mode = status_line._mode
         status_msg = status_line._status_message
         phase = status_line._phase
-
-        # Mode badge
-        if mode == Mode.PROOF:
-            mode_html = '<style bg="ansiyellow" fg="ansiblack"><b> PROOF </b></style>'
-        else:
-            mode_html = '<style bg="ansicyan" fg="ansiblack"><b> EXPLORE </b></style>'
 
         # Status text
         if status_msg:
@@ -760,7 +721,7 @@ class FeedbackDisplay:
 
         # Return two-line toolbar: rule + status bar
         # Rule uses gray foreground, explicitly set dark background to match toolbar
-        return HTML(f'<style fg="ansigray" bg="#333333">{rule_line}</style>\n{mode_html} {status_text}  <style fg="ansigray">{stats}</style>')
+        return HTML(f'<style fg="ansigray" bg="#333333">{rule_line}</style>\n{status_text}  <style fg="ansigray">{stats}</style>')
 
     def prompt_with_status(self, prompt_text: str = "> ", default: str = "") -> str:
         """Prompt for input with status bar at bottom.
@@ -838,8 +799,6 @@ class FeedbackDisplay:
         self._auditable_mode = True
         self._proof_outputs = []
         self._resolved_tables = set()  # Reset table tracking for new proof
-        # Ensure status bar shows PROOF mode when proof tree is active
-        self._status_bar.update(mode=Mode.PROOF)
 
     def update_proof_resolving(self, fact_name: str, description: str = "", parent_name: str = None) -> None:
         """Mark a fact as being resolved in the proof tree."""
@@ -1303,25 +1262,18 @@ class FeedbackDisplay:
 
         Returns a Group containing:
         1. A horizontal rule
-        2. The status bar with mode, spinner (if active), status, and stats
+        2. The status bar with spinner (if active), status, and stats
         """
         status_line = self._status_bar.status_line
-        mode = status_line._mode
         status_msg = status_line._status_message
         phase = status_line._phase
-
-        # Mode badge
-        if mode == Mode.PROOF:
-            mode_text = Text(" PROOF ", style="bold black on yellow")
-        else:
-            mode_text = Text(" EXPLORE ", style="bold black on cyan")
 
         # Status text with spinner if there's an active status message
         if status_msg:
             spinner_char = SPINNER_FRAMES[status_line._spinner_frame % len(SPINNER_FRAMES)]
             status_text = f"{spinner_char} {status_msg}"
         elif phase.value == "idle":
-            status_text = "ready"
+            status_text = "Ready to accept input"
         else:
             status_text = phase.value
 
@@ -1332,8 +1284,6 @@ class FeedbackDisplay:
 
         # Build the status line
         line = Text()
-        line.append_text(mode_text)
-        line.append(" ")
         line.append(status_text, style="dim" if not status_msg else "cyan")
         line.append("  ")
         line.append(stats, style="dim")
@@ -1540,29 +1490,17 @@ class FeedbackDisplay:
             self._start_animation_thread()  # Start background animation
             self._update_live()
 
-    def show_mode_selection(self, mode: Mode, reasoning: str) -> None:
-        """Display the selected execution mode."""
-        mode_style = "cyan" if mode == Mode.EXPLORATORY else "yellow"
-        self.console.print(
-            f"[bold]Mode:[/bold] [{mode_style}]{mode.value.upper()}[/{mode_style}]"
-        )
-        self.console.print(f"  [dim]{reasoning}[/dim]")
-        self.console.print()
-
     def request_plan_approval(self, request: PlanApprovalRequest) -> PlanApprovalResponse:
         """
         Request user approval for a generated plan.
 
-        Displays the plan with mode selection and prompts for approval.
+        Displays the plan and prompts for approval.
         Returns user's decision with optional feedback.
 
         Approval flow (simplified):
         - approve: Execute the plan as-is
         - reject: Cancel execution
         - suggest: User provides feedback for replanning
-
-        Note: Mode switching removed from approval flow. Use /proof or /explore
-        commands instead to change modes.
 
         Args:
             request: PlanApprovalRequest with full context
@@ -1572,9 +1510,6 @@ class FeedbackDisplay:
         """
         # Stop any running animation/spinner before prompting for input
         self.stop_spinner()
-
-        # Show mode selection
-        self.show_mode_selection(request.mode, request.mode_reasoning)
 
         # Show the plan
         self.show_plan(request.steps)
@@ -1986,29 +1921,6 @@ class FeedbackDisplay:
             fact_strs = [f"[cyan]{f['name']}[/cyan]={f['value']}" for f in facts[:5]]
             self.console.print(f"[dim]Remembered: {', '.join(fact_strs)}[/dim]")
 
-    def show_mode_switch(self, mode: str, keywords: list[str]) -> None:
-        """Show that execution mode has been switched.
-
-        Args:
-            mode: The new execution mode
-            keywords: Keywords that triggered the switch
-        """
-        # Update status bar mode
-        if mode.upper() == "PROOF" or mode.upper() == "AUDITABLE":
-            self._status_bar.update(mode=Mode.PROOF)
-        else:
-            self._status_bar.update(mode=Mode.EXPLORATORY)
-
-        # Skip message for explicit user requests - they know what they asked for
-        if keywords == ["user request"]:
-            return
-        keyword_str = ", ".join(keywords) if keywords else "context"
-        self.console.print()
-        self.console.print(
-            f"[bold cyan]Switching to {mode.upper()} mode[/bold cyan] "
-            f"[dim](triggered by: {keyword_str})[/dim]"
-        )
-
     def request_failure_recovery(self, error_message: str, step_info: str = "") -> str:
         """
         Request user decision on how to handle execution failure.
@@ -2118,13 +2030,6 @@ class SessionFeedbackHandler:
             step_current = data.get("step_number", 0)
             if step_current > 0:
                 self.display.update_status_line(step_current=step_current)
-
-        elif event_type == "mode_switch":
-            mode_str = data.get("mode", "")
-            if mode_str == "proof":
-                self.display.update_status_line(mode=Mode.PROOF)
-            elif mode_str == "exploratory":
-                self.display.update_status_line(mode=Mode.EXPLORATORY)
 
         elif event_type in ("verification_complete", "execution_complete", "knowledge_complete"):
             self.display.reset_status_line()
@@ -2667,11 +2572,6 @@ class SessionFeedbackHandler:
             source = data.get("source", "unknown")
             if facts:
                 self.display.show_facts_extracted(facts, source)
-
-        elif event_type == "mode_switch":
-            mode = data.get("mode", "")
-            keywords = data.get("matched_keywords", [])
-            self.display.show_mode_switch(mode, keywords)
 
         elif event_type == "deriving":
             message = data.get("message", "Deriving answer...")
