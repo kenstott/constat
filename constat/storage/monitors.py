@@ -11,11 +11,14 @@ Storage locations:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -266,7 +269,16 @@ class MonitorStore:
             self._monitors = {
                 mid: Monitor.from_dict(mdata) for mid, mdata in data.items()
             }
-        except (json.JSONDecodeError, OSError, KeyError):
+        except (json.JSONDecodeError, OSError, KeyError) as e:
+            logger.warning(f"Could not load monitors from {monitors_file}: {e}")
+            # Backup corrupted file before discarding
+            if monitors_file.exists():
+                try:
+                    backup_path = monitors_file.with_suffix('.corrupted')
+                    monitors_file.rename(backup_path)
+                    logger.warning(f"Corrupted monitors file backed up to {backup_path}")
+                except OSError as backup_err:
+                    logger.error(f"Failed to backup corrupted monitors file: {backup_err}")
             self._monitors = {}
 
         return self._monitors

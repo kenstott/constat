@@ -1,7 +1,13 @@
 """Database schema introspection, caching, and vector search."""
 
+import hashlib
+import json
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Union
+from pathlib import Path
+from typing import Callable, Optional, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from constat.discovery.doc_tools import DocumentDiscoveryTools
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -143,8 +149,8 @@ class SchemaManager:
     4. Generates token-optimized overview for system prompt
     """
 
-    # Lightweight, fast embedding model (~80MB)
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+    # High-quality embedding model for semantic search (~1.3GB, 1024 dims)
+    EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
     def __init__(self, config: Config):
         self.config = config
@@ -167,6 +173,10 @@ class SchemaManager:
     def initialize(self, progress_callback: Optional[Callable[[str, int, int, str], None]] = None) -> None:
         """Connect to databases, introspect schemas, build vector index.
 
+        Uses cached schema metadata when available to avoid expensive
+        database introspection on every startup. Cache is invalidated
+        when config.databases changes.
+
         Args:
             progress_callback: Optional callback for progress updates.
                 Called with (stage, current, total, detail) where:
@@ -176,9 +186,23 @@ class SchemaManager:
                 - detail: description of current item
         """
         self._progress_callback = progress_callback
-        self._connect_all()
-        self._introspect_all()
-        self._resolve_reverse_references()
+
+        # Compute config hash for cache validation
+        config_hash = self._compute_config_hash()
+
+        # Try to load schema from cache first
+        if self._load_schema_cache(config_hash):
+            # Cache hit - still need connections for query execution
+            self._connect_all()
+            # Reverse references are stored in cache, no need to recompute
+        else:
+            # Cache miss - full introspection required
+            self._connect_all()
+            self._introspect_all()
+            self._resolve_reverse_references()
+            # Save to cache for next time
+            self._save_schema_cache(config_hash)
+
         self._build_vector_index()
         self._generate_overview()
         self._progress_callback = None
@@ -188,16 +212,26 @@ class SchemaManager:
 
         Use this when database schemas have changed and you need fresh metadata.
         """
-        # Clear all caches
+        # Clear all caches (memory and disk)
         self.metadata_cache.clear()
         self._embeddings = None
         self._embedding_keys = []
         self._overview = None
 
+        # Delete disk caches to force fresh introspection
+        schema_cache = self._get_schema_cache_path()
+        if schema_cache.exists():
+            schema_cache.unlink()
+        vectors_db = self._get_vectors_db_path()
+        if vectors_db.exists():
+            vectors_db.unlink()
+
         # Re-initialize (connections are preserved)
         self._progress_callback = progress_callback
         self._introspect_all()
         self._resolve_reverse_references()
+        config_hash = self._compute_config_hash()
+        self._save_schema_cache(config_hash)
         self._build_vector_index()
         self._generate_overview()
         self._progress_callback = None
@@ -541,12 +575,269 @@ class SchemaManager:
                     if ref_str not in ref_table.referenced_by:
                         ref_table.referenced_by.append(ref_str)
 
+    def _compute_config_hash(self) -> str:
+        """Compute a deterministic hash of the databases config.
+
+        The hash changes when databases are added, removed, or their
+        connection parameters change. This triggers re-introspection
+        and re-embedding.
+        """
+        # Build a canonical representation of the databases config
+        # Include only the keys that affect schema structure
+        config_data = {}
+        for db_name, db_config in sorted(self.config.databases.items()):
+            config_data[db_name] = {
+                "type": db_config.type or "",
+                "uri": db_config.uri or "",
+                "database": db_config.database or "",
+                "hosts": sorted(db_config.hosts) if db_config.hosts else [],
+                "port": db_config.port or 0,
+                "path": db_config.path or "",
+                "keyspace": db_config.keyspace or "",
+            }
+
+        # Create deterministic JSON and hash it
+        config_json = json.dumps(config_data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(config_json.encode()).hexdigest()[:16]
+
+    def _get_cache_dir(self) -> Path:
+        """Get the .constat cache directory."""
+        source_path = getattr(self.config, '_source_path', None)
+        if source_path:
+            cache_dir = source_path.parent / ".constat"
+        else:
+            cache_dir = Path.cwd() / ".constat"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    def _get_vectors_db_path(self) -> Path:
+        """Get the path to the vectors.duckdb database."""
+        return self._get_cache_dir() / "vectors.duckdb"
+
+    def _get_schema_cache_path(self) -> Path:
+        """Get the path to the schema cache JSON file."""
+        return self._get_cache_dir() / "schema_cache.json"
+
+    def _load_schema_cache(self, expected_hash: str) -> bool:
+        """Load schema metadata from cache if hash matches.
+
+        Args:
+            expected_hash: The current config hash
+
+        Returns:
+            True if cache was loaded successfully, False otherwise
+        """
+        cache_path = self._get_schema_cache_path()
+        if not cache_path.exists():
+            return False
+
+        try:
+            with open(cache_path, "r") as f:
+                cache_data = json.load(f)
+
+            # Check hash matches
+            if cache_data.get("config_hash") != expected_hash:
+                return False
+
+            # Rebuild metadata_cache from cached data
+            tables = cache_data.get("tables", {})
+            for full_name, table_dict in tables.items():
+                # Rebuild ColumnMetadata objects
+                columns = [
+                    ColumnMetadata(
+                        name=c["name"],
+                        type=c["type"],
+                        nullable=c.get("nullable", True),
+                        primary_key=c.get("primary_key", False),
+                        comment=c.get("comment"),
+                        sample_values=c.get("sample_values"),
+                    )
+                    for c in table_dict.get("columns", [])
+                ]
+
+                # Rebuild ForeignKey objects
+                foreign_keys = [
+                    ForeignKey(
+                        from_column=fk["from_column"],
+                        to_table=fk["to_table"],
+                        to_column=fk["to_column"],
+                        comment=fk.get("comment"),
+                    )
+                    for fk in table_dict.get("foreign_keys", [])
+                ]
+
+                self.metadata_cache[full_name] = TableMetadata(
+                    database=table_dict["database"],
+                    name=table_dict["name"],
+                    comment=table_dict.get("comment"),
+                    columns=columns,
+                    primary_keys=table_dict.get("primary_keys", []),
+                    foreign_keys=foreign_keys,
+                    row_count=table_dict.get("row_count", 0),
+                    referenced_by=table_dict.get("referenced_by", []),
+                    database_type=table_dict.get("database_type", ""),
+                )
+
+            return True
+        except Exception:
+            return False
+
+    def _save_schema_cache(self, config_hash: str) -> None:
+        """Save schema metadata to cache file."""
+        cache_path = self._get_schema_cache_path()
+
+        try:
+            tables = {}
+            for full_name, meta in self.metadata_cache.items():
+                tables[full_name] = {
+                    "database": meta.database,
+                    "name": meta.name,
+                    "comment": meta.comment,
+                    "columns": [
+                        {
+                            "name": c.name,
+                            "type": c.type,
+                            "nullable": c.nullable,
+                            "primary_key": c.primary_key,
+                            "comment": c.comment,
+                            "sample_values": c.sample_values,
+                        }
+                        for c in meta.columns
+                    ],
+                    "primary_keys": meta.primary_keys,
+                    "foreign_keys": [
+                        {
+                            "from_column": fk.from_column,
+                            "to_table": fk.to_table,
+                            "to_column": fk.to_column,
+                            "comment": fk.comment,
+                        }
+                        for fk in meta.foreign_keys
+                    ],
+                    "row_count": meta.row_count,
+                    "referenced_by": meta.referenced_by,
+                    "database_type": meta.database_type,
+                }
+
+            cache_data = {
+                "config_hash": config_hash,
+                "tables": tables,
+            }
+
+            with open(cache_path, "w") as f:
+                json.dump(cache_data, f, indent=2)
+        except Exception:
+            # Silently ignore cache save failures
+            pass
+
+    def _load_embedding_cache(self, expected_hash: str) -> bool:
+        """Load embeddings from cache if hash matches.
+
+        Args:
+            expected_hash: The current schema hash
+
+        Returns:
+            True if cache was loaded successfully, False otherwise
+        """
+        try:
+            import duckdb
+        except ImportError:
+            return False
+
+        db_path = self._get_vectors_db_path()
+        if not db_path.exists():
+            return False
+
+        try:
+            conn = duckdb.connect(str(db_path))
+
+            # Check if table exists and has data
+            tables = conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_name='schema_embeddings'"
+            ).fetchall()
+            if not tables:
+                conn.close()
+                return False
+
+            # Check hash
+            result = conn.execute(
+                "SELECT schema_hash FROM schema_embeddings LIMIT 1"
+            ).fetchone()
+            if not result or result[0] != expected_hash:
+                conn.close()
+                return False
+
+            # Load embeddings - order by table_name to ensure consistent ordering
+            rows = conn.execute(
+                "SELECT table_name, embedding FROM schema_embeddings ORDER BY table_name"
+            ).fetchall()
+            conn.close()
+
+            if not rows:
+                return False
+
+            self._embedding_keys = [row[0] for row in rows]
+            self._embeddings = np.array([row[1] for row in rows])
+            return True
+        except Exception:
+            return False
+
+    def _save_embedding_cache(self, schema_hash: str) -> None:
+        """Save embeddings to vectors.duckdb with schema hash."""
+        try:
+            import duckdb
+        except ImportError:
+            return
+
+        db_path = self._get_vectors_db_path()
+
+        try:
+            conn = duckdb.connect(str(db_path))
+
+            # Create table if not exists (1024 dims for BAAI/bge-large-en-v1.5)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_embeddings (
+                    table_name VARCHAR PRIMARY KEY,
+                    embedding FLOAT[1024] NOT NULL,
+                    schema_hash VARCHAR NOT NULL
+                )
+            """)
+
+            # Clear existing and insert new
+            conn.execute("DELETE FROM schema_embeddings")
+
+            # Insert all embeddings
+            for i, table_name in enumerate(self._embedding_keys):
+                embedding = self._embeddings[i].tolist()
+                conn.execute(
+                    "INSERT INTO schema_embeddings (table_name, embedding, schema_hash) VALUES (?, ?, ?)",
+                    [table_name, embedding, schema_hash]
+                )
+
+            conn.close()
+        except Exception:
+            # Silently ignore cache save failures
+            pass
+
     def _build_vector_index(self) -> None:
-        """Build vector embeddings for all tables."""
+        """Build vector embeddings for all tables.
+
+        Uses caching based on schema hash - embeddings are only recomputed
+        when the schema structure changes (new tables, columns, or types).
+        """
         if not self.metadata_cache:
             return
 
-        # Load embedding model
+        # Compute hash of config.databases
+        config_hash = self._compute_config_hash()
+
+        # Try to load from cache (silent - no progress needed for fast cache hit)
+        if self._load_embedding_cache(config_hash):
+            # Still need the model for queries
+            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
+            return
+
+        # Cache miss - need to compute embeddings
         self._emit_progress("indexing", 1, 2, "loading embedding model")
         self._model = SentenceTransformer(self.EMBEDDING_MODEL)
 
@@ -554,13 +845,17 @@ class SchemaManager:
         texts = []
         self._embedding_keys = []
 
-        for full_name, table_meta in self.metadata_cache.items():
+        for full_name in sorted(self.metadata_cache.keys()):
+            table_meta = self.metadata_cache[full_name]
             texts.append(table_meta.to_embedding_text())
             self._embedding_keys.append(full_name)
 
         # Generate embeddings
         self._emit_progress("indexing", 2, 2, f"vectorizing {len(texts)} tables")
         self._embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+        # Save to cache
+        self._save_embedding_cache(config_hash)
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
@@ -691,16 +986,26 @@ class SchemaManager:
 
         raise KeyError(f"Table not found: {table}")
 
-    def find_relevant_tables(self, query: str, top_k: int = 5) -> list[dict]:
+    def find_relevant_tables(
+        self,
+        query: str,
+        top_k: int = 5,
+        doc_tools: Optional["DocumentDiscoveryTools"] = None,
+        doc_limit: int = 2,
+    ) -> list[dict]:
         """
         Find tables relevant to a natural language query using vector search.
 
         Args:
             query: Natural language description of what data is needed
             top_k: Maximum number of results to return
+            doc_tools: Optional DocumentDiscoveryTools instance for enriching
+                      results with relevant documentation excerpts
+            doc_limit: Maximum number of doc excerpts per table (default 2)
 
         Returns:
-            List of dicts with table, database, relevance score, and summary
+            List of dicts with table, database, relevance score, summary,
+            and optionally documentation excerpts mentioning the table
         """
         if self._model is None or self._embeddings is None:
             return []
@@ -727,7 +1032,7 @@ class SchemaManager:
                 col_names.append("...")
             summary = f"{table_meta.name}: {', '.join(col_names)} ({table_meta.row_count:,} rows)"
 
-            results.append({
+            result = {
                 "table": table_meta.name,
                 "database": table_meta.database,
                 "full_name": full_name,
@@ -736,13 +1041,78 @@ class SchemaManager:
                 # Database type - tells LLM what query semantics to use
                 "database_type": table_meta.database_type,  # e.g., "postgresql", "mongodb"
                 "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra"),
-            })
+            }
+
+            # Enrich with document context if doc_tools provided
+            if doc_tools:
+                doc_context = doc_tools.explore_entity(table_meta.name, limit=doc_limit)
+                if doc_context:
+                    result["documentation"] = [
+                        {
+                            "document": d["document"],
+                            "excerpt": d["excerpt"],
+                            "section": d.get("section"),
+                        }
+                        for d in doc_context
+                    ]
+
+            results.append(result)
 
         return results
 
     def list_tables(self) -> list[str]:
         """Return list of all table full names."""
         return list(self.metadata_cache.keys())
+
+    def get_entity_names(self) -> list[str]:
+        """Return all table and column names for entity extraction.
+
+        Returns a deduplicated list of names that can be used to identify
+        schema entities in documents. Includes both table names and column
+        names (without database prefix).
+
+        Returns:
+            List of unique entity names (tables and columns)
+        """
+        entities = set()
+
+        for table_meta in self.metadata_cache.values():
+            # Add table name (without database prefix for matching)
+            entities.add(table_meta.name)
+
+            # Add column names
+            for col in table_meta.columns:
+                entities.add(col.name)
+
+        return list(entities)
+
+    def get_table_metadata(self, database: str, table_name: str) -> Optional[TableMetadata]:
+        """Get metadata for a specific table.
+
+        Args:
+            database: Database name
+            table_name: Table name (case-insensitive)
+
+        Returns:
+            TableMetadata if found, None otherwise
+        """
+        # Try exact match first
+        full_name = f"{database}.{table_name}"
+        if full_name in self.metadata_cache:
+            return self.metadata_cache[full_name]
+
+        # Try case-insensitive match
+        table_lower = table_name.lower()
+        for key, meta in self.metadata_cache.items():
+            if meta.database == database and meta.name.lower() == table_lower:
+                return meta
+
+        # Try matching just by table name (any database)
+        for key, meta in self.metadata_cache.items():
+            if meta.name.lower() == table_lower:
+                return meta
+
+        return None
 
     def get_connection(self, database: str) -> Union[Engine, NoSQLConnector, FileConnector]:
         """Get connection for a database (SQL Engine, NoSQL Connector, or File Connector)."""

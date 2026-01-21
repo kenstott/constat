@@ -1,9 +1,50 @@
 """Data models for document discovery."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from datetime import datetime
+from typing import Optional, Any
 
 from constat.core.config import DocumentConfig
+
+
+class EntityType:
+    """Entity type constants."""
+    TABLE = "table"
+    COLUMN = "column"
+    CONCEPT = "concept"
+    BUSINESS_TERM = "business_term"
+
+
+@dataclass
+class Entity:
+    """An extracted entity from documents or schema."""
+    id: str
+    name: str
+    type: str  # EntityType constant
+    metadata: dict[str, Any] = field(default_factory=dict)
+    embedding: Optional[list[float]] = None
+    created_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+
+
+@dataclass
+class ChunkEntity:
+    """Link between a chunk and an entity."""
+    chunk_id: str
+    entity_id: str
+    mention_count: int = 1
+    confidence: float = 1.0
+
+
+@dataclass
+class EnrichedChunk:
+    """A chunk with its similarity score and associated entities."""
+    chunk: "DocumentChunk"
+    score: float
+    entities: list[Entity] = field(default_factory=list)
 
 
 @dataclass

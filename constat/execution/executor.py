@@ -1,5 +1,7 @@
 """Safe Python code execution with timeout and error capture."""
 
+from __future__ import annotations
+
 import ast
 import io
 import sys
@@ -18,8 +20,12 @@ class CompileError:
 
 
 @dataclass
-class RuntimeError_:
-    """Python runtime exception."""
+class ExecutionRuntimeError:
+    """Runtime exception from executed code.
+
+    Captures runtime errors that occur during execution of generated Python code,
+    including the error message and full traceback for debugging.
+    """
     error: str
     traceback: str
 
@@ -31,7 +37,7 @@ class ExecutionResult:
     stdout: str = ""
     stderr: str = ""
     compile_error: Optional[CompileError] = None
-    runtime_error: Optional[RuntimeError_] = None
+    runtime_error: Optional[ExecutionRuntimeError] = None
     return_value: Any = None
     namespace: Optional[dict] = None  # Variables after execution (for auto-saving)
 
@@ -163,7 +169,7 @@ class PythonExecutor:
                 success=False,
                 stdout=stdout_capture.getvalue(),
                 stderr=stderr_capture.getvalue(),
-                runtime_error=RuntimeError_(
+                runtime_error=ExecutionRuntimeError(
                     error=f"{type(e).__name__}: {e}",
                     traceback=tb,
                 ),

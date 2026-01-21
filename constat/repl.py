@@ -1,18 +1,27 @@
 """Interactive REPL for refinement loop."""
 
 from typing import Optional
+
+# Rich for output (tables, panels, syntax highlighting)
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
+# prompt_toolkit for input with status bar at bottom and auto-completion
+from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style as PTStyle
+from prompt_toolkit.completion import WordCompleter, FuzzyWordCompleter
+
 import os
 import re
 import random
+import sys
 from pathlib import Path
 from constat.session import Session, SessionConfig
-from constat.execution.mode import Mode
+from constat.execution.mode import Mode, Phase
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
@@ -198,36 +207,8 @@ REPL_COMMANDS = [
 import os
 import sys
 
-READLINE_AVAILABLE = False
-try:
-    import gnureadline as readline
-    READLINE_AVAILABLE = True
-except ImportError:
-    try:
-        import readline
-        READLINE_AVAILABLE = True
-    except ImportError:
-        pass
 
-
-class REPLCompleter:
-    """Tab completer for readline fallback."""
-
-    def __init__(self, commands: list[str]):
-        self.commands = commands
-        self.matches: list[str] = []
-
-    def complete(self, text: str, state: int) -> Optional[str]:
-        if state == 0:
-            if text.startswith("/"):
-                self.matches = [cmd for cmd in self.commands
-                               if cmd.lower().startswith(text.lower())]
-            else:
-                self.matches = []
-
-        if state < len(self.matches):
-            return self.matches[state]
-        return None
+# Tab completion uses prompt_toolkit's WordCompleter (set up in __init__)
 
 
 class InteractiveREPL:
@@ -260,14 +241,11 @@ class InteractiveREPL:
         self.session = self._create_session()
         # Note: auto-compact is called in run() after spinner stops
 
-        # Setup readline for tab completion
-        self._readline_available = False
-        if READLINE_AVAILABLE:
-            self._readline_available = True
-            self._completer = REPLCompleter(REPL_COMMANDS)
-            readline.set_completer(self._completer.complete)
-            readline.parse_and_bind("tab: complete")
-            readline.set_completer_delims(' \t\n')
+        # Style for prompt_toolkit status bar - dark background with light text
+        self._prompt_style = PTStyle.from_dict({
+            'bottom-toolbar': 'bg:#1a1a1a #888888',
+            'bottom-toolbar.text': '#888888',
+        })
 
     def _get_suggestion_context(self) -> dict:
         """Provide context for typeahead suggestions."""
@@ -394,6 +372,10 @@ class InteractiveREPL:
         # Load persistent facts into the session
         self._load_persistent_facts(session)
 
+        # Initialize status line with default mode
+        if self.session_config.default_mode:
+            self.display.update_status_line(mode=self.session_config.default_mode)
+
         return session
 
     def _load_persistent_facts(self, session: Session) -> None:
@@ -413,12 +395,114 @@ class InteractiveREPL:
             except Exception:
                 pass  # Skip facts that fail to load
 
+    def _get_bottom_toolbar(self):
+        """Get the status bar text for the bottom toolbar as HTML.
+
+        Returns a two-line toolbar with:
+        1. A horizontal rule
+        2. The status bar with mode, status, and stats
+        """
+        import html as html_module
+        import shutil
+
+        status_bar = self.display._status_bar
+        status_line = status_bar.status_line
+
+        # Build status text based on current state
+        mode = status_line._mode
+        phase = status_line._phase
+        status_msg = status_line._status_message
+
+        # Mode badge
+        if mode == Mode.PROOF:
+            mode_html = '<style bg="ansiyellow" fg="ansiblack"><b> PROOF </b></style>'
+        else:
+            mode_html = '<style bg="ansicyan" fg="ansiblack"><b> EXPLORE </b></style>'
+
+        # Phase/status text
+        if status_msg:
+            phase_text = html_module.escape(status_msg)
+        elif phase.value == "idle":
+            phase_text = 'ready'
+        elif phase.value == "planning":
+            plan = status_line._plan_name or ""
+            if plan:
+                plan = plan[:40] + "..." if len(plan) > 40 else plan
+                phase_text = f'planning: {html_module.escape(plan)}'
+            else:
+                phase_text = 'planning...'
+        elif phase.value == "executing":
+            step = status_line._step_current
+            total = status_line._step_total
+            desc = status_line._step_description or ""
+            if desc:
+                desc = desc[:30] + "..." if len(desc) > 30 else desc
+                phase_text = f'executing step {step}/{total}: {html_module.escape(desc)}'
+            else:
+                phase_text = f'executing step {step}/{total}'
+        elif phase.value == "failed":
+            err = status_line._error_message or "error"
+            err = err[:40] + "..." if len(err) > 40 else err
+            phase_text = f'failed: {html_module.escape(err)}'
+        else:
+            phase_text = phase.value
+
+        # Stats - get current counts
+        tables_count = status_bar._tables_count
+        facts_count = status_bar._facts_count
+
+        # Build full status bar with stats on right
+        stats_html = f'<style fg="ansigray">tables:{tables_count} facts:{facts_count}</style>'
+
+        # Get terminal width for rule
+        terminal_width = shutil.get_terminal_size().columns
+        rule_line = '─' * terminal_width
+
+        # Return two-line toolbar: rule + status bar
+        # Rule uses gray foreground, explicitly set dark background to match toolbar
+        return HTML(f'<style fg="ansigray" bg="#333333">{rule_line}</style>\n{mode_html} {phase_text}  {stats_html}')
+
+    def _get_completer(self) -> WordCompleter:
+        """Build a completer with commands and dynamic context."""
+        words = list(REPL_COMMANDS)
+
+        # Add table names if session has datastore
+        if self.session and self.session.datastore:
+            try:
+                tables = self.session.datastore.list_tables()
+                for t in tables:
+                    words.append(t["name"])
+            except Exception:
+                pass
+
+        # Add saved plan names
+        try:
+            plans = Session.list_saved_plans(user_id=self.user_id)
+            for p in plans:
+                words.append(p["name"])
+        except Exception:
+            pass
+
+        return WordCompleter(words, ignore_case=True)
+
     def _get_input(self) -> str:
-        """Get user input with tab completion (readline)."""
-        # Show YOU header before prompt
+        """Get user input with status bar at bottom.
+
+        Uses Rich for output (header), prompt_toolkit for input with bottom toolbar.
+        """
+        # Print YOU header
         self.console.print()
         self.console.print(Rule("[bold green]YOU[/bold green]", align="right"))
-        return input("> ").strip()
+
+        # prompt_toolkit input with auto-completion and status bar
+        result = pt_prompt(
+            "> ",
+            completer=self._get_completer(),
+            complete_while_typing=True,
+            bottom_toolbar=self._get_bottom_toolbar,
+            style=self._prompt_style,
+        )
+        return result.strip()
 
     def _show_help(self) -> None:
         """Show available commands."""
@@ -1205,6 +1289,9 @@ class InteractiveREPL:
         self.console.print("[green]Switched to:[/green] [bold yellow]PROOF[/bold yellow] mode")
         self.console.print("[dim]Plans will be complete and self-contained with full provenance.[/dim]")
 
+        # Update status bar
+        self.display._status_bar.update(mode=Mode.PROOF)
+
         # Update conversation state if session exists
         if self.session:
             self.session._conversation_state.mode = Mode.PROOF
@@ -1222,6 +1309,9 @@ class InteractiveREPL:
         self.session_config.default_mode = Mode.EXPLORATORY
         self.console.print("[green]Switched to:[/green] [bold cyan]EXPLORATORY[/bold cyan] mode")
         self.console.print("[dim]Plans can build on prior work, facts accumulate across plans.[/dim]")
+
+        # Update status bar
+        self.display._status_bar.update(mode=Mode.EXPLORATORY)
 
         # Update conversation state if session exists
         if self.session:
@@ -2322,7 +2412,7 @@ Provide a 2-3 sentence summary covering:
                 if self.suggestions:
                     self.display.show_suggestions(self.suggestions)
                 self.display.show_summary(success=True, total_steps=0, duration_ms=0)
-            elif result.get("mode") == "proof" and result.get("success", True):
+            elif result.get("mode") == Mode.PROOF.value and result.get("success", True):
                 # AUDITABLE mode - display full output with answer, derivation, and insights
                 # Note: success=True default since older code paths may not set it explicitly
                 self.display.show_output(result.get("output", ""))
@@ -2349,9 +2439,9 @@ Provide a 2-3 sentence summary covering:
 
                 # Check context size and warn if needed
                 self._check_context_warning()
-            elif result.get("mode") != "proof":
-                # Only show generic error for non-auditable modes
-                # Auditable mode errors are already displayed via verification_error event
+            elif result.get("mode") != Mode.PROOF.value:
+                # Only show generic error for non-proof modes
+                # Proof mode errors are already displayed via verification_error event
                 self.console.print(f"[red]Error:[/red] {result.get('error', 'Unknown error')}")
         except KeyboardInterrupt:
             # Cancel execution via session's cancel_execution() method
@@ -2378,13 +2468,21 @@ Provide a 2-3 sentence summary covering:
         # Set REPL mode for output formatting
         os.environ["CONSTAT_REPL_MODE"] = "1"
         try:
+            # Enable persistent status bar at bottom of terminal
+            self.display.enable_status_bar()
             self._run_repl_body(initial_problem)
         finally:
+            # Disable status bar and restore terminal
+            self.display.disable_status_bar()
             if self.session and self.session.datastore:
                 self.session.datastore.close()
 
     def _run_repl_body(self, initial_problem: Optional[str] = None) -> None:
         """Run the REPL body (banner + loop)."""
+        # Flush any pending Rich output before switching to prompt_toolkit
+        sys.stdout.flush()
+        sys.stderr.flush()
+
         # Auto-compact learnings on startup (after spinner stops, before banner)
         self._maybe_auto_compact()
 
@@ -2392,20 +2490,26 @@ Provide a 2-3 sentence summary covering:
         if self.auto_resume:
             self._handle_auto_resume()
 
-        # Welcome banner with random personality adjectives
+        # Welcome banner with random personality adjectives (Rich output)
         reliable_adj, honest_adj = get_vera_adjectives()
-        if self._readline_available:
-            hints = "[dim]Tab[/dim] completes commands | [dim]Ctrl+C[/dim] interrupts"
-        else:
-            hints = "[dim]Ctrl+C[/dim] interrupts"
-        self.console.print(Panel.fit(
-            f"[white]Hi, I'm [bold]Vera[/bold], your {reliable_adj} and {honest_adj} data analyst.[/white]\n"
-            "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]\n"
-            "\n"
-            "[dim]Powered by [bold blue]Constat[/bold blue] [italic](Latin: \"it is established\")[/italic] — Multi-Step AI Reasoning Agent[/dim]\n"
-            f"[dim]Type /help for commands, or ask a question.[/dim] | {hints}",
-            border_style="blue",
-        ))
+        hints = "Tab completes commands | Ctrl+C interrupts"
+
+        # Use Rich for banner output
+        self.console.print()
+        self.console.print(
+            f"Hi, I'm [bold]Vera[/bold], your {reliable_adj} and {honest_adj} data analyst."
+        )
+        self.console.print(
+            "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]"
+        )
+        self.console.print()
+        self.console.print(
+            "[dim]Powered by[/dim] [blue bold]Constat[/blue bold] "
+            "[dim](Latin: \"it is established\") — Multi-Step AI Reasoning Agent[/dim]"
+        )
+        self.console.print(
+            f"[dim]Type /help for commands, or ask a question. | {hints}[/dim]"
+        )
 
         # Show starter suggestions if no initial problem
         if not initial_problem:

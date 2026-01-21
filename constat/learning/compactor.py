@@ -18,6 +18,7 @@ class CompactionResult:
     """Result of a compaction operation."""
     rules_created: int = 0
     learnings_archived: int = 0
+    learnings_expired: int = 0  # Stale learnings that never grouped
     groups_found: int = 0
     skipped_low_confidence: int = 0
     errors: list[str] = field(default_factory=list)
@@ -165,8 +166,8 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=500,
             )
 
-            # Parse response
-            content = response.content.strip()
+            # Parse response (generate returns string, not object)
+            content = response.strip() if isinstance(response, str) else response.content.strip()
             # Extract JSON if wrapped in markdown
             if "```" in content:
                 match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
@@ -185,8 +186,10 @@ Output ONLY valid JSON, no explanation."""
 
             return groups
 
-        except Exception:
+        except Exception as e:
             # Fallback: simple keyword-based grouping
+            import logging
+            logging.getLogger(__name__).warning(f"LLM grouping failed: {e}, using keyword fallback")
             return self._keyword_grouping(learnings)
 
     def _keyword_grouping(self, learnings: list[dict]) -> list[list[dict]]:
@@ -237,7 +240,8 @@ Output ONLY valid JSON, no explanation."""
                 user_message=prompt,
                 max_tokens=10,
             )
-            return "yes" in response.content.lower()
+            # generate() returns string directly
+            return "yes" in response.lower()
         except Exception:
             return False
 
@@ -282,7 +286,8 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=300,
             )
 
-            content = response.content.strip()
+            # generate() returns string directly
+            content = response.strip()
             # Extract JSON if wrapped in markdown
             if "```" in content:
                 match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)

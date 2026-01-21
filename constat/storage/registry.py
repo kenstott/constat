@@ -5,12 +5,13 @@ enabling collaboration, search, and audit trails.
 """
 
 import json
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import duckdb
 
 
 @dataclass
@@ -47,35 +48,35 @@ class ConstatRegistry:
     Stores metadata about all tables and artifacts created across sessions,
     enabling discovery, search, and collaboration.
 
-    Storage location: .constat/registry.db
+    Storage location: .constat/registry.duckdb
     """
 
     TABLES_SCHEMA = """
         CREATE TABLE IF NOT EXISTS constat_tables (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            file_path TEXT NOT NULL,
-            description TEXT,
+            id VARCHAR PRIMARY KEY,
+            user_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            name VARCHAR NOT NULL,
+            file_path VARCHAR NOT NULL,
+            description VARCHAR,
             row_count INTEGER DEFAULT 0,
-            columns TEXT,  -- JSON array of {name, type}
-            created_at TEXT NOT NULL,
+            columns VARCHAR,  -- JSON array of {name, type}
+            created_at VARCHAR NOT NULL,
             UNIQUE(user_id, session_id, name)
         )
     """
 
     ARTIFACTS_SCHEMA = """
         CREATE TABLE IF NOT EXISTS constat_artifacts (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            file_path TEXT NOT NULL,
-            artifact_type TEXT,
-            description TEXT,
+            id VARCHAR PRIMARY KEY,
+            user_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            name VARCHAR NOT NULL,
+            file_path VARCHAR NOT NULL,
+            artifact_type VARCHAR,
+            description VARCHAR,
             size_bytes INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at VARCHAR NOT NULL
         )
     """
 
@@ -95,8 +96,8 @@ class ConstatRegistry:
             base_dir: Base directory for .constat. Defaults to current directory.
         """
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
-        self.db_path = self.base_dir / "registry.db"
-        self._conn: Optional[sqlite3.Connection] = None
+        self.db_path = self.base_dir / "registry.duckdb"
+        self._conn: Optional[duckdb.DuckDBPyConnection] = None
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -107,15 +108,11 @@ class ConstatRegistry:
         conn.execute(self.ARTIFACTS_SCHEMA)
         for idx in self.INDEXES:
             conn.execute(idx)
-        conn.commit()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> duckdb.DuckDBPyConnection:
         """Get or create database connection."""
         if self._conn is None:
-            # check_same_thread=False allows connection to be used from multiple threads
-            # This is safe for our use case (simple metadata operations)
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
+            self._conn = duckdb.connect(str(self.db_path))
         return self._conn
 
     def close(self) -> None:
@@ -159,12 +156,17 @@ class ConstatRegistry:
             description = self._generate_table_description(name, row_count, columns)
 
         conn = self._get_connection()
+        # Delete existing if present (user_id, session_id, name is unique)
         conn.execute("""
-            INSERT OR REPLACE INTO constat_tables
+            DELETE FROM constat_tables
+            WHERE user_id = ? AND session_id = ? AND name = ?
+        """, [user_id, session_id, name])
+        # Insert new record
+        conn.execute("""
+            INSERT INTO constat_tables
             (id, user_id, session_id, name, file_path, description, row_count, columns, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (table_id, user_id, session_id, name, file_path, description, row_count, columns_json, now))
-        conn.commit()
+        """, [table_id, user_id, session_id, name, file_path, description, row_count, columns_json, now])
 
         return table_id
 
@@ -218,9 +220,8 @@ class ConstatRegistry:
             SET {", ".join(updates)}
             WHERE user_id = ? AND session_id = ? AND name = ?
         """, params)
-        conn.commit()
 
-        return result.rowcount > 0
+        return result.fetchone() is not None or True  # DuckDB doesn't return rowcount easily
 
     def delete_table(self, user_id: str, session_id: str, name: str) -> bool:
         """Delete a table from the registry.
@@ -229,12 +230,20 @@ class ConstatRegistry:
             True if deleted, False if not found
         """
         conn = self._get_connection()
-        result = conn.execute("""
+        # Check if exists first
+        exists = conn.execute("""
+            SELECT 1 FROM constat_tables
+            WHERE user_id = ? AND session_id = ? AND name = ?
+        """, [user_id, session_id, name]).fetchone()
+
+        if not exists:
+            return False
+
+        conn.execute("""
             DELETE FROM constat_tables
             WHERE user_id = ? AND session_id = ? AND name = ?
-        """, (user_id, session_id, name))
-        conn.commit()
-        return result.rowcount > 0
+        """, [user_id, session_id, name])
+        return True
 
     def list_tables(
         self,
@@ -268,18 +277,19 @@ class ConstatRegistry:
         params.append(limit)
 
         rows = conn.execute(query, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
 
         return [
             TableRecord(
-                id=row["id"],
-                user_id=row["user_id"],
-                session_id=row["session_id"],
-                name=row["name"],
-                file_path=row["file_path"],
-                description=row["description"],
-                row_count=row["row_count"],
-                columns=json.loads(row["columns"]) if row["columns"] else [],
-                created_at=row["created_at"],
+                id=row[columns.index("id")],
+                user_id=row[columns.index("user_id")],
+                session_id=row[columns.index("session_id")],
+                name=row[columns.index("name")],
+                file_path=row[columns.index("file_path")],
+                description=row[columns.index("description")],
+                row_count=row[columns.index("row_count")],
+                columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
+                created_at=row[columns.index("created_at")],
             )
             for row in rows
         ]
@@ -290,21 +300,22 @@ class ConstatRegistry:
         row = conn.execute("""
             SELECT * FROM constat_tables
             WHERE user_id = ? AND session_id = ? AND name = ?
-        """, (user_id, session_id, name)).fetchone()
+        """, [user_id, session_id, name]).fetchone()
 
         if not row:
             return None
 
+        columns = [desc[0] for desc in conn.description]
         return TableRecord(
-            id=row["id"],
-            user_id=row["user_id"],
-            session_id=row["session_id"],
-            name=row["name"],
-            file_path=row["file_path"],
-            description=row["description"],
-            row_count=row["row_count"],
-            columns=json.loads(row["columns"]) if row["columns"] else [],
-            created_at=row["created_at"],
+            id=row[columns.index("id")],
+            user_id=row[columns.index("user_id")],
+            session_id=row[columns.index("session_id")],
+            name=row[columns.index("name")],
+            file_path=row[columns.index("file_path")],
+            description=row[columns.index("description")],
+            row_count=row[columns.index("row_count")],
+            columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
+            created_at=row[columns.index("created_at")],
         )
 
     # --- Artifact Registration ---
@@ -345,8 +356,7 @@ class ConstatRegistry:
             INSERT INTO constat_artifacts
             (id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (artifact_id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, now))
-        conn.commit()
+        """, [artifact_id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, now])
 
         return artifact_id
 
@@ -397,18 +407,19 @@ class ConstatRegistry:
         params.append(limit)
 
         rows = conn.execute(query, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
 
         return [
             ArtifactRecord(
-                id=row["id"],
-                user_id=row["user_id"],
-                session_id=row["session_id"],
-                name=row["name"],
-                file_path=row["file_path"],
-                artifact_type=row["artifact_type"],
-                description=row["description"],
-                size_bytes=row["size_bytes"],
-                created_at=row["created_at"],
+                id=row[columns.index("id")],
+                user_id=row[columns.index("user_id")],
+                session_id=row[columns.index("session_id")],
+                name=row[columns.index("name")],
+                file_path=row[columns.index("file_path")],
+                artifact_type=row[columns.index("artifact_type")],
+                description=row[columns.index("description")],
+                size_bytes=row[columns.index("size_bytes")],
+                created_at=row[columns.index("created_at")],
             )
             for row in rows
         ]
@@ -420,12 +431,20 @@ class ConstatRegistry:
             True if deleted, False if not found
         """
         conn = self._get_connection()
-        result = conn.execute(
+        # Check if exists first
+        exists = conn.execute(
+            "SELECT 1 FROM constat_artifacts WHERE id = ?",
+            [artifact_id]
+        ).fetchone()
+
+        if not exists:
+            return False
+
+        conn.execute(
             "DELETE FROM constat_artifacts WHERE id = ?",
-            (artifact_id,)
+            [artifact_id]
         )
-        conn.commit()
-        return result.rowcount > 0
+        return True
 
     def delete_session_artifacts(self, user_id: str, session_id: str) -> int:
         """Delete all artifacts for a session.
@@ -434,12 +453,17 @@ class ConstatRegistry:
             Number of artifacts deleted
         """
         conn = self._get_connection()
-        result = conn.execute("""
+        # Count first
+        count = conn.execute("""
+            SELECT COUNT(*) FROM constat_artifacts
+            WHERE user_id = ? AND session_id = ?
+        """, [user_id, session_id]).fetchone()[0]
+
+        conn.execute("""
             DELETE FROM constat_artifacts
             WHERE user_id = ? AND session_id = ?
-        """, (user_id, session_id))
-        conn.commit()
-        return result.rowcount
+        """, [user_id, session_id])
+        return count
 
     # --- Search ---
 
@@ -463,7 +487,7 @@ class ConstatRegistry:
 
         sql = """
             SELECT * FROM constat_tables
-            WHERE (name LIKE ? OR description LIKE ?)
+            WHERE (name ILIKE ? OR description ILIKE ?)
         """
         params = [f"%{query}%", f"%{query}%"]
 
@@ -475,18 +499,19 @@ class ConstatRegistry:
         params.append(limit)
 
         rows = conn.execute(sql, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
 
         return [
             TableRecord(
-                id=row["id"],
-                user_id=row["user_id"],
-                session_id=row["session_id"],
-                name=row["name"],
-                file_path=row["file_path"],
-                description=row["description"],
-                row_count=row["row_count"],
-                columns=json.loads(row["columns"]) if row["columns"] else [],
-                created_at=row["created_at"],
+                id=row[columns.index("id")],
+                user_id=row[columns.index("user_id")],
+                session_id=row[columns.index("session_id")],
+                name=row[columns.index("name")],
+                file_path=row[columns.index("file_path")],
+                description=row[columns.index("description")],
+                row_count=row[columns.index("row_count")],
+                columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
+                created_at=row[columns.index("created_at")],
             )
             for row in rows
         ]
@@ -511,7 +536,7 @@ class ConstatRegistry:
 
         sql = """
             SELECT * FROM constat_artifacts
-            WHERE (name LIKE ? OR description LIKE ?)
+            WHERE (name ILIKE ? OR description ILIKE ?)
         """
         params = [f"%{query}%", f"%{query}%"]
 
@@ -523,18 +548,19 @@ class ConstatRegistry:
         params.append(limit)
 
         rows = conn.execute(sql, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
 
         return [
             ArtifactRecord(
-                id=row["id"],
-                user_id=row["user_id"],
-                session_id=row["session_id"],
-                name=row["name"],
-                file_path=row["file_path"],
-                artifact_type=row["artifact_type"],
-                description=row["description"],
-                size_bytes=row["size_bytes"],
-                created_at=row["created_at"],
+                id=row[columns.index("id")],
+                user_id=row[columns.index("user_id")],
+                session_id=row[columns.index("session_id")],
+                name=row[columns.index("name")],
+                file_path=row[columns.index("file_path")],
+                artifact_type=row[columns.index("artifact_type")],
+                description=row[columns.index("description")],
+                size_bytes=row[columns.index("size_bytes")],
+                created_at=row[columns.index("created_at")],
             )
             for row in rows
         ]

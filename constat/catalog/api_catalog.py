@@ -260,7 +260,7 @@ class APICatalog:
     """
 
     # Same embedding model as SchemaManager for consistency
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+    EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
     def __init__(self):
         self.operations: dict[str, OperationMetadata] = {}  # key: "type.name"

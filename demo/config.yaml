@@ -69,6 +69,11 @@ documents:
     path: demo/docs/business_rules.md
     description: Business policies for customer tiers, inventory reorder, and performance reviews
 
+  compensation_policy:
+    type: file
+    path: demo/docs/compensation_policy.pdf
+    description: Employee compensation policy including salary bands, merit increase matrix, bonus structure, and promotion guidelines
+
 system_prompt: |
   You are a business analyst assistant analyzing company data.
 

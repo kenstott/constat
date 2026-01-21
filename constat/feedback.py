@@ -22,6 +22,11 @@ from rich.columns import Columns
 from rich.tree import Tree
 import threading
 
+# prompt_toolkit for input with status bar
+from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style as PTStyle
+
 from constat.proof_tree import ProofTree, NodeStatus
 
 
@@ -89,6 +94,7 @@ class StatusLine:
         self._queue_count: int = 0
         self._error_message: str | None = None
         self._spinner_frame: int = 0
+        self._status_message: str | None = None  # Arbitrary status message (e.g., "Analyzing...")
 
     def render(self) -> str:
         """Render current status line as a formatted string."""
@@ -100,6 +106,12 @@ class StatusLine:
         else:
             mode_badge = "[bold cyan][EXPLORE][/bold cyan]"
         parts.append(mode_badge)
+
+        # If there's an explicit status message, show that instead of phase
+        if self._status_message:
+            spinner = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
+            parts.append(f"[cyan]{spinner}[/cyan] {self._status_message}")
+            return "    ".join(parts)
 
         # Phase with context
         if self._phase == Phase.IDLE:
@@ -167,9 +179,108 @@ class StatusLine:
         """Update the queued intent count."""
         self._queue_count = count
 
+    def set_status_message(self, message: str | None) -> None:
+        """Set an arbitrary status message (overrides phase display when set)."""
+        self._status_message = message
+
     def advance_spinner(self) -> None:
         """Advance the spinner animation frame."""
         self._spinner_frame += 1
+
+
+class PersistentStatusBar:
+    """
+    Status bar state tracker.
+
+    Tracks mode, phase, and stats. The actual display is handled by:
+    - prompt_toolkit's bottom_toolbar during input
+    - Rich spinner display during processing
+    """
+
+    def __init__(self, console: Console):
+        self.console = console
+        self._status_line = StatusLine()
+        self._enabled = False
+        self._tables_count = 0
+        self._facts_count = 0
+        self._artifacts_count = 0
+
+    def enable(self) -> None:
+        """Enable status tracking."""
+        self._enabled = True
+
+    def disable(self) -> None:
+        """Disable status tracking."""
+        self._enabled = False
+
+    def refresh(self) -> None:
+        """No-op - display is handled by prompt_toolkit or Rich."""
+        pass
+
+    def update(self, mode: Mode = None, phase: Phase = None,
+               plan_name: str = None, step_current: int = None,
+               step_total: int = None, step_description: str = None,
+               error_message: str = None, tables_count: int = None,
+               facts_count: int = None, artifacts_count: int = None) -> None:
+        """Update status bar values and refresh display."""
+        if mode is not None:
+            self._status_line._mode = mode
+        if phase is not None:
+            self._status_line._phase = phase
+        if plan_name is not None:
+            self._status_line._plan_name = plan_name
+        if step_current is not None:
+            self._status_line._step_current = step_current
+        if step_total is not None:
+            self._status_line._step_total = step_total
+        if step_description is not None:
+            self._status_line._step_description = step_description
+        if error_message is not None:
+            self._status_line._error_message = error_message
+        if tables_count is not None:
+            self._tables_count = tables_count
+        if facts_count is not None:
+            self._facts_count = facts_count
+        if artifacts_count is not None:
+            self._artifacts_count = artifacts_count
+
+        self.refresh()
+
+    def set_status_message(self, message: str | None) -> None:
+        """Set an arbitrary status message and refresh."""
+        self._status_line.set_status_message(message)
+        self.refresh()
+
+    def reset(self) -> None:
+        """Reset status bar to idle state."""
+        self._status_line._phase = Phase.IDLE
+        self._status_line._plan_name = None
+        self._status_line._step_current = 0
+        self._status_line._step_total = 0
+        self._status_line._step_description = ""
+        self._status_line._error_message = None
+        self._status_line._status_message = None
+        self.refresh()
+
+    @property
+    def status_line(self) -> StatusLine:
+        """Access the underlying status line for direct manipulation."""
+        return self._status_line
+
+    @property
+    def is_active(self) -> bool:
+        """Status bar is never 'active' in persistent scroll mode.
+
+        Since we use prompt_toolkit for the status bar during input and
+        Rich Live for the status bar during processing, this should always
+        return False so that spinners display properly with their own
+        status bar line.
+        """
+        return False
+
+    def print(self, *args, **kwargs) -> None:
+        """Print to console directly."""
+        self.console.print(*args, **kwargs)
 
 
 @dataclass
@@ -466,12 +577,235 @@ class FeedbackDisplay:
         self._proof_tree: Optional[ProofTree] = None
         self._auditable_mode: bool = False
         self._proof_outputs: list[tuple[str, str]] = []  # (fact_name, output) for resolved facts
+        self._resolved_tables: set[str] = set()  # Track unique table names for status bar
 
         # Live plan execution display for DAG-based execution
         self._live_plan_display: Optional[LivePlanExecutionDisplay] = None
 
         # Stopped flag to prevent updates after interruption
         self._stopped: bool = False
+
+        # Persistent status bar pinned to bottom of terminal
+        self._status_bar: PersistentStatusBar = PersistentStatusBar(self.console)
+        self._status_bar_enabled: bool = False
+        self._scroll_region_active: bool = False
+
+    def setup_scroll_region(self) -> None:
+        """Set up terminal scroll region to reserve bottom 2 lines for status bar."""
+        import shutil
+        if not sys.stdout.isatty():
+            return
+        height = shutil.get_terminal_size().lines
+        # Set scroll region from line 1 to height-2 (reserve bottom 2 lines)
+        sys.stdout.write(f"\033[1;{height - 2}r")
+        # Move cursor to top of scroll region
+        sys.stdout.write("\033[1;1H")
+        sys.stdout.flush()
+        self._scroll_region_active = True
+        # Draw initial status bar
+        self._draw_bottom_status_bar()
+
+    def restore_scroll_region(self) -> None:
+        """Restore full terminal scroll region."""
+        if not sys.stdout.isatty() or not self._scroll_region_active:
+            return
+        # Reset scroll region to full terminal
+        sys.stdout.write("\033[r")
+        sys.stdout.flush()
+        self._scroll_region_active = False
+
+    def _draw_bottom_status_bar(self) -> None:
+        """Draw the status bar at the fixed bottom of the terminal."""
+        import shutil
+        if not sys.stdout.isatty():
+            return
+        height = shutil.get_terminal_size().lines
+        width = shutil.get_terminal_size().columns
+
+        # Save cursor position
+        sys.stdout.write("\033[s")
+
+        # Move to bottom area (line height-1 for rule, height for status)
+        sys.stdout.write(f"\033[{height - 1};1H")
+
+        # Draw rule line
+        rule_line = '─' * width
+        sys.stdout.write(f"\033[90m{rule_line}\033[0m")  # Gray rule
+
+        # Move to status line
+        sys.stdout.write(f"\033[{height};1H")
+
+        # Build status text
+        status_line = self._status_bar.status_line
+        mode = status_line._mode
+        status_msg = status_line._status_message
+        phase = status_line._phase
+
+        # Mode badge
+        if mode == Mode.PROOF:
+            mode_str = "\033[30;43m PROOF \033[0m"  # Black on yellow
+        else:
+            mode_str = "\033[30;46m EXPLORE \033[0m"  # Black on cyan
+
+        # Status text with spinner if active
+        if status_msg:
+            spinner_char = SPINNER_FRAMES[status_line._spinner_frame % len(SPINNER_FRAMES)]
+            status_text = f"\033[36m{spinner_char} {status_msg}\033[0m"  # Cyan
+        elif phase.value == "idle":
+            status_text = "\033[90mready\033[0m"  # Gray
+        else:
+            status_text = f"\033[90m{phase.value}\033[0m"
+
+        # Stats
+        tables_count = self._status_bar._tables_count
+        facts_count = self._status_bar._facts_count
+        stats = f"\033[90mtables:{tables_count} facts:{facts_count}\033[0m"
+
+        # Clear line and write status
+        sys.stdout.write("\033[K")  # Clear line
+        sys.stdout.write(f"{mode_str} {status_text}  {stats}")
+
+        # Restore cursor position
+        sys.stdout.write("\033[u")
+        sys.stdout.flush()
+
+    def enable_status_bar(self) -> None:
+        """Enable the persistent status bar at the bottom of the terminal."""
+        self._status_bar.enable()
+        self._status_bar_enabled = True
+        # Note: scroll region disabled due to compatibility issues with prompt_toolkit
+
+    def disable_status_bar(self) -> None:
+        """Disable the persistent status bar."""
+        self._status_bar.disable()
+        self._status_bar_enabled = False
+        self._status_bar_enabled = False
+
+    def print(self, *args, **kwargs) -> None:
+        """Print content, routing through status bar if active.
+
+        When the status bar is active, content is printed above the status line.
+        Otherwise, prints directly to the console.
+        """
+        self._status_bar.print(*args, **kwargs)
+
+    def get_status_line(self) -> str:
+        """Get the current status line for display (fallback for non-persistent mode)."""
+        return self._status_bar.status_line.render()
+
+    def update_status_line(self, mode: Mode = None, phase: Phase = None,
+                           plan_name: str = None, step_current: int = None,
+                           step_total: int = None, step_description: str = None,
+                           error_message: str = None) -> None:
+        """Update the status line/bar with new values."""
+        self._status_bar.update(
+            mode=mode,
+            phase=phase,
+            plan_name=plan_name,
+            step_current=step_current,
+            step_total=step_total,
+            step_description=step_description,
+            error_message=error_message,
+        )
+
+    def reset_status_line(self) -> None:
+        """Reset status line to idle state."""
+        self._status_bar.reset()
+
+    def set_status_message(self, message: str | None) -> None:
+        """Set an arbitrary status message in the status bar."""
+        self._status_bar.set_status_message(message)
+
+    def refresh_status_bar(self) -> None:
+        """Refresh the status bar display."""
+        if self._status_bar_enabled:
+            self._status_bar.refresh()
+
+    def _get_status_toolbar(self):
+        """Get the status bar for prompt_toolkit bottom_toolbar.
+
+        Returns a two-line toolbar with:
+        1. A horizontal rule
+        2. The status bar with mode, status, and stats
+        """
+        import shutil
+
+        status_line = self._status_bar.status_line
+        mode = status_line._mode
+        status_msg = status_line._status_message
+        phase = status_line._phase
+
+        # Mode badge
+        if mode == Mode.PROOF:
+            mode_html = '<style bg="ansiyellow" fg="ansiblack"><b> PROOF </b></style>'
+        else:
+            mode_html = '<style bg="ansicyan" fg="ansiblack"><b> EXPLORE </b></style>'
+
+        # Status text
+        if status_msg:
+            status_text = status_msg
+        elif phase.value == "idle":
+            status_text = "ready"
+        else:
+            status_text = phase.value
+
+        # Stats
+        tables_count = self._status_bar._tables_count
+        facts_count = self._status_bar._facts_count
+        stats = f"tables:{tables_count} facts:{facts_count}"
+
+        # Get terminal width for rule
+        terminal_width = shutil.get_terminal_size().columns
+        rule_line = '─' * terminal_width
+
+        # Return two-line toolbar: rule + status bar
+        # Rule uses gray foreground, explicitly set dark background to match toolbar
+        return HTML(f'<style fg="ansigray" bg="#333333">{rule_line}</style>\n{mode_html} {status_text}  <style fg="ansigray">{stats}</style>')
+
+    def prompt_with_status(self, prompt_text: str = "> ", default: str = "") -> str:
+        """Prompt for input with status bar at bottom.
+
+        Uses prompt_toolkit to show status bar during all input prompts.
+        Falls back to console.input in non-interactive environments (tests).
+
+        Args:
+            prompt_text: The prompt string to display
+            default: Default value if user presses Enter (not pre-filled)
+
+        Returns:
+            User's input string, or default if empty
+        """
+        # Check if we're in an interactive terminal
+        import os
+        if not sys.stdin.isatty() or os.environ.get("CONSTAT_TEST_MODE"):
+            # Fall back to console.input in non-interactive environments
+            try:
+                result = self.console.input(prompt_text)
+                return result.strip() if result else default
+            except (EOFError, KeyboardInterrupt):
+                return default
+
+        style = PTStyle.from_dict({
+            'bottom-toolbar': '#ffffff bg:#333333',
+        })
+
+        try:
+            # Don't pre-fill the default - just return it if user enters nothing
+            result = pt_prompt(
+                prompt_text,
+                bottom_toolbar=self._get_status_toolbar,
+                style=style,
+            )
+            return result.strip() if result else default
+        except (EOFError, KeyboardInterrupt):
+            return default
+        except Exception:
+            # Fall back to console.input if prompt_toolkit fails
+            try:
+                result = self.console.input(prompt_text)
+                return result.strip() if result else default
+            except (EOFError, KeyboardInterrupt):
+                return default
 
     def start_live_plan_display(self, premises: list[dict], inferences: list[dict]) -> None:
         """Start the live plan execution display showing all P/I items."""
@@ -503,6 +837,9 @@ class FeedbackDisplay:
         self._proof_tree = ProofTree(conclusion_name, conclusion_description)
         self._auditable_mode = True
         self._proof_outputs = []
+        self._resolved_tables = set()  # Reset table tracking for new proof
+        # Ensure status bar shows PROOF mode when proof tree is active
+        self._status_bar.update(mode=Mode.PROOF)
 
     def update_proof_resolving(self, fact_name: str, description: str = "", parent_name: str = None) -> None:
         """Mark a fact as being resolved in the proof tree."""
@@ -538,6 +875,9 @@ class FeedbackDisplay:
                 if len(summary) > 100:
                     summary = summary[:97] + "..."
                 self._proof_outputs.append((fact_name, summary))
+
+            # Update status bar facts count
+            self._status_bar._facts_count += 1
 
     def update_proof_failed(self, fact_name: str, error: str) -> None:
         """Mark a fact as failed in the proof tree."""
@@ -636,25 +976,87 @@ class FeedbackDisplay:
             # ~10 FPS for smooth animation
             time.sleep(0.1)
 
+    def _render_spinner_with_status(self, message: str) -> RenderableType:
+        """Render just the status bar (spinner is now inside the status bar)."""
+        # The spinner and message are now shown inside _build_status_bar_line()
+        return self._build_status_bar_line()
+
     def start_spinner(self, message: str) -> None:
-        """Start an animated spinner with a message."""
+        """Start an animated spinner with a message in the status bar."""
         self.stop_spinner()  # Stop any existing spinner
-        self._spinner_progress = Progress(
-            SpinnerColumn("dots"),
-            TextColumn("[cyan]{task.description}"),
+        self._status_bar.set_status_message(message)
+        self._current_spinner_message = message
+
+        # Use Live display to show status bar with spinner
+        self._spinner_live = Live(
+            self._render_spinner_with_status(message),
             console=self.console,
-            transient=True,  # Remove spinner when done
+            transient=True,
+            refresh_per_second=10,
         )
-        self._spinner_progress.start()
-        self._spinner_task = self._spinner_progress.add_task(message, total=None)
+        self._spinner_live.start()
+
+        # Start animation thread
+        self._spinner_running = True
+        self._spinner_thread = threading.Thread(target=self._animate_spinner, daemon=True)
+        self._spinner_thread.start()
+
+    def _animate_spinner(self) -> None:
+        """Animate the spinner in Live display mode."""
+        while self._spinner_running:
+            self._status_bar.status_line.advance_spinner()
+            if hasattr(self, '_spinner_live') and self._spinner_live:
+                try:
+                    self._spinner_live.update(
+                        self._render_spinner_with_status(self._current_spinner_message)
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.1)
+
+    def _animate_bottom_spinner(self) -> None:
+        """Animate the spinner in the fixed bottom status bar."""
+        while self._spinner_running:
+            self._status_bar.status_line.advance_spinner()
+            try:
+                self._draw_bottom_status_bar()
+            except Exception:
+                pass
+            time.sleep(0.1)
 
     def update_spinner(self, message: str) -> None:
         """Update the spinner message."""
-        if self._spinner_progress and self._spinner_task is not None:
+        self._current_spinner_message = message
+        self._status_bar.set_status_message(message)
+
+        # Update Live display if running
+        if hasattr(self, '_spinner_live') and self._spinner_live:
+            try:
+                self._spinner_live.update(self._render_spinner_with_status(message))
+            except Exception:
+                pass
+        # Fallback to old Progress spinner
+        elif self._spinner_progress and self._spinner_task is not None:
             self._spinner_progress.update(self._spinner_task, description=message)
 
     def stop_spinner(self) -> None:
         """Stop the spinner."""
+        # Clear status bar message
+        self._status_bar.set_status_message(None)
+
+        # Stop animation thread
+        if hasattr(self, '_spinner_running'):
+            self._spinner_running = False
+
+        # Stop Live display
+        if hasattr(self, '_spinner_live') and self._spinner_live:
+            try:
+                self._spinner_live.stop()
+            except Exception:
+                pass
+            self._spinner_live = None
+
+        # Stop old Progress spinner
         if self._spinner_progress:
             self._spinner_progress.stop()
             self._spinner_progress = None
@@ -858,14 +1260,13 @@ class FeedbackDisplay:
         Shows:
         1. Intermediate outputs from resolved facts (top)
         2. Proof tree structure with live status updates (bottom)
+        3. Status bar at bottom with elapsed time
         """
         all_parts = []
 
-        # Show elapsed time header
+        # Set the status message to include elapsed time (shown in status bar)
         elapsed = self._format_elapsed()
-        header = Text.from_markup(f"[dim]Resolving proof... ({elapsed})[/dim]")
-        all_parts.append(header)
-        all_parts.append(Text(""))
+        self._status_bar.set_status_message(f"Resolving proof... ({elapsed})")
 
         # Show the proof tree structure (with animated spinner for resolving nodes)
         # Note: Removed "Resolved Facts" section - duplicative with tree display
@@ -892,7 +1293,53 @@ class FeedbackDisplay:
                 all_parts.append(Text(""))
                 all_parts.append(Text.from_markup(f"[dim]Progress: {' | '.join(status_parts)}[/dim]"))
 
+        # Add status bar at bottom (includes rule line)
+        all_parts.append(self._build_status_bar_line())
+
         return Group(*all_parts)
+
+    def _build_status_bar_line(self) -> RenderableType:
+        """Build a Rich status bar with rule and status line.
+
+        Returns a Group containing:
+        1. A horizontal rule
+        2. The status bar with mode, spinner (if active), status, and stats
+        """
+        status_line = self._status_bar.status_line
+        mode = status_line._mode
+        status_msg = status_line._status_message
+        phase = status_line._phase
+
+        # Mode badge
+        if mode == Mode.PROOF:
+            mode_text = Text(" PROOF ", style="bold black on yellow")
+        else:
+            mode_text = Text(" EXPLORE ", style="bold black on cyan")
+
+        # Status text with spinner if there's an active status message
+        if status_msg:
+            spinner_char = SPINNER_FRAMES[status_line._spinner_frame % len(SPINNER_FRAMES)]
+            status_text = f"{spinner_char} {status_msg}"
+        elif phase.value == "idle":
+            status_text = "ready"
+        else:
+            status_text = phase.value
+
+        # Stats
+        tables_count = self._status_bar._tables_count
+        facts_count = self._status_bar._facts_count
+        stats = f"tables:{tables_count} facts:{facts_count}"
+
+        # Build the status line
+        line = Text()
+        line.append_text(mode_text)
+        line.append(" ")
+        line.append(status_text, style="dim" if not status_msg else "cyan")
+        line.append("  ")
+        line.append(stats, style="dim")
+
+        # Return Group with rule and status line
+        return Group(Rule(style="dim"), line)
 
     def _update_live(self) -> None:
         """Update the live display with current step states."""
@@ -919,6 +1366,10 @@ class FeedbackDisplay:
         self._output_lines = []
         self._completed_outputs = []
         self._active_step_goal = ""
+        # Reset status bar counts
+        self._status_bar._tables_count = 0
+        self._status_bar._facts_count = 0
+        self._status_bar.reset()
         self.stop()
 
     def show_user_input(self, user_input: str) -> None:
@@ -1136,10 +1587,11 @@ class FeedbackDisplay:
         # Prompt for approval - simplified to approve/reject/suggest
         # Mode switching should be done via /proof or /explore commands
         self.console.print()
+        self.console.print("[dim]Enter to execute, 'n' to cancel, or type changes[/dim]")
 
         while True:
             try:
-                response = self.console.input("[dim]Enter to execute, 'n' to cancel, or type changes >[/dim] ").strip()
+                response = self.prompt_with_status("> ")
             except (EOFError, KeyboardInterrupt):
                 self.console.print("\n[red]Cancelled.[/red]")
                 return PlanApprovalResponse.reject("User cancelled")
@@ -1215,22 +1667,10 @@ class FeedbackDisplay:
             # Force Rich console to flush as well
             self.console.file.flush() if hasattr(self.console, 'file') else None
 
-            # Get answer - show first suggestion as default hint if available
-            try:
-                if suggestions:
-                    default_hint = suggestions[0]
-                    # Show clear prompt line with default
-                    # Print the prompt prefix separately to ensure visibility
-                    self.console.print(f"     > [dim]({default_hint})[/dim]: ", end="")
-                    answer = input() or default_hint
-                else:
-                    # Show clear prompt line for custom input
-                    answer = Prompt.ask("     >", default="", show_default=False)
-            except Exception:
-                # Fallback to basic input if Rich Prompt fails
-                print("     > ", end="", flush=True)
-                answer = input()
-            answer = answer.strip()
+            # Get answer with status bar - use prompt_toolkit
+            default_hint = suggestions[0] if suggestions else ""
+            prompt_str = f"     > ({default_hint}): " if default_hint else "     > "
+            answer = self.prompt_with_status(prompt_str, default=default_hint)
 
             # Process the answer
             if answer.lower() == "skip" or not answer:
@@ -1274,22 +1714,16 @@ class FeedbackDisplay:
             return ClarificationResponse(answers=non_empty_answers, skip=False)
         elif non_empty_answers:
             # Some questions skipped - ask if they want to continue
-            skip = Prompt.ask(
-                "[yellow]Some clarifications skipped.[/yellow] [dim]Press Enter to continue anyway, or 's' to cancel[/dim]",
-                default="",
-                show_default=False
-            ).lower()
+            self.console.print("[yellow]Some clarifications skipped.[/yellow] [dim]Press Enter to continue anyway, or 's' to cancel[/dim]")
+            skip = self.prompt_with_status("> ").lower()
             if skip == "s":
                 self.console.print("[dim]Cancelled.[/dim]")
                 return ClarificationResponse(answers={}, skip=True)
             return ClarificationResponse(answers=non_empty_answers, skip=False)
         else:
             # No answers provided at all
-            skip = Prompt.ask(
-                "[yellow]No clarifications provided.[/yellow] [dim]Press Enter to try anyway, or 's' to cancel[/dim]",
-                default="",
-                show_default=False
-            ).lower()
+            self.console.print("[yellow]No clarifications provided.[/yellow] [dim]Press Enter to try anyway, or 's' to cancel[/dim]")
+            skip = self.prompt_with_status("> ").lower()
             if skip == "s":
                 self.console.print("[dim]Cancelled.[/dim]")
                 return ClarificationResponse(answers={}, skip=True)
@@ -1379,6 +1813,10 @@ class FeedbackDisplay:
             step.attempts = attempts
             step.duration_ms = duration_ms
             step.tables_created = tables_created or []
+
+            # Update status bar tables count
+            if tables_created:
+                self._status_bar._tables_count += len(tables_created)
 
         # Clear active step goal after completion
         self._active_step_goal = ""
@@ -1478,6 +1916,8 @@ class FeedbackDisplay:
 
     def show_tables(self, tables: list[dict], duration_ms: int = 0, force_show: bool = False) -> None:
         """Show available tables in the datastore."""
+        # Update status bar with current table count
+        self._status_bar._tables_count = len(tables)
         if not tables:
             if duration_ms:
                 self.console.print(f"\n[dim]({duration_ms/1000:.1f}s total)[/dim]")
@@ -1553,6 +1993,12 @@ class FeedbackDisplay:
             mode: The new execution mode
             keywords: Keywords that triggered the switch
         """
+        # Update status bar mode
+        if mode.upper() == "PROOF" or mode.upper() == "AUDITABLE":
+            self._status_bar.update(mode=Mode.PROOF)
+        else:
+            self._status_bar.update(mode=Mode.EXPLORATORY)
+
         # Skip message for explicit user requests - they know what they asked for
         if keywords == ["user request"]:
             return
@@ -1602,10 +2048,11 @@ class FeedbackDisplay:
         self.console.print("  [cyan]2.[/cyan] [bold]replan[/bold]  - Modify the plan")
         self.console.print("  [cyan]3.[/cyan] [bold]abandon[/bold] - Start over")
         self.console.print()
+        self.console.print("[dim]Enter choice (1/2/3 or retry/replan/abandon)[/dim]")
 
         while True:
             try:
-                response = self.console.input("[dim]Enter choice (1/2/3 or retry/replan/abandon) >[/dim] ").strip().lower()
+                response = self.prompt_with_status("> ").lower()
             except (EOFError, KeyboardInterrupt):
                 self.console.print("\n[dim]Abandoning...[/dim]")
                 return "abandon"
@@ -1639,11 +2086,64 @@ class SessionFeedbackHandler:
         self.session_config = session_config
         self._execution_started = False
 
+    def _update_status_for_event(self, event_type: str, data: dict) -> None:
+        """Update the status line based on event type."""
+        if event_type == "planning_start":
+            self.display.update_status_line(phase=Phase.PLANNING)
+
+        elif event_type == "plan_ready":
+            steps = data.get("steps", [])
+            problem = data.get("problem", "")
+            self.display.update_status_line(
+                phase=Phase.AWAITING_APPROVAL,
+                plan_name=problem[:50] if problem else None,
+                step_total=len(steps),
+            )
+
+        elif event_type in ("proof_start", "dag_execution_start", "step_start"):
+            if event_type in ("proof_start", "dag_execution_start"):
+                self.display.update_status_line(phase=Phase.EXECUTING)
+            # Update step progress
+            step_current = data.get("step_number", 0) or data.get("current", 0)
+            step_total = data.get("total", 0)
+            step_desc = data.get("goal", "") or data.get("description", "")
+            if step_current > 0:
+                self.display.update_status_line(
+                    step_current=step_current,
+                    step_total=step_total,
+                    step_description=step_desc,
+                )
+
+        elif event_type == "step_complete":
+            step_current = data.get("step_number", 0)
+            if step_current > 0:
+                self.display.update_status_line(step_current=step_current)
+
+        elif event_type == "mode_switch":
+            mode_str = data.get("mode", "")
+            if mode_str == "proof":
+                self.display.update_status_line(mode=Mode.PROOF)
+            elif mode_str == "exploratory":
+                self.display.update_status_line(mode=Mode.EXPLORATORY)
+
+        elif event_type in ("verification_complete", "execution_complete", "knowledge_complete"):
+            self.display.reset_status_line()
+
+        elif event_type in ("step_failed", "verification_error"):
+            error = data.get("error", "")
+            self.display.update_status_line(
+                phase=Phase.FAILED,
+                error_message=error[:50] if error else None,
+            )
+
     def handle_event(self, event) -> None:
         """Handle a StepEvent from Session."""
         event_type = event.event_type
         step_number = event.step_number
         data = event.data
+
+        # Update status line based on event type
+        self._update_status_for_event(event_type, data)
 
         # Generic progress events (used for early-stage operations)
         if event_type == "progress":
@@ -1948,6 +2448,15 @@ class SessionFeedbackHandler:
                         resolution_summary=resolution_summary,
                         query=query,
                     )
+                    # Track table names from resolution_summary like "(hr.employees) 15 rows"
+                    if resolution_summary and resolution_summary.startswith("("):
+                        import re
+                        table_match = re.match(r'\(([^)]+)\)', resolution_summary)
+                        if table_match:
+                            table_name = table_match.group(1)
+                            if table_name not in self.display._resolved_tables:
+                                self.display._resolved_tables.add(table_name)
+                                self.display._status_bar._tables_count = len(self.display._resolved_tables)
                 else:
                     self.display.update_proof_failed(fact_name, error or "unresolved")
             elif not self.display._live_plan_display:
@@ -2124,10 +2633,14 @@ class SessionFeedbackHandler:
                 if self.display._live:
                     self.display._live.refresh()
                     time.sleep(0.1)
-            # Stop Live display before printing synthesizing message
+            # Stop Live display and show status bar with synthesizing message
             self.display.stop()
             self.display.stop_proof_tree()
-            self.display.console.print(f"\n[dim]{data.get('message', 'Synthesizing...')}[/dim]")
+            # Set the status message and print static status bar line
+            message = data.get('message', 'Synthesizing...')
+            self.display._status_bar.set_status_message(message)
+            self.display.console.print()
+            self.display.console.print(self.display._build_status_bar_line())
 
         elif event_type == "raw_results_ready":
             # Raw results are shown immediately so user can see them while synthesis runs

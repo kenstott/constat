@@ -1,6 +1,16 @@
 """Command-line interface for Constat."""
 
+import os
 import sys
+
+# Suppress macOS MallocStackLogging warnings from DuckDB/multiprocessing
+# These are written directly to stderr by native code, so we suppress at fd level
+# during imports, then restore stderr for normal operation
+if sys.platform == "darwin":
+    _original_stderr_fd = os.dup(2)
+    _devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(_devnull, 2)
+
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +23,11 @@ from constat.session import Session, SessionConfig
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.repl import InteractiveREPL
 
+# Restore stderr after imports
+if sys.platform == "darwin":
+    os.dup2(_original_stderr_fd, 2)
+    os.close(_original_stderr_fd)
+    os.close(_devnull)
 
 console = Console()
 
@@ -159,7 +174,12 @@ def solve(problem: str, config: str, verbose: bool, output: Optional[str]):
     default="default",
     help="User ID for session management.",
 )
-def repl(config: str, verbose: bool, problem: Optional[str], continue_session: bool, user: str):
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug logging (shows detailed internal state).",
+)
+def repl(config: str, verbose: bool, problem: Optional[str], continue_session: bool, user: str, debug: bool):
     """Start interactive REPL session.
 
     The REPL allows you to:
@@ -173,29 +193,36 @@ def repl(config: str, verbose: bool, problem: Optional[str], continue_session: b
         constat repl -c config.yaml
         constat repl -c config.yaml -p "Show me the sales data"
         constat repl -c config.yaml --continue  # Resume last session
+        constat repl -c config.yaml --debug     # Enable debug logging
     """
-    try:
-        cfg = Config.from_yaml(config)
-    except Exception as e:
-        console.print(f"[red]Config error:[/red] {e}")
-        sys.exit(1)
+    # Configure logging if debug is enabled
+    if debug:
+        import logging
+        # Write debug logs to file (keeps UI clean)
+        log_file = Path('.constat/debug.log')
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        logging.getLogger('constat').addHandler(file_handler)
+        logging.getLogger('constat').setLevel(logging.DEBUG)
+        console.print(f"[dim]Debug logs: {log_file}[/dim]")
 
-    # Initialize REPL with progress feedback
-    with console.status("[bold]Initializing...", spinner="dots") as status:
-        progress_cb = create_progress_callback(status)
-        interactive = InteractiveREPL(
-            cfg,
+    # Use Textual REPL with persistent status bar
+    from constat.textual_repl import run_textual_repl
+    try:
+        run_textual_repl(
+            config,
             verbose=verbose,
-            progress_callback=progress_cb,
+            problem=problem,
             user_id=user,
             auto_resume=continue_session,
+            debug=debug,
         )
-    console.print("[green]Ready[/green]\n")
-
-    try:
-        interactive.run(initial_problem=problem)
     except KeyboardInterrupt:
-        console.print("\n[dim]Goodbye![/dim]")
+        pass
     except Exception as e:
         console.print(f"\n[red]Error:[/red] {e}")
         if verbose:

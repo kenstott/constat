@@ -3580,26 +3580,25 @@ Provide a brief, high-level summary of the key findings."""
 
     def _handle_plan_new_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
         """
-        Handle PLAN_NEW primary intent - start planning a new task.
+        Handle PLAN_NEW primary intent - enhance problem based on sub-intent.
+
+        NOTE: This method is called from solve() BEFORE the planning flow.
+        It enhances the problem statement based on sub-intent (COMPARE, PREDICT).
+        The actual planning is done by solve() after this returns.
 
         This handles sub-intents:
         - COMPARE: evaluate alternatives
         - PREDICT: what-if / forecast
-        - Default: standard new task planning
+        - Default: pass through unchanged
 
         Args:
             turn_intent: The classified turn intent.
             user_input: The user's original input.
 
         Returns:
-            Result dict from the planning/execution flow.
+            Dict with enhanced_problem for solve() to use.
         """
-        # Transition phase to PLANNING
-        self._apply_phase_transition("plan_new")
-
         sub_intent = turn_intent.sub
-
-        # Enhance problem statement based on sub-intent
         enhanced_problem = user_input
 
         if sub_intent == SubIntent.COMPARE:
@@ -3610,24 +3609,7 @@ Provide a brief, high-level summary of the key findings."""
             # Add forecasting context to the problem
             enhanced_problem = f"Forecast/What-if analysis: {user_input}\n\nProvide predictive analysis with assumptions clearly stated."
 
-        # Update active plan reference in conversation state
-        self._conversation_state.active_plan = None  # Clear any previous plan
-
-        # Delegate to existing solve() method which handles the full planning flow
-        result = self.solve(enhanced_problem)
-
-        # Update conversation state based on result
-        if result.get("success"):
-            if result.get("plan"):
-                self._conversation_state.active_plan = result["plan"]
-            self._apply_phase_transition("complete")
-        elif result.get("rejected"):
-            self._apply_phase_transition("abandon")
-        else:
-            self._apply_phase_transition("fail")
-            self._conversation_state.failure_context = result.get("error")
-
-        return result
+        return {"enhanced_problem": enhanced_problem, "sub_intent": sub_intent}
 
     def _handle_plan_continue_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
         """
@@ -4212,19 +4194,17 @@ Please revise the plan to incorporate this feedback."""
 
     def solve(self, problem: str) -> dict:
         """
-        Solve a problem with multi-step planning and execution.
+        Solve a problem with intent-based routing and multi-step execution.
 
         Workflow:
-        1. Classify question (meta-question, general knowledge, or data analysis)
-        2. Check for ambiguity and request clarification if needed
-        3. Determine execution mode (exploratory vs auditable)
-        4. Generate plan
-        5. Request user approval (if require_approval is True)
-           - If approved: execute
-           - If rejected: return without executing
-           - If suggestions: replan and ask again
-        6. Execute steps in parallel waves
-        7. Synthesize answer and generate follow-up suggestions
+        1. Classify intent (QUERY, PLAN_NEW, PLAN_CONTINUE, CONTROL)
+        2. Route QUERY and CONTROL intents to handlers (no planning needed)
+        3. For PLAN_NEW/PLAN_CONTINUE:
+           a. Determine execution mode (exploratory vs proof)
+           b. Generate plan
+           c. Request user approval (if require_approval is True)
+           d. Execute steps in parallel waves
+           e. Synthesize answer and generate follow-up suggestions
 
         Args:
             problem: Natural language problem to solve
@@ -4232,6 +4212,40 @@ Please revise the plan to incorporate this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
+        # Fast path: Check for meta-questions first (no intent classification needed)
+        # These are questions about capabilities, available data, etc.
+        if is_meta_question(problem):
+            self._emit_event(StepEvent(
+                event_type="progress",
+                step_number=0,
+                data={"message": "Reviewing available data sources..."}
+            ))
+            return self._answer_meta_question(problem)
+
+        # Phase 3: Intent-based routing
+        # Classify user intent using embedding-based classifier
+        turn_intent = self._classify_turn_intent(problem)
+
+        # Route based on primary intent
+        if turn_intent.primary == PrimaryIntent.QUERY:
+            # QUERY intent - answer from knowledge or current context
+            # No approval required, no planning needed
+            return self._handle_query_intent(turn_intent, problem)
+
+        if turn_intent.primary == PrimaryIntent.CONTROL:
+            # CONTROL intent - system/session commands
+            # No approval required
+            return self._handle_control_intent(turn_intent, problem)
+
+        # PLAN_NEW or PLAN_CONTINUE - continue with planning flow
+        # Update conversation phase to PLANNING
+        self._apply_phase_transition("plan_new")
+
+        # Apply sub-intent enhancements for PLAN_NEW (COMPARE, PREDICT)
+        if turn_intent.primary == PrimaryIntent.PLAN_NEW:
+            enhancement = self._handle_plan_new_intent(turn_intent, problem)
+            problem = enhancement.get("enhanced_problem", problem)
+
         # Combined analysis: extract facts, classify, check cached facts in ONE LLM call
         # This is more efficient than separate calls for each operation
         self._emit_event(StepEvent(
@@ -6631,7 +6645,7 @@ Be direct and specific. No fluff."""
 
             return {
                 "success": True,
-                "mode": "auditable",
+                "mode": Mode.PROOF.value,
                 "output": final_output,
                 "final_answer": answer,
                 "confidence": confidence,
@@ -6655,7 +6669,7 @@ Be direct and specific. No fluff."""
 
             return {
                 "success": False,
-                "mode": "auditable",
+                "mode": Mode.PROOF.value,
                 "error": str(e),
                 "output": f"Verification failed: {e}",
             }
@@ -6675,17 +6689,6 @@ Be direct and specific. No fluff."""
             Dict with synthesized explanation and sources
         """
         start_time = time.time()
-
-        # Emit mode selection event
-        self._emit_event(StepEvent(
-            event_type="mode_switch",
-            step_number=0,
-            data={
-                "mode": "knowledge",
-                "reasoning": mode_selection.reasoning,
-                "matched_keywords": mode_selection.matched_keywords,
-            }
-        ))
 
         # Step 1: Search documents for relevant content
         self._emit_event(StepEvent(
@@ -6790,18 +6793,20 @@ If you don't have enough information, say so rather than guessing."""
 
             final_output = "\n".join(output_parts)
 
-            # Record in history
-            self.history.record_query(
-                session_id=self.session_id,
-                question=problem,
-                success=True,
-                attempts=1,
-                duration_ms=duration_ms,
-                answer=final_output,
-            )
+            # Record in history (only if session exists)
+            if self.session_id:
+                self.history.record_query(
+                    session_id=self.session_id,
+                    question=problem,
+                    success=True,
+                    attempts=1,
+                    duration_ms=duration_ms,
+                    answer=final_output,
+                )
 
             return {
                 "success": True,
+                "meta_response": True,  # Display as meta-response (no tables)
                 "mode": "knowledge",
                 "output": final_output,
                 "sources": sources,

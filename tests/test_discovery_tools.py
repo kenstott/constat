@@ -47,6 +47,8 @@ A VIP customer is defined as one with lifetime value > $100,000.
                 "tags": ["rules", "definitions"],
             }
         },
+        # Use in-memory vector store for tests to avoid stale data
+        storage={"vector_store": {"backend": "numpy"}},
     )
 
 

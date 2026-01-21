@@ -22,6 +22,7 @@ from typing import Optional
 import numpy as np
 import yaml
 
+from constat.core.models import TaskType
 from constat.execution.mode import Mode, Phase, PrimaryIntent, SubIntent, TurnIntent
 
 logger = logging.getLogger(__name__)
@@ -505,13 +506,14 @@ Has active plan: {has_plan}
 Mode: {mode_str}"""
 
         try:
-            response = self._llm_provider.generate(
+            result = self._llm_provider.execute(
+                task_type=TaskType.INTENT_CLASSIFICATION,
                 system=system_prompt,
                 user_message=user_message,
                 max_tokens=100,
             )
 
-            return self._parse_llm_response(response, user_input)
+            return self._parse_llm_response(result.content, user_input)
 
         except Exception as e:
             logger.error(f"LLM fallback failed: {e}")

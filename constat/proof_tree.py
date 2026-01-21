@@ -124,11 +124,26 @@ class ProofTree:
         node = ProofNode(name=name, description=description)
 
         # Find parent node - default to root if not specified
+        import logging
+        logger = logging.getLogger(__name__)
         parent = None
         if parent_name:
             parent = self._nodes.get(parent_name)
+            logger.debug(f"[PROOF_TREE] add_fact '{name}' looking for parent '{parent_name}': exact match={parent is not None}")
+            # If not found by exact match, try matching by bare name
+            # (nodes are stored as "P1: employees" but deps may be "employees")
+            if not parent:
+                for key, candidate in self._nodes.items():
+                    # Check if key ends with ": parent_name"
+                    if key.endswith(f": {parent_name}"):
+                        logger.debug(f"[PROOF_TREE] Found parent by suffix: key='{key}' matches ':{parent_name}'")
+                        parent = candidate
+                        break
         if not parent:
+            logger.debug(f"[PROOF_TREE] No parent found for '{name}', using root. Available nodes: {list(self._nodes.keys())}")
             parent = self.root
+        else:
+            logger.debug(f"[PROOF_TREE] '{name}' -> parent '{parent.name}'")
 
         parent.add_child(node)
         self._nodes[name] = node

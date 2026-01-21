@@ -112,7 +112,7 @@ class TestExecutionDAG:
         b = FactNode(name="B", description="Second", dependencies=["A"])
         c = FactNode(name="C", description="Third", dependencies=["B"])
 
-        with pytest.raises(ValueError, match="Cycle detected"):
+        with pytest.raises(ValueError, match="Circular dependency"):
             ExecutionDAG([a, b, c])
 
     def test_missing_dependency(self):
@@ -254,6 +254,52 @@ class TestParsePlanToDAG:
         dag = parse_plan_to_dag(premises, inferences)
 
         assert dag.nodes["filtered"].dependencies == ["employees"]
+
+    def test_duplicate_premise_names_raises_error(self):
+        """Duplicate premise names should raise ValueError with clear message."""
+        premises = [
+            {"id": "P1", "name": "employees", "description": "First employees", "source": "database"},
+            {"id": "P2", "name": "employees", "description": "Duplicate employees", "source": "database"},
+        ]
+
+        with pytest.raises(ValueError) as exc_info:
+            parse_plan_to_dag(premises, [])
+
+        assert "Duplicate premise name 'employees'" in str(exc_info.value)
+        assert "P1" in str(exc_info.value)
+        assert "P2" in str(exc_info.value)
+
+    def test_duplicate_inference_names_raises_error(self):
+        """Duplicate inference names should raise ValueError with clear message."""
+        premises = [
+            {"id": "P1", "name": "employees", "description": "Employees", "source": "database"},
+        ]
+        inferences = [
+            {"id": "I1", "name": "data_verified", "operation": "validate(P1)", "explanation": "First validation"},
+            {"id": "I2", "name": "data_verified", "operation": "verify_exists(I1)", "explanation": "Second validation"},
+        ]
+
+        with pytest.raises(ValueError) as exc_info:
+            parse_plan_to_dag(premises, inferences)
+
+        assert "Duplicate inference name 'data_verified'" in str(exc_info.value)
+        assert "I1" in str(exc_info.value)
+        assert "I2" in str(exc_info.value)
+
+    def test_inference_name_conflicts_with_premise_raises_error(self):
+        """Inference name that matches a premise name should raise ValueError."""
+        premises = [
+            {"id": "P1", "name": "employees", "description": "Employees", "source": "database"},
+        ]
+        inferences = [
+            {"id": "I1", "name": "employees", "operation": "filter(P1, active)", "explanation": "Filtered"},
+        ]
+
+        with pytest.raises(ValueError) as exc_info:
+            parse_plan_to_dag(premises, inferences)
+
+        assert "conflicts with premise" in str(exc_info.value)
+        assert "employees" in str(exc_info.value)
 
 
 class TestExtractDependencies:

@@ -12,9 +12,15 @@ Supports multiple backends via SQLAlchemy:
 - SQLite: sqlite:///path/to/file.db or sqlite:///:memory:
 """
 
+from __future__ import annotations
+
 import json
+import logging
+import re
 from pathlib import Path
 from typing import Any, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -76,6 +82,35 @@ class DataStore:
         "_constat_session",
         "_constat_plan_steps",
     }
+
+    # Valid table name pattern: alphanumeric and underscores, must start with letter or underscore
+    _VALID_TABLE_NAME_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+    @classmethod
+    def _validate_table_name(cls, name: str) -> str:
+        """Validate and return a safe table name.
+
+        Prevents SQL injection by ensuring table names only contain safe characters.
+
+        Args:
+            name: Table name to validate
+
+        Returns:
+            The validated table name
+
+        Raises:
+            ValueError: If table name contains invalid characters
+        """
+        if not name:
+            raise ValueError("Table name cannot be empty")
+        if not cls._VALID_TABLE_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"Invalid table name '{name}': must contain only alphanumeric characters "
+                "and underscores, and must start with a letter or underscore"
+            )
+        if len(name) > 255:
+            raise ValueError(f"Table name '{name}' exceeds maximum length of 255 characters")
+        return name
 
     def __init__(
         self,
@@ -326,10 +361,16 @@ class DataStore:
             DataFrame or None if table doesn't exist
         """
         try:
+            # Validate table name to prevent SQL injection
+            validated_name = self._validate_table_name(name)
             # Use read_sql_query instead of read_sql_table to avoid
             # duckdb-engine compatibility issues with SQLAlchemy reflection
-            return pd.read_sql_query(f"SELECT * FROM {name}", self.engine)
-        except Exception:
+            return pd.read_sql_query(f"SELECT * FROM {validated_name}", self.engine)
+        except ValueError as e:
+            logger.warning(f"Invalid table name '{name}': {e}")
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to load table '{name}': {e}")
             return None
 
     def query(self, sql: str) -> pd.DataFrame:
@@ -461,9 +502,11 @@ class DataStore:
         Returns:
             List of column info dicts or None if table doesn't exist
         """
-        inspector = inspect(self.engine)
         try:
-            columns = inspector.get_columns(name)
+            # Validate table name to prevent SQL injection
+            validated_name = self._validate_table_name(name)
+            inspector = inspect(self.engine)
+            columns = inspector.get_columns(validated_name)
             return [
                 {
                     "name": col["name"],
@@ -472,7 +515,11 @@ class DataStore:
                 }
                 for col in columns
             ]
-        except Exception:
+        except ValueError as e:
+            logger.warning(f"Invalid table name '{name}': {e}")
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get schema for table '{name}': {e}")
             return None
 
     def drop_table(self, name: str) -> bool:
@@ -486,14 +533,20 @@ class DataStore:
             True if dropped, False if didn't exist
         """
         try:
+            # Validate table name to prevent SQL injection
+            validated_name = self._validate_table_name(name)
             with self.engine.begin() as conn:
-                conn.execute(text(f"DROP TABLE IF EXISTS {name}"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {validated_name}"))
                 conn.execute(
                     text("DELETE FROM _constat_table_registry WHERE table_name = :name"),
-                    {"name": name}
+                    {"name": validated_name}
                 )
             return True
-        except Exception:
+        except ValueError as e:
+            logger.warning(f"Invalid table name '{name}': {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to drop table '{name}': {e}")
             return False
 
     def clear_step_data(self, step_number: int) -> None:

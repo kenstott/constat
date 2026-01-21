@@ -5,9 +5,11 @@ on-demand rather than loading everything into the system prompt.
 """
 
 import glob as glob_module
+import json
 from pathlib import Path
 from typing import Optional
 import hashlib
+import threading
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -17,11 +19,14 @@ from constat.discovery.models import (
     DocumentChunk,
     LoadedDocument,
     StructuredFileSchema,
+    Entity,
+    ChunkEntity,
 )
 from constat.discovery.vector_store import (
     VectorStoreBackend,
     create_vector_store,
 )
+from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
 
 
 def _is_glob_pattern(path: str) -> bool:
@@ -334,10 +339,10 @@ class DocumentDiscoveryTools:
     based on file modification times and content hashes.
     """
 
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-    # all-MiniLM-L6-v2 has max_seq_length=256 tokens (~1024 chars)
-    # Use 800 chars to stay within limit while maximizing context
-    CHUNK_SIZE = 800
+    EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
+    # bge-large-en-v1.5 has max_seq_length=512 tokens (~2048 chars)
+    # Use 1500 chars to stay within limit while maximizing context
+    CHUNK_SIZE = 1500
     CACHE_FILENAME = "doc_index_cache.json"
 
     def __init__(
@@ -345,11 +350,19 @@ class DocumentDiscoveryTools:
         config: Config,
         cache_dir: Optional[Path] = None,
         vector_store: Optional[VectorStoreBackend] = None,
+        schema_entities: Optional[list[str]] = None,
     ):
         self.config = config
         self._loaded_documents: dict[str, LoadedDocument] = {}
-        self._model: Optional[SentenceTransformer] = None
-        self._index_built = False
+
+        # Load embedding model eagerly - it's always needed and avoids
+        # race conditions from lazy initialization in parallel contexts
+        self._model: SentenceTransformer = SentenceTransformer(self.EMBEDDING_MODEL)
+        # Lock for thread-safe access to embedding model (not thread-safe for concurrent encode)
+        self._model_lock = threading.Lock()
+
+        # Schema entities for entity extraction (table names, column names)
+        self._schema_entities: list[str] = schema_entities or []
 
         # Cache directory for persisting document metadata
         if cache_dir:
@@ -364,6 +377,24 @@ class DocumentDiscoveryTools:
         else:
             self._vector_store = self._create_vector_store()
 
+        # Clean up ephemeral data from previous sessions
+        if hasattr(self._vector_store, 'clear_ephemeral'):
+            self._vector_store.clear_ephemeral()
+
+        # Index documents if vector store is empty (first-time setup)
+        # This MUST complete synchronously before __init__ returns
+        if self._vector_store.count() == 0 and self.config.documents:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[DOC_INIT] Vector store empty, indexing {len(self.config.documents)} documents...")
+            for name in self.config.documents:
+                try:
+                    self._load_document(name)
+                except Exception as e:
+                    logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
+            self._build_index(self._schema_entities)
+            logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
+
     def _create_vector_store(self) -> VectorStoreBackend:
         """Create vector store based on config."""
         storage_config = self.config.storage
@@ -373,6 +404,139 @@ class DocumentDiscoveryTools:
         db_path = vs_config.db_path if vs_config else None
 
         return create_vector_store(backend=backend, db_path=db_path)
+
+    def add_ephemeral_document(
+        self,
+        name: str,
+        content: str,
+        doc_format: str = "text",
+        description: str = "",
+    ) -> bool:
+        """Add a session-only document that will be cleaned up on restart.
+
+        Use this for documents added via /file during a session.
+
+        Args:
+            name: Document name
+            content: Document content
+            doc_format: Format (text, markdown, etc.)
+            description: Optional description
+
+        Returns:
+            True if indexed successfully
+        """
+        from datetime import datetime
+
+        # Create a minimal config for the document
+        doc_config = DocumentConfig(
+            type="inline",
+            content=content,
+            description=description,
+            format=doc_format,
+        )
+
+        # Extract sections for markdown
+        sections = []
+        if doc_format in ("markdown", "md"):
+            for line in content.split("\n"):
+                if line.startswith("#"):
+                    sections.append(line.lstrip("#").strip())
+
+        # Store the loaded document
+        self._loaded_documents[name] = LoadedDocument(
+            name=name,
+            config=doc_config,
+            content=content,
+            format=doc_format,
+            sections=sections,
+            loaded_at=datetime.now().isoformat(),
+        )
+
+        # Chunk and embed the document
+        chunks = self._chunk_document(name, content)
+        if not chunks:
+            return True
+
+        # Generate embeddings
+        texts = [chunk.content for chunk in chunks]
+        embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+        # Add to vector store with ephemeral=True
+        if hasattr(self._vector_store, 'add_chunks'):
+            # Check if the method accepts ephemeral parameter
+            import inspect
+            sig = inspect.signature(self._vector_store.add_chunks)
+            if 'ephemeral' in sig.parameters:
+                self._vector_store.add_chunks(chunks, embeddings, ephemeral=True)
+            else:
+                self._vector_store.add_chunks(chunks, embeddings)
+
+        # Extract entities with ephemeral=True
+        self._extract_and_store_entities_ephemeral(chunks)
+
+        return True
+
+    def _extract_and_store_entities_ephemeral(
+        self,
+        chunks: list[DocumentChunk],
+    ) -> None:
+        """Extract entities from chunks and store them as ephemeral.
+
+        Args:
+            chunks: Document chunks to extract entities from
+        """
+        if not hasattr(self._vector_store, 'add_entities'):
+            return
+
+        config = ExtractionConfig(
+            extract_schema=bool(self._schema_entities),
+            extract_ner=True,
+            extract_concepts=False,
+            schema_entities=self._schema_entities or [],
+        )
+        extractor = EntityExtractor(config)
+
+        all_links: list[ChunkEntity] = []
+        for chunk in chunks:
+            extractions = extractor.extract(chunk)
+            for entity, link in extractions:
+                all_links.append(link)
+
+        entities = extractor.get_all_entities()
+        if entities:
+            import inspect
+            sig = inspect.signature(self._vector_store.add_entities)
+            if 'ephemeral' in sig.parameters:
+                self._vector_store.add_entities(entities, ephemeral=True)
+            else:
+                self._vector_store.add_entities(entities)
+
+        if all_links:
+            sig = inspect.signature(self._vector_store.link_chunk_entities)
+            if 'ephemeral' in sig.parameters:
+                self._vector_store.link_chunk_entities(all_links, ephemeral=True)
+            else:
+                self._vector_store.link_chunk_entities(all_links)
+
+    def remove_document(self, name: str) -> bool:
+        """Remove a document and its vectors from the index.
+
+        Args:
+            name: Document name to remove
+
+        Returns:
+            True if removed, False if not found
+        """
+        if name not in self._loaded_documents:
+            return False
+
+        del self._loaded_documents[name]
+
+        # Remove from vector store
+        if hasattr(self._vector_store, 'delete_by_document'):
+            self._vector_store.delete_by_document(name)
+
+        return True
 
     def refresh(self, force_full: bool = False) -> dict:
         """Refresh documents, using incremental update by default.
@@ -386,7 +550,6 @@ class DocumentDiscoveryTools:
         if force_full:
             self._loaded_documents.clear()
             self._vector_store.clear()
-            self._index_built = False
             return {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "mode": "full_rebuild"}
 
         return self._refresh_incremental()
@@ -448,7 +611,7 @@ class DocumentDiscoveryTools:
 
         # Rebuild index if anything changed
         if docs_to_reload or docs_to_remove:
-            self._index_built = False  # Force index rebuild
+            self._build_index(self._schema_entities)
 
         return stats
 
@@ -655,20 +818,27 @@ class DocumentDiscoveryTools:
         Returns:
             List of relevant document excerpts with relevance scores
         """
-        # Ensure all documents are loaded and indexed
-        self._ensure_indexed()
+        import logging
+        logger = logging.getLogger(__name__)
 
-        if self._model is None or self._vector_store.count() == 0:
+        if self._model is None:
+            logger.debug(f"[SEARCH] No embedding model")
             return []
 
-        # Embed the query
-        query_embedding = self._model.encode([query], convert_to_numpy=True)
+        # Use lock for thread-safe access - both embedding model AND DuckDB connection
+        # are not thread-safe for concurrent operations
+        with self._model_lock:
+            # Embed the query
+            query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-        # Search using vector store
-        search_results = self._vector_store.search(query_embedding, limit=limit)
+            # Search using vector store (also protected by lock for consistency)
+            search_results = self._vector_store.search(query_embedding, limit=limit)
+
+        logger.debug(f"[SEARCH] Found {len(search_results)} results for '{query}'")
 
         results = []
         for chunk_id, similarity, chunk in search_results:
+            logger.debug(f"[SEARCH] Result: doc={chunk.document_name}, section={chunk.section}, score={similarity:.3f}")
             results.append({
                 "document": chunk.document_name,
                 # Return full chunk content (already sized at CHUNK_SIZE=800)
@@ -676,6 +846,99 @@ class DocumentDiscoveryTools:
                 "excerpt": chunk.content,
                 "relevance": round(similarity, 3),
                 "section": chunk.section,
+            })
+
+        return results
+
+    def search_documents_enriched(self, query: str, limit: int = 5) -> list[dict]:
+        """Search documents with entity enrichment.
+
+        Like search_documents, but includes entities mentioned in each chunk.
+        Useful for understanding what concepts are discussed in relevant chunks.
+
+        Args:
+            query: Natural language query
+            limit: Maximum results to return
+
+        Returns:
+            List of dicts with document, excerpt, relevance, section, and entities
+        """
+        if self._model is None:
+            return []
+
+        # Use enriched search if available
+        if hasattr(self._vector_store, 'search_enriched'):
+            # Use lock for thread-safe access - both embedding model AND DuckDB connection
+            with self._model_lock:
+                query_embedding = self._model.encode([query], convert_to_numpy=True)
+                enriched_results = self._vector_store.search_enriched(query_embedding, limit=limit)
+
+            results = []
+            for enriched in enriched_results:
+                results.append({
+                    "document": enriched.chunk.document_name,
+                    "excerpt": enriched.chunk.content,
+                    "relevance": round(enriched.score, 3),
+                    "section": enriched.chunk.section,
+                    "entities": [
+                        {"name": e.name, "type": e.type}
+                        for e in enriched.entities
+                    ],
+                })
+            return results
+
+        # Fall back to regular search
+        return self.search_documents(query, limit)
+
+    def explore_entity(self, entity_name: str, limit: int = 5) -> list[dict]:
+        """Find chunks mentioning the given entity.
+
+        Use when the LLM notices a relevant entity and wants more context.
+        Returns chunks ordered by relevance (mention count, recency).
+
+        This is designed to be exposed as an LLM tool:
+        {
+            "name": "explore_entity",
+            "description": "Find additional context about an entity (table, concept, term)
+                           mentioned in the retrieved chunks. Use when you need more
+                           information about something specific.",
+            "parameters": {
+                "entity_name": {
+                    "type": "string",
+                    "description": "Name of the entity to explore"
+                }
+            }
+        }
+
+        Args:
+            entity_name: Name of the entity to explore
+            limit: Maximum number of chunks to return
+
+        Returns:
+            List of dicts with document, excerpt, section, mention_count, confidence
+            Empty list if entity not found
+        """
+        if not hasattr(self._vector_store, 'find_entity_by_name'):
+            return []
+
+        entity = self._vector_store.find_entity_by_name(entity_name)
+        if not entity:
+            return []
+
+        chunks = self._vector_store.get_chunks_for_entity(entity.id, limit=limit)
+
+        results = []
+        for chunk_id, chunk, mention_count, confidence in chunks:
+            results.append({
+                "document": chunk.document_name,
+                "excerpt": chunk.content,
+                "section": chunk.section,
+                "entity": {
+                    "name": entity.name,
+                    "type": entity.type,
+                },
+                "mention_count": mention_count,
+                "confidence": round(confidence, 3),
             })
 
         return results
@@ -895,10 +1158,6 @@ class DocumentDiscoveryTools:
             loaded_at=datetime.now().isoformat(),
         )
 
-        # Invalidate index (unless it's a structured data file)
-        if not self._is_structured_data_format(doc_format):
-            self._index_built = False
-
     def _load_file_directly(self, name: str, filepath: Path, doc_config: DocumentConfig) -> None:
         """Load a file directly from a path (for expanded glob/directory entries)."""
         from datetime import datetime
@@ -931,8 +1190,6 @@ class DocumentDiscoveryTools:
                 sections=sections,
                 loaded_at=datetime.now().isoformat(),
             )
-            # Structured files DO get indexed (via their metadata)
-            self._index_built = False
             return
 
         # Handle other file types
@@ -977,9 +1234,6 @@ class DocumentDiscoveryTools:
             sections=sections,
             loaded_at=datetime.now().isoformat(),
         )
-
-        # Invalidate index
-        self._index_built = False
 
     def _is_structured_data_format(self, doc_format: str) -> bool:
         """Check if format is structured data that shouldn't be semantically indexed."""
@@ -1270,29 +1524,22 @@ class DocumentDiscoveryTools:
             return "pdf"
         return "text"
 
-    def _ensure_indexed(self) -> None:
-        """Ensure all documents are loaded and indexed."""
-        # Load any unloaded documents
-        for name in self.config.documents:
-            if name not in self._loaded_documents:
-                try:
-                    self._load_document(name)
-                except Exception:
-                    # Skip documents that fail to load
-                    pass
-
-        # Build index if needed
-        if not self._index_built:
-            self._build_index()
-
-    def _build_index(self) -> None:
+    def _build_index(self, schema_entities: Optional[list[str]] = None) -> None:
         """Build vector embeddings for document chunks.
 
         Note: Structured data files (CSV, JSON) are indexed via their
         schema metadata, not raw data rows.
+
+        Args:
+            schema_entities: Optional list of known schema entity names
+                            (tables, columns) for entity extraction
         """
         # Clear existing index
         self._vector_store.clear()
+
+        # Clear entities if supported
+        if hasattr(self._vector_store, 'clear_entities'):
+            self._vector_store.clear_entities()
 
         chunks = []
         for name, doc in self._loaded_documents.items():
@@ -1301,20 +1548,60 @@ class DocumentDiscoveryTools:
             chunks.extend(doc_chunks)
 
         if not chunks:
-            self._index_built = True
             return
 
-        # Load embedding model
-        if self._model is None:
-            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
-
-        # Generate embeddings
+        # Generate embeddings (model is loaded eagerly in __init__)
+        # Use model lock for thread safety
         texts = [chunk.content for chunk in chunks]
-        embeddings = self._model.encode(texts, convert_to_numpy=True)
+        with self._model_lock:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
 
         # Add to vector store
         self._vector_store.add_chunks(chunks, embeddings)
-        self._index_built = True
+
+        # Extract and store entities
+        self._extract_and_store_entities(chunks, schema_entities)
+
+    def _extract_and_store_entities(
+        self,
+        chunks: list[DocumentChunk],
+        schema_entities: Optional[list[str]] = None,
+    ) -> None:
+        """Extract entities from chunks and store them.
+
+        Args:
+            chunks: Document chunks to extract entities from
+            schema_entities: Known schema entity names for matching
+        """
+        # Skip if vector store doesn't support entities
+        if not hasattr(self._vector_store, 'add_entities'):
+            return
+
+        # Create extractor with schema entities if provided
+        config = ExtractionConfig(
+            extract_schema=bool(schema_entities),
+            extract_ner=True,
+            extract_concepts=False,  # Skip LLM extraction for now
+            schema_entities=schema_entities or [],
+        )
+        extractor = EntityExtractor(config)
+
+        # Extract entities from each chunk
+        all_links: list[ChunkEntity] = []
+
+        for chunk in chunks:
+            extractions = extractor.extract(chunk)
+            for entity, link in extractions:
+                all_links.append(link)
+
+        # Store all unique entities
+        entities = extractor.get_all_entities()
+        if entities:
+            self._vector_store.add_entities(entities)
+
+        # Store all chunk-entity links
+        if all_links:
+            self._vector_store.link_chunk_entities(all_links)
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.

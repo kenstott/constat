@@ -36,6 +36,14 @@ primary_intents:
     - "determine whether"
     - "check if the policy applies"
     - "run an analysis on"
+    # Prove/verify requests that need execution (not showing existing proof)
+    - "prove the total revenue"
+    - "prove the total from all orders"
+    - "prove that customers are"
+    - "show that the data satisfies"
+    - "demonstrate that revenue is"
+    - "prove compliance with"
+    - "verify the calculation"
 
   plan_continue:
     # Modifying or extending the current plan
@@ -77,15 +85,16 @@ sub_intents:
       - "what are the components of"
 
     provenance:
-      # Asking about derivation and proof chains
-      - "how did you determine"
-      - "show me the proof"
-      - "where did that come from"
-      - "what's the derivation"
-      - "trace the reasoning"
-      - "show the audit trail"
-      - "what evidence supports"
-      - "how do you know"
+      # Asking about EXISTING derivation and proof chains (not running new proofs)
+      - "how did you determine that"
+      - "show me the proof chain"
+      - "where did that value come from"
+      - "what's the derivation for that"
+      - "trace the reasoning you used"
+      - "show the audit trail for"
+      - "what evidence supports that answer"
+      - "how do you know that result"
+      - "explain how you got that number"
 
     summary:
       # Requesting condensed information

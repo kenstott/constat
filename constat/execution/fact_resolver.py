@@ -24,6 +24,8 @@ which provides:
 - Parallel source resolution: Try DATABASE + LLM_KNOWLEDGE + SUB_PLAN concurrently
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random
@@ -287,7 +289,8 @@ class Fact:
             value_type = "dataframe"
             try:
                 value = f"{len(self.value)} rows"  # Store summary, not full data
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Could not get len() of value, using str(): {e}")
                 value = str(self.value)[:500]
 
         result = {
@@ -1115,7 +1118,8 @@ class FactResolver:
                 fact = self._try_resolve(source, fact_name, params, cache_key)
                 if fact and fact.is_resolved:
                     return fact
-            except Exception:
+            except Exception as e:
+                logger.debug(f"[_resolve_legacy] Source {source.value} failed for {fact_name}: {e}")
                 continue
 
         return Fact(
@@ -1355,8 +1359,8 @@ class FactResolver:
                     existing_tables = [t["name"] for t in self._datastore.list_tables()]
                     if cached.table_name not in existing_tables:
                         return None  # Table doesn't exist, fact is invalid
-                except Exception:
-                    pass  # If we can't check, assume it's valid
+                except Exception as e:
+                    logger.debug(f"[get] Cache validation failed for {name}, assuming valid: {e}")
         return cached
 
     def get_all_facts(self) -> dict[str, Fact]:
@@ -1959,8 +1963,8 @@ Respond with ONLY the JSON object, no explanation."""
                         if cached.table_name not in existing_tables:
                             logger.debug(f"[_try_resolve] CACHE table {cached.table_name} no longer exists")
                             return None  # Table doesn't exist, need to re-resolve
-                    except Exception:
-                        pass  # If we can't check, assume it's valid
+                    except Exception as e:
+                        logger.debug(f"[_try_resolve] Cache validation failed for {cache_key}, assuming valid: {e}")
                 logger.debug(f"[_try_resolve] CACHE hit for {cache_key}")
             return cached
 
@@ -2120,6 +2124,32 @@ Respond with ONLY the JSON object, no explanation."""
             logger.debug(f"[_resolve_from_database] Missing LLM ({self.llm is not None}) "
                         f"or schema_manager ({self.schema_manager is not None})")
             return None
+
+        # Check if fact_name matches a table name - return "referenced" instead of loading data
+        # This allows inferences to query the table directly from the original database
+        fact_name_lower = fact_name.lower().strip()
+        cache_tables = list(self.schema_manager.metadata_cache.keys())
+        logger.debug(f"[_resolve_from_database] Checking table match for '{fact_name_lower}', metadata_cache has {len(cache_tables)} tables: {cache_tables[:5]}")
+        for full_name, table_meta in self.schema_manager.metadata_cache.items():
+            # Match by table name (case-insensitive)
+            if table_meta.name.lower() == fact_name_lower:
+                logger.info(f"[_resolve_from_database] Table match for '{fact_name}' -> {full_name}")
+                # Store column metadata in reasoning for use by inferences
+                columns = [c.name for c in table_meta.columns]
+                reasoning = f"Table '{table_meta.name}' from database '{table_meta.database}'. Columns: {columns}"
+                # Build descriptive value for UI display
+                row_info = f"{table_meta.row_count:,} rows" if table_meta.row_count else "table"
+                value_str = f"({table_meta.database}.{table_meta.name}) {row_info}"
+                return Fact(
+                    name=fact_name,
+                    value=value_str,
+                    source=FactSource.DATABASE,
+                    source_name=table_meta.database,
+                    reasoning=reasoning,
+                    confidence=0.95,
+                    table_name=table_meta.name,
+                    row_count=table_meta.row_count,
+                )
 
         # Build execution globals with database connections and file paths
         exec_globals = {"pd": pd, "Fact": Fact, "FactSource": FactSource}
@@ -2576,12 +2606,12 @@ UNKNOWN
                     # Try to parse as number
                     try:
                         value = float(value_str)
-                    except:
+                    except (ValueError, TypeError):
                         value = value_str
                 elif line.startswith("CONFIDENCE:"):
                     try:
                         confidence = float(line.split(":", 1)[1].strip())
-                    except:
+                    except (ValueError, TypeError):
                         pass
                 elif line.startswith("TYPE:"):
                     if "heuristic" in line.lower():
@@ -2952,7 +2982,8 @@ REASONING: User is focused on US region analysis
 
             return facts
 
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[extract_facts_from_text] Failed to extract facts: {e}")
             return []
 
     def get_unresolved_facts(self) -> list[Fact]:
@@ -4379,8 +4410,8 @@ class AsyncFactResolver(FactResolver):
                 return cached
 
             return result
-        except Exception:
-            # Rule failed - log but don't crash
+        except Exception as e:
+            logger.debug(f"[_resolve_from_rule_async] Rule failed for {fact_name}: {e}")
             return None
 
     async def _resolve_from_database_async(
@@ -4391,6 +4422,29 @@ class AsyncFactResolver(FactResolver):
         """Async database resolution using LLM to generate SQL."""
         if not self.llm or not self.schema_manager:
             return None
+
+        # Check if fact_name matches a table name - return "referenced" instead of loading data
+        # This allows inferences to query the table directly from the original database
+        fact_name_lower = fact_name.lower().strip()
+        for full_name, table_meta in self.schema_manager.metadata_cache.items():
+            # Match by table name (case-insensitive)
+            if table_meta.name.lower() == fact_name_lower:
+                # Store column metadata in reasoning for use by inferences
+                columns = [c.name for c in table_meta.columns]
+                reasoning = f"Table '{table_meta.name}' from database '{table_meta.database}'. Columns: {columns}"
+                # Build descriptive value for UI display
+                row_info = f"{table_meta.row_count:,} rows" if table_meta.row_count else "table"
+                value_str = f"({table_meta.database}.{table_meta.name}) {row_info}"
+                return Fact(
+                    name=fact_name,
+                    value=value_str,
+                    source=FactSource.DATABASE,
+                    source_name=table_meta.database,
+                    reasoning=reasoning,
+                    confidence=0.95,
+                    table_name=table_meta.name,
+                    row_count=table_meta.row_count,
+                )
 
         schema_overview = self.schema_manager.get_overview()
         prompt = f"""I need to resolve this fact from the database:
@@ -4487,8 +4541,8 @@ NOT_POSSIBLE: <reason>
                                 query=sql,
                                 context=f"SQL Query:\n{sql}",
                             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[_resolve_from_database_async] Database resolution failed for {fact_name}: {e}")
 
         return None
 
@@ -4562,8 +4616,8 @@ UNKNOWN
                     source=source,
                     reasoning=reasoning,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[_resolve_from_llm_async] LLM resolution failed for {fact_name}: {e}")
 
         return None
 
@@ -4642,8 +4696,8 @@ Generate the derivation function for {fact_name}:
                     return result
                 finally:
                     self._resolution_depth -= 1
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[_resolve_from_sub_plan_async] Sub-plan resolution failed for {fact_name}: {e}")
 
         return None
 

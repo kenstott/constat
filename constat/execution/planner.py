@@ -3,7 +3,7 @@
 import json
 import re
 from datetime import datetime, timezone
-from typing import Optional, Union
+from typing import Optional, Union, TYPE_CHECKING
 
 from constat.core.config import Config
 from constat.core.models import Plan, PlannerResponse, Step, StepType, TaskType
@@ -12,6 +12,9 @@ from constat.providers.base import BaseLLMProvider
 from constat.catalog.schema_manager import SchemaManager
 from constat.storage.learnings import LearningCategory
 from constat.discovery.concept_detector import ConceptDetector
+
+if TYPE_CHECKING:
+    from constat.discovery.doc_tools import DocumentDiscoveryTools
 
 
 # System prompt for planning - base version
@@ -102,9 +105,11 @@ class Planner:
         schema_manager: SchemaManager,
         router_or_provider: Optional[Union[BaseLLMProvider, TaskRouter]] = None,
         learning_store=None,
+        doc_tools: Optional["DocumentDiscoveryTools"] = None,
     ):
         self.config = config
         self.schema_manager = schema_manager
+        self.doc_tools = doc_tools  # For enriching schema search with documents
         self._user_facts: dict = {}  # name -> value mapping
         self._learning_store = learning_store  # For injecting learned rules
 
@@ -220,7 +225,9 @@ class Planner:
         """Get tool handler functions for schema exploration."""
         handlers = {
             "get_table_schema": lambda table: self.schema_manager.get_table_schema(table),
-            "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(query, top_k),
+            "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(
+                query, top_k, doc_tools=self.doc_tools
+            ),
         }
 
         # Add API schema handlers if APIs are configured

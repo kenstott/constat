@@ -1316,6 +1316,24 @@ class TestStatusLine:
         status.advance_spinner()
         assert status._spinner_frame == initial_frame + 1
 
+    def test_status_line_status_message(self):
+        """Test StatusLine renders status message when set."""
+        from constat.feedback import StatusLine
+
+        status = StatusLine()
+        status.set_status_message("Analyzing your question...")
+
+        rendered = status.render()
+        # Should show spinner and message instead of phase
+        assert "Analyzing your question..." in rendered
+        assert "idle" not in rendered  # Phase should be hidden
+
+        # Clear message
+        status.set_status_message(None)
+        rendered = status.render()
+        assert "Analyzing" not in rendered
+        assert "idle" in rendered  # Phase should be shown again
+
 
 class TestFailureRecovery:
     """Tests for failure recovery prompts (Phase 5)."""

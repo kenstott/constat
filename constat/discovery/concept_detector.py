@@ -1,7 +1,7 @@
 """Embedding-based concept detection for conditional prompt injection.
 
 Detects relevant prompt concepts in user queries using semantic similarity.
-Uses the same all-MiniLM-L6-v2 model as document and schema search for consistency.
+Uses BAAI/bge-large-en-v1.5 model for high-quality semantic matching.
 
 Concepts are defined by exemplar sentences, not keywords. This approach is:
 - More robust to paraphrasing and language variation
@@ -39,8 +39,8 @@ class ConceptDetector:
     """
     Detects relevant prompt concepts in user queries using embedding similarity.
 
-    Uses the same all-MiniLM-L6-v2 model as document and schema search
-    for consistency. Concepts are defined by exemplar sentences, not keywords.
+    Uses BAAI/bge-large-en-v1.5 model for high-quality semantic matching.
+    Concepts are defined by exemplar sentences, not keywords.
 
     The detector precomputes embeddings for all exemplars at initialization,
     making query-time detection fast (~5ms).
@@ -57,7 +57,7 @@ class ConceptDetector:
         content = detector.get_sections_for_prompt("create a dashboard", "step")
     """
 
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+    EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
     DEFAULT_THRESHOLD = 0.55
 
     def __init__(

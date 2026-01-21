@@ -17,6 +17,7 @@ dependencies = [
     "requests>=2.28",
     # CLI & REPL
     "rich>=13.0",
+    "textual>=0.47",  # TUI framework for persistent status bar
     "click>=8.0",
     "gnureadline>=8.0; sys_platform == 'darwin'",  # Better readline on macOS
     # Visualization (works OOB)

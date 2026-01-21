@@ -4,16 +4,24 @@ These tools allow the LLM to discover database schemas on-demand
 rather than loading everything into the system prompt upfront.
 """
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from constat.catalog.schema_manager import SchemaManager
+
+if TYPE_CHECKING:
+    from constat.discovery.doc_tools import DocumentDiscoveryTools
 
 
 class SchemaDiscoveryTools:
     """Tools for discovering database schemas on-demand."""
 
-    def __init__(self, schema_manager: SchemaManager):
+    def __init__(
+        self,
+        schema_manager: SchemaManager,
+        doc_tools: Optional["DocumentDiscoveryTools"] = None,
+    ):
         self.schema_manager = schema_manager
+        self.doc_tools = doc_tools
 
     def list_databases(self) -> list[dict]:
         """
@@ -197,6 +205,86 @@ class SchemaDiscoveryTools:
         except Exception as e:
             return {"error": str(e)}
 
+    def find_entity(self, name: str, limit: int = 3) -> dict:
+        """
+        Find all occurrences of an entity across schema and documents.
+
+        This unified search returns:
+        - Schema matches: tables and columns matching the entity name
+        - Document mentions: excerpts from docs that reference the entity
+
+        Args:
+            name: Entity name to search for (e.g., "Customer", "order_id")
+            limit: Maximum document excerpts per entity (default 3)
+
+        Returns:
+            Dict with entity name, schema matches, and document excerpts
+        """
+        name_lower = name.lower()
+        results = {
+            "entity": name,
+            "schema": [],
+            "documents": [],
+        }
+
+        # 1. Find matching tables
+        for full_name, table_meta in self.schema_manager.metadata_cache.items():
+            # Check if table name matches (case-insensitive, partial match)
+            if name_lower in table_meta.name.lower():
+                col_names = [c.name for c in table_meta.columns[:5]]
+                if len(table_meta.columns) > 5:
+                    col_names.append(f"... +{len(table_meta.columns) - 5} more")
+                results["schema"].append({
+                    "type": "table",
+                    "name": table_meta.name,
+                    "database": table_meta.database,
+                    "columns": col_names,
+                    "row_count": table_meta.row_count,
+                })
+
+        # 2. Find matching columns across all tables
+        seen_columns = set()  # Avoid duplicates
+        for full_name, table_meta in self.schema_manager.metadata_cache.items():
+            for col in table_meta.columns:
+                col_key = f"{table_meta.name}.{col.name}"
+                if name_lower in col.name.lower() and col_key not in seen_columns:
+                    seen_columns.add(col_key)
+                    results["schema"].append({
+                        "type": "column",
+                        "name": col.name,
+                        "table": table_meta.name,
+                        "database": table_meta.database,
+                        "data_type": col.type,
+                        "nullable": col.nullable,
+                        "is_primary_key": col.is_primary_key,
+                    })
+
+        # 3. Find document mentions via explore_entity
+        if self.doc_tools:
+            try:
+                doc_context = self.doc_tools.explore_entity(name, limit=limit)
+                if doc_context:
+                    results["documents"] = [
+                        {
+                            "document": d.get("document"),
+                            "excerpt": d.get("excerpt"),
+                            "section": d.get("section"),
+                            "relevance": d.get("relevance"),
+                        }
+                        for d in doc_context
+                    ]
+            except Exception:
+                pass  # Don't fail if doc search fails
+
+        # Add summary counts
+        results["summary"] = {
+            "tables_found": sum(1 for s in results["schema"] if s["type"] == "table"),
+            "columns_found": sum(1 for s in results["schema"] if s["type"] == "column"),
+            "documents_found": len(results["documents"]),
+        }
+
+        return results
+
 
 # Tool schemas for LLM
 SCHEMA_TOOL_SCHEMAS = [
@@ -303,6 +391,25 @@ SCHEMA_TOOL_SCHEMAS = [
                 },
             },
             "required": ["database", "table", "column"],
+        },
+    },
+    {
+        "name": "find_entity",
+        "description": "Find all occurrences of an entity across schema and documents. Returns matching tables, columns, and document excerpts that mention the entity. Use this to get a complete picture of where a concept appears in both data structures and documentation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Entity name to search for (e.g., 'Customer', 'order_id', 'pricing')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum document excerpts to return",
+                    "default": 3,
+                },
+            },
+            "required": ["name"],
         },
     },
 ]

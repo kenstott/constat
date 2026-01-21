@@ -19,7 +19,7 @@ The product code contains LLM prompt examples that exactly match the demo schema
 
 **Problem:** `chinook` and `northwind` are famous sample databases extensively covered in LLM training data. Large models have strong priors about their schemas.
 
-**Fix:**
+**Fix:**a 
 ```python
 - Database connections: `db_<name>` for each database (e.g., `db_main`, `db_analytics`)
 ```

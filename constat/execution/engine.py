@@ -259,7 +259,9 @@ class QueryEngine:
         """Get tool handler functions."""
         handlers = {
             "get_table_schema": lambda table: self.schema_manager.get_table_schema(table),
-            "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(query, top_k),
+            "find_relevant_tables": lambda query, top_k=5: self.schema_manager.find_relevant_tables(
+                query, top_k, doc_tools=self.doc_tools
+            ),
         }
 
         # Add document tools if available

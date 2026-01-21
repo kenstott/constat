@@ -22,6 +22,8 @@ Usage in generated code:
     viz.save_html('custom_viz', html_string, title='Custom Visualization')
 """
 
+from __future__ import annotations
+
 import json
 import os
 from datetime import datetime
@@ -152,24 +154,23 @@ class VisualizationHelper:
         return path.resolve().as_uri()
 
     def _open_in_system_viewer(self, filepath: Path) -> None:
-        """Open the file in the OS default application (non-blocking)."""
-        try:
-            path_str = str(filepath.resolve())
-            if sys.platform.startswith("darwin"):
-                # macOS
-                subprocess.Popen(["open", path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif sys.platform.startswith("win"):
-                # Windows
-                try:
-                    os.startfile(path_str)  # type: ignore[attr-defined]
-                except AttributeError:
-                    subprocess.Popen(["cmd", "/c", "start", "", path_str], shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                # Linux / other Unix
-                subprocess.Popen(["xdg-open", path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            # Swallow errors; printing is handled by caller
-            raise
+        """Open the file in the OS default application (non-blocking).
+
+        Uses platform-appropriate methods:
+        - macOS: 'open' command
+        - Windows: os.startfile() (avoids shell=True security risk)
+        - Linux: xdg-open
+        """
+        path_str = str(filepath.resolve())
+        if sys.platform.startswith("darwin"):
+            # macOS
+            subprocess.Popen(["open", path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform.startswith("win"):
+            # Windows: use os.startfile() to avoid command injection risk with shell=True
+            os.startfile(path_str)  # type: ignore[attr-defined]
+        else:
+            # Linux / other Unix
+            subprocess.Popen(["xdg-open", path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _print_ref(self, label: str, filepath: Path, description: str = "") -> None:
         """Print file reference or collect for later display.
