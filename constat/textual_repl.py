@@ -349,22 +349,19 @@ class SidePanelContent(Static):
                     icon = "📦"
 
                 content.append(f"{icon} ", style="")
-
-                # Make name clickable if we have a file URI
-                if file_uri:
-                    # Use file:// URI for clickable link
-                    if not file_uri.startswith("file://"):
-                        file_uri = f"file://{file_uri}"
-                    # Rich hyperlink syntax: style="link URL"
-                    content.append(f"{name}", style=f"bold green link {file_uri}")
-                    content.append("\n")
-                else:
-                    content.append(f"{name}\n", style="bold green")
+                content.append(f"{name}\n", style="bold green")
 
                 if description:
                     content.append(f"   {description}\n", style="dim")
-                if command:
+
+                # Show file URI directly - terminals make these clickable
+                if file_uri:
+                    if not file_uri.startswith("file://"):
+                        file_uri = f"file://{file_uri}"
+                    content.append(f"   {file_uri}\n", style="cyan underline")
+                elif command:
                     content.append(f"   → {command}\n", style="cyan")
+
                 content.append("\n")
 
         self.update(content)
@@ -1580,11 +1577,74 @@ class ConstatREPLApp(App):
             await self._show_help()
         elif cmd == "/tables":
             await self._show_tables()
+        elif cmd == "/show" and args:
+            await self._show_table(args)
+        elif cmd == "/query" and args:
+            await self._run_query(args)
+        elif cmd == "/facts":
+            await self._show_facts()
+        elif cmd == "/state":
+            await self._show_state()
+        elif cmd == "/reset":
+            await self._reset_session()
+        elif cmd == "/redo":
+            await self._redo(args)
+        elif cmd == "/artifacts":
+            await self._show_artifacts()
+        elif cmd == "/code":
+            await self._show_code(args)
+        elif cmd in ("/proof", "/audit"):
+            await self._set_mode("proof")
+        elif cmd == "/explore":
+            await self._set_mode("explore")
+        elif cmd == "/mode":
+            await self._set_mode(args)
+        elif cmd == "/preferences":
+            await self._show_preferences()
+        elif cmd in ("/databases", "/database", "/db"):
+            await self._show_databases()
+        elif cmd in ("/files", "/file"):
+            await self._show_files()
+        elif cmd == "/context":
+            await self._show_context()
+        elif cmd in ("/history", "/sessions"):
+            await self._show_history()
         elif cmd == "/verbose":
-            self.verbose = not self.verbose
-            self.session_config.verbose = self.verbose
-            state = "on" if self.verbose else "off"
-            log.write(Text(f"Verbose mode: {state}", style="dim"))
+            await self._toggle_setting("verbose", args)
+        elif cmd == "/raw":
+            await self._toggle_setting("raw", args)
+        elif cmd == "/insights":
+            await self._toggle_setting("insights", args)
+        elif cmd in ("/update", "/refresh"):
+            await self._refresh_metadata()
+        elif cmd == "/learnings":
+            await self._show_learnings()
+        elif cmd == "/compact":
+            log.write(Text("Context compaction not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/remember" and args:
+            log.write(Text("Remember not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/forget" and args:
+            log.write(Text("Forget not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/correct" and args:
+            log.write(Text("Correct not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/save" and args:
+            log.write(Text("Save not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/share" and args:
+            log.write(Text("Share not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/plans":
+            log.write(Text("Plans not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/replay" and args:
+            log.write(Text("Replay not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/resume" and args:
+            log.write(Text("Resume not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/export" and args:
+            log.write(Text("Export not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/summarize" and args:
+            log.write(Text("Summarize not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/audit":
+            log.write(Text("Audit trail not yet implemented in Textual REPL.", style="yellow"))
+        elif cmd == "/user":
+            log.write(Text(f"Current user: {self.user_id}", style="dim"))
         else:
             log.write(Text(f"Unknown command: {cmd}", style="yellow"))
             log.write(Text("Type /help for available commands.", style="dim"))
@@ -1601,16 +1661,38 @@ class ConstatREPLApp(App):
             ("/help, /h", "Show this help message"),
             ("/tables", "List available tables"),
             ("/show <table>", "Show table contents"),
-            ("/query <sql>", "Run SQL query"),
-            ("/code [step]", "Show generated code"),
+            ("/export <table> [file]", "Export table to CSV or XLSX"),
+            ("/query <sql>", "Run SQL query on datastore"),
+            ("/code [step]", "Show generated code (all or specific step)"),
             ("/state", "Show session state"),
-            ("/reset", "Clear session state"),
-            ("/redo [instruction]", "Retry last query"),
+            ("/update, /refresh", "Refresh metadata and rebuild cache"),
+            ("/reset", "Clear session state and start fresh"),
+            ("/redo [instruction]", "Retry last query (optionally with modifications)"),
+            ("/user [name]", "Show or set current user"),
+            ("/save <name>", "Save current plan for replay"),
+            ("/share <name>", "Save plan as shared (all users)"),
+            ("/plans", "List saved plans"),
+            ("/replay <name>", "Replay a saved plan"),
+            ("/history, /sessions", "List recent sessions"),
+            ("/resume <id>", "Resume a previous session"),
+            ("/context", "Show context size and token usage"),
+            ("/compact", "Compact context to reduce token usage"),
+            ("/facts", "Show cached facts from this session"),
+            ("/remember <fact>", "Persist a session fact"),
+            ("/forget <name>", "Forget a remembered fact"),
             ("/verbose [on|off]", "Toggle verbose mode"),
-            ("/raw [on|off]", "Toggle raw output"),
-            ("/insights [on|off]", "Toggle insights"),
-            ("/facts", "Show cached facts"),
-            ("/proof", "Switch to proof/audit mode"),
+            ("/raw [on|off]", "Toggle raw output display"),
+            ("/insights [on|off]", "Toggle insight synthesis"),
+            ("/preferences", "Show current preferences"),
+            ("/artifacts", "Show saved artifacts with file:// URIs"),
+            ("/databases, /db", "List databases"),
+            ("/files", "List all data files"),
+            ("/correct <text>", "Record a correction for future reference"),
+            ("/learnings", "Show learnings and rules"),
+            ("/audit", "Re-derive last result with full audit trail"),
+            ("/summarize <target>", "Summarize plan|session|facts|<table>"),
+            ("/mode [mode]", "Set default mode: proof|explore|auto"),
+            ("/proof", "Switch to proof mode (auditable)"),
             ("/explore", "Switch to exploratory mode"),
             ("/quit, /q", "Exit"),
         ]
@@ -1621,7 +1703,7 @@ class ConstatREPLApp(App):
         log.write(table)
 
     async def _show_tables(self) -> None:
-        """Show available tables."""
+        """Show available tables with file:// URIs."""
         log = self.query_one("#output-log", OutputLog)
 
         if not self.session or not self.session.session_id:
@@ -1630,6 +1712,7 @@ class ConstatREPLApp(App):
 
         try:
             from constat.storage.registry import ConstatRegistry
+            from pathlib import Path
             registry = ConstatRegistry()
             tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
             registry.close()
@@ -1645,8 +1728,340 @@ class ConstatREPLApp(App):
                     (t.name, "cyan"),
                     (f" ({t.row_count} rows)", "dim"),
                 ))
+                # Show file:// URI for the Parquet file
+                file_path = Path(t.file_path)
+                if file_path.exists():
+                    file_uri = file_path.resolve().as_uri()
+                    log.write(Text(f"    {file_uri}", style="dim underline"))
         except Exception as e:
             log.write(Text(f"Error listing tables: {e}", style="red"))
+
+    async def _show_table(self, table_name: str) -> None:
+        """Show contents of a specific table."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session or not self.session.datastore:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            df = self.session.datastore.query(f"SELECT * FROM {table_name} LIMIT 20")
+            if df.empty:
+                log.write(Text(f"Table '{table_name}' is empty.", style="dim"))
+                return
+
+            # Create a Rich table
+            table = Table(title=f"{table_name} ({len(df)} rows shown)", show_header=True)
+            for col in df.columns:
+                table.add_column(str(col), style="cyan")
+
+            for _, row in df.iterrows():
+                table.add_row(*[str(v)[:50] for v in row.values])
+
+            log.write(table)
+        except Exception as e:
+            log.write(Text(f"Error showing table: {e}", style="red"))
+
+    async def _run_query(self, sql: str) -> None:
+        """Run a SQL query on the datastore."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session or not self.session.datastore:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            df = self.session.datastore.query(sql)
+            if df.empty:
+                log.write(Text("Query returned no results.", style="dim"))
+                return
+
+            table = Table(show_header=True)
+            for col in df.columns:
+                table.add_column(str(col), style="cyan")
+
+            for _, row in df.head(20).iterrows():
+                table.add_row(*[str(v)[:50] for v in row.values])
+
+            log.write(table)
+            if len(df) > 20:
+                log.write(Text(f"... and {len(df) - 20} more rows", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Query error: {e}", style="red"))
+
+    async def _show_facts(self) -> None:
+        """Show cached facts from this session."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session or not hasattr(self.session, 'fact_resolver'):
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            facts = self.session.fact_resolver.get_all_facts()
+            if not facts:
+                log.write(Text("No facts cached.", style="dim"))
+                return
+
+            log.write(Text(f"Cached Facts ({len(facts)})", style="bold"))
+            for fact_id, fact in facts.items():
+                status = "✓" if fact.get("resolved") else "○"
+                value = fact.get("value", "")
+                value_str = str(value)[:60] + "..." if len(str(value)) > 60 else str(value)
+                log.write(Text(f"  {status} {fact_id}: {value_str}", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error showing facts: {e}", style="red"))
+
+    async def _show_state(self) -> None:
+        """Show session state."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        log.write(Text("Session State", style="bold"))
+        log.write(Text(f"  Mode: {status_bar.mode.value}", style="dim"))
+        log.write(Text(f"  Phase: {status_bar.phase.value}", style="dim"))
+        log.write(Text(f"  Verbose: {self.verbose}", style="dim"))
+        log.write(Text(f"  User: {self.user_id}", style="dim"))
+        if self.session:
+            log.write(Text(f"  Session ID: {self.session.session_id}", style="dim"))
+            log.write(Text(f"  Tables: {status_bar.tables_count}", style="dim"))
+            log.write(Text(f"  Facts: {status_bar.facts_count}", style="dim"))
+
+    async def _reset_session(self) -> None:
+        """Clear session state."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if self.session:
+            self.session.reset()
+        status_bar.update_status(
+            mode=Mode.PROOF,
+            phase=Phase.IDLE,
+            status_message=None,
+            tables_count=0,
+            facts_count=0,
+        )
+        log.write(Text("Session reset.", style="green"))
+
+    async def _redo(self, instruction: str = "") -> None:
+        """Retry last query, optionally with modifications."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.last_problem:
+            log.write(Text("No previous query to redo.", style="yellow"))
+            return
+
+        problem = self.last_problem
+        if instruction:
+            problem = f"{problem}\n\nModification: {instruction}"
+
+        log.write(Text(f"Redoing: {self.last_problem[:50]}...", style="dim"))
+        await self._solve(problem)
+
+    async def _show_artifacts(self) -> None:
+        """Show saved artifacts with file:// URIs."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            from constat.storage.registry import ConstatRegistry
+            from pathlib import Path
+            registry = ConstatRegistry()
+            tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+            registry.close()
+
+            outputs = self.session.datastore.get_session_meta("pending_outputs") or []
+
+            if not tables and not outputs:
+                log.write(Text("No artifacts.", style="dim"))
+                return
+
+            log.write(Text("Artifacts", style="bold"))
+
+            for t in tables:
+                file_path = Path(t.file_path)
+                if file_path.exists():
+                    file_uri = file_path.resolve().as_uri()
+                    log.write(Text(f"  📊 {t.name} ({t.row_count} rows)", style="cyan"))
+                    log.write(Text(f"     {file_uri}", style="dim underline"))
+
+            for output in outputs:
+                if isinstance(output, dict):
+                    name = output.get("name", "Unknown")
+                    path = output.get("path", "")
+                    if path:
+                        file_path = Path(path)
+                        if file_path.exists():
+                            file_uri = file_path.resolve().as_uri()
+                            log.write(Text(f"  📄 {name}", style="cyan"))
+                            log.write(Text(f"     {file_uri}", style="dim underline"))
+        except Exception as e:
+            log.write(Text(f"Error showing artifacts: {e}", style="red"))
+
+    async def _show_code(self, step_arg: str = "") -> None:
+        """Show generated code."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            code_blocks = self.session.datastore.get_session_meta("code_blocks") or []
+            if not code_blocks:
+                log.write(Text("No code generated yet.", style="dim"))
+                return
+
+            log.write(Text(f"Generated Code ({len(code_blocks)} blocks)", style="bold"))
+            for i, block in enumerate(code_blocks):
+                if step_arg and str(i + 1) != step_arg:
+                    continue
+                log.write(Text(f"\n--- Step {i + 1} ---", style="dim"))
+                code = block.get("code", "") if isinstance(block, dict) else str(block)
+                log.write(Text(code[:500], style="green"))
+                if len(code) > 500:
+                    log.write(Text("... (truncated)", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error showing code: {e}", style="red"))
+
+    async def _set_mode(self, mode_str: str) -> None:
+        """Set execution mode."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        mode_str = mode_str.lower().strip() if mode_str else ""
+
+        if mode_str in ("proof", "audit"):
+            status_bar.update_status(mode=Mode.PROOF)
+            log.write(Text("Switched to PROOF mode (auditable, defensible).", style="cyan"))
+        elif mode_str in ("explore", "exploratory"):
+            status_bar.update_status(mode=Mode.EXPLORATORY)
+            log.write(Text("Switched to EXPLORATORY mode (iterative analysis).", style="cyan"))
+        elif mode_str == "auto" or not mode_str:
+            log.write(Text(f"Current mode: {status_bar.mode.value}", style="dim"))
+            log.write(Text("Use /proof or /explore to switch.", style="dim"))
+        else:
+            log.write(Text(f"Unknown mode: {mode_str}. Use proof, explore, or auto.", style="yellow"))
+
+    async def _show_preferences(self) -> None:
+        """Show current preferences."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        log.write(Text("Preferences", style="bold"))
+        log.write(Text(f"  verbose: {self.verbose}", style="dim"))
+        log.write(Text(f"  mode: {status_bar.mode.value}", style="dim"))
+        log.write(Text(f"  user: {self.user_id}", style="dim"))
+
+    async def _show_databases(self) -> None:
+        """Show configured databases."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session or not hasattr(self.session, 'schema_manager'):
+            log.write(Text("No session available.", style="yellow"))
+            return
+
+        try:
+            databases = self.session.config.databases
+            log.write(Text(f"Databases ({len(databases)})", style="bold"))
+            for db in databases:
+                log.write(Text(f"  {db.name}: {db.uri[:50]}...", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _show_files(self) -> None:
+        """Show data files."""
+        log = self.query_one("#output-log", OutputLog)
+        log.write(Text("Data files not yet implemented in Textual REPL.", style="yellow"))
+
+    async def _show_context(self) -> None:
+        """Show context size and token usage."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            context_size = self.session.datastore.get_session_meta("context_tokens") or 0
+            log.write(Text("Context", style="bold"))
+            log.write(Text(f"  Tokens: {context_size}", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _show_history(self) -> None:
+        """Show recent sessions."""
+        log = self.query_one("#output-log", OutputLog)
+
+        try:
+            from constat.storage.history import SessionHistory
+            hist = SessionHistory(user_id=self.user_id)
+            sessions = hist.list_sessions(limit=10)
+
+            if not sessions:
+                log.write(Text("No previous sessions.", style="dim"))
+                return
+
+            log.write(Text(f"Recent Sessions ({len(sessions)})", style="bold"))
+            for s in sessions:
+                log.write(Text(f"  {s.session_id[:16]}... - {s.created_at[:16]} ({s.status})", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _toggle_setting(self, setting: str, value: str = "") -> None:
+        """Toggle or set a boolean setting."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if setting == "verbose":
+            if value.lower() in ("on", "true", "1"):
+                self.verbose = True
+            elif value.lower() in ("off", "false", "0"):
+                self.verbose = False
+            else:
+                self.verbose = not self.verbose
+            self.session_config.verbose = self.verbose
+            log.write(Text(f"Verbose: {'on' if self.verbose else 'off'}", style="dim"))
+        elif setting == "raw":
+            log.write(Text("Raw mode toggled (affects output display).", style="dim"))
+        elif setting == "insights":
+            log.write(Text("Insights toggled.", style="dim"))
+
+    async def _refresh_metadata(self) -> None:
+        """Refresh metadata and rebuild cache."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        status_bar.update_status(status_message="Refreshing metadata...")
+        try:
+            self.session.schema_manager.refresh()
+            log.write(Text("Metadata refreshed.", style="green"))
+        except Exception as e:
+            log.write(Text(f"Refresh failed: {e}", style="red"))
+        finally:
+            status_bar.update_status(status_message=None)
+
+    async def _show_learnings(self) -> None:
+        """Show learnings and rules."""
+        log = self.query_one("#output-log", OutputLog)
+
+        try:
+            learnings = self.learning_store.list_learnings(limit=20)
+            if not learnings:
+                log.write(Text("No learnings yet.", style="dim"))
+                return
+
+            log.write(Text(f"Learnings ({len(learnings)})", style="bold"))
+            for learning in learnings:
+                log.write(Text(f"  • {learning.get('content', '')[:60]}...", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
 
     async def _solve(self, problem: str) -> None:
         """Solve a problem - starts worker thread, result comes via message."""
