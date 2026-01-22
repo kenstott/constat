@@ -567,6 +567,7 @@ class SidePanelContent(RichLog):
 
     # Panel modes
     MODE_DFD = "dfd"
+    MODE_PLAN = "plan"  # Plan approval display (no box)
     MODE_PROOF_TREE = "proof_tree"
     MODE_ARTIFACTS = "artifacts"
     MODE_STEPS = "steps"  # Exploratory mode step tracking
@@ -649,6 +650,12 @@ class SidePanelContent(RichLog):
         """Show only the DFD diagram (during approval)."""
         self._dag_lines = dag_lines
         self._mode = self.MODE_DFD
+        self._update_display()
+
+    def show_plan(self, dag_lines: list[str]) -> None:
+        """Show plan for approval (no box, just content)."""
+        self._dag_lines = dag_lines
+        self._mode = self.MODE_PLAN
         self._update_display()
 
     def start_proof_tree(self, conclusion: str = "") -> None:
@@ -812,6 +819,7 @@ class SidePanelContent(RichLog):
         # Update border title based on mode
         mode_titles = {
             self.MODE_DFD: "Data Flow",
+            self.MODE_PLAN: "Plan",
             self.MODE_PROOF_TREE: "Proof Tree",
             self.MODE_ARTIFACTS: "Artifacts",
             self.MODE_STEPS: "Steps",
@@ -826,6 +834,8 @@ class SidePanelContent(RichLog):
             self._render_artifacts()
         elif self._mode == self.MODE_DFD:
             self._render_dfd()
+        elif self._mode == self.MODE_PLAN:
+            self._render_plan()
         elif self._mode == self.MODE_STEPS:
             self._render_steps()
         else:
@@ -907,6 +917,21 @@ class SidePanelContent(RichLog):
 
             centered = Align.center(panel)
             self.write(centered)
+
+    def _render_plan(self) -> None:
+        """Render plan for approval (no box, just content)."""
+        super().clear()
+
+        if not self._dag_lines:
+            content = Text()
+            content.append("No plan to display.\n", style="dim")
+            self.write(content)
+            return
+
+        # Render plan content directly without a box
+        for line in self._dag_lines:
+            if line.strip():
+                self.write(Text(line, style="white"))
 
     def _render_artifacts(self) -> None:
         """Render artifact links with clickable file:// URIs.
@@ -2476,7 +2501,7 @@ class ConstatREPLApp(App):
         try:
             diagram = render_dag(G, style='rounded', max_width=panel_width)
             dag_lines = [line for line in diagram.split('\n') if line.strip()]
-            panel_content.show_dfd(dag_lines)
+            panel_content.show_plan(dag_lines)
             logger.debug(f"_show_dfd_in_side_panel: dag_lines={len(dag_lines)}, panel_width={panel_width}")
 
             # Save DFD as artifact file (before execution)
@@ -2505,9 +2530,9 @@ class ConstatREPLApp(App):
             step_type = s.get("type", "")
             prefix = "P" if step_type == "premise" else "I" if step_type == "inference" else "→"
             lines.append(f"{prefix} {fact_id}: {goal}")  # Full text, wraps at panel width
-        # Set lines directly without changing mode (show_dfd sets MODE_DFD)
+        # Set lines directly for plan display (no box)
         panel_content._dag_lines = lines
-        panel_content._mode = panel_content.MODE_DFD  # Use DFD rendering for this fallback
+        panel_content._mode = panel_content.MODE_PLAN  # Use plan rendering (no box)
         panel_content._update_display()
 
     def _focus_input(self) -> None:
