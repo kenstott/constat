@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Embedding-based concept detection for conditional prompt injection.
 
 Detects relevant prompt concepts in user queries using semantic similarity.
@@ -14,6 +23,7 @@ from typing import Optional
 
 import numpy as np
 
+from constat.embedding_loader import EmbeddingModelLoader
 from constat.execution.prompt_sections import (
     PROMPT_SECTIONS,
     PromptSection,
@@ -92,12 +102,9 @@ class ConceptDetector:
         if self._initialized:
             return
 
-        # Lazy import to avoid loading torch at module import time
-        from sentence_transformers import SentenceTransformer
-
-        # Load model if not provided
+        # Use shared embedding model loader (may already be loaded)
         if self._model is None:
-            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
+            self._model = EmbeddingModelLoader.get_instance().get_model()
 
         # Collect all exemplars
         all_exemplars = []

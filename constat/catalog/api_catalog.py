@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """API operation catalog with vector search for GraphQL/REST discovery.
 
 Provides the same pattern as SchemaManager but for API operations:

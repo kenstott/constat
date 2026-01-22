@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Two-tier learning storage for corrections and patterns.
 
 Provides storage for learnings (raw corrections) and rules (compacted patterns)
@@ -173,7 +182,7 @@ class LearningStore:
     def list_raw_learnings(
         self,
         category: Optional[LearningCategory] = None,
-        limit: int = 50,
+        limit: Optional[int] = 50,
         include_promoted: bool = False,
     ) -> list[dict]:
         """List raw learnings.

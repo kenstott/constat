@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Lazy fact resolution with provenance tracking.
 
 This module provides on-demand fact resolution during plan execution.
@@ -2213,23 +2222,35 @@ Generate a `get_result()` function that:
 1. Queries the appropriate data source(s)
 2. Returns the result value (scalar, list, or DataFrame)
 
-IMPORTANT:
+IMPORTANT - PREFER SQL OVER PANDAS:
+- SQL is more robust, scalable, and has clearer error messages
+- Use DuckDB to query DataFrames/JSON: `duckdb.query("SELECT ... FROM df").df()`
 - For SQLite: Do NOT use schema prefixes (use 'customers' not 'sales.customers')
 - For SQLite: Use strftime() for date formatting, date() for date math
 - Return the raw result - the caller will wrap it in a Fact
 
-Example for SQL:
+Example for SQL database:
 ```python
 def get_result():
     df = pd.read_sql("SELECT SUM(amount) as total FROM orders", db_sales)
     return df.iloc[0, 0]  # Return scalar
 ```
 
+Example for API response (use DuckDB for transformations):
+```python
+def get_result():
+    import duckdb
+    response = api_catfacts.get("/breeds", params={"limit": 10})
+    data = response["data"]  # API responses often have data in nested field
+    return duckdb.query("SELECT breed, country FROM data").df()
+```
+
 Example for CSV:
 ```python
 def get_result():
+    import duckdb
     df = pd.read_csv(file_web_metrics)
-    return df[df['page'] == 'home']['visitors'].sum()
+    return duckdb.query("SELECT page, SUM(visitors) as total FROM df GROUP BY page").df()
 ```
 
 CRITICAL - When to respond NOT_POSSIBLE:

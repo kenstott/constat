@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Pluggable vector store backends for document embedding storage and search.
 
 This module provides an abstracted vector store interface with two implementations:
@@ -235,20 +244,26 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
-        # Create entities table for extracted entities
+        # Create unified entities table - ALL known entities (schema, API, extracted)
+        # This is the single source of truth for entity catalog
         self._conn.execute(f"""
             CREATE TABLE IF NOT EXISTS entities (
                 id VARCHAR PRIMARY KEY,
                 name VARCHAR NOT NULL,
-                type VARCHAR,
+                type VARCHAR NOT NULL,
+                source VARCHAR NOT NULL,
+                parent_id VARCHAR,
                 embedding FLOAT[{self.EMBEDDING_DIM}],
                 metadata JSON,
+                config_hash VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 ephemeral BOOLEAN DEFAULT FALSE
             )
         """)
+        # type: table, column, api_endpoint, api_field, api_schema, extracted
+        # source: schema, api, document
 
-        # Create chunk_entities junction table
+        # Create chunk_entities junction table (links document chunks to entities)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS chunk_entities (
                 chunk_id VARCHAR NOT NULL,
@@ -260,22 +275,31 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
-        # Migration: add ephemeral column to existing tables if missing
-        self._migrate_ephemeral_column()
+        # Migration: add new columns to existing tables if missing
+        self._migrate_schema()
 
-        # Create index for efficient entity lookups
+        # Create indexes for efficient lookups
         try:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity ON chunk_entities(entity_id)"
             )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_source ON entities(source)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_parent ON entities(parent_id)"
+            )
         except Exception:
-            pass  # Index might already exist
+            pass  # Indexes might already exist
 
-    def _migrate_ephemeral_column(self) -> None:
-        """Add ephemeral column to existing tables if missing."""
+    def _migrate_schema(self) -> None:
+        """Migrate existing tables to new schema if needed."""
+        # Add ephemeral column to tables if missing
         for table in ['embeddings', 'entities', 'chunk_entities']:
             try:
-                # Check if column exists
                 cols = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
                 col_names = [c[1] for c in cols]
                 if 'ephemeral' not in col_names:
@@ -283,7 +307,34 @@ class DuckDBVectorStore(VectorStoreBackend):
                         f"ALTER TABLE {table} ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE"
                     )
             except Exception:
-                pass  # Column might already exist or table doesn't exist yet
+                pass
+
+        # Add new columns to entities table for unified catalog
+        try:
+            cols = self._conn.execute("PRAGMA table_info(entities)").fetchall()
+            col_names = [c[1] for c in cols]
+
+            if 'source' not in col_names:
+                self._conn.execute(
+                    "ALTER TABLE entities ADD COLUMN source VARCHAR DEFAULT 'document'"
+                )
+            if 'parent_id' not in col_names:
+                self._conn.execute(
+                    "ALTER TABLE entities ADD COLUMN parent_id VARCHAR"
+                )
+            if 'config_hash' not in col_names:
+                self._conn.execute(
+                    "ALTER TABLE entities ADD COLUMN config_hash VARCHAR"
+                )
+        except Exception:
+            pass
+
+        # Drop old tables if they exist (migrating to unified entities)
+        try:
+            self._conn.execute("DROP TABLE IF EXISTS table_embeddings")
+            self._conn.execute("DROP TABLE IF EXISTS api_embeddings")
+        except Exception:
+            pass
 
     def clear_ephemeral(self) -> None:
         """Remove all ephemeral (session-added) data.
@@ -445,12 +496,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         entity: Entity,
         embedding: Optional[np.ndarray] = None,
+        source: str = "document",
     ) -> None:
         """Add a single entity to the store.
 
         Args:
             entity: Entity object to add
             embedding: Optional embedding for semantic entity search
+            source: Source category ('document', 'schema', 'api')
         """
         emb_list = embedding.tolist() if embedding is not None else None
         metadata_json = json.dumps(entity.metadata) if entity.metadata else None
@@ -458,13 +511,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         with self._lock:
             self._conn.execute(
                 """
-                INSERT OR REPLACE INTO entities (id, name, type, embedding, metadata, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     entity.id,
                     entity.name,
                     entity.type,
+                    source,
                     emb_list,
                     metadata_json,
                     entity.created_at,
@@ -476,6 +530,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         entities: list[Entity],
         embeddings: Optional[np.ndarray] = None,
         ephemeral: bool = False,
+        source: str = "document",
     ) -> None:
         """Add multiple entities to the store.
 
@@ -483,6 +538,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             entities: List of Entity objects to add
             embeddings: Optional embeddings array of shape (n_entities, embedding_dim)
             ephemeral: If True, marks entities as session-only (cleaned up on restart)
+            source: Source category ('document', 'schema', 'api')
         """
         if not entities:
             return
@@ -495,6 +551,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 entity.id,
                 entity.name,
                 entity.type,
+                source,
                 emb_list,
                 metadata_json,
                 entity.created_at,
@@ -504,8 +561,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         with self._lock:
             self._conn.executemany(
                 """
-                INSERT OR REPLACE INTO entities (id, name, type, embedding, metadata, created_at, ephemeral)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 records,
             )
@@ -681,17 +738,264 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return enriched
 
-    def clear_entities(self) -> None:
-        """Clear all entities and chunk-entity links."""
+    def clear_entities(self, source: Optional[str] = "document") -> None:
+        """Clear entities and chunk-entity links.
+
+        Args:
+            source: If specified, only clear entities with this source.
+                   Default is 'document' to preserve schema/api entities.
+                   Pass None to clear ALL entities.
+        """
         with self._lock:
-            self._conn.execute("DELETE FROM chunk_entities")
-            self._conn.execute("DELETE FROM entities")
+            if source:
+                # Only delete chunk_entities for document-sourced entities
+                self._conn.execute("""
+                    DELETE FROM chunk_entities
+                    WHERE entity_id IN (SELECT id FROM entities WHERE source = ?)
+                """, [source])
+                self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
+            else:
+                self._conn.execute("DELETE FROM chunk_entities")
+                self._conn.execute("DELETE FROM entities")
 
     def count_entities(self) -> int:
         """Return number of stored entities."""
         with self._lock:
             result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
         return result[0] if result else 0
+
+    # ========== Unified Catalog Entity Methods ==========
+
+    def add_catalog_entities(
+        self,
+        entities: list[dict],
+        embeddings: np.ndarray,
+        source: str,
+        config_hash: str,
+    ) -> None:
+        """Add catalog entities (schema tables/columns or API endpoints/fields) to the store.
+
+        Args:
+            entities: List of entity dicts with:
+                - id: unique identifier (e.g., "sales.customers" or "catfacts.GET /breeds")
+                - name: display name
+                - type: entity type (table, column, api_endpoint, api_field, api_schema)
+                - parent_id: optional parent entity id (e.g., table id for columns)
+                - metadata: additional entity-specific data (JSON-serializable dict)
+            embeddings: numpy array of shape (n_entities, embedding_dim)
+            source: source category ('schema' or 'api')
+            config_hash: Hash of config for cache invalidation
+        """
+        if not entities:
+            return
+
+        records = []
+        for i, e in enumerate(entities):
+            metadata_json = json.dumps(e.get("metadata", {})) if e.get("metadata") else None
+            records.append((
+                e["id"],
+                e["name"],
+                e["type"],
+                source,
+                e.get("parent_id"),
+                embeddings[i].tolist() if embeddings is not None else None,
+                metadata_json,
+                config_hash,
+            ))
+
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO entities
+                (id, name, type, source, parent_id, embedding, metadata, config_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    type = EXCLUDED.type,
+                    source = EXCLUDED.source,
+                    parent_id = EXCLUDED.parent_id,
+                    embedding = EXCLUDED.embedding,
+                    metadata = EXCLUDED.metadata,
+                    config_hash = EXCLUDED.config_hash
+                """,
+                records,
+            )
+
+    def search_catalog_entities(
+        self,
+        query_embedding: np.ndarray,
+        source: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        limit: int = 5,
+        min_similarity: float = 0.0,
+    ) -> list[dict]:
+        """Search for relevant catalog entities by embedding similarity.
+
+        Args:
+            query_embedding: Query embedding vector
+            source: Filter by source ('schema', 'api', 'document') or None for all
+            entity_type: Filter by type ('table', 'column', 'api_endpoint', etc.) or None for all
+            limit: Maximum number of results
+            min_similarity: Minimum similarity threshold
+
+        Returns:
+            List of dicts with id, name, type, source, parent_id, metadata, similarity
+        """
+        query = query_embedding.flatten().tolist()
+
+        # Build WHERE clause based on filters
+        conditions = ["embedding IS NOT NULL"]
+        params = [query]
+
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        if entity_type:
+            conditions.append("type = ?")
+            params.append(entity_type)
+
+        where_clause = " AND ".join(conditions)
+        params.extend([query, min_similarity, limit])
+
+        with self._lock:
+            result = self._conn.execute(
+                f"""
+                SELECT
+                    id,
+                    name,
+                    type,
+                    source,
+                    parent_id,
+                    metadata,
+                    array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
+                FROM entities
+                WHERE {where_clause}
+                  AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
+                ORDER BY similarity DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "type": row[2],
+                "source": row[3],
+                "parent_id": row[4],
+                "metadata": json.loads(row[5]) if row[5] else {},
+                "similarity": float(row[6]),
+            }
+            for row in result
+        ]
+
+    def get_catalog_config_hash(self, source: str) -> Optional[str]:
+        """Get the config hash for cached catalog entities by source.
+
+        Args:
+            source: Source category ('schema' or 'api')
+
+        Returns:
+            Config hash string or None if not found
+        """
+        with self._lock:
+            result = self._conn.execute(
+                "SELECT config_hash FROM entities WHERE source = ? AND config_hash IS NOT NULL LIMIT 1",
+                [source],
+            ).fetchone()
+        return result[0] if result else None
+
+    def clear_catalog_entities(self, source: str) -> None:
+        """Clear all catalog entities for a specific source.
+
+        Args:
+            source: Source category ('schema' or 'api')
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
+
+    def count_catalog_entities(self, source: Optional[str] = None) -> int:
+        """Return number of stored catalog entities.
+
+        Args:
+            source: Optional source filter ('schema', 'api', 'document')
+
+        Returns:
+            Count of entities
+        """
+        with self._lock:
+            if source:
+                result = self._conn.execute(
+                    "SELECT COUNT(*) FROM entities WHERE source = ?", [source]
+                ).fetchone()
+            else:
+                result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
+        return result[0] if result else 0
+
+    def get_entity_names_by_source(
+        self, source: Optional[str] = None, entity_type: Optional[str] = None
+    ) -> list[str]:
+        """Get all entity names, optionally filtered by source and type.
+
+        Args:
+            source: Optional source filter ('schema', 'api', 'document')
+            entity_type: Optional type filter ('table', 'column', 'api_endpoint', etc.)
+
+        Returns:
+            List of entity names
+        """
+        conditions = []
+        params = []
+
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        if entity_type:
+            conditions.append("type = ?")
+            params.append(entity_type)
+
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+        with self._lock:
+            result = self._conn.execute(
+                f"SELECT DISTINCT name FROM entities{where_clause}",
+                params,
+            ).fetchall()
+
+        return [row[0] for row in result]
+
+    def get_entities_by_parent(self, parent_id: str) -> list[dict]:
+        """Get all child entities for a given parent.
+
+        Args:
+            parent_id: Parent entity ID
+
+        Returns:
+            List of child entity dicts
+        """
+        with self._lock:
+            result = self._conn.execute(
+                """
+                SELECT id, name, type, source, parent_id, metadata
+                FROM entities
+                WHERE parent_id = ?
+                ORDER BY name
+                """,
+                [parent_id],
+            ).fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "type": row[2],
+                "source": row[3],
+                "parent_id": row[4],
+                "metadata": json.loads(row[5]) if row[5] else {},
+            }
+            for row in result
+        ]
 
     def close(self) -> None:
         """Close the database connection."""

@@ -377,14 +377,23 @@ class APIExecutor:
         """
         Resolve an operation to a path and HTTP method.
 
-        If operation looks like a path (starts with /), use it directly.
-        Otherwise, look it up in the OpenAPI spec.
+        Supports multiple formats:
+        - "/path" - path directly, method defaults to GET
+        - "GET /path" - method and path together
+        - "operationId" - look up in OpenAPI spec
         """
+        # Handle "METHOD /path" format (e.g., "GET /breeds")
+        if " /" in operation:
+            parts = operation.split(" ", 1)
+            if len(parts) == 2 and parts[1].startswith("/"):
+                extracted_method, path = parts
+                return path, method or extracted_method.upper()
+
         # If it looks like a path, use it directly
         if operation.startswith("/"):
             return operation, method or "GET"
 
-        # Look up in OpenAPI spec
+        # Look up in OpenAPI spec by operationId
         spec = self._get_openapi_spec(api_config)
         if not spec:
             raise APIExecutionError(

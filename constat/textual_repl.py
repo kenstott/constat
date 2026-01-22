@@ -539,20 +539,20 @@ class CopyButton(Static):
 
     DEFAULT_CSS = """
     CopyButton {
-        width: 5;
+        width: auto;
         height: 1;
-        dock: right;
-        color: $text-muted;
+        min-width: 6;
+        color: $text;
+        background: $primary-darken-2;
         padding: 0 1;
     }
     CopyButton:hover {
-        color: $text;
         background: $primary;
     }
     """
 
     def __init__(self, target_id: str, **kwargs) -> None:
-        super().__init__(" ⎘ ", **kwargs)  # Copy icon (U+2398)
+        super().__init__("Copy", **kwargs)  # Simple text
         self.target_id = target_id
 
     def on_click(self) -> None:
@@ -1958,7 +1958,7 @@ class ConstatREPLApp(App):
 
         # Show plan summary in main panel
         log.write("")
-        log.write(Text("Plan ready:", style="bold yellow"))
+        log.write(Text("Plan ready.", style="bold yellow"))
 
         # Show premises and inferences
         if request.steps:

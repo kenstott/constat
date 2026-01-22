@@ -1,0 +1,16 @@
+employee_id,first_name,last_name,current_salary,rating,salary_band,position_in_band,recommended_increase_percent,recommended_increase_amount,new_salary,eligibility_reason
+1,Alice,Johnson,150000,4,E,at_mid,5.5,8250.0,158250.0,"Rating 4, at_mid in band E"
+2,Bob,Smith,120000,4,D,at_mid,5.5,6600.0,126600.0,"Rating 4, at_mid in band D"
+3,Carol,Williams,95000,3,C,at_mid,2.5,2375.0,97375.0,"Rating 3, at_mid in band C"
+4,David,Brown,85000,4,C,below_mid,7.0,5950.000000000001,90950.0,"Rating 4, below_mid in band C"
+5,Eva,Martinez,140000,3,D,above_mid,1.5,2100.0,142100.0,"Rating 3, above_mid in band D"
+6,Frank,Garcia,90000,3,C,at_mid,2.5,2250.0,92250.0,"Rating 3, at_mid in band C"
+7,Grace,Lee,65000,3,B,at_mid,2.5,1625.0,66625.0,"Rating 3, at_mid in band B"
+8,Henry,Wilson,110000,4,C,above_mid,4.5,4950.0,114950.0,"Rating 4, above_mid in band C"
+9,Iris,Taylor,75000,5,B,above_mid,7.0,5250.000000000001,80250.0,"Rating 5, above_mid in band B"
+10,Jack,Anderson,130000,5,D,above_mid,7.0,9100.0,139100.0,"Rating 5, above_mid in band D"
+11,Karen,Thomas,80000,5,B,above_mid,7.0,5600.000000000001,85600.0,"Rating 5, above_mid in band B"
+12,Leo,Jackson,95000,5,C,at_mid,9.0,8550.0,103550.0,"Rating 5, at_mid in band C"
+13,Maya,White,115000,3,D,at_mid,2.5,2875.0,117875.0,"Rating 3, at_mid in band D"
+14,Nathan,Harris,85000,2,C,below_mid,0.0,0.0,85000.0,No increase - Rating 2
+15,Olivia,Martin,90000,3,C,at_mid,2.5,2250.0,92250.0,"Rating 3, at_mid in band C"

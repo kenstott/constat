@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Embedding-based intent classification with LLM fallback.
 
 This module implements a hierarchical intent classifier that uses embedding
@@ -14,6 +23,7 @@ Thresholds:
 - If below primary threshold, falls back to LLM classification
 """
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -23,6 +33,7 @@ import numpy as np
 import yaml
 
 from constat.core.models import TaskType
+from constat.embedding_loader import EmbeddingModelLoader
 from constat.execution.mode import Mode, Phase, PrimaryIntent, SubIntent, TurnIntent
 
 logger = logging.getLogger(__name__)
@@ -115,21 +126,19 @@ class IntentClassifier:
     def _load_embedding_model(self) -> None:
         """Lazy load the embedding model.
 
-        Loads BAAI/bge-large-en-v1.5 using sentence-transformers and precomputes
-        embeddings for all exemplars.
+        Uses the shared EmbeddingModelLoader to get the model, which may
+        already be loading in the background.
 
         Raises:
-            ImportError: If sentence-transformers is not installed.
-            Exception: If model fails to load.
+            RuntimeError: If model fails to load.
         """
         if self._model is not None:
             return
 
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
+        logger.info(f"Getting embedding model from shared loader: {EMBEDDING_MODEL}")
 
-        from sentence_transformers import SentenceTransformer
-
-        self._model = SentenceTransformer(EMBEDDING_MODEL)
+        # Use shared loader (may already be loaded or loading in background)
+        self._model = EmbeddingModelLoader.get_instance().get_model()
 
         # Precompute primary intent embeddings
         self._primary_embeddings = {}

@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Database schema introspection, caching, and vector search."""
 
 import hashlib
@@ -10,11 +19,11 @@ if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 from constat.core.config import Config, DatabaseConfig, DatabaseCredentials
+from constat.embedding_loader import EmbeddingModelLoader
 from constat.catalog.nosql.base import NoSQLConnector
 from constat.catalog.file.connector import FileConnector, FileType
 
@@ -159,9 +168,9 @@ class SchemaManager:
         self.file_connections: dict[str, FileConnector] = {}  # File data sources
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
 
-        # Vector index components
-        self._embeddings: Optional[np.ndarray] = None
-        self._embedding_keys: list[str] = []  # Maps index → table full_name
+        # Vector store for embeddings (shared DuckDB)
+        from constat.discovery.vector_store import DuckDBVectorStore
+        self._vector_store: Optional[DuckDBVectorStore] = None
         self._model: Optional[SentenceTransformer] = None
 
         # Cached overview string
@@ -214,17 +223,16 @@ class SchemaManager:
         """
         # Clear all caches (memory and disk)
         self.metadata_cache.clear()
-        self._embeddings = None
-        self._embedding_keys = []
         self._overview = None
+
+        # Clear schema entities from vector store
+        if self._vector_store:
+            self._vector_store.clear_catalog_entities('schema')
 
         # Delete disk caches to force fresh introspection
         schema_cache = self._get_schema_cache_path()
         if schema_cache.exists():
             schema_cache.unlink()
-        vectors_db = self._get_vectors_db_path()
-        if vectors_db.exists():
-            vectors_db.unlink()
 
         # Re-initialize (connections are preserved)
         self._progress_callback = progress_callback
@@ -610,10 +618,6 @@ class SchemaManager:
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
-    def _get_vectors_db_path(self) -> Path:
-        """Get the path to the vectors.duckdb database."""
-        return self._get_cache_dir() / "vectors.duckdb"
-
     def _get_schema_cache_path(self) -> Path:
         """Get the path to the schema cache JSON file."""
         return self._get_cache_dir() / "schema_cache.json"
@@ -730,132 +734,71 @@ class SchemaManager:
             # Silently ignore cache save failures
             pass
 
-    def _load_embedding_cache(self, expected_hash: str) -> bool:
-        """Load embeddings from cache if hash matches.
-
-        Args:
-            expected_hash: The current schema hash
-
-        Returns:
-            True if cache was loaded successfully, False otherwise
-        """
-        try:
-            import duckdb
-        except ImportError:
-            return False
-
-        db_path = self._get_vectors_db_path()
-        if not db_path.exists():
-            return False
-
-        try:
-            conn = duckdb.connect(str(db_path))
-
-            # Check if table exists and has data
-            tables = conn.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_name='schema_embeddings'"
-            ).fetchall()
-            if not tables:
-                conn.close()
-                return False
-
-            # Check hash
-            result = conn.execute(
-                "SELECT schema_hash FROM schema_embeddings LIMIT 1"
-            ).fetchone()
-            if not result or result[0] != expected_hash:
-                conn.close()
-                return False
-
-            # Load embeddings - order by table_name to ensure consistent ordering
-            rows = conn.execute(
-                "SELECT table_name, embedding FROM schema_embeddings ORDER BY table_name"
-            ).fetchall()
-            conn.close()
-
-            if not rows:
-                return False
-
-            self._embedding_keys = [row[0] for row in rows]
-            self._embeddings = np.array([row[1] for row in rows])
-            return True
-        except Exception:
-            return False
-
-    def _save_embedding_cache(self, schema_hash: str) -> None:
-        """Save embeddings to vectors.duckdb with schema hash."""
-        try:
-            import duckdb
-        except ImportError:
-            return
-
-        db_path = self._get_vectors_db_path()
-
-        try:
-            conn = duckdb.connect(str(db_path))
-
-            # Create table if not exists (1024 dims for BAAI/bge-large-en-v1.5)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS schema_embeddings (
-                    table_name VARCHAR PRIMARY KEY,
-                    embedding FLOAT[1024] NOT NULL,
-                    schema_hash VARCHAR NOT NULL
-                )
-            """)
-
-            # Clear existing and insert new
-            conn.execute("DELETE FROM schema_embeddings")
-
-            # Insert all embeddings
-            for i, table_name in enumerate(self._embedding_keys):
-                embedding = self._embeddings[i].tolist()
-                conn.execute(
-                    "INSERT INTO schema_embeddings (table_name, embedding, schema_hash) VALUES (?, ?, ?)",
-                    [table_name, embedding, schema_hash]
-                )
-
-            conn.close()
-        except Exception:
-            # Silently ignore cache save failures
-            pass
-
     def _build_vector_index(self) -> None:
         """Build vector embeddings for all tables.
 
         Uses caching based on schema hash - embeddings are only recomputed
         when the schema structure changes (new tables, columns, or types).
+        Embeddings are stored in the shared vectors.duckdb.
         """
         if not self.metadata_cache:
             return
 
+        # Initialize vector store if needed
+        if self._vector_store is None:
+            from constat.discovery.vector_store import DuckDBVectorStore
+            self._vector_store = DuckDBVectorStore()
+
         # Compute hash of config.databases
         config_hash = self._compute_config_hash()
 
-        # Try to load from cache (silent - no progress needed for fast cache hit)
-        if self._load_embedding_cache(config_hash):
-            # Still need the model for queries
-            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
+        # Check if cache is valid
+        cached_hash = self._vector_store.get_catalog_config_hash('schema')
+        if cached_hash == config_hash and self._vector_store.count_catalog_entities(source='schema') > 0:
+            # Cache hit - embeddings already in DuckDB
             return
 
         # Cache miss - need to compute embeddings
         self._emit_progress("indexing", 1, 2, "loading embedding model")
-        self._model = SentenceTransformer(self.EMBEDDING_MODEL)
+        self._model = EmbeddingModelLoader.get_instance().get_model()
 
-        # Generate texts for embedding
+        # Generate entity records for unified catalog
+        # Each table becomes an entity, and each column becomes a child entity
+        entities = []
         texts = []
-        self._embedding_keys = []
 
         for full_name in sorted(self.metadata_cache.keys()):
             table_meta = self.metadata_cache[full_name]
-            texts.append(table_meta.to_embedding_text())
-            self._embedding_keys.append(full_name)
+            embedding_text = table_meta.to_embedding_text()
+            texts.append(embedding_text)
 
-        # Generate embeddings
+            # Table entity
+            entities.append({
+                "id": full_name,
+                "name": table_meta.name,
+                "type": "table",
+                "parent_id": None,
+                "metadata": {
+                    "database": table_meta.database,
+                    "database_type": table_meta.database_type,
+                    "row_count": table_meta.row_count,
+                    "comment": table_meta.comment,
+                    "columns": [c.name for c in table_meta.columns],
+                    "primary_keys": table_meta.primary_keys,
+                    "foreign_keys": [
+                        {"from": fk.from_column, "to_table": fk.to_table, "to_column": fk.to_column}
+                        for fk in table_meta.foreign_keys
+                    ],
+                },
+            })
+
+        # Generate embeddings for tables
         self._emit_progress("indexing", 2, 2, f"vectorizing {len(texts)} tables")
-        self._embeddings = self._model.encode(texts, convert_to_numpy=True)
+        embeddings = self._model.encode(texts, convert_to_numpy=True)
 
-        # Save to cache
-        self._save_embedding_cache(config_hash)
+        # Clear old and save to DuckDB
+        self._vector_store.clear_catalog_entities('schema')
+        self._vector_store.add_catalog_entities(entities, embeddings, 'schema', config_hash)
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
@@ -996,6 +939,8 @@ class SchemaManager:
         """
         Find tables relevant to a natural language query using vector search.
 
+        Queries embeddings directly from DuckDB using array_cosine_similarity.
+
         Args:
             query: Natural language description of what data is needed
             top_k: Maximum number of results to return
@@ -1007,24 +952,28 @@ class SchemaManager:
             List of dicts with table, database, relevance score, summary,
             and optionally documentation excerpts mentioning the table
         """
-        if self._model is None or self._embeddings is None:
+        if self._vector_store is None or self._vector_store.count_catalog_entities(source='schema') == 0:
             return []
+
+        # Lazy load the model only when needed for queries (uses shared loader)
+        if self._model is None:
+            self._model = EmbeddingModelLoader.get_instance().get_model()
 
         # Embed the query
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-        # Compute cosine similarity
-        # embeddings are already normalized by sentence-transformers
-        similarities = np.dot(self._embeddings, query_embedding.T).flatten()
-
-        # Get top-k indices
-        top_indices = np.argsort(similarities)[::-1][:top_k]
+        # Search unified catalog entities for schema tables
+        search_results = self._vector_store.search_catalog_entities(
+            query_embedding, source='schema', entity_type='table', limit=top_k
+        )
 
         results = []
-        for idx in top_indices:
-            full_name = self._embedding_keys[idx]
-            table_meta = self.metadata_cache[full_name]
-            relevance = float(similarities[idx])
+        for entity in search_results:
+            full_name = entity["id"]
+            relevance = entity["similarity"]
+            table_meta = self.metadata_cache.get(full_name)
+            if not table_meta:
+                continue
 
             # Generate a brief summary
             col_names = [c.name for c in table_meta.columns[:5]]

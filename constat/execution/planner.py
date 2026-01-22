@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Multi-step planner for problem decomposition."""
 
 import json
@@ -15,6 +24,7 @@ from constat.discovery.concept_detector import ConceptDetector
 
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
+    from constat.catalog.api_schema_manager import APISchemaManager
 
 
 # System prompt for planning - base version
@@ -35,6 +45,7 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 
 ## Code Environment Capabilities
 - Database connections (`db_<name>`), API clients (`api_<name>`)
+- `duckdb` for SQL queries on any data (DataFrames, JSON, Parquet)
 - `pd` (pandas), `np` (numpy), `store` for persisting data between steps
 - `llm_ask(question)` for general knowledge, `send_email(to, subject, body, df=None)` for emails
 
@@ -44,11 +55,16 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 3. Use documents for policies/rules and business thresholds
 
 ## Planning Guidelines
-1. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE, API filters, or GraphQL arguments
-2. **PREFER SQL JOINs over separate queries** for related tables
-3. Keep steps atomic - one main action per step
-4. Identify parallelizable steps (empty depends_on)
-5. End with a step that synthesizes the final answer
+1. **PREFER SQL OVER PANDAS** - SQL is more robust, scalable, and has clearer error messages
+   - For databases: Use native SQL queries with pd.read_sql()
+   - For in-memory data: Use DuckDB to query DataFrames/JSON with SQL syntax
+   - SQL is declarative (what you want) vs pandas is imperative (how to get it)
+2. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE, API filters, or GraphQL arguments
+3. **PREFER SQL JOINs over separate queries** for related tables
+4. Only use pandas for operations SQL cannot express (e.g., complex reshaping, pivot, ML)
+5. Keep steps atomic - one main action per step
+6. Identify parallelizable steps (empty depends_on)
+7. End with a step that synthesizes the final answer
 
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).
@@ -106,10 +122,12 @@ class Planner:
         router_or_provider: Optional[Union[BaseLLMProvider, TaskRouter]] = None,
         learning_store=None,
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
+        api_schema_manager: Optional["APISchemaManager"] = None,
     ):
         self.config = config
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools  # For enriching schema search with documents
+        self.api_schema_manager = api_schema_manager  # For API semantic search
         self._user_facts: dict = {}  # name -> value mapping
         self._learning_store = learning_store  # For injecting learned rules
 
@@ -237,6 +255,10 @@ class Planner:
             handlers["get_api_schema_overview"] = lambda api_name: api_executor.get_schema_overview(api_name)
             handlers["get_api_query_schema"] = lambda api_name, query_name: api_executor.get_query_schema(api_name, query_name)
 
+            # Add semantic search for APIs if api_schema_manager is available
+            if self.api_schema_manager:
+                handlers["find_relevant_apis"] = lambda query, limit=5: self.api_schema_manager.find_relevant_apis(query, limit=limit)
+
         return handlers
 
     def _parse_plan_response(self, response: str) -> dict:
@@ -338,8 +360,30 @@ class Planner:
                         },
                         "required": ["api_name", "query_name"]
                     }
-                }
+                },
             ])
+
+            # Add semantic search for APIs if api_schema_manager is available
+            if self.api_schema_manager:
+                schema_tools.append({
+                    "name": "find_relevant_apis",
+                    "description": "Search for API endpoints relevant to a query using semantic similarity. Returns APIs that might have the data you need.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Natural language description of what API data is needed"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of results (default 5)",
+                                "default": 5
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                })
 
         system_prompt = self._build_system_prompt(problem)
 

@@ -106,7 +106,10 @@ apis:
     type: openapi
     url: https://catfact.ninja
     spec_url: https://catfact.ninja/docs
-    description: Cat facts and breeds API with endpoints for random facts and breed information
+    description: |
+      Cat facts and breeds API. Endpoints return paginated responses where the
+      actual data is in the 'data' field (e.g., response["data"] for the array of items).
+      /breeds returns breed info with country of origin. /facts returns random cat facts.
 
 execution:
   timeout_seconds: 120

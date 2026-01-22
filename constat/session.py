@@ -6902,7 +6902,8 @@ If there are no verifiable claims, return an empty array []."""
         ))
 
         try:
-            claims_result = self.router.chat(
+            claims_result = self.router.execute(
+                task_type="general",
                 system_prompt="You are a claims extraction assistant. Extract verifiable claims from analysis results.",
                 user_message=claims_prompt,
                 max_tokens=1000,

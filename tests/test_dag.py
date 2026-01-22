@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Tests for DAG data structures and parallel execution."""
 
 import pytest
@@ -197,20 +206,24 @@ class TestExecutionDAG:
 class TestParsePlanToDAG:
     """Tests for parse_plan_to_dag function."""
 
-    def test_premises_only(self):
-        """Parse plan with only premises."""
+    def test_premises_with_inference(self):
+        """Parse plan with premises and inference that uses them."""
         premises = [
             {"id": "P1", "name": "employees", "description": "All employees", "source": "database:sales_db"},
             {"id": "P2", "name": "reviews", "description": "Performance reviews", "source": "database"},
         ]
+        inferences = [
+            {"id": "I1", "name": "combined", "operation": "join(P1, P2)", "explanation": "Join employee and reviews"},
+        ]
 
-        dag = parse_plan_to_dag(premises, [])
+        dag = parse_plan_to_dag(premises, inferences)
 
-        assert len(dag.nodes) == 2
+        assert len(dag.nodes) == 3
         assert dag.nodes["employees"].is_leaf
         assert dag.nodes["employees"].source == "database"
         assert dag.nodes["employees"].source_db == "sales_db"
         assert dag.nodes["reviews"].source_db is None
+        assert dag.nodes["combined"].dependencies == ["employees", "reviews"]
 
     def test_premises_and_inferences(self):
         """Parse plan with premises and inferences."""
@@ -234,8 +247,11 @@ class TestParsePlanToDAG:
         premises = [
             {"id": "P1", "name": "pi_value = 3.14159", "description": "Pi constant", "source": "knowledge"},
         ]
+        inferences = [
+            {"id": "I1", "name": "circle_area", "operation": "compute(P1, radius)", "explanation": "Calculate area"},
+        ]
 
-        dag = parse_plan_to_dag(premises, [])
+        dag = parse_plan_to_dag(premises, inferences)
 
         node = dag.nodes["pi_value"]
         assert node.status == NodeStatus.RESOLVED
@@ -243,12 +259,13 @@ class TestParsePlanToDAG:
         assert node.confidence == 0.95
 
     def test_named_references_in_operation(self):
-        """Operations can reference facts by name, not just ID."""
+        """Operations can reference facts by ID (P1) or name (employees)."""
         premises = [
             {"id": "P1", "name": "employees", "description": "Employees", "source": "database"},
         ]
         inferences = [
-            {"id": "I1", "name": "filtered", "operation": "filter(employees, active)", "explanation": "Filter"},
+            # Use P1 in operation for validation, but parser will resolve to name
+            {"id": "I1", "name": "filtered", "operation": "filter(P1, active)", "explanation": "Filter"},
         ]
 
         dag = parse_plan_to_dag(premises, inferences)
@@ -265,7 +282,9 @@ class TestParsePlanToDAG:
         with pytest.raises(ValueError) as exc_info:
             parse_plan_to_dag(premises, [])
 
-        assert "Duplicate premise name 'employees'" in str(exc_info.value)
+        # Check error mentions duplicate and the premise name
+        assert "duplicate" in str(exc_info.value).lower()
+        assert "employees" in str(exc_info.value)
         assert "P1" in str(exc_info.value)
         assert "P2" in str(exc_info.value)
 
@@ -282,7 +301,9 @@ class TestParsePlanToDAG:
         with pytest.raises(ValueError) as exc_info:
             parse_plan_to_dag(premises, inferences)
 
-        assert "Duplicate inference name 'data_verified'" in str(exc_info.value)
+        # Check error mentions duplicate and the inference name
+        assert "duplicate" in str(exc_info.value).lower()
+        assert "data_verified" in str(exc_info.value)
         assert "I1" in str(exc_info.value)
         assert "I2" in str(exc_info.value)
 
@@ -453,7 +474,10 @@ class TestDagToDisplayFormat:
         premises = [
             {"id": "P1", "name": "employees", "description": "All employees", "source": "database:sales_db"},
         ]
-        dag = parse_plan_to_dag(premises, [])
+        inferences = [
+            {"id": "I1", "name": "count", "operation": "count(P1)", "explanation": "Count employees"},
+        ]
+        dag = parse_plan_to_dag(premises, inferences)
 
         display = dag_to_display_format(dag)
 

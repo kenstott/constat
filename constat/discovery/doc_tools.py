@@ -1,3 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Document discovery tools for reference documents.
 
 These tools allow the LLM to discover and search reference documents
@@ -12,9 +21,9 @@ import hashlib
 import threading
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 from constat.core.config import Config, DocumentConfig
+from constat.embedding_loader import EmbeddingModelLoader
 from constat.discovery.models import (
     DocumentChunk,
     LoadedDocument,
@@ -355,9 +364,8 @@ class DocumentDiscoveryTools:
         self.config = config
         self._loaded_documents: dict[str, LoadedDocument] = {}
 
-        # Load embedding model eagerly - it's always needed and avoids
-        # race conditions from lazy initialization in parallel contexts
-        self._model: SentenceTransformer = SentenceTransformer(self.EMBEDDING_MODEL)
+        # Use shared embedding model loader (may already be loading in background)
+        self._model = EmbeddingModelLoader.get_instance().get_model()
         # Lock for thread-safe access to embedding model (not thread-safe for concurrent encode)
         self._model_lock = threading.Lock()
 
