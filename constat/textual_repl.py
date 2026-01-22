@@ -919,7 +919,7 @@ class SidePanelContent(RichLog):
             self.write(centered)
 
     def _render_plan(self) -> None:
-        """Render plan for approval (no box, just content)."""
+        """Render plan for approval (no box, just content with proper wrapping)."""
         super().clear()
 
         if not self._dag_lines:
@@ -928,10 +928,51 @@ class SidePanelContent(RichLog):
             self.write(content)
             return
 
-        # Render plan content directly without a box
+        import textwrap
+        import re
+
+        # Calculate content width
+        content_width = self.content_size.width - 3  # -3 for accurate wrapping
+        if content_width <= 0:
+            # Widget not laid out yet - calculate from app size
+            try:
+                app = self.app
+                ratio_index = getattr(app, '_panel_ratio_index', 1)
+                ratios = getattr(app, 'PANEL_RATIOS', [(3, 1), (2, 1), (1, 1), (1, 2)])
+                output_ratio, side_ratio = ratios[ratio_index]
+                total_ratio = output_ratio + side_ratio
+                app_width = app.size.width if app.size.width > 0 else 120
+                panel_width = (app_width * side_ratio) // total_ratio
+                content_width = panel_width - 6
+            except Exception:
+                content_width = 40  # Reasonable default
+        content_width = max(20, content_width)
+
+        # Render plan content with proper text wrapping
         for line in self._dag_lines:
             if line.strip():
-                self.write(Text(line, style="white"))
+                # Lines may have prefix like "P P1: " or "I I1: " - detect and account for it
+                prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*)', line)
+                if prefix_match:
+                    prefix = prefix_match.group(1)
+                    rest = line[len(prefix):]
+                    first_width = content_width - len(prefix)
+                    cont_width = content_width - 4  # indent for continuation
+                    if len(rest) <= first_width:
+                        self.write(f"[white]{line}[/white]")
+                    else:
+                        wrapped = textwrap.wrap(rest, width=first_width)
+                        self.write(f"[white]{prefix}{wrapped[0]}[/white]")
+                        remainder = rest[len(wrapped[0]):].strip()
+                        if remainder:
+                            cont_wrapped = textwrap.wrap(remainder, width=cont_width)
+                            for cont in cont_wrapped:
+                                self.write(f"[white]    {cont}[/white]")
+                else:
+                    # No prefix detected (e.g., box-drawing DAG lines), wrap normally
+                    wrapped_lines = textwrap.wrap(line, width=content_width)
+                    for wrapped in wrapped_lines:
+                        self.write(f"[white]{wrapped}[/white]")
 
     def _render_artifacts(self) -> None:
         """Render artifact links with clickable file:// URIs.
