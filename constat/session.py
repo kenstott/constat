@@ -193,7 +193,8 @@ Share data between steps ONLY via `store`:
 ## Code Rules
 1. Use `pd.read_sql(query, db_<name>)` for source databases
 2. **ALWAYS save results to store** - nothing in local variables persists!
-3. Print informative output about what was done
+3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
+4. Do NOT print full tables/DataFrames - they are saved as artifacts for the user to view
 
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers.

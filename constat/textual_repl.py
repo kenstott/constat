@@ -305,16 +305,13 @@ class StatusBar(Static):
         # 4. Status message (remaining space)
         content.append(" ")
         if self.status_message:
-            spinner = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
-            content.append(f"{spinner} {self.status_message}", style="cyan")
+            content.append(self.status_message, style="cyan")
         elif self.phase == Phase.IDLE:
             content.append("ready", style="dim")
         elif self.phase == Phase.PLANNING:
-            spinner = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
-            content.append(f"{spinner} planning", style="cyan")
+            content.append("planning", style="cyan")
         elif self.phase == Phase.EXECUTING:
-            spinner = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
-            content.append(f"{spinner} executing", style="green")
+            content.append("executing", style="green")
         elif self.phase == Phase.AWAITING_APPROVAL:
             content.append("awaiting approval", style="yellow")
         elif self.phase == Phase.FAILED:
