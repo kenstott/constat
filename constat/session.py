@@ -6639,29 +6639,21 @@ REMEMBER:
                 execution_context=self._execution_context,
             )
 
-            # Emit event to start live plan display
+            # Build pre-resolved info for nodes with embedded values (e.g., "breed_limit = 10")
+            pre_resolved = {}
+            for node in dag.nodes.values():
+                if node.status == NodeStatus.RESOLVED and node.is_leaf:
+                    pre_resolved[node.fact_id] = {
+                        "value": node.value,
+                        "confidence": node.confidence,
+                    }
+
+            # Emit event to start live plan display (includes pre-resolved info)
             self._emit_event(StepEvent(
                 event_type="dag_execution_start",
                 step_number=0,
-                data={"premises": premises, "inferences": inferences}
+                data={"premises": premises, "inferences": inferences, "pre_resolved": pre_resolved}
             ))
-
-            # Emit events for pre-resolved nodes (embedded values like "breed_limit = 10")
-            # These nodes are already RESOLVED in the DAG but the UI needs notification
-            for node in dag.nodes.values():
-                if node.status == NodeStatus.RESOLVED and node.is_leaf:
-                    fact_id = node.fact_id or node.name
-                    self._emit_event(StepEvent(
-                        event_type="premise_resolved",
-                        step_number=0,
-                        data={
-                            "fact_name": f"{fact_id}: {node.name}",
-                            "value": node.value,
-                            "confidence": node.confidence,
-                            "source": "embedded"
-                        }
-                    ))
-                    logger.debug(f"Emitted premise_resolved for pre-resolved node: {fact_id}: {node.name} = {node.value}")
 
             # Phase 4: Check for cancellation before starting DAG execution
             if self.is_cancelled():

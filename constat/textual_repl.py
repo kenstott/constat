@@ -1443,6 +1443,22 @@ class TextualFeedbackHandler:
 
             logger.debug(f"dag_execution_start: pre-built tree with {len(added)} nodes")
 
+            # Mark pre-resolved nodes (values from user input like "breed_limit = 10")
+            pre_resolved = data.get("pre_resolved", {})
+            for fact_id, info in pre_resolved.items():
+                # Find the node name that contains this fact_id
+                for p in premises:
+                    if p.get("id") == fact_id:
+                        node_name = f"{fact_id}: {p.get('name', fact_id)}"
+                        panel_content.update_resolved(
+                            node_name,
+                            info.get("value"),
+                            source="user",  # Value came from user's question
+                            confidence=info.get("confidence", 0.95),
+                        )
+                        logger.debug(f"dag_execution_start: marked {node_name} as pre-resolved (user input)")
+                        break
+
         elif event_type == "premise_resolving":
             # Events use fact_name and description
             fact_name = data.get("fact_name", "") or data.get("fact_id", "")
