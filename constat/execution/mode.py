@@ -90,6 +90,10 @@ class SubIntent(Enum):
     PREDICT = "predict"
     """What-if / forecast."""
 
+    # Plan continue sub-intents
+    CORRECTION = "correction"
+    """User providing a reusable correction/rule (always use X, never do Y)."""
+
     # Control sub-intents (session management)
     RESET = "reset"
     """Clear session state (/reset)."""

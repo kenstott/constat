@@ -1596,6 +1596,13 @@ class TextualFeedbackHandler:
                 logger.debug(f"on_session_event: {display_msg}")
                 log.write(Text(f"  {display_msg}", style="dim green"))
 
+        elif event_type == "correction_saved":
+            correction = data.get("correction", "")[:60]
+            learning_id = data.get("learning_id", "")
+            status_bar.update_status(status_message="Correction saved")
+            log.write(Text(f"  Saved correction: {correction}", style="dim cyan"))
+            logger.debug(f"Correction saved as learning {learning_id}")
+
         # Proof/verification events (from /prove command)
         elif event_type == "extracting_claims":
             msg = data.get("message", "Extracting claims...")
@@ -2815,6 +2822,8 @@ class ConstatREPLApp(App):
             await self._handle_audit()
         elif cmd == "/user":
             log.write(Text(f"Current user: {self.user_id}", style="dim"))
+        elif cmd == "/discover":
+            await self._discover(args)
         else:
             log.write(Text(f"Unknown command: {cmd}", style="yellow"))
             log.write(Text("Type /help for available commands.", style="dim"))
@@ -2861,6 +2870,7 @@ class ConstatREPLApp(App):
             ("/learnings", "Show learnings and rules"),
             ("/consolidate", "Promote similar learnings into rules"),
             ("/prove", "Verify conversation claims with auditable proof"),
+            ("/discover [scope] <query>", "Search data sources (scope: database|api|document)"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
             ("/quit, /q", "Exit"),
         ]
@@ -3329,6 +3339,147 @@ class ConstatREPLApp(App):
                 log.write(Text(f"  {db.name}: {db.uri[:50]}...", style="dim"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
+
+    async def _discover(self, args: str) -> None:
+        """Semantic search across data sources (databases, APIs, documents).
+
+        Usage:
+            /discover <query>                    - Search all sources
+            /discover database <query>           - Search database tables/columns
+            /discover api <query>                - Search API endpoints
+            /discover document <query>           - Search documents
+            /discover database <schema> <query>  - Search within specific schema
+        """
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one(StatusBar)
+
+        if not args.strip():
+            log.write(Text("Usage: /discover [scope] <query>", style="yellow"))
+            log.write(Text("  scope: database|api|document (optional)", style="dim"))
+            log.write(Text("  query: semantic search terms", style="dim"))
+            return
+
+        # Parse arguments: [scope] [sub-scope] <query>
+        parts = args.strip().split()
+        source_filter = None
+        parent_filter = None
+        query_parts = parts
+
+        # Check for scope prefix
+        scope_map = {
+            "database": "schema",
+            "db": "schema",
+            "databases": "schema",
+            "api": "api",
+            "apis": "api",
+            "document": "document",
+            "documents": "document",
+            "doc": "document",
+            "docs": "document",
+        }
+
+        if parts and parts[0].lower() in scope_map:
+            source_filter = scope_map[parts[0].lower()]
+            query_parts = parts[1:]
+
+            # For database scope, check for schema sub-filter
+            if source_filter == "schema" and len(query_parts) >= 2:
+                # Check if next part looks like a schema name (not a search term)
+                potential_schema = query_parts[0].lower()
+                if self.session and hasattr(self.session, 'config'):
+                    schema_names = [db.name.lower() for db in self.session.config.databases]
+                    if potential_schema in schema_names:
+                        parent_filter = query_parts[0]
+                        query_parts = query_parts[1:]
+
+        if not query_parts:
+            log.write(Text("Please provide a search query.", style="yellow"))
+            return
+
+        query = " ".join(query_parts)
+        status_bar.update_status(status_message=f"Searching: {query[:40]}...")
+
+        try:
+            # Get vector store from session
+            if not self.session or not hasattr(self.session, 'catalog'):
+                log.write(Text("No catalog available for search.", style="yellow"))
+                return
+
+            # Get embedding model
+            from constat.embedding_loader import EmbeddingModelLoader
+            model = EmbeddingModelLoader.get_instance().get_model()
+            query_embedding = model.encode(query, normalize_embeddings=True)
+
+            # Get the vector store from schema manager
+            vector_store = None
+            if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
+                vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+
+            if not vector_store:
+                # Try to get from catalog
+                if hasattr(self.session.catalog, '_vector_store'):
+                    vector_store = self.session.catalog._vector_store
+
+            if not vector_store:
+                log.write(Text("No vector store available. Run /update to build index.", style="yellow"))
+                return
+
+            # Search catalog entities
+            results = vector_store.search_catalog_entities(
+                query_embedding=query_embedding,
+                source=source_filter,
+                limit=15,
+                min_similarity=0.3,
+            )
+
+            # Filter by parent if specified
+            if parent_filter:
+                results = [r for r in results if r.get("parent_id", "").startswith(parent_filter)]
+
+            if not results:
+                scope_str = f" in {source_filter}" if source_filter else ""
+                log.write(Text(f"No results found for '{query}'{scope_str}.", style="dim"))
+                return
+
+            # Display results
+            scope_str = f" ({source_filter})" if source_filter else ""
+            log.write(Text(f"Found {len(results)} matches{scope_str}:", style="bold"))
+
+            from rich.table import Table
+            table = Table(show_header=True, box=None, padding=(0, 1))
+            table.add_column("Score", style="dim", width=5)
+            table.add_column("Type", style="cyan", width=12)
+            table.add_column("Name", style="bold")
+            table.add_column("Details", style="dim")
+
+            for r in results:
+                score = f"{r['similarity']:.2f}"
+                etype = r.get("type", "unknown")
+                name = r.get("name", "")
+                parent = r.get("parent_id", "")
+                metadata = r.get("metadata", {})
+
+                # Build details string
+                details = []
+                if parent:
+                    details.append(f"in {parent}")
+                if etype == "column" and metadata.get("dtype"):
+                    details.append(metadata["dtype"])
+                if etype == "api_endpoint" and metadata.get("method"):
+                    details.append(metadata["method"])
+                if metadata.get("description"):
+                    desc = metadata["description"][:40]
+                    details.append(desc)
+
+                table.add_row(score, etype, name, " | ".join(details) if details else "")
+
+            log.write(table)
+            status_bar.update_status(status_message="Search complete")
+
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+            logger.debug(f"_discover error: {e}", exc_info=True)
+            status_bar.update_status(status_message="Search failed")
 
     async def _show_context(self) -> None:
         """Show context size and token usage."""

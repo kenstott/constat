@@ -122,12 +122,13 @@ class TestExemplarStructure:
         assert "cancel" in control_subs
         assert "replan" in control_subs
 
-    def test_plan_continue_has_no_sub_intents(self, classifier):
-        """plan_continue should not have sub-intents (user message is the context)."""
+    def test_plan_continue_has_correction_sub_intent(self, classifier):
+        """plan_continue should have correction sub-intent for reusable user rules."""
         sub_intents = classifier._exemplars.get("sub_intents", {})
-        # plan_continue may be absent or empty
+        # plan_continue should have correction sub-intent
         if "plan_continue" in sub_intents:
-            assert sub_intents["plan_continue"] == {} or sub_intents["plan_continue"] is None
+            assert "correction" in sub_intents["plan_continue"]
+            assert len(sub_intents["plan_continue"]["correction"]) >= 3
 
 
 class TestMessageSplitting:

@@ -2203,6 +2203,64 @@ Return ONLY Python code, no markdown."""
         except Exception as e:
             logger.debug(f"Learning capture failed (non-fatal): {e}")
 
+    def _save_correction_as_learning(self, user_input: str) -> None:
+        """Save a user correction as a reusable learning.
+
+        Captures context from the current session to make the correction
+        applicable to future similar queries.
+
+        Args:
+            user_input: The user's correction (e.g., "always use customer_id not cust_id")
+        """
+        if not self.learning_store:
+            logger.debug("No learning store available, skipping correction capture")
+            return
+
+        try:
+            # Build context from current session
+            context = {}
+
+            # Add current problem/query context
+            if self.datastore:
+                problem = self.datastore.get_session_meta("problem")
+                if problem:
+                    context["original_problem"] = problem[:500]
+
+                # Add available tables for schema context
+                tables = self.datastore.list_tables()
+                if tables:
+                    context["tables"] = [t.get("name", "") for t in tables[:10]]
+
+                # Add any active schemas from catalog
+                if hasattr(self, 'catalog') and self.catalog:
+                    schemas = getattr(self.catalog, 'get_active_schemas', lambda: [])()
+                    if schemas:
+                        context["schemas"] = schemas[:5]
+
+            # Add session ID for traceability
+            if self.session_id:
+                context["session_id"] = self.session_id
+
+            # Save the correction as a learning
+            learning_id = self.learning_store.save_learning(
+                category=LearningCategory.USER_CORRECTION,
+                context=context,
+                correction=user_input,
+                source=LearningSource.NL_DETECTION,
+            )
+
+            logger.info(f"Saved user correction as learning {learning_id}: {user_input[:50]}...")
+
+            # Emit event so UI can acknowledge
+            self._emit_event(StepEvent(
+                event_type="correction_saved",
+                step_number=0,
+                data={"correction": user_input, "learning_id": learning_id}
+            ))
+
+        except Exception as e:
+            logger.debug(f"Correction capture failed (non-fatal): {e}")
+
     def _generate_failure_suggestions(
         self, step: "Step", error: str, code: str
     ) -> list["FailureSuggestion"]:
@@ -4090,6 +4148,10 @@ Provide a brief, high-level summary of the key findings."""
         Returns:
             Result dict from the replanning flow.
         """
+        # Check for CORRECTION sub-intent - save as reusable learning
+        if turn_intent.sub == SubIntent.CORRECTION:
+            self._save_correction_as_learning(user_input)
+
         # Transition phase to PLANNING
         self._apply_phase_transition("plan_new")  # Returns to planning state
 

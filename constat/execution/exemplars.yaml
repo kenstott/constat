@@ -118,6 +118,18 @@ sub_intents:
       - "get the"
       - "find the"
 
+  plan_continue:
+    correction:
+      # User providing a reusable correction/rule
+      - "always use customer_id not cust_id"
+      - "never use the old table"
+      - "from now on use the new schema"
+      - "remember to filter by active status"
+      - "the correct join is on account_id"
+      - "that column is deprecated, use this instead"
+      - "use billing_address not address"
+      - "always exclude test accounts"
+
   plan_new:
     compare:
       # Comparison analysis
