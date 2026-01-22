@@ -486,6 +486,7 @@ class ResolutionStrategy:
         FactSource.RULE,
         FactSource.DOCUMENT,
         FactSource.DATABASE,
+        FactSource.API,
     ])
 
     # Tier 1 timeout in seconds - collect results within this window
@@ -2003,6 +2004,12 @@ Respond with ONLY the JSON object, no explanation."""
             logger.debug(f"[_try_resolve] DOCUMENT for {fact_name}: {result is not None}")
             return result
 
+        elif source == FactSource.API:
+            logger.debug(f"[_try_resolve] API attempting for {fact_name}")
+            result = self._resolve_from_api(fact_name, params)
+            logger.debug(f"[_try_resolve] API for {fact_name}: {result is not None}")
+            return result
+
         elif source == FactSource.LLM_KNOWLEDGE:
             logger.debug(f"[_try_resolve] LLM_KNOWLEDGE attempting for {fact_name}")
             result = self._resolve_from_llm(fact_name, params)
@@ -2042,6 +2049,231 @@ Respond with ONLY the JSON object, no explanation."""
             return rule(self, params)
         except Exception as e:
             # Rule failed - log but don't crash
+            return None
+
+    def _resolve_from_api(self, fact_name: str, params: dict, lazy: bool = True) -> Optional[Fact]:
+        """Resolve a fact by querying external APIs.
+
+        Uses LLM to determine which API to query and how.
+
+        Args:
+            fact_name: Name of the fact to resolve
+            params: Parameters for the fact
+            lazy: If True (default), return a binding without executing the API.
+                  The binding shows which API/endpoint will be used.
+                  If False, execute the API and return actual data.
+
+        Returns:
+            Fact with API binding (lazy) or actual data (eager)
+        """
+        import logging
+        import json
+        logger = logging.getLogger(__name__)
+
+        if not self.config or not self.config.apis:
+            logger.debug(f"[_resolve_from_api] No APIs configured")
+            return None
+
+        if not self.llm:
+            logger.debug(f"[_resolve_from_api] No LLM available for API query generation")
+            return None
+
+        # Build API overview for LLM
+        api_overview_lines = []
+        api_descriptions = {}
+        for api_name, api_config in self.config.apis.items():
+            api_type = api_config.type.upper()
+            desc = api_config.description or f"{api_type} endpoint"
+            url = api_config.url or ""
+            api_overview_lines.append(f"- {api_name} ({api_type}): {desc}")
+            api_descriptions[api_name] = {"type": api_type, "desc": desc, "url": url}
+            if url:
+                api_overview_lines.append(f"  URL: {url}")
+        api_overview = "\n".join(api_overview_lines)
+
+        # Ask LLM which API can provide this fact and how to query it
+        prompt = f"""I need to resolve this fact from an external API:
+
+Fact: {fact_name}
+Parameters: {json.dumps(params) if params else "none"}
+
+Available APIs:
+{api_overview}
+
+If this fact can be resolved from one of these APIs, provide the query details.
+Otherwise respond NOT_POSSIBLE.
+
+For GraphQL APIs, respond in this format:
+API: <api_name>
+GRAPHQL: <graphql_query>
+
+For REST/OpenAPI APIs, respond in this format:
+API: <api_name>
+REST: <endpoint_path>
+METHOD: GET|POST|etc
+PARAMS: {{"key": "value"}}
+
+If this fact cannot be resolved from any available API, respond:
+NOT_POSSIBLE: <reason>
+"""
+
+        try:
+            response = self.llm.generate(
+                system="You are an API expert. Determine which API can provide the requested data and how to query it.",
+                user_message=prompt,
+                max_tokens=500,
+            )
+
+            if "NOT_POSSIBLE" in response:
+                logger.debug(f"[_resolve_from_api] LLM says not possible: {response}")
+                return None
+
+            # Parse the response
+            lines = response.strip().split("\n")
+            api_name = None
+            graphql_query = None
+            rest_endpoint = None
+            rest_method = "GET"
+            rest_params = {}
+
+            for idx, line in enumerate(lines):
+                line = line.strip()
+                if line.startswith("API:"):
+                    api_name = line.split(":", 1)[1].strip()
+                elif line.startswith("GRAPHQL:"):
+                    graphql_query = line.split(":", 1)[1].strip()
+                    # Collect multi-line GraphQL query
+                    for subsequent in lines[idx + 1:]:
+                        if subsequent.strip().startswith(("API:", "REST:", "METHOD:", "PARAMS:", "NOT_POSSIBLE")):
+                            break
+                        graphql_query += "\n" + subsequent
+                    graphql_query = graphql_query.strip()
+                    # Clean up code blocks
+                    graphql_query = graphql_query.replace("```graphql", "").replace("```", "").strip()
+                elif line.startswith("REST:"):
+                    rest_endpoint = line.split(":", 1)[1].strip()
+                elif line.startswith("METHOD:"):
+                    rest_method = line.split(":", 1)[1].strip().upper()
+                elif line.startswith("PARAMS:"):
+                    params_str = line.split(":", 1)[1].strip()
+                    try:
+                        rest_params = json.loads(params_str)
+                    except json.JSONDecodeError:
+                        pass
+
+            if not api_name:
+                logger.debug(f"[_resolve_from_api] Could not parse API name from response")
+                return None
+
+            # Build endpoint description
+            if graphql_query:
+                api_endpoint = graphql_query[:100] + "..." if len(graphql_query) > 100 else graphql_query
+                endpoint_display = f"GraphQL query"
+            elif rest_endpoint:
+                api_endpoint = f"{rest_method} {rest_endpoint}"
+                endpoint_display = api_endpoint
+            else:
+                logger.debug(f"[_resolve_from_api] No query found in LLM response")
+                return None
+
+            # Lazy binding: return API source info without executing
+            if lazy:
+                cache_key = self._cache_key(fact_name, params)
+                api_info = api_descriptions.get(api_name, {})
+                api_desc = api_info.get("desc", "API")
+                api_type = api_info.get("type", "REST")
+
+                # Build descriptive value like database does: "(api_name) endpoint_info"
+                value_str = f"({api_name}) {endpoint_display}"
+                reasoning = f"API '{api_name}' ({api_type}): {api_desc}. Endpoint: {api_endpoint}"
+
+                logger.info(f"[_resolve_from_api] Lazy binding for '{fact_name}' -> {api_name}: {endpoint_display}")
+
+                fact = Fact(
+                    name=cache_key,
+                    value=value_str,
+                    confidence=0.95,
+                    source=FactSource.API,
+                    source_name=api_name,
+                    api_endpoint=api_endpoint,
+                    reasoning=reasoning,
+                    context=f"API: {api_name} - {endpoint_display}",
+                )
+
+                self._cache[cache_key] = fact
+                self.resolution_log.append(fact)
+                return fact
+
+            # Eager execution: actually call the API
+            from constat.catalog.api_executor import APIExecutor, APIExecutionError
+            executor = APIExecutor(self.config)
+
+            try:
+                if graphql_query:
+                    logger.info(f"[_resolve_from_api] Executing GraphQL query on {api_name}")
+                    result = executor.execute_graphql(api_name, graphql_query)
+                elif rest_endpoint:
+                    logger.info(f"[_resolve_from_api] Executing REST call on {api_name}: {rest_method} {rest_endpoint}")
+                    result = executor.execute_rest(
+                        api_name,
+                        operation=rest_endpoint,
+                        query_params=rest_params if rest_method == "GET" else None,
+                        body=rest_params if rest_method in ("POST", "PUT", "PATCH") else None,
+                        method=rest_method,
+                    )
+                else:
+                    logger.debug(f"[_resolve_from_api] No query found in LLM response")
+                    return None
+
+                # Create the fact from the result
+                cache_key = self._cache_key(fact_name, params)
+
+                # Determine value and whether to store as table
+                if isinstance(result, dict):
+                    # Check if result has a 'data' key with list (common pattern)
+                    if "data" in result and isinstance(result["data"], list):
+                        value = result["data"]
+                    else:
+                        value = result
+                elif isinstance(result, list):
+                    value = result
+                else:
+                    value = result
+
+                # Check if should store as table
+                row_count = None
+                table_name = None
+                if self._datastore and isinstance(value, list) and len(value) > 10:
+                    # Store large results as table
+                    import pandas as pd
+                    df = pd.DataFrame(value)
+                    table_name = f"api_{api_name}_{fact_name}".replace(" ", "_").replace("-", "_")[:50]
+                    self._datastore.save_table(table_name, df)
+                    row_count = len(df)
+                    logger.info(f"[_resolve_from_api] Stored {row_count} rows as table {table_name}")
+
+                fact = Fact(
+                    name=cache_key,
+                    value=value,
+                    confidence=0.95,
+                    source=FactSource.API,
+                    source_name=api_name,
+                    api_endpoint=api_endpoint,
+                    table_name=table_name,
+                    row_count=row_count,
+                    context=f"API Query: {api_endpoint}",
+                )
+
+                self._cache[cache_key] = fact
+                self.resolution_log.append(fact)
+                return fact
+
+            except APIExecutionError as e:
+                logger.warning(f"[_resolve_from_api] API execution failed: {e}")
+                return None
+
+        except Exception as e:
+            logger.warning(f"[_resolve_from_api] Failed to resolve {fact_name} from API: {e}")
             return None
 
     def _transform_sql_for_sqlite(self, sql: str) -> str:
@@ -2276,7 +2508,7 @@ If this fact cannot be DIRECTLY resolved from the available sources, respond wit
                 response = self.llm.generate(
                     system="You are a Python data expert. Generate code to extract facts from data sources.",
                     user_message=prompt,
-                    max_tokens=600,
+                    max_tokens=2000,
                 )
             else:
                 # Retry with error context
@@ -2296,7 +2528,7 @@ Original request:
                 response = self.llm.generate(
                     system="You are a Python data expert. Generate code to extract facts from data sources.",
                     user_message=retry_prompt,
-                    max_tokens=600,
+                    max_tokens=2000,
                 )
 
             logger.debug(f"DB: LLM response (first 300 chars): {response[:300]}...")

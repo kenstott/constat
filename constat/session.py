@@ -184,6 +184,7 @@ Share data between steps ONLY via `store`:
 - Check `if 'col' in df.columns` before accessing columns
 - For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
+- In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
 
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") → compute dynamically with datetime
@@ -563,12 +564,15 @@ class Session:
         # Build source context
         ctx = self._build_source_context()
 
-        # Build codegen learnings section - show what didn't work vs what did work
+        # Build codegen learnings section - only for code generation steps
+        # Skip for summarization, planning, intent classification etc.
         learnings_text = ""
-        try:
-            learnings_text = self._get_codegen_learnings(step.goal)
-        except Exception as e:
-            logger.debug(f"Failed to get codegen learnings: {e}")
+        code_gen_types = {TaskType.PYTHON_ANALYSIS, TaskType.SQL_GENERATION}
+        if step.task_type in code_gen_types:
+            try:
+                learnings_text = self._get_codegen_learnings(step.goal, step.task_type)
+            except Exception as e:
+                logger.debug(f"Failed to get codegen learnings: {e}")
 
         # Detect relevant concepts and inject specialized sections
         injected_sections = self._concept_detector.get_sections_for_prompt(
@@ -593,17 +597,21 @@ class Session:
             outputs=", ".join(step.expected_outputs) if step.expected_outputs else "(none)",
         )
 
-    def _get_codegen_learnings(self, step_goal: str) -> str:
+    def _get_codegen_learnings(self, step_goal: str, task_type: TaskType = None) -> str:
         """Get relevant codegen learnings showing what didn't work vs what did work.
 
         Args:
             step_goal: The goal of the current step for context matching
+            task_type: The task type to filter learnings (SQL vs Python)
 
         Returns:
             Formatted learnings text for prompt injection
         """
         if not self.learning_store:
             return ""
+
+        # Determine if this is SQL or Python based on task type
+        is_sql = task_type == TaskType.SQL_GENERATION
 
         lines = []
 
@@ -613,9 +621,20 @@ class Session:
             min_confidence=0.6,
         )
         if rules:
-            lines.append("\n## Code Generation Rules (apply these)")
-            for rule in rules[:5]:
-                lines.append(f"- {rule['summary']}")
+            # Filter rules by type - SQL rules mention SQL/query patterns
+            sql_keywords = {'sql', 'query', 'select', 'join', 'table', 'column', 'duckdb'}
+            filtered_rules = []
+            for rule in rules:
+                summary_lower = rule.get('summary', '').lower()
+                rule_is_sql = any(kw in summary_lower for kw in sql_keywords)
+                if is_sql == rule_is_sql:
+                    filtered_rules.append(rule)
+
+            if filtered_rules:
+                label = "SQL" if is_sql else "Code"
+                lines.append(f"\n## {label} Generation Rules (apply these)")
+                for rule in filtered_rules[:5]:
+                    lines.append(f"- {rule['summary']}")
 
         # Get recent raw learnings with full context (error vs fix)
         raw_learnings = self.learning_store.list_raw_learnings(
@@ -624,14 +643,20 @@ class Session:
             include_promoted=False,
         )
         if raw_learnings:
-            # Filter to relevant ones based on step_goal similarity
-            relevant = [
-                l for l in raw_learnings
-                if self._is_learning_relevant(l, step_goal)
-            ][:3]  # Limit to 3 detailed examples
+            # Filter by type and relevance
+            sql_code_patterns = {'SELECT', 'FROM', 'WHERE', 'JOIN', 'INSERT', 'UPDATE', 'store.query'}
+            relevant = []
+            for l in raw_learnings:
+                ctx = l.get("context", {})
+                code = ctx.get("original_code", "") + ctx.get("fixed_code", "")
+                learning_is_sql = any(pat in code for pat in sql_code_patterns)
+                if is_sql == learning_is_sql and self._is_learning_relevant(l, step_goal):
+                    relevant.append(l)
+            relevant = relevant[:3]  # Limit to 3 detailed examples
 
             if relevant:
-                lines.append("\n## Recent Codegen Fixes (learn from these)")
+                label = "SQL" if is_sql else "Codegen"
+                lines.append(f"\n## Recent {label} Fixes (learn from these)")
                 for learning in relevant:
                     ctx = learning.get("context", {})
                     original = ctx.get("original_code", "")
@@ -642,10 +667,11 @@ class Session:
                     lines.append(f"\n### {learning['correction'][:80]}")
                     if error_msg:
                         lines.append(f"**Error:** {error_msg[:100]}")
+                    lang = "sql" if is_sql else "python"
                     if original:
-                        lines.append(f"**Broken code:**\n```python\n{original[:300]}\n```")
+                        lines.append(f"**Broken code:**\n```{lang}\n{original[:300]}\n```")
                     if fixed:
-                        lines.append(f"**Fixed code:**\n```python\n{fixed[:300]}\n```")
+                        lines.append(f"**Fixed code:**\n```{lang}\n{fixed[:300]}\n```")
 
         return "\n".join(lines) if lines else ""
 
@@ -751,8 +777,13 @@ class Session:
             ]
 
         # Find relevant APIs
+        if not self.config.apis:
+            logger.debug(f"[find_relevant_sources] No APIs configured")
         if self.config.apis:
             apis = self._cached_find_relevant_apis(query, limit=api_limit)
+            logger.debug(f"[find_relevant_sources] API search for '{query[:50]}': {len(apis)} results, min_sim={min_similarity}")
+            for a in apis[:3]:
+                logger.debug(f"[find_relevant_sources]   - {a.get('api_name')}.{a.get('endpoint')}: sim={a.get('similarity', 0):.3f}")
             results["apis"] = [
                 {
                     "source_type": "api",
@@ -1031,9 +1062,7 @@ class Session:
         """
         import json
         from datetime import datetime
-        import logging
 
-        logger = logging.getLogger(__name__)
         json_key = question.replace(" ", "_").lower()[:30]
 
         knowledge_prompt = f"""Provide the value for this fact.
@@ -1107,7 +1136,7 @@ YOUR JSON RESPONSE:"""
         resolved_premises: dict,
         resolved_inferences: dict,
         inference_names: dict,
-    ) -> tuple[any, float]:
+    ) -> tuple[any, float, str]:
         """Execute a single DAG node (premise or inference).
 
         Called by DAGExecutor for each node. Handles both:
@@ -1126,7 +1155,7 @@ YOUR JSON RESPONSE:"""
             inference_names: Dict mapping inference ID to table name
 
         Returns:
-            Tuple of (value, confidence)
+            Tuple of (value, confidence, source)
         """
         import re
         import pandas as pd
@@ -1155,20 +1184,61 @@ YOUR JSON RESPONSE:"""
                     reasoning="Embedded value",
                     source=FactSource.LLM_KNOWLEDGE,
                 )
-                return node.value, node.confidence
+                return node.value, node.confidence, "embedded"
 
             # Check cache
             cached_fact = self.fact_resolver.get_fact(fact_name)
             if cached_fact and cached_fact.value is not None:
                 resolved_premises[fact_id] = cached_fact
-                return cached_fact.value, cached_fact.confidence
+                source_str = cached_fact.source_name or (cached_fact.source.value if cached_fact.source else "cache")
+                return cached_fact.value, cached_fact.confidence, source_str
 
             fact = None
             sql = None
 
             # Route based on source type (source is required, validated by DAG parser)
             logger.debug(f"[DAG] Premise {fact_id} '{fact_name}' routing with source='{source}'")
-            if source.startswith("database") or source == "database":
+
+            if source == FactSource.CACHE.value:
+                # Cached data resolution - look up in fact cache or datastore
+                cached_fact = self.fact_resolver.get_fact(fact_name)
+                if cached_fact:
+                    logger.debug(f"[DAG] Found cached fact: {fact_name} = {str(cached_fact.value)[:50]}...")
+                    resolved_premises[fact_id] = cached_fact
+                    source_str = cached_fact.source_name or (cached_fact.source.value if cached_fact.source else "cache")
+                    return cached_fact.value, cached_fact.confidence, source_str
+
+                # Try datastore table
+                if self.datastore:
+                    tables = self.datastore.list_tables()
+                    for table in tables:
+                        if table["name"].lower() == fact_name.lower():
+                            # Found table in datastore
+                            row_count = table.get("row_count", 0)
+                            value_str = f"({table['name']}) {row_count} rows"
+                            fact = Fact(
+                                name=fact_name,
+                                value=value_str,
+                                source=FactSource.CACHE,
+                                reasoning=f"Cached table from previous analysis",
+                                confidence=0.95,
+                                table_name=table["name"],
+                                row_count=row_count,
+                            )
+                            resolved_premises[fact_id] = fact
+                            self.fact_resolver.add_user_fact(
+                                fact_name=fact_name,
+                                value=value_str,
+                                reasoning="Retrieved from session cache",
+                                source=FactSource.CACHE,
+                                table_name=table["name"],
+                                row_count=row_count,
+                            )
+                            return value_str, 0.95, "cache"
+
+                raise ValueError(f"Cached data not found: {fact_name}")
+
+            elif source.startswith(FactSource.DATABASE.value):
                 # Database resolution
                 db_name = source.split(":", 1)[1].strip() if ":" in source else None
                 if not db_name:
@@ -1206,7 +1276,7 @@ YOUR JSON RESPONSE:"""
                             reasoning=f"Table reference: {table_meta.database}.{table_meta.name}",
                             source=FactSource.DATABASE,
                         )
-                        return value_str, 0.95
+                        return value_str, 0.95, f"database:{db_name}"
 
                 engine = self.schema_manager.get_sql_connection(db_name)
                 max_retries = 7
@@ -1228,7 +1298,7 @@ YOUR JSON RESPONSE:"""
                     ))
 
                     error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query." if last_error else ""
-                    sql_learnings = self._get_codegen_learnings(fact_desc)
+                    sql_learnings = self._get_codegen_learnings(fact_desc, TaskType.SQL_GENERATION)
 
                     sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
 
@@ -1236,7 +1306,9 @@ Schema:
 {detailed_schema}
 {sql_learnings}
 {error_context}
-RULE: Always SELECT primary key columns for joins."""
+RULES:
+- Always SELECT primary key columns for joins
+- Always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts"""
 
                     sql_result = self.router.execute(
                         task_type=TaskType.SQL_GENERATION,
@@ -1252,6 +1324,9 @@ RULE: Always SELECT primary key columns for joins."""
 
                     if "sqlite" in str(engine.url):
                         sql = re.sub(rf'\b{db_name}\.(\w+)', r'\1', sql)
+
+                    # Log generated SQL for debugging
+                    logger.debug(f"[SQL] Generated SQL for '{fact_name}' (attempt {attempt + 1}/{max_retries}):\n{sql}")
 
                     # Emit SQL executing event
                     self._emit_event(StepEvent(
@@ -1295,6 +1370,12 @@ RULE: Always SELECT primary key columns for joins."""
                         break
                     except Exception as sql_err:
                         last_error = str(sql_err)
+                        will_retry = attempt < max_retries - 1
+                        # Log full error for debugging
+                        logger.warning(f"[SQL] Error for '{fact_name}' (attempt {attempt + 1}/{max_retries}): {sql_err}")
+                        logger.debug(f"[SQL] Failed query:\n{sql}")
+                        if will_retry:
+                            logger.debug(f"[SQL] Will retry ({max_retries - attempt - 1} attempts remaining)")
                         # Emit SQL error event
                         self._emit_event(StepEvent(
                             event_type="sql_error",
@@ -1302,16 +1383,17 @@ RULE: Always SELECT primary key columns for joins."""
                             data={
                                 "fact_name": fact_name,
                                 "database": db_name,
-                                "error": str(sql_err)[:100],
+                                "error": str(sql_err),  # Full error, not truncated
+                                "sql": sql[:500],  # Include SQL (truncated to 500 for events)
                                 "attempt": attempt + 1,
                                 "max_attempts": max_retries,
-                                "will_retry": attempt < max_retries - 1,
+                                "will_retry": will_retry,
                             }
                         ))
                         if attempt == max_retries - 1:
                             raise Exception(f"SQL error after {max_retries} attempts: {sql_err}")
 
-            elif source.startswith("knowledge") or source.startswith("llm"):
+            elif source.startswith(FactSource.LLM_KNOWLEDGE.value):
                 value = self._resolve_llm_knowledge(fact_desc)
                 fact = Fact(
                     name=fact_name,
@@ -1321,8 +1403,17 @@ RULE: Always SELECT primary key columns for joins."""
                     reasoning=f"LLM estimate: {fact_desc}",
                 )
 
+            elif source.startswith(FactSource.API.value):
+                # API resolution via fact resolver
+                api_name = source.split(":", 1)[1].strip() if ":" in source else None
+                logger.debug(f"[DAG] Resolving API premise {fact_id} '{fact_name}' from API: {api_name}")
+                fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc)
+                if fact and fact.source != FactSource.API:
+                    # Fact resolver may have used a different source - update if API was requested
+                    logger.debug(f"[DAG] API resolution fell back to {fact.source.value}")
+
             else:
-                # Generic resolution (document, or other non-database/knowledge sources)
+                # Generic resolution (document, user, or other sources)
                 logger.debug(f"[DAG] Using tiered resolution for {fact_id} '{fact_name}' (source={source})")
                 fact, _ = self.fact_resolver.resolve_tiered(fact_name, fact_description=fact_desc)
 
@@ -1338,7 +1429,8 @@ RULE: Always SELECT primary key columns for joins."""
                     row_count=getattr(fact, 'row_count', None),
                     context=f"SQL: {sql}" if sql else None,
                 )
-                return fact.value, fact.confidence
+                source_str = fact.source_name or (fact.source.value if fact.source else "resolved")
+                return fact.value, fact.confidence, source_str
             else:
                 raise ValueError(f"Failed to resolve premise: {fact_name}")
 
@@ -1373,7 +1465,7 @@ RULE: Always SELECT primary key columns for joins."""
                                 reasoning=f"Verified {ref_table} contains data",
                                 source=FactSource.DERIVED,
                             )
-                            return f"Verified: {row_count} records", 0.95
+                            return f"Verified: {row_count} records", 0.95, "derived"
                         except Exception as ve:
                             raise ValueError(f"Verification failed: {ve}")
 
@@ -1638,7 +1730,32 @@ Return ONLY Python code, no markdown."""
                 context=f"Code:\n{code}" if code else None,
             )
 
-            return result_value, 0.9
+            return result_value, 0.9, "derived"
+
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """Convert an object to be JSON-serializable.
+
+        Handles pandas NA values (NAType), numpy types, and nested structures.
+        """
+        import numpy as np
+        import pandas as pd
+
+        if obj is None:
+            return None
+        # Handle pandas NA
+        if pd.isna(obj):
+            return None
+        # Handle numpy types
+        if isinstance(obj, (np.integer, np.floating)):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        # Handle nested structures
+        if isinstance(obj, dict):
+            return {k: self._make_json_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._make_json_serializable(v) for v in obj]
+        return obj
 
     def _build_source_context(self, include_user_facts: bool = True) -> dict:
         """Build context about available data sources (schema, APIs, documents, facts).
@@ -1844,7 +1961,9 @@ Return ONLY Python code, no markdown."""
                 existing = self.datastore.get_state(var_name)
                 if existing is None:
                     try:
-                        self.datastore.set_state(var_name, value, step_number)
+                        # Convert pandas NA values to None for JSON serialization
+                        clean_value = self._make_json_serializable(value)
+                        self.datastore.set_state(var_name, clean_value, step_number)
                     except Exception as e:
                         logger.debug(f"Skip auto-save of {var_name}: not JSON-serializable: {e}")
 
@@ -1983,6 +2102,10 @@ Return ONLY Python code, no markdown."""
             last_code = code
             last_error = format_error_for_retry(result, code)
 
+            # Log error for debugging
+            logger.warning(f"[Step {step.number}] Execution error (attempt {attempt}/{max_attempts}): {result.error_message() or 'Unknown error'}")
+            logger.debug(f"[Step {step.number}] Failed code:\n{code}")
+
             # Record error artifact
             if self.datastore:
                 self.datastore.add_artifact(step.number, attempt, "error", last_error)
@@ -2005,6 +2128,8 @@ Return ONLY Python code, no markdown."""
                 error_type = "Runtime error"
 
             will_retry = attempt < max_attempts
+            if will_retry:
+                logger.debug(f"[Step {step.number}] Will retry ({max_attempts - attempt} attempts remaining)")
             self._emit_event(StepEvent(
                 event_type="step_error",
                 step_number=step.number,
@@ -2019,6 +2144,7 @@ Return ONLY Python code, no markdown."""
             ))
 
         # Max retries exceeded - generate suggestions for alternative approaches
+        logger.warning(f"[Step {step.number}] Failed after {max_attempts} attempts: {last_error[:200]}")
         duration_ms = int((time.time() - start_time) * 1000)
         suggestions = self._generate_failure_suggestions(step, last_error, last_code)
 
@@ -3892,6 +4018,7 @@ Provide a brief, high-level summary of the key findings."""
             api_limit=3,
             min_similarity=0.3,
         )
+        logger.debug(f"[LOOKUP] find_relevant_sources returned: apis={len(sources.get('apis', []))}, tables={len(sources.get('tables', []))}, docs={len(sources.get('documents', []))}")
 
         # If we found relevant APIs or tables, signal to route to planning
         has_data_sources = bool(sources.get("apis") or sources.get("tables"))
@@ -4507,71 +4634,96 @@ Please revise the plan to incorporate this feedback."""
             ))
             return self._answer_meta_question(problem)
 
-        # Phase 3: Intent-based routing
-        # Classify user intent using embedding-based classifier
-        turn_intent = self._classify_turn_intent(problem)
-
-        # Route based on primary intent
-        route_to_planning = False
-
-        if turn_intent.primary == PrimaryIntent.QUERY:
-            # QUERY intent - answer from knowledge or current context
-            # No approval required, no planning needed
-            result = self._handle_query_intent(turn_intent, problem)
-            # Check if query handler found data sources that need planning
-            if not result.get("_route_to_planning"):
-                return result
-            # Data sources found - route to planning flow below
-            logger.info("[ROUTING] QUERY/LOOKUP found data sources, routing to planning")
-            route_to_planning = True
-
-        if turn_intent.primary == PrimaryIntent.CONTROL and not route_to_planning:
-            # CONTROL intent - system/session commands
-            # No approval required
-            return self._handle_control_intent(turn_intent, problem)
-
-        # PLAN_NEW, PLAN_CONTINUE, or re-routed QUERY - continue with planning flow
-        # Update conversation phase to PLANNING
-        self._apply_phase_transition("plan_new")
-
-        # Apply sub-intent enhancements for PLAN_NEW (COMPARE, PREDICT)
-        if turn_intent.primary == PrimaryIntent.PLAN_NEW:
-            enhancement = self._handle_plan_new_intent(turn_intent, problem)
-            problem = enhancement.get("enhanced_problem", problem)
-
-        # Run analysis and ambiguity detection in PARALLEL for faster response
-        # This saves ~1 LLM round-trip for DATA_ANALYSIS questions (the common case)
+        # PARALLEL OPTIMIZATION: Run intent, analysis, ambiguity, and planning ALL in parallel
+        # Most queries need planning, so we speculatively start it while classifying intent.
+        # If planning isn't needed (CONTROL intent, META question), we discard the speculative plan.
         self._emit_event(StepEvent(
             event_type="progress",
             step_number=0,
             data={"message": "Analyzing your question..."}
         ))
 
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+
+        def run_intent():
+            return self._classify_turn_intent(problem)
 
         def run_analysis():
             return self._analyze_question(problem)
 
         def run_ambiguity():
-            # Default to auditable mode (safer - won't pre-ask for personal values)
-            # If actual mode is exploratory, we might miss some upfront questions
-            # but that's acceptable for the performance gain
             return self._detect_ambiguity(problem, is_auditable_mode=True)
 
-        analysis = None
-        clarification_request = None
+        def run_planning():
+            # Speculative planning - may be discarded if intent doesn't need it
+            try:
+                self._sync_user_facts_to_planner()
+                return self.planner.plan(problem)
+            except Exception as e:
+                logger.debug(f"[PARALLEL] Speculative planning failed: {e}")
+                return None
 
-        # Run both in parallel if clarifications are enabled
+        # Determine which tasks to run
+        tasks = {
+            "intent": run_intent,
+            "analysis": run_analysis,
+        }
         if self.session_config.ask_clarifications and self._clarification_callback:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                analysis_future = executor.submit(run_analysis)
-                ambiguity_future = executor.submit(run_ambiguity)
+            tasks["ambiguity"] = run_ambiguity
+        # Always run speculative planning in parallel
+        tasks["planning"] = run_planning
 
-                analysis = analysis_future.result()
-                clarification_request = ambiguity_future.result()
-        else:
-            # No clarifications - just run analysis
-            analysis = self._analyze_question(problem)
+        # Run all tasks in parallel
+        parallel_start = time.time()
+        results = {}
+        with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+            futures = {executor.submit(fn): name for name, fn in tasks.items()}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                except Exception as e:
+                    logger.warning(f"[PARALLEL] Task {name} failed: {e}")
+                    results[name] = None
+
+        parallel_duration = time.time() - parallel_start
+        logger.debug(f"[PARALLEL] All tasks completed in {parallel_duration:.2f}s")
+
+        turn_intent = results.get("intent")
+        analysis = results.get("analysis")
+        clarification_request = results.get("ambiguity")
+        speculative_plan = results.get("planning")
+
+        # Route based on primary intent (may discard speculative plan)
+        route_to_planning = False
+
+        if turn_intent and turn_intent.primary == PrimaryIntent.QUERY:
+            # QUERY intent - answer from knowledge or current context
+            result = self._handle_query_intent(turn_intent, problem)
+            if not result.get("_route_to_planning"):
+                logger.debug("[PARALLEL] QUERY handled without planning (speculative plan discarded)")
+                return result
+            logger.info("[ROUTING] QUERY/LOOKUP found data sources, routing to planning")
+            route_to_planning = True
+
+        if turn_intent and turn_intent.primary == PrimaryIntent.CONTROL and not route_to_planning:
+            logger.debug("[PARALLEL] CONTROL intent (speculative plan discarded)")
+            return self._handle_control_intent(turn_intent, problem)
+
+        # PLAN_NEW, PLAN_CONTINUE, or re-routed QUERY - continue with planning flow
+        self._apply_phase_transition("plan_new")
+
+        # Apply sub-intent enhancements for PLAN_NEW (COMPARE, PREDICT)
+        enhanced_problem = problem
+        if turn_intent and turn_intent.primary == PrimaryIntent.PLAN_NEW:
+            enhancement = self._handle_plan_new_intent(turn_intent, problem)
+            enhanced_problem = enhancement.get("enhanced_problem", problem)
+            # If problem was enhanced, speculative plan may be stale - replan
+            if enhanced_problem != problem:
+                logger.debug("[PARALLEL] Problem enhanced, replanning...")
+                speculative_plan = None
+        problem = enhanced_problem
 
         # Emit facts if any were extracted
         if analysis.extracted_facts:
@@ -4596,6 +4748,7 @@ Please revise the plan to incorporate this feedback."""
         question_type = analysis.question_type
 
         if question_type == QuestionType.META_QUESTION:
+            logger.debug("[PARALLEL] META_QUESTION (speculative plan discarded)")
             self._emit_event(StepEvent(
                 event_type="progress",
                 step_number=0,
@@ -4603,6 +4756,7 @@ Please revise the plan to incorporate this feedback."""
             ))
             return self._answer_meta_question(problem)
         elif question_type == QuestionType.GENERAL_KNOWLEDGE:
+            logger.debug("[PARALLEL] GENERAL_KNOWLEDGE (speculative plan discarded)")
             self._emit_event(StepEvent(
                 event_type="progress",
                 step_number=0,
@@ -4615,7 +4769,9 @@ Please revise the plan to incorporate this feedback."""
                 enhanced_problem = self._request_clarification(clarification_request)
                 if enhanced_problem:
                     problem = enhanced_problem
-                    # Re-analyze with clarified problem
+                    # Re-analyze with clarified problem - speculative plan is stale
+                    logger.debug("[PARALLEL] Problem clarified, replanning...")
+                    speculative_plan = None
                     analysis = self._analyze_question(problem)
 
         # Create session
@@ -4681,19 +4837,31 @@ Please revise the plan to incorporate this feedback."""
         replan_attempt = 0
 
         while replan_attempt <= self.session_config.max_replan_attempts:
-            # Emit planning start event
-            self._emit_event(StepEvent(
-                event_type="planning_start",
-                step_number=0,
-                data={"message": "Analyzing data sources and creating plan..."}
-            ))
+            # Use speculative plan if available (from parallel execution), otherwise generate new plan
+            if speculative_plan is not None and replan_attempt == 0:
+                logger.debug("[PARALLEL] Using speculative plan (saved ~1 LLM call)")
+                planner_response = speculative_plan
+                self.plan = planner_response.plan
+                # Emit planning events for UI consistency
+                self._emit_event(StepEvent(
+                    event_type="planning_start",
+                    step_number=0,
+                    data={"message": "Plan ready..."}
+                ))
+            else:
+                # Emit planning start event
+                self._emit_event(StepEvent(
+                    event_type="planning_start",
+                    step_number=0,
+                    data={"message": "Analyzing data sources and creating plan..."}
+                ))
 
-            # Sync user facts to planner before generating plan
-            self._sync_user_facts_to_planner()
+                # Sync user facts to planner before generating plan
+                self._sync_user_facts_to_planner()
 
-            # Generate plan
-            planner_response = self.planner.plan(current_problem)
-            self.plan = planner_response.plan
+                # Generate plan
+                planner_response = self.planner.plan(current_problem)
+                self.plan = planner_response.plan
 
             # Emit planning complete event
             self._emit_event(StepEvent(
@@ -5305,6 +5473,16 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # Get previous problem for follow-up context
         previous_problem = self.datastore.get_session_meta("problem")
 
+        # Store follow-up question for /prove command
+        follow_ups_json = self.datastore.get_session_meta("follow_ups")
+        try:
+            follow_ups = json.loads(follow_ups_json) if follow_ups_json else []
+        except json.JSONDecodeError:
+            follow_ups = []
+        follow_ups.append(question)
+        self.datastore.set_session_meta("follow_ups", json.dumps(follow_ups))
+        logger.debug(f"[follow_up] Stored follow-up #{len(follow_ups)}: {question[:50]}...")
+
         # Use LLM to analyze the question and detect intents (with follow-up context)
         # This single call determines intent, facts, AND execution mode
         analysis = self._analyze_question(question, previous_problem=previous_problem)
@@ -5729,16 +5907,28 @@ User feedback: {approval.suggestion}
         # Build hint about cached facts for redo (helps LLM use consistent names)
         cached_facts_hint = ""
         if cached_fact_hints:
+            # Separate tables from scalar facts
+            cached_tables = [f for f in cached_fact_hints if f.get("value_type") == "table"]
+            cached_scalars = [f for f in cached_fact_hints if f.get("value_type") != "table"]
+
             hint_lines = [
-                "REDO MODE - These data facts are already cached. Use these EXACT premise names:",
+                "CACHED DATA AVAILABLE AS INPUT - Use these as premises with [source: cache]:",
             ]
-            for fact in cached_fact_hints:
-                name = fact.get("name", "")
-                value_type = fact.get("value_type", "")
-                if value_type == "table":
-                    hint_lines.append(f"  - {name} (table, {fact.get('row_count', '?')} rows)")
-                else:
-                    hint_lines.append(f"  - {name}")
+            if cached_tables:
+                hint_lines.append("\nCached tables:")
+                for fact in cached_tables:
+                    name = fact.get("name", "")
+                    desc = fact.get("description", "")
+                    hint_lines.append(f"  - \"{name}\" ({fact.get('row_count', '?')} rows) {desc}")
+            if cached_scalars:
+                hint_lines.append("\nCached values:")
+                for fact in cached_scalars:
+                    name = fact.get("name", "")
+                    hint_lines.append(f"  - \"{name}\" = {fact.get('value', '?')}")
+            hint_lines.append("")
+            hint_lines.append("Use [source: cache] with EXACT names above. Do NOT rename them.")
+            hint_lines.append("CRITICAL: You must still build a COMPLETE derivation chain that PROVES the answer.")
+            hint_lines.append("CRITICAL: Do NOT just verify cached data exists - you must show HOW the answer is derived.")
             hint_lines.append("")
             cached_facts_hint = "\n".join(hint_lines) + "\n"
 
@@ -5757,17 +5947,24 @@ QUESTION: <restate the question>
 
 PREMISES:
 P1: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
-P2: <fact_name> = ? (<description>) [source: knowledge]
-P3: <fact_name> = <known_value> (<description>) [source: knowledge]
+P2: <fact_name> = ? (<description>) [source: api:<api_name>]
+P3: <fact_name> = <known_value> (<description>) [source: llm_knowledge]
 
 PREMISE RULES:
 - Premises are DATA only (tables, records, values) - NOT functions or operations
 - Every premise MUST be referenced by at least one inference
-- Use "database" for SQL queries, "knowledge" for universal facts (scientific constants, geography)
-- For known universal values (mathematical constants like Pi, geographic facts), embed directly: P2: pi_value = 3.14159 (Pi constant) [source: knowledge]
+- Use "cache" for data already in cache (PREFERRED - fastest)
+- Use "database" for SQL queries to configured databases
+- Use "api" for external API data (GraphQL or REST endpoints)
+- Use "document" for reference documents, policies, and guidelines
+- Use "llm_knowledge" ONLY for universal facts (mathematical constants like Pi, scientific facts)
+- For known universal values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: llm_knowledge]
 - NEVER ASSUME personal values (age, location, preferences) - use [source: user] and leave value as ?
 - Example: P4: my_age = ? (User's age) [source: user]
+- IMPORTANT: If cached data is available for what you need, ALWAYS use [source: cache] instead of fetching from database/api again.
 - IMPORTANT: If the question mentions clarifications or user preferences (like "use guidelines from X"), treat these as DATA to be retrieved, NOT as embedded values. Always use = ? and resolve from the appropriate source.
+- IMPORTANT: If a configured API can provide the data, use [source: api:<name>] instead of llm_knowledge.
+- IMPORTANT: Extract numeric constraints from the question as premises. Example: "top 5 results" becomes P2: limit_count = 5 (Requested limit) [source: user]
 
 INFERENCE:
 I1: <result_name> = <operation>(P1, P2) -- <explanation>
@@ -5790,7 +5987,7 @@ EXAMPLE 1 - "What is revenue multiplied by Pi?":
 
 PREMISES:
 P1: orders = ? (All orders with amounts) [source: database:sales_db]
-P2: pi_value = 3.14159 (Mathematical constant) [source: knowledge]
+P2: pi_value = 3.14159 (Mathematical constant) [source: llm_knowledge]
 
 INFERENCE:
 I1: total_revenue = sum(P1.amount) -- Sum all order amounts
@@ -5872,7 +6069,7 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
                         "source": match.group(4).strip() if match.group(4) else "database",
                     })
                 else:
-                    # Try format with embedded value: P1: fact_name = 8 (description) [source: knowledge]
+                    # Try format with embedded value: P1: fact_name = 8 (description) [source: llm_knowledge]
                     value_match = re.match(r'^(P\d+):\s*(.+?)\s*=\s*([^\s(]+)\s*\(([^)]+)\)\s*(?:\[source:\s*([^\]]+)\])?', line)
                     if value_match:
                         # Include the value in the name so embedded value extraction works
@@ -6191,12 +6388,17 @@ REMEMBER:
         if self.session_config.require_approval:
             from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse, PlanApproval
 
+            logger.debug(f"[_solve_auditable] require_approval=True, auto_approve={self.session_config.auto_approve}, has_callback={self._approval_callback is not None}")
+
             # Auto-approve if configured
             if self.session_config.auto_approve:
+                logger.debug("[_solve_auditable] Auto-approving (auto_approve=True)")
                 approval = PlanApprovalResponse.approve()
             elif not self._approval_callback:
+                logger.debug("[_solve_auditable] Auto-approving (no callback)")
                 approval = PlanApprovalResponse.approve()
             else:
+                logger.debug("[_solve_auditable] Calling approval callback...")
                 # Build approval request with full proof structure (preserves type, fact_id)
                 request = PlanApprovalRequest(
                     problem=problem,
@@ -6246,8 +6448,6 @@ REMEMBER:
         try:
             from constat.execution.dag import parse_plan_to_dag, DAGExecutor
             from constat.execution.fact_resolver import Fact, FactSource
-            import logging
-            logger = logging.getLogger(__name__)
 
             # Parse plan into DAG
             dag = parse_plan_to_dag(premises, inferences)
@@ -6324,13 +6524,14 @@ REMEMBER:
                 elif event_type == "node_resolved":
                     value = data.get("value")
                     confidence = data.get("confidence", 0.9)
+                    source = data.get("source", "")
                     is_premise = fact_id.startswith("P") if fact_id else level == 0
                     if is_premise:
                         derivation_lines.append(f"- {fact_id}: {node_name} = {str(value)[:100]} (confidence: {confidence:.0%})")
                         self._emit_event(StepEvent(
                             event_type="premise_resolved",
                             step_number=level + 1,
-                            data={"fact_name": f"{fact_id}: {node_name}", "value": value, "confidence": confidence}
+                            data={"fact_name": f"{fact_id}: {node_name}", "value": value, "confidence": confidence, "source": source}
                         ))
                     else:
                         self._emit_event(StepEvent(
@@ -6813,24 +7014,18 @@ If you don't have enough information, say so rather than guessing."""
 
     def prove_conversation(self) -> dict:
         """
-        Verify claims from the conversation with auditable proof.
+        Re-run the original request in proof/auditable mode.
 
-        This command:
-        1. Collects conversation history and accumulated facts
-        2. Extracts verifiable claims via LLM
-        3. Reuses existing facts and their provenance
-        4. Creates new facts if needed to complete the proof
-        5. Runs the formal proof and computes a final confidence factor
+        Takes the original problem from the session and runs it through
+        the auditable solver, reusing existing facts and tables from
+        the exploratory session.
 
         Returns:
-            Dict with proof results:
-            - claims: List of verified/unverified claims
-            - confidence: Overall confidence factor
-            - proof: The formal proof structure
-            - no_claims: True if no verifiable claims found
-            - error: Error message if proof generation failed
+            Dict with proof results (same format as _solve_auditable)
         """
         import json
+
+        logger.debug("[prove_conversation] Starting prove_conversation")
 
         # Check if we have a session to prove
         if not self.session_id:
@@ -6839,175 +7034,65 @@ If you don't have enough information, say so rather than guessing."""
         if not self.datastore:
             return {"error": "No datastore available"}
 
-        # Step 1: Collect conversation context
-        # Get the original problem and any cached facts
+        # Get the original problem
         original_problem = self.datastore.get_session_meta("problem")
         if not original_problem:
             return {"no_claims": True, "error": "No conversation to prove"}
 
-        # Get previously resolved facts from the datastore
-        saved_facts_json = self.datastore.get_session_meta("resolved_facts")
-        saved_facts = []
-        if saved_facts_json:
+        # Get follow-up questions to include in proof
+        follow_ups_json = self.datastore.get_session_meta("follow_ups")
+        follow_ups = []
+        if follow_ups_json:
             try:
-                saved_facts = json.loads(saved_facts_json)
+                follow_ups = json.loads(follow_ups_json)
             except json.JSONDecodeError:
-                logger.warning("Could not parse saved facts for /prove")
+                pass
 
-        # Import cached facts into the fact resolver
-        if saved_facts:
-            self.fact_resolver.import_cache(saved_facts)
+        # Build combined problem statement
+        if follow_ups:
+            combined_problem = f"""Original request: {original_problem}
+
+Follow-up requests:
+{chr(10).join(f'- {q}' for q in follow_ups)}
+
+Prove all of the above claims and provide a complete audit trail."""
+            logger.debug(f"[prove_conversation] Combined problem with {len(follow_ups)} follow-ups")
+        else:
+            combined_problem = original_problem
+
+        logger.debug(f"[prove_conversation] Running proof for: {combined_problem[:150]}...")
+
+        # For proof mode, we do NOT pass cached/derived facts as hints.
+        # Proof must derive from GROUND TRUTH sources only (databases, APIs, documents).
+        # This ensures the proof is independent and verifiable.
+        logger.debug("[prove_conversation] Proof will derive from ground truth sources only (no cached facts)")
+
+        # Auto-approve during /prove
+        original_auto_approve = self.session_config.auto_approve
+        self.session_config.auto_approve = True
+
+        try:
+            # Run the combined problem through the auditable solver
+            # No cached_fact_hints - proof derives from ground truth only
+            result = self._solve_auditable(combined_problem)
+
             self._emit_event(StepEvent(
-                event_type="facts_restored",
+                event_type="proof_complete",
                 step_number=0,
                 data={
-                    "count": len(saved_facts),
-                    "fact_names": [f.get("name") for f in saved_facts],
+                    "success": result.get("success", False),
+                    "confidence": result.get("confidence", 0.0),
                 }
             ))
 
-        # Get existing tables that contain computed results
-        existing_tables = self.datastore.list_tables() if self.datastore else []
-
-        # Step 2: Extract verifiable claims from the conversation
-        # Use LLM to identify what claims can be verified
-        claims_prompt = f"""Analyze this question and any computed results to extract verifiable claims.
-
-Original Question:
-{original_problem}
-
-Available Data (already computed):
-{json.dumps([{"name": t["name"], "rows": t.get("row_count", "?")} for t in existing_tables], indent=2)}
-
-Cached Facts:
-{json.dumps([{"name": f.get("name"), "source": f.get("source")} for f in saved_facts], indent=2)}
-
-Extract a list of specific, verifiable claims that can be proven from this analysis.
-Each claim should be:
-- Testable (can be verified with data)
-- Specific (contains concrete values or conditions)
-- Derived from the analysis (not just restating the question)
-
-Return JSON array of claims:
-[
-  {{"claim": "description of claim", "verification_approach": "how to verify"}}
-]
-
-If there are no verifiable claims, return an empty array []."""
-
-        self._emit_event(StepEvent(
-            event_type="extracting_claims",
-            step_number=0,
-            data={"message": "Analyzing conversation for verifiable claims..."}
-        ))
-
-        try:
-            claims_result = self.router.execute(
-                task_type="general",
-                system_prompt="You are a claims extraction assistant. Extract verifiable claims from analysis results.",
-                user_message=claims_prompt,
-                max_tokens=1000,
-            )
-            claims_text = claims_result.content
-
-            # Parse claims from LLM response
-            import re
-            json_match = re.search(r'\[.*\]', claims_text, re.DOTALL)
-            if json_match:
-                claims = json.loads(json_match.group())
-            else:
-                claims = []
-
-            if not claims:
-                return {"no_claims": True, "claims": []}
+            return result
 
         except Exception as e:
-            logger.error(f"Failed to extract claims: {e}")
-            return {"error": f"Failed to extract claims: {e}"}
+            logger.error(f"[prove_conversation] Error: {e}")
+            return {"error": str(e), "success": False}
 
-        # Step 3: Verify each claim using the auditable solver
-        verified_claims = []
-        total_confidence = 0.0
-
-        for i, claim_data in enumerate(claims):
-            claim_text = claim_data.get("claim", "")
-            verification = claim_data.get("verification_approach", "")
-
-            self._emit_event(StepEvent(
-                event_type="verifying_claim",
-                step_number=i + 1,
-                data={"claim": claim_text, "total": len(claims)}
-            ))
-
-            try:
-                # Build a verification problem that uses existing facts
-                verification_problem = f"""Verify this claim using the available data and facts.
-
-Claim: {claim_text}
-
-Verification approach: {verification}
-
-Available data tables: {[t["name"] for t in existing_tables]}
-
-Use existing computed tables and facts where possible.
-Create new facts only if needed to complete the verification.
-
-Provide a confidence score (0-1) for the verification."""
-
-                # Run auditable verification (reuses cached facts)
-                result = self._solve_auditable(verification_problem, cached_fact_hints=saved_facts)
-
-                if result.get("success"):
-                    confidence = result.get("confidence", 0.8)
-                    verified_claims.append({
-                        "claim": claim_text,
-                        "verified": True,
-                        "confidence": confidence,
-                        "proof": result.get("derivation_chain", ""),
-                    })
-                    total_confidence += confidence
-                else:
-                    verified_claims.append({
-                        "claim": claim_text,
-                        "verified": False,
-                        "confidence": 0.0,
-                        "discrepancy": result.get("error", "Could not verify"),
-                    })
-
-            except Exception as e:
-                logger.error(f"Failed to verify claim '{claim_text}': {e}")
-                verified_claims.append({
-                    "claim": claim_text,
-                    "verified": False,
-                    "confidence": 0.0,
-                    "discrepancy": str(e),
-                })
-
-        # Step 4: Compute final confidence factor
-        if verified_claims:
-            verified_count = sum(1 for c in verified_claims if c.get("verified"))
-            overall_confidence = total_confidence / len(verified_claims) if verified_claims else 0.0
-        else:
-            verified_count = 0
-            overall_confidence = 0.0
-
-        self._emit_event(StepEvent(
-            event_type="proof_complete",
-            step_number=0,
-            data={
-                "claims_count": len(verified_claims),
-                "verified_count": verified_count,
-                "confidence": overall_confidence,
-            }
-        ))
-
-        return {
-            "success": True,
-            "claims": verified_claims,
-            "confidence": overall_confidence,
-            "verified_count": verified_count,
-            "total_claims": len(verified_claims),
-        }
+        finally:
+            self.session_config.auto_approve = original_auto_approve
 
     def replay(self, problem: str) -> dict:
         """

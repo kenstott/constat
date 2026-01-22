@@ -61,10 +61,11 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
    - SQL is declarative (what you want) vs pandas is imperative (how to get it)
 2. **ALWAYS FILTER AT THE SOURCE** - use SQL WHERE, API filters, or GraphQL arguments
 3. **PREFER SQL JOINs over separate queries** for related tables
-4. Only use pandas for operations SQL cannot express (e.g., complex reshaping, pivot, ML)
-5. Keep steps atomic - one main action per step
-6. Identify parallelizable steps (empty depends_on)
-7. End with a step that synthesizes the final answer
+4. **ALWAYS QUOTE SQL IDENTIFIERS** with double quotes (e.g., "group", "order", "user") to avoid reserved word conflicts
+5. Only use pandas for operations SQL cannot express (e.g., complex reshaping, pivot, ML)
+6. Keep steps atomic - one main action per step
+7. Identify parallelizable steps (empty depends_on)
+8. End with a step that synthesizes the final answer
 
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).

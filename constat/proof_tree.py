@@ -47,6 +47,10 @@ class ProofNode:
     result_summary: str = ""
     # Depth in tree for indentation
     depth: int = 0
+    # All dependencies (for showing deps not in visual tree)
+    all_dependencies: list[str] = field(default_factory=list)
+    # Visual parent name (the one shown in tree)
+    visual_parent: str = ""
 
     def add_child(self, child: "ProofNode") -> "ProofNode":
         """Add a child dependency."""
@@ -155,8 +159,15 @@ class ProofTree:
             logger.debug(f"[PROOF_TREE] '{name}' -> parent '{parent.name}'")
 
         parent.add_child(node)
+        node.visual_parent = parent.name
         self._nodes[name] = node
         return node
+
+    def set_dependencies(self, name: str, dependencies: list[str]) -> None:
+        """Set all dependencies for a node (for showing non-visual deps)."""
+        node = self._nodes.get(name)
+        if node:
+            node.all_dependencies = dependencies
 
     def start_resolving(self, name: str, description: str = "", parent_name: str = None) -> ProofNode:
         """Mark a fact as being resolved.
@@ -220,8 +231,8 @@ class ProofTree:
             parent.add_child(child)
             self._nodes[depends_on] = child
 
-    def _format_value_summary(self, value: Any, max_len: int = 60) -> str:
-        """Format a value for brief display."""
+    def _format_value_summary(self, value: Any, max_len: int = 250) -> str:
+        """Format a value for brief display (truncated to max_len characters)."""
         if value is None:
             return ""
 
@@ -289,6 +300,26 @@ class ProofTree:
         if is_root:
             text.append("Prove: ", style="bold")
         text.append(node.name, style="bold" if is_root else "")
+
+        # Show non-visual dependencies (deps not shown in tree structure)
+        if node.all_dependencies and node.visual_parent:
+            # Extract the ID from visual_parent (e.g., "I3: country_data" -> "I3")
+            visual_parent_id = node.visual_parent.split(":")[0].strip() if ":" in node.visual_parent else node.visual_parent
+
+            # Get IDs of visual children (these are already shown in tree)
+            visual_child_ids = set()
+            for child in node.children:
+                child_id = child.name.split(":")[0].strip() if ":" in child.name else child.name
+                visual_child_ids.add(child_id)
+
+            # Filter out visual parent AND visual children to show only "hidden" deps
+            hidden_deps = []
+            for dep in node.all_dependencies:
+                dep_id = dep.split(":")[0].strip() if ":" in dep else dep
+                if dep_id != visual_parent_id and dep_id not in visual_child_ids:
+                    hidden_deps.append(dep_id)
+            if hidden_deps:
+                text.append(f" ← [{', '.join(hidden_deps)}]", style="dim magenta")
 
         # Status-specific suffix
         if node.status == NodeStatus.RESOLVING:

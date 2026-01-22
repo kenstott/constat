@@ -673,7 +673,16 @@ class DAGExecutor:
 
                     node = futures[future]
                     try:
-                        value, confidence = future.result()
+                        result = future.result()
+                        # Support both (value, confidence) and (value, confidence, source) returns
+                        if isinstance(result, tuple) and len(result) >= 3:
+                            value, confidence, source = result[0], result[1], result[2]
+                        elif isinstance(result, tuple) and len(result) == 2:
+                            value, confidence = result
+                            source = ""
+                        else:
+                            value, confidence, source = result, 0.9, ""
+
                         node.status = NodeStatus.RESOLVED
                         node.value = value
                         node.confidence = confidence
@@ -684,6 +693,7 @@ class DAGExecutor:
                                 "fact_id": node.fact_id,
                                 "value": value,
                                 "confidence": confidence,
+                                "source": source,
                             })
                     except Exception as e:
                         node.status = NodeStatus.FAILED

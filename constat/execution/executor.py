@@ -153,6 +153,7 @@ class PythonExecutor:
         # Add common imports to namespace
         exec_globals.setdefault("pd", __import__("pandas"))
         exec_globals.setdefault("np", __import__("numpy"))
+        exec_globals.setdefault("re", __import__("re"))
 
         # Capture stdout/stderr
         stdout_capture = io.StringIO()

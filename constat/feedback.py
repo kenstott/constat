@@ -107,7 +107,7 @@ class StatusLine:
             parts.append("[dim]Awaiting approval[/dim]")
             if self._plan_name:
                 truncated = self._plan_name[:30] + "..." if len(self._plan_name) > 30 else self._plan_name
-                parts.append(f'Plan: "{truncated}"')
+                parts.append(f'"{truncated}"')
             if self._step_total > 0:
                 parts.append(f"({self._step_total} steps)")
             parts.append("[dim][y/n/suggest][/dim]")

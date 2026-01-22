@@ -358,6 +358,38 @@ class LearningStore:
                 self._save()
                 return
 
+    def update_rule(
+        self,
+        rule_id: str,
+        summary: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        confidence: Optional[float] = None,
+    ) -> bool:
+        """Update an existing rule.
+
+        Args:
+            rule_id: Rule ID to update
+            summary: New summary (if provided)
+            tags: New tags (if provided)
+            confidence: New confidence (if provided)
+
+        Returns:
+            True if updated, False if rule not found
+        """
+        data = self._load()
+        for rule in data["rules"]:
+            if rule["id"] == rule_id:
+                if summary is not None:
+                    rule["summary"] = summary
+                if tags is not None:
+                    rule["tags"] = tags
+                if confidence is not None:
+                    rule["confidence"] = confidence
+                rule["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self._save()
+                return True
+        return False
+
     def delete_rule(self, rule_id: str) -> bool:
         """Delete a rule.
 
