@@ -1242,6 +1242,7 @@ class TextualFeedbackHandler:
                     for i, s in enumerate(steps)
                 ]
 
+            logger.debug(f"plan_ready: set app._plan_steps with {len(app._plan_steps)} steps, resetting _steps_initialized")
             self._steps_initialized = False  # Reset for new plan
             # Don't set status_message here - the approval UI will handle it
             # Just update phase (approval callback will clear spinner)
@@ -1488,10 +1489,14 @@ class TextualFeedbackHandler:
             # Initialize steps panel on first step
             panel_content = self._get_panel_content()
             side_panel = self._get_side_panel()
+            logger.debug(f"step_start: step={step_num}, _steps_initialized={self._steps_initialized}, _plan_steps={len(self.app._plan_steps) if self.app._plan_steps else 0}")
             if not self._steps_initialized and self.app._plan_steps:
+                logger.debug(f"step_start: calling start_steps with {len(self.app._plan_steps)} steps")
                 panel_content.start_steps(self.app._plan_steps)
                 side_panel.add_class("visible")
                 self._steps_initialized = True
+            else:
+                logger.debug(f"step_start: NOT calling start_steps - initialized={self._steps_initialized}, plan_steps_exist={bool(self.app._plan_steps)}")
 
             # Update step status in panel
             panel_content.update_step_executing(step_num)
