@@ -32,47 +32,30 @@ Example queries to try:
 - "Which pages have the highest bounce rate?"
 - "Average performance rating by department"
 
-## Execution Modes
+## Execution and Provenance
 
-Constat supports two execution modes to balance flexibility with auditability:
-
-### Exploratory Mode
-
-For data exploration, visualization, and iterative analysis. The LLM generates multi-step plans and executes code to answer questions.
+Constat operates in exploratory mode for data exploration, visualization, and iterative analysis. The LLM generates multi-step plans and executes code to answer questions.
 
 ```python
 from constat import Session
 
-session = Session(config, mode="exploratory")
+session = Session(config)
 result = session.solve("What are the top 10 customers by revenue this quarter?")
 ```
 
 - Generates multi-step execution plans
 - Each step produces code, output, and narrative
 - Results include charts, tables, and insights
-- Trace available but not formally verified
 
-### Auditable Mode
+### On-Demand Proof Generation
 
-For compliance, financial reporting, and any scenario requiring provable conclusions. Uses lazy fact resolution with full derivation traces.
+At any point, use `/prove` to generate a formal proof of your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
 
-The key difference from exploratory mode: the LLM generates the derivation logic automatically based on your question and the available schema. You don't write rules - the system figures out what data it needs and how to combine it.
-
-```python
-from constat import Session
-
-session = Session(config, mode="auditable")
-
-# The system automatically:
-# 1. Analyzes the question to identify required facts
-# 2. Determines how to derive each fact from your data sources
-# 3. Executes queries and combines results
-# 4. Returns the answer with full provenance
-
-result = session.resolve("Is customer C001 a VIP?")
-print(result.answer)       # "Yes, customer C001 is a VIP"
-print(result.derivation)   # Full derivation trace
-```
+The system automatically:
+1. Analyzes the question to identify required facts
+2. Determines how to derive each fact from your data sources
+3. Executes queries and combines results
+4. Returns the answer with full provenance
 
 The derivation trace shows exactly how the conclusion was reached:
 
@@ -1234,7 +1217,7 @@ Every piece of information is a `Fact` with:
 
 ### Derivation Traces
 
-In auditable mode, every conclusion includes a full derivation trace showing:
+When using `/prove`, every conclusion includes a full derivation trace showing:
 - The logical chain of reasoning
 - All data sources consulted
 - The exact queries executed
