@@ -108,6 +108,11 @@ Use these tools FIRST to explore available data:
 2. For SQL use pd.read_sql(), for files use appropriate pd.read_* function
 3. Print a clear, formatted answer at the end
 
+## Output Guidelines
+- Print brief summaries and key metrics (e.g., "Found 150 employees, Average: $85,000")
+- **NEVER print raw DataFrames** - produces unreadable output
+- For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
+
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers."""
 

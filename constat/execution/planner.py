@@ -66,6 +66,14 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 6. Keep steps atomic - one main action per step
 7. Identify parallelizable steps (empty depends_on)
 8. End with a step that synthesizes the final answer
+9. **REUSE DATASET NAMES** - When modifying existing analysis, update existing tables (e.g., `final_answer`) rather than creating variations (`final_answer_v2`). Create new names only when truly adding new data.
+10. **CROSS-SOURCE JOIN OPTIMIZATION** - When joining data from multiple sources:
+    - Same database: Use native JOIN (SQL) or lookup (MongoDB $lookup, Elasticsearch nested/parent-child)
+    - Cross-database: Query smaller dataset first, push results to larger DB as constants
+      - SQL: Use IN clause or VALUES CTE
+      - MongoDB: Use $match with $in array
+      - Elasticsearch: Use terms query
+    - General principle: Query smaller dataset first, push those values as constants to filter the larger dataset; avoid loading large datasets into Python when the database can filter
 
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).

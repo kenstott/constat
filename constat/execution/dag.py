@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from constat.execution.fact_resolver import format_source_attribution
+
 if TYPE_CHECKING:
     from constat.execution.parallel_scheduler import ExecutionContext
 
@@ -796,9 +798,9 @@ def dag_to_display_format(dag: ExecutionDAG) -> str:
                 display_id = node.fact_id or f"P{len(premise_lines) + 1}"
                 name_to_display_id[name] = display_id
 
-                source_str = node.source or "database"
-                if node.source_db:
-                    source_str = f"{node.source}:{node.source_db}"
+                source_str = format_source_attribution(
+                    node.source or "database", node.source_db
+                )
 
                 premise_lines.append(
                     f"{display_id}: {node.name} = ? ({node.description}) [source: {source_str}]"
@@ -857,7 +859,7 @@ def dag_to_proof_format(dag: ExecutionDAG, conclusion: str = "") -> str:
             if node.is_leaf:
                 # Premise - show resolved value
                 value_str = str(node.value)[:60] + "..." if node.value and len(str(node.value)) > 60 else str(node.value) if node.value else "?"
-                source_str = f"[{node.source or 'database'}]" if node.source else ""
+                source_str = f"[{format_source_attribution(node.source or 'database', node.source_db)}]"
                 premise_lines.append(
                     f"{status_icon} {node.fact_id}: {node.name} = {value_str} {source_str}"
                 )

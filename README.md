@@ -325,29 +325,77 @@ constat init
 
 Once in the interactive REPL, these commands are available:
 
+**Session & Navigation:**
+
 | Command | Description |
 |---------|-------------|
-| `/help` | Show all commands |
+| `/help`, `/h` | Show all commands |
+| `/quit`, `/q` | Exit |
+| `/reset` | Clear session state and start fresh |
+| `/redo [instruction]` | Retry last query (optionally with modifications) |
+| `/user [name]` | Show or set current user |
+
+**Data Inspection:**
+
+| Command | Description |
+|---------|-------------|
 | `/tables` | List tables in session datastore |
 | `/show <table>` | Show table contents |
-| `/query <sql>` | Run SQL on datastore |
-| `/code [step]` | Show generated code |
-| `/facts` | Show cached facts (persistent + session) |
-| `/remember <fact>` | Save a fact that persists across sessions |
-| `/forget <name>` | Remove a persistent or session fact |
-| `/correct <text>` | Record a correction for future sessions |
-| `/learnings` | Show learned rules and pending corrections |
-| `/compact-learnings` | Promote similar learnings to rules |
-| `/forget-learning <id>` | Remove a specific learning |
-| `/insights [on\|off]` | Toggle insight synthesis |
-| `/preferences` | Show current settings |
-| `/verbose` | Toggle verbose mode |
-| `/mode [mode]` | Set default mode: audit\|explore\|knowledge\|auto |
-| `/save <name>` | Save plan for replay |
+| `/query <sql>` | Run SQL query on datastore |
+| `/export <table> [file]` | Export table to CSV or XLSX |
+| `/code [step]` | Show generated code (all or specific step) |
+| `/state` | Show session state |
+| `/artifacts [all]` | Show artifacts (use 'all' to include intermediate) |
+
+**Data Sources:**
+
+| Command | Description |
+|---------|-------------|
+| `/databases`, `/db` | List configured databases |
+| `/files` | List all data files |
+| `/doc <path> [name]` | Add a document to this session |
+| `/discover [scope] <query>` | Search data sources (scope: database\|api\|document) |
+| `/update`, `/refresh` | Refresh metadata and rebuild cache |
+
+**Facts & Memory:**
+
+| Command | Description |
+|---------|-------------|
+| `/facts` | Show cached facts from this session |
+| `/remember <fact>` | Persist a session fact across sessions |
+| `/forget <name>` | Forget a remembered fact |
+| `/correct <text>` | Record a correction for future reference |
+| `/learnings` | Show learnings and rules |
+| `/compact-learnings` | Promote similar learnings into rules |
+
+**Plans & History:**
+
+| Command | Description |
+|---------|-------------|
+| `/save <name>` | Save current plan for replay |
+| `/share <name>` | Save plan as shared (all users) |
 | `/plans` | List saved plans |
 | `/replay <name>` | Replay a saved plan |
-| `/reset` | Clear session state |
-| `/quit` | Exit |
+| `/history`, `/sessions` | List recent sessions |
+| `/resume <id>` | Resume a previous session |
+| `/summarize <target>` | Summarize plan\|session\|facts\|<table> |
+
+**Verification:**
+
+| Command | Description |
+|---------|-------------|
+| `/prove` | Verify conversation claims with auditable proof |
+
+**Settings:**
+
+| Command | Description |
+|---------|-------------|
+| `/verbose [on\|off]` | Toggle verbose mode |
+| `/raw [on\|off]` | Toggle raw output display |
+| `/insights [on\|off]` | Toggle insight synthesis |
+| `/preferences` | Show current preferences |
+| `/context` | Show context size and token usage |
+| `/compact` | Compact context to reduce token usage |
 
 **Saved Plans & Replay:**
 - `/save` stores the executed code (not just the plan) for deterministic replay

@@ -1414,69 +1414,17 @@ class FeedbackDisplay:
         Args:
             steps: List of proof steps with type, fact_id, goal, etc.
         """
-        import re
-
         try:
-            import networkx as nx
-            from constat.visualization.box_dag import render_dag
-        except ImportError:
-            # networkx not available, skip diagram
-            return
-
-        # Build NetworkX graph from steps
-        G = nx.DiGraph()
-
-        for s in steps:
-            step_type = s.get("type")
-            fact_id = s.get("fact_id", "")
-            goal = s.get("goal", "")
-
-            if step_type == "premise":
-                G.add_node(fact_id)
-            elif step_type == "inference":
-                G.add_node(fact_id)
-                # Extract dependencies from the operation
-                inf_match = re.match(r'^(\w+)\s*=\s*(.+)', goal)
-                if inf_match:
-                    operation = inf_match.group(2)
-                else:
-                    operation = goal
-                deps = re.findall(r'[PI]\d+', operation)
-                for dep in deps:
-                    if G.has_node(dep):
-                        G.add_edge(dep, fact_id)
-
-        if G.number_of_nodes() == 0:
-            return
-
-        # Find terminal inference and add conclusion
-        inferences = [n for n in G.nodes() if n.startswith('I')]
-        if inferences:
-            # Find the one with no outgoing edges to other inferences
-            terminal = None
-            for inf in inferences:
-                successors = list(G.successors(inf))
-                if not any(s.startswith('I') for s in successors):
-                    terminal = inf
-                    break
-            if terminal is None:
-                terminal = inferences[-1]
-            G.add_node("C")
-            G.add_edge(terminal, "C")
-
-        self.console.print("\n  [bold yellow]DATA FLOW[/bold yellow]")
-
-        try:
-            from constat.visualization.box_dag import render_dag
-            diagram = render_dag(G, style='rounded')
-            for line in diagram.split('\n'):
-                if line.strip():
-                    self.console.print(f"      [dim]{line}[/dim]")
+            from constat.visualization.box_dag import generate_proof_dfd
+            diagram = generate_proof_dfd(steps, max_width=60, max_name_len=10)
+            if diagram and diagram != "(No derivation graph available)":
+                self.console.print("\n  [bold yellow]DATA FLOW[/bold yellow]")
+                for line in diagram.split('\n'):
+                    if line.strip():
+                        self.console.print(f"      [dim]{line}[/dim]")
+                self.console.print()
         except Exception:
-            # Fallback: just list the edges
-            self.console.print("      [dim](diagram rendering failed)[/dim]")
-
-        self.console.print()
+            pass  # Skip diagram on error
 
     def start_execution(self) -> None:
         """Start the live execution display."""

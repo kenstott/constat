@@ -142,6 +142,8 @@ class RegistryAwareDataStore:
         df: pd.DataFrame,
         step_number: int = 0,
         description: str = "",
+        is_final_step: bool = False,
+        is_published: bool = False,
     ) -> None:
         """
         Save a DataFrame to Parquet with DuckDB view and registry.
@@ -151,6 +153,8 @@ class RegistryAwareDataStore:
             df: DataFrame to save
             step_number: Which step created this table
             description: Human-readable description
+            is_final_step: Whether this is created in the final execution step
+            is_published: Whether explicitly published for artifacts panel
         """
         if df.empty or len(df.columns) == 0:
             return
@@ -185,6 +189,8 @@ class RegistryAwareDataStore:
             row_count=len(df),
             columns=columns,
             description=description or None,
+            is_final_step=is_final_step,
+            is_published=is_published or is_final_step,  # Final step tables are auto-published
         )
 
     def drop_table(self, name: str) -> bool:
@@ -398,6 +404,21 @@ class RegistryAwareDataStore:
         self.save_dataframe("execution_history", df, step_number=0,
                           description="Execution history with code and outputs")
         return True
+
+    def publish_tables(self, table_names: list[str]) -> int:
+        """Mark specific tables as published for artifacts panel.
+
+        Args:
+            table_names: Names of tables to publish
+
+        Returns:
+            Number of tables updated
+        """
+        return self._registry.publish_tables(
+            user_id=self._user_id,
+            session_id=self._session_id,
+            table_names=table_names,
+        )
 
     # --- Utility ---
 

@@ -35,6 +35,9 @@ class TableRecord:
     row_count: int
     columns: list[dict]  # [{name, type}, ...]
     created_at: str
+    is_published: bool = False  # Explicitly marked as output for artifacts panel
+    is_final_step: bool = False  # Created in final step of request
+    title: Optional[str] = None  # Human-friendly display name
 
 
 @dataclass
@@ -49,6 +52,9 @@ class ArtifactRecord:
     description: Optional[str]
     size_bytes: int
     created_at: str
+    is_published: bool = False  # Explicitly marked as output for artifacts panel
+    is_final_step: bool = False  # Created in final step of request
+    title: Optional[str] = None  # Human-friendly display name
 
 
 class ConstatRegistry:
@@ -71,6 +77,9 @@ class ConstatRegistry:
             row_count INTEGER DEFAULT 0,
             columns VARCHAR,  -- JSON array of {name, type}
             created_at VARCHAR NOT NULL,
+            is_published BOOLEAN DEFAULT FALSE,
+            is_final_step BOOLEAN DEFAULT FALSE,
+            title VARCHAR,
             UNIQUE(user_id, session_id, name)
         )
     """
@@ -85,7 +94,10 @@ class ConstatRegistry:
             artifact_type VARCHAR,
             description VARCHAR,
             size_bytes INTEGER DEFAULT 0,
-            created_at VARCHAR NOT NULL
+            created_at VARCHAR NOT NULL,
+            is_published BOOLEAN DEFAULT FALSE,
+            is_final_step BOOLEAN DEFAULT FALSE,
+            title VARCHAR
         )
     """
 
@@ -118,6 +130,43 @@ class ConstatRegistry:
         for idx in self.INDEXES:
             conn.execute(idx)
 
+        # Migration: Add new columns to existing tables if they don't exist
+        self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn: duckdb.DuckDBPyConnection) -> None:
+        """Add new columns to existing tables for backwards compatibility."""
+        # Check and add columns to constat_tables
+        # Note: PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
+        # Column name is at index 1, not 0
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(constat_tables)").fetchall()}
+            if "is_published" not in cols:
+                conn.execute("ALTER TABLE constat_tables ADD COLUMN is_published BOOLEAN DEFAULT FALSE")
+            if "is_final_step" not in cols:
+                conn.execute("ALTER TABLE constat_tables ADD COLUMN is_final_step BOOLEAN DEFAULT FALSE")
+            if "title" not in cols:
+                conn.execute("ALTER TABLE constat_tables ADD COLUMN title VARCHAR")
+            # Update existing NULL values to FALSE so filtering works correctly
+            conn.execute("UPDATE constat_tables SET is_published = FALSE WHERE is_published IS NULL")
+            conn.execute("UPDATE constat_tables SET is_final_step = FALSE WHERE is_final_step IS NULL")
+        except Exception:
+            pass  # Table may not exist yet
+
+        # Check and add columns to constat_artifacts
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(constat_artifacts)").fetchall()}
+            if "is_published" not in cols:
+                conn.execute("ALTER TABLE constat_artifacts ADD COLUMN is_published BOOLEAN DEFAULT FALSE")
+            if "is_final_step" not in cols:
+                conn.execute("ALTER TABLE constat_artifacts ADD COLUMN is_final_step BOOLEAN DEFAULT FALSE")
+            if "title" not in cols:
+                conn.execute("ALTER TABLE constat_artifacts ADD COLUMN title VARCHAR")
+            # Update existing NULL values to FALSE so filtering works correctly
+            conn.execute("UPDATE constat_artifacts SET is_published = FALSE WHERE is_published IS NULL")
+            conn.execute("UPDATE constat_artifacts SET is_final_step = FALSE WHERE is_final_step IS NULL")
+        except Exception:
+            pass  # Table may not exist yet
+
     def _get_connection(self) -> duckdb.DuckDBPyConnection:
         """Get or create database connection."""
         if self._conn is None:
@@ -141,6 +190,9 @@ class ConstatRegistry:
         row_count: int = 0,
         columns: Optional[list[dict]] = None,
         description: Optional[str] = None,
+        is_published: bool = False,
+        is_final_step: bool = False,
+        title: Optional[str] = None,
     ) -> str:
         """Register a table in the registry.
 
@@ -152,6 +204,9 @@ class ConstatRegistry:
             row_count: Number of rows in the table
             columns: List of {name, type} dicts for columns
             description: Human-readable description (auto-generated if None)
+            is_published: Whether explicitly published for artifacts panel
+            is_final_step: Whether created in final step of request
+            title: Human-friendly display name
 
         Returns:
             Table ID
@@ -173,9 +228,11 @@ class ConstatRegistry:
         # Insert new record
         conn.execute("""
             INSERT INTO constat_tables
-            (id, user_id, session_id, name, file_path, description, row_count, columns, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [table_id, user_id, session_id, name, file_path, description, row_count, columns_json, now])
+            (id, user_id, session_id, name, file_path, description, row_count, columns, created_at,
+             is_published, is_final_step, title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [table_id, user_id, session_id, name, file_path, description, row_count, columns_json, now,
+              is_published, is_final_step, title])
 
         return table_id
 
@@ -254,6 +311,34 @@ class ConstatRegistry:
         """, [user_id, session_id, name])
         return True
 
+    def publish_tables(
+        self,
+        user_id: str,
+        session_id: str,
+        table_names: list[str],
+    ) -> int:
+        """Mark specific tables as published for artifacts panel.
+
+        Args:
+            user_id: User who owns the tables
+            session_id: Session where tables exist
+            table_names: Names of tables to publish
+
+        Returns:
+            Number of tables updated
+        """
+        if not table_names:
+            return 0
+
+        conn = self._get_connection()
+        placeholders = ", ".join("?" for _ in table_names)
+        conn.execute(f"""
+            UPDATE constat_tables
+            SET is_published = TRUE, is_final_step = TRUE
+            WHERE user_id = ? AND session_id = ? AND name IN ({placeholders})
+        """, [user_id, session_id] + table_names)
+        return len(table_names)
+
     def list_tables(
         self,
         user_id: Optional[str] = None,
@@ -288,6 +373,13 @@ class ConstatRegistry:
         rows = conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in conn.description]
 
+        def get_col(row, columns, name, default=None):
+            """Safely get column value with default for missing columns."""
+            try:
+                return row[columns.index(name)]
+            except (ValueError, IndexError):
+                return default
+
         return [
             TableRecord(
                 id=row[columns.index("id")],
@@ -299,6 +391,9 @@ class ConstatRegistry:
                 row_count=row[columns.index("row_count")],
                 columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
                 created_at=row[columns.index("created_at")],
+                is_published=bool(get_col(row, columns, "is_published", False)),
+                is_final_step=bool(get_col(row, columns, "is_final_step", False)),
+                title=get_col(row, columns, "title"),
             )
             for row in rows
         ]
@@ -315,6 +410,13 @@ class ConstatRegistry:
             return None
 
         columns = [desc[0] for desc in conn.description]
+
+        def get_col(name, default=None):
+            try:
+                return row[columns.index(name)]
+            except (ValueError, IndexError):
+                return default
+
         return TableRecord(
             id=row[columns.index("id")],
             user_id=row[columns.index("user_id")],
@@ -325,6 +427,9 @@ class ConstatRegistry:
             row_count=row[columns.index("row_count")],
             columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
             created_at=row[columns.index("created_at")],
+            is_published=bool(get_col("is_published", False)),
+            is_final_step=bool(get_col("is_final_step", False)),
+            title=get_col("title"),
         )
 
     # --- Artifact Registration ---
@@ -338,6 +443,9 @@ class ConstatRegistry:
         artifact_type: str = "file",
         size_bytes: int = 0,
         description: Optional[str] = None,
+        is_published: bool = False,
+        is_final_step: bool = False,
+        title: Optional[str] = None,
     ) -> str:
         """Register an artifact in the registry.
 
@@ -349,6 +457,9 @@ class ConstatRegistry:
             artifact_type: Type (chart, csv, image, html, etc.)
             size_bytes: File size in bytes
             description: Human-readable description
+            is_published: Whether explicitly published for artifacts panel
+            is_final_step: Whether created in final step of request
+            title: Human-friendly display name
 
         Returns:
             Artifact ID
@@ -363,9 +474,11 @@ class ConstatRegistry:
         conn = self._get_connection()
         conn.execute("""
             INSERT INTO constat_artifacts
-            (id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [artifact_id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, now])
+            (id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, created_at,
+             is_published, is_final_step, title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [artifact_id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, now,
+              is_published, is_final_step, title])
 
         return artifact_id
 
@@ -418,6 +531,13 @@ class ConstatRegistry:
         rows = conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in conn.description]
 
+        def get_col(row, name, default=None):
+            """Safely get column value with default for missing columns."""
+            try:
+                return row[columns.index(name)]
+            except (ValueError, IndexError):
+                return default
+
         return [
             ArtifactRecord(
                 id=row[columns.index("id")],
@@ -429,6 +549,9 @@ class ConstatRegistry:
                 description=row[columns.index("description")],
                 size_bytes=row[columns.index("size_bytes")],
                 created_at=row[columns.index("created_at")],
+                is_published=bool(get_col(row, "is_published", False)),
+                is_final_step=bool(get_col(row, "is_final_step", False)),
+                title=get_col(row, "title"),
             )
             for row in rows
         ]
@@ -473,6 +596,229 @@ class ConstatRegistry:
             WHERE user_id = ? AND session_id = ?
         """, [user_id, session_id])
         return count
+
+    # --- Publishing ---
+
+    def publish_table(
+        self,
+        user_id: str,
+        session_id: str,
+        name: str,
+        is_published: bool = True,
+        title: Optional[str] = None,
+    ) -> bool:
+        """Publish or unpublish a table.
+
+        Args:
+            user_id: User ID
+            session_id: Session ID
+            name: Table name
+            is_published: Whether to publish (True) or unpublish (False)
+            title: Optional human-friendly title
+
+        Returns:
+            True if updated, False if not found
+        """
+        conn = self._get_connection()
+
+        updates = ["is_published = ?"]
+        params = [is_published]
+
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+
+        params.extend([user_id, session_id, name])
+
+        result = conn.execute(f"""
+            UPDATE constat_tables
+            SET {", ".join(updates)}
+            WHERE user_id = ? AND session_id = ? AND name = ?
+        """, params)
+
+        # Check if any row was updated
+        row = conn.execute("""
+            SELECT 1 FROM constat_tables
+            WHERE user_id = ? AND session_id = ? AND name = ?
+        """, [user_id, session_id, name]).fetchone()
+        return row is not None
+
+    def publish_artifact(
+        self,
+        user_id: str,
+        session_id: str,
+        name: str,
+        is_published: bool = True,
+        title: Optional[str] = None,
+    ) -> bool:
+        """Publish or unpublish an artifact.
+
+        Args:
+            user_id: User ID
+            session_id: Session ID
+            name: Artifact name
+            is_published: Whether to publish (True) or unpublish (False)
+            title: Optional human-friendly title
+
+        Returns:
+            True if updated, False if not found
+        """
+        conn = self._get_connection()
+
+        updates = ["is_published = ?"]
+        params = [is_published]
+
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+
+        params.extend([user_id, session_id, name])
+
+        conn.execute(f"""
+            UPDATE constat_artifacts
+            SET {", ".join(updates)}
+            WHERE user_id = ? AND session_id = ? AND name = ?
+        """, params)
+
+        # Check if any row was updated
+        row = conn.execute("""
+            SELECT 1 FROM constat_artifacts
+            WHERE user_id = ? AND session_id = ? AND name = ?
+        """, [user_id, session_id, name]).fetchone()
+        return row is not None
+
+    def mark_final_step(
+        self,
+        user_id: str,
+        session_id: str,
+        table_names: list[str] = None,
+        artifact_names: list[str] = None,
+    ) -> int:
+        """Mark tables/artifacts as created in final step (auto-publishes them).
+
+        Args:
+            user_id: User ID
+            session_id: Session ID
+            table_names: List of table names to mark
+            artifact_names: List of artifact names to mark
+
+        Returns:
+            Number of items updated
+        """
+        conn = self._get_connection()
+        count = 0
+
+        if table_names:
+            for name in table_names:
+                conn.execute("""
+                    UPDATE constat_tables
+                    SET is_final_step = TRUE, is_published = TRUE
+                    WHERE user_id = ? AND session_id = ? AND name = ?
+                """, [user_id, session_id, name])
+                count += 1
+
+        if artifact_names:
+            for name in artifact_names:
+                conn.execute("""
+                    UPDATE constat_artifacts
+                    SET is_final_step = TRUE, is_published = TRUE
+                    WHERE user_id = ? AND session_id = ? AND name = ?
+                """, [user_id, session_id, name])
+                count += 1
+
+        return count
+
+    def list_published_tables(
+        self,
+        user_id: str,
+        session_id: str,
+        limit: int = 100,
+    ) -> list[TableRecord]:
+        """List only published tables for a session.
+
+        Returns tables that are either explicitly published or created in final step.
+        """
+        conn = self._get_connection()
+
+        rows = conn.execute("""
+            SELECT * FROM constat_tables
+            WHERE user_id = ? AND session_id = ?
+              AND (is_published = TRUE OR is_final_step = TRUE)
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, [user_id, session_id, limit]).fetchall()
+
+        columns = [desc[0] for desc in conn.description]
+
+        def get_col(row, name, default=None):
+            try:
+                return row[columns.index(name)]
+            except (ValueError, IndexError):
+                return default
+
+        return [
+            TableRecord(
+                id=row[columns.index("id")],
+                user_id=row[columns.index("user_id")],
+                session_id=row[columns.index("session_id")],
+                name=row[columns.index("name")],
+                file_path=row[columns.index("file_path")],
+                description=row[columns.index("description")],
+                row_count=row[columns.index("row_count")],
+                columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
+                created_at=row[columns.index("created_at")],
+                is_published=bool(get_col(row, "is_published", False)),
+                is_final_step=bool(get_col(row, "is_final_step", False)),
+                title=get_col(row, "title"),
+            )
+            for row in rows
+        ]
+
+    def list_published_artifacts(
+        self,
+        user_id: str,
+        session_id: str,
+        limit: int = 100,
+    ) -> list[ArtifactRecord]:
+        """List only published artifacts for a session.
+
+        Returns artifacts that are either explicitly published or created in final step.
+        """
+        conn = self._get_connection()
+
+        rows = conn.execute("""
+            SELECT * FROM constat_artifacts
+            WHERE user_id = ? AND session_id = ?
+              AND (is_published = TRUE OR is_final_step = TRUE)
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, [user_id, session_id, limit]).fetchall()
+
+        columns = [desc[0] for desc in conn.description]
+
+        def get_col(row, name, default=None):
+            try:
+                return row[columns.index(name)]
+            except (ValueError, IndexError):
+                return default
+
+        return [
+            ArtifactRecord(
+                id=row[columns.index("id")],
+                user_id=row[columns.index("user_id")],
+                session_id=row[columns.index("session_id")],
+                name=row[columns.index("name")],
+                file_path=row[columns.index("file_path")],
+                artifact_type=row[columns.index("artifact_type")],
+                description=row[columns.index("description")],
+                size_bytes=row[columns.index("size_bytes")],
+                created_at=row[columns.index("created_at")],
+                is_published=bool(get_col(row, "is_published", False)),
+                is_final_step=bool(get_col(row, "is_final_step", False)),
+                title=get_col(row, "title"),
+            )
+            for row in rows
+        ]
 
     # --- Search ---
 

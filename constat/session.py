@@ -35,6 +35,7 @@ from constat.execution.fact_resolver import (
     FactSource,
     Tier2Strategy,
     Tier2AssessmentResult,
+    format_source_attribution,
 )
 from constat.execution.mode import (
     Mode,
@@ -180,6 +181,12 @@ Share data between steps ONLY via `store`:
 - `store.set_state('key', value, step_number=N)` / `store.get_state('key')` (check for None!)
 - `store.query('SELECT ... FROM table')` for SQL on saved data
 
+## Corrections and Updates
+When correcting or updating previous results:
+- **OVERWRITE the original table** with the same name - don't create "corrected_*" versions
+- Use `store.save_dataframe('original_name', corrected_df, step_number=N)` to replace
+- The user wants the canonical result fixed, not a separate corrected copy
+
 ## Common Pitfalls
 - Check `if 'col' in df.columns` before accessing columns
 - For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
@@ -194,7 +201,12 @@ Share data between steps ONLY via `store`:
 1. Use `pd.read_sql(query, db_<name>)` for source databases
 2. **ALWAYS save results to store** - nothing in local variables persists!
 3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
-4. Do NOT print full tables/DataFrames - they are saved as artifacts for the user to view
+
+## Output Guidelines
+- Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")
+- **NEVER print raw DataFrames** - `print(df)`, `print(df.head())` produce unreadable output
+- Tables saved to `store` appear automatically as clickable artifacts - don't dump their contents to stdout
+- For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
 
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers.
@@ -1185,13 +1197,15 @@ YOUR JSON RESPONSE:"""
                     reasoning="Embedded value",
                     source=FactSource.LLM_KNOWLEDGE,
                 )
-                return node.value, node.confidence, "embedded"
+                return node.value, node.confidence, "user"
 
             # Check cache
             cached_fact = self.fact_resolver.get_fact(fact_name)
             if cached_fact and cached_fact.value is not None:
                 resolved_premises[fact_id] = cached_fact
-                source_str = cached_fact.source_name or (cached_fact.source.value if cached_fact.source else "cache")
+                source_str = format_source_attribution(
+                    cached_fact.source, cached_fact.source_name, cached_fact.api_endpoint
+                )
                 return cached_fact.value, cached_fact.confidence, source_str
 
             fact = None
@@ -1206,7 +1220,9 @@ YOUR JSON RESPONSE:"""
                 if cached_fact:
                     logger.debug(f"[DAG] Found cached fact: {fact_name} = {str(cached_fact.value)[:50]}...")
                     resolved_premises[fact_id] = cached_fact
-                    source_str = cached_fact.source_name or (cached_fact.source.value if cached_fact.source else "cache")
+                    source_str = format_source_attribution(
+                        cached_fact.source, cached_fact.source_name, cached_fact.api_endpoint
+                    )
                     return cached_fact.value, cached_fact.confidence, source_str
 
                 # Try datastore table
@@ -1430,7 +1446,9 @@ RULES:
                     row_count=getattr(fact, 'row_count', None),
                     context=f"SQL: {sql}" if sql else None,
                 )
-                source_str = fact.source_name or (fact.source.value if fact.source else "resolved")
+                source_str = format_source_attribution(
+                    fact.source, fact.source_name, fact.api_endpoint
+                )
                 return fact.value, fact.confidence, source_str
             else:
                 raise ValueError(f"Failed to resolve premise: {fact_name}")
@@ -1881,6 +1899,54 @@ Return ONLY Python code, no markdown."""
         """Check if the current plan involves sensitive data."""
         return self.plan is not None and self.plan.contains_sensitive_data
 
+    def _create_publish_helper(self) -> callable:
+        """Create a helper function for step code to publish artifacts.
+
+        Published artifacts appear in the artifacts panel (consequential outputs).
+        Unpublished artifacts are still accessible via inline links and /artifacts.
+        """
+        def publish(name: str, title: str = None, description: str = None) -> bool:
+            """
+            Mark an artifact as published for the artifacts panel.
+
+            Call this for artifacts that are consequential outputs (final deliverables)
+            rather than intermediate results. Published artifacts appear prominently
+            in the artifacts panel.
+
+            Args:
+                name: The table or artifact name to publish
+                title: Optional human-friendly display title
+                description: Optional description
+
+            Returns:
+                True if published successfully, False if artifact not found
+
+            Example:
+                # After creating a final summary table
+                store.save_dataframe('executive_summary', summary_df)
+                publish('executive_summary', title='Executive Summary Report')
+            """
+            if not self.registry:
+                return False
+
+            # Try to publish as table first
+            if self.registry.publish_table(
+                self.user_id, self.session_id, name,
+                is_published=True, title=title
+            ):
+                return True
+
+            # Try as artifact
+            if self.registry.publish_artifact(
+                self.user_id, self.session_id, name,
+                is_published=True, title=title
+            ):
+                return True
+
+            return False
+
+        return publish
+
     def _get_execution_globals(self) -> dict:
         """Get globals dict for code execution.
 
@@ -1901,6 +1967,7 @@ Return ONLY Python code, no markdown."""
                 registry=self.registry,
                 open_with_system_viewer=self.config.execution.open_with_system_viewer,
             ),  # Visualization/file output helper
+            "publish": self._create_publish_helper(),  # Mark artifact as published for artifacts panel
         }
 
         # Provide database connections
@@ -3635,8 +3702,11 @@ Create a clear, direct answer to the user's question. Include:
 3. Any notable observations or caveats
 
 **Important formatting rules:**
-- Do NOT display tables inline - data is available in artifacts (user can view via /tables)
-- Reference artifact tables by name when mentioning results
+- Do NOT display tables inline - data is available as clickable artifacts
+- ALWAYS use backticks when referencing artifacts: `table_name` or `filename.ext`
+- For tables, include row count: `customers` (1,234 rows)
+- ONLY reference artifacts that were actually created - do not invent table names
+- Keep references inline in your prose - they become clickable links
 - Focus on key findings and conclusions, not raw data
 - Keep the response concise"""
 
@@ -4829,13 +4899,13 @@ Please revise the plan to incorporate this feedback."""
 
         # Check for clarification (clarification_request already computed in parallel above)
         if clarification_request:
-                enhanced_problem = self._request_clarification(clarification_request)
-                if enhanced_problem:
-                    problem = enhanced_problem
-                    # Re-analyze with clarified problem - speculative plan is stale
-                    logger.debug("[PARALLEL] Problem clarified, replanning...")
-                    speculative_plan = None
-                    analysis = self._analyze_question(problem)
+            enhanced_problem = self._request_clarification(clarification_request)
+            if enhanced_problem:
+                problem = enhanced_problem
+                # Re-analyze with clarified problem - speculative plan is stale
+                logger.debug("[PARALLEL] Problem clarified, replanning...")
+                speculative_plan = None
+                analysis = self._analyze_question(problem)
 
         # Create session
         db_names = list(self.config.databases.keys())
@@ -5191,6 +5261,42 @@ Please revise the plan to incorporate this feedback."""
             for i, r in enumerate(all_results)
         ])
 
+        # Auto-publish final step artifacts (they appear in artifacts panel)
+        # Find the last step that actually created tables (may not be the last step if it's just a summary)
+        if all_results and self.registry:
+            # Collect tables from last 2 steps that created tables (final outputs often span multiple steps)
+            final_tables = []
+            steps_with_tables = 0
+            for result in reversed(all_results):
+                if result.success and result.tables_created:
+                    final_tables.extend(result.tables_created)
+                    steps_with_tables += 1
+                    if steps_with_tables >= 2:
+                        break
+
+            # Filter to most important tables (avoid publishing every intermediate table)
+            # Prioritize: tables with "final", "report", "result", "recommendation" in name
+            important_keywords = ("final", "report", "result", "recommendation", "summary", "output")
+            important_tables = [t for t in final_tables if any(kw in t.lower() for kw in important_keywords)]
+
+            # If no important tables found, use tables from last step only (max 5)
+            if not important_tables:
+                for result in reversed(all_results):
+                    if result.success and result.tables_created:
+                        important_tables = result.tables_created[:5]
+                        break
+
+            # Limit to max 8 published tables to avoid clutter
+            tables_to_publish = important_tables[:8] if important_tables else []
+
+            if tables_to_publish:
+                self.registry.mark_final_step(
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    table_names=tables_to_publish,
+                )
+                logger.debug(f"Auto-published final step tables: {tables_to_publish}")
+
         # Emit raw results first (so user can see them immediately)
         self._emit_event(StepEvent(
             event_type="raw_results_ready",
@@ -5198,11 +5304,38 @@ Please revise the plan to incorporate this feedback."""
             data={"output": combined_output}
         ))
 
+        # Check if this was primarily an artifact creation task (production request)
+        # e.g., "create a table", "export to csv", "generate a report"
+        from constat.visualization.output import peek_pending_outputs
+        pending_artifacts = peek_pending_outputs()
+        is_artifact_focused = bool(pending_artifacts) or any(
+            marker in combined_output.lower()
+            for marker in ["file saved", "chart:", "map:", "image:", "saved to"]
+        )
+
         # Check if insights are enabled (config or per-query brief detection via LLM)
         skip_insights = not self.session_config.enable_insights or analysis.wants_brief
         suggestions = []  # Initialize for brief mode (no suggestions)
 
-        if skip_insights:
+        if is_artifact_focused:
+            # Production request: Generate brief response with artifact links
+            artifact_names = [a.get("description", a.get("file_uri", "artifact")) for a in pending_artifacts]
+            if artifact_names:
+                final_answer = "Created: " + ", ".join(f"`{n}`" for n in artifact_names)
+            else:
+                # Extract artifact names from output
+                import re
+                file_matches = re.findall(r'(?:File saved|Chart|Map|Image)[^:]*:\s*(file://[^\s]+)', combined_output)
+                if file_matches:
+                    final_answer = "Created:\n" + "\n".join(f"  {f}" for f in file_matches)
+                else:
+                    final_answer = combined_output  # Fallback to raw output
+            self._emit_event(StepEvent(
+                event_type="answer_ready",
+                step_number=0,
+                data={"answer": final_answer, "brief": True}
+            ))
+        elif skip_insights:
             # Use raw output as final answer
             final_answer = combined_output
             self._emit_event(StepEvent(
@@ -5586,12 +5719,16 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
 Available tables from previous steps:
 {', '.join(t['name'] for t in existing_tables) if existing_tables else '(none)'}
 
-**IMPORTANT**: The `execution_history` table contains the actual code and output from each step.
-To retrieve code for a step: `SELECT code FROM execution_history WHERE step_number = N`
-Columns: step_number, goal, narrative, code, output, tables_created
-
 Available state variables:
 {existing_state if existing_state else '(none)'}
+
+**DATASET REUSE GUIDELINES**:
+When the follow-up modifies existing analysis (a "steer"):
+1. REUSE existing table/fact names - e.g., update `final_answer` rather than create `final_answer_v2`
+2. OVERWRITE existing datasets when the modification replaces previous results
+3. Only create NEW names when truly adding new data alongside existing data
+4. Reference and build on existing tables/state rather than recreating from scratch
+5. The final result should only contain items that address the complete plan (original + extensions)
 
 Follow-up question: {question}
 """
@@ -5798,6 +5935,39 @@ User feedback: {approval.suggestion}
             for step, r in zip(follow_up_plan.steps, all_results)
         ])
 
+        # Auto-publish final step artifacts (they appear in artifacts panel)
+        # Find the last step that actually created tables (may not be the last step if it's just a summary)
+        if all_results and self.registry:
+            # Collect tables from last 2 steps that created tables
+            final_tables = []
+            steps_with_tables = 0
+            for result in reversed(all_results):
+                if result.success and result.tables_created:
+                    final_tables.extend(result.tables_created)
+                    steps_with_tables += 1
+                    if steps_with_tables >= 2:
+                        break
+
+            # Filter to most important tables
+            important_keywords = ("final", "report", "result", "recommendation", "summary", "output")
+            important_tables = [t for t in final_tables if any(kw in t.lower() for kw in important_keywords)]
+
+            if not important_tables:
+                for result in reversed(all_results):
+                    if result.success and result.tables_created:
+                        important_tables = result.tables_created[:5]
+                        break
+
+            tables_to_publish = important_tables[:8] if important_tables else []
+
+            if tables_to_publish:
+                self.registry.mark_final_step(
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    table_names=tables_to_publish,
+                )
+                logger.debug(f"Auto-published follow-up final step tables: {tables_to_publish}")
+
         # Emit raw results first (so user can see them immediately)
         self._emit_event(StepEvent(
             event_type="raw_results_ready",
@@ -5808,11 +5978,42 @@ User feedback: {approval.suggestion}
         # Analyze follow-up question for brief output preference (LLM-based, not keywords)
         follow_up_analysis = self._analyze_question(question)
 
+        # Check if this was primarily an artifact creation task
+        # (e.g., "generate a report", "create a chart", "export to csv")
+        from constat.visualization.output import peek_pending_outputs
+        pending_artifacts = peek_pending_outputs()  # Peek without clearing
+        is_artifact_focused = bool(pending_artifacts) or any(
+            marker in combined_output.lower()
+            for marker in ["file saved", "chart:", "map:", "image:", "saved to"]
+        )
+
         # Check if insights are enabled (config or per-query brief detection via LLM)
-        skip_insights = not self.session_config.enable_insights or follow_up_analysis.wants_brief
+        skip_insights = (
+            not self.session_config.enable_insights
+            or follow_up_analysis.wants_brief
+        )
         suggestions = []  # Initialize for brief mode (no suggestions)
 
-        if skip_insights:
+        if is_artifact_focused:
+            # For artifact-focused extensions, generate brief summary with artifact links
+            artifact_names = [a.get("description", a.get("file_uri", "artifact")) for a in pending_artifacts]
+            if artifact_names:
+                brief_summary = "Created: " + ", ".join(artifact_names)
+            else:
+                # Extract artifact names from output
+                import re
+                file_matches = re.findall(r'(?:File saved|Chart|Map|Image)[^:]*:\s*(file://[^\s]+)', combined_output)
+                if file_matches:
+                    brief_summary = "Created:\n" + "\n".join(f"  {f}" for f in file_matches)
+                else:
+                    brief_summary = combined_output  # Fallback to raw output
+            final_answer = brief_summary
+            self._emit_event(StepEvent(
+                event_type="answer_ready",
+                step_number=0,
+                data={"answer": final_answer, "brief": True}
+            ))
+        elif skip_insights:
             # Use raw output as final answer
             final_answer = combined_output
             self._emit_event(StepEvent(
@@ -6770,12 +6971,14 @@ Conclusion to derive: {conclusion}
 
 IMPORTANT INSTRUCTIONS:
 1. Always refer to data by its English variable name (e.g., "budget_validated_raises"), NEVER by ID (e.g., "I6")
-2. Do NOT display tables inline - the data is available in artifacts (user can view via /tables)
-3. Reference artifact tables by name when mentioning results (e.g., "see the budget_validated_raises table")
-4. Focus on the key findings and conclusions, not on showing raw data
-5. If the user asked for recommendations/suggestions, summarize them with key values
+2. Do NOT display tables inline - data is available as clickable artifacts
+3. ALWAYS use backticks when referencing artifacts: `table_name` (these become clickable links)
+4. For tables, include row count: `budget_validated_raises` (15 rows)
+5. ONLY reference artifacts that were actually created - do not invent table names
+6. Focus on the key findings and conclusions, not on showing raw data
+7. If the user asked for recommendations/suggestions, summarize them with key values
 
-Provide a concise, clear answer that references the artifact tables for detailed data."""
+Provide a concise, clear answer with inline artifact references."""
 
             synthesis_result = self.router.execute(
                 task_type=TaskType.SYNTHESIS,
@@ -6895,6 +7098,34 @@ Focus on the key finding and its significance."""
                 cached_facts = self.fact_resolver.export_cache()
                 self.datastore.set_session_meta("resolved_facts", json.dumps(cached_facts))
 
+            # Generate and save Data Flow Diagram (DFD) as published artifact
+            dfd_text = ""
+            try:
+                from constat.visualization.box_dag import generate_proof_dfd
+                dfd_text = generate_proof_dfd(proof_steps, max_width=80, max_name_len=10)
+                if dfd_text and self.datastore:
+                    from pathlib import Path
+                    artifacts_dir = Path(".constat") / self.user_id / "sessions" / self.session_id / "artifacts"
+                    artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    dfd_path = artifacts_dir / "data_flow.txt"
+                    dfd_path.write_text(dfd_text)
+
+                    # Register as published artifact
+                    self.registry.register_artifact(
+                        user_id=self.user_id,
+                        session_id=self.session_id,
+                        name="data_flow",
+                        file_path=str(dfd_path.resolve()),
+                        artifact_type="diagram",
+                        size_bytes=len(dfd_text.encode('utf-8')),
+                        description="Data flow diagram showing proof dependencies",
+                        is_published=True,
+                        title="Data Flow Diagram",
+                    )
+                    logger.debug(f"Saved DFD artifact: {dfd_path}")
+            except Exception as e:
+                logger.warning(f"Failed to generate DFD: {e}")
+
             return {
                 "success": True,
                 "mode": Mode.PROOF.value,
@@ -6902,6 +7133,7 @@ Focus on the key finding and its significance."""
                 "final_answer": answer,
                 "confidence": confidence,
                 "derivation": derivation_trace,
+                "derivation_chain": derivation_trace,  # Alias for UI
                 "sources": sources,
                 "suggestions": [
                     "Show me the supporting data for this verification",

@@ -482,7 +482,7 @@ class TestDagToDisplayFormat:
         display = dag_to_display_format(dag)
 
         assert "PREMISES:" in display
-        assert "P1: employees = ? (All employees) [source: database:sales_db]" in display
+        assert "P1: employees = ? (All employees) [source: sales_db]" in display
 
     def test_inferences_format(self):
         """Inferences are formatted correctly."""

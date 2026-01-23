@@ -284,7 +284,7 @@ class TaskRouter:
         user_message: str,
         tools: Optional[list[dict]] = None,
         tool_handlers: Optional[dict[str, Callable]] = None,
-        max_tokens: int = 4096,
+        max_tokens: int = 12288,
         complexity: str = "medium",
     ) -> TaskResult:
         """Execute and extract code from response."""

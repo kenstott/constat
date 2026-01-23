@@ -15,12 +15,15 @@ on-demand rather than loading everything into the system prompt.
 
 import glob as glob_module
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 import hashlib
 import threading
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from constat.core.config import Config, DocumentConfig
 from constat.embedding_loader import EmbeddingModelLoader
@@ -387,13 +390,14 @@ class DocumentDiscoveryTools:
 
         # Clean up ephemeral data from previous sessions
         if hasattr(self._vector_store, 'clear_ephemeral'):
+            logger.debug("DocumentDiscoveryTools.__init__: calling clear_ephemeral()")
             self._vector_store.clear_ephemeral()
+        else:
+            logger.debug("DocumentDiscoveryTools.__init__: vector store has no clear_ephemeral method")
 
         # Index documents if vector store is empty (first-time setup)
         # This MUST complete synchronously before __init__ returns
         if self._vector_store.count() == 0 and self.config.documents:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.info(f"[DOC_INIT] Vector store empty, indexing {len(self.config.documents)} documents...")
             for name in self.config.documents:
                 try:
@@ -434,6 +438,13 @@ class DocumentDiscoveryTools:
             True if indexed successfully
         """
         from datetime import datetime
+
+        # Remove existing document with same name to avoid duplicate key errors
+        if name in self._loaded_documents:
+            self.remove_document(name)
+        elif hasattr(self._vector_store, 'delete_by_document'):
+            # Document might exist in vector store from previous session
+            self._vector_store.delete_by_document(name)
 
         # Create a minimal config for the document
         doc_config = DocumentConfig(
@@ -483,6 +494,75 @@ class DocumentDiscoveryTools:
         self._extract_and_store_entities_ephemeral(chunks)
 
         return True
+
+    def add_ephemeral_document_from_file(
+        self,
+        file_path: str,
+        name: str | None = None,
+        description: str = "",
+    ) -> tuple[bool, str]:
+        """Add a session-only document from a file path.
+
+        Args:
+            file_path: Path to the document file
+            name: Optional name (defaults to filename without extension)
+            description: Optional description
+
+        Returns:
+            Tuple of (success, message)
+        """
+        path = Path(file_path)
+        if not path.exists():
+            return False, f"File not found: {file_path}"
+
+        # Use filename as name if not provided
+        if not name:
+            name = path.stem.replace(" ", "_").replace("-", "_").lower()
+
+        # Determine format and extract content
+        suffix = path.suffix.lower()
+        try:
+            if suffix == ".pdf":
+                content = self._extract_pdf_text(path)
+                doc_format = "text"
+            elif suffix == ".docx":
+                content = self._extract_docx_text(path)
+                doc_format = "text"
+            elif suffix == ".xlsx":
+                content = self._extract_xlsx_text(path)
+                doc_format = "text"
+            elif suffix == ".pptx":
+                content = self._extract_pptx_text(path)
+                doc_format = "text"
+            elif suffix in (".md", ".markdown"):
+                content = path.read_text()
+                doc_format = "markdown"
+            elif suffix in (".json",):
+                content = path.read_text()
+                doc_format = "json"
+            elif suffix in (".yaml", ".yml"):
+                content = path.read_text()
+                doc_format = "yaml"
+            else:
+                content = path.read_text()
+                doc_format = "text"
+        except Exception as e:
+            return False, f"Failed to read file: {e}"
+
+        if not content.strip():
+            return False, "File is empty"
+
+        # Add as ephemeral document
+        success = self.add_ephemeral_document(
+            name=name,
+            content=content,
+            doc_format=doc_format,
+            description=description or f"Session document from {path.name}",
+        )
+
+        if success:
+            return True, f"Added document '{name}' ({len(content):,} chars)"
+        return False, "Failed to index document"
 
     def _extract_and_store_entities_ephemeral(
         self,
@@ -545,6 +625,27 @@ class DocumentDiscoveryTools:
             self._vector_store.delete_by_document(name)
 
         return True
+
+    def get_ephemeral_documents(self) -> dict[str, dict]:
+        """Get documents added during this session (not in config).
+
+        Returns:
+            Dict of {name: {format, char_count, loaded_at}} for ephemeral docs
+        """
+        # Get names of documents from config (documents is a dict keyed by name)
+        config_doc_names = set(self.config.documents.keys()) if self.config.documents else set()
+
+        # Find documents that were added but not in config
+        ephemeral = {}
+        for name, doc in self._loaded_documents.items():
+            if name not in config_doc_names:
+                ephemeral[name] = {
+                    "format": doc.format,
+                    "char_count": len(doc.content),
+                    "loaded_at": doc.loaded_at,
+                }
+
+        return ephemeral
 
     def refresh(self, force_full: bool = False) -> dict:
         """Refresh documents, using incremental update by default.
@@ -826,9 +927,6 @@ class DocumentDiscoveryTools:
         Returns:
             List of relevant document excerpts with relevance scores
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         if self._model is None:
             logger.debug(f"[SEARCH] No embedding model")
             return []

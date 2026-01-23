@@ -208,6 +208,118 @@ def make_file_text(file_uri: str, style: str = "cyan underline", indent: str = "
     return Text(f"{indent}{filename}", style=style)
 
 
+def make_artifact_link_markup(
+    artifact_name: str,
+    artifact_type: str = "table",
+    row_count: int | None = None,
+    style: str = "cyan underline",
+) -> str:
+    """Create Textual markup for a clickable artifact reference.
+
+    Uses Textual's @click action syntax to make artifact names clickable.
+    When clicked, opens the artifact (table preview, file viewer, etc.).
+
+    Args:
+        artifact_name: Name of the artifact (e.g., "high_value_customers")
+        artifact_type: Type of artifact ("table", "file", "chart", etc.)
+        row_count: Optional row count for tables
+        style: Rich style to apply (default: "cyan underline")
+
+    Returns:
+        Markup string with clickable artifact name
+    """
+    # Escape single quotes in the name for the action parameter
+    escaped_name = artifact_name.replace("'", "\\'")
+
+    # Build display text
+    display_text = artifact_name
+    if row_count is not None:
+        display_text = f"{artifact_name} ({row_count:,} rows)"
+
+    # Create clickable markup using Textual's @click syntax
+    return f"[@click=app.open_artifact('{artifact_type}', '{escaped_name}')][{style}]{display_text}[/{style}][/]"
+
+
+def linkify_artifact_references(
+    text: str,
+    tables: list[dict],
+    artifacts: list[dict],
+) -> str:
+    """Convert artifact name references to clickable links.
+
+    Scans text for:
+    1. Backtick-quoted names: `table_name` or `filename.ext`
+    2. Known table names followed by row counts: table_name (N rows)
+
+    Args:
+        text: The text containing artifact references
+        tables: List of table dicts with 'name', 'row_count' keys
+        artifacts: List of artifact dicts with 'name', 'artifact_type', 'file_path' keys
+
+    Returns:
+        Text with artifact references converted to clickable markup
+    """
+    import re
+
+    # Build lookup maps
+    table_map = {t['name']: t for t in tables}
+    artifact_map = {a['name']: a for a in artifacts}
+
+    # Pass 1: Find all backtick-quoted strings
+    # Pattern: `name` optionally followed by (N rows) which we'll replace
+    backtick_pattern = r'`([^`]+)`(?:\s*\((\d+(?:,\d+)*)\s*rows?\))?'
+
+    def replace_backtick_match(match):
+        name = match.group(1)
+        explicit_count = match.group(2)
+
+        # Check if it's a known table
+        if name in table_map:
+            table = table_map[name]
+            row_count = int(explicit_count.replace(',', '')) if explicit_count else table.get('row_count')
+            return make_artifact_link_markup(name, "table", row_count)
+
+        # Check if it's a known artifact (file, chart, etc.)
+        if name in artifact_map:
+            artifact = artifact_map[name]
+            return make_artifact_link_markup(name, artifact.get('artifact_type', 'file'))
+
+        # Check by filename (artifacts may be referenced by filename)
+        for aname, artifact in artifact_map.items():
+            file_path = artifact.get('file_path', '')
+            if file_path and Path(file_path).name == name:
+                return make_artifact_link_markup(aname, artifact.get('artifact_type', 'file'))
+
+        # Not a known artifact, keep original
+        return match.group(0)
+
+    result = re.sub(backtick_pattern, replace_backtick_match, text)
+
+    # Pass 2: Find non-backticked table names followed by (N rows)
+    # Only match known table names to avoid false positives
+    # Pattern: word_boundary + table_name + optional space + (N rows)
+    for table_name, table in table_map.items():
+        # Skip if already linkified (contains @click)
+        if f"'{table_name}')" in result:
+            continue
+
+        # Escape special regex characters in table name
+        escaped_name = re.escape(table_name)
+
+        # Match: table_name (N rows) - without backticks, not already in a link
+        # Use word boundary to avoid partial matches
+        bare_pattern = rf'\b({escaped_name})\s*\((\d+(?:,\d+)*)\s*rows?\)'
+
+        def replace_bare_match(match, tname=table_name, tdata=table):
+            row_count_str = match.group(2)
+            row_count = int(row_count_str.replace(',', '')) if row_count_str else tdata.get('row_count')
+            return make_artifact_link_markup(tname, "table", row_count)
+
+        result = re.sub(bare_pattern, replace_bare_match, result)
+
+    return result
+
+
 class StatusBar(Static):
     """Persistent status bar widget at the bottom of the terminal."""
 
@@ -405,8 +517,13 @@ class CommandSuggester(Suggester):
         "/code",
         "/prove", "/audit",
         "/preferences",
-        "/databases", "/database", "/db",
+        "/databases",
+        "/database", "/db",
+        "/apis",
+        "/api",
+        "/documents", "/docs",
         "/files", "/file",
+        "/doc",
         "/context",
         "/history", "/sessions",
         "/verbose",
@@ -414,7 +531,7 @@ class CommandSuggester(Suggester):
         "/insights",
         "/update", "/refresh",
         "/learnings",
-        "/consolidate",
+        "/consolidate", "/compact-learnings",
         "/compact",
         "/remember",
         "/forget",
@@ -461,7 +578,7 @@ class ConstatInput(Input):
     """
 
     # Maximum history size
-    MAX_HISTORY = 100
+    MAX_HISTORY = 500
 
     def __init__(self, *args, **kwargs) -> None:
         # Initialize with command suggester for auto-complete
@@ -470,6 +587,38 @@ class ConstatInput(Input):
         self._history: list[str] = []
         self._history_index: int = -1  # -1 means not browsing history
         self._current_input: str = ""  # Stores current input when browsing history
+        self._history_file: Path | None = None
+
+    def set_history_file(self, user_id: str) -> None:
+        """Set the history file path for persistent storage."""
+        self._history_file = Path(".constat") / user_id / "prompt_history.json"
+
+    def load_history(self) -> None:
+        """Load command history from file."""
+        if not self._history_file or not self._history_file.exists():
+            return
+        try:
+            import json
+            with open(self._history_file, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    self._history = data[-self.MAX_HISTORY:]
+                    logger.debug(f"Loaded {len(self._history)} history entries")
+        except Exception as e:
+            logger.debug(f"Failed to load history: {e}")
+
+    def save_history(self) -> None:
+        """Save command history to file."""
+        if not self._history_file:
+            return
+        try:
+            import json
+            self._history_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._history_file, "w") as f:
+                json.dump(self._history[-self.MAX_HISTORY:], f, indent=2)
+            logger.debug(f"Saved {len(self._history)} history entries")
+        except Exception as e:
+            logger.debug(f"Failed to save history: {e}")
 
     def add_to_history(self, command: str) -> None:
         """Add a command to history (called after submission)."""
@@ -591,11 +740,9 @@ class SidePanelContent(RichLog):
 
     def start_animation(self) -> None:
         """Start the spinner animation for active steps."""
-        logger.debug(f"[ANIM] start_animation called, already_animating={self._is_animating}")
         if not self._is_animating:
             self._is_animating = True
             self._animation_timer = self.set_interval(0.1, self._animate_tick)
-            logger.debug("[ANIM] Animation timer started")
             # Add executing class to side panel (changes border color)
             try:
                 side_panel = self.app.query_one("#side-panel")
@@ -623,7 +770,6 @@ class SidePanelContent(RichLog):
         self._pulse_state = not self._pulse_state
         # Only redraw if we're in step mode with active steps
         has_active = any(s.get("status") in ("in_progress", "executing") for s in self._steps)
-        logger.debug(f"[ANIM] tick frame={self._spinner_frame}, mode={self._mode}, has_active={has_active}, steps={len(self._steps)}")
         if self._mode == self.MODE_STEPS and has_active:
             self._update_display()
 
@@ -872,9 +1018,9 @@ class SidePanelContent(RichLog):
             content_width = max(20, content_width)
             for line in self._dag_lines:
                 if line.strip():  # Skip empty lines
-                    # Lines have prefix like "P P1: " or "I I1: " - detect and account for it
+                    # Lines have prefix like "P P1: ", "I I1: ", or "→ 1: " - detect and account for it
                     import re
-                    prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*)', line)
+                    prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*)', line)
                     if prefix_match:
                         prefix = prefix_match.group(1)
                         rest = line[len(prefix):]
@@ -948,8 +1094,9 @@ class SidePanelContent(RichLog):
         # Render plan content with proper text wrapping
         for line in self._dag_lines:
             if line.strip():
-                # Lines may have prefix like "P P1: " or "I I1: " - detect and account for it
-                prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*)', line)
+                # Lines may have prefix like "P P1: ", "I I1: ", or "→ 1: " - detect and account for it
+                # Pattern matches: P/I prefix (P P1: or I I1:) OR arrow prefix (→ 1:)
+                prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*)', line)
                 if prefix_match:
                     prefix = prefix_match.group(1)
                     rest = line[len(prefix):]
@@ -1008,6 +1155,8 @@ class SidePanelContent(RichLog):
             icon = "📊"
         elif artifact_type == "chart":
             icon = "📈"
+        elif artifact_type == "diagram":
+            icon = "🔀"
         elif artifact_type == "file":
             icon = "📄"
         else:
@@ -1165,6 +1314,14 @@ class ConsolidateComplete(Message):
     """Message posted when consolidate operation completes."""
     def __init__(self, result: dict) -> None:
         self.result = result
+        super().__init__()
+
+
+class DocumentAddComplete(Message):
+    """Message posted when document addition completes."""
+    def __init__(self, success: bool, message: str) -> None:
+        self.success = success
+        self.message = message
         super().__init__()
 
 
@@ -1701,11 +1858,8 @@ class TextualFeedbackHandler:
             log.write(Text(f"  Verifying: {claim}...", style="dim"))
 
         elif event_type == "proof_complete":
-            verified = data.get("verified_count", 0)
-            total = data.get("claims_count", 0)
-            confidence = data.get("confidence", 0.0)
-            status_bar.update_status(status_message=f"Proof complete: {verified}/{total} verified")
-            log.write(Text(f"  Proof complete: {verified}/{total} claims verified (confidence: {confidence:.0%})", style="bold"))
+            # Just update status bar - proof result is shown by the PROOF RESULT panel
+            status_bar.update_status(status_message=None, phase=Phase.IDLE)
 
         elif event_type == "verification_error":
             error = data.get("error", "Unknown error")
@@ -1894,8 +2048,11 @@ class ConstatREPLApp(App):
 
     async def on_mount(self) -> None:
         """Initialize after mounting."""
-        # Focus the input
-        self.query_one("#user-input", Input).focus()
+        # Focus the input and load persistent history
+        input_widget = self.query_one("#user-input", ConstatInput)
+        input_widget.focus()
+        input_widget.set_history_file(self.user_id)
+        input_widget.load_history()
 
         # Set border titles with copy hint (shortcuts: Ctrl+Shift+O for output, Ctrl+Shift+P for panel)
         output_container = self.query_one("#output-container", Vertical)
@@ -1918,6 +2075,14 @@ class ConstatREPLApp(App):
         # Handle initial problem if provided
         if self.initial_problem:
             await self._solve(self.initial_problem)
+
+    def on_unmount(self) -> None:
+        """Save history when app unmounts."""
+        try:
+            input_widget = self.query_one("#user-input", ConstatInput)
+            input_widget.save_history()
+        except Exception:
+            pass
 
     async def _create_session(self) -> None:
         """Verify session is ready and register feedback handler."""
@@ -1962,6 +2127,101 @@ class ConstatREPLApp(App):
         # Return the response
         self._awaiting_clarification = False
         return self._clarification_response or ClarificationResponse(answers={}, skip=True)
+
+    def _get_artifacts_for_linkification(self) -> tuple[list[dict], list[dict]]:
+        """Get current tables and artifacts for linkifying references.
+
+        Returns:
+            Tuple of (tables_list, artifacts_list) with dicts containing
+            name, row_count, artifact_type, file_path as needed.
+        """
+        tables = []
+        artifacts = []
+        seen_tables = set()
+
+        # First get from datastore (most reliable, always has current session tables)
+        if self.session and self.session.datastore:
+            try:
+                for t in self.session.datastore.list_tables():
+                    name = t.get("name") if isinstance(t, dict) else t
+                    if name and name not in seen_tables:
+                        seen_tables.add(name)
+                        tables.append({
+                            "name": name,
+                            "row_count": t.get("row_count") if isinstance(t, dict) else None,
+                            "file_path": t.get("file_path", "") if isinstance(t, dict) else "",
+                        })
+            except Exception as e:
+                logger.debug(f"Failed to get tables from datastore: {e}")
+
+        # Also get from registry (has file paths)
+        try:
+            from constat.storage.registry import ConstatRegistry
+            registry = ConstatRegistry()
+
+            if self.session:
+                # Get tables from registry (may have file paths)
+                table_records = registry.list_tables(
+                    user_id=self.user_id,
+                    session_id=self.session.session_id,
+                )
+                for t in table_records:
+                    if t.name not in seen_tables:
+                        seen_tables.add(t.name)
+                        tables.append({
+                            "name": t.name,
+                            "row_count": t.row_count,
+                            "file_path": t.file_path,
+                        })
+
+                # Get other artifacts
+                artifact_records = registry.list_artifacts(
+                    user_id=self.user_id,
+                    session_id=self.session.session_id,
+                )
+                artifacts = [
+                    {
+                        "name": a.name,
+                        "artifact_type": a.artifact_type,
+                        "file_path": a.file_path,
+                    }
+                    for a in artifact_records
+                ]
+
+            registry.close()
+        except Exception as e:
+            logger.debug(f"Failed to get artifacts from registry: {e}")
+
+        return tables, artifacts
+
+    def _write_with_artifact_links(self, log: "OutputLog", text: str) -> None:
+        """Write text to log with artifact references converted to clickable links.
+
+        Artifact names in backticks (e.g., `table_name`) are converted to clickable
+        links if they match known tables or artifacts.
+
+        Args:
+            log: The OutputLog widget to write to
+            text: Text containing potential artifact references
+        """
+        tables, artifacts = self._get_artifacts_for_linkification()
+
+        if not tables and not artifacts:
+            # No artifacts to link - use regular Markdown
+            log.write(Markdown(text))
+            return
+
+        # Linkify artifact references
+        linkified = linkify_artifact_references(text, tables, artifacts)
+
+        # Check if any links were added (look for @click pattern)
+        if "[@click=" in linkified:
+            # Write as markup (clickable links work)
+            # Use Text.from_markup() to enable Rich markup parsing including @click actions
+            log.write(Text.from_markup(linkified))
+        else:
+            # No links added - use Markdown for better formatting
+            log.write(Markdown(text))
 
     def _show_clarification_ui(self) -> None:
         """Show clarification UI and set focus."""
@@ -2095,17 +2355,28 @@ class ConstatREPLApp(App):
         logger.debug(f"on_solve_complete: result keys = {list(result.keys())}")
 
         # Get table file paths from registry for file:// URIs
+        # Also track which tables are published (for filtering panel to show only consequential outputs)
         table_file_paths = {}
+        published_table_names = set()
+        all_table_count = 0
         try:
             from constat.storage.registry import ConstatRegistry
             from pathlib import Path
             registry = ConstatRegistry()
-            registry_tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
-            registry.close()
-            for t in registry_tables:
+
+            # Get all tables for file paths
+            all_tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+            all_table_count = len(all_tables)
+            for t in all_tables:
                 file_path = Path(t.file_path)
                 if file_path.exists():
                     table_file_paths[t.name] = file_path.resolve().as_uri()
+
+            # Get published tables (for filtering to consequential outputs)
+            published_tables = registry.list_published_tables(user_id=self.user_id, session_id=self.session.session_id)
+            published_table_names = {t.name for t in published_tables}
+
+            registry.close()
         except Exception as e:
             logger.debug(f"on_solve_complete: failed to get table file paths: {e}")
 
@@ -2219,8 +2490,24 @@ class ConstatREPLApp(App):
         # Sort artifacts by step_number and created_at to ensure creation order (older first, newer at bottom)
         artifacts.sort(key=lambda a: (a.get("step_number", 0), a.get("created_at", "")))
 
+        # Filter to only published/consequential artifacts for the side panel
+        # (intermediate tables are still accessible via /tables command and inline links)
+        intermediate_count = 0
+        if published_table_names:
+            all_artifacts = artifacts
+            artifacts = []
+            for a in all_artifacts:
+                if a.get("type") == "table":
+                    if a.get("name") in published_table_names:
+                        artifacts.append(a)
+                    else:
+                        intermediate_count += 1
+                else:
+                    # Non-table artifacts (charts, files, etc.) are always shown
+                    artifacts.append(a)
+
         # Show artifacts in side panel (or hide if none)
-        logger.debug(f"on_solve_complete: total artifacts = {len(artifacts)}")
+        logger.debug(f"on_solve_complete: total artifacts = {len(artifacts)}, intermediate = {intermediate_count}")
         if artifacts:
             logger.debug(f"on_solve_complete: showing {len(artifacts)} artifacts in side panel")
             for a in artifacts[:3]:  # Log first 3
@@ -2261,15 +2548,15 @@ class ConstatREPLApp(App):
                 if is_synthesized and self.session_config.enable_insights:
                     log.write("")
                     log.write(Text("Summary:", style="bold cyan"))
-                    log.write(Markdown(final_answer))
+                    self._write_with_artifact_links(log, final_answer)
             else:
                 # raw=off: Prefer synthesized summary over verbose step output
                 if is_synthesized:
-                    # Show synthesis (different from raw)
-                    log.write(Markdown(final_answer))
+                    # Show synthesis (different from raw) with clickable artifact links
+                    self._write_with_artifact_links(log, final_answer)
                 elif final_answer:
                     # final_answer exists but equals raw_output - show it
-                    log.write(Markdown(final_answer))
+                    self._write_with_artifact_links(log, final_answer)
                 elif raw_output:
                     # No synthesis available but we have output - show it
                     # (raw=off preference can't be honored when no synthesis exists)
@@ -2405,61 +2692,16 @@ class ConstatREPLApp(App):
     def _show_data_flow_dag(self, log: OutputLog, steps: list[dict]) -> None:
         """Display an ASCII data flow DAG."""
         try:
-            import networkx as nx
-            from constat.visualization.box_dag import render_dag
-        except ImportError:
-            return
-
-        # Build NetworkX graph from steps
-        G = nx.DiGraph()
-
-        for s in steps:
-            step_type = s.get("type")
-            fact_id = s.get("fact_id", "")
-            goal = s.get("goal", "")
-
-            if step_type == "premise":
-                G.add_node(fact_id)
-            elif step_type == "inference":
-                G.add_node(fact_id)
-                # Extract dependencies from the operation
-                inf_match = re.match(r'^(\w+)\s*=\s*(.+)', goal)
-                if inf_match:
-                    operation = inf_match.group(2)
-                else:
-                    operation = goal
-                deps = re.findall(r'[PI]\d+', operation)
-                for dep in deps:
-                    if G.has_node(dep):
-                        G.add_edge(dep, fact_id)
-
-        if G.number_of_nodes() == 0:
-            return
-
-        # Find terminal inference and add conclusion
-        inferences = [n for n in G.nodes() if n.startswith('I')]
-        if inferences:
-            terminal = None
-            for inf in inferences:
-                successors = list(G.successors(inf))
-                if not any(s.startswith('I') for s in successors):
-                    terminal = inf
-                    break
-            if terminal is None:
-                terminal = inferences[-1]
-            G.add_node("C")
-            G.add_edge(terminal, "C")
-
-        log.write("")
-        log.write(Text("  DATA FLOW:", style="bold yellow"))
-
-        try:
-            diagram = render_dag(G, style='rounded')
-            for line in diagram.split('\n'):
-                if line.strip():
-                    log.write(Text(f"      {line}", style="dim"))
+            from constat.visualization.box_dag import generate_proof_dfd
+            diagram = generate_proof_dfd(steps, max_width=60, max_name_len=10)
+            if diagram and diagram != "(No derivation graph available)":
+                log.write("")
+                log.write(Text("  DATA FLOW:", style="bold yellow"))
+                for line in diagram.split('\n'):
+                    if line.strip():
+                        log.write(Text(f"      {line}", style="dim"))
         except Exception:
-            log.write(Text("      (diagram rendering failed)", style="dim"))
+            pass  # Skip diagram on error
 
     def _show_dfd_in_side_panel(self, steps: list[dict]) -> None:
         """Show DFD diagram in the side panel. Always shows side panel."""
@@ -2469,125 +2711,91 @@ class ConstatREPLApp(App):
         # Always make side panel visible
         side_panel.add_class("visible")
 
-        try:
-            import networkx as nx
-            from constat.visualization.box_dag import render_dag
-        except ImportError:
-            # Fallback: show simple step list if networkx not available
-            self._show_steps_fallback(steps, panel_content)
-            return
+        # Check if these are proof steps (have fact_id with P/I prefix) or plan steps (have number)
+        has_proof_format = any(
+            s.get("fact_id", "").startswith(("P", "I")) and s.get("type") in ("premise", "inference")
+            for s in steps
+        )
 
-        # Calculate available panel width based on terminal width and ratio
+        if has_proof_format:
+            # Calculate available panel width based on terminal width and ratio
+            try:
+                app_width = self.size.width
+                output_ratio, side_ratio = self.PANEL_RATIOS[self._panel_ratio_index]
+                total_ratio = output_ratio + side_ratio
+                # Side panel width minus border/padding (approx 4 chars)
+                panel_width = max(20, (app_width * side_ratio // total_ratio) - 4)
+            except Exception:
+                panel_width = 40  # Fallback width
+
+            # Scale node name length based on panel width
+            max_name_len = max(6, min(12, panel_width // 4))
+
+            try:
+                from constat.visualization.box_dag import generate_proof_dfd
+                diagram = generate_proof_dfd(steps, max_width=panel_width, max_name_len=max_name_len)
+                if diagram and diagram != "(No derivation graph available)":
+                    dag_lines = [line for line in diagram.split('\n') if line.strip()]
+                    panel_content.show_plan(dag_lines)
+                    logger.debug(f"_show_dfd_in_side_panel: dag_lines={len(dag_lines)}, panel_width={panel_width}")
+                    return
+            except Exception as e:
+                logger.debug(f"_show_dfd_in_side_panel proof DFD failed: {e}")
+
+        # Fallback for plan steps or when proof DFD fails
+        self._show_plan_steps_fallback(steps, panel_content)
+
+    def _show_plan_steps_fallback(self, steps: list[dict], panel_content: SidePanelContent) -> None:
+        """Show simple step list for both plan and proof steps.
+
+        - Numbered steps, no truncation
+        - Text wraps at panel width with hanging indent
+        """
+        import textwrap
+
+        # Calculate panel width
         try:
             app_width = self.size.width
             output_ratio, side_ratio = self.PANEL_RATIOS[self._panel_ratio_index]
             total_ratio = output_ratio + side_ratio
-            # Side panel width minus border/padding (approx 4 chars)
             panel_width = max(20, (app_width * side_ratio // total_ratio) - 4)
         except Exception:
-            panel_width = 40  # Fallback width
+            panel_width = 40
 
-        # Scale node name length based on panel width
-        # Allow for ~3 nodes side by side with spacing
-        max_name_len = max(6, min(12, panel_width // 4))
-
-        # Build mapping from fact_id (P1, I1) to English variable name
-        fact_to_name: dict[str, str] = {}
-        for s in steps:
-            fact_id = s.get("fact_id", "")
-            goal = s.get("goal", "")
-            # Extract English name from BEFORE the first '='
-            # Premise format: "employees = ? (description) [source: xxx]"
-            # Inference format: "remaining_days = P1 - P2 -- explanation"
-            if "=" in goal:
-                english_name = goal.split("=", 1)[0].strip()
-                # Truncate to fit panel width
-                if len(english_name) > max_name_len:
-                    english_name = english_name[:max_name_len]
-                fact_to_name[fact_id] = english_name
-            elif fact_id:
-                fact_to_name[fact_id] = fact_id  # Fallback to fact_id
-
-        # Build NetworkX graph from steps using English names
-        G = nx.DiGraph()
-
-        for s in steps:
-            step_type = s.get("type")
-            fact_id = s.get("fact_id", "")
-            goal = s.get("goal", "")
-            node_name = fact_to_name.get(fact_id, fact_id)
-
-            if step_type == "premise":
-                G.add_node(node_name)
-            elif step_type == "inference":
-                G.add_node(node_name)
-                # Extract dependencies from the operation
-                inf_match = re.match(r'^(\w+)\s*=\s*(.+)', goal)
-                if inf_match:
-                    operation = inf_match.group(2)
-                else:
-                    operation = goal
-                deps = re.findall(r'[PI]\d+', operation)
-                for dep in deps:
-                    dep_name = fact_to_name.get(dep, dep)
-                    if G.has_node(dep_name):
-                        G.add_edge(dep_name, node_name)
-
-        if G.number_of_nodes() == 0:
-            # Fallback: show simple step list if no graph nodes
-            self._show_steps_fallback(steps, panel_content)
-            return
-
-        # Find terminal inference and add conclusion
-        inference_names = [fact_to_name.get(f, f) for f in fact_to_name if f.startswith('I')]
-        if inference_names:
-            terminal = None
-            for inf_name in inference_names:
-                successors = list(G.successors(inf_name))
-                if not any(s in inference_names for s in successors):
-                    terminal = inf_name
-                    break
-            if terminal is None:
-                terminal = inference_names[-1]
-            G.add_node("conclusion")
-            G.add_edge(terminal, "conclusion")
-
-        try:
-            diagram = render_dag(G, style='rounded', max_width=panel_width)
-            dag_lines = [line for line in diagram.split('\n') if line.strip()]
-            panel_content.show_plan(dag_lines)
-            logger.debug(f"_show_dfd_in_side_panel: dag_lines={len(dag_lines)}, panel_width={panel_width}")
-
-            # Save DFD as artifact file (before execution)
-            if self.session and self.session.session_id:
-                try:
-                    from pathlib import Path
-                    import tempfile
-                    artifacts_dir = Path(tempfile.gettempdir()) / "constat_artifacts"
-                    artifacts_dir.mkdir(exist_ok=True)
-                    dfd_path = artifacts_dir / f"{self.session.session_id}_data_flow.txt"
-                    dfd_path.write_text(diagram)
-                    logger.debug(f"_show_dfd_in_side_panel: saved DFD artifact to {dfd_path}")
-                except Exception as e:
-                    logger.debug(f"_show_dfd_in_side_panel: failed to save DFD artifact: {e}")
-        except Exception as e:
-            logger.debug(f"_show_dfd_in_side_panel render failed: {e}")
-            # Fallback: show simple step list
-            self._show_steps_fallback(steps, panel_content)
-
-    def _show_steps_fallback(self, steps: list[dict], panel_content: SidePanelContent) -> None:
-        """Show simple step list when DFD can't be rendered."""
         lines = []
         for s in steps:
-            fact_id = s.get("fact_id", "")
-            goal = s.get("goal", "")
-            step_type = s.get("type", "")
-            prefix = "P" if step_type == "premise" else "I" if step_type == "inference" else "→"
-            lines.append(f"{prefix} {fact_id}: {goal}")  # Full text, wraps at panel width
+            # Check if this is a plan step (has 'number') or proof step (has 'fact_id')
+            if "number" in s:
+                # Plan step format: {number, goal, inputs, outputs}
+                num = s.get("number", "?")
+                goal = s.get("goal", "")
+                prefix = f"{num}. "
+            else:
+                # Proof step format: {type, fact_id, goal}
+                fact_id = s.get("fact_id", "")
+                goal = s.get("goal", "")
+                step_type = s.get("type", "")
+                type_prefix = "P" if step_type == "premise" else "I" if step_type == "inference" else "→"
+                prefix = f"{type_prefix} {fact_id}: "
+
+            # Wrap text with hanging indent (continuation lines indented)
+            indent = " " * len(prefix)
+            wrapped = textwrap.wrap(
+                goal,
+                width=panel_width,
+                initial_indent=prefix,
+                subsequent_indent=indent,
+            )
+            lines.extend(wrapped if wrapped else [prefix])
+
         # Set lines directly for plan display (no box)
         panel_content._dag_lines = lines
         panel_content._mode = panel_content.MODE_PLAN  # Use plan rendering (no box)
         panel_content._update_display()
+
+    def _show_steps_fallback(self, steps: list[dict], panel_content: SidePanelContent) -> None:
+        """Alias for _show_plan_steps_fallback for backward compatibility."""
+        self._show_plan_steps_fallback(steps, panel_content)
 
     def _focus_input(self) -> None:
         """Focus the input widget."""
@@ -2853,17 +3061,28 @@ class ConstatREPLApp(App):
         elif cmd == "/redo":
             await self._redo(args)
         elif cmd == "/artifacts":
-            await self._show_artifacts()
+            show_all = args.strip().lower() == "all"
+            await self._show_artifacts(show_all=show_all)
         elif cmd == "/code":
             await self._show_code(args)
         elif cmd in ("/prove", "/audit"):
             await self._handle_prove()
         elif cmd == "/preferences":
             await self._show_preferences()
-        elif cmd in ("/databases", "/database", "/db"):
+        elif cmd == "/databases":
             await self._show_databases()
+        elif cmd in ("/database", "/db"):
+            await self._add_database(args)
+        elif cmd == "/apis":
+            await self._show_apis()
+        elif cmd == "/api":
+            await self._add_api(args)
+        elif cmd in ("/documents", "/docs"):
+            await self._show_documents()
         elif cmd in ("/files", "/file"):
             await self._show_files()
+        elif cmd == "/doc":
+            await self._add_document(args)
         elif cmd == "/context":
             await self._show_context()
         elif cmd in ("/history", "/sessions"):
@@ -2878,7 +3097,7 @@ class ConstatREPLApp(App):
             await self._refresh_metadata()
         elif cmd == "/learnings":
             await self._show_learnings()
-        elif cmd == "/consolidate":
+        elif cmd in ("/consolidate", "/compact-learnings"):
             await self._consolidate_learnings()
         elif cmd == "/compact":
             await self._compact_context()
@@ -2947,12 +3166,17 @@ class ConstatREPLApp(App):
             ("/raw [on|off]", "Toggle raw output display"),
             ("/insights [on|off]", "Toggle insight synthesis"),
             ("/preferences", "Show current preferences"),
-            ("/artifacts", "Show saved artifacts with file:// URIs"),
-            ("/databases, /db", "List databases"),
+            ("/artifacts [all]", "Show artifacts (use 'all' to include intermediate)"),
+            ("/databases", "List configured databases"),
+            ("/database <uri> [name]", "Add a database to this session"),
+            ("/apis", "List configured APIs"),
+            ("/api <spec_url> [name]", "Add an API to this session"),
+            ("/documents, /docs", "List all documents"),
             ("/files", "List all data files"),
+            ("/doc <path> [name]", "Add a document to this session"),
             ("/correct <text>", "Record a correction for future reference"),
             ("/learnings", "Show learnings and rules"),
-            ("/consolidate", "Promote similar learnings into rules"),
+            ("/compact-learnings", "Promote similar learnings into rules"),
             ("/prove", "Verify conversation claims with auditable proof"),
             ("/discover [scope] <query>", "Search data sources (scope: database|api|document)"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
@@ -3086,11 +3310,15 @@ class ConstatREPLApp(App):
                 return
 
             log.write(Text(f"Cached Facts ({len(facts)})", style="bold"))
+            from constat.execution.fact_resolver import format_source_attribution
+
             for fact_id, fact in facts.items():
                 # Fact is a dataclass, not a dict
                 value = getattr(fact, 'value', None)
                 confidence = getattr(fact, 'confidence', 1.0)
                 source = getattr(fact, 'source', None)
+                source_name = getattr(fact, 'source_name', None)
+                api_endpoint = getattr(fact, 'api_endpoint', None)
 
                 # Format value
                 value_str = str(value)[:60] + "..." if len(str(value)) > 60 else str(value)
@@ -3103,8 +3331,11 @@ class ConstatREPLApp(App):
                 else:
                     status = "○"
 
-                # Source info
-                source_str = f"[{source.value}]" if source and hasattr(source, 'value') else ""
+                # Source info - use common format
+                if source:
+                    source_str = f"[{format_source_attribution(source, source_name, api_endpoint)}]"
+                else:
+                    source_str = ""
 
                 log.write(Text(f"  {status} {fact_id}: {value_str} {source_str}", style="dim"))
         except Exception as e:
@@ -3170,8 +3401,12 @@ class ConstatREPLApp(App):
         log.write(Text(f"Redoing: {self.last_problem[:50]}...", style="dim"))
         await self._solve(problem)
 
-    async def _show_artifacts(self) -> None:
-        """Show saved artifacts with file:// URIs."""
+    async def _show_artifacts(self, show_all: bool = False) -> None:
+        """Show saved artifacts with file:// URIs.
+
+        Args:
+            show_all: If True, show all artifacts. If False, show only published/consequential.
+        """
         log = self.query_one("#output-log", OutputLog)
 
         if not self.session:
@@ -3182,17 +3417,36 @@ class ConstatREPLApp(App):
             from constat.storage.registry import ConstatRegistry
             from pathlib import Path
             registry = ConstatRegistry()
-            tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+
+            # Get all artifacts for count
+            all_tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+            all_artifacts = registry.list_artifacts(user_id=self.user_id, session_id=self.session.session_id)
+
+            if show_all:
+                tables = all_tables
+                artifacts = all_artifacts
+            else:
+                # Show only published (consequential) artifacts
+                tables = registry.list_published_tables(user_id=self.user_id, session_id=self.session.session_id)
+                artifacts = registry.list_published_artifacts(user_id=self.user_id, session_id=self.session.session_id)
+
             registry.close()
 
-            outputs = self.session.datastore.get_session_meta("pending_outputs") or []
+            # Calculate intermediate counts
+            intermediate_tables = len(all_tables) - len(tables) if not show_all else 0
+            intermediate_artifacts = len(all_artifacts) - len(artifacts) if not show_all else 0
+            intermediate_count = intermediate_tables + intermediate_artifacts
 
-            if not tables and not outputs:
-                log.write(Text("No artifacts.", style="dim"))
+            if not tables and not artifacts:
+                if intermediate_count > 0:
+                    log.write(Text(f"No published artifacts. ({intermediate_count} intermediate - use /artifacts all to see)", style="dim"))
+                else:
+                    log.write(Text("No artifacts.", style="dim"))
                 return
 
             log.write(Text("Artifacts", style="bold"))
 
+            # Show tables
             for t in tables:
                 file_path = Path(t.file_path)
                 if file_path.exists():
@@ -3201,17 +3455,25 @@ class ConstatREPLApp(App):
                     link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
                     log.write(link_markup)
 
-            for output in outputs:
-                if isinstance(output, dict):
-                    name = output.get("name", "Unknown")
-                    path = output.get("path", "")
-                    if path:
-                        file_path = Path(path)
-                        if file_path.exists():
-                            file_uri = file_path.resolve().as_uri()
-                            log.write(Text(f"  📄 {name}", style="cyan"))
-                            link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
-                            log.write(link_markup)
+            # Show other artifacts (charts, files, etc.)
+            for artifact in artifacts:
+                file_path = Path(artifact.file_path)
+                if file_path.exists():
+                    file_uri = file_path.resolve().as_uri()
+                    # Choose icon based on artifact type
+                    if artifact.artifact_type in ("chart", "html", "map"):
+                        icon = "📈"
+                    elif artifact.artifact_type in ("image", "png", "svg", "jpeg"):
+                        icon = "🖼️"
+                    else:
+                        icon = "📄"
+                    log.write(Text(f"  {icon} {artifact.name}", style="cyan"))
+                    link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
+                    log.write(link_markup)
+
+            # Show intermediate count hint
+            if intermediate_count > 0 and not show_all:
+                log.write(Text(f"\n  ({intermediate_count} intermediate artifacts - use /artifacts all to see)", style="dim"))
         except Exception as e:
             log.write(Text(f"Error showing artifacts: {e}", style="red"))
 
@@ -3327,11 +3589,10 @@ class ConstatREPLApp(App):
             success = result.get("success", False)
             confidence = result.get("confidence", 0.0)
 
-            log.write(Rule("[bold green]PROOF RESULT[/bold green]", align="left"))
-
             if success:
-                log.write(Text(f"Proof completed (confidence: {confidence:.0%})", style="bold green"))
+                log.write(Rule("[bold green]PROOF RESULT[/bold green]", align="left"))
             else:
+                log.write(Rule("[bold red]PROOF RESULT[/bold red]", align="left"))
                 log.write(Text("Proof could not be completed", style="bold red"))
 
             # Show derivation chain if available
@@ -3340,11 +3601,11 @@ class ConstatREPLApp(App):
                 log.write(Text("\nDerivation:", style="bold"))
                 log.write(Markdown(derivation))
 
-            # Show output/answer if available
+            # Show output/answer if available with clickable artifact links
             output = result.get("output", "")
             if output:
                 log.write(Text("\nResult:", style="bold"))
-                log.write(Markdown(output))
+                self._write_with_artifact_links(log, output)
 
             # Switch side panel to artifacts mode
             side_panel = self.query_one("#side-panel", SidePanel)
@@ -3417,10 +3678,80 @@ class ConstatREPLApp(App):
             return
 
         try:
-            databases = self.session.config.databases
+            # databases is a dict[str, DatabaseConfig]
+            databases = self.session.config.databases or {}
+            if not databases:
+                log.write(Text("No databases configured.", style="dim"))
+                return
             log.write(Text(f"Databases ({len(databases)})", style="bold"))
-            for db in databases:
-                log.write(Text(f"  {db.name}: {db.uri[:50]}...", style="dim"))
+            for name, db in databases.items():
+                uri_display = db.uri[:50] + "..." if db.uri and len(db.uri) > 50 else (db.uri or "(no uri)")
+                log.write(Text(f"  {name}: {uri_display}", style="dim"))
+                if db.description:
+                    first_line = db.description.strip().split('\n')[0][:60]
+                    log.write(Text(f"    {first_line}", style="dim italic"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _show_apis(self) -> None:
+        """Show configured APIs."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No session available.", style="yellow"))
+            return
+
+        try:
+            # apis is a dict[str, APIConfig]
+            apis = self.session.config.apis or {}
+            if not apis:
+                log.write(Text("No APIs configured.", style="dim"))
+                return
+
+            log.write(Text(f"APIs ({len(apis)})", style="bold"))
+            for name, api in apis.items():
+                api_type = api.type.value if hasattr(api.type, "value") else api.type
+                log.write(Text(f"  {name}: {api_type} - {api.url}", style="dim"))
+                if api.description:
+                    # Show first line of description
+                    first_line = api.description.strip().split('\n')[0][:60]
+                    log.write(Text(f"    {first_line}", style="dim italic"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _show_documents(self) -> None:
+        """Show configured and ephemeral documents."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No session available.", style="yellow"))
+            return
+
+        try:
+            # Show configured documents from config (documents is a dict)
+            docs = self.session.config.documents or {}
+            if docs:
+                log.write(Text(f"Configured Documents ({len(docs)})", style="bold"))
+                for name, doc in docs.items():
+                    doc_type = doc.type.value if hasattr(doc.type, "value") else doc.type
+                    doc_path = doc.path or doc.url or "(inline)"
+                    log.write(Text(f"  {name}: {doc_type} - {doc_path}", style="dim"))
+                    if doc.description:
+                        first_line = doc.description.strip().split('\n')[0][:60]
+                        log.write(Text(f"    {first_line}", style="dim italic"))
+
+            # Show ephemeral documents added this session
+            if self.session.doc_tools:
+                ephemeral = self.session.doc_tools.get_ephemeral_documents()
+                if ephemeral:
+                    log.write(Text(f"Session Documents ({len(ephemeral)})", style="bold cyan"))
+                    for name, info in ephemeral.items():
+                        fmt = info.get("format", "text")
+                        chars = info.get("char_count", 0)
+                        log.write(Text(f"  {name}: {fmt} ({chars:,} chars)", style="dim"))
+
+            if not docs and not (self.session.doc_tools and self.session.doc_tools.get_ephemeral_documents()):
+                log.write(Text("No documents configured or added.", style="dim"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
 
@@ -3741,7 +4072,7 @@ class ConstatREPLApp(App):
             if not rules and not pending:
                 log.write(Text("No learnings yet.", style="dim"))
             elif len(pending) >= 5:
-                log.write(Text(f"  Tip: Use /consolidate to promote similar learnings to rules", style="dim cyan"))
+                log.write(Text(f"  Tip: Use /compact-learnings to promote similar learnings to rules", style="dim cyan"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
 
@@ -3849,6 +4180,14 @@ class ConstatREPLApp(App):
             await self._stop_spinner()
             status_bar.stop_timer()
             status_bar.update_status(status_message=None, phase=Phase.IDLE)
+
+    async def on_document_add_complete(self, message: "DocumentAddComplete") -> None:
+        """Handle DocumentAddComplete message - display result."""
+        log = self.query_one("#output-log", OutputLog)
+        if message.success:
+            log.write(Text(f"  {message.message}", style="green"))
+        else:
+            log.write(Text(f"  {message.message}", style="red"))
 
     async def _compact_context(self) -> None:
         """Compact context to reduce token usage."""
@@ -4243,10 +4582,182 @@ class ConstatREPLApp(App):
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
 
+    async def _add_document(self, args: str) -> None:
+        """Add a document to the current session (runs in background)."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        if not args:
+            log.write(Text("Usage: /doc <path_or_uri> [name]", style="yellow"))
+            log.write(Text("  Add a document to the current session for reference.", style="dim"))
+            log.write(Text("  Supports: local paths, file:// URIs, http:// URLs, https:// URLs", style="dim"))
+            log.write(Text("  File types: .pdf, .docx, .xlsx, .pptx, .md, .txt, .json, .yaml", style="dim"))
+            return
+
+        # Parse args: file_path [optional_name]
+        parts = args.split(maxsplit=1)
+        path_or_uri = parts[0]
+        doc_name = parts[1] if len(parts) > 1 else None
+
+        if not self.session.doc_tools:
+            log.write(Text("Document tools not available.", style="red"))
+            return
+
+        log.write(Text(f"  Adding document: {path_or_uri}...", style="dim"))
+
+        # Run in background thread to avoid blocking
+        thread = threading.Thread(
+            target=self._add_document_thread,
+            args=(path_or_uri, doc_name),
+            daemon=True
+        )
+        thread.start()
+
+    def _add_document_thread(self, path_or_uri: str, doc_name: str | None) -> None:
+        """Add document in background thread, post result via message."""
+        import tempfile
+        import urllib.request
+        from urllib.parse import urlparse
+
+        try:
+            file_path = path_or_uri
+
+            # Parse URI schemes
+            parsed = urlparse(path_or_uri)
+
+            if parsed.scheme in ("http", "https"):
+                # Download remote file to temp location
+                suffix = Path(parsed.path).suffix or ".txt"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    with urllib.request.urlopen(path_or_uri, timeout=30) as response:
+                        tmp.write(response.read())
+                    file_path = tmp.name
+                    if not doc_name:
+                        doc_name = Path(parsed.path).stem or "remote_doc"
+
+            elif parsed.scheme == "file":
+                # Convert file:// URI to local path
+                # Handle file:///path (standard) and file://path (less common)
+                file_path = parsed.path
+                # On Windows, file:///C:/path becomes /C:/path, fix it
+                if file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+                    file_path = file_path[1:]
+
+            else:
+                # Assume local path - expand ~ for home directory
+                if path_or_uri.startswith("~"):
+                    file_path = str(Path(path_or_uri).expanduser())
+
+            # Call the doc_tools method
+            success, message = self.session.doc_tools.add_ephemeral_document_from_file(
+                file_path=file_path,
+                name=doc_name,
+            )
+            self.post_message(DocumentAddComplete(success, message))
+
+        except Exception as e:
+            self.post_message(DocumentAddComplete(False, f"Error: {e}"))
+
+    async def _add_database(self, args: str) -> None:
+        """Add a temporary database connection to the current session."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        if not args:
+            log.write(Text("Usage: /database <uri> [name]", style="yellow"))
+            log.write(Text("  Add a database connection to this session temporarily.", style="dim"))
+            log.write(Text("  Example: /database sqlite:///path/to/data.db mydata", style="dim"))
+            log.write(Text("  Example: /database postgresql://user:pass@host/db", style="dim"))
+            return
+
+        # Parse args: uri [optional_name]
+        parts = args.split(maxsplit=1)
+        uri = parts[0]
+        name = parts[1] if len(parts) > 1 else None
+
+        # Auto-generate name from URI if not provided
+        if not name:
+            if ":///" in uri:
+                # File-based DB - use filename
+                name = Path(uri.split(":///")[-1]).stem
+            elif "://" in uri:
+                # Network DB - use database name from URI
+                name = uri.split("/")[-1].split("?")[0]
+            else:
+                name = "temp_db"
+
+        log.write(Text(f"  Adding database: {name}...", style="dim"))
+
+        # TODO: Implement ephemeral database addition in session/catalog layer
+        # For now, show message that this feature is not yet implemented
+        try:
+            if hasattr(self.session, 'add_ephemeral_database'):
+                success, message = self.session.add_ephemeral_database(uri=uri, name=name)
+                if success:
+                    log.write(Text(f"  {message}", style="green"))
+                else:
+                    log.write(Text(f"  {message}", style="red"))
+            else:
+                log.write(Text("  Temporary database addition not yet implemented.", style="yellow"))
+                log.write(Text("  Add database to config.yaml to use it.", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _add_api(self, args: str) -> None:
+        """Add a temporary API connection to the current session."""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        if not args:
+            log.write(Text("Usage: /api <spec_url> [name]", style="yellow"))
+            log.write(Text("  Add an API to this session temporarily.", style="dim"))
+            log.write(Text("  Example: /api https://api.example.com/openapi.json myapi", style="dim"))
+            log.write(Text("  Example: /api https://example.com/graphql (auto-detects GraphQL)", style="dim"))
+            return
+
+        # Parse args: spec_url [optional_name]
+        parts = args.split(maxsplit=1)
+        spec_url = parts[0]
+        name = parts[1] if len(parts) > 1 else None
+
+        # Auto-generate name from URL if not provided
+        if not name:
+            from urllib.parse import urlparse
+            parsed = urlparse(spec_url)
+            name = parsed.netloc.replace(".", "_").replace(":", "_") or "temp_api"
+
+        log.write(Text(f"  Adding API: {name}...", style="dim"))
+
+        # TODO: Implement ephemeral API addition in session/catalog layer
+        try:
+            if hasattr(self.session, 'add_ephemeral_api'):
+                success, message = self.session.add_ephemeral_api(spec_url=spec_url, name=name)
+                if success:
+                    log.write(Text(f"  {message}", style="green"))
+                else:
+                    log.write(Text(f"  {message}", style="red"))
+            else:
+                log.write(Text("  Temporary API addition not yet implemented.", style="yellow"))
+                log.write(Text("  Add API to config.yaml to use it.", style="dim"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
     async def _solve(self, problem: str) -> None:
         """Solve a problem - starts worker thread, result comes via message."""
         log = self.query_one("#output-log", OutputLog)
         status_bar = self.query_one("#status-bar", StatusBar)
+
+        # Clear any pending outputs from previous execution
+        clear_pending_outputs()
 
         self._is_solving = True
         self.last_problem = problem
@@ -4339,6 +4850,12 @@ class ConstatREPLApp(App):
     def action_quit(self) -> None:
         """Handle quit."""
         self._app_running = False
+        # Save command history before exit
+        try:
+            input_widget = self.query_one("#user-input", ConstatInput)
+            input_widget.save_history()
+        except Exception:
+            pass
         # Release any waiting threads
         self._approval_event.set()
         self._clarification_event.set()
@@ -4368,6 +4885,80 @@ class ConstatREPLApp(App):
             status_bar.update_status(status_message=f"Opened: {Path(file_path).name}")
         except Exception as e:
             status_bar.update_status(status_message=f"Failed to open: {e}")
+
+    def action_open_artifact(self, artifact_type: str, artifact_name: str) -> None:
+        """Open an artifact by name (table, file, chart, etc.)."""
+        import subprocess
+        import platform
+
+        status_bar = self.query_one("#status-bar", StatusBar)
+        log = self.query_one("#output-log", OutputLog)
+
+        try:
+            from constat.storage.registry import ConstatRegistry
+
+            registry = ConstatRegistry()
+
+            if artifact_type == "table":
+                # Look up table in registry
+                tables = registry.list_tables(
+                    user_id=self.user_id,
+                    session_id=self.session.session_id if self.session else None,
+                )
+                table = next((t for t in tables if t.name == artifact_name), None)
+
+                if table and Path(table.file_path).exists():
+                    # Open the parquet file
+                    file_path = table.file_path
+                    system = platform.system()
+                    if system == "Darwin":
+                        subprocess.run(["open", file_path], check=True)
+                    elif system == "Windows":
+                        subprocess.run(["start", "", file_path], shell=True, check=True)
+                    else:
+                        subprocess.run(["xdg-open", file_path], check=True)
+                    status_bar.update_status(status_message=f"Opened table: {artifact_name}")
+                else:
+                    # Try datastore as fallback
+                    if self.session and self.session.datastore:
+                        df = self.session.datastore.get_table(artifact_name)
+                        if df is not None:
+                            # Show preview in output log
+                            log.write(Text(f"\n{artifact_name} ({len(df)} rows):", style="bold cyan"))
+                            preview = df.head(10).to_string()
+                            log.write(Text(preview, style="dim"))
+                            if len(df) > 10:
+                                log.write(Text(f"... ({len(df) - 10} more rows)", style="dim"))
+                            status_bar.update_status(status_message=f"Showing: {artifact_name}")
+                        else:
+                            status_bar.update_status(status_message=f"Table not found: {artifact_name}")
+                    else:
+                        status_bar.update_status(status_message=f"Table not found: {artifact_name}")
+            else:
+                # Look up artifact (file, chart, etc.) in registry
+                artifacts = registry.list_artifacts(
+                    user_id=self.user_id,
+                    session_id=self.session.session_id if self.session else None,
+                )
+                artifact = next((a for a in artifacts if a.name == artifact_name), None)
+
+                if artifact and Path(artifact.file_path).exists():
+                    file_path = artifact.file_path
+                    system = platform.system()
+                    if system == "Darwin":
+                        subprocess.run(["open", file_path], check=True)
+                    elif system == "Windows":
+                        subprocess.run(["start", "", file_path], shell=True, check=True)
+                    else:
+                        subprocess.run(["xdg-open", file_path], check=True)
+                    status_bar.update_status(status_message=f"Opened: {artifact_name}")
+                else:
+                    status_bar.update_status(status_message=f"Artifact not found: {artifact_name}")
+
+            registry.close()
+
+        except Exception as e:
+            status_bar.update_status(status_message=f"Failed to open artifact: {e}")
 
     def action_shrink_panel(self) -> None:
         """Shrink the side panel (make output log larger)."""
@@ -4477,6 +5068,10 @@ def run_textual_repl(
     debug: bool = False,
 ) -> None:
     """Run the Textual-based REPL."""
+    # Set REPL mode FIRST - before any imports or session creation
+    # This ensures viz.save_file collects outputs for artifact display
+    os.environ["CONSTAT_REPL_MODE"] = "1"
+
     from rich.console import Console
     console = Console()
 

@@ -282,12 +282,14 @@ class LearningStore:
         self,
         category: Optional[LearningCategory] = None,
         min_confidence: float = 0.0,
+        limit: Optional[int] = None,
     ) -> list[dict]:
         """List rules.
 
         Args:
             category: Filter by category (None for all)
             min_confidence: Minimum confidence threshold
+            limit: Maximum number of rules to return (None for all)
 
         Returns:
             List of rule dicts, highest confidence first
@@ -304,6 +306,11 @@ class LearningStore:
 
         # Sort by confidence (highest first)
         rules = sorted(rules, key=lambda r: r.get("confidence", 0), reverse=True)
+
+        # Apply limit
+        if limit is not None:
+            rules = rules[:limit]
+
         return [r.copy() for r in rules]
 
     def get_relevant_rules(

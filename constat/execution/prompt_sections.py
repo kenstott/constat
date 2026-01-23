@@ -199,10 +199,27 @@ Check API schema for available filter arguments before writing queries.
 
 Save files and interactive visualizations to ~/.constat/outputs/ with clickable file:// URIs.
 
-### Documents and Data Files
+### Documents and Data Files (text formats)
 ```python
 viz.save_file('quarterly_report', markdown_content, ext='md', title='Q4 Report')
 viz.save_file('export', df.to_csv(index=False), ext='csv', title='Data Export')
+viz.save_file('report', json.dumps(data, indent=2), ext='json', title='JSON Report')
+```
+
+### Excel, PDF, and Binary Files
+```python
+# Excel: Create in-memory, then save binary content
+from io import BytesIO
+buffer = BytesIO()
+df.to_excel(buffer, index=False, engine='openpyxl')
+viz.save_binary('sales_report', buffer.getvalue(), ext='xlsx', title='Sales Report')
+
+# Multiple sheets in Excel
+with BytesIO() as buffer:
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df1.to_excel(writer, sheet_name='Summary', index=False)
+        df2.to_excel(writer, sheet_name='Details', index=False)
+    viz.save_binary('report', buffer.getvalue(), ext='xlsx', title='Full Report')
 ```
 
 ### Interactive Maps (using folium)
@@ -242,6 +259,66 @@ fig = px.choropleth(df, locations='iso_code', color='value',
 
 viz.save_chart('chart_name', fig, title='Chart Title')
 ```
+
+**IMPORTANT**: Never save files directly to disk (e.g., `df.to_excel('file.xlsx')`). Always use viz methods so files are properly tracked and stored in the artifacts directory.
+""",
+    ),
+    # -------------------------------------------------------------------------
+    # File Output (Reports, Exports, Results)
+    # -------------------------------------------------------------------------
+    "file_output": PromptSection(
+        concept_id="file_output",
+        targets=["step"],
+        exemplars=[
+            "Calculate employee raises and save the results",
+            "Generate a report of sales data",
+            "Export the analysis to Excel",
+            "Create a summary report",
+            "Save the results to a file",
+            "Produce a salary report",
+            "Output the data to CSV",
+            "Make a report showing the totals",
+            "Generate an Excel spreadsheet",
+            "Save this as a markdown report",
+            "Create an export of the data",
+            "Prepare a report for management",
+        ],
+        content="""## Final Results & Reports (via viz)
+
+For any final output that should be viewable by the user, use `viz` to create clickable file:// URIs.
+
+### Summary Reports (Markdown)
+```python
+# Build a formatted markdown report
+report = f\"\"\"# Analysis Report
+
+## Summary
+- Total records: {len(df)}
+- Average value: ${df['amount'].mean():,.2f}
+
+## Details
+{df.head(10).to_markdown(index=False)}
+\"\"\"
+viz.save_file('report', report, ext='md', title='Analysis Report')
+```
+
+### Data Exports (CSV/Excel)
+```python
+# CSV export
+viz.save_file('export', df.to_csv(index=False), ext='csv', title='Data Export')
+
+# Excel export (single sheet)
+from io import BytesIO
+buffer = BytesIO()
+df.to_excel(buffer, index=False, engine='openpyxl')
+viz.save_binary('report', buffer.getvalue(), ext='xlsx', title='Excel Report')
+```
+
+### Key Principles
+1. **Use viz for all final outputs** - creates clickable file:// URIs in terminal
+2. **Don't print full tables** - use viz.save_file() instead
+3. **Print only brief summaries** - e.g., "Saved 150 records to report"
+4. Tables saved to `store` appear automatically in the artifacts panel
 """,
     ),
     # -------------------------------------------------------------------------

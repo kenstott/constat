@@ -356,3 +356,86 @@ def render_compact(graph: nx.DiGraph, spacing: int = 3,
     """Render a DAG compactly. Linear chains snake horizontally at max_width."""
     return CompactDAG(graph, min_spacing=spacing,
                       snake_chains=snake, max_chain_width=max_width).render()
+
+
+def generate_proof_dfd(
+    steps: List[Dict],
+    max_width: int = 80,
+    max_name_len: int = 10,
+) -> str:
+    """
+    Generate a Data Flow Diagram from proof steps.
+
+    Args:
+        steps: List of step dicts with 'fact_id', 'goal', 'type' keys
+               - type: 'premise', 'inference', or 'conclusion'
+               - fact_id: P1, P2, I1, I2, etc.
+               - goal: "var_name = operation" or "var_name = ? (desc) [source: x]"
+        max_width: Maximum width for rendering
+        max_name_len: Max characters for node labels (truncated)
+
+    Returns:
+        Rendered ASCII diagram string
+    """
+    import re
+
+    # Build mapping from fact_id (P1, I1) to English variable name
+    fact_to_name: Dict[str, str] = {}
+    for s in steps:
+        fact_id = s.get("fact_id", "")
+        goal = s.get("goal", "")
+        # Extract English name from BEFORE the first '='
+        # Premise format: "employees = ? (description) [source: xxx]"
+        # Inference format: "remaining_days = P1 - P2 -- explanation"
+        if "=" in goal:
+            english_name = goal.split("=", 1)[0].strip()
+            # Truncate to fit
+            if len(english_name) > max_name_len:
+                english_name = english_name[:max_name_len]
+            fact_to_name[fact_id] = english_name
+        elif fact_id:
+            fact_to_name[fact_id] = fact_id  # Fallback to fact_id
+
+    # Build NetworkX graph using English names
+    G = nx.DiGraph()
+
+    for s in steps:
+        step_type = s.get("type")
+        fact_id = s.get("fact_id", "")
+        goal = s.get("goal", "")
+        node_name = fact_to_name.get(fact_id, fact_id)
+
+        if step_type == "premise":
+            G.add_node(node_name)
+        elif step_type == "inference":
+            G.add_node(node_name)
+            # Extract dependencies from the operation
+            inf_match = re.match(r'^(\w+)\s*=\s*(.+)', goal)
+            if inf_match:
+                operation = inf_match.group(2)
+            else:
+                operation = goal
+            deps = re.findall(r'[PI]\d+', operation)
+            for dep in deps:
+                dep_name = fact_to_name.get(dep, dep)
+                if G.has_node(dep_name):
+                    G.add_edge(dep_name, node_name)
+
+    if G.number_of_nodes() == 0:
+        return "(No derivation graph available)"
+
+    # Find terminal inference and add conclusion
+    inference_names = [fact_to_name.get(f, f) for f in fact_to_name if f.startswith('I')]
+    if inference_names:
+        terminal = None
+        for inf_name in inference_names:
+            successors = list(G.successors(inf_name))
+            if not any(s in inference_names for s in successors):
+                terminal = inf_name
+                break
+        if terminal is None:
+            terminal = inference_names[-1]
+        G.add_node("conclusion")
+        G.add_edge(terminal, "conclusion")
+
+    return render_dag(G, max_width=max_width)

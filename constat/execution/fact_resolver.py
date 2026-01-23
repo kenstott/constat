@@ -91,6 +91,109 @@ DERIVED_SOURCES = {
 }
 
 
+def format_source_attribution(
+    source_type: Union[FactSource, str],
+    source_name: Optional[str] = None,
+    entity: Optional[str] = None,
+    params: Optional[list[str]] = None,
+) -> str:
+    """Format source attribution consistently across the codebase.
+
+    This provides a common format for displaying where data came from:
+    - Database: db_name.table_name (e.g., "chinook.employees")
+    - GraphQL: api_name.query_path (e.g., "catfacts.breeds")
+    - REST: api_name.resource[params] (e.g., "countries./v3.1/all[fields,lang]")
+    - User: "user" (values from user input)
+    - Cache: "cache"
+    - Knowledge: "knowledge"
+    - Derived: "derived"
+
+    Args:
+        source_type: The FactSource enum or string source type
+        source_name: Name of the source (db name, api name, etc.)
+        entity: The specific entity accessed (table name, query path, endpoint)
+        params: Optional list of parameter names for REST APIs
+
+    Returns:
+        Formatted source attribution string
+    """
+    import re
+
+    # Normalize source_type to string
+    if isinstance(source_type, FactSource):
+        source_str = source_type.value
+    else:
+        source_str = str(source_type).lower()
+
+    # Handle special cases
+    if source_str in ("user", "user_provided", "embedded"):
+        return "user"
+    if source_str == "cache":
+        return "cache"
+    if source_str in ("llm_knowledge", "knowledge"):
+        return "knowledge"
+    if source_str == "derived":
+        return "derived"
+    if source_str == "document":
+        if source_name and entity:
+            return f"{source_name}.{entity}"
+        return source_name or "document"
+
+    # Database format: db_name.table_name
+    if source_str == "database":
+        if source_name and entity:
+            return f"{source_name}.{entity}"
+        return source_name or "database"
+
+    # API format depends on type
+    if source_str == "api":
+        if not source_name:
+            return "api"
+
+        if entity:
+            # Check if it's a GraphQL query (contains { })
+            if "{" in entity:
+                # Extract query path with dot notation
+                # e.g., "{ countries { currencies } }" -> "countries.currencies"
+                # Remove query wrapper and extract field names
+                clean = entity.strip()
+                if clean.startswith("{"):
+                    clean = clean[1:]
+                if clean.endswith("}"):
+                    clean = clean[:-1]
+                # Extract field names (words before { or at leaf level)
+                fields = re.findall(r'(\w+)\s*(?:\{|$)', clean)
+                if fields:
+                    query_path = ".".join(fields)
+                    return f"{source_name}.{query_path}"
+                return f"{source_name}.query"
+
+            # REST endpoint: extract resource name and params
+            # e.g., "GET /v3.1/all" or "/users/{id}/orders?limit=10"
+            endpoint = entity
+            # Remove HTTP method prefix
+            endpoint = re.sub(r'^(GET|POST|PUT|DELETE|PATCH)\s+', '', endpoint)
+            # Extract path (before query string)
+            path = endpoint.split("?")[0]
+            # Extract path variable names from {name} patterns
+            path_vars = re.findall(r'\{(\w+)\}', path)
+            # Extract query param names
+            query_str = endpoint.split("?")[1] if "?" in endpoint else ""
+            query_params = re.findall(r'(\w+)=', query_str)
+
+            # Combine params (use provided list or extract from endpoint)
+            all_params = params or (path_vars + query_params)
+
+            if all_params:
+                return f"{source_name}.{path}[{','.join(all_params)}]"
+            return f"{source_name}.{path}"
+
+        return source_name
+
+    # Default: just return source name or type
+    return source_name or source_str
+
+
 @dataclass
 class AuditContext:
     """Context for audit mode from exploratory session.
@@ -4081,16 +4184,16 @@ Be specific and exhaustive - list ALL facts needed to verify the claim."""
                         derivation_lines.append(f"- {fact_name} = {fact.value} (derived, confidence: {fact.confidence:.0%})")
                         derivation_lines.append(f"  ↳ Derived from:")
                         for sub_fact in fact.because:
-                            sub_source = sub_fact.source.value
-                            if sub_fact.source_name:
-                                sub_source = f"{sub_fact.source.value}:{sub_fact.source_name}"
+                            sub_source = format_source_attribution(
+                                sub_fact.source, sub_fact.source_name, sub_fact.api_endpoint
+                            )
                             derivation_lines.append(f"    - {sub_fact.name} = {sub_fact.value} ({sub_source})")
                         source_detail = "derived"
                     else:
-                        # Simple fact, show source
-                        source_detail = fact.source.value
-                        if fact.query:
-                            source_detail = f"SQL query"
+                        # Simple fact, use common source format
+                        source_detail = format_source_attribution(
+                            fact.source, fact.source_name, fact.api_endpoint
+                        )
                         derivation_lines.append(f"- {fact_name} = {fact.value} ({source_detail}, confidence: {fact.confidence:.0%})")
 
                     # Emit resolved event

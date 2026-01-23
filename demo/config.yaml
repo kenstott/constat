@@ -121,6 +121,8 @@ execution:
     - datetime
     - statistics
     - polars
+    - tempfile
+    - os            # File path operations
     # Standard library
     - re
     - math
@@ -133,3 +135,13 @@ execution:
     - matplotlib
     - seaborn
     - folium
+    # Document/artifact creation
+    - openpyxl      # Excel files (.xlsx)
+    - xlsxwriter    # Excel files with formatting
+    - docx          # Word documents (.docx) - python-docx
+    - pptx          # PowerPoint (.pptx) - python-pptx
+    - reportlab     # PDF generation
+    - pypdf         # PDF manipulation
+    - PIL           # Image processing (Pillow)
+    - io            # In-memory file handling
+    - tabulate      # Table formatting (used by pandas to_markdown)

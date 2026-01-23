@@ -22,11 +22,14 @@ from pathlib import Path
 from typing import Optional
 import hashlib
 import json
+import logging
 import threading
 
 import numpy as np
 
 from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStoreBackend(ABC):
@@ -227,9 +230,9 @@ class DuckDBVectorStore(VectorStoreBackend):
         try:
             self._conn.execute("INSTALL vss")
             self._conn.execute("LOAD vss")
-        except Exception:
+        except Exception as e:
             # VSS might already be loaded or not available in older versions
-            pass
+            logger.debug(f"VSS extension load skipped: {e}")
 
         # Create embeddings table with FLOAT array for vectors
         self._conn.execute(f"""
@@ -292,49 +295,64 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entities_parent ON entities(parent_id)"
             )
-        except Exception:
-            pass  # Indexes might already exist
+        except Exception as e:
+            logger.debug(f"Index creation skipped: {e}")
 
     def _migrate_schema(self) -> None:
         """Migrate existing tables to new schema if needed."""
+        # DuckDB uses information_schema, not PRAGMA (which is SQLite)
+        def get_column_names(table_name: str) -> set[str]:
+            """Get column names for a table using DuckDB's information_schema."""
+            try:
+                result = self._conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                    [table_name]
+                ).fetchall()
+                return {row[0] for row in result}
+            except Exception as e:
+                logger.warning(f"Failed to get columns for {table_name}: {e}")
+                return set()
+
         # Add ephemeral column to tables if missing
         for table in ['embeddings', 'entities', 'chunk_entities']:
             try:
-                cols = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
-                col_names = [c[1] for c in cols]
-                if 'ephemeral' not in col_names:
+                col_names = get_column_names(table)
+                if col_names and 'ephemeral' not in col_names:
+                    logger.debug(f"_migrate_schema: adding ephemeral column to {table}")
                     self._conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_migrate_schema: failed to add ephemeral to {table}: {e}")
 
         # Add new columns to entities table for unified catalog
         try:
-            cols = self._conn.execute("PRAGMA table_info(entities)").fetchall()
-            col_names = [c[1] for c in cols]
+            col_names = get_column_names('entities')
 
-            if 'source' not in col_names:
+            if col_names and 'source' not in col_names:
+                logger.debug("_migrate_schema: adding source column to entities")
                 self._conn.execute(
                     "ALTER TABLE entities ADD COLUMN source VARCHAR DEFAULT 'document'"
                 )
-            if 'parent_id' not in col_names:
+            if col_names and 'parent_id' not in col_names:
+                logger.debug("_migrate_schema: adding parent_id column to entities")
                 self._conn.execute(
                     "ALTER TABLE entities ADD COLUMN parent_id VARCHAR"
                 )
-            if 'config_hash' not in col_names:
+            if col_names and 'config_hash' not in col_names:
+                logger.debug("_migrate_schema: adding config_hash column to entities")
                 self._conn.execute(
                     "ALTER TABLE entities ADD COLUMN config_hash VARCHAR"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"_migrate_schema: failed to add columns to entities: {e}")
 
         # Drop old tables if they exist (migrating to unified entities)
         try:
             self._conn.execute("DROP TABLE IF EXISTS table_embeddings")
             self._conn.execute("DROP TABLE IF EXISTS api_embeddings")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"_migrate_schema: failed to drop old tables: {e}")
 
     def clear_ephemeral(self) -> None:
         """Remove all ephemeral (session-added) data.
@@ -342,12 +360,27 @@ class DuckDBVectorStore(VectorStoreBackend):
         Called at startup to clean up temporary data from previous sessions.
         """
         with self._lock:
+            # Count ephemeral rows before deletion
+            emb_count = self._conn.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE ephemeral = TRUE"
+            ).fetchone()[0]
+            ent_count = self._conn.execute(
+                "SELECT COUNT(*) FROM entities WHERE ephemeral = TRUE"
+            ).fetchone()[0]
+            link_count = self._conn.execute(
+                "SELECT COUNT(*) FROM chunk_entities WHERE ephemeral = TRUE"
+            ).fetchone()[0]
+
+            logger.debug(f"clear_ephemeral: found {emb_count} embeddings, {ent_count} entities, {link_count} links")
+
             # Delete ephemeral chunk-entity links first (foreign key consideration)
             self._conn.execute("DELETE FROM chunk_entities WHERE ephemeral = TRUE")
             # Delete ephemeral entities
             self._conn.execute("DELETE FROM entities WHERE ephemeral = TRUE")
             # Delete ephemeral chunks
             self._conn.execute("DELETE FROM embeddings WHERE ephemeral = TRUE")
+
+            logger.debug(f"clear_ephemeral: deleted ephemeral data")
 
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         """Generate a unique ID for a chunk."""
@@ -371,6 +404,9 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         if len(chunks) == 0:
             return
+
+        doc_names = set(c.document_name for c in chunks)
+        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, ephemeral={ephemeral}")
 
         # Prepare data for insertion
         records = []

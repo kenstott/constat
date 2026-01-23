@@ -69,6 +69,11 @@ def get_pending_outputs() -> list[dict]:
     return outputs
 
 
+def peek_pending_outputs() -> list[dict]:
+    """Peek at pending outputs without clearing them."""
+    return _pending_outputs[:]
+
+
 def add_pending_output(file_uri: str, description: str, file_type: str = "") -> None:
     """Add an output to the pending list for later display."""
     _pending_outputs.append({
@@ -80,6 +85,7 @@ def add_pending_output(file_uri: str, description: str, file_type: str = "") -> 
 
 # File extension to artifact type mapping
 FILE_EXT_ARTIFACT_TYPES = {
+    # Text formats
     "md": "markdown",
     "markdown": "markdown",
     "txt": "text",
@@ -89,6 +95,38 @@ FILE_EXT_ARTIFACT_TYPES = {
     "xml": "xml",
     "yaml": "yaml",
     "yml": "yaml",
+    "html": "html",
+    "htm": "html",
+    # Spreadsheets
+    "xlsx": "spreadsheet",
+    "xls": "spreadsheet",
+    "ods": "spreadsheet",
+    # Documents
+    "pdf": "document",
+    "docx": "document",
+    "doc": "document",
+    "odt": "document",
+    "rtf": "document",
+    # Presentations
+    "pptx": "presentation",
+    "ppt": "presentation",
+    "odp": "presentation",
+    # Images
+    "png": "image",
+    "jpg": "image",
+    "jpeg": "image",
+    "gif": "image",
+    "svg": "image",
+    "bmp": "image",
+    "tiff": "image",
+    "tif": "image",
+    "webp": "image",
+    # Data formats
+    "parquet": "data",
+    "arrow": "data",
+    "feather": "data",
+    "pickle": "data",
+    "pkl": "data",
 }
 
 
@@ -203,11 +241,11 @@ class VisualizationHelper:
                     print(f"Note: Could not auto-open file in system viewer: {e}")
 
         if self.print_file_refs:
-            if is_repl_mode():
-                # Collect for later display in REPL
-                add_pending_output(file_uri, desc, filepath.suffix.lstrip("."))
-            else:
-                # Direct print for non-REPL contexts
+            # Always collect for REPL display AND print
+            # REPL will collect from pending_outputs, CLI will show the print
+            add_pending_output(file_uri, desc, filepath.suffix.lstrip("."))
+            if not is_repl_mode():
+                # Also print directly for non-REPL contexts
                 print(f"{label}: {file_uri}")
 
     def _register_artifact(
@@ -288,6 +326,42 @@ class VisualizationHelper:
 
         # Register in central registry
         artifact_type = FILE_EXT_ARTIFACT_TYPES.get(ext, "text")
+        self._register_artifact(filepath, artifact_type, description=title or name)
+
+        self._print_ref(f"File saved ({ext})", filepath, description=title or name)
+        return filepath
+
+    def save_binary(
+        self,
+        name: str,
+        content: bytes,
+        ext: str = "xlsx",
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Path:
+        """Save binary file to disk and artifact store.
+
+        Use this for Excel files, images, PDFs, and other binary formats.
+
+        Args:
+            name: Name for the file (used in filename and artifact)
+            content: Binary content to save
+            ext: File extension (xlsx, pdf, png, etc.)
+            title: Human-readable title for the artifact
+            description: Description of the file
+
+        Returns:
+            Path to the saved file
+        """
+        # Normalize extension
+        ext = ext.lstrip(".")
+
+        # Save to file
+        filepath = self._generate_filename(name, ext)
+        filepath.write_bytes(content)
+
+        # Register in central registry
+        artifact_type = FILE_EXT_ARTIFACT_TYPES.get(ext, "document")
         self._register_artifact(filepath, artifact_type, description=title or name)
 
         self._print_ref(f"File saved ({ext})", filepath, description=title or name)
