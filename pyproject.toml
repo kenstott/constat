@@ -63,6 +63,15 @@ openai = ["openai>=1.0"]
 # Email formatting
 email = ["markdown>=3.4"]
 
+# Extended data processing and document generation
+extras = [
+    "polars>=0.20",        # Fast DataFrame library
+    "xlsxwriter>=3.1",     # Excel files with formatting
+    "reportlab>=4.0",      # PDF generation
+    "Pillow>=10.0",        # Image processing (PIL)
+    "tabulate>=0.9",       # Table formatting (pandas to_markdown)
+]
+
 # Development
 dev = [
     "pytest>=7.0",
@@ -80,6 +89,7 @@ all = [
     "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore]",
     "constat[openai]",
     "constat[email]",
+    "constat[extras]",
 ]
 
 [project.scripts]
