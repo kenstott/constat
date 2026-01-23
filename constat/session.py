@@ -198,9 +198,11 @@ When correcting or updating previous results:
 - Explicit values ("January 2006", "above 100") → hardcode
 
 ## Code Rules
-1. Use `pd.read_sql(query, db_<name>)` for source databases
+1. Use `pd.read_sql(query, db_<name>)` for source databases - NEVER use db.execute()
 2. **ALWAYS save results to store** - nothing in local variables persists!
 3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
+
+**CRITICAL**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Always use `pd.read_sql(query, db_<name>)` for ALL database queries.
 
 ## Output Guidelines
 - Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")

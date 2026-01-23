@@ -94,10 +94,12 @@ Use these tools FIRST to explore available data:
 - `send_email(to, subject, body, df=None)`: Email with optional attachment
 
 ## Data Loading
-- SQL: `pd.read_sql("SELECT ...", db_<name>)`
+- SQL: `pd.read_sql("SELECT ...", db_<name>)` - ALWAYS use pd.read_sql(), NEVER use db.execute()
 - CSV: `pd.read_csv(file_<name>)`
 - JSON: `pd.read_json(file_<name>)`
 - Parquet: `pd.read_parquet(file_<name>)`
+
+**CRITICAL**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Always use `pd.read_sql(query, db_<name>)` for ALL database queries.
 
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") → use `datetime.now()`, relative calculations
