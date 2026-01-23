@@ -192,6 +192,7 @@ When correcting or updating previous results:
 - For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
+- **Discovery tools NOT available**: `find_relevant_tables()`, `get_table_schema()`, etc. are planning-only. In step code, query tables directly with `pd.read_sql()`.
 
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") → compute dynamically with datetime
