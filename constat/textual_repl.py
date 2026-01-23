@@ -634,7 +634,7 @@ class ConstatInput(Input):
         self._current_input = ""
 
     def _on_key(self, event: events.Key) -> None:
-        """Handle key events for history navigation."""
+        """Handle key events for history navigation and autocomplete."""
         if event.key == "up":
             self._navigate_history(-1)
             event.prevent_default()
@@ -643,6 +643,14 @@ class ConstatInput(Input):
             self._navigate_history(1)
             event.prevent_default()
             event.stop()
+        elif event.key == "tab":
+            # Accept autocomplete suggestion if available
+            if self._suggestion:
+                self.value = self._suggestion
+                self.cursor_position = len(self.value)
+                self._suggestion = ""
+                event.prevent_default()
+                event.stop()
         else:
             # Any other key resets history navigation
             if self._history_index != -1:
