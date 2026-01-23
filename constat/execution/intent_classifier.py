@@ -553,17 +553,34 @@ Mode: {mode_str}"""
 
             if line.upper().startswith("PRIMARY:"):
                 value = line.split(":", 1)[1].strip().lower()
-                try:
-                    primary = PrimaryIntent(value)
-                except ValueError:
+                # Handle LLM returning pipe-separated options (e.g., "plan_new | none")
+                # Try each part until we find a valid enum value
+                found = False
+                for part in value.split("|"):
+                    part = part.strip()
+                    if part and part != "none":
+                        try:
+                            primary = PrimaryIntent(part)
+                            found = True
+                            break
+                        except ValueError:
+                            continue
+                if not found and value:
                     logger.warning(f"LLM returned unknown primary intent: {value}")
 
             elif line.upper().startswith("SUB:"):
                 value = line.split(":", 1)[1].strip().lower()
-                if value != "none":
-                    try:
-                        sub = SubIntent(value)
-                    except ValueError:
+                # Handle pipe-separated options
+                for part in value.split("|"):
+                    part = part.strip()
+                    if part and part != "none":
+                        try:
+                            sub = SubIntent(part)
+                            break
+                        except ValueError:
+                            continue
+                else:
+                    if value and value != "none" and "|" not in value:
                         logger.warning(f"LLM returned unknown sub-intent: {value}")
 
             elif line.upper().startswith("TARGET:"):
