@@ -3173,7 +3173,7 @@ class ConstatREPLApp(App):
             ("/api <spec_url> [name]", "Add an API to this session"),
             ("/documents, /docs", "List all documents"),
             ("/files", "List all data files"),
-            ("/doc <path> [name]", "Add a document to this session"),
+            ("/doc <path> [name] [desc]", "Add a document to this session"),
             ("/correct <text>", "Record a correction for future reference"),
             ("/learnings", "Show learnings and rules"),
             ("/compact-learnings", "Promote similar learnings into rules"),
@@ -4591,16 +4591,18 @@ class ConstatREPLApp(App):
             return
 
         if not args:
-            log.write(Text("Usage: /doc <path_or_uri> [name]", style="yellow"))
+            log.write(Text("Usage: /doc <path_or_uri> [name] [description]", style="yellow"))
             log.write(Text("  Add a document to the current session for reference.", style="dim"))
             log.write(Text("  Supports: local paths, file:// URIs, http:// URLs, https:// URLs", style="dim"))
             log.write(Text("  File types: .pdf, .docx, .xlsx, .pptx, .md, .txt, .json, .yaml", style="dim"))
+            log.write(Text("  Example: /doc ./README.md readme Project documentation", style="dim"))
             return
 
-        # Parse args: file_path [optional_name]
-        parts = args.split(maxsplit=1)
+        # Parse args: file_path [optional_name] [optional_description]
+        parts = args.split(maxsplit=2)
         path_or_uri = parts[0]
         doc_name = parts[1] if len(parts) > 1 else None
+        description = parts[2] if len(parts) > 2 else ""
 
         if not self.session.doc_tools:
             log.write(Text("Document tools not available.", style="red"))
@@ -4611,12 +4613,12 @@ class ConstatREPLApp(App):
         # Run in background thread to avoid blocking
         thread = threading.Thread(
             target=self._add_document_thread,
-            args=(path_or_uri, doc_name),
+            args=(path_or_uri, doc_name, description),
             daemon=True
         )
         thread.start()
 
-    def _add_document_thread(self, path_or_uri: str, doc_name: str | None) -> None:
+    def _add_document_thread(self, path_or_uri: str, doc_name: str | None, description: str) -> None:
         """Add document in background thread, post result via message."""
         import tempfile
         import urllib.request
@@ -4635,8 +4637,6 @@ class ConstatREPLApp(App):
                     with urllib.request.urlopen(path_or_uri, timeout=30) as response:
                         tmp.write(response.read())
                     file_path = tmp.name
-                    if not doc_name:
-                        doc_name = Path(parsed.path).stem or "remote_doc"
 
             elif parsed.scheme == "file":
                 # Convert file:// URI to local path
@@ -4655,6 +4655,7 @@ class ConstatREPLApp(App):
             success, message = self.session.doc_tools.add_ephemeral_document_from_file(
                 file_path=file_path,
                 name=doc_name,
+                description=description,
             )
             self.post_message(DocumentAddComplete(success, message))
 

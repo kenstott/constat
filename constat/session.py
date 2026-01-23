@@ -4089,7 +4089,50 @@ Provide a detailed explanation or suggest what specific data to examine."""
         return self._handle_general_query(user_input)
 
     def _handle_summary_query(self, user_input: str) -> dict:
-        """Handle summary/condensation query."""
+        """Handle summary/condensation query.
+
+        Checks if the user is asking about a specific document first.
+        If so, summarizes that document. Otherwise, summarizes previous analysis results.
+        """
+        # Check if the query mentions a document - search for relevant documents
+        if self.doc_tools:
+            try:
+                doc_results = self.doc_tools.search_documents(user_input, limit=3)
+                if doc_results and doc_results[0].get("similarity", 0) > 0.4:
+                    # Found a relevant document - summarize it
+                    doc_name = doc_results[0]["name"]
+                    doc_content = self.doc_tools.get_document(doc_name)
+                    if doc_content:
+                        # Truncate if too long
+                        max_chars = 15000
+                        if len(doc_content) > max_chars:
+                            doc_content = doc_content[:max_chars] + "\n\n[... truncated for length ...]"
+
+                        prompt = f"""Summarize this document based on the user's request.
+
+Document: {doc_name}
+Content:
+{doc_content}
+
+User request: {user_input}
+
+Provide a clear, structured summary focusing on what the user asked for."""
+
+                        result = self.router.execute(
+                            task_type=TaskType.SUMMARIZATION,
+                            system="You are a document summarizer. Extract key concepts and structure your response clearly.",
+                            user_message=prompt,
+                            max_tokens=1000,
+                        )
+
+                        return {
+                            "success": True,
+                            "output": result.content,
+                            "meta_response": True,
+                        }
+            except Exception as e:
+                logger.debug(f"Document search for summary failed: {e}")
+
         # Check if we have previous results to summarize
         if self.datastore:
             scratchpad_entries = self.datastore.get_scratchpad()
