@@ -337,12 +337,14 @@ class StatusBar(Static):
         self._timer_start: float | None = None
         self._timer_interval = None
         self._final_time: str | None = None  # Stores final time after stop
+        self._timer_hidden: bool = False  # Hide timer during clarifications
 
     def start_timer(self) -> None:
-        """Start the elapsed time timer."""
+        """Start the elapsed time timer from 0."""
         import time
         self._timer_start = time.time()
         self._final_time = None
+        self._timer_hidden = False
         self.elapsed_time = "0.0s"
         # Update timer every 100ms
         if self._timer_interval is None:
@@ -359,6 +361,13 @@ class StatusBar(Static):
             self._timer_interval.stop()
             self._timer_interval = None
         self._timer_start = None
+
+    def hide_timer(self) -> None:
+        """Hide the timer (used during clarifications)."""
+        self.stop_timer()
+        self._timer_hidden = True
+        self._final_time = None
+        self.elapsed_time = ""
 
     def _update_timer(self) -> None:
         """Update the elapsed time display."""
@@ -1391,11 +1400,12 @@ class TextualFeedbackHandler:
 
         # Clarification events
         elif event_type == "clarification_needed":
-            status_bar.stop_timer()  # Stop and reset timer during clarification
+            status_bar.hide_timer()  # Hide timer during clarification
             status_bar.update_status(status_message="Clarification needed...")
 
         # Planning events
         elif event_type == "planning_start":
+            status_bar.start_timer()  # Start timer at 0 when planning begins
             status_bar.update_status(status_message="Planning approach...", phase=Phase.PLANNING)
 
         elif event_type == "planning_complete":
