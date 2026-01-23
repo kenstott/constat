@@ -1391,6 +1391,7 @@ class TextualFeedbackHandler:
 
         # Clarification events
         elif event_type == "clarification_needed":
+            status_bar.stop_timer()  # Stop and reset timer during clarification
             status_bar.update_status(status_message="Clarification needed...")
 
         # Planning events
