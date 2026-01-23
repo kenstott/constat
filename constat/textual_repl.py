@@ -629,6 +629,8 @@ class ConstatInput(Input):
                 # Trim to max size
                 if len(self._history) > self.MAX_HISTORY:
                     self._history = self._history[-self.MAX_HISTORY:]
+                # Save immediately so history persists even if app crashes
+                self.save_history()
         # Reset history navigation
         self._history_index = -1
         self._current_input = ""
