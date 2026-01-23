@@ -187,24 +187,103 @@ class PythonExecutor:
 
 
 def format_error_for_retry(result: ExecutionResult, code: str) -> str:
-    """Format error message to send back to LLM for retry."""
+    """Format error message to send back to LLM for retry.
+
+    Includes prescriptive fixes for common errors to help smaller models.
+    """
     parts = ["The generated code failed to execute."]
 
+    error_text = ""
     if result.compile_error:
-        parts.append(f"\nSyntax Error: {result.compile_error.error}")
+        error_text = result.compile_error.error
+        parts.append(f"\nSyntax Error: {error_text}")
         if result.compile_error.line:
-            # Show the problematic line
             lines = code.split('\n')
             if 0 < result.compile_error.line <= len(lines):
                 parts.append(f"Line {result.compile_error.line}: {lines[result.compile_error.line - 1]}")
 
     elif result.runtime_error:
-        parts.append(f"\nRuntime Error: {result.runtime_error.error}")
+        error_text = result.runtime_error.error
+        parts.append(f"\nRuntime Error: {error_text}")
         parts.append(f"\nTraceback:\n{result.runtime_error.traceback}")
 
     if result.stdout:
         parts.append(f"\nStdout before error:\n{result.stdout}")
 
+    # Add prescriptive fixes for common errors
+    fix_hints = _get_prescriptive_fix(error_text, code)
+    if fix_hints:
+        parts.append(f"\n**HOW TO FIX**: {fix_hints}")
+
     parts.append("\nPlease fix the code and try again.")
 
     return "\n".join(parts)
+
+
+def _get_prescriptive_fix(error_text: str, code: str) -> str:
+    """Return specific fix instructions for common errors."""
+    error_lower = error_text.lower()
+
+    # Discovery tools not available
+    if "find_relevant_tables" in error_text or "get_table_schema" in error_text:
+        return (
+            "The function find_relevant_tables() and get_table_schema() are NOT available. "
+            "These are planning-only tools. Use pd.read_sql(query, db_<name>) to query tables directly. "
+            "The table schema is already provided in the prompt - use that information."
+        )
+
+    # db.execute() not available in SQLAlchemy 2.0
+    if "execute" in error_lower and ("engine" in error_lower or "attribute" in error_lower):
+        return (
+            "Do NOT use db.execute() or db_<name>.execute() - this does not work in SQLAlchemy 2.0. "
+            "Use pd.read_sql(query, db_<name>) for ALL database queries."
+        )
+
+    # Schema prefix errors (SQLite doesn't support them)
+    if "no such table" in error_lower and "." in error_text:
+        # Extract the table name with schema prefix
+        import re
+        match = re.search(r'no such table[:\s]+(\w+\.\w+)', error_text, re.IGNORECASE)
+        if match:
+            full_name = match.group(1)
+            table_only = full_name.split('.')[-1]
+            return (
+                f"SQLite does NOT support schema prefixes. Change '{full_name}' to just '{table_only}'. "
+                f"Use: pd.read_sql('SELECT * FROM {table_only}', db_<name>)"
+            )
+
+    # Store methods that don't exist
+    if "registryawaredatastore" in error_lower or "datastore" in error_lower:
+        if "contains" in error_lower:
+            return (
+                "store.contains() does not exist. To check if a table exists, use: "
+                "tables = store.list_tables(); if 'name' in tables: ..."
+            )
+        if "get" in error_lower and "attribute" in error_lower:
+            return (
+                "Use store.load_dataframe('name') to load a DataFrame, "
+                "store.get_state('key') for simple values, "
+                "store.list_tables() to see available tables."
+            )
+
+    # DataFrame truth value error
+    if "truth value of a dataframe" in error_lower:
+        return (
+            "Do NOT use 'if df:' on DataFrames. Use 'if not df.empty:' or 'if len(df) > 0:' instead."
+        )
+
+    # Column not found
+    if "keyerror" in error_lower or "column" in error_lower and "not found" in error_lower:
+        return (
+            "Column not found. Check column names with df.columns first. "
+            "Use: if 'col_name' in df.columns: ... before accessing columns."
+        )
+
+    # Import errors for common modules
+    if "no module named" in error_lower:
+        if "plotly" in error_lower:
+            return "plotly is available. Use: import plotly.express as px"
+        if "folium" in error_lower:
+            return "folium is available. Use: import folium"
+
+    return ""
