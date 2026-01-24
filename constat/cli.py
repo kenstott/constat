@@ -411,6 +411,105 @@ def schema(config: str):
 
 
 @cli.command()
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True),
+    help="Path to config YAML file.",
+)
+@click.option(
+    "--port", "-p",
+    default=8000,
+    help="Port to bind the server to.",
+)
+@click.option(
+    "--host", "-h",
+    default="127.0.0.1",
+    help="Host address to bind the server to.",
+)
+@click.option(
+    "--reload",
+    is_flag=True,
+    help="Enable auto-reload for development.",
+)
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug logging (shows detailed internal state).",
+)
+def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool):
+    """Start the API server.
+
+    Launches the Constat API server for HTTP/WebSocket access.
+
+    \b
+    Examples:
+        constat serve -c config.yaml
+        constat serve -c config.yaml --port 8080
+        constat serve -c config.yaml --reload  # For development
+        constat serve -c config.yaml --debug   # Enable debug logging
+    """
+    import uvicorn
+
+    from constat.server.config import ServerConfig
+
+    # Load config
+    if config:
+        try:
+            cfg = Config.from_yaml(config)
+        except Exception as e:
+            console.print(f"[red]Config error:[/red] {e}")
+            sys.exit(1)
+    else:
+        cfg = Config()
+
+    # Build server config
+    server_config = ServerConfig(host=host, port=port)
+
+    # Configure logging if debug is enabled
+    if debug:
+        import logging
+        log_file = Path('.constat/debug.log')
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        logging.getLogger('constat').addHandler(file_handler)
+        logging.getLogger('constat').setLevel(logging.DEBUG)
+
+    log_level = "debug" if debug else "info"
+
+    console.print(f"[bold]Starting Constat API server[/bold]")
+    console.print(f"  Host: {host}")
+    console.print(f"  Port: {port}")
+    console.print(f"  Config: {config or '(default)'}")
+    if debug:
+        console.print(f"  Debug logs: .constat/debug.log")
+    console.print()
+
+    if reload:
+        # For reload mode, set config path in environment and use module path
+        import os
+        if config:
+            os.environ["CONSTAT_CONFIG"] = config
+        uvicorn.run(
+            "constat.server.app:app",
+            host=host,
+            port=port,
+            reload=True,
+            reload_dirs=["constat"],
+            log_level=log_level,
+        )
+    else:
+        # For production mode, create app directly
+        from constat.server.app import create_app
+
+        app = create_app(cfg, server_config)
+        uvicorn.run(app, host=host, port=port, log_level=log_level)
+
+
+@cli.command()
 def init():
     """Create a sample config file.
 

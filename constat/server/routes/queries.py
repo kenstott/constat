@@ -1,0 +1,671 @@
+# Copyright (c) 2025 Kenneth Stott
+#
+# This source code is licensed under the Business Source License 1.1
+# found in the LICENSE file in the root directory of this source tree.
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Query execution REST endpoints."""
+
+import asyncio
+import logging
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+
+from constat.server.models import (
+    ApprovalRequest,
+    ApprovalResponse,
+    EventType,
+    PlanResponse,
+    QueryRequest,
+    QueryResponse,
+    SessionStatus,
+    StepEventWS,
+    StepResponse,
+)
+from constat.server.session_manager import SessionManager, ManagedSession
+from constat.session import (
+    StepEvent,
+    PlanApprovalRequest,
+    PlanApprovalResponse,
+    PlanApproval,
+    ClarificationRequest,
+    ClarificationResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# Thread pool for running synchronous Session.solve() calls
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-worker")
+
+
+def get_session_manager(request: Request) -> SessionManager:
+    """Dependency to get session manager from app state."""
+    return request.app.state.session_manager
+
+
+def _step_to_response(step) -> StepResponse:
+    """Convert a Step to StepResponse."""
+    result_dict = None
+    if step.result:
+        result_dict = {
+            "success": step.result.success,
+            "stdout": step.result.stdout,
+            "error": step.result.error,
+            "attempts": step.result.attempts,
+            "duration_ms": step.result.duration_ms,
+            "tables_created": step.result.tables_created,
+            "tables_modified": step.result.tables_modified,
+        }
+
+    return StepResponse(
+        number=step.number,
+        goal=step.goal,
+        status=step.status.value,
+        expected_inputs=step.expected_inputs,
+        expected_outputs=step.expected_outputs,
+        depends_on=step.depends_on,
+        code=step.code,
+        result=result_dict,
+    )
+
+
+def _plan_to_response(plan) -> PlanResponse:
+    """Convert a Plan to PlanResponse."""
+    return PlanResponse(
+        problem=plan.problem,
+        steps=[_step_to_response(s) for s in plan.steps],
+        current_step=plan.current_step,
+        completed_steps=plan.completed_steps,
+        failed_steps=plan.failed_steps,
+        is_complete=plan.is_complete,
+    )
+
+
+def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop):
+    """Create an approval callback that bridges sync session to async WebSocket.
+
+    This callback is called from the synchronous session.solve() thread when
+    plan approval is required. It:
+    1. Updates status to awaiting_approval
+    2. Emits plan_ready event via the event queue
+    3. Blocks waiting for approval_event to be set (by WebSocket handler)
+    4. Returns the approval response
+    """
+    def approval_callback(request: PlanApprovalRequest) -> PlanApprovalResponse:
+        logger.debug(f"Approval callback called for session {managed.session_id}")
+
+        # Update status
+        managed.status = SessionStatus.AWAITING_APPROVAL
+
+        # Create approval event for waiting
+        managed.approval_event = asyncio.Event()
+        managed.approval_response = None
+
+        # Queue plan_ready event for WebSocket
+        plan_data = {
+            "problem": request.problem,
+            "steps": request.steps,
+            "reasoning": request.reasoning,
+        }
+        try:
+            managed.event_queue.put_nowait({
+                "event_type": EventType.PLAN_READY.value,
+                "session_id": managed.session_id,
+                "step_number": 0,
+                "data": {"plan": plan_data},
+            })
+        except asyncio.QueueFull:
+            logger.warning(f"Event queue full for session {managed.session_id}")
+
+        # Wait for approval (blocking in thread, but event is set from async context)
+        # Use run_coroutine_threadsafe to wait on the async event from sync code
+        async def wait_for_approval():
+            await managed.approval_event.wait()
+            return managed.approval_response
+
+        future = asyncio.run_coroutine_threadsafe(wait_for_approval(), loop)
+        try:
+            response = future.result(timeout=600)  # 10 minute timeout
+        except Exception as e:
+            logger.error(f"Error waiting for approval: {e}")
+            return PlanApprovalResponse.approve()  # Default to approve on error
+
+        if response is None:
+            return PlanApprovalResponse.approve()
+
+        if response.get("approved"):
+            managed.status = SessionStatus.EXECUTING
+            return PlanApprovalResponse.approve()
+        else:
+            managed.status = SessionStatus.IDLE
+            feedback = response.get("feedback", "Rejected by user")
+            return PlanApprovalResponse.reject(feedback)
+
+    return approval_callback
+
+
+def _create_clarification_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop):
+    """Create a clarification callback that bridges sync session to async WebSocket.
+
+    This callback is called from the synchronous session.solve() thread when
+    clarification is needed. It sends all questions at once for stepper UI.
+    """
+    def clarification_callback(request: ClarificationRequest) -> ClarificationResponse:
+        logger.debug(f"Clarification callback called for session {managed.session_id}")
+
+        # Update status
+        managed.status = SessionStatus.AWAITING_APPROVAL
+
+        # Create event for waiting
+        managed.clarification_event = asyncio.Event()
+        managed.clarification_response = None
+
+        # Send all questions at once for stepper UI
+        clarification_data = {
+            "original_question": request.original_question,
+            "ambiguity_reason": request.ambiguity_reason,
+            "questions": [
+                {"text": q.text, "suggestions": q.suggestions}
+                for q in request.questions
+            ],
+        }
+        try:
+            managed.event_queue.put_nowait({
+                "event_type": EventType.CLARIFICATION_NEEDED.value,
+                "session_id": managed.session_id,
+                "step_number": 0,
+                "data": clarification_data,
+            })
+        except asyncio.QueueFull:
+            logger.warning(f"Event queue full for session {managed.session_id}")
+
+        # Wait for all answers
+        async def wait_for_clarification():
+            await managed.clarification_event.wait()
+            return managed.clarification_response
+
+        future = asyncio.run_coroutine_threadsafe(wait_for_clarification(), loop)
+        try:
+            response = future.result(timeout=600)  # 10 minute timeout for all questions
+        except Exception as e:
+            logger.error(f"Error waiting for clarification: {e}")
+            return ClarificationResponse(answers={}, skip=True)
+
+        if response is None or response.get("skip"):
+            return ClarificationResponse(answers={}, skip=True)
+
+        managed.status = SessionStatus.PLANNING
+        return ClarificationResponse(answers=response.get("answers", {}), skip=False)
+
+    return clarification_callback
+
+
+def _create_event_handler(managed: ManagedSession):
+    """Create an event handler that queues events for WebSocket delivery."""
+
+    def handle_event(event: StepEvent) -> None:
+        """Handle session events by queuing them."""
+        try:
+            # Map session event types to API event types
+            event_type_map = {
+                "step_start": EventType.STEP_START,
+                "generating": EventType.STEP_GENERATING,
+                "executing": EventType.STEP_EXECUTING,
+                "step_complete": EventType.STEP_COMPLETE,
+                "step_error": EventType.STEP_ERROR,
+                "step_failed": EventType.STEP_FAILED,
+                "facts_extracted": EventType.FACTS_EXTRACTED,
+                "progress": EventType.PROGRESS,
+                "planning_start": EventType.PLANNING_START,
+            }
+
+            api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)
+
+            ws_event = StepEventWS(
+                event_type=api_event_type,
+                session_id=managed.session_id,
+                step_number=event.step_number,
+                data=event.data,
+            )
+
+            # Put event on queue (non-blocking)
+            try:
+                managed.event_queue.put_nowait(ws_event.model_dump(mode="json"))
+            except asyncio.QueueFull:
+                logger.warning(f"Event queue full for session {managed.session_id}")
+
+        except Exception as e:
+            logger.error(f"Error handling event: {e}")
+
+    return handle_event
+
+
+def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+    """Run a query synchronously (called from thread pool).
+
+    Args:
+        managed: The managed session
+        problem: Query problem text
+        loop: Event loop for async bridge
+
+    Returns:
+        Query result dict
+    """
+    try:
+        # Register approval callback if plan approval is required
+        if managed.session.session_config.require_approval:
+            approval_callback = _create_approval_callback(managed, loop)
+            managed.session.set_approval_callback(approval_callback)
+            logger.debug(f"Registered approval callback for session {managed.session_id}")
+
+        # Register clarification callback if clarifications are enabled
+        if managed.session.session_config.ask_clarifications:
+            clarification_callback = _create_clarification_callback(managed, loop)
+            managed.session.set_clarification_callback(clarification_callback)
+            logger.debug(f"Registered clarification callback for session {managed.session_id}")
+
+        # Run the query
+        result = managed.session.solve(problem)
+        return result
+    except Exception as e:
+        logger.error(f"Query execution error: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+async def _execute_query_async(
+    managed: ManagedSession,
+    problem: str,
+    execution_id: str,
+) -> None:
+    """Execute query in background and update session state.
+
+    Args:
+        managed: The managed session
+        problem: Query problem text
+        execution_id: Execution tracking ID
+    """
+    loop = asyncio.get_event_loop()
+
+    try:
+        # Run the synchronous solve() in thread pool
+        result = await loop.run_in_executor(_executor, _run_query, managed, problem, loop)
+
+        # Queue completion event
+        if result.get("success"):
+            managed.event_queue.put_nowait({
+                "event_type": EventType.QUERY_COMPLETE.value,
+                "session_id": managed.session_id,
+                "step_number": 0,
+                "data": {
+                    "execution_id": execution_id,
+                    "output": result.get("output", ""),
+                    "tables": result.get("datastore_tables", []),
+                },
+            })
+            managed.status = SessionStatus.COMPLETED
+        else:
+            managed.event_queue.put_nowait({
+                "event_type": EventType.QUERY_ERROR.value,
+                "session_id": managed.session_id,
+                "step_number": 0,
+                "data": {
+                    "execution_id": execution_id,
+                    "error": result.get("error", "Unknown error"),
+                },
+            })
+            managed.status = SessionStatus.ERROR
+
+    except asyncio.CancelledError:
+        # Query was cancelled
+        managed.event_queue.put_nowait({
+            "event_type": EventType.QUERY_CANCELLED.value,
+            "session_id": managed.session_id,
+            "step_number": 0,
+            "data": {"execution_id": execution_id},
+        })
+        managed.status = SessionStatus.CANCELLED
+        raise
+
+    except Exception as e:
+        logger.error(f"Async query execution error: {e}")
+        managed.event_queue.put_nowait({
+            "event_type": EventType.QUERY_ERROR.value,
+            "session_id": managed.session_id,
+            "step_number": 0,
+            "data": {
+                "execution_id": execution_id,
+                "error": str(e),
+            },
+        })
+        managed.status = SessionStatus.ERROR
+
+    finally:
+        managed.current_query = None
+        managed.execution_id = None
+
+
+@router.post("/{session_id}/query", response_model=QueryResponse)
+async def submit_query(
+    session_id: str,
+    body: QueryRequest,
+    background_tasks: BackgroundTasks,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> QueryResponse:
+    """Submit a query for execution.
+
+    The query is executed asynchronously. Subscribe to the WebSocket
+    endpoint to receive real-time progress events.
+
+    Args:
+        session_id: Session ID
+        body: Query request with problem text
+
+    Returns:
+        Query response with execution ID
+
+    Raises:
+        404: Session not found
+        400: Session is busy
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Check if session is busy
+    if managed.status in (SessionStatus.PLANNING, SessionStatus.EXECUTING, SessionStatus.AWAITING_APPROVAL):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session is busy (status: {managed.status.value})",
+        )
+
+    # Generate execution ID
+    execution_id = str(uuid.uuid4())
+
+    # Update session state
+    managed.current_query = body.problem
+    managed.execution_id = execution_id
+    managed.status = SessionStatus.PLANNING
+
+    # Register event handler if not already registered
+    handler = _create_event_handler(managed)
+    # Remove any existing handlers first to avoid duplicates
+    managed.session._event_handlers = []
+    managed.session.on_event(handler)
+
+    # Start background execution
+    background_tasks.add_task(
+        _execute_query_async,
+        managed,
+        body.problem,
+        execution_id,
+    )
+
+    return QueryResponse(
+        execution_id=execution_id,
+        status="started",
+        message="Query execution started. Connect to WebSocket for progress updates.",
+    )
+
+
+@router.post("/{session_id}/cancel")
+async def cancel_execution(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Cancel the current execution.
+
+    Attempts to cancel any running query execution.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Cancellation status
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Signal cancellation to the session
+    if hasattr(managed.session, "_cancelled"):
+        managed.session._cancelled = True
+
+    # Also signal to execution context if present
+    if hasattr(managed.session, "_execution_context"):
+        managed.session._execution_context.cancel()
+
+    managed.status = SessionStatus.CANCELLED
+
+    return {
+        "status": "cancelling",
+        "message": "Cancellation requested",
+    }
+
+
+@router.get("/{session_id}/plan", response_model=PlanResponse)
+async def get_plan(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> PlanResponse:
+    """Get the current execution plan.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Current plan details
+
+    Raises:
+        404: Session not found or no plan exists
+    """
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.plan:
+        raise HTTPException(status_code=404, detail="No plan exists for this session")
+
+    return _plan_to_response(managed.session.plan)
+
+
+@router.post("/{session_id}/plan/approve", response_model=ApprovalResponse)
+async def approve_plan(
+    session_id: str,
+    body: ApprovalRequest,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> ApprovalResponse:
+    """Approve or reject the current plan.
+
+    This endpoint is used when require_plan_approval is enabled.
+    Call this after receiving the plan_ready event via WebSocket.
+
+    Args:
+        session_id: Session ID
+        body: Approval request with decision
+
+    Returns:
+        Approval status
+
+    Raises:
+        404: Session not found
+        400: Session not awaiting approval
+    """
+    managed = session_manager.get_session(session_id)
+
+    if managed.status != SessionStatus.AWAITING_APPROVAL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session is not awaiting approval (status: {managed.status.value})",
+        )
+
+    # Store approval response and signal the waiting coroutine
+    managed.approval_response = {
+        "approved": body.approved,
+        "feedback": body.feedback,
+    }
+
+    if managed.approval_event:
+        managed.approval_event.set()
+
+    if body.approved:
+        managed.status = SessionStatus.EXECUTING
+        return ApprovalResponse(status="approved", message="Plan approved, execution continuing")
+    else:
+        managed.status = SessionStatus.IDLE
+        return ApprovalResponse(status="rejected", message=f"Plan rejected: {body.feedback}")
+
+
+@router.websocket("/{session_id}/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    session_id: str,
+):
+    """WebSocket endpoint for real-time event streaming.
+
+    Connect to this endpoint to receive real-time progress events
+    during query execution. Events include:
+    - planning_start: Planning has begun
+    - plan_ready: Plan is ready (approval may be required)
+    - step_start: Step execution starting
+    - step_generating: Generating code for step
+    - step_executing: Executing step code
+    - step_complete: Step completed successfully
+    - step_error: Step encountered an error
+    - query_complete: Query execution completed
+    - query_error: Query execution failed
+
+    Commands can be sent via the WebSocket:
+    - {"action": "approve"}: Approve the current plan
+    - {"action": "reject", "data": {"feedback": "reason"}}: Reject plan
+    - {"action": "cancel"}: Cancel execution
+    - {"action": "clarify", "data": {"answer": "user answer"}}: Answer a clarification question
+    - {"action": "skip_clarification"}: Skip clarification and proceed
+    """
+    await websocket.accept()
+
+    # Get session manager from app state
+    session_manager: SessionManager = websocket.app.state.session_manager
+
+    try:
+        managed = session_manager.get_session(session_id)
+    except KeyError:
+        await websocket.close(code=4404, reason="Session not found")
+        return
+
+    try:
+        # Create tasks for sending events and receiving commands
+        async def send_events():
+            """Send events from queue to WebSocket."""
+            while True:
+                try:
+                    event = await managed.event_queue.get()
+                    await websocket.send_json({
+                        "type": "event",
+                        "payload": event,
+                    })
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error sending event: {e}")
+                    break
+
+        async def receive_commands():
+            """Receive and process commands from WebSocket."""
+            while True:
+                try:
+                    data = await websocket.receive_json()
+                    action = data.get("action")
+
+                    if action == "approve":
+                        managed.approval_response = {"approved": True, "feedback": None}
+                        if managed.approval_event:
+                            managed.approval_event.set()
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "approve", "status": "ok"},
+                        })
+
+                    elif action == "reject":
+                        feedback = data.get("data", {}).get("feedback", "Rejected by user")
+                        managed.approval_response = {"approved": False, "feedback": feedback}
+                        if managed.approval_event:
+                            managed.approval_event.set()
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "reject", "status": "ok"},
+                        })
+
+                    elif action == "cancel":
+                        if hasattr(managed.session, "_cancelled"):
+                            managed.session._cancelled = True
+                        if hasattr(managed.session, "_execution_context"):
+                            managed.session._execution_context.cancel()
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "cancel", "status": "ok"},
+                        })
+
+                    elif action == "clarify":
+                        # User answered all clarification questions
+                        answers = data.get("data", {}).get("answers", {})
+                        managed.clarification_response = {"answers": answers, "skip": False}
+                        if managed.clarification_event:
+                            managed.clarification_event.set()
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "clarify", "status": "ok"},
+                        })
+
+                    elif action == "skip_clarification":
+                        # User wants to skip clarification
+                        managed.clarification_response = {"skip": True}
+                        if managed.clarification_event:
+                            managed.clarification_event.set()
+                        await websocket.send_json({
+                            "type": "ack",
+                            "payload": {"action": "skip_clarification", "status": "ok"},
+                        })
+
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {"message": f"Unknown action: {action}"},
+                        })
+
+                except asyncio.CancelledError:
+                    break
+                except WebSocketDisconnect:
+                    break
+                except Exception as e:
+                    logger.error(f"Error receiving command: {e}")
+                    break
+
+        # Run both tasks concurrently
+        send_task = asyncio.create_task(send_events())
+        receive_task = asyncio.create_task(receive_commands())
+
+        try:
+            await asyncio.gather(send_task, receive_task)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            send_task.cancel()
+            receive_task.cancel()
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for session {session_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass  # Already closed

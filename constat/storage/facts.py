@@ -146,3 +146,38 @@ class FactStore:
         data["facts"] = {}
         self._save()
         return count
+
+    def load_into_session(self, session: "Session") -> int:
+        """Load persistent facts into a session's fact resolver.
+
+        Args:
+            session: Session instance to load facts into
+
+        Returns:
+            Number of facts loaded
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        persistent_facts = self.list_facts()
+        logger.debug(f"[FactStore] Found {len(persistent_facts)} persistent facts to load")
+
+        if not persistent_facts:
+            return 0
+
+        loaded = 0
+        for name, fact_data in persistent_facts.items():
+            try:
+                session.fact_resolver.add_user_fact(
+                    fact_name=name,
+                    value=fact_data.get("value"),
+                    reasoning="Loaded from persistent storage",
+                    description=fact_data.get("description", ""),
+                )
+                loaded += 1
+                logger.debug(f"[FactStore] Loaded fact: {name} = {fact_data.get('value')}")
+            except Exception as e:
+                logger.warning(f"[FactStore] Failed to load fact {name}: {e}")
+
+        logger.debug(f"[FactStore] Successfully loaded {loaded} facts into session")
+        return loaded
