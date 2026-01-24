@@ -125,7 +125,13 @@ export function PlanApprovalDialog() {
   }
 
   const steps = plan.steps || []
-  const problem = plan.problem || 'Processing...'
+  // Transform clarification numbering from 0-indexed to 1-indexed for display
+  const rawProblem = plan.problem || 'Processing...'
+  const problem = rawProblem.replace(/Clarifications:\s*([\s\S]*)/g, (_match: string, clarifications: string) => {
+    // Replace "0:", "1:", etc. with "1:", "2:", etc.
+    const renumbered = clarifications.replace(/^(\d+):/gm, (_: string, num: string) => `${parseInt(num) + 1}:`)
+    return `Clarifications:\n${renumbered}`
+  })
 
   // Check if any modifications exist
   const hasModifications = Object.values(stepModifications).some((m) => m.trim().length > 0)
