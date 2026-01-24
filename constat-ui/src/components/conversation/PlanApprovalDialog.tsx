@@ -23,11 +23,13 @@ const stepStatusIcons: Record<string, { icon: typeof ClockIcon; color: string }>
   skipped: { icon: XCircleIcon, color: 'text-gray-400' },
 }
 
-function StepItem({ step, index, isExpanded, onToggle }: {
+function StepItem({ step, index, isExpanded, onToggle, modification, onModificationChange }: {
   step: Step
   index: number
   isExpanded: boolean
   onToggle: () => void
+  modification: string
+  onModificationChange: (value: string) => void
 }) {
   const status = stepStatusIcons[step.status] || stepStatusIcons.pending
   const StatusIcon = status.icon
@@ -36,9 +38,10 @@ function StepItem({ step, index, isExpanded, onToggle }: {
   const expectedInputs = step.expected_inputs || []
   const expectedOutputs = step.expected_outputs || []
   const dependsOn = step.depends_on || []
+  const hasModification = modification.trim().length > 0
 
   return (
-    <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+    <div className={`border rounded-lg overflow-hidden ${hasModification ? 'border-amber-400 dark:border-amber-600' : 'border-gray-200 dark:border-gray-700'}`}>
       <button
         onClick={onToggle}
         className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
@@ -52,13 +55,18 @@ function StepItem({ step, index, isExpanded, onToggle }: {
         <span className="text-xs font-medium text-gray-500 dark:text-gray-400 flex-shrink-0">
           {stepNumber}.
         </span>
-        <span className="text-sm text-gray-700 dark:text-gray-300 truncate">
+        <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
           {step.goal || 'Processing...'}
         </span>
+        {hasModification && (
+          <span className="text-xs px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded">
+            Modified
+          </span>
+        )}
       </button>
 
       {isExpanded && (
-        <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700">
+        <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700 space-y-3">
           <div className="space-y-1.5 text-xs">
             {expectedInputs.length > 0 && (
               <div>
@@ -85,6 +93,19 @@ function StepItem({ step, index, isExpanded, onToggle }: {
               </div>
             )}
           </div>
+          {/* Modification input */}
+          <div>
+            <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+              Modify this step:
+            </label>
+            <textarea
+              value={modification}
+              onChange={(e) => onModificationChange(e.target.value)}
+              placeholder="Describe how to change this step..."
+              rows={2}
+              className="w-full px-2 py-1.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 resize-none"
+            />
+          </div>
         </div>
       )}
     </div>
@@ -94,6 +115,7 @@ function StepItem({ step, index, isExpanded, onToggle }: {
 export function PlanApprovalDialog() {
   const { status, plan, approvePlan, rejectPlan } = useSessionStore()
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set())
+  const [stepModifications, setStepModifications] = useState<Record<number, string>>({})
   const [additionalInstructions, setAdditionalInstructions] = useState('')
 
   const isOpen = status === 'awaiting_approval' && plan !== null
@@ -104,6 +126,10 @@ export function PlanApprovalDialog() {
 
   const steps = plan.steps || []
   const problem = plan.problem || 'Processing...'
+
+  // Check if any modifications exist
+  const hasModifications = Object.values(stepModifications).some((m) => m.trim().length > 0)
+  const hasAnyChanges = hasModifications || additionalInstructions.trim().length > 0
 
   const toggleStep = (stepNumber: number) => {
     setExpandedSteps((prev) => {
@@ -117,16 +143,39 @@ export function PlanApprovalDialog() {
     })
   }
 
+  const setStepModification = (stepNumber: number, value: string) => {
+    setStepModifications((prev) => ({ ...prev, [stepNumber]: value }))
+  }
+
   const handleApprove = () => {
     approvePlan()
     setAdditionalInstructions('')
+    setStepModifications({})
     setExpandedSteps(new Set())
   }
 
   const handleRevise = () => {
+    // Build feedback from step modifications and additional instructions
+    const feedbackParts: string[] = []
+
+    // Add step-specific modifications
+    steps.forEach((step) => {
+      const stepNum = step.number ?? steps.indexOf(step) + 1
+      const mod = stepModifications[stepNum]?.trim()
+      if (mod) {
+        feedbackParts.push(`Step ${stepNum} (${step.goal}): ${mod}`)
+      }
+    })
+
+    // Add general instructions
     if (additionalInstructions.trim()) {
-      rejectPlan(additionalInstructions.trim())
+      feedbackParts.push(`Additional: ${additionalInstructions.trim()}`)
+    }
+
+    if (feedbackParts.length > 0) {
+      rejectPlan(feedbackParts.join('\n\n'))
       setAdditionalInstructions('')
+      setStepModifications({})
       setExpandedSteps(new Set())
     }
   }
@@ -134,6 +183,7 @@ export function PlanApprovalDialog() {
   const handleCancel = () => {
     rejectPlan('Cancelled by user')
     setAdditionalInstructions('')
+    setStepModifications({})
     setExpandedSteps(new Set())
   }
 
@@ -186,15 +236,20 @@ export function PlanApprovalDialog() {
                 </p>
               ) : (
                 <div className="space-y-1.5">
-                  {steps.map((step, index) => (
-                    <StepItem
-                      key={step.number ?? index}
-                      step={step}
-                      index={index}
-                      isExpanded={expandedSteps.has(step.number ?? index)}
-                      onToggle={() => toggleStep(step.number ?? index)}
-                    />
-                  ))}
+                  {steps.map((step, index) => {
+                    const stepNum = step.number ?? index + 1
+                    return (
+                      <StepItem
+                        key={stepNum}
+                        step={step}
+                        index={index}
+                        isExpanded={expandedSteps.has(stepNum)}
+                        onToggle={() => toggleStep(stepNum)}
+                        modification={stepModifications[stepNum] || ''}
+                        onModificationChange={(value) => setStepModification(stepNum, value)}
+                      />
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -223,10 +278,10 @@ export function PlanApprovalDialog() {
               Cancel
             </button>
             <div className="flex items-center gap-2">
-              {additionalInstructions.trim() && (
+              {hasAnyChanges && (
                 <button
                   onClick={handleRevise}
-                  className="px-4 py-2 text-sm font-medium rounded-lg border border-primary-500 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors flex items-center gap-2"
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-amber-500 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center gap-2"
                 >
                   <ArrowPathIcon className="w-4 h-4" />
                   Revise Plan

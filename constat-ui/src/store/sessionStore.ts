@@ -55,6 +55,7 @@ interface SessionState {
   // Execution tracking
   executionPhase: ExecutionPhase
   liveMessageId: string | null
+  stepMessageIds: Record<number, string> // Maps step number to message ID
   currentStepNumber: number
   stepAttempt: number
 
@@ -92,6 +93,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   thinkingMessageId: null,
   executionPhase: 'idle',
   liveMessageId: null,
+  stepMessageIds: {},
   currentStepNumber: 0,
   stepAttempt: 1,
   plan: null,
@@ -138,6 +140,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       messages: [...state.messages, thinkingMessage],
       thinkingMessageId: thinkingId,
       liveMessageId: null,
+      stepMessageIds: {},
       currentQuery: problem,
       status: 'planning',
       executionPhase: 'idle',
@@ -157,33 +160,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   approvePlan: async () => {
-    const { session, plan, addMessage } = get()
+    const { session, plan } = get()
     if (!session) return
 
-    // Add a summary message about the approved plan
-    if (plan) {
-      const steps = plan.steps || []
-      addMessage({
-        type: 'system',
-        content: `Plan approved: ${steps.length} step${steps.length !== 1 ? 's' : ''} to execute`,
-      })
-    }
+    const steps = plan?.steps || []
 
-    // Create a live message for execution progress
-    const liveId = crypto.randomUUID()
-    const liveMessage: Message = {
-      id: liveId,
-      type: 'system',
-      content: 'Starting execution...',
-      timestamp: new Date(),
-      isLive: true,
-    }
+    // Create message bubbles for all steps upfront
+    const stepMessageIds: Record<number, string> = {}
+    const stepMessages: Message[] = steps.map((step) => {
+      const id = crypto.randomUUID()
+      const stepNum = step.number ?? steps.indexOf(step) + 1
+      stepMessageIds[stepNum] = id
+      return {
+        id,
+        type: 'step' as const,
+        content: `Step ${stepNum}: ${step.goal || 'Pending'}`,
+        timestamp: new Date(),
+        stepNumber: stepNum,
+        isLive: true,
+      }
+    })
 
     await queriesApi.approvePlan(session.session_id, true)
     wsManager.approve()
     set((state) => ({
-      messages: [...state.messages, liveMessage],
-      liveMessageId: liveId,
+      messages: [...state.messages, ...stepMessages],
+      stepMessageIds,
+      liveMessageId: null,
       status: 'executing',
       executionPhase: 'executing',
       plan: null,
@@ -274,9 +277,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCurrentQuery: (query) => set({ currentQuery: query }),
 
   handleWSEvent: (event) => {
-    const { addMessage, thinkingMessageId, liveMessageId, updateMessage, removeMessage, stepAttempt } = get()
+    const { addMessage, thinkingMessageId, liveMessageId, stepMessageIds, updateMessage, removeMessage, stepAttempt } = get()
 
-    // Helper to get or create the live message
+    // Helper to update a step's message bubble
+    const updateStepMessage = (stepNumber: number, content: string, isComplete = false) => {
+      const messageId = stepMessageIds[stepNumber]
+      if (messageId) {
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.id === messageId
+              ? { ...m, content, isLive: !isComplete }
+              : m
+          ),
+        }))
+      }
+    }
+
+    // Helper to get or create the live message (for planning phase)
     const ensureLiveMessage = (content: string, phase: ExecutionPhase): string => {
       const existingId = liveMessageId || thinkingMessageId
       if (existingId) {
@@ -318,6 +335,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
+    // Helper to finalize all step messages (remove live state)
+    const finalizeAllSteps = () => {
+      set((state) => ({
+        messages: state.messages.map((m) =>
+          m.stepNumber !== undefined && stepMessageIds[m.stepNumber]
+            ? { ...m, isLive: false }
+            : m
+        ),
+        stepMessageIds: {},
+      }))
+    }
+
     switch (event.event_type) {
       case 'planning_start':
         ensureLiveMessage('Planning...', 'planning')
@@ -332,48 +361,46 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'step_start': {
         const goal = (event.data.goal as string) || 'Processing'
-        ensureLiveMessage(`Step ${event.step_number}: ${goal}...`, 'generating')
+        updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
         set({ status: 'executing', currentStepNumber: event.step_number, stepAttempt: 1 })
         break
       }
 
       case 'step_generating': {
         const attempt = stepAttempt > 1 ? ` (attempt ${stepAttempt})` : ''
-        ensureLiveMessage(`Step ${event.step_number}: Generating code${attempt}...`, 'generating')
+        updateStepMessage(event.step_number, `Step ${event.step_number}: Generating code${attempt}...`)
+        set({ executionPhase: 'generating' })
         break
       }
 
       case 'step_executing': {
-        ensureLiveMessage(`Step ${event.step_number}: Executing...`, 'executing')
+        const goal = (event.data.goal as string) || ''
+        updateStepMessage(event.step_number, `Step ${event.step_number}: Executing${goal ? ` - ${goal}` : ''}...`)
+        set({ executionPhase: 'executing' })
         break
       }
 
       case 'step_error': {
-        // Show retry attempt in live message
+        // Show retry attempt in step message
         const newAttempt = stepAttempt + 1
-        ensureLiveMessage(`Step ${event.step_number}: Retrying (attempt ${newAttempt})...`, 'retrying')
-        set({ stepAttempt: newAttempt })
+        updateStepMessage(event.step_number, `Step ${event.step_number}: Retrying (attempt ${newAttempt})...`)
+        set({ stepAttempt: newAttempt, executionPhase: 'retrying' })
         break
       }
 
-      case 'step_failed':
-        // Step fully failed - add error bubble and update live message
-        addMessage({
-          type: 'error',
-          content: `Step ${event.step_number} failed: ${event.data.error || 'Unknown error'}`,
-          stepNumber: event.step_number,
-        })
+      case 'step_failed': {
+        // Mark step as failed
+        const errorMsg = (event.data.error as string) || 'Failed'
+        updateStepMessage(event.step_number, `Step ${event.step_number}: ❌ ${errorMsg}`, true)
         break
+      }
 
       case 'step_complete': {
         const result = event.data as { success?: boolean; stdout?: string; goal?: string }
-        // Add step completion bubble
-        addMessage({
-          type: 'step',
-          content: `Step ${event.step_number}: ${result.goal || 'Completed'}`,
-          stepNumber: event.step_number,
-        })
-        // Add output if there is any
+        // Update step bubble with completion
+        const summary = result.goal || 'Completed'
+        updateStepMessage(event.step_number, `Step ${event.step_number}: ✓ ${summary}`, true)
+        // Add output if there is any (as separate bubble)
         if (result.stdout) {
           addMessage({
             type: 'output',
@@ -381,13 +408,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             stepNumber: event.step_number,
           })
         }
-        // Update live message to show we're moving on
-        ensureLiveMessage('Continuing...', 'executing')
         break
       }
 
       case 'query_complete': {
-        // Remove live message
+        // Finalize all step messages
+        finalizeAllSteps()
         clearLiveMessage()
         set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1 })
         // Add final insights bubble
@@ -400,6 +426,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       case 'query_error':
+        finalizeAllSteps()
         clearLiveMessage()
         set({ status: 'error', currentStepNumber: 0, stepAttempt: 1 })
         addMessage({
@@ -409,6 +436,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
 
       case 'query_cancelled':
+        finalizeAllSteps()
         clearLiveMessage()
         set({ status: 'cancelled', currentStepNumber: 0, stepAttempt: 1 })
         addMessage({ type: 'system', content: 'Execution cancelled' })
