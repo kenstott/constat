@@ -265,6 +265,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 entity_id VARCHAR NOT NULL,
                 mention_count INTEGER DEFAULT 1,
                 confidence FLOAT DEFAULT 1.0,
+                mention_text VARCHAR,
                 ephemeral BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (chunk_id, entity_id)
             )
@@ -316,6 +317,17 @@ class DuckDBVectorStore(VectorStoreBackend):
                     )
             except Exception as e:
                 logger.debug(f"_migrate_schema: failed to add ephemeral to {table}: {e}")
+
+        # Add mention_text column to chunk_entities if missing
+        try:
+            col_names = get_column_names('chunk_entities')
+            if col_names and 'mention_text' not in col_names:
+                logger.debug("_migrate_schema: adding mention_text column to chunk_entities")
+                self._conn.execute(
+                    "ALTER TABLE chunk_entities ADD COLUMN mention_text VARCHAR"
+                )
+        except Exception as e:
+            logger.debug(f"_migrate_schema: failed to add mention_text to chunk_entities: {e}")
 
         # Add new columns to entities table for unified catalog
         try:
@@ -802,8 +814,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not entities:
             return
 
-        records = []
+        # Deduplicate entities by ID (keep last occurrence)
+        seen_ids: dict[str, int] = {}
         for i, e in enumerate(entities):
+            seen_ids[e["id"]] = i
+
+        records = []
+        for i in sorted(seen_ids.values()):
+            e = entities[i]
             metadata_json = json.dumps(e.get("metadata", {})) if e.get("metadata") else None
             records.append((
                 e["id"],

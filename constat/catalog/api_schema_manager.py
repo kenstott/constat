@@ -41,22 +41,37 @@ class APIFieldMetadata:
 class APIEndpointMetadata:
     """Metadata for an API endpoint or GraphQL type."""
     api_name: str
-    endpoint_name: str
+    endpoint_name: str  # Resource name (e.g., "breeds", "users")
     api_type: str  # "graphql" or "rest"
     description: Optional[str] = None
     fields: list[APIFieldMetadata] = field(default_factory=list)
+    # Original path/method for REST endpoints (e.g., "GET /breeds")
+    http_method: Optional[str] = None
+    http_path: Optional[str] = None
+    operation_id: Optional[str] = None
 
     @property
     def full_name(self) -> str:
+        """Unique identifier for this endpoint."""
+        if self.http_method and self.http_path:
+            return f"{self.api_name}.{self.http_method} {self.http_path}"
         return f"{self.api_name}.{self.endpoint_name}"
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable name for display."""
+        from constat.discovery.models import normalize_entity_name
+        return normalize_entity_name(self.endpoint_name)
 
     def to_embedding_text(self) -> str:
         """Generate text for embedding."""
         parts = [
             f"API: {self.api_name}",
-            f"Endpoint: {self.endpoint_name}",
+            f"Resource: {self.display_name}",
             f"Type: {self.api_type}",
         ]
+        if self.http_method and self.http_path:
+            parts.append(f"Endpoint: {self.http_method} {self.http_path}")
         if self.description:
             parts.append(f"Description: {self.description}")
         if self.fields:
@@ -410,8 +425,12 @@ class APISchemaManager:
         for path, path_item in paths.items():
             for method, operation in path_item.items():
                 if method in ("get", "post", "put", "patch", "delete"):
-                    endpoint_name = f"{method.upper()} {path}"
-                    operation_id = operation.get("operationId", endpoint_name)
+                    http_method = method.upper()
+                    operation_id = operation.get("operationId")
+
+                    # Extract resource name from path
+                    from constat.discovery.models import extract_resource_from_path
+                    resource_name = extract_resource_from_path(path)
 
                     # Extract parameters as fields
                     fields = []
@@ -438,10 +457,13 @@ class APISchemaManager:
 
                     meta = APIEndpointMetadata(
                         api_name=name,
-                        endpoint_name=endpoint_name,
+                        endpoint_name=resource_name,
                         api_type="rest",
                         description=" - ".join(desc_parts) if desc_parts else None,
                         fields=fields,
+                        http_method=http_method,
+                        http_path=path,
+                        operation_id=operation_id,
                     )
                     self.metadata_cache[meta.full_name] = meta
 
@@ -542,7 +564,7 @@ class APISchemaManager:
 
             entities.append({
                 "id": full_name,
-                "name": meta.endpoint_name,
+                "name": meta.display_name,
                 "type": entity_type,
                 "parent_id": None,  # API endpoints don't have parents for now
                 "metadata": {
@@ -550,6 +572,10 @@ class APISchemaManager:
                     "api_type": meta.api_type,
                     "description": meta.description,
                     "fields": [f.name for f in meta.fields],
+                    "original_name": meta.endpoint_name,
+                    "http_method": meta.http_method,
+                    "http_path": meta.http_path,
+                    "operation_id": meta.operation_id,
                 },
             })
 
@@ -560,7 +586,58 @@ class APISchemaManager:
         self._vector_store.clear_catalog_entities('api')
         self._vector_store.add_catalog_entities(entities, embeddings, 'api', config_hash)
 
+        # Extract entities from API descriptions
+        self._extract_entities_from_descriptions()
+
         logger.info(f"Built API vector index with {len(texts)} endpoints")
+
+    def _extract_entities_from_descriptions(self) -> None:
+        """Extract entities from API endpoint descriptions using spaCy NER.
+
+        This enables finding relationships between API elements and concepts
+        mentioned in their descriptions.
+        """
+        if not hasattr(self._vector_store, 'add_entities'):
+            return
+
+        # Lazy imports to avoid circular dependency
+        from constat.discovery.models import DocumentChunk
+        from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
+
+        # Configure extractor with NER only
+        config = ExtractionConfig(
+            extract_schema=False,
+            extract_ner=True,
+        )
+        extractor = EntityExtractor(config)
+
+        # Process each endpoint's description
+        for full_name, meta in self.metadata_cache.items():
+            if meta.description:
+                chunk = DocumentChunk(
+                    document_name=f"api:{full_name}",
+                    content=meta.description,
+                    section="api_description",
+                    chunk_index=0,
+                )
+                extractor.extract(chunk)
+
+            # Also extract from field descriptions
+            for i, field_meta in enumerate(meta.fields):
+                if field_meta.description:
+                    chunk = DocumentChunk(
+                        document_name=f"api:{full_name}.{field_meta.name}",
+                        content=field_meta.description,
+                        section="field_description",
+                        chunk_index=i,
+                    )
+                    extractor.extract(chunk)
+
+        # Store extracted entities
+        entities = extractor.get_all_entities()
+        if entities:
+            logger.debug(f"Extracted {len(entities)} entities from API descriptions")
+            self._vector_store.add_entities(entities)
 
     def find_relevant_apis(
         self,

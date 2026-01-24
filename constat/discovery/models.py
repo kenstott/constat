@@ -9,6 +9,7 @@
 
 """Data models for document discovery."""
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Any
@@ -16,12 +17,79 @@ from typing import Optional, Any
 from constat.core.config import DocumentConfig
 
 
+def normalize_entity_name(name: str) -> str:
+    """Normalize an entity name for display.
+
+    Converts underscores and hyphens to spaces for readability.
+
+    Args:
+        name: Raw entity name (e.g., "employee_salary", "user-profile")
+
+    Returns:
+        Normalized name (e.g., "employee salary", "user profile")
+    """
+    # Replace underscores and hyphens with spaces
+    normalized = re.sub(r'[_-]+', ' ', name)
+    # Collapse multiple spaces
+    normalized = re.sub(r'\s+', ' ', normalized)
+    return normalized.strip()
+
+
+def extract_resource_from_path(path: str) -> str:
+    """Extract the primary resource name from an API path.
+
+    Extracts the last meaningful path segment, ignoring path parameters.
+
+    Args:
+        path: API path (e.g., "/breeds", "/users/{id}/orders", "/api/v1/products")
+
+    Returns:
+        Resource name (e.g., "breeds", "orders", "products")
+    """
+    # Split path into segments
+    segments = [s for s in path.split('/') if s]
+
+    # Filter out path parameters ({id}, {userId}, etc.) and common prefixes
+    ignore_patterns = {'api', 'v1', 'v2', 'v3'}
+    meaningful_segments = []
+
+    for segment in segments:
+        # Skip path parameters
+        if segment.startswith('{') and segment.endswith('}'):
+            continue
+        # Skip common API prefixes
+        if segment.lower() in ignore_patterns:
+            continue
+        meaningful_segments.append(segment)
+
+    if not meaningful_segments:
+        # Fallback to last segment even if it's a parameter
+        return segments[-1] if segments else path
+
+    # Return the last meaningful segment (the primary resource)
+    return meaningful_segments[-1]
+
+
 class EntityType:
     """Entity type constants."""
+    # Database schema
     TABLE = "table"
     COLUMN = "column"
+    # API schemas
+    API_ENDPOINT = "api_endpoint"
+    API_SCHEMA = "api_schema"
+    GRAPHQL_TYPE = "graphql_type"
+    GRAPHQL_FIELD = "graphql_field"
+    # Business/domain
     CONCEPT = "concept"
     BUSINESS_TERM = "business_term"
+    # spaCy NER types
+    ORGANIZATION = "organization"
+    PRODUCT = "product"
+    LOCATION = "location"
+    PERSON = "person"
+    EVENT = "event"
+    METRIC = "metric"
 
 
 @dataclass
@@ -41,11 +109,12 @@ class Entity:
 
 @dataclass
 class ChunkEntity:
-    """Link between a chunk and an entity."""
+    """Link between a chunk and an entity with exact mention text."""
     chunk_id: str
     entity_id: str
     mention_count: int = 1
     confidence: float = 1.0
+    mention_text: Optional[str] = None  # Exact text as it appeared in source
 
 
 @dataclass

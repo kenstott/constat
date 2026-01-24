@@ -375,6 +375,14 @@ class DocumentDiscoveryTools:
         # Schema entities for entity extraction (table names, column names)
         self._schema_entities: list[str] = schema_entities or []
 
+        # OpenAPI entities (operations, schemas)
+        self._openapi_operations: list[str] = []
+        self._openapi_schemas: list[str] = []
+
+        # GraphQL entities (types, fields)
+        self._graphql_types: list[str] = []
+        self._graphql_fields: list[str] = []
+
         # Cache directory for persisting document metadata
         if cache_dir:
             self._cache_dir = cache_dir
@@ -417,6 +425,42 @@ class DocumentDiscoveryTools:
 
         return create_vector_store(backend=backend, db_path=db_path)
 
+    def set_schema_entities(self, entities: set[str] | list[str]) -> None:
+        """Set database schema entities (table names, column names) for pattern matching.
+
+        Args:
+            entities: Set or list of entity names
+        """
+        self._schema_entities = list(entities) if isinstance(entities, set) else entities
+
+    def set_openapi_entities(
+        self,
+        operations: list[str],
+        schemas: list[str],
+    ) -> None:
+        """Set OpenAPI entities for pattern matching in documents.
+
+        Args:
+            operations: List of operation/endpoint names
+            schemas: List of schema definition names
+        """
+        self._openapi_operations = operations
+        self._openapi_schemas = schemas
+
+    def set_graphql_entities(
+        self,
+        types: list[str],
+        fields: list[str],
+    ) -> None:
+        """Set GraphQL entities for pattern matching in documents.
+
+        Args:
+            types: List of type names
+            fields: List of field/operation names
+        """
+        self._graphql_types = types
+        self._graphql_fields = fields
+
     def add_ephemeral_document(
         self,
         name: str,
@@ -442,15 +486,15 @@ class DocumentDiscoveryTools:
         # Remove existing document with same name to avoid duplicate key errors
         if name in self._loaded_documents:
             self.remove_document(name)
-        elif hasattr(self._vector_store, 'delete_by_document'):
-            # Document might exist in vector store from previous session
+        # Always try to delete from vector store in case chunks exist from previous session
+        if hasattr(self._vector_store, 'delete_by_document'):
             self._vector_store.delete_by_document(name)
 
         # Create a minimal config for the document
         doc_config = DocumentConfig(
             type="inline",
             content=content,
-            description=description,
+            description=description or "",
             format=doc_format,
         )
 
@@ -473,6 +517,7 @@ class DocumentDiscoveryTools:
 
         # Chunk and embed the document
         chunks = self._chunk_document(name, content)
+        logger.debug(f"Document '{name}': {len(chunks)} chunks generated")
         if not chunks:
             return True
 
@@ -570,27 +615,41 @@ class DocumentDiscoveryTools:
     ) -> None:
         """Extract entities from chunks and store them as ephemeral.
 
+        Uses spaCy NER for named entity extraction plus pattern matching
+        for database, OpenAPI, and GraphQL schemas.
+
         Args:
             chunks: Document chunks to extract entities from
         """
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
+        logger.debug(f"Extracting entities from {len(chunks)} chunks")
+
+        # Create extractor with all known schema entities
         config = ExtractionConfig(
             extract_schema=bool(self._schema_entities),
             extract_ner=True,
-            extract_concepts=False,
             schema_entities=self._schema_entities or [],
+            openapi_operations=self._openapi_operations,
+            openapi_schemas=self._openapi_schemas,
+            graphql_types=self._graphql_types,
+            graphql_fields=self._graphql_fields,
         )
         extractor = EntityExtractor(config)
 
         all_links: list[ChunkEntity] = []
+
+        # Extract entities from all chunks using spaCy NER
         for chunk in chunks:
             extractions = extractor.extract(chunk)
+            logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
+
             for entity, link in extractions:
                 all_links.append(link)
 
         entities = extractor.get_all_entities()
+        logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
         if entities:
             import inspect
             sig = inspect.signature(self._vector_store.add_entities)
@@ -1673,7 +1732,7 @@ class DocumentDiscoveryTools:
         chunks: list[DocumentChunk],
         schema_entities: Optional[list[str]] = None,
     ) -> None:
-        """Extract entities from chunks and store them.
+        """Extract entities from chunks and store them using spaCy NER.
 
         Args:
             chunks: Document chunks to extract entities from
@@ -1683,12 +1742,15 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
-        # Create extractor with schema entities if provided
+        # Create extractor with schema entities and spaCy NER
         config = ExtractionConfig(
             extract_schema=bool(schema_entities),
             extract_ner=True,
-            extract_concepts=False,  # Skip LLM extraction for now
             schema_entities=schema_entities or [],
+            openapi_operations=self._openapi_operations,
+            openapi_schemas=self._openapi_schemas,
+            graphql_types=self._graphql_types,
+            graphql_fields=self._graphql_fields,
         )
         extractor = EntityExtractor(config)
 

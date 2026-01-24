@@ -372,8 +372,10 @@ async def add_file_reference(
             description=body.description,
         )
     except AttributeError:
-        # Session doesn't have add_file method, store locally
+        # Session doesn't have add_file method - that's OK
         pass
+    except Exception as e:
+        logger.warning(f"Error adding file reference: {e}")
 
     # Track in managed session
     now = datetime.now(timezone.utc)

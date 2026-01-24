@@ -160,7 +160,7 @@ Generate Python code to accomplish the current step's goal.
 
 ## Code Environment
 Your code has access to:
-- Database connections: `db_<name>` for each database (e.g., `db_chinook`, `db_northwind`)
+- Database connections: `db_<name>` for each configured database
 - `db`: alias for the first database
 - API clients: `api_<name>` for configured APIs (GraphQL and REST)
 - `pd`: pandas (imported as pd)
@@ -169,6 +169,16 @@ Your code has access to:
 - `llm_ask`: a function to query the LLM for general knowledge (batch calls, never loop)
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
 - `viz`: visualization helper for saving maps and charts to files
+
+## Database Access Patterns
+**SQL databases** (SQLite, PostgreSQL, DuckDB):
+- Use `pd.read_sql(query, db_<name>)` - NEVER use db.execute()
+
+**NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
+- MongoDB: `list(db_<name>['collection'].find(query))` returns list of dicts
+- Elasticsearch: `db_<name>.query('index', query_dict)` returns list of dicts
+- Cassandra: `db_<name>.query('table', {'column': value})` returns list of dicts
+- Convert to DataFrame: `pd.DataFrame(db_<name>['collection'].find(query))`
 
 ## API Usage
 - `api_<name>('query { ... }')` for GraphQL - returns data payload directly (no 'data' wrapper)
@@ -192,18 +202,18 @@ When correcting or updating previous results:
 - For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
-- **Discovery tools NOT available**: `find_relevant_tables()`, `get_table_schema()`, etc. are planning-only. In step code, query tables directly with `pd.read_sql()`.
+- **Discovery tools NOT available**: `find_relevant_tables()`, `get_table_schema()`, etc. are planning-only. In step code, query tables/collections directly.
 
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") → compute dynamically with datetime
 - Explicit values ("January 2006", "above 100") → hardcode
 
 ## Code Rules
-1. Use `pd.read_sql(query, db_<name>)` for source databases - NEVER use db.execute()
+1. Use appropriate access pattern for database type (see Database Access Patterns above)
 2. **ALWAYS save results to store** - nothing in local variables persists!
 3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
 
-**CRITICAL**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Always use `pd.read_sql(query, db_<name>)` for ALL database queries.
+**CRITICAL for SQL databases**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Use `pd.read_sql(query, db_<name>)` instead.
 
 ## Output Guidelines
 - Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")
@@ -3685,33 +3695,49 @@ Keep it concise and actionable."""
 
         return text.rstrip()
 
-    def _synthesize_answer(self, problem: str, step_outputs: str) -> str:
+    def _synthesize_answer(self, problem: str, step_outputs: str, artifacts: list[dict] | None = None) -> str:
         """
         Synthesize a final user-facing answer from step execution outputs.
 
         This takes the raw step outputs (which may be verbose technical details)
         and creates a clear, direct answer to the user's original question.
         """
-        prompt = f"""You are synthesizing results from a multi-step data analysis.
+        # Build artifact context if files were created
+        artifact_context = ""
+        if artifacts:
+            artifact_lines = ["Files created:"]
+            for a in artifacts:
+                desc = a.get("description", "")
+                uri = a.get("file_uri", "")
+                if uri:
+                    filename = uri.split("/")[-1]
+                    artifact_lines.append(f"- `{filename}`: {desc}")
+            artifact_context = "\n" + "\n".join(artifact_lines) + "\n"
 
-Original question: {problem}
+        prompt = f"""Synthesize a final insight from this data analysis.
 
-Analysis results from each step:
+Question: {problem}
+
+[Step outputs for context - DO NOT repeat these, user already saw them]
 {step_outputs}
+{artifact_context}
+IMPORTANT: The user has ALREADY SEEN all the step-by-step output above in separate messages. Your job is ONLY to provide high-level analysis - NOT to summarize what each step did.
 
-Create a clear, direct answer to the user's question. Include:
-1. A direct answer to their question (the main finding)
-2. Key supporting data points or insights
-3. Any notable observations or caveats
+Write a brief insight (max 150 words) with:
 
-**Important formatting rules:**
-- Do NOT display tables inline - data is available as clickable artifacts
-- ALWAYS use backticks when referencing artifacts: `table_name` or `filename.ext`
-- For tables, include row count: `customers` (1,234 rows)
-- ONLY reference artifacts that were actually created - do not invent table names
-- Keep references inline in your prose - they become clickable links
-- Focus on key findings and conclusions, not raw data
-- Keep the response concise"""
+1. **Answer**: Direct 1-sentence answer to their question
+2. **Key Insight**: The most important finding or pattern (not a list of what steps did)
+3. **Next Steps**: 2-3 follow-up questions they could ask (formatted as a numbered list)
+
+WRONG (do not do this):
+- "Step 1 loaded the data, Step 2 filtered it, Step 3 calculated..."
+- "First I analyzed X, then I computed Y..."
+
+RIGHT:
+- "The top 3 customers account for 60% of revenue. This concentration suggests..."
+- "Revenue grew 15% YoY, driven primarily by the Enterprise segment..."
+
+Reference tables with backticks: `table_name`"""
 
         result = self.router.execute(
             task_type=TaskType.SUMMARIZATION,
@@ -5135,10 +5161,19 @@ Please revise the plan to incorporate this feedback."""
         # Phase 4: Reset cancellation state before starting execution
         self.reset_cancellation()
         all_results = []
+
+        # Debug: Log full plan structure before computing waves
+        logger.debug(f"[EXECUTION] Plan has {len(self.plan.steps)} steps:")
+        for step in self.plan.steps:
+            logger.debug(f"[EXECUTION]   Step {step.number}: status={step.status.value}, "
+                         f"depends_on={step.depends_on}, goal='{step.goal[:60]}...'")
+
         execution_waves = self.plan.get_execution_order()
+        logger.debug(f"[EXECUTION] execution_waves: {execution_waves}, total steps: {len(self.plan.steps)}")
         cancelled = False
 
         for wave_num, wave_step_nums in enumerate(execution_waves):
+            logger.debug(f"[EXECUTION] Starting wave {wave_num + 1}, steps: {wave_step_nums}")
             # Phase 4: Check for cancellation before starting each wave
             if self.is_cancelled():
                 cancelled = True
@@ -5249,7 +5284,12 @@ Please revise the plan to incorporate this feedback."""
                         all_results.append(result)
 
                 if cancelled:
+                    logger.debug(f"[EXECUTION] Wave {wave_num + 1} cancelled, breaking out of loop")
                     break
+
+                logger.debug(f"[EXECUTION] Wave {wave_num + 1} completed: "
+                             f"wave_failed={wave_failed}, all_results={len(all_results)}, "
+                             f"completed_steps={self.plan.completed_steps}")
 
                 # If any step in wave failed, stop execution
                 if wave_failed:
@@ -5270,6 +5310,10 @@ Please revise the plan to incorporate this feedback."""
                         "error": failed_result.error,
                         "completed_steps": self.plan.completed_steps,
                     }
+
+        # Log exit reason
+        logger.debug(f"[EXECUTION] Wave loop finished: cancelled={cancelled}, "
+                     f"all_results={len(all_results)}, completed_steps={self.plan.completed_steps}")
 
         # Phase 4: Handle cancellation - return with completed results preserved
         if cancelled:
@@ -5350,38 +5394,15 @@ Please revise the plan to incorporate this feedback."""
             data={"output": combined_output}
         ))
 
-        # Check if this was primarily an artifact creation task (production request)
-        # e.g., "create a table", "export to csv", "generate a report"
+        # Check for created artifacts (to mention in synthesis)
         from constat.visualization.output import peek_pending_outputs
         pending_artifacts = peek_pending_outputs()
-        is_artifact_focused = bool(pending_artifacts) or any(
-            marker in combined_output.lower()
-            for marker in ["file saved", "chart:", "map:", "image:", "saved to"]
-        )
 
         # Check if insights are enabled (config or per-query brief detection via LLM)
         skip_insights = not self.session_config.enable_insights or analysis.wants_brief
         suggestions = []  # Initialize for brief mode (no suggestions)
 
-        if is_artifact_focused:
-            # Production request: Generate brief response with artifact links
-            artifact_names = [a.get("description", a.get("file_uri", "artifact")) for a in pending_artifacts]
-            if artifact_names:
-                final_answer = "Created: " + ", ".join(f"`{n}`" for n in artifact_names)
-            else:
-                # Extract artifact names from output
-                import re
-                file_matches = re.findall(r'(?:File saved|Chart|Map|Image)[^:]*:\s*(file://[^\s]+)', combined_output)
-                if file_matches:
-                    final_answer = "Created:\n" + "\n".join(f"  {f}" for f in file_matches)
-                else:
-                    final_answer = combined_output  # Fallback to raw output
-            self._emit_event(StepEvent(
-                event_type="answer_ready",
-                step_number=0,
-                data={"answer": final_answer, "brief": True}
-            ))
-        elif skip_insights:
+        if skip_insights:
             # Use raw output as final answer
             final_answer = combined_output
             self._emit_event(StepEvent(
@@ -5397,7 +5418,7 @@ Please revise the plan to incorporate this feedback."""
                 data={"message": "Synthesizing final answer..."}
             ))
 
-            final_answer = self._synthesize_answer(problem, combined_output)
+            final_answer = self._synthesize_answer(problem, combined_output, pending_artifacts)
 
             self._emit_event(StepEvent(
                 event_type="answer_ready",
@@ -6024,14 +6045,9 @@ User feedback: {approval.suggestion}
         # Analyze follow-up question for brief output preference (LLM-based, not keywords)
         follow_up_analysis = self._analyze_question(question)
 
-        # Check if this was primarily an artifact creation task
-        # (e.g., "generate a report", "create a chart", "export to csv")
+        # Check for created artifacts (to mention in synthesis)
         from constat.visualization.output import peek_pending_outputs
         pending_artifacts = peek_pending_outputs()  # Peek without clearing
-        is_artifact_focused = bool(pending_artifacts) or any(
-            marker in combined_output.lower()
-            for marker in ["file saved", "chart:", "map:", "image:", "saved to"]
-        )
 
         # Check if insights are enabled (config or per-query brief detection via LLM)
         skip_insights = (
@@ -6040,26 +6056,7 @@ User feedback: {approval.suggestion}
         )
         suggestions = []  # Initialize for brief mode (no suggestions)
 
-        if is_artifact_focused:
-            # For artifact-focused extensions, generate brief summary with artifact links
-            artifact_names = [a.get("description", a.get("file_uri", "artifact")) for a in pending_artifacts]
-            if artifact_names:
-                brief_summary = "Created: " + ", ".join(artifact_names)
-            else:
-                # Extract artifact names from output
-                import re
-                file_matches = re.findall(r'(?:File saved|Chart|Map|Image)[^:]*:\s*(file://[^\s]+)', combined_output)
-                if file_matches:
-                    brief_summary = "Created:\n" + "\n".join(f"  {f}" for f in file_matches)
-                else:
-                    brief_summary = combined_output  # Fallback to raw output
-            final_answer = brief_summary
-            self._emit_event(StepEvent(
-                event_type="answer_ready",
-                step_number=0,
-                data={"answer": final_answer, "brief": True}
-            ))
-        elif skip_insights:
+        if skip_insights:
             # Use raw output as final answer
             final_answer = combined_output
             self._emit_event(StepEvent(
@@ -6075,7 +6072,7 @@ User feedback: {approval.suggestion}
                 data={"message": "Synthesizing final answer..."}
             ))
 
-            final_answer = self._synthesize_answer(question, combined_output)
+            final_answer = self._synthesize_answer(question, combined_output, pending_artifacts)
 
             self._emit_event(StepEvent(
                 event_type="answer_ready",
@@ -7559,6 +7556,10 @@ Prove all of the above claims and provide a complete audit trail."""
             data={"output": combined_output}
         ))
 
+        # Check for created artifacts (to mention in synthesis)
+        from constat.visualization.output import peek_pending_outputs
+        pending_artifacts = peek_pending_outputs()
+
         # Check if insights are enabled
         skip_insights = not self.session_config.enable_insights
 
@@ -7576,7 +7577,7 @@ Prove all of the above claims and provide a complete audit trail."""
                 data={"message": "Synthesizing final answer..."}
             ))
 
-            final_answer = self._synthesize_answer(problem, combined_output)
+            final_answer = self._synthesize_answer(problem, combined_output, pending_artifacts)
 
             self._emit_event(StepEvent(
                 event_type="answer_ready",
@@ -7752,8 +7753,9 @@ Prove all of the above claims and provide a complete audit trail."""
                         doc_format=doc_format,
                         description=description,
                     )
-                except Exception:
-                    pass  # Non-fatal - file still added to session
+                    logger.debug(f"Indexed document: session:{name}")
+                except Exception as e:
+                    logger.warning(f"Failed to index document {name}: {e}")
 
         return True
 
@@ -8285,6 +8287,10 @@ Prove all of the above claims and provide a complete audit trail."""
             data={"output": combined_output}
         ))
 
+        # Check for created artifacts (to mention in synthesis)
+        from constat.visualization.output import peek_pending_outputs
+        pending_artifacts = peek_pending_outputs()
+
         # Check if insights are enabled
         skip_insights = not self.session_config.enable_insights
 
@@ -8302,7 +8308,7 @@ Prove all of the above claims and provide a complete audit trail."""
                 data={"message": "Synthesizing final answer..."}
             ))
 
-            final_answer = self._synthesize_answer(problem, combined_output)
+            final_answer = self._synthesize_answer(problem, combined_output, pending_artifacts)
 
             self._emit_event(StepEvent(
                 event_type="answer_ready",

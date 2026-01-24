@@ -7,28 +7,44 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Entity extraction for document chunks.
+"""Entity extraction for document chunks using spaCy NER.
 
 Extracts entities during document ingestion to enable entity-aware search
 and the explore_entity LLM tool.
 
 Extraction sources:
-1. Schema entities - Tables, columns from database metadata (high confidence)
-2. Named entities - NER for business terms, proper nouns (medium confidence)
-3. Domain concepts - LLM-assisted extraction for domain-specific terms
+1. Database schemas - Tables, columns from database metadata
+2. OpenAPI schemas - Endpoints, operations, schema definitions
+3. GraphQL schemas - Types, fields, queries, mutations
+4. Document NER - Named entities using spaCy (ORG, PRODUCT, GPE, etc.)
 """
 
 import hashlib
 import re
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Optional
+
+import spacy
+from spacy.language import Language
 
 from constat.discovery.models import (
     DocumentChunk,
     Entity,
     EntityType,
     ChunkEntity,
+    normalize_entity_name,
 )
+
+# Load spaCy model once at module level
+_nlp: Optional[Language] = None
+
+
+def get_nlp() -> Language:
+    """Get or load the spaCy model."""
+    global _nlp
+    if _nlp is None:
+        _nlp = spacy.load("en_core_web_sm")
+    return _nlp
 
 
 @dataclass
@@ -38,11 +54,8 @@ class ExtractionConfig:
     # Whether to extract schema entities (tables, columns)
     extract_schema: bool = True
 
-    # Whether to use NER for named entity extraction
+    # Whether to use spaCy NER for named entity extraction
     extract_ner: bool = True
-
-    # Whether to use LLM for domain concept extraction
-    extract_concepts: bool = False  # Off by default - requires LLM calls
 
     # Minimum confidence threshold for linking
     min_confidence: float = 0.5
@@ -53,34 +66,64 @@ class ExtractionConfig:
     # Known business terms/glossary for matching
     business_terms: list[str] = field(default_factory=list)
 
+    # OpenAPI operations (endpoint names)
+    openapi_operations: list[str] = field(default_factory=list)
+
+    # OpenAPI schema definitions
+    openapi_schemas: list[str] = field(default_factory=list)
+
+    # GraphQL types
+    graphql_types: list[str] = field(default_factory=list)
+
+    # GraphQL fields/operations
+    graphql_fields: list[str] = field(default_factory=list)
+
 
 class EntityExtractor:
     """Extracts entities from document chunks during ingestion.
 
-    Supports three extraction approaches:
-    1. Schema matching - Matches known table/column names in text
-    2. Named entity recognition - Extracts proper nouns and business terms
-    3. LLM-assisted - Uses LLM to identify domain concepts (optional)
+    Uses spaCy NER for document content and pattern matching for
+    database, OpenAPI, and GraphQL schemas.
     """
+
+    # spaCy entity types to extract (excluding numeric types like MONEY, PERCENT, CARDINAL, etc.)
+    SPACY_ENTITY_TYPES = {
+        'ORG',      # Organizations, companies
+        'PRODUCT',  # Products, software
+        'GPE',      # Countries, cities, states
+        'PERSON',   # People
+        'EVENT',    # Named events
+        'WORK_OF_ART',  # Titles of books, songs, etc.
+        'LAW',      # Legal documents, treaties
+    }
+
+    # Patterns to filter out (markdown artifacts, symbols, etc.)
+    NOISE_PATTERNS = re.compile(
+        r'^[\s#*_\-=`~\[\](){}|\\/<>@!$%^&+]+$'  # Pure symbols/markdown
+        r'|^#+\s*$'                               # Markdown headers
+        r'|^\*+$'                                 # Markdown bold/italic
+        r'|^-+$'                                  # Markdown hr
+        r'|^_{2,}$'                               # Underscores
+    )
 
     def __init__(
         self,
         config: Optional[ExtractionConfig] = None,
-        llm_extractor: Optional[Callable[[str], list[tuple[str, str]]]] = None,
     ):
         """Initialize the entity extractor.
 
         Args:
             config: Extraction configuration
-            llm_extractor: Optional LLM function that takes text and returns
-                          list of (entity_name, entity_type) tuples
         """
         self.config = config or ExtractionConfig()
-        self._llm_extractor = llm_extractor
 
         # Build lookup sets for fast matching
         self._schema_patterns = self._build_patterns(self.config.schema_entities)
         self._term_patterns = self._build_patterns(self.config.business_terms)
+        self._openapi_op_patterns = self._build_patterns(self.config.openapi_operations)
+        self._openapi_schema_patterns = self._build_patterns(self.config.openapi_schemas)
+        self._graphql_type_patterns = self._build_patterns(self.config.graphql_types)
+        self._graphql_field_patterns = self._build_patterns(self.config.graphql_fields)
 
         # Entity deduplication cache
         self._entity_cache: dict[str, Entity] = {}
@@ -95,55 +138,60 @@ class EntityExtractor:
 
         # Handle plurals -> singular
         if lower.endswith('ies') and len(lower) > 3:
-            # categories -> category
             variations.append(term[:-3] + 'y')
         elif lower.endswith('es') and len(lower) > 2:
-            # processes -> process, boxes -> box
             variations.append(term[:-2])
-            # Also try just removing 's' for words like 'employees'
             variations.append(term[:-1])
         elif lower.endswith('s') and len(lower) > 1:
-            # customers -> customer
             variations.append(term[:-1])
 
         # Handle singular -> plural
         if not lower.endswith('s'):
             if lower.endswith('y') and len(lower) > 1:
-                # category -> categories
                 variations.append(term[:-1] + 'ies')
             elif lower.endswith(('s', 'x', 'z', 'ch', 'sh')):
-                # box -> boxes
                 variations.append(term + 'es')
             else:
-                # customer -> customers
                 variations.append(term + 's')
 
         return variations
 
     def _build_patterns(self, terms: list[str]) -> dict[str, re.Pattern]:
-        """Build regex patterns for term matching with stemming.
+        """Build regex patterns for term matching with stemming and normalization.
 
-        Returns dict mapping lowercase term to compiled pattern.
-        Patterns match whole words and common inflections, case-insensitive.
+        Returns dict mapping original term to compiled pattern.
+        Patterns match:
+        - Original term (e.g., "order_id")
+        - Normalized term (e.g., "order id")
+        - Singular/plural variations of both
+        All matching is case-insensitive.
         """
         patterns = {}
         for term in terms:
             if not term:
                 continue
 
-            # Get all variations (singular/plural)
-            variations = self._get_stem_variations(term)
+            # Get variations of original term
+            variations = set(self._get_stem_variations(term))
 
-            # Build alternation pattern for all variations
+            # Also get variations of normalized term (underscore/hyphen -> space)
+            normalized = normalize_entity_name(term)
+            if normalized != term:
+                variations.update(self._get_stem_variations(normalized))
+
             escaped_variations = [re.escape(v) for v in variations]
             alternation = '|'.join(escaped_variations)
             pattern = re.compile(rf'\b({alternation})\b', re.IGNORECASE)
-            patterns[term.lower()] = pattern
+            patterns[term] = pattern  # Keep original term as key
         return patterns
 
     def _generate_entity_id(self, name: str, entity_type: str) -> str:
-        """Generate a stable entity ID from name and type."""
-        key = f"{entity_type}:{name.lower()}"
+        """Generate a stable entity ID from normalized name and type.
+
+        Uses normalized name so "order_id" and "order id" map to the same entity.
+        """
+        normalized = normalize_entity_name(name).lower()
+        key = f"{entity_type}:{normalized}"
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
     def _get_or_create_entity(
@@ -154,18 +202,26 @@ class EntityExtractor:
     ) -> Entity:
         """Get cached entity or create new one.
 
-        Ensures entity deduplication across chunks.
+        Ensures entity deduplication across chunks using normalized names.
+        Stores normalized name as display name, original in metadata.
         """
-        cache_key = f"{entity_type}:{name.lower()}"
+        # Use normalized name for cache key to dedupe "order_id" and "order id"
+        normalized = normalize_entity_name(name)
+        cache_key = f"{entity_type}:{normalized.lower()}"
 
         if cache_key in self._entity_cache:
             return self._entity_cache[cache_key]
 
+        # Store original name in metadata if different from normalized
+        entity_metadata = metadata.copy() if metadata else {}
+        if name != normalized:
+            entity_metadata["original_name"] = name
+
         entity = Entity(
             id=self._generate_entity_id(name, entity_type),
-            name=name,
+            name=normalized,  # Use normalized name for display
             type=entity_type,
-            metadata=metadata or {},
+            metadata=entity_metadata,
         )
         self._entity_cache[cache_key] = entity
         return entity
@@ -188,17 +244,22 @@ class EntityExtractor:
 
         results: list[tuple[Entity, ChunkEntity]] = []
 
-        # 1. Schema entity extraction
+        # 1. Database schema entity extraction
         if self.config.extract_schema:
             results.extend(self._extract_schema_entities(text, chunk_id))
 
-        # 2. Named entity recognition
-        if self.config.extract_ner:
-            results.extend(self._extract_named_entities(text, chunk_id))
+        # 2. OpenAPI entity extraction
+        results.extend(self._extract_openapi_entities(text, chunk_id))
 
-        # 3. LLM-assisted concept extraction
-        if self.config.extract_concepts and self._llm_extractor:
-            results.extend(self._extract_concepts(text, chunk_id))
+        # 3. GraphQL entity extraction
+        results.extend(self._extract_graphql_entities(text, chunk_id))
+
+        # 4. Business term extraction
+        results.extend(self._extract_business_terms(text, chunk_id))
+
+        # 5. spaCy NER extraction
+        if self.config.extract_ner:
+            results.extend(self._extract_spacy_entities(text, chunk_id))
 
         return results
 
@@ -214,19 +275,16 @@ class EntityExtractor:
         text: str,
         chunk_id: str,
     ) -> list[tuple[Entity, ChunkEntity]]:
-        """Extract schema entities (tables, columns) by pattern matching."""
+        """Extract database schema entities (tables, columns) by pattern matching."""
         results = []
 
         for term, pattern in self._schema_patterns.items():
             matches = pattern.findall(text)
             if matches:
-                # Use the first match's actual casing
                 actual_name = matches[0]
                 mention_count = len(matches)
 
                 # Determine if it's a table or column based on naming conventions
-                # Tables are usually PascalCase or snake_case nouns
-                # Columns often have prefixes like id_, _at, etc.
                 entity_type = EntityType.TABLE
                 if '_id' in term or term.endswith('_at') or term.startswith('is_'):
                     entity_type = EntityType.COLUMN
@@ -234,35 +292,140 @@ class EntityExtractor:
                 entity = self._get_or_create_entity(
                     name=actual_name,
                     entity_type=entity_type,
-                    metadata={"source": "schema"},
+                    metadata={"source": "database_schema"},
                 )
 
                 link = ChunkEntity(
                     chunk_id=chunk_id,
                     entity_id=entity.id,
                     mention_count=mention_count,
-                    confidence=0.95,  # High confidence for schema matches
+                    confidence=0.95,
+                    mention_text=actual_name,
                 )
 
                 results.append((entity, link))
 
         return results
 
-    def _extract_named_entities(
+    def _extract_openapi_entities(
         self,
         text: str,
         chunk_id: str,
     ) -> list[tuple[Entity, ChunkEntity]]:
-        """Extract named entities using pattern-based NER.
-
-        Extracts:
-        - Known business terms from glossary
-        - CamelCase/PascalCase identifiers (likely class/type names)
-        - ALL_CAPS identifiers (likely constants or acronyms)
-        """
+        """Extract OpenAPI entities (operations, schemas)."""
         results = []
 
-        # Match known business terms
+        # Extract operations (endpoints)
+        for term, pattern in self._openapi_op_patterns.items():
+            matches = pattern.findall(text)
+            if matches:
+                actual_name = matches[0]
+                mention_count = len(matches)
+
+                entity = self._get_or_create_entity(
+                    name=actual_name,
+                    entity_type=EntityType.API_ENDPOINT,
+                    metadata={"source": "openapi"},
+                )
+
+                link = ChunkEntity(
+                    chunk_id=chunk_id,
+                    entity_id=entity.id,
+                    mention_count=mention_count,
+                    confidence=0.95,
+                    mention_text=actual_name,
+                )
+
+                results.append((entity, link))
+
+        # Extract schema definitions
+        for term, pattern in self._openapi_schema_patterns.items():
+            matches = pattern.findall(text)
+            if matches:
+                actual_name = matches[0]
+                mention_count = len(matches)
+
+                entity = self._get_or_create_entity(
+                    name=actual_name,
+                    entity_type=EntityType.API_SCHEMA,
+                    metadata={"source": "openapi"},
+                )
+
+                link = ChunkEntity(
+                    chunk_id=chunk_id,
+                    entity_id=entity.id,
+                    mention_count=mention_count,
+                    confidence=0.90,
+                    mention_text=actual_name,
+                )
+
+                results.append((entity, link))
+
+        return results
+
+    def _extract_graphql_entities(
+        self,
+        text: str,
+        chunk_id: str,
+    ) -> list[tuple[Entity, ChunkEntity]]:
+        """Extract GraphQL entities (types, fields)."""
+        results = []
+
+        # Extract types
+        for term, pattern in self._graphql_type_patterns.items():
+            matches = pattern.findall(text)
+            if matches:
+                actual_name = matches[0]
+                mention_count = len(matches)
+
+                entity = self._get_or_create_entity(
+                    name=actual_name,
+                    entity_type=EntityType.GRAPHQL_TYPE,
+                    metadata={"source": "graphql"},
+                )
+
+                link = ChunkEntity(
+                    chunk_id=chunk_id,
+                    entity_id=entity.id,
+                    mention_count=mention_count,
+                    confidence=0.95,
+                )
+
+                results.append((entity, link))
+
+        # Extract fields/operations
+        for term, pattern in self._graphql_field_patterns.items():
+            matches = pattern.findall(text)
+            if matches:
+                actual_name = matches[0]
+                mention_count = len(matches)
+
+                entity = self._get_or_create_entity(
+                    name=actual_name,
+                    entity_type=EntityType.GRAPHQL_FIELD,
+                    metadata={"source": "graphql"},
+                )
+
+                link = ChunkEntity(
+                    chunk_id=chunk_id,
+                    entity_id=entity.id,
+                    mention_count=mention_count,
+                    confidence=0.90,
+                    mention_text=actual_name,
+                )
+
+                results.append((entity, link))
+
+        return results
+
+    def _extract_business_terms(
+        self,
+        text: str,
+        chunk_id: str,
+    ) -> list[tuple[Entity, ChunkEntity]]:
+        """Extract known business terms from glossary."""
+        results = []
+
         for term, pattern in self._term_patterns.items():
             matches = pattern.findall(text)
             if matches:
@@ -280,103 +443,84 @@ class EntityExtractor:
                     entity_id=entity.id,
                     mention_count=mention_count,
                     confidence=0.85,
+                    mention_text=actual_name,
                 )
 
                 results.append((entity, link))
 
-        # Extract PascalCase identifiers (likely class/concept names)
-        pascal_pattern = re.compile(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b')
-        for match in pascal_pattern.finditer(text):
-            name = match.group(1)
-            # Skip if already matched as schema entity
-            if name.lower() in self._schema_patterns:
+        return results
+
+    def _extract_spacy_entities(
+        self,
+        text: str,
+        chunk_id: str,
+    ) -> list[tuple[Entity, ChunkEntity]]:
+        """Extract named entities using spaCy NER."""
+        results = []
+        nlp = get_nlp()
+        doc = nlp(text)
+
+        # Count mentions per entity
+        entity_mentions: dict[tuple[str, str], int] = {}
+        for ent in doc.ents:
+            if ent.label_ in self.SPACY_ENTITY_TYPES:
+                # Skip noise (markdown, symbols, short strings)
+                text = ent.text.strip()
+                if len(text) < 2:
+                    continue
+                if self.NOISE_PATTERNS.match(text):
+                    continue
+                # Skip if mostly non-alphanumeric
+                alpha_count = sum(1 for c in text if c.isalnum())
+                if alpha_count < len(text) * 0.5:
+                    continue
+
+                key = (text, ent.label_)
+                entity_mentions[key] = entity_mentions.get(key, 0) + 1
+
+        # Create entities
+        for (mention_text, spacy_type), mention_count in entity_mentions.items():
+            # Map spaCy type to our entity types
+            entity_type = self._map_spacy_type(spacy_type)
+
+            # Skip if already matched by schema/API patterns (higher confidence)
+            normalized = normalize_entity_name(mention_text)
+            cache_key = f"{entity_type}:{normalized.lower()}"
+            if cache_key in self._entity_cache:
                 continue
 
             entity = self._get_or_create_entity(
-                name=name,
-                entity_type=EntityType.CONCEPT,
-                metadata={"source": "ner", "pattern": "PascalCase"},
+                name=mention_text,
+                entity_type=entity_type,
+                metadata={"source": "spacy_ner", "spacy_type": spacy_type},
             )
 
             link = ChunkEntity(
                 chunk_id=chunk_id,
                 entity_id=entity.id,
-                mention_count=1,
-                confidence=0.7,
-            )
-
-            results.append((entity, link))
-
-        # Extract ALL_CAPS identifiers (acronyms, constants)
-        caps_pattern = re.compile(r'\b([A-Z][A-Z0-9_]{2,})\b')
-        for match in caps_pattern.finditer(text):
-            name = match.group(1)
-            # Skip common words that happen to be caps
-            if name in ('THE', 'AND', 'FOR', 'NOT', 'SQL', 'API', 'URL', 'JSON', 'XML'):
-                continue
-
-            entity = self._get_or_create_entity(
-                name=name,
-                entity_type=EntityType.BUSINESS_TERM,
-                metadata={"source": "ner", "pattern": "CAPS"},
-            )
-
-            link = ChunkEntity(
-                chunk_id=chunk_id,
-                entity_id=entity.id,
-                mention_count=1,
-                confidence=0.6,
+                mention_count=mention_count,
+                confidence=0.75,  # NER confidence
+                mention_text=mention_text,  # Store exact text as found
             )
 
             results.append((entity, link))
 
         return results
 
-    def _extract_concepts(
-        self,
-        text: str,
-        chunk_id: str,
-    ) -> list[tuple[Entity, ChunkEntity]]:
-        """Extract domain concepts using LLM.
-
-        Requires llm_extractor function to be provided.
-        """
-        if not self._llm_extractor:
-            return []
-
-        try:
-            extracted = self._llm_extractor(text)
-
-            results = []
-            for name, entity_type in extracted:
-                # Map LLM-provided type to our types
-                if entity_type.lower() in ('table', 'column'):
-                    etype = entity_type.lower()
-                elif entity_type.lower() in ('term', 'business_term', 'glossary'):
-                    etype = EntityType.BUSINESS_TERM
-                else:
-                    etype = EntityType.CONCEPT
-
-                entity = self._get_or_create_entity(
-                    name=name,
-                    entity_type=etype,
-                    metadata={"source": "llm"},
-                )
-
-                link = ChunkEntity(
-                    chunk_id=chunk_id,
-                    entity_id=entity.id,
-                    mention_count=1,
-                    confidence=0.75,  # Medium confidence for LLM extraction
-                )
-
-                results.append((entity, link))
-
-            return results
-
-        except Exception:
-            # LLM extraction failed, return empty
-            return []
+    def _map_spacy_type(self, spacy_type: str) -> str:
+        """Map spaCy entity type to our entity type."""
+        mapping = {
+            'ORG': EntityType.ORGANIZATION,
+            'PRODUCT': EntityType.PRODUCT,
+            'GPE': EntityType.LOCATION,
+            'PERSON': EntityType.PERSON,
+            'EVENT': EntityType.EVENT,
+            'WORK_OF_ART': EntityType.CONCEPT,
+            'LAW': EntityType.CONCEPT,
+            'MONEY': EntityType.METRIC,
+            'PERCENT': EntityType.METRIC,
+        }
+        return mapping.get(spacy_type, EntityType.CONCEPT)
 
     def get_all_entities(self) -> list[Entity]:
         """Get all extracted entities (for batch insert)."""
@@ -401,6 +545,38 @@ class EntityExtractor:
         """
         self.config.business_terms = terms
         self._term_patterns = self._build_patterns(terms)
+
+    def update_openapi_entities(
+        self,
+        operations: list[str],
+        schemas: list[str],
+    ) -> None:
+        """Update OpenAPI entities for pattern matching.
+
+        Args:
+            operations: List of operation/endpoint names
+            schemas: List of schema definition names
+        """
+        self.config.openapi_operations = operations
+        self.config.openapi_schemas = schemas
+        self._openapi_op_patterns = self._build_patterns(operations)
+        self._openapi_schema_patterns = self._build_patterns(schemas)
+
+    def update_graphql_entities(
+        self,
+        types: list[str],
+        fields: list[str],
+    ) -> None:
+        """Update GraphQL entities for pattern matching.
+
+        Args:
+            types: List of type names
+            fields: List of field/operation names
+        """
+        self.config.graphql_types = types
+        self.config.graphql_fields = fields
+        self._graphql_type_patterns = self._build_patterns(types)
+        self._graphql_field_patterns = self._build_patterns(fields)
 
 
 def create_schema_entities_from_catalog(

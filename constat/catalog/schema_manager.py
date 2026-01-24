@@ -11,9 +11,12 @@
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Union, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
@@ -772,10 +775,11 @@ class SchemaManager:
             embedding_text = table_meta.to_embedding_text()
             texts.append(embedding_text)
 
-            # Table entity
+            # Table entity - use normalized name for display, keep original in metadata
+            from constat.discovery.models import normalize_entity_name
             entities.append({
                 "id": full_name,
-                "name": table_meta.name,
+                "name": normalize_entity_name(table_meta.name),
                 "type": "table",
                 "parent_id": None,
                 "metadata": {
@@ -783,6 +787,7 @@ class SchemaManager:
                     "database_type": table_meta.database_type,
                     "row_count": table_meta.row_count,
                     "comment": table_meta.comment,
+                    "original_name": table_meta.name,
                     "columns": [c.name for c in table_meta.columns],
                     "primary_keys": table_meta.primary_keys,
                     "foreign_keys": [
@@ -799,6 +804,58 @@ class SchemaManager:
         # Clear old and save to DuckDB
         self._vector_store.clear_catalog_entities('schema')
         self._vector_store.add_catalog_entities(entities, embeddings, 'schema', config_hash)
+
+        # Extract entities from table/column descriptions
+        self._extract_entities_from_descriptions()
+
+    def _extract_entities_from_descriptions(self) -> None:
+        """Extract entities from table and column descriptions using spaCy NER.
+
+        This enables finding relationships between schema elements and concepts
+        mentioned in their descriptions/comments.
+        """
+        if not hasattr(self._vector_store, 'add_entities'):
+            return
+
+        # Lazy imports to avoid circular dependency
+        from constat.discovery.models import DocumentChunk
+        from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
+
+        # Configure extractor with NER only (no schema patterns - we're extracting FROM schema)
+        config = ExtractionConfig(
+            extract_schema=False,
+            extract_ner=True,
+        )
+        extractor = EntityExtractor(config)
+
+        # Process each table's description
+        for full_name, table_meta in self.metadata_cache.items():
+            # Extract from table comment
+            if table_meta.comment:
+                chunk = DocumentChunk(
+                    document_name=f"schema:{full_name}",
+                    content=table_meta.comment,
+                    section="table_description",
+                    chunk_index=0,
+                )
+                extractor.extract(chunk)
+
+            # Extract from column comments
+            for i, col in enumerate(table_meta.columns):
+                if col.comment:
+                    chunk = DocumentChunk(
+                        document_name=f"schema:{full_name}.{col.name}",
+                        content=col.comment,
+                        section="column_description",
+                        chunk_index=i,
+                    )
+                    extractor.extract(chunk)
+
+        # Store extracted entities
+        entities = extractor.get_all_entities()
+        if entities:
+            logger.debug(f"Extracted {len(entities)} entities from schema descriptions")
+            self._vector_store.add_entities(entities)
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
