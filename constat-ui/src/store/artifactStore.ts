@@ -28,6 +28,11 @@ interface ArtifactState {
   selectTable: (tableName: string | null) => void
   persistFact: (sessionId: string, factName: string) => Promise<void>
   forgetFact: (sessionId: string, factName: string) => Promise<void>
+  // Real-time update methods
+  addTable: (table: TableInfo) => void
+  updateTable: (tableName: string, updates: Partial<TableInfo>) => void
+  addArtifact: (artifact: Artifact) => void
+  addFact: (fact: Fact) => void
   clear: () => void
 }
 
@@ -101,6 +106,54 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   forgetFact: async (sessionId, factName) => {
     await sessionsApi.forgetFact(sessionId, factName)
     get().fetchFacts(sessionId)
+  },
+
+  // Real-time update methods for WebSocket events
+  addTable: (table) => {
+    set((state) => {
+      // Check if table already exists, update if so
+      const existingIndex = state.tables.findIndex((t) => t.name === table.name)
+      if (existingIndex >= 0) {
+        const updated = [...state.tables]
+        updated[existingIndex] = table
+        return { tables: updated }
+      }
+      return { tables: [...state.tables, table] }
+    })
+  },
+
+  updateTable: (tableName, updates) => {
+    set((state) => ({
+      tables: state.tables.map((t) =>
+        t.name === tableName ? { ...t, ...updates } : t
+      ),
+    }))
+  },
+
+  addArtifact: (artifact) => {
+    set((state) => {
+      // Check if artifact already exists
+      const existingIndex = state.artifacts.findIndex((a) => a.id === artifact.id)
+      if (existingIndex >= 0) {
+        const updated = [...state.artifacts]
+        updated[existingIndex] = artifact
+        return { artifacts: updated }
+      }
+      return { artifacts: [...state.artifacts, artifact] }
+    })
+  },
+
+  addFact: (fact) => {
+    set((state) => {
+      // Check if fact already exists
+      const existingIndex = state.facts.findIndex((f) => f.name === fact.name)
+      if (existingIndex >= 0) {
+        const updated = [...state.facts]
+        updated[existingIndex] = fact
+        return { facts: updated }
+      }
+      return { facts: [...state.facts, fact] }
+    })
   },
 
   clear: () =>

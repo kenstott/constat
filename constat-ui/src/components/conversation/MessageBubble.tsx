@@ -27,6 +27,7 @@ interface MessageBubbleProps {
   content: string
   timestamp?: Date
   stepNumber?: number
+  isLive?: boolean
   children?: ReactNode
 }
 
@@ -73,11 +74,16 @@ export function MessageBubble({
   content,
   timestamp,
   stepNumber,
+  isLive,
   children,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
   const Icon = styles.icon
   const isUser = type === 'user'
+
+  // Check if content ends with "..." to show animated dots
+  const showAnimatedDots = isLive && content.endsWith('...')
+  const displayContent = showAnimatedDots ? content.slice(0, -3) : content
 
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
@@ -85,7 +91,7 @@ export function MessageBubble({
       <div
         className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
           isUser ? 'bg-primary-100 dark:bg-primary-900' : 'bg-gray-100 dark:bg-gray-700'
-        }`}
+        } ${isLive ? 'animate-pulse' : ''}`}
       >
         <Icon className={`w-4 h-4 ${styles.iconColor}`} />
       </div>
@@ -95,7 +101,7 @@ export function MessageBubble({
         <div
           className={`inline-block rounded-lg px-4 py-3 ${styles.bg} ${
             isUser ? 'rounded-tr-none' : 'rounded-tl-none'
-          }`}
+          } ${isLive ? 'border-l-2 border-blue-500' : ''}`}
         >
           {stepNumber !== undefined && (
             <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
@@ -105,8 +111,8 @@ export function MessageBubble({
           <div className="text-sm text-gray-800 dark:text-gray-200">
             {type === 'thinking' ? (
               <AnimatedDots />
-            ) : content === 'Planning...' ? (
-              <span>Planning<AnimatedDots /></span>
+            ) : showAnimatedDots ? (
+              <span>{displayContent}<AnimatedDots /></span>
             ) : (
               <ReactMarkdown
                 components={{
@@ -126,7 +132,7 @@ export function MessageBubble({
           </div>
           {children}
         </div>
-        {timestamp && (
+        {timestamp && !isLive && (
           <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
             {timestamp.toLocaleTimeString()}
           </p>

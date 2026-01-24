@@ -57,6 +57,7 @@ export function ConversationPanel() {
                 content={message.content}
                 timestamp={message.timestamp}
                 stepNumber={message.stepNumber}
+                isLive={message.isLive}
               />
             ))}
             <div ref={messagesEndRef} />
