@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import duckdb
+from constat.storage.duckdb_pool import ThreadLocalDuckDB
 
 
 @dataclass
@@ -118,12 +118,14 @@ class ConstatRegistry:
         """
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
         self.db_path = self.base_dir / "registry.duckdb"
-        self._conn: Optional[duckdb.DuckDBPyConnection] = None
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use thread-local connections for thread safety
+        self._db = ThreadLocalDuckDB(str(self.db_path))
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
         """Ensure database and schema exist."""
-        self.base_dir.mkdir(parents=True, exist_ok=True)
         conn = self._get_connection()
         conn.execute(self.TABLES_SCHEMA)
         conn.execute(self.ARTIFACTS_SCHEMA)
@@ -133,7 +135,7 @@ class ConstatRegistry:
         # Migration: Add new columns to existing tables if they don't exist
         self._migrate_schema(conn)
 
-    def _migrate_schema(self, conn: duckdb.DuckDBPyConnection) -> None:
+    def _migrate_schema(self, conn) -> None:
         """Add new columns to existing tables for backwards compatibility."""
         # Check and add columns to constat_tables
         # Note: PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
@@ -167,17 +169,13 @@ class ConstatRegistry:
         except Exception:
             pass  # Table may not exist yet
 
-    def _get_connection(self) -> duckdb.DuckDBPyConnection:
-        """Get or create database connection."""
-        if self._conn is None:
-            self._conn = duckdb.connect(str(self.db_path))
-        return self._conn
+    def _get_connection(self):
+        """Get thread-local database connection."""
+        return self._db.conn
 
     def close(self) -> None:
-        """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """Close all database connections."""
+        self._db.close()
 
     # --- Table Registration ---
 

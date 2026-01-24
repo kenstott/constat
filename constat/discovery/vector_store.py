@@ -23,7 +23,6 @@ from typing import Optional
 import hashlib
 import json
 import logging
-import threading
 
 import numpy as np
 
@@ -199,17 +198,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             db_path: Path to DuckDB database file. If None, uses
                      ~/.constat/vectors.duckdb
         """
-        try:
-            import duckdb
-        except ImportError:
-            raise ImportError(
-                "DuckDB is required for DuckDBVectorStore. "
-                "Install with: pip install duckdb"
-            )
-
-        self._duckdb = duckdb
-        # Lock for thread-safe database access - DuckDB connections are NOT thread-safe
-        self._lock = threading.Lock()
+        from constat.storage.duckdb_pool import ThreadLocalDuckDB
 
         # Determine database path
         if db_path:
@@ -220,19 +209,22 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Ensure parent directory exists
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Connect and initialize
-        self._conn = self._duckdb.connect(str(self._db_path))
+        # Use thread-local connection pool for thread safety
+        # Each thread gets its own connection to avoid heap corruption
+        self._db = ThreadLocalDuckDB(
+            str(self._db_path),
+            init_sql=["INSTALL vss", "LOAD vss"],
+        )
         self._init_schema()
+
+    @property
+    def _conn(self):
+        """Get the thread-local connection (backwards compatibility)."""
+        return self._db.conn
 
     def _init_schema(self) -> None:
         """Initialize database schema if not exists."""
-        # Load VSS extension for vector operations
-        try:
-            self._conn.execute("INSTALL vss")
-            self._conn.execute("LOAD vss")
-        except Exception as e:
-            # VSS might already be loaded or not available in older versions
-            logger.debug(f"VSS extension load skipped: {e}")
+        # VSS extension is loaded via init_sql in ThreadLocalDuckDB
 
         # Create embeddings table with FLOAT array for vectors
         self._conn.execute(f"""
@@ -359,28 +351,27 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         Called at startup to clean up temporary data from previous sessions.
         """
-        with self._lock:
-            # Count ephemeral rows before deletion
-            emb_count = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE ephemeral = TRUE"
-            ).fetchone()[0]
-            ent_count = self._conn.execute(
-                "SELECT COUNT(*) FROM entities WHERE ephemeral = TRUE"
-            ).fetchone()[0]
-            link_count = self._conn.execute(
-                "SELECT COUNT(*) FROM chunk_entities WHERE ephemeral = TRUE"
-            ).fetchone()[0]
+        # Count ephemeral rows before deletion
+        emb_count = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE ephemeral = TRUE"
+        ).fetchone()[0]
+        ent_count = self._conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE ephemeral = TRUE"
+        ).fetchone()[0]
+        link_count = self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_entities WHERE ephemeral = TRUE"
+        ).fetchone()[0]
 
-            logger.debug(f"clear_ephemeral: found {emb_count} embeddings, {ent_count} entities, {link_count} links")
+        logger.debug(f"clear_ephemeral: found {emb_count} embeddings, {ent_count} entities, {link_count} links")
 
-            # Delete ephemeral chunk-entity links first (foreign key consideration)
-            self._conn.execute("DELETE FROM chunk_entities WHERE ephemeral = TRUE")
-            # Delete ephemeral entities
-            self._conn.execute("DELETE FROM entities WHERE ephemeral = TRUE")
-            # Delete ephemeral chunks
-            self._conn.execute("DELETE FROM embeddings WHERE ephemeral = TRUE")
+        # Delete ephemeral chunk-entity links first (foreign key consideration)
+        self._conn.execute("DELETE FROM chunk_entities WHERE ephemeral = TRUE")
+        # Delete ephemeral entities
+        self._conn.execute("DELETE FROM entities WHERE ephemeral = TRUE")
+        # Delete ephemeral chunks
+        self._conn.execute("DELETE FROM embeddings WHERE ephemeral = TRUE")
 
-            logger.debug(f"clear_ephemeral: deleted ephemeral data")
+        logger.debug(f"clear_ephemeral: deleted ephemeral data")
 
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         """Generate a unique ID for a chunk."""
@@ -424,15 +415,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             ))
 
         # Use INSERT OR REPLACE to handle updates
-        with self._lock:
-            self._conn.executemany(
-                """
-                INSERT OR REPLACE INTO embeddings
-                (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                records,
-            )
+        self._conn.executemany(
+            """
+            INSERT OR REPLACE INTO embeddings
+            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            records,
+        )
 
     def search(
         self, query_embedding: np.ndarray, limit: int = 5
@@ -442,22 +432,21 @@ class DuckDBVectorStore(VectorStoreBackend):
         query = query_embedding.flatten().tolist()
 
         # Query with cosine similarity
-        with self._lock:
-            result = self._conn.execute(
-                f"""
-                SELECT
-                    chunk_id,
-                    document_name,
-                    section,
-                    chunk_index,
-                    content,
-                    array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-                FROM embeddings
-                ORDER BY similarity DESC
-                LIMIT ?
-                """,
-                [query, limit],
-            ).fetchall()
+        result = self._conn.execute(
+            f"""
+            SELECT
+                chunk_id,
+                document_name,
+                section,
+                chunk_index,
+                content,
+                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
+            FROM embeddings
+            ORDER BY similarity DESC
+            LIMIT ?
+            """,
+            [query, limit],
+        ).fetchall()
 
         # Convert to output format
         results = []
@@ -475,21 +464,18 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def clear(self) -> None:
         """Clear all stored data."""
-        with self._lock:
-            self._conn.execute("DELETE FROM embeddings")
+        self._conn.execute("DELETE FROM embeddings")
 
     def count(self) -> int:
         """Return number of stored chunks."""
-        with self._lock:
-            result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+        result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
         return result[0] if result else 0
 
     def get_chunks(self) -> list[DocumentChunk]:
         """Get all stored chunks."""
-        with self._lock:
-            result = self._conn.execute(
-                "SELECT document_name, content, section, chunk_index FROM embeddings"
-            ).fetchall()
+        result = self._conn.execute(
+            "SELECT document_name, content, section, chunk_index FROM embeddings"
+        ).fetchall()
 
         return [
             DocumentChunk(
@@ -510,17 +496,16 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             Number of chunks deleted
         """
-        with self._lock:
-            # Count before deletion
-            count_before = self._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
-                [document_name],
-            ).fetchone()[0]
+        # Count before deletion
+        count_before = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
+            [document_name],
+        ).fetchone()[0]
 
-            self._conn.execute(
-                "DELETE FROM embeddings WHERE document_name = ?",
-                [document_name],
-            )
+        self._conn.execute(
+            "DELETE FROM embeddings WHERE document_name = ?",
+            [document_name],
+        )
 
         return count_before
 
@@ -544,22 +529,21 @@ class DuckDBVectorStore(VectorStoreBackend):
         emb_list = embedding.tolist() if embedding is not None else None
         metadata_json = json.dumps(entity.metadata) if entity.metadata else None
 
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    entity.id,
-                    entity.name,
-                    entity.type,
-                    source,
-                    emb_list,
-                    metadata_json,
-                    entity.created_at,
-                ],
-            )
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                entity.id,
+                entity.name,
+                entity.type,
+                source,
+                emb_list,
+                metadata_json,
+                entity.created_at,
+            ],
+        )
 
     def add_entities(
         self,
@@ -594,14 +578,13 @@ class DuckDBVectorStore(VectorStoreBackend):
                 ephemeral,
             ))
 
-        with self._lock:
-            self._conn.executemany(
-                """
-                INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                records,
-            )
+        self._conn.executemany(
+            """
+            INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            records,
+        )
 
     def link_chunk_entities(
         self,
@@ -619,14 +602,13 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         records = [(l.chunk_id, l.entity_id, l.mention_count, l.confidence, ephemeral) for l in links]
 
-        with self._lock:
-            self._conn.executemany(
-                """
-                INSERT OR REPLACE INTO chunk_entities (chunk_id, entity_id, mention_count, confidence, ephemeral)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                records,
-            )
+        self._conn.executemany(
+            """
+            INSERT OR REPLACE INTO chunk_entities (chunk_id, entity_id, mention_count, confidence, ephemeral)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            records,
+        )
 
     def get_entities_for_chunk(self, chunk_id: str) -> list[Entity]:
         """Get all entities associated with a chunk.
@@ -637,17 +619,16 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             List of Entity objects linked to this chunk
         """
-        with self._lock:
-            result = self._conn.execute(
-                """
-                SELECT e.id, e.name, e.type, e.metadata, e.created_at
-                FROM entities e
-                JOIN chunk_entities ce ON e.id = ce.entity_id
-                WHERE ce.chunk_id = ?
-                ORDER BY ce.mention_count DESC, ce.confidence DESC
-                """,
-                [chunk_id],
-            ).fetchall()
+        result = self._conn.execute(
+            """
+            SELECT e.id, e.name, e.type, e.metadata, e.created_at
+            FROM entities e
+            JOIN chunk_entities ce ON e.id = ce.entity_id
+            WHERE ce.chunk_id = ?
+            ORDER BY ce.mention_count DESC, ce.confidence DESC
+            """,
+            [chunk_id],
+        ).fetchall()
 
         entities = []
         for row in result:
@@ -678,25 +659,24 @@ class DuckDBVectorStore(VectorStoreBackend):
             List of (chunk_id, DocumentChunk, mention_count, confidence) tuples
             ordered by mention_count and confidence
         """
-        with self._lock:
-            result = self._conn.execute(
-                """
-                SELECT
-                    e.chunk_id,
-                    em.document_name,
-                    em.content,
-                    em.section,
-                    em.chunk_index,
-                    e.mention_count,
-                    e.confidence
-                FROM chunk_entities e
-                JOIN embeddings em ON e.chunk_id = em.chunk_id
-                WHERE e.entity_id = ?
-                ORDER BY e.mention_count DESC, e.confidence DESC
-                LIMIT ?
-                """,
-                [entity_id, limit],
-            ).fetchall()
+        result = self._conn.execute(
+            """
+            SELECT
+                e.chunk_id,
+                em.document_name,
+                em.content,
+                em.section,
+                em.chunk_index,
+                e.mention_count,
+                e.confidence
+            FROM chunk_entities e
+            JOIN embeddings em ON e.chunk_id = em.chunk_id
+            WHERE e.entity_id = ?
+            ORDER BY e.mention_count DESC, e.confidence DESC
+            LIMIT ?
+            """,
+            [entity_id, limit],
+        ).fetchall()
 
         chunks = []
         for row in result:
@@ -720,16 +700,15 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             Entity if found, None otherwise
         """
-        with self._lock:
-            result = self._conn.execute(
-                """
-                SELECT id, name, type, metadata, created_at
-                FROM entities
-                WHERE LOWER(name) = LOWER(?)
-                LIMIT 1
-                """,
-                [name],
-            ).fetchone()
+        result = self._conn.execute(
+            """
+            SELECT id, name, type, metadata, created_at
+            FROM entities
+            WHERE LOWER(name) = LOWER(?)
+            LIMIT 1
+            """,
+            [name],
+        ).fetchone()
 
         if not result:
             return None
@@ -782,22 +761,20 @@ class DuckDBVectorStore(VectorStoreBackend):
                    Default is 'document' to preserve schema/api entities.
                    Pass None to clear ALL entities.
         """
-        with self._lock:
-            if source:
-                # Only delete chunk_entities for document-sourced entities
-                self._conn.execute("""
-                    DELETE FROM chunk_entities
-                    WHERE entity_id IN (SELECT id FROM entities WHERE source = ?)
-                """, [source])
-                self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
-            else:
-                self._conn.execute("DELETE FROM chunk_entities")
-                self._conn.execute("DELETE FROM entities")
+        if source:
+            # Only delete chunk_entities for document-sourced entities
+            self._conn.execute("""
+                DELETE FROM chunk_entities
+                WHERE entity_id IN (SELECT id FROM entities WHERE source = ?)
+            """, [source])
+            self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
+        else:
+            self._conn.execute("DELETE FROM chunk_entities")
+            self._conn.execute("DELETE FROM entities")
 
     def count_entities(self) -> int:
         """Return number of stored entities."""
-        with self._lock:
-            result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
+        result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
         return result[0] if result else 0
 
     # ========== Unified Catalog Entity Methods ==========
@@ -839,23 +816,22 @@ class DuckDBVectorStore(VectorStoreBackend):
                 config_hash,
             ))
 
-        with self._lock:
-            self._conn.executemany(
-                """
-                INSERT INTO entities
-                (id, name, type, source, parent_id, embedding, metadata, config_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    type = EXCLUDED.type,
-                    source = EXCLUDED.source,
-                    parent_id = EXCLUDED.parent_id,
-                    embedding = EXCLUDED.embedding,
-                    metadata = EXCLUDED.metadata,
-                    config_hash = EXCLUDED.config_hash
-                """,
-                records,
-            )
+        self._conn.executemany(
+            """
+            INSERT INTO entities
+            (id, name, type, source, parent_id, embedding, metadata, config_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                type = EXCLUDED.type,
+                source = EXCLUDED.source,
+                parent_id = EXCLUDED.parent_id,
+                embedding = EXCLUDED.embedding,
+                metadata = EXCLUDED.metadata,
+                config_hash = EXCLUDED.config_hash
+            """,
+            records,
+        )
 
     def search_catalog_entities(
         self,
@@ -893,25 +869,24 @@ class DuckDBVectorStore(VectorStoreBackend):
         where_clause = " AND ".join(conditions)
         params.extend([query, min_similarity, limit])
 
-        with self._lock:
-            result = self._conn.execute(
-                f"""
-                SELECT
-                    id,
-                    name,
-                    type,
-                    source,
-                    parent_id,
-                    metadata,
-                    array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-                FROM entities
-                WHERE {where_clause}
-                  AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
-                ORDER BY similarity DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
+        result = self._conn.execute(
+            f"""
+            SELECT
+                id,
+                name,
+                type,
+                source,
+                parent_id,
+                metadata,
+                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
+            FROM entities
+            WHERE {where_clause}
+              AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
+            ORDER BY similarity DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
 
         return [
             {
@@ -935,11 +910,10 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             Config hash string or None if not found
         """
-        with self._lock:
-            result = self._conn.execute(
-                "SELECT config_hash FROM entities WHERE source = ? AND config_hash IS NOT NULL LIMIT 1",
-                [source],
-            ).fetchone()
+        result = self._conn.execute(
+            "SELECT config_hash FROM entities WHERE source = ? AND config_hash IS NOT NULL LIMIT 1",
+            [source],
+        ).fetchone()
         return result[0] if result else None
 
     def clear_catalog_entities(self, source: str) -> None:
@@ -948,8 +922,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         Args:
             source: Source category ('schema' or 'api')
         """
-        with self._lock:
-            self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
+        self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
 
     def count_catalog_entities(self, source: Optional[str] = None) -> int:
         """Return number of stored catalog entities.
@@ -960,13 +933,12 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             Count of entities
         """
-        with self._lock:
-            if source:
-                result = self._conn.execute(
-                    "SELECT COUNT(*) FROM entities WHERE source = ?", [source]
-                ).fetchone()
-            else:
-                result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
+        if source:
+            result = self._conn.execute(
+                "SELECT COUNT(*) FROM entities WHERE source = ?", [source]
+            ).fetchone()
+        else:
+            result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
         return result[0] if result else 0
 
     def get_entity_names_by_source(
@@ -993,11 +965,10 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        with self._lock:
-            result = self._conn.execute(
-                f"SELECT DISTINCT name FROM entities{where_clause}",
-                params,
-            ).fetchall()
+        result = self._conn.execute(
+            f"SELECT DISTINCT name FROM entities{where_clause}",
+            params,
+        ).fetchall()
 
         return [row[0] for row in result]
 
@@ -1010,16 +981,15 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             List of child entity dicts
         """
-        with self._lock:
-            result = self._conn.execute(
-                """
-                SELECT id, name, type, source, parent_id, metadata
-                FROM entities
-                WHERE parent_id = ?
-                ORDER BY name
-                """,
-                [parent_id],
-            ).fetchall()
+        result = self._conn.execute(
+            """
+            SELECT id, name, type, source, parent_id, metadata
+            FROM entities
+            WHERE parent_id = ?
+            ORDER BY name
+            """,
+            [parent_id],
+        ).fetchall()
 
         return [
             {
