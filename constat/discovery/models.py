@@ -83,18 +83,52 @@ def singularize(word: str) -> str:
     return word
 
 
+def is_proper_noun(name: str) -> bool:
+    """Detect if a name appears to be a proper noun.
+
+    Proper nouns (e.g., "Microsoft", "San Francisco") have intentional
+    capitalization that should be preserved. Schema names (e.g.,
+    "order_items", "user-profiles") use underscores/hyphens and should
+    be normalized.
+
+    Args:
+        name: Entity name to check
+
+    Returns:
+        True if the name appears to be a proper noun
+    """
+    # If it contains underscores or hyphens, it's a schema name
+    if '_' in name or '-' in name:
+        return False
+
+    # If it's all lowercase, it's not a proper noun
+    if name == name.lower():
+        return False
+
+    # If it's all uppercase, treat as acronym (proper noun)
+    if name == name.upper() and len(name) > 1:
+        return True
+
+    # If it has mixed case with capitals (e.g., "Microsoft", "San Francisco")
+    # and no underscores, treat as proper noun
+    return True
+
+
 def normalize_entity_name(name: str, to_singular: bool = True) -> str:
     """Normalize an entity name to a canonical form.
 
     Converts underscores and hyphens to spaces, optionally singularizes.
+    Preserves case for proper nouns, lowercases schema names.
 
     Args:
-        name: Raw entity name (e.g., "order_items", "user-profiles")
+        name: Raw entity name (e.g., "order_items", "user-profiles", "Microsoft")
         to_singular: If True, convert to singular form (default True)
 
     Returns:
-        Normalized name (e.g., "order item", "user profile")
+        Normalized name (e.g., "order item", "user profile", "Microsoft")
     """
+    proper_noun = is_proper_noun(name)
+
     # Replace underscores and hyphens with spaces
     normalized = re.sub(r'[_-]+', ' ', name)
     # Collapse multiple spaces
@@ -106,20 +140,31 @@ def normalize_entity_name(name: str, to_singular: bool = True) -> str:
         words = [singularize(w) for w in words]
         normalized = ' '.join(words)
 
+    # Lowercase non-proper nouns
+    if not proper_noun:
+        normalized = normalized.lower()
+
     return normalized
 
 
 def display_entity_name(name: str) -> str:
-    """Get the display name for an entity (title case of normalized name).
+    """Get the display name for an entity.
+
+    For proper nouns (e.g., "Microsoft"), preserves original capitalization.
+    For schema names (e.g., "order_items"), uses title case.
 
     Args:
         name: Raw or normalized entity name
 
     Returns:
-        Title case display name (e.g., "Order Item", "User Profile")
+        Display name (e.g., "Order Item" or "Microsoft")
     """
+    proper_noun = is_proper_noun(name)
     normalized = normalize_entity_name(name, to_singular=True)
-    return normalized.title()
+
+    if proper_noun:
+        return normalized  # Preserve capitalization
+    return normalized.title()  # Title case for schema names
 
 
 def extract_resource_from_path(path: str) -> str:
