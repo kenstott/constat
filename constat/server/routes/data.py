@@ -371,18 +371,33 @@ async def list_entities(
     """
     managed = session_manager.get_session(session_id)
 
-    # Use dict keyed by (name, type) for deduplication
+    # Use dict keyed by (normalized_name, type) for deduplication
+    from constat.discovery.models import normalize_entity_name, display_entity_name
+
     entity_map: dict[tuple[str, str], dict[str, Any]] = {}
 
     def add_entity(name: str, etype: str, source: str, metadata: dict, references: list[dict] | None = None):
-        """Add or merge an entity into the map."""
-        key = (name.lower(), etype)
-        # Extract original_name from metadata if present
+        """Add or merge an entity into the map.
+
+        Normalizes entity names for deduplication and display:
+        - Cache key uses normalized (lowercase, singular) form
+        - Display name uses title case (or preserved case for proper nouns)
+        - Original name stored in metadata if different
+        """
+        normalized = normalize_entity_name(name)
+        display = display_entity_name(name)
+        key = (normalized.lower(), etype)
+
+        # Get original_name from metadata, or use raw name if different from display
         original_name = metadata.get("original_name")
+        if not original_name and name != display and name != normalized:
+            original_name = name
+            metadata = {**metadata, "original_name": original_name}
+
         if key not in entity_map:
             entity_map[key] = {
-                "id": str(hash(f"{name}_{etype}")),
-                "name": name,
+                "id": str(hash(f"{display}_{etype}")),
+                "name": display,
                 "type": etype,
                 "sources": [source],
                 "metadata": metadata,
