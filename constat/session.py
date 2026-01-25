@@ -2167,7 +2167,14 @@ Return ONLY Python code, no markdown."""
                 self._emit_event(StepEvent(
                     event_type="step_complete",
                     step_number=step.number,
-                    data={"stdout": result.stdout, "attempts": attempt, "duration_ms": duration_ms, "tables_created": tables_created}
+                    data={
+                        "goal": step.goal,
+                        "code": code,
+                        "stdout": result.stdout,
+                        "attempts": attempt,
+                        "duration_ms": duration_ms,
+                        "tables_created": tables_created,
+                    }
                 ))
 
                 return StepResult(
@@ -7520,7 +7527,14 @@ Prove all of the above claims and provide a complete audit trail."""
                 self._emit_event(StepEvent(
                     event_type="step_complete",
                     step_number=step_number,
-                    data={"stdout": result.stdout, "attempts": 1, "duration_ms": duration_ms, "tables_created": tables_created}
+                    data={
+                        "goal": goal,
+                        "code": code,
+                        "stdout": result.stdout,
+                        "attempts": 1,
+                        "duration_ms": duration_ms,
+                        "tables_created": tables_created,
+                    }
                 ))
 
                 all_results.append(StepResult(
@@ -8251,7 +8265,14 @@ Prove all of the above claims and provide a complete audit trail."""
                 self._emit_event(StepEvent(
                     event_type="step_complete",
                     step_number=step_number,
-                    data={"stdout": result.stdout, "attempts": 1, "duration_ms": duration_ms, "tables_created": tables_created}
+                    data={
+                        "goal": goal,
+                        "code": code,
+                        "stdout": result.stdout,
+                        "attempts": 1,
+                        "duration_ms": duration_ms,
+                        "tables_created": tables_created,
+                    }
                 ))
 
                 all_results.append(StepResult(

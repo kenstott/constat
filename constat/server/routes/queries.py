@@ -29,6 +29,7 @@ from constat.server.models import (
     StepResponse,
 )
 from constat.server.session_manager import SessionManager, ManagedSession
+from constat.messages import WelcomeMessage, STARTER_SUGGESTIONS
 from constat.session import (
     StepEvent,
     PlanApprovalRequest,
@@ -303,14 +304,17 @@ async def _execute_query_async(
 
         # Queue completion event
         if result.get("success"):
+            # Use synthesized final_answer if available, fallback to raw output
+            final_output = result.get("final_answer") or result.get("output", "")
             managed.event_queue.put_nowait({
                 "event_type": EventType.QUERY_COMPLETE.value,
                 "session_id": managed.session_id,
                 "step_number": 0,
                 "data": {
                     "execution_id": execution_id,
-                    "output": result.get("output", ""),
+                    "output": final_output,
                     "tables": result.get("datastore_tables", []),
+                    "suggestions": result.get("suggestions", []),
                 },
             })
             managed.status = SessionStatus.COMPLETED
@@ -559,6 +563,24 @@ async def websocket_endpoint(
     except KeyError:
         await websocket.close(code=4404, reason="Session not found")
         return
+
+    # Send welcome message on connection
+    welcome = WelcomeMessage.create()
+    await websocket.send_json({
+        "type": "event",
+        "payload": {
+            "event_type": "welcome",
+            "session_id": session_id,
+            "step_number": 0,
+            "data": {
+                "reliable_adjective": welcome.reliable_adjective,
+                "honest_adjective": welcome.honest_adjective,
+                "tagline": welcome.tagline,
+                "suggestions": welcome.suggestions,
+                "message_markdown": welcome.to_markdown(),
+            },
+        },
+    })
 
     try:
         # Create tasks for sending events and receiving commands
