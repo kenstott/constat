@@ -74,6 +74,10 @@ class EventType(str, Enum):
     TABLE_CREATED = "table_created"
     ARTIFACT_CREATED = "artifact_created"
 
+    # Synthesis events
+    SYNTHESIZING = "synthesizing"
+    GENERATING_INSIGHTS = "generating_insights"
+
 
 # ============================================================================
 # Session Models
@@ -261,6 +265,7 @@ class ArtifactInfo(BaseModel):
     description: Optional[str] = Field(default=None, description="Description")
     mime_type: str = Field(description="MIME type of content")
     created_at: Optional[str] = Field(default=None, description="Creation timestamp")
+    is_key_result: bool = Field(default=False, description="Whether this is a key result")
 
 
 class ArtifactListResponse(BaseModel):
@@ -288,6 +293,7 @@ class FactInfo(BaseModel):
     source: str = Field(description="Source of the fact")
     reasoning: Optional[str] = Field(default=None, description="Resolution reasoning")
     confidence: Optional[float] = Field(default=None, description="Confidence score")
+    is_persisted: bool = Field(default=False, description="Whether the fact is persisted globally")
 
 
 class FactListResponse(BaseModel):
@@ -531,10 +537,22 @@ class LearningCreateRequest(BaseModel):
     )
 
 
-class LearningListResponse(BaseModel):
-    """Response containing list of learnings."""
+class RuleInfo(BaseModel):
+    """Information about a compacted rule."""
 
-    learnings: list[LearningInfo] = Field(description="List of learnings")
+    id: str = Field(description="Rule ID")
+    summary: str = Field(description="The rule summary")
+    category: str = Field(description="Rule category")
+    confidence: float = Field(description="Confidence score 0-1")
+    source_count: int = Field(default=0, description="Number of source learnings")
+    tags: list[str] = Field(default_factory=list, description="Tags for searching")
+
+
+class LearningListResponse(BaseModel):
+    """Response containing list of learnings and rules."""
+
+    learnings: list[LearningInfo] = Field(description="List of raw learnings")
+    rules: list[RuleInfo] = Field(default_factory=list, description="List of compacted rules")
 
 
 # ============================================================================

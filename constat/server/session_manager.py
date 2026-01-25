@@ -126,6 +126,8 @@ class SessionManager:
                 session_config=session_config,
                 user_id=user_id,
             )
+            # Set the server UUID for reverse lookup from history
+            session.server_session_id = session_id
 
             # Load persisted facts for this user
             self._load_persistent_facts(session, user_id)

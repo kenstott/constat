@@ -10,7 +10,11 @@
 """FastAPI application factory for the Constat API server."""
 
 import logging
+import warnings
 from contextlib import asynccontextmanager
+
+# Suppress multiprocessing resource_tracker warnings at shutdown
+warnings.filterwarnings("ignore", message="resource_tracker:")
 from typing import Any
 
 from fastapi import FastAPI
@@ -20,6 +24,7 @@ from fastapi.responses import JSONResponse
 from constat.core.config import Config
 from constat.server.config import ServerConfig
 from constat.server.session_manager import SessionManager
+from constat.server.routes.queries import shutdown_executor_async
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         yield
 
         # Shutdown: Stop cleanup task and cleanup sessions
+        await shutdown_executor_async()  # Stop thread pool to allow clean exit
         await session_manager.stop_cleanup_task()
         for managed in session_manager.list_sessions():
             session_manager.delete_session(managed.session_id)

@@ -13,6 +13,7 @@ Analyzes patterns in raw learnings and creates generalized rules
 when sufficient similar learnings accumulate.
 """
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
@@ -20,6 +21,8 @@ import json
 import re
 
 from constat.storage.learnings import LearningStore, LearningCategory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -115,12 +118,16 @@ class LearningCompactor:
 
                 for group in groups:
                     if len(group) < self.MIN_GROUP_SIZE:
+                        logger.debug(f"[compact] Skipping group with {len(group)} learnings (< {self.MIN_GROUP_SIZE})")
                         continue
+
+                    logger.info(f"[compact] Processing group of {len(group)} learnings in {category}")
 
                     # Check if this group overlaps with an existing rule
                     overlapping_rule = self._find_overlapping_rule(group, category_rules)
 
                     if overlapping_rule:
+                        logger.info(f"[compact] Group overlaps with existing rule: {overlapping_rule['id']}")
                         # Strengthen the existing rule instead of creating new one
                         if not dry_run:
                             strengthened = self._strengthen_rule(overlapping_rule, group)
@@ -130,15 +137,22 @@ class LearningCompactor:
                                 for learning in group:
                                     self.store.archive_learning(learning["id"], overlapping_rule["id"])
                                     result.learnings_archived += 1
+                                logger.info(f"[compact] Strengthened rule and archived {len(group)} learnings")
+                            else:
+                                logger.warning(f"[compact] Failed to strengthen rule {overlapping_rule['id']}")
                         continue
 
                     # No overlap - generate new rule summary
+                    logger.info(f"[compact] No overlapping rule, generating new rule summary")
                     rule_data = self._generate_rule_summary(group)
                     if not rule_data:
+                        logger.warning(f"[compact] Failed to generate rule summary for group")
                         continue
 
                     confidence = rule_data.get("confidence", 0)
+                    logger.info(f"[compact] Generated rule with confidence {confidence}: {rule_data.get('summary', '')[:80]}")
                     if confidence < self.CONFIDENCE_THRESHOLD:
+                        logger.info(f"[compact] Skipping low confidence rule ({confidence} < {self.CONFIDENCE_THRESHOLD})")
                         result.skipped_low_confidence += 1
                         continue
 
@@ -323,10 +337,13 @@ Output ONLY valid JSON."""
             idx = data.get("overlapping_rule_index", -1)
 
             if idx >= 0 and idx < len(rules):
+                logger.info(f"[find_overlap] Found overlapping rule at index {idx}: {rules[idx]['id']}")
                 return rules[idx]
+            else:
+                logger.debug(f"[find_overlap] No overlapping rule found (idx={idx})")
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[find_overlap] Error checking overlap: {e}")
 
         return None
 
@@ -393,10 +410,13 @@ Output ONLY valid JSON."""
                     summary=new_summary,
                     tags=new_tags,
                 )
+                logger.info(f"[strengthen] Updated rule {rule['id']} with new summary")
                 return True
+            else:
+                logger.warning(f"[strengthen] No change to rule - summary unchanged or empty")
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"[strengthen] Error strengthening rule: {e}")
 
         return False
 
@@ -618,7 +638,10 @@ Output ONLY valid JSON, no explanation."""
                 if match:
                     content = match.group(1)
 
-            return json.loads(content)
+            result = json.loads(content)
+            logger.debug(f"[generate_rule] Generated: {result}")
+            return result
 
-        except Exception:
+        except Exception as e:
+            logger.error(f"[generate_rule] Error generating rule summary: {e}")
             return None

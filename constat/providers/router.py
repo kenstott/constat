@@ -361,3 +361,31 @@ class TaskRouter:
     def clear_cache(self) -> None:
         """Clear the provider cache."""
         self._provider_cache.clear()
+
+    def generate(
+        self,
+        system: str,
+        user_message: str,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Simple text generation without task routing.
+
+        This is a convenience method for simple generation tasks that don't
+        need the full execute() machinery with task types and escalation.
+
+        Args:
+            system: System prompt
+            user_message: User's request
+            max_tokens: Max tokens to generate
+
+        Returns:
+            Generated text content
+        """
+        result = self.execute(
+            task_type=TaskType.SUMMARIZATION,  # Use summarization as generic task
+            system=system,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            complexity="low",
+        )
+        return result.content if result.success else ""

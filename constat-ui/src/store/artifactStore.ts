@@ -1,8 +1,15 @@
 // Artifact state store
 
 import { create } from 'zustand'
-import type { Artifact, ArtifactContent, TableInfo, Fact, Entity } from '@/types/api'
+import type { Artifact, ArtifactContent, TableInfo, Fact, Entity, SessionDatabase, ApiSourceInfo, DocumentSourceInfo, Learning, Rule } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
+
+// Step code from execution (matches API response)
+interface StepCode {
+  step_number: number
+  goal: string
+  code: string
+}
 
 interface ArtifactState {
   // Data
@@ -10,6 +17,12 @@ interface ArtifactState {
   tables: TableInfo[]
   facts: Fact[]
   entities: Entity[]
+  learnings: Learning[]
+  rules: Rule[]
+  databases: SessionDatabase[]
+  apis: ApiSourceInfo[]
+  documents: DocumentSourceInfo[]
+  stepCodes: StepCode[]
 
   // Selected items
   selectedArtifact: ArtifactContent | null
@@ -24,6 +37,10 @@ interface ArtifactState {
   fetchTables: (sessionId: string) => Promise<void>
   fetchFacts: (sessionId: string) => Promise<void>
   fetchEntities: (sessionId: string, entityType?: string) => Promise<void>
+  fetchLearnings: () => Promise<void>
+  fetchStepCodes: (sessionId: string) => Promise<void>
+  fetchDatabases: (sessionId: string) => Promise<void>
+  fetchDataSources: (sessionId: string) => Promise<void>
   selectArtifact: (sessionId: string, artifactId: number) => Promise<void>
   selectTable: (tableName: string | null) => void
   persistFact: (sessionId: string, factName: string) => Promise<void>
@@ -33,6 +50,7 @@ interface ArtifactState {
   updateTable: (tableName: string, updates: Partial<TableInfo>) => void
   addArtifact: (artifact: Artifact) => void
   addFact: (fact: Fact) => void
+  addStepCode: (stepNumber: number, goal: string, code: string) => void
   clear: () => void
 }
 
@@ -40,7 +58,13 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   artifacts: [],
   tables: [],
   facts: [],
+  stepCodes: [],
   entities: [],
+  learnings: [],
+  rules: [],
+  databases: [],
+  apis: [],
+  documents: [],
   selectedArtifact: null,
   selectedTable: null,
   loading: false,
@@ -81,6 +105,70 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     try {
       const response = await sessionsApi.listEntities(sessionId, entityType)
       set({ entities: response.entities, loading: false })
+    } catch (error) {
+      set({ error: String(error), loading: false })
+    }
+  },
+
+  fetchLearnings: async () => {
+    set({ loading: true, error: null })
+    try {
+      const response = await sessionsApi.listLearnings()
+      set({ learnings: response.learnings, rules: response.rules || [], loading: false })
+    } catch (error) {
+      set({ error: String(error), loading: false })
+    }
+  },
+
+  fetchStepCodes: async (sessionId) => {
+    try {
+      const response = await sessionsApi.listStepCodes(sessionId)
+      set({ stepCodes: response.steps })
+    } catch (error) {
+      // Step codes endpoint might not exist on older servers
+      console.warn('Failed to fetch step codes:', error)
+    }
+  },
+
+  fetchDatabases: async (sessionId) => {
+    set({ loading: true, error: null })
+    try {
+      const response = await sessionsApi.listDatabases(sessionId)
+      set({ databases: response.databases, loading: false })
+    } catch (error) {
+      set({ error: String(error), loading: false })
+    }
+  },
+
+  fetchDataSources: async (sessionId) => {
+    set({ loading: true, error: null })
+    try {
+      // Fetch databases
+      const dbResponse = await sessionsApi.listDatabases(sessionId)
+
+      // Fetch config for APIs and documents (global endpoint)
+      let apis: ApiSourceInfo[] = []
+      let docs: DocumentSourceInfo[] = []
+      try {
+        const config = await sessionsApi.getConfig()
+        apis = config.apis.map((name) => ({
+          name,
+          connected: true, // Assume connected if in config
+        }))
+        docs = config.documents.map((name) => ({
+          name,
+          indexed: true, // Assume indexed if in config
+        }))
+      } catch {
+        // Config endpoint might not exist, that's ok
+      }
+
+      set({
+        databases: dbResponse.databases,
+        apis,
+        documents: docs,
+        loading: false,
+      })
     } catch (error) {
       set({ error: String(error), loading: false })
     }
@@ -156,12 +244,31 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     })
   },
 
+  addStepCode: (stepNumber, goal, code) => {
+    set((state) => {
+      // Check if step code already exists
+      const existingIndex = state.stepCodes.findIndex((s) => s.step_number === stepNumber)
+      if (existingIndex >= 0) {
+        const updated = [...state.stepCodes]
+        updated[existingIndex] = { step_number: stepNumber, goal, code }
+        return { stepCodes: updated }
+      }
+      return { stepCodes: [...state.stepCodes, { step_number: stepNumber, goal, code }] }
+    })
+  },
+
   clear: () =>
     set({
       artifacts: [],
       tables: [],
       facts: [],
       entities: [],
+      learnings: [],
+      rules: [],
+      databases: [],
+      apis: [],
+      documents: [],
+      stepCodes: [],
       selectedArtifact: null,
       selectedTable: null,
       error: null,

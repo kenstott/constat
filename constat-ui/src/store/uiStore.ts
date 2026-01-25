@@ -20,6 +20,8 @@ interface UIState {
   setMenuOpen: (open: boolean) => void
   setArtifactPanelWidth: (width: number) => void
   toggleArtifactSection: (section: string) => void
+  expandArtifactSection: (section: string) => void
+  expandArtifactSections: (sections: string[]) => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -50,6 +52,23 @@ export const useUIStore = create<UIState>()(
             ? state.expandedArtifactSections.filter((s) => s !== section)
             : [...state.expandedArtifactSections, section],
         })),
+
+      expandArtifactSection: (section) =>
+        set((state) => ({
+          expandedArtifactSections: state.expandedArtifactSections.includes(section)
+            ? state.expandedArtifactSections
+            : [...state.expandedArtifactSections, section],
+        })),
+
+      expandArtifactSections: (sections) =>
+        set((state) => {
+          const newSections = sections.filter(
+            (s) => !state.expandedArtifactSections.includes(s)
+          )
+          return {
+            expandedArtifactSections: [...state.expandedArtifactSections, ...newSections],
+          }
+        }),
     }),
     {
       name: 'constat-ui-storage',

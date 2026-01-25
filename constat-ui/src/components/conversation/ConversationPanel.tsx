@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
 import { MessageBubble } from './MessageBubble'
-import { QueryInput } from './QueryInput'
+import { AutocompleteInput } from './AutocompleteInput'
 
 export function ConversationPanel() {
   const { session, messages, submitQuery } = useSessionStore()
@@ -58,6 +58,8 @@ export function ConversationPanel() {
                 timestamp={message.timestamp}
                 stepNumber={message.stepNumber}
                 isLive={message.isLive}
+                isPending={message.isPending}
+                defaultExpanded={message.defaultExpanded}
               />
             ))}
             <div ref={messagesEndRef} />
@@ -66,7 +68,7 @@ export function ConversationPanel() {
       </div>
 
       {/* Query input */}
-      <QueryInput onSubmit={handleSubmit} />
+      <AutocompleteInput onSubmit={handleSubmit} />
     </div>
   )
 }

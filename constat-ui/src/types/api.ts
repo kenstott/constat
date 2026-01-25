@@ -64,6 +64,7 @@ export interface Session {
   created_at: string
   last_activity: string
   current_query?: string
+  summary?: string // LLM-generated session summary
   tables_count: number
   artifacts_count: number
 }
@@ -167,6 +168,7 @@ export interface Fact {
   source: FactSource
   reasoning?: string
   confidence?: number
+  is_persisted: boolean
 }
 
 // Entity Reference
@@ -249,6 +251,16 @@ export interface Learning {
   created_at: string
 }
 
+// Rules (compacted learnings)
+export interface Rule {
+  id: string
+  summary: string
+  category: string
+  confidence: number
+  source_count: number
+  tags: string[]
+}
+
 // Config
 export interface Config {
   databases: string[]
@@ -277,6 +289,14 @@ export interface DocumentSourceInfo {
   indexed: boolean
 }
 
+// Autocomplete
+export interface CompletionItem {
+  label: string
+  value: string
+  description?: string
+  category?: string
+}
+
 // WebSocket Events
 export type EventType =
   | 'welcome'
@@ -302,6 +322,9 @@ export type EventType =
   | 'artifact_created'
   | 'clarification_needed'
   | 'clarification_received'
+  | 'autocomplete_response'
+  | 'synthesizing'
+  | 'generating_insights'
 
 export interface WSEvent {
   event_type: EventType

@@ -15,7 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from constat.server.models import (
     ApprovalRequest,
@@ -45,6 +45,37 @@ router = APIRouter()
 
 # Thread pool for running synchronous Session.solve() calls
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-worker")
+
+# Track active query tasks for graceful shutdown
+_active_tasks: set[asyncio.Task] = set()
+
+# Track active WebSocket connections for graceful shutdown
+_active_websockets: set[WebSocket] = set()
+
+
+async def shutdown_executor_async() -> None:
+    """Shutdown the thread pool executor and cancel active tasks. Called during app shutdown."""
+    # Close all active WebSocket connections first
+    websockets_to_close = list(_active_websockets)
+    for ws in websockets_to_close:
+        try:
+            await ws.close(code=1001, reason="Server shutting down")
+        except Exception:
+            pass
+    _active_websockets.clear()
+
+    # Cancel all active query tasks
+    tasks_to_cancel = list(_active_tasks)
+    for task in tasks_to_cancel:
+        task.cancel()
+
+    # Wait briefly for tasks to handle cancellation
+    if tasks_to_cancel:
+        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+    _active_tasks.clear()
+
+    # Then shutdown the executor
+    _executor.shutdown(wait=False, cancel_futures=True)
 
 
 def get_session_manager(request: Request) -> SessionManager:
@@ -226,6 +257,8 @@ def _create_event_handler(managed: ManagedSession):
                 "facts_extracted": EventType.FACTS_EXTRACTED,
                 "progress": EventType.PROGRESS,
                 "planning_start": EventType.PLANNING_START,
+                "synthesizing": EventType.SYNTHESIZING,
+                "generating_insights": EventType.GENERATING_INSIGHTS,
             }
 
             api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)
@@ -273,8 +306,13 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             managed.session.set_clarification_callback(clarification_callback)
             logger.debug(f"Registered clarification callback for session {managed.session_id}")
 
-        # Run the query
-        result = managed.session.solve(problem)
+        # Run the query - use follow_up if session already has context
+        if managed.session.session_id:
+            logger.debug(f"Running follow-up query for session {managed.session_id}")
+            result = managed.session.follow_up(problem)
+        else:
+            logger.debug("Running new query (no existing session)")
+            result = managed.session.solve(problem)
         return result
     except Exception as e:
         logger.error(f"Query execution error: {e}")
@@ -363,7 +401,6 @@ async def _execute_query_async(
 async def submit_query(
     session_id: str,
     body: QueryRequest,
-    background_tasks: BackgroundTasks,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> QueryResponse:
     """Submit a query for execution.
@@ -405,13 +442,12 @@ async def submit_query(
     managed.session._event_handlers = []
     managed.session.on_event(handler)
 
-    # Start background execution
-    background_tasks.add_task(
-        _execute_query_async,
-        managed,
-        body.problem,
-        execution_id,
+    # Start background execution using asyncio.create_task for better shutdown control
+    task = asyncio.create_task(
+        _execute_query_async(managed, body.problem, execution_id)
     )
+    _active_tasks.add(task)
+    task.add_done_callback(_active_tasks.discard)
 
     return QueryResponse(
         execution_id=execution_id,
@@ -554,6 +590,7 @@ async def websocket_endpoint(
     - {"action": "skip_clarification"}: Skip clarification and proceed
     """
     await websocket.accept()
+    _active_websockets.add(websocket)
 
     # Get session manager from app state
     session_manager: SessionManager = websocket.app.state.session_manager
@@ -561,6 +598,7 @@ async def websocket_endpoint(
     try:
         managed = session_manager.get_session(session_id)
     except KeyError:
+        _active_websockets.discard(websocket)
         await websocket.close(code=4404, reason="Session not found")
         return
 
@@ -656,6 +694,69 @@ async def websocket_endpoint(
                             "payload": {"action": "skip_clarification", "status": "ok"},
                         })
 
+                    elif action == "autocomplete":
+                        # Handle autocomplete requests for tables, columns, entities
+                        ac_data = data.get("data", {})
+                        context = ac_data.get("context")
+                        prefix = ac_data.get("prefix", "").lower()
+                        parent = ac_data.get("parent")
+                        request_id = ac_data.get("request_id")
+
+                        items = []
+                        try:
+                            if context == "table":
+                                # Get tables from datastore
+                                tables = managed.session.datastore.list_tables()
+                                for t in tables:
+                                    name = t.get("name", "")
+                                    if name.lower().startswith(prefix):
+                                        items.append({
+                                            "label": name,
+                                            "value": name,
+                                            "description": t.get("description") or f"{t.get('row_count', 0)} rows",
+                                        })
+
+                            elif context == "column" and parent:
+                                # Get columns for a specific table
+                                schema = managed.session.datastore.get_table_schema(parent)
+                                if schema:
+                                    for col in schema:
+                                        name = col.get("name", "")
+                                        if name.lower().startswith(prefix):
+                                            items.append({
+                                                "label": name,
+                                                "value": name,
+                                                "description": col.get("type", ""),
+                                            })
+
+                            elif context == "entity":
+                                # Get entity names from schema manager
+                                if hasattr(managed.session, "schema_manager") and managed.session.schema_manager:
+                                    entities = managed.session.schema_manager.get_schema_entities(include_columns=False)
+                                    for entity in entities:
+                                        if entity.lower().startswith(prefix):
+                                            items.append({
+                                                "label": entity,
+                                                "value": entity,
+                                                "description": "Table",
+                                            })
+                        except Exception as e:
+                            logger.warning(f"Autocomplete error: {e}")
+
+                        # Send autocomplete response
+                        await websocket.send_json({
+                            "type": "event",
+                            "payload": {
+                                "event_type": "autocomplete_response",
+                                "session_id": session_id,
+                                "step_number": 0,
+                                "data": {
+                                    "request_id": request_id,
+                                    "items": items[:20],  # Limit to 20 items
+                                },
+                            },
+                        })
+
                     else:
                         await websocket.send_json({
                             "type": "error",
@@ -687,6 +788,7 @@ async def websocket_endpoint(
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
+        _active_websockets.discard(websocket)
         try:
             await websocket.close()
         except Exception:

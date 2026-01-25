@@ -156,6 +156,7 @@ class SessionHistory:
         databases: list[str],
         apis: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
+        server_session_id: Optional[str] = None,
     ) -> str:
         """
         Create a new session.
@@ -165,6 +166,7 @@ class SessionHistory:
             databases: List of database names in this session
             apis: List of API names in this session
             documents: List of document names in this session
+            server_session_id: Optional server-side UUID for reverse lookup
 
         Returns:
             session_id: Unique identifier for this session
@@ -188,6 +190,7 @@ class SessionHistory:
             "total_duration_ms": 0,
             "user_id": self.user_id,
             "summary": None,
+            "server_session_id": server_session_id,  # For reverse lookup from API
         }
 
         with open(session_dir / "session.json", "w") as f:
@@ -452,6 +455,160 @@ class SessionHistory:
             ))
 
         return artifacts
+
+    def _steps_dir(self, session_id: str) -> Path:
+        """Get the steps directory for step code storage."""
+        return self._session_dir(session_id) / "steps"
+
+    def save_step_code(
+        self,
+        session_id: str,
+        step_number: int,
+        goal: str,
+        code: str,
+        output: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        Save code for a specific execution step.
+
+        Args:
+            session_id: Session ID
+            step_number: Step number in the plan
+            goal: Description of what this step accomplishes
+            code: Python code that was executed
+            output: Standard output from execution (optional)
+            error: Error message if execution failed (optional)
+        """
+        steps_dir = self._steps_dir(session_id)
+        self._ensure_dir(steps_dir)
+
+        # Save step metadata
+        step_data = {
+            "step_number": step_number,
+            "goal": goal,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Save code file
+        code_file = steps_dir / f"step_{step_number:03d}_code.py"
+        with open(code_file, "w") as f:
+            # Add goal as a comment at the top
+            f.write(f'# Step {step_number}: {goal}\n\n')
+            f.write(code)
+
+        # Save output if present
+        if output:
+            output_file = steps_dir / f"step_{step_number:03d}_output.txt"
+            with open(output_file, "w") as f:
+                f.write(output)
+
+        # Save error if present
+        if error:
+            error_file = steps_dir / f"step_{step_number:03d}_error.txt"
+            with open(error_file, "w") as f:
+                f.write(error)
+
+        # Update step index
+        index_file = steps_dir / "index.jsonl"
+        with open(index_file, "a") as f:
+            f.write(json.dumps(step_data) + "\n")
+
+    def list_step_codes(self, session_id: str) -> list[dict]:
+        """
+        List all step codes for a session.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            List of step info dicts with step_number, goal, code
+        """
+        steps_dir = self._steps_dir(session_id)
+        if not steps_dir.exists():
+            return []
+
+        steps = []
+        index_file = steps_dir / "index.jsonl"
+
+        if index_file.exists():
+            with open(index_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        step_data = json.loads(line)
+                        step_number = step_data["step_number"]
+                        code_file = steps_dir / f"step_{step_number:03d}_code.py"
+
+                        if code_file.exists():
+                            with open(code_file) as cf:
+                                code = cf.read()
+                            steps.append({
+                                "step_number": step_number,
+                                "goal": step_data.get("goal", ""),
+                                "code": code,
+                            })
+
+        return sorted(steps, key=lambda x: x["step_number"])
+
+    def find_session_by_server_id(self, server_session_id: str) -> Optional[str]:
+        """
+        Find a history session ID by its server UUID.
+
+        This is used when the server restarts and loses the in-memory
+        mapping between server UUIDs and history session IDs.
+
+        Args:
+            server_session_id: The server-side UUID
+
+        Returns:
+            History session ID (timestamp-based) or None if not found
+        """
+        if not self.storage_dir.exists():
+            return None
+
+        # Search through recent sessions (most recent first for efficiency)
+        session_dirs = sorted(
+            [d for d in self.storage_dir.iterdir() if d.is_dir()],
+            key=lambda x: x.name,
+            reverse=True,
+        )
+
+        for session_dir in session_dirs[:50]:  # Only check last 50 sessions
+            session_file = session_dir / "session.json"
+            if not session_file.exists():
+                continue
+
+            try:
+                with open(session_file) as f:
+                    metadata = json.load(f)
+
+                if metadata.get("server_session_id") == server_session_id:
+                    return metadata.get("session_id")
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        return None
+
+    def update_summary(self, session_id: str, summary: str) -> None:
+        """
+        Update the session summary (LLM-generated).
+
+        Args:
+            session_id: Session ID
+            summary: New summary text
+        """
+        session_file = self._session_dir(session_id) / "session.json"
+        if not session_file.exists():
+            return
+
+        with open(session_file) as f:
+            metadata = json.load(f)
+
+        metadata["summary"] = summary
+
+        with open(session_file, "w") as f:
+            json.dump(metadata, f, indent=2)
 
     def save_state(self, session_id: str, state: dict) -> None:
         """

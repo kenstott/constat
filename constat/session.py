@@ -61,6 +61,7 @@ from constat.email import create_send_email
 from constat.embedding_loader import EmbeddingModelLoader
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 from constat.visualization import create_viz_helper
+from constat.commands import HELP_COMMANDS, get_help_markdown
 
 
 # Meta-questions that don't require data queries
@@ -401,6 +402,7 @@ class Session:
 
         # Session state
         self.session_id: Optional[str] = None
+        self.server_session_id: Optional[str] = None  # Server UUID for reverse lookup
         self.plan: Optional[Plan] = None
         self.scratchpad = Scratchpad()
         self.datastore: Optional[RegistryAwareDataStore] = None  # Persistent storage (only shared state between steps)
@@ -1981,6 +1983,7 @@ Return ONLY Python code, no markdown."""
                 open_with_system_viewer=self.config.execution.open_with_system_viewer,
             ),  # Visualization/file output helper
             "publish": self._create_publish_helper(),  # Mark artifact as published for artifacts panel
+            "facts": self._get_facts_dict(),  # Resolved facts as dict (loaded from _facts table)
         }
 
         # Provide database connections
@@ -2006,6 +2009,58 @@ Return ONLY Python code, no markdown."""
 
         return globals_dict
 
+    def _get_facts_dict(self) -> dict:
+        """Get resolved facts as a simple dict for use in generated code.
+
+        Returns a dict mapping fact names to their values. This dict is injected
+        into the execution globals so steps can reference facts['user_email'] etc.
+        """
+        facts_dict = {}
+        try:
+            all_facts = self.fact_resolver.get_all_facts()
+            for name, fact in all_facts.items():
+                if fact and fact.value is not None:
+                    facts_dict[name] = fact.value
+        except Exception as e:
+            logger.debug(f"Error getting facts dict: {e}")
+        return facts_dict
+
+    def _materialize_facts_table(self) -> None:
+        """Materialize resolved facts as a _facts table in the datastore.
+
+        Creates a table with columns: name, value, source, description
+        This table is used by downloaded scripts and for auditing.
+        """
+        import pandas as pd
+
+        try:
+            all_facts = self.fact_resolver.get_all_facts()
+            if not all_facts:
+                return
+
+            rows = []
+            for name, fact in all_facts.items():
+                if fact and fact.value is not None:
+                    rows.append({
+                        "name": name,
+                        "value": str(fact.value),
+                        "source": fact.source.value if hasattr(fact.source, "value") else str(fact.source),
+                        "description": fact.reasoning or "",
+                    })
+
+            if rows:
+                facts_df = pd.DataFrame(rows)
+                self.datastore.save_dataframe(
+                    name="_facts",
+                    df=facts_df,
+                    step_number=0,  # Step 0 = pre-execution
+                    description="Resolved facts for this analysis",
+                )
+                logger.debug(f"[FACTS] Materialized _facts table with {len(rows)} facts")
+
+        except Exception as e:
+            logger.warning(f"Failed to materialize _facts table: {e}")
+
     def _auto_save_results(self, namespace: dict, step_number: int) -> None:
         """
         Auto-save any DataFrames or lists found in the execution namespace.
@@ -2016,7 +2071,7 @@ Return ONLY Python code, no markdown."""
         import pandas as pd
 
         # Skip internal/injected variables
-        skip_vars = {"store", "db", "pd", "np", "llm_ask", "send_email", "__builtins__"}
+        skip_vars = {"store", "db", "pd", "np", "llm_ask", "send_email", "facts", "viz", "publish", "__builtins__"}
         skip_prefixes = ("db_", "_")
 
         # Already-saved tables (don't duplicate)
@@ -2177,6 +2232,16 @@ Return ONLY Python code, no markdown."""
                     }
                 ))
 
+                # Persist step code to disk
+                if self.session_id:
+                    self.history.save_step_code(
+                        session_id=self.session_id,
+                        step_number=step.number,
+                        goal=step.goal,
+                        code=code,
+                        output=result.stdout,
+                    )
+
                 return StepResult(
                     success=True,
                     stdout=result.stdout,
@@ -2246,6 +2311,16 @@ Return ONLY Python code, no markdown."""
                 "suggestions": suggestions,
             }
         ))
+
+        # Persist failed step code to disk (with error)
+        if self.session_id and last_code:
+            self.history.save_step_code(
+                session_id=self.session_id,
+                step_number=step.number,
+                goal=step.goal,
+                code=last_code,
+                error=last_error,
+            )
 
         return StepResult(
             success=False,
@@ -4399,6 +4474,103 @@ Please revise the plan to incorporate this feedback."""
             "meta_response": True,
         }
 
+    def _handle_slash_command(self, command_text: str) -> dict:
+        """Handle explicit slash commands via the command registry.
+
+        This is a fast path for slash commands that bypasses intent classification.
+        Commands like /tables, /show, /help are routed directly to their handlers.
+
+        Args:
+            command_text: The full command text (e.g., "/tables" or "/show orders")
+
+        Returns:
+            Result dict with output, success, and other metadata.
+        """
+        from constat.commands.registry import execute_command, parse_command
+        from constat.commands.base import (
+            TableResult,
+            ListResult,
+            TextResult,
+            ErrorResult,
+        )
+
+        # Parse the command
+        cmd, args = parse_command(command_text)
+
+        # Execute via registry
+        result = execute_command(self, cmd, args)
+
+        # Convert CommandResult to dict format expected by solve()
+        if isinstance(result, TableResult):
+            # Format table as markdown
+            lines = []
+            if result.title:
+                lines.append(f"**{result.title}**\n")
+            if result.columns and result.rows:
+                # Header
+                lines.append("| " + " | ".join(str(c) for c in result.columns) + " |")
+                lines.append("| " + " | ".join("---" for _ in result.columns) + " |")
+                # Rows
+                for row in result.rows:
+                    lines.append("| " + " | ".join(str(v) for v in row) + " |")
+            if result.footer:
+                lines.append(f"\n*{result.footer}*")
+
+            return {
+                "success": result.success,
+                "output": "\n".join(lines) if lines else result.footer or "No data.",
+                "meta_response": True,
+            }
+
+        elif isinstance(result, ListResult):
+            # Format list
+            lines = []
+            if result.title:
+                lines.append(f"**{result.title}**\n")
+            if result.items:
+                for item in result.items:
+                    if isinstance(item, dict):
+                        # Code block
+                        if "code" in item:
+                            lines.append(f"### Step {item.get('step', '?')}: {item.get('goal', '')}")
+                            lines.append(f"```{item.get('language', 'python')}")
+                            lines.append(item["code"])
+                            lines.append("```\n")
+                        else:
+                            lines.append(f"- {item}")
+                    else:
+                        lines.append(f"- {item}")
+            elif result.empty_message:
+                lines.append(result.empty_message)
+
+            return {
+                "success": result.success,
+                "output": "\n".join(lines) if lines else result.empty_message or "No items.",
+                "meta_response": True,
+            }
+
+        elif isinstance(result, TextResult):
+            return {
+                "success": result.success,
+                "output": result.content,
+                "meta_response": True,
+            }
+
+        elif isinstance(result, ErrorResult):
+            return {
+                "success": False,
+                "output": f"Error: {result.error}" + (f"\n{result.details}" if result.details else ""),
+                "meta_response": True,
+            }
+
+        else:
+            # Generic fallback
+            return {
+                "success": getattr(result, "success", True),
+                "output": str(result),
+                "meta_response": True,
+            }
+
     def _handle_reset(self) -> dict:
         """Handle reset control command - clear session state."""
         # Clear conversation state
@@ -4460,32 +4632,10 @@ Please revise the plan to incorporate this feedback."""
 
     def _handle_help(self) -> dict:
         """Handle help control command - show available commands."""
-        help_text = """**Available Commands:**
-
-**Mode Control:**
-- `/proof` or `/auditable` - Switch to proof mode (fact-based derivation)
-- `/explore` or `/exploratory` - Switch to exploratory mode (step-by-step analysis)
-
-**Session Control:**
-- `/reset` - Clear all facts and start fresh
-- `/redo` - Re-execute the last plan
-- `/status` - Show current session state
-
-**Query Commands:**
-- `/provenance` or "show proof" - Display fact derivation chain
-- Ask questions naturally to analyze data
-
-**Exit:**
-- `/exit` or `/quit` - End the session
-
-**Tips:**
-- In proof mode, every conclusion has a traceable derivation
-- In exploratory mode, you can build up analysis iteratively
-- Use "why?" or "explain" to drill down into results
-"""
+        # Use centralized help text from HELP_COMMANDS
         return {
             "success": True,
-            "output": help_text,
+            "output": get_help_markdown(),
             "meta_response": True,
         }
 
@@ -4836,7 +4986,13 @@ Please revise the plan to incorporate this feedback."""
         Returns:
             Dict with plan, results, and summary
         """
-        # Fast path: Check for meta-questions first (no intent classification needed)
+        # Fast path 1: Handle slash commands directly via command registry
+        # These are explicit commands like /tables, /show, /help etc.
+        # Must be checked FIRST since they're the most explicit user intent
+        if problem.strip().startswith("/"):
+            return self._handle_slash_command(problem.strip())
+
+        # Fast path 2: Check for meta-questions (no intent classification needed)
         # These are questions about capabilities, available data, etc.
         if is_meta_question(problem):
             self._emit_event(StepEvent(
@@ -4995,6 +5151,7 @@ Please revise the plan to incorporate this feedback."""
             databases=db_names,
             apis=api_names,
             documents=doc_names,
+            server_session_id=self.server_session_id,
         )
 
         # Initialize session state
@@ -5163,6 +5320,9 @@ Please revise the plan to incorporate this feedback."""
                 "is_followup": False,
             }
         ))
+
+        # Materialize facts table before execution starts
+        self._materialize_facts_table()
 
         # Execute steps in parallel waves based on dependencies
         # Phase 4: Reset cancellation state before starting execution
@@ -5734,6 +5894,10 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
 
+        # Fast path: Handle slash commands directly via command registry
+        if question.strip().startswith("/"):
+            return self._handle_slash_command(question.strip())
+
         # Fast path: check if this is a simple "show me X" request for existing data
         # This avoids expensive LLM classification for simple data lookups
         show_result = self._try_show_existing_data(question)
@@ -5917,6 +6081,9 @@ User feedback: {approval.suggestion}
                         "command": approval.command,
                         "message": "Slash command entered during approval.",
                     }
+
+        # Materialize facts table before execution starts
+        self._materialize_facts_table()
 
         # Execute each step
         # Phase 4: Reset cancellation state before starting execution

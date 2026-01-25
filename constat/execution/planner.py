@@ -448,9 +448,19 @@ class Planner:
             contains_sensitive_data=plan_data.get("contains_sensitive_data", False),
         )
 
-        # If LLM didn't provide depends_on, infer from inputs/outputs
-        if all(not step.depends_on for step in steps):
-            plan.infer_dependencies()
+        # Validate: steps must have expected_outputs (except final step)
+        for step in steps[:-1]:
+            if not step.expected_outputs:
+                raise ValueError(
+                    f"Step {step.number} has no expected_outputs. "
+                    f"Plan is malformed - each step must declare its outputs."
+                )
+
+        # Clear LLM's depends_on (unreliable format - often strings instead of ints)
+        # and rebuild DAG from expected_inputs/expected_outputs data flow
+        for step in steps:
+            step.depends_on = []
+        plan.infer_dependencies()
 
         return PlannerResponse(
             plan=plan,

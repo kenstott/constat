@@ -44,6 +44,7 @@ from textual.worker import Worker, get_current_worker
 from textual.suggester import Suggester
 
 from constat.session import Session, SessionConfig, ClarificationRequest, ClarificationResponse
+from constat.commands import HELP_COMMANDS
 from constat.execution.mode import Mode, Phase, PlanApprovalRequest, PlanApprovalResponse, PlanApproval
 from constat.core.config import Config
 from constat.feedback import FeedbackDisplay, SessionFeedbackHandler, StatusLine, SPINNER_FRAMES
@@ -51,23 +52,7 @@ from constat.visualization.output import clear_pending_outputs, get_pending_outp
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
 from constat.proof_tree import ProofTree, NodeStatus
-
-
-# Vera's personality adjectives (abbreviated list for space)
-RELIABLE_ADJECTIVES = [
-    "dependable", "reliable", "trustworthy", "steadfast", "unwavering",
-    "rock-solid", "battle-tested", "bulletproof", "laser-focused",
-]
-
-HONEST_ADJECTIVES = [
-    "honest", "truthful", "candid", "forthright", "sincere",
-    "straight-shooting", "no-nonsense", "radically-transparent",
-]
-
-
-def get_vera_adjectives() -> tuple[str, str]:
-    """Return a random pair of (reliable, honest) adjectives for Vera's intro."""
-    return (random.choice(RELIABLE_ADJECTIVES), random.choice(HONEST_ADJECTIVES))
+from constat.messages import get_vera_adjectives, STARTER_SUGGESTIONS
 
 
 def terminal_supports_hyperlinks() -> bool:
@@ -240,6 +225,45 @@ def make_artifact_link_markup(
     return f"[@click=app.open_artifact('{artifact_type}', '{escaped_name}')][{style}]{display_text}[/{style}][/]"
 
 
+def markdown_to_rich_markup(text: str) -> str:
+    """Convert common Markdown patterns to Rich markup.
+
+    Converts:
+    - **bold** → [bold]bold[/bold]
+    - *italic* → [italic]italic[/italic]
+    - ## Header → [bold]Header[/bold] (headers)
+    - - bullet → • bullet (bullet points)
+    - Numbered lists stay as-is
+
+    Note: Backticks are NOT converted since they're used for artifact linkification.
+
+    Args:
+        text: Text with Markdown formatting
+
+    Returns:
+        Text with Rich markup
+    """
+    import re
+
+    result = text
+
+    # Convert bold: **text** → [bold]text[/bold]
+    result = re.sub(r'\*\*([^*]+)\*\*', r'[bold]\1[/bold]', result)
+
+    # Convert italic: *text* → [italic]text[/italic]
+    # Be careful not to match ** (already converted) or bullet points
+    result = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'[italic]\1[/italic]', result)
+
+    # Convert headers: ## Header → [bold]Header[/bold]
+    # Match lines starting with 1-6 # characters
+    result = re.sub(r'^(#{1,6})\s+(.+)$', r'[bold]\2[/bold]', result, flags=re.MULTILINE)
+
+    # Convert bullet points: - item → • item
+    result = re.sub(r'^(\s*)-\s+', r'\1• ', result, flags=re.MULTILINE)
+
+    return result
+
+
 def linkify_artifact_references(
     text: str,
     tables: list[dict],
@@ -265,6 +289,13 @@ def linkify_artifact_references(
     table_map = {t['name']: t for t in tables}
     artifact_map = {a['name']: a for a in artifacts}
 
+    # Build description -> artifact map for matching "Created: Description" patterns
+    desc_to_artifact = {}
+    for a in artifacts:
+        desc = a.get('description', '')
+        if desc and len(desc) >= 10:  # Only match substantial descriptions
+            desc_to_artifact[desc.lower()] = a
+
     # Pass 1: Find all backtick-quoted strings
     # Pattern: `name` optionally followed by (N rows) which we'll replace
     backtick_pattern = r'`([^`]+)`(?:\s*\((\d+(?:,\d+)*)\s*rows?\))?'
@@ -286,9 +317,18 @@ def linkify_artifact_references(
 
         # Check by filename (artifacts may be referenced by filename)
         for aname, artifact in artifact_map.items():
-            file_path = artifact.get('file_path', '')
+            file_path = artifact.get('file_path', '') or artifact.get('file_uri', '')
             if file_path and Path(file_path).name == name:
-                return make_artifact_link_markup(aname, artifact.get('artifact_type', 'file'))
+                return make_file_link_markup(file_path)
+
+        # Check by description (LLM might use description in backticks)
+        name_lower = name.lower()
+        for desc, artifact in desc_to_artifact.items():
+            if desc == name_lower:
+                file_path = artifact.get('file_path', '') or artifact.get('file_uri', '')
+                if file_path:
+                    return make_file_link_markup(file_path)
+                return make_artifact_link_markup(artifact.get('name', name), artifact.get('artifact_type', 'file'))
 
         # Not a known artifact, keep original
         return match.group(0)
@@ -316,6 +356,61 @@ def linkify_artifact_references(
             return make_artifact_link_markup(tname, "table", row_count)
 
         result = re.sub(bare_pattern, replace_bare_match, result)
+
+    # Pass 3: Find bare table names (without backticks or row counts)
+    # Only for distinctive names (contain underscore and length >= 8) to avoid false positives
+    for table_name, table in table_map.items():
+        # Skip if already linkified
+        if f"'{table_name}')" in result:
+            continue
+
+        # Only match distinctive table names to avoid false positives
+        # Must contain underscore and be at least 8 chars (e.g., "final_answer", "employee_summary")
+        if '_' not in table_name or len(table_name) < 8:
+            continue
+
+        # Skip common words that might appear in prose
+        skip_names = {'the_data', 'the_table', 'new_data', 'old_data'}
+        if table_name.lower() in skip_names:
+            continue
+
+        escaped_name = re.escape(table_name)
+
+        # Match: word boundary + table_name + word boundary (not already in a link)
+        bare_pattern = rf'\b({escaped_name})\b'
+
+        def replace_bare_name(match, tname=table_name, tdata=table):
+            return make_artifact_link_markup(tname, "table", tdata.get('row_count'))
+
+        result = re.sub(bare_pattern, replace_bare_name, result)
+
+    # Pass 4: Match artifact descriptions after "Created:", "Saved:", "Generated:", etc.
+    # e.g., "Created: Employee Raise Analysis Report" -> clickable link
+    if desc_to_artifact:
+        for desc, artifact in desc_to_artifact.items():
+            # Skip if already linkified
+            aname = artifact.get('name', '')
+            if f"'{aname}')" in result:
+                continue
+
+            # Escape for regex
+            escaped_desc = re.escape(artifact.get('description', ''))
+            if not escaped_desc:
+                continue
+
+            # Match: "Created: Description" or "Saved: Description" or just the description
+            # Case-insensitive match
+            desc_pattern = rf'(?:(?:Created|Saved|Generated|Exported):\s*)?({escaped_desc})'
+
+            def replace_desc_match(match, a=artifact):
+                file_path = a.get('file_path', '') or a.get('file_uri', '')
+                if file_path:
+                    # Use make_file_link_markup for file artifacts
+                    return make_file_link_markup(file_path)
+                else:
+                    return make_artifact_link_markup(a.get('name', match.group(1)), a.get('artifact_type', 'file'))
+
+            result = re.sub(desc_pattern, replace_desc_match, result, flags=re.IGNORECASE)
 
     return result
 
@@ -1037,24 +1132,23 @@ class SidePanelContent(RichLog):
             content_width = max(20, content_width)
             for line in self._dag_lines:
                 if line.strip():  # Skip empty lines
-                    # Lines have prefix like "P P1: ", "I I1: ", or "→ 1: " - detect and account for it
+                    # Lines have prefix like "P P1: ", "I I1: ", "→ 1: ", or "1. " - detect and account for it
                     import re
-                    prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*)', line)
+                    prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*|\d+\.\s*)', line)
                     if prefix_match:
                         prefix = prefix_match.group(1)
                         rest = line[len(prefix):]
-                        first_width = content_width - len(prefix)
-                        cont_width = content_width - 4  # indent for continuation
-                        if len(rest) <= first_width:
-                            self.write(f"[white]{line}[/white]")
-                        else:
-                            wrapped = textwrap.wrap(rest, width=first_width)
+                        cont_indent = " " * len(prefix)  # Match prefix width
+
+                        # Use textwrap with proper width for single-pass wrapping
+                        wrapped = textwrap.wrap(
+                            rest,
+                            width=content_width - len(prefix),
+                        )
+                        if wrapped:
                             self.write(f"[white]{prefix}{wrapped[0]}[/white]")
-                            remainder = rest[len(wrapped[0]):].strip()
-                            if remainder:
-                                cont_wrapped = textwrap.wrap(remainder, width=cont_width)
-                                for cont in cont_wrapped:
-                                    self.write(f"[white]    {cont}[/white]")
+                            for cont in wrapped[1:]:
+                                self.write(f"[white]{cont_indent}{cont}[/white]")
                     else:
                         # No prefix detected, wrap normally
                         wrapped_lines = textwrap.wrap(line, width=content_width)
@@ -1115,25 +1209,32 @@ class SidePanelContent(RichLog):
             if line.strip():
                 # Lines may have prefix like "P P1: ", "I I1: ", or "→ 1: " - detect and account for it
                 # Pattern matches: P/I prefix (P P1: or I I1:) OR arrow prefix (→ 1:)
-                prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*)', line)
+                # Match step prefixes: "P P1: ", "I I1: ", "→ 1: ", or "1. ", "10. "
+                prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*|\d+\.\s*)', line)
                 if prefix_match:
                     prefix = prefix_match.group(1)
                     rest = line[len(prefix):]
-                    first_width = content_width - len(prefix)
-                    cont_width = content_width - 4  # indent for continuation
-                    if len(rest) <= first_width:
-                        self.write(f"[white]{line}[/white]")
-                    else:
-                        wrapped = textwrap.wrap(rest, width=first_width)
+                    cont_indent = " " * len(prefix)  # Match prefix width
+
+                    # Normalize whitespace - replace newlines/tabs with spaces, collapse multiple spaces
+                    # This prevents textwrap from treating embedded newlines as paragraph breaks
+                    rest = " ".join(rest.split())
+
+                    # Use textwrap with subsequent_indent for proper wrapping in one pass
+                    wrapped = textwrap.wrap(
+                        rest,
+                        width=content_width - len(prefix),
+                        subsequent_indent="",  # We handle indent when writing
+                    )
+                    if wrapped:
                         self.write(f"[white]{prefix}{wrapped[0]}[/white]")
-                        remainder = rest[len(wrapped[0]):].strip()
-                        if remainder:
-                            cont_wrapped = textwrap.wrap(remainder, width=cont_width)
-                            for cont in cont_wrapped:
-                                self.write(f"[white]    {cont}[/white]")
+                        for cont in wrapped[1:]:
+                            self.write(f"[white]{cont_indent}{cont}[/white]")
                 else:
                     # No prefix detected (e.g., box-drawing DAG lines), wrap normally
-                    wrapped_lines = textwrap.wrap(line, width=content_width)
+                    # Normalize whitespace first
+                    normalized = " ".join(line.split())
+                    wrapped_lines = textwrap.wrap(normalized, width=content_width)
                     for wrapped in wrapped_lines:
                         self.write(f"[white]{wrapped}[/white]")
 
@@ -2227,22 +2328,24 @@ class ConstatREPLApp(App):
         """
         tables, artifacts = self._get_artifacts_for_linkification()
 
+        logger.debug(f"_write_with_artifact_links: {len(tables)} tables, {len(artifacts)} artifacts")
+        if tables:
+            logger.debug(f"  Available tables: {[t['name'] for t in tables[:5]]}")
+
+        # Convert Markdown to Rich markup first (so **bold**, - bullets etc work)
+        rich_text = markdown_to_rich_markup(text)
+
         if not tables and not artifacts:
-            # No artifacts to link - use regular Markdown
-            log.write(Markdown(text))
+            # No artifacts to link - write converted markup
+            log.write(Text.from_markup(rich_text))
             return
 
         # Linkify artifact references
-        linkified = linkify_artifact_references(text, tables, artifacts)
+        linkified = linkify_artifact_references(rich_text, tables, artifacts)
 
-        # Check if any links were added (look for @click pattern)
-        if "[@click=" in linkified:
-            # Write as markup (clickable links work)
-            # Use Text.from_markup() to enable Rich markup parsing including @click actions
-            log.write(Text.from_markup(linkified))
-        else:
-            # No links added - use Markdown for better formatting
-            log.write(Markdown(text))
+        logger.debug(f"_write_with_artifact_links: links={'[@click=' in linkified}")
+        # Write as markup (both formatting and clickable links work)
+        log.write(Text.from_markup(linkified))
 
     def _show_clarification_ui(self) -> None:
         """Show clarification UI and set focus."""
@@ -2852,22 +2955,16 @@ class ConstatREPLApp(App):
             style="dim",
         ))
 
-        # Show starter suggestions
+        # Show starter suggestions (from shared messages module)
         if not self.initial_problem:
             log.write("")
             log.write(Text("Try asking:", style="dim"))
-            starter_suggestions = [
-                "What data is available?",
-                "What can you help me with?",
-                "How do you reason about problems?",
-                "What makes you different, Vera?",
-            ]
-            for i, s in enumerate(starter_suggestions, 1):
+            for i, s in enumerate(STARTER_SUGGESTIONS, 1):
                 log.write(Text.assemble(
                     (f"  {i}. ", "dim"),
                     (s, "cyan"),
                 ))
-            self.suggestions = starter_suggestions
+            self.suggestions = list(STARTER_SUGGESTIONS)
             log.write("")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -3153,58 +3250,15 @@ class ConstatREPLApp(App):
             log.write(Text("Type /help for available commands.", style="dim"))
 
     async def _show_help(self) -> None:
-        """Show help information."""
+        """Show help information using centralized HELP_COMMANDS."""
         log = self.query_one("#output-log", OutputLog)
 
         table = Table(title="Commands", show_header=True, box=None)
         table.add_column("Command", style="cyan")
         table.add_column("Description")
 
-        commands = [
-            ("/help, /h", "Show this help message"),
-            ("/tables", "List available tables"),
-            ("/show <table>", "Show table contents"),
-            ("/export <table> [file]", "Export table to CSV or XLSX"),
-            ("/query <sql>", "Run SQL query on datastore"),
-            ("/code [step]", "Show generated code (all or specific step)"),
-            ("/state", "Show session state"),
-            ("/update, /refresh", "Refresh metadata and rebuild cache"),
-            ("/reset", "Clear session state and start fresh"),
-            ("/redo [instruction]", "Retry last query (optionally with modifications)"),
-            ("/user [name]", "Show or set current user"),
-            ("/save <name>", "Save current plan for replay"),
-            ("/share <name>", "Save plan as shared (all users)"),
-            ("/plans", "List saved plans"),
-            ("/replay <name>", "Replay a saved plan"),
-            ("/history, /sessions", "List recent sessions"),
-            ("/resume <id>", "Resume a previous session"),
-            ("/context", "Show context size and token usage"),
-            ("/compact", "Compact context to reduce token usage"),
-            ("/facts", "Show cached facts from this session"),
-            ("/remember <fact>", "Persist a session fact"),
-            ("/forget <name>", "Forget a remembered fact"),
-            ("/verbose [on|off]", "Toggle verbose mode"),
-            ("/raw [on|off]", "Toggle raw output display"),
-            ("/insights [on|off]", "Toggle insight synthesis"),
-            ("/preferences", "Show current preferences"),
-            ("/artifacts [all]", "Show artifacts (use 'all' to include intermediate)"),
-            ("/databases", "List configured databases"),
-            ("/database <uri> [name]", "Add a database to this session"),
-            ("/apis", "List configured APIs"),
-            ("/api <spec_url> [name]", "Add an API to this session"),
-            ("/documents, /docs", "List all documents"),
-            ("/files", "List all data files"),
-            ("/doc <path> [name] [desc]", "Add a document to this session"),
-            ("/correct <text>", "Record a correction for future reference"),
-            ("/learnings", "Show learnings and rules"),
-            ("/compact-learnings", "Promote similar learnings into rules"),
-            ("/prove", "Verify conversation claims with auditable proof"),
-            ("/discover [scope] <query>", "Search data sources (scope: database|api|document)"),
-            ("/summarize <target>", "Summarize plan|session|facts|<table>"),
-            ("/quit, /q", "Exit"),
-        ]
-
-        for cmd, desc in commands:
+        # Use centralized HELP_COMMANDS from session (single source of truth)
+        for cmd, desc, _category in HELP_COMMANDS:
             table.add_row(cmd, desc)
 
         log.write(table)
@@ -5114,6 +5168,12 @@ def run_textual_repl(
             session_config=session_config,
             user_id=user_id,
         )
+
+        # Load persistent facts
+        from constat.storage.facts import FactStore
+        fact_store = FactStore(user_id=user_id)
+        fact_store.load_into_session(session)
+
     # Note: Feedback handler is registered in ConstatREPLApp.on_mount()
 
     app = ConstatREPLApp(

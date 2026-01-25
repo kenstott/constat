@@ -23,7 +23,9 @@ from constat.server.models import (
     LearningCreateRequest,
     LearningInfo,
     LearningListResponse,
+    RuleInfo,
 )
+from constat.storage.learnings import LearningCategory, LearningSource
 
 logger = logging.getLogger(__name__)
 
@@ -61,21 +63,34 @@ async def list_learnings(
     try:
         from constat.storage.learnings import LearningStore
         store = LearningStore()
-        learnings_data = store.get_learnings(category=category)
+        cat_enum = LearningCategory(category) if category else None
+        learnings_data = store.list_raw_learnings(category=cat_enum, limit=100)
+        rules_data = store.list_rules(category=cat_enum, limit=50)
 
         return LearningListResponse(
             learnings=[
                 LearningInfo(
                     id=l.get("id", str(uuid.uuid4())),
-                    content=l["content"],
-                    category=l.get("category", "user_correction"),
-                    source=l.get("source", "explicit_command"),
+                    content=l.get("correction", ""),  # YAML uses 'correction' field
+                    category=l.get("category", LearningCategory.USER_CORRECTION.value),
+                    source=l.get("source", LearningSource.EXPLICIT_COMMAND.value),
                     context=l.get("context"),
                     applied_count=l.get("applied_count", 0),
-                    created_at=datetime.fromisoformat(l["created_at"]) if l.get("created_at") else datetime.now(timezone.utc),
+                    created_at=datetime.fromisoformat(l["created"]) if l.get("created") else datetime.now(timezone.utc),
                 )
                 for l in learnings_data
-            ]
+            ],
+            rules=[
+                RuleInfo(
+                    id=r.get("id", ""),
+                    summary=r.get("summary", ""),
+                    category=r.get("category", LearningCategory.USER_CORRECTION.value),
+                    confidence=r.get("confidence", 0.0),
+                    source_count=len(r.get("source_learnings", [])),
+                    tags=r.get("tags", []),
+                )
+                for r in rules_data
+            ],
         )
     except Exception as e:
         logger.warning(f"Could not load from LearningStore: {e}")
@@ -90,14 +105,15 @@ async def list_learnings(
             LearningInfo(
                 id=l["id"],
                 content=l["content"],
-                category=l.get("category", "user_correction"),
-                source=l.get("source", "explicit_command"),
+                category=l.get("category", LearningCategory.USER_CORRECTION.value),
+                source=l.get("source", LearningSource.EXPLICIT_COMMAND.value),
                 context=l.get("context"),
                 applied_count=l.get("applied_count", 0),
                 created_at=datetime.fromisoformat(l["created_at"]),
             )
             for l in filtered
-        ]
+        ],
+        rules=[],
     )
 
 
@@ -121,7 +137,7 @@ async def add_learning(
         "id": learning_id,
         "content": body.content,
         "category": body.category,
-        "source": "explicit_command",
+        "source": LearningSource.EXPLICIT_COMMAND.value,
         "context": None,
         "applied_count": 0,
         "created_at": now.isoformat(),
@@ -134,7 +150,7 @@ async def add_learning(
         store.add_learning(
             content=body.content,
             category=body.category,
-            source="explicit_command",
+            source=LearningSource.EXPLICIT_COMMAND.value,
         )
     except Exception as e:
         logger.warning(f"Could not persist to LearningStore: {e}")
@@ -146,7 +162,7 @@ async def add_learning(
         id=learning_id,
         content=body.content,
         category=body.category,
-        source="explicit_command",
+        source=LearningSource.EXPLICIT_COMMAND.value,
         context=None,
         applied_count=0,
         created_at=now,
@@ -188,6 +204,68 @@ async def delete_learning(
         raise HTTPException(status_code=404, detail=f"Learning not found: {learning_id}")
 
     return {"status": "deleted", "id": learning_id}
+
+
+@router.post("/learnings/compact")
+async def compact_learnings(
+    config: Config = Depends(get_config),
+) -> dict:
+    """Compact similar learnings into rules using LLM.
+
+    This analyzes pending learnings and groups similar ones into rules.
+
+    Returns:
+        Compaction results with counts of rules created/strengthened
+    """
+    try:
+        from constat.storage.learnings import LearningStore
+        from constat.learning.compactor import LearningCompactor
+        from constat.providers import TaskRouter
+
+        store = LearningStore()
+        stats = store.get_stats()
+        unpromoted = stats.get("unpromoted", 0)
+
+        if unpromoted < 2:
+            return {
+                "status": "skipped",
+                "message": f"Not enough learnings to compact ({unpromoted} pending, need at least 2)",
+                "rules_created": 0,
+                "learnings_archived": 0,
+            }
+
+        # Create LLM router for compaction
+        llm = TaskRouter(config.llm)
+
+        compactor = LearningCompactor(store, llm)
+        result = compactor.compact(dry_run=False)
+
+        return {
+            "status": "success",
+            "rules_created": result.rules_created,
+            "rules_strengthened": result.rules_strengthened,
+            "rules_merged": result.rules_merged,
+            "learnings_archived": result.learnings_archived,
+            "groups_found": result.groups_found,
+            "skipped_low_confidence": result.skipped_low_confidence,
+            "errors": result.errors,
+        }
+    except ImportError as e:
+        logger.warning(f"Compactor not available: {e}")
+        return {
+            "status": "error",
+            "message": "Learning compactor not available",
+            "rules_created": 0,
+            "learnings_archived": 0,
+        }
+    except Exception as e:
+        logger.error(f"Error compacting learnings: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "rules_created": 0,
+            "learnings_archived": 0,
+        }
 
 
 @router.get("/config", response_model=ConfigResponse)

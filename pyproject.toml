@@ -43,6 +43,8 @@ dependencies = [
     "uvicorn>=0.23",
     # Graph visualization (requires system graphviz)
     "graphviz>=0.20",
+    # NLP / Named Entity Recognition
+    "spacy>=3.8",
 ]
 
 [project.optional-dependencies]

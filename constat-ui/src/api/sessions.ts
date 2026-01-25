@@ -13,6 +13,9 @@ import type {
   UploadedFile,
   FileReference,
   SessionDatabase,
+  Config,
+  Learning,
+  Rule,
 } from '@/types/api'
 
 // Session CRUD
@@ -66,6 +69,15 @@ export async function listFacts(sessionId: string): Promise<{ facts: Fact[] }> {
   return get<{ facts: Fact[] }>(`/sessions/${sessionId}/facts`)
 }
 
+export async function addFact(
+  sessionId: string,
+  name: string,
+  value: unknown,
+  persist: boolean = false
+): Promise<{ status: string; fact: Fact }> {
+  return post<{ status: string; fact: Fact }>(`/sessions/${sessionId}/facts`, { name, value, persist })
+}
+
 export async function persistFact(
   sessionId: string,
   factName: string
@@ -110,6 +122,21 @@ export async function getProofTree(
 ): Promise<{ facts: unknown[]; execution_trace: unknown[] }> {
   return get<{ facts: unknown[]; execution_trace: unknown[] }>(
     `/sessions/${sessionId}/proof-tree`
+  )
+}
+
+// Step Codes
+export interface StepCode {
+  step_number: number
+  goal: string
+  code: string
+}
+
+export async function listStepCodes(
+  sessionId: string
+): Promise<{ steps: StepCode[]; total: number }> {
+  return get<{ steps: StepCode[]; total: number }>(
+    `/sessions/${sessionId}/steps`
   )
 }
 
@@ -189,4 +216,31 @@ export async function testDatabase(
   return post<{ name: string; connected: boolean; table_count: number; error?: string }>(
     `/sessions/${sessionId}/databases/${name}/test`
   )
+}
+
+// Config (global, not per-session)
+export async function getConfig(): Promise<Config> {
+  return get<Config>(`/config`)
+}
+
+// Learnings (global, not per-session)
+export async function listLearnings(
+  category?: string
+): Promise<{ learnings: Learning[]; rules: Rule[] }> {
+  const query = category ? `?category=${encodeURIComponent(category)}` : ''
+  return get<{ learnings: Learning[]; rules: Rule[] }>(`/learnings${query}`)
+}
+
+export async function compactLearnings(): Promise<{
+  status: string
+  message?: string
+  rules_created: number
+  learnings_archived: number
+}> {
+  return post<{
+    status: string
+    message?: string
+    rules_created: number
+    learnings_archived: number
+  }>('/learnings/compact', {})
 }

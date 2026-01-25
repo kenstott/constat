@@ -2,9 +2,11 @@
 # Run from project root: constat repl -c demo/config.yaml
 
 llm:
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  api_key: ${ANTHROPIC_API_KEY}
+#  provider: ollama
+#  model: qwen2.5:7b
+   provider: anthropic
+   model: claude-sonnet-4-20250514
+   api_key: ${ANTHROPIC_API_KEY}
 
 # Email configuration for send_email() in generated code
 email:

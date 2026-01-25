@@ -478,6 +478,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Clear all stored data."""
         self._conn.execute("DELETE FROM embeddings")
 
+    def clear_chunk_entity_links(self) -> None:
+        """Clear all chunk-entity links (but keep entities).
+
+        Use this when re-extracting entities from documents.
+        """
+        self._conn.execute("DELETE FROM chunk_entities")
+
     def count(self) -> int:
         """Return number of stored chunks."""
         result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
@@ -612,12 +619,16 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not links:
             return
 
-        records = [(l.chunk_id, l.entity_id, l.mention_count, l.confidence, ephemeral) for l in links]
+        records = [
+            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, ephemeral)
+            for l in links
+        ]
 
         self._conn.executemany(
             """
-            INSERT OR REPLACE INTO chunk_entities (chunk_id, entity_id, mention_count, confidence, ephemeral)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO chunk_entities
+                (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             records,
         )
@@ -814,21 +825,23 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not entities:
             return
 
-        # Deduplicate entities by ID (keep last occurrence)
+        # Deduplicate entities by normalized ID (case-insensitive, keep last occurrence)
         seen_ids: dict[str, int] = {}
         for i, e in enumerate(entities):
-            seen_ids[e["id"]] = i
+            # Normalize ID to lowercase for deduplication
+            normalized_id = e["id"].lower()
+            seen_ids[normalized_id] = i
 
         records = []
-        for i in sorted(seen_ids.values()):
+        for normalized_id, i in sorted(seen_ids.items(), key=lambda x: x[1]):
             e = entities[i]
             metadata_json = json.dumps(e.get("metadata", {})) if e.get("metadata") else None
             records.append((
-                e["id"],
+                normalized_id,  # Use normalized (lowercase) ID
                 e["name"],
                 e["type"],
                 source,
-                e.get("parent_id"),
+                e.get("parent_id").lower() if e.get("parent_id") else None,
                 embeddings[i].tolist() if embeddings is not None else None,
                 metadata_json,
                 config_hash,

@@ -154,6 +154,27 @@ async def list_artifacts(
 
     try:
         artifacts = managed.session.datastore.list_artifacts()
+
+        # Determine which artifacts are key results
+        # Key results: ONLY visualizations and consequential tables - NOT code
+        visualization_types = {'chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown'}
+        table_types = {'dataframe', 'table', 'csv', 'parquet'}
+        # Code types are explicitly excluded from key results
+        code_types = {'code', 'python', 'sql', 'script', 'text'}
+
+        def is_key_result(a: dict) -> bool:
+            artifact_type = a.get("type", "").lower()
+            # Code is NEVER a key result
+            if artifact_type in code_types:
+                return False
+            # Visualizations are always key results
+            if artifact_type in visualization_types:
+                return True
+            # Tables marked as consequential are key results
+            if artifact_type in table_types and a.get("is_consequential", False):
+                return True
+            return False
+
         return ArtifactListResponse(
             artifacts=[
                 ArtifactInfo(
@@ -163,8 +184,9 @@ async def list_artifacts(
                     step_number=a.get("step_number", 0),
                     title=a.get("title"),
                     description=a.get("description"),
-                    mime_type=a.get("content_type", "application/octet-stream"),
+                    mime_type=a.get("content_type") or "application/octet-stream",
                     created_at=a.get("created_at"),
+                    is_key_result=is_key_result(a),
                 )
                 for a in artifacts
             ]
@@ -241,9 +263,11 @@ async def list_facts(
 
     try:
         all_facts = managed.session.fact_resolver.get_all_facts()
-        print(f"[list_facts] Retrieved {len(all_facts)} facts from fact_resolver")
-        for name, fact in all_facts.items():
-            print(f"[list_facts] Fact: {name} = {fact.value} (source: {fact.source})")
+
+        # Get persisted fact names from FactStore
+        from constat.storage.facts import FactStore
+        fact_store = FactStore(user_id=managed.user_id)
+        persisted_fact_names = set(fact_store.list_facts().keys())
 
         return FactListResponse(
             facts=[
@@ -253,6 +277,7 @@ async def list_facts(
                     source=fact.source.value if hasattr(fact.source, "value") else str(fact.source),
                     reasoning=fact.reasoning,
                     confidence=getattr(fact, "confidence", None),
+                    is_persisted=name in persisted_fact_names,
                 )
                 for name, fact in all_facts.items()
             ]
@@ -439,11 +464,17 @@ async def list_entities(
                 # Update primary type if new type has higher priority
                 if TYPE_PRIORITY.get(etype, 0) > TYPE_PRIORITY.get(existing["type"], 0):
                     existing["type"] = etype
-            # Merge: add source if new, extend references
+            # Merge: add source if new
             if source not in existing["sources"]:
                 existing["sources"].append(source)
+            # Merge references with deduplication (by document + section)
             if references:
-                existing["references"].extend(references)
+                existing_refs = {(r["document"], r["section"]) for r in existing["references"]}
+                for ref in references:
+                    ref_key = (ref["document"], ref["section"])
+                    if ref_key not in existing_refs:
+                        existing["references"].append(ref)
+                        existing_refs.add(ref_key)
                 existing["mention_count"] = len(existing["references"])
             # Merge metadata
             existing["metadata"].update(metadata)
@@ -628,7 +659,7 @@ async def add_fact(
 
     Args:
         session_id: Session ID
-        body: Request body with name and value
+        body: Request body with name, value, and optional persist flag
 
     Returns:
         Created fact
@@ -646,17 +677,36 @@ async def add_fact(
     try:
         fact_name = body["name"]
         fact_value = body["value"]
+        persist = body.get("persist", False)
 
         # Add the fact via fact_resolver
-        if hasattr(managed.session.fact_resolver, "set_fact"):
-            managed.session.fact_resolver.set_fact(fact_name, fact_value, source="user")
+        from constat.execution.fact_resolver import FactSource
+        managed.session.fact_resolver.add_user_fact(
+            fact_name=fact_name,
+            value=fact_value,
+            source=FactSource.USER_PROVIDED,
+            reasoning="Added via UI",
+        )
+
+        # Optionally persist to FactStore
+        is_persisted = False
+        if persist:
+            from constat.storage.facts import FactStore
+            fact_store = FactStore(user_id=managed.user_id)
+            fact_store.save_fact(
+                name=fact_name,
+                value=fact_value,
+                description="Added via UI",
+            )
+            is_persisted = True
 
         return {
             "status": "created",
             "fact": {
                 "name": fact_name,
                 "value": fact_value,
-                "source": "user",
+                "source": FactSource.USER_PROVIDED.value,
+                "is_persisted": is_persisted,
             },
         }
 
@@ -709,14 +759,14 @@ async def forget_fact(
     fact_name: str,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
-    """Invalidate a cached fact.
+    """Forget a fact (removes from both session and persistent storage).
 
     Args:
         session_id: Session ID
         fact_name: Name of the fact to forget
 
     Returns:
-        Confirmation
+        Confirmation with what was deleted
 
     Raises:
         404: Session or fact not found
@@ -728,11 +778,27 @@ async def forget_fact(
         if fact_name not in all_facts:
             raise HTTPException(status_code=404, detail=f"Fact not found: {fact_name}")
 
-        # Forget the fact
-        if hasattr(managed.session.fact_resolver, "forget_fact"):
-            managed.session.fact_resolver.forget_fact(fact_name)
+        deleted_persistent = False
+        deleted_session = False
 
-        return {"status": "forgotten", "fact_name": fact_name}
+        # Delete from persistent storage (facts.yaml) if exists
+        from constat.storage.facts import FactStore
+        fact_store = FactStore(user_id=managed.user_id)
+        if fact_store.delete_fact(fact_name):
+            deleted_persistent = True
+
+        # Remove from session cache
+        if hasattr(managed.session.fact_resolver, "_cache"):
+            if fact_name in managed.session.fact_resolver._cache:
+                managed.session.fact_resolver._cache.pop(fact_name, None)
+                deleted_session = True
+
+        return {
+            "status": "forgotten",
+            "fact_name": fact_name,
+            "deleted_persistent": deleted_persistent,
+            "deleted_session": deleted_session,
+        }
 
     except HTTPException:
         raise
@@ -772,9 +838,14 @@ async def edit_fact(
         if fact_name not in all_facts:
             raise HTTPException(status_code=404, detail=f"Fact not found: {fact_name}")
 
-        # Edit the fact
-        if hasattr(managed.session.fact_resolver, "set_fact"):
-            managed.session.fact_resolver.set_fact(fact_name, body["value"], source="user")
+        # Edit the fact by updating the cache directly
+        from constat.execution.fact_resolver import FactSource
+        managed.session.fact_resolver.add_user_fact(
+            fact_name=fact_name,
+            value=body["value"],
+            source=FactSource.USER_PROVIDED,
+            reasoning="Edited via UI",
+        )
 
         return {
             "status": "updated",
@@ -786,4 +857,426 @@ async def edit_fact(
         raise
     except Exception as e:
         logger.error(f"Error editing fact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Step Code Endpoints
+# ============================================================================
+
+
+@router.get("/{session_id}/steps")
+async def list_step_codes(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """List all step codes for a session.
+
+    Returns the code executed for each step in the plan, stored on disk.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        List of step codes with step_number, goal, and code
+
+    Raises:
+        404: Session not found
+    """
+    # Try to get the session from memory first
+    managed = session_manager.get_session_or_none(session_id)
+    history = None
+    history_session_id = None
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+        logger.debug(f"[list_step_codes] Found managed session. Server: {session_id}, History: {history_session_id}")
+    else:
+        # Session not in memory - try reverse lookup from disk
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id="default")  # TODO: get user_id properly
+        history_session_id = history.find_session_by_server_id(session_id)
+        logger.debug(f"[list_step_codes] Session not in memory. Reverse lookup found: {history_session_id}")
+
+    try:
+        steps = history.list_step_codes(history_session_id) if history_session_id else []
+        logger.debug(f"[list_step_codes] Found {len(steps)} steps")
+
+        return {
+            "steps": steps,
+            "total": len(steps),
+            # Include session ID info for debugging
+            "session_info": {
+                "server_session_id": session_id,
+                "history_session_id": history_session_id,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing step codes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/download-code")
+async def download_code(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+):
+    """Download all step codes as a standalone Python script.
+
+    Generates a self-contained Python script that can be run independently
+    to reproduce the analysis. Includes all step functions, imports, and
+    helper utilities. Facts are loaded from _facts.parquet and passed as
+    explicit arguments to run_analysis().
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Python script file download
+
+    Raises:
+        404: Session not found or no code available
+    """
+    from fastapi.responses import Response
+    import pandas as pd
+
+    # Try to get the session from memory first
+    managed = session_manager.get_session_or_none(session_id)
+    history = None
+    history_session_id = None
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+        logger.debug(f"[download-code] Found managed session. Server: {session_id}, History: {history_session_id}")
+    else:
+        # Session not in memory - try reverse lookup from disk
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id="default")  # TODO: get user_id properly
+        history_session_id = history.find_session_by_server_id(session_id)
+        logger.debug(f"[download-code] Session not in memory. Reverse lookup found: {history_session_id}")
+
+    try:
+        if not history_session_id:
+            logger.warning(f"[download-code] No history session ID for server session {session_id}")
+            raise HTTPException(
+                status_code=404,
+                detail="No code available for this session. Run a query first to generate step code."
+            )
+
+        # Check if the steps directory exists
+        steps_dir = history._steps_dir(history_session_id)
+        logger.debug(f"[download-code] Steps directory: {steps_dir}, exists: {steps_dir.exists() if steps_dir else 'N/A'}")
+
+        steps = history.list_step_codes(history_session_id)
+        logger.debug(f"[download-code] Found {len(steps)} steps for history session {history_session_id}")
+
+        if not steps:
+            # Provide more context for debugging
+            detail = "No code available for this session."
+            if history_session_id:
+                detail += f" History session {history_session_id} has no steps."
+                if steps_dir.exists():
+                    # Check what's in the directory
+                    try:
+                        contents = list(steps_dir.iterdir())
+                        detail += f" Steps dir exists with {len(contents)} files."
+                    except Exception:
+                        pass
+            detail += " Run a query first to generate step code."
+            raise HTTPException(status_code=404, detail=detail)
+
+        # Get facts from the _facts table (if session is in memory and has datastore)
+        facts_list = []
+        if managed and managed.session.datastore:
+            try:
+                facts_df = managed.session.datastore.load_dataframe("_facts")
+                for _, row in facts_df.iterrows():
+                    facts_list.append({
+                        "name": row.get("name", ""),
+                        "value": row.get("value", ""),
+                        "description": row.get("description", ""),
+                    })
+            except Exception:
+                # No facts table - that's okay
+                pass
+
+        # Get data sources from config (if session is in memory)
+        databases = []
+        apis = []
+        files = []
+
+        if managed and managed.session.config:
+            config = managed.session.config
+            if config.databases:
+                for name, db_config in config.databases.items():
+                    if db_config.is_file_source():
+                        files.append({
+                            "name": name,
+                            "path": db_config.path,
+                            "description": db_config.description or "",
+                        })
+                    else:
+                        databases.append({
+                            "name": name,
+                            "type": db_config.type or "sql",
+                            "uri": db_config.uri or "",
+                            "description": db_config.description or "",
+                        })
+
+            if config.apis:
+                for name, api_config in config.apis.items():
+                    apis.append({
+                        "name": name,
+                        "type": api_config.type,
+                        "url": api_config.url or "",
+                        "description": api_config.description or "",
+                    })
+
+        # Build standalone Python script
+        script_lines = [
+            '#!/usr/bin/env python3',
+            '"""',
+            f'Constat Analysis Script - Session {session_id[:8]}',
+            '',
+            'This script was automatically generated from a Constat analysis session.',
+            'It contains all the step code that was executed during the analysis.',
+            '',
+            'Usage:',
+            '  1. Edit _facts.parquet with your context values, then run:',
+            '     python script.py',
+            '',
+            '  2. Or call run_analysis() directly with your values:',
+            '     from script import run_analysis',
+        ]
+
+        # Add example call with explicit args
+        if facts_list:
+            args_example = ", ".join(f'{f["name"]}="..."' for f in facts_list)
+            script_lines.append(f'     run_analysis({args_example})')
+        script_lines.extend([
+            '"""',
+            '',
+            'import os',
+            'import pandas as pd',
+            'import numpy as np',
+            'import duckdb',
+            'from pathlib import Path',
+        ])
+
+        # Add SQLAlchemy import if there are SQL databases
+        if any(db['type'] in ('sql', 'postgresql', 'mysql', 'sqlite') for db in databases):
+            script_lines.append('from sqlalchemy import create_engine')
+
+        # Add data sources section if there are any
+        if databases or apis or files:
+            script_lines.extend([
+                '',
+                '# ============================================================================',
+                '# Data Sources (from Constat config)',
+                '# ============================================================================',
+                '# Configure these for your environment. Values containing secrets should',
+                '# use environment variables: os.environ["VAR_NAME"]',
+                '',
+            ])
+
+            # Helper to format multi-line descriptions as comments
+            def format_description_comment(desc: str, prefix: str = "#   ") -> list[str]:
+                """Format a description as properly wrapped comment lines."""
+                if not desc:
+                    return []
+                # Split on newlines and wrap each line
+                lines = []
+                for line in desc.replace('\n', ' ').split('. '):
+                    line = line.strip()
+                    if line:
+                        if not line.endswith('.'):
+                            line += '.'
+                        lines.append(f"{prefix}{line}")
+                return lines
+
+            if databases:
+                script_lines.append('# Databases')
+                for db in databases:
+                    uri = db['uri']
+                    # Mask passwords in URIs for safety, suggest env var
+                    if '@' in uri and ':' in uri.split('@')[0]:
+                        # Has embedded credentials - suggest env var
+                        script_lines.append(f"# db_{db['name']}: {db['type']} - credentials detected, use env var")
+                        script_lines.append(f"# db_{db['name']} = create_engine(os.environ['DB_{db['name'].upper()}_URI'])")
+                        # Also show masked version
+                        masked = uri.split('://')[0] + '://***:***@' + uri.split('@')[-1] if '://' in uri else uri
+                        script_lines.append(f"# Original (masked): {masked}")
+                    else:
+                        script_lines.append(f"# db_{db['name']}: {db['type']}")
+                        # Add description as wrapped comment lines
+                        if db['description']:
+                            script_lines.extend(format_description_comment(db['description']))
+                        if 'duckdb' in uri.lower():
+                            # DuckDB uses its own connect() method
+                            script_lines.append(f"db_{db['name']} = duckdb.connect('{uri.replace('duckdb:///', '')}')")
+                        else:
+                            # SQLite, PostgreSQL, MySQL, etc. use SQLAlchemy
+                            script_lines.append(f"db_{db['name']} = create_engine('{uri}')")
+                    script_lines.append('')
+
+            if apis:
+                script_lines.append('# APIs')
+                for api in apis:
+                    script_lines.append(f"# api_{api['name']}: {api['type']} - {api['url']}")
+                    # Add description as wrapped comment lines
+                    if api['description']:
+                        script_lines.extend(format_description_comment(api['description']))
+                    script_lines.append(f"# api_{api['name']} = ...  # Configure your API client")
+                    script_lines.append('')
+
+            if files:
+                script_lines.append('# Files')
+                for f in files:
+                    script_lines.append(f"# file_{f['name']}")
+                    # Add description as wrapped comment lines
+                    if f['description']:
+                        script_lines.extend(format_description_comment(f['description']))
+                    script_lines.append(f"file_{f['name']} = Path('{f['path']}')")
+                script_lines.append('')
+
+        script_lines.extend([
+            '',
+            '# ============================================================================',
+            '# Helper Functions',
+            '# ============================================================================',
+            '',
+            '_dataframes: dict[str, pd.DataFrame] = {}',
+            '',
+            'def save_dataframe(name: str, df: pd.DataFrame) -> None:',
+            '    """Save a DataFrame to the local cache."""',
+            '    _dataframes[name] = df',
+            '    print(f"Saved table: {name} ({len(df)} rows)")',
+            '',
+            'def load_dataframe(name: str) -> pd.DataFrame:',
+            '    """Load a DataFrame from the local cache."""',
+            '    if name not in _dataframes:',
+            '        raise ValueError(f"Table not found: {name}")',
+            '    return _dataframes[name]',
+            '',
+            'def query(sql: str) -> pd.DataFrame:',
+            '    """Execute SQL query against local DataFrames."""',
+            '    conn = duckdb.connect()',
+            '    for table_name, df in _dataframes.items():',
+            '        conn.register(table_name, df)',
+            '    result = conn.execute(sql).fetchdf()',
+            '    conn.close()',
+            '    return result',
+            '',
+            '# ============================================================================',
+            '# Step Functions',
+            '# ============================================================================',
+            '',
+        ])
+
+        # Add step functions
+        for step in steps:
+            step_num = step.get("step_number", 0)
+            goal = step.get("goal", "Unknown goal")
+            code = step.get("code", "pass")
+
+            script_lines.append(f'def step_{step_num}(facts: dict):')
+            script_lines.append(f'    """Step {step_num}: {goal}"""')
+
+            # Indent the code properly
+            for line in code.split('\n'):
+                if line.strip():
+                    script_lines.append(f'    {line}')
+                else:
+                    script_lines.append('')
+
+            script_lines.append('')
+
+        # Build run_analysis function with explicit fact arguments
+        script_lines.append('# ============================================================================')
+        script_lines.append('# Main Analysis Function')
+        script_lines.append('# ============================================================================')
+        script_lines.append('')
+
+        # Build function signature with explicit args
+        if facts_list:
+            args_with_types = ", ".join(f'{f["name"]}: str' for f in facts_list)
+            script_lines.append(f'def run_analysis({args_with_types}):')
+            script_lines.append('    """')
+            script_lines.append('    Run the complete analysis with the given facts.')
+            script_lines.append('')
+            script_lines.append('    Args:')
+            for fact in facts_list:
+                desc = fact["description"] or "No description"
+                script_lines.append(f'        {fact["name"]}: {desc}')
+            script_lines.append('    """')
+            # Build facts dict from explicit args
+            script_lines.append('    facts = {')
+            for fact in facts_list:
+                script_lines.append(f'        "{fact["name"]}": {fact["name"]},')
+            script_lines.append('    }')
+        else:
+            script_lines.append('def run_analysis():')
+            script_lines.append('    """Run the complete analysis."""')
+            script_lines.append('    facts = {}')
+
+        script_lines.append('')
+        for step in steps:
+            step_num = step.get("step_number", 0)
+            goal = step.get("goal", "Unknown goal")
+            script_lines.append(f'    print("\\n=== Step {step_num}: {goal} ===")')
+            script_lines.append(f'    step_{step_num}(facts)')
+        script_lines.append('')
+
+        # Add main function that loads facts and calls run_analysis
+        script_lines.append('')
+        script_lines.append('# ============================================================================')
+        script_lines.append('# Main Entry Point')
+        script_lines.append('# ============================================================================')
+        script_lines.append('')
+        script_lines.append('def main():')
+        script_lines.append('    """Load facts from _facts.parquet and run analysis."""')
+
+        if facts_list:
+            # Generate the facts table schema comment
+            script_lines.append('    # Expected _facts.parquet schema:')
+            script_lines.append('    #   name (str)         | value (str)')
+            script_lines.append('    #   -------------------+' + '-' * 40)
+            for fact in facts_list:
+                desc = fact["description"][:35] + "..." if len(fact.get("description", "")) > 38 else fact.get("description", "")
+                script_lines.append(f'    #   {fact["name"]:<18} | {desc}')
+            script_lines.append('    #')
+            script_lines.append('    facts_df = pd.read_parquet("_facts.parquet")')
+            script_lines.append('    facts = dict(zip(facts_df["name"], facts_df["value"]))')
+            script_lines.append('')
+            # Call run_analysis with explicit args from facts dict
+            args_from_dict = ", ".join(f'{f["name"]}=facts["{f["name"]}"]' for f in facts_list)
+            script_lines.append(f'    run_analysis({args_from_dict})')
+        else:
+            script_lines.append('    run_analysis()')
+
+        script_lines.extend([
+            '',
+            '',
+            'if __name__ == "__main__":',
+            '    main()',
+            '',
+        ])
+
+        script_content = '\n'.join(script_lines)
+
+        return Response(
+            content=script_content,
+            media_type="text/x-python",
+            headers={
+                "Content-Disposition": f'attachment; filename="session_{session_id[:8]}_code.py"'
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading code: {e}")
         raise HTTPException(status_code=500, detail=str(e))

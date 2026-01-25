@@ -428,10 +428,30 @@ class DocumentDiscoveryTools:
     def set_schema_entities(self, entities: set[str] | list[str]) -> None:
         """Set database schema entities (table names, column names) for pattern matching.
 
+        When schema entities change, entity extraction is re-run on existing
+        documents to link schema terms to document references.
+
         Args:
             entities: Set or list of entity names
         """
-        self._schema_entities = list(entities) if isinstance(entities, set) else entities
+        new_entities = list(entities) if isinstance(entities, set) else entities
+
+        # Check if entities actually changed
+        if set(new_entities) == set(self._schema_entities or []):
+            return
+
+        self._schema_entities = new_entities
+
+        # Re-extract entities from existing documents if we have indexed chunks
+        if self._vector_store.count() > 0 and hasattr(self._vector_store, 'add_entities'):
+            # Clear existing entity links (but keep entities from other sources)
+            if hasattr(self._vector_store, 'clear_chunk_entity_links'):
+                self._vector_store.clear_chunk_entity_links()
+
+            # Get all chunks and re-extract entities
+            chunks = self._vector_store.get_chunks()
+            if chunks:
+                self._extract_and_store_entities(chunks, self._schema_entities)
 
     def set_openapi_entities(
         self,
@@ -718,7 +738,20 @@ class DocumentDiscoveryTools:
         if force_full:
             self._loaded_documents.clear()
             self._vector_store.clear()
-            return {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "mode": "full_rebuild"}
+            if hasattr(self._vector_store, 'clear_entities'):
+                self._vector_store.clear_entities()
+
+            # Reload all documents and rebuild index
+            stats = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "mode": "full_rebuild"}
+            if self.config.documents:
+                for name in self.config.documents:
+                    try:
+                        self._load_document(name)
+                        stats["added"] += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to load {name}: {e}")
+                self._build_index(self._schema_entities)
+            return stats
 
         return self._refresh_incremental()
 

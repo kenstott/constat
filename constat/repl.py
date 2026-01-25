@@ -389,20 +389,7 @@ class InteractiveREPL:
 
     def _load_persistent_facts(self, session: Session) -> None:
         """Load persistent facts into a session's fact resolver."""
-        persistent_facts = self.fact_store.list_facts()
-        if not persistent_facts:
-            return
-
-        for name, fact_data in persistent_facts.items():
-            try:
-                session.fact_resolver.add_user_fact(
-                    fact_name=name,
-                    value=fact_data.get("value"),
-                    reasoning="Loaded from persistent storage",
-                    description=fact_data.get("description", ""),
-                )
-            except Exception:
-                pass  # Skip facts that fail to load
+        self.fact_store.load_into_session(session)
 
     def _get_bottom_toolbar(self):
         """Get the status bar text for the bottom toolbar as HTML.
@@ -2209,6 +2196,10 @@ Provide a 2-3 sentence summary covering:
     def _handle_command(self, cmd_input: str) -> bool:
         """Handle a slash command.
 
+        Routes core commands through session.solve() to use centralized command registry,
+        keeping only REPL-specific presentation here. This ensures REPL and web UI share
+        the same command logic.
+
         Args:
             cmd_input: The full command string (e.g., "/tables" or "/show orders")
 
@@ -2219,27 +2210,27 @@ Provide a 2-3 sentence summary covering:
         cmd = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
 
+        # REPL-specific: exit commands
         if cmd in ("/quit", "/exit", "/q"):
             self.console.print("[dim]Goodbye![/dim]")
             return True
-        elif cmd in ("/help", "/h"):
-            self._show_help()
-        elif cmd == "/tables":
-            self._show_tables()
-        elif cmd == "/show" and arg:
-            self._run_query(f"SELECT * FROM {arg}")
-        elif cmd == "/query" and arg:
-            self._run_query(arg)
-        elif cmd == "/export":
-            self._export_table(arg)
-        elif cmd == "/code":
-            self._show_code(arg)
-        elif cmd == "/state":
-            self._show_state()
-        elif cmd in ("/update", "/refresh"):
+
+        # Commands routed through session for shared core logic
+        # These use the centralized command registry
+        registry_commands = {
+            "/help", "/h", "/tables", "/show", "/query", "/code",
+            "/artifacts", "/export", "/state", "/status", "/reset",
+            "/facts", "/context", "/preferences",
+            "/databases", "/apis", "/documents", "/docs", "/files",
+        }
+
+        if cmd in registry_commands or (cmd == "/show" and arg) or (cmd == "/query" and arg):
+            return self._run_registry_command(cmd_input)
+
+        # REPL-specific commands with custom presentation or interactive handling
+        # These are NOT in the centralized registry
+        if cmd in ("/update", "/refresh"):
             self._refresh_metadata()
-        elif cmd == "/reset":
-            self._reset_session()
         elif cmd == "/redo":
             self._handle_redo(arg)
         elif cmd == "/user":
@@ -2258,12 +2249,8 @@ Provide a 2-3 sentence summary covering:
             self._show_history()
         elif cmd in ("/resume", "/restore") and arg:
             self._resume_session(arg)
-        elif cmd == "/context":
-            self._show_context()
         elif cmd == "/compact":
             self._compact_context()
-        elif cmd == "/facts":
-            self._show_facts()
         elif cmd == "/remember" and arg:
             self._remember_fact(arg)
         elif cmd == "/forget" and arg:
@@ -2274,13 +2261,9 @@ Provide a 2-3 sentence summary covering:
             self._toggle_raw(arg)
         elif cmd == "/insights":
             self._toggle_insights(arg)
-        elif cmd == "/preferences":
-            self._show_preferences()
-        elif cmd == "/artifacts":
-            self._show_artifacts()
-        elif cmd in ("/database", "/databases", "/db"):
+        elif cmd in ("/database", "/db"):
             self._handle_database(arg)
-        elif cmd in ("/file", "/files"):
+        elif cmd == "/file":
             self._handle_file(arg)
         elif cmd == "/correct":
             self._handle_correct(arg)
@@ -2298,6 +2281,39 @@ Provide a 2-3 sentence summary covering:
             self._handle_prove()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")
+
+        return False
+
+    def _run_registry_command(self, cmd_input: str) -> bool:
+        """Run a command through the session's centralized command registry.
+
+        This ensures REPL and web UI share the same command logic.
+        Handles presentation of the result in Rich format.
+
+        Args:
+            cmd_input: The full command string (e.g., "/tables" or "/show orders")
+
+        Returns:
+            False (commands don't exit the REPL)
+        """
+        if not self.session:
+            self.session = self._create_session()
+
+        try:
+            # Route through session which uses the command registry
+            result = self.session.solve(cmd_input)
+
+            if result.get("success") is False:
+                self.console.print(f"[red]{result.get('output', 'Command failed')}[/red]")
+            else:
+                output = result.get("output", "")
+                if output:
+                    # Display markdown output using Rich
+                    from rich.markdown import Markdown
+                    self.console.print(Markdown(output))
+
+        except Exception as e:
+            self.console.print(f"[red]Error: {e}[/red]")
 
         return False
 

@@ -1,6 +1,6 @@
 // Hamburger Menu (drawer) component
 
-import { Fragment } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import {
@@ -14,8 +14,14 @@ import {
   LinkIcon,
   ServerIcon,
   Cog6ToothIcon,
+  ChatBubbleLeftRightIcon,
+  PlusIcon,
 } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
+import { useSessionStore } from '@/store/sessionStore'
+import { useArtifactStore } from '@/store/artifactStore'
+import * as sessionsApi from '@/api/sessions'
+import type { Session } from '@/types/api'
 
 interface MenuItem {
   name: string
@@ -83,14 +89,97 @@ const menuItems: MenuItem[] = [
 
 interface HamburgerMenuProps {
   onCommand?: (command: string) => void
+  onNewSession?: () => void
 }
 
-export function HamburgerMenu({ onCommand }: HamburgerMenuProps) {
+export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
   const { menuOpen, setMenuOpen, theme, setTheme } = useUIStore()
+  const { session: currentSession, setSession, createSession } = useSessionStore()
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [loadingSessions, setLoadingSessions] = useState(false)
+
+  // Fetch sessions when menu opens
+  useEffect(() => {
+    if (menuOpen) {
+      setLoadingSessions(true)
+      sessionsApi.listSessions()
+        .then((response) => {
+          // Sort by last_activity descending (most recent first)
+          const sorted = [...response.sessions].sort(
+            (a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+          )
+          setSessions(sorted)
+        })
+        .catch(console.error)
+        .finally(() => setLoadingSessions(false))
+    }
+  }, [menuOpen])
 
   const handleCommand = (command: string) => {
     onCommand?.(command)
     setMenuOpen(false)
+  }
+
+  const handleSwitchSession = async (sessionId: string) => {
+    if (sessionId === currentSession?.session_id) {
+      setMenuOpen(false)
+      return
+    }
+    try {
+      const session = await sessionsApi.getSession(sessionId)
+
+      // Clear current state and set new session
+      useArtifactStore.getState().clear()
+      setSession(session)
+
+      // Fetch all session data to restore state
+      const artifactStore = useArtifactStore.getState()
+      await Promise.all([
+        artifactStore.fetchTables(sessionId),
+        artifactStore.fetchArtifacts(sessionId),
+        artifactStore.fetchFacts(sessionId),
+        artifactStore.fetchEntities(sessionId),
+        artifactStore.fetchDataSources(sessionId),
+        artifactStore.fetchStepCodes(sessionId),
+      ])
+
+      setMenuOpen(false)
+    } catch (error) {
+      console.error('Failed to switch session:', error)
+    }
+  }
+
+  const handleNewSession = async () => {
+    useArtifactStore.getState().clear()
+    await createSession()
+    setMenuOpen(false)
+    onNewSession?.()
+  }
+
+  // Format session title: use summary if available, otherwise current_query, otherwise session_id
+  const getSessionTitle = (session: Session) => {
+    if (session.summary) return session.summary
+    if (session.current_query) {
+      const query = session.current_query
+      return query.length > 40 ? query.slice(0, 40) + '...' : query
+    }
+    return `Session ${session.session_id.slice(0, 8)}`
+  }
+
+  // Format relative time
+  const formatRelativeTime = (dateStr: string) => {
+    const date = new Date(dateStr)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+
+    if (diffMins < 1) return 'Just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffDays < 7) return `${diffDays}d ago`
+    return date.toLocaleDateString()
   }
 
   return (
@@ -125,7 +214,7 @@ export function HamburgerMenu({ onCommand }: HamburgerMenuProps) {
                     {/* Header */}
                     <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 dark:border-gray-700">
                       <Dialog.Title className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                        Commands
+                        Menu
                       </Dialog.Title>
                       <button
                         onClick={() => setMenuOpen(false)}
@@ -135,8 +224,59 @@ export function HamburgerMenu({ onCommand }: HamburgerMenuProps) {
                       </button>
                     </div>
 
-                    {/* Menu items */}
-                    <nav className="flex-1 px-2 py-4 space-y-1">
+                    {/* Sessions section */}
+                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                          Sessions
+                        </h3>
+                        <button
+                          onClick={handleNewSession}
+                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                          title="New session"
+                        >
+                          <PlusIcon className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="space-y-1 max-h-48 overflow-y-auto">
+                        {loadingSessions ? (
+                          <p className="text-xs text-gray-400 py-2">Loading sessions...</p>
+                        ) : sessions.length === 0 ? (
+                          <p className="text-xs text-gray-400 py-2">No sessions yet</p>
+                        ) : (
+                          sessions.slice(0, 10).map((session) => (
+                            <button
+                              key={session.session_id}
+                              onClick={() => handleSwitchSession(session.session_id)}
+                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors ${
+                                session.session_id === currentSession?.session_id
+                                  ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
+                                  : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                              }`}
+                            >
+                              <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate text-gray-900 dark:text-gray-100">
+                                  {getSessionTitle(session)}
+                                </p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                  {formatRelativeTime(session.last_activity)}
+                                  {session.tables_count > 0 && ` · ${session.tables_count} tables`}
+                                </p>
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Commands section */}
+                    <div className="px-4 pt-3 pb-1">
+                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                        Commands
+                      </h3>
+                    </div>
+                    <nav className="flex-1 px-2 pb-4 space-y-1">
                       {menuItems.map((item) => (
                         <button
                           key={item.command}

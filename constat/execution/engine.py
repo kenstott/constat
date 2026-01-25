@@ -90,18 +90,26 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 
 ## Code Environment
 - `pd`: pandas, `np`: numpy (pre-imported)
-- `db_<name>`: SQL database connections
+- `db_<name>`: Database connections (SQL or NoSQL depending on config)
 - `api_<name>`: GraphQL/REST API clients (response is data payload directly, no 'data' wrapper)
 - `file_<name>`: File paths for CSV/JSON/Parquet
 - `send_email(to, subject, body, df=None)`: Email with optional attachment
 
 ## Data Loading
-- SQL: `pd.read_sql("SELECT ...", db_<name>)` - ALWAYS use pd.read_sql(), NEVER use db.execute()
+**SQL databases** (SQLite, PostgreSQL, DuckDB):
+- `pd.read_sql("SELECT ...", db_<name>)` - ALWAYS use pd.read_sql(), NEVER use db.execute()
+
+**NoSQL databases** (MongoDB, Cassandra, Elasticsearch):
+- MongoDB: `pd.DataFrame(list(db_<name>['collection'].find(query)))`
+- Elasticsearch: `pd.DataFrame(db_<name>.query('index', query_dict))`
+- Cassandra: `pd.DataFrame(db_<name>.query('table', filter_dict))`
+
+**Files:**
 - CSV: `pd.read_csv(file_<name>)`
 - JSON: `pd.read_json(file_<name>)`
 - Parquet: `pd.read_parquet(file_<name>)`
 
-**CRITICAL**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Always use `pd.read_sql(query, db_<name>)` for ALL database queries.
+**CRITICAL for SQL**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Use `pd.read_sql(query, db_<name>)` instead.
 
 ## Variable vs Hardcoded Values
 - Relative terms ("today", "last month") → use `datetime.now()`, relative calculations
@@ -109,7 +117,7 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 
 ## Code Rules
 1. Use discovery tools first to understand available data
-2. For SQL use pd.read_sql(), for files use appropriate pd.read_* function
+2. Use appropriate access pattern for database type (see Data Loading above)
 3. Print a clear, formatted answer at the end
 
 ## Output Guidelines

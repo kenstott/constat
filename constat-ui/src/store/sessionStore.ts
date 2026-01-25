@@ -15,6 +15,8 @@ interface Message {
   stepNumber?: number
   plan?: Plan
   isLive?: boolean // Message that updates in place during execution
+  isPending?: boolean // Step that hasn't started yet (shows pending animation)
+  defaultExpanded?: boolean // Start expanded (don't collapse)
 }
 
 // Execution phases for live status updates
@@ -26,6 +28,7 @@ type ExecutionPhase =
   | 'executing'
   | 'retrying'
   | 'summarizing'
+  | 'synthesizing'
 
 interface ClarificationQuestion {
   text: string
@@ -65,6 +68,9 @@ interface SessionState {
   // Clarification
   clarification: ClarificationState | null
 
+  // Suggestions (for number shortcuts)
+  suggestions: string[]
+
   // Actions
   createSession: (userId?: string) => Promise<void>
   setSession: (session: Session | null) => void
@@ -98,12 +104,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   stepAttempt: 1,
   plan: null,
   clarification: null,
+  suggestions: [],
 
   createSession: async (userId = 'default') => {
     const session = await sessionsApi.createSession(userId)
-    set({ session, status: 'idle', messages: [], plan: null })
 
-    // Connect WebSocket
+    // Clear artifact store for fresh session
+    useArtifactStore.getState().clear()
+
+    // Initialize empty - welcome message will come from server via WebSocket
+    set({ session, status: 'idle', messages: [], plan: null, suggestions: [] })
+
+    // Connect WebSocket - server will send welcome message on connect
     wsManager.connect(session.session_id)
     wsManager.onStatus((connected) => set({ wsConnected: connected }))
     wsManager.onEvent((event) => get().handleWSEvent(event))
@@ -121,11 +133,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   submitQuery: async (problem, isFollowup = false) => {
-    const { session, addMessage } = get()
+    const { session, addMessage, suggestions } = get()
     if (!session) return
 
-    // Add user message
-    addMessage({ type: 'user', content: problem })
+    // Expand number shortcuts (e.g., "1" -> first suggestion)
+    let expandedProblem = problem
+    const trimmed = problem.trim()
+    if (/^\d+$/.test(trimmed) && suggestions.length > 0) {
+      const idx = parseInt(trimmed, 10) - 1
+      if (idx >= 0 && idx < suggestions.length) {
+        expandedProblem = suggestions[idx]
+      }
+    }
+
+    // Add user message (show expanded form)
+    addMessage({ type: 'user', content: expandedProblem })
 
     // Add thinking indicator (will become live message on first event)
     const thinkingId = crypto.randomUUID()
@@ -141,14 +163,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMessageId: thinkingId,
       liveMessageId: null,
       stepMessageIds: {},
-      currentQuery: problem,
+      currentQuery: expandedProblem,
       status: 'planning',
       executionPhase: 'idle',
       currentStepNumber: 0,
       stepAttempt: 1,
+      suggestions: [], // Clear suggestions after use
     }))
 
-    await queriesApi.submitQuery(session.session_id, problem, isFollowup)
+    await queriesApi.submitQuery(session.session_id, expandedProblem, isFollowup)
   },
 
   cancelExecution: async () => {
@@ -165,7 +188,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const steps = plan?.steps || []
 
-    // Create message bubbles for all steps upfront
+    // Create message bubbles for all steps upfront (pending until step_start)
     const stepMessageIds: Record<number, string> = {}
     const stepMessages: Message[] = steps.map((step) => {
       const id = crypto.randomUUID()
@@ -177,7 +200,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         content: `Step ${stepNum}: ${step.goal || 'Pending'}`,
         timestamp: new Date(),
         stepNumber: stepNum,
-        isLive: true,
+        isLive: false, // Not live until step starts
+        isPending: true, // Pending animation until step starts
       }
     })
 
@@ -286,7 +310,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set((state) => ({
           messages: state.messages.map((m) =>
             m.id === messageId
-              ? { ...m, content, isLive: !isComplete }
+              ? { ...m, content, isLive: !isComplete, isPending: false }
               : m
           ),
         }))
@@ -348,6 +372,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     switch (event.event_type) {
+      case 'welcome': {
+        // Welcome message from server (unified with REPL)
+        const data = event.data as {
+          message_markdown: string
+          suggestions: string[]
+        }
+        const welcomeMessage: Message = {
+          id: crypto.randomUUID(),
+          type: 'system',
+          content: data.message_markdown,
+          timestamp: new Date(),
+          defaultExpanded: true,
+        }
+        set((state) => ({
+          messages: [...state.messages, welcomeMessage],
+          suggestions: data.suggestions || [],
+        }))
+        break
+      }
+
       case 'planning_start':
         ensureLiveMessage('Planning...', 'planning')
         set({ status: 'planning' })
@@ -368,7 +412,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'step_generating': {
         const attempt = stepAttempt > 1 ? ` (attempt ${stepAttempt})` : ''
-        updateStepMessage(event.step_number, `Step ${event.step_number}: Generating code${attempt}...`)
+        updateStepMessage(event.step_number, `Step ${event.step_number}: Planning${attempt}...`)
         set({ executionPhase: 'generating' })
         break
       }
@@ -396,16 +440,154 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       case 'step_complete': {
-        const result = event.data as { success?: boolean; stdout?: string; goal?: string }
-        // Update step bubble with completion
+        const result = event.data as {
+          success?: boolean
+          stdout?: string
+          goal?: string
+          code?: string
+          tables_created?: string[]
+        }
+        // Update step bubble with completion status and output (code goes to Code accordion)
         const summary = result.goal || 'Completed'
-        updateStepMessage(event.step_number, `Step ${event.step_number}: ✓ ${summary}`, true)
-        // Add output if there is any (as separate bubble)
-        if (result.stdout) {
-          addMessage({
-            type: 'output',
-            content: result.stdout,
-            stepNumber: event.step_number,
+        const outputSummary = result.stdout ? `\n\n${result.stdout}` : ''
+        updateStepMessage(
+          event.step_number,
+          `Step ${event.step_number}: ✓ ${summary}${outputSummary}`,
+          true
+        )
+        // Store code for the Code accordion
+        if (result.code) {
+          useArtifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code)
+        }
+        // Fetch artifacts/facts after each step completes (server doesn't emit real-time events)
+        const { session } = get()
+        if (session) {
+          const artifactStore = useArtifactStore.getState()
+          artifactStore.fetchArtifacts(session.session_id)
+          artifactStore.fetchFacts(session.session_id)
+        }
+        // Add tables created in this step to artifact store
+        if (result.tables_created && result.tables_created.length > 0) {
+          result.tables_created.forEach((tableName) => {
+            useArtifactStore.getState().addTable({
+              name: tableName,
+              row_count: 0, // Will be fetched on demand
+              step_number: event.step_number,
+              columns: [],
+            })
+          })
+        }
+        break
+      }
+
+      case 'synthesizing':
+      case 'generating_insights': {
+        // Show "Generating insights..." with animation
+        finalizeAllSteps()
+        // Add or update a live thinking message
+        const insightMsg = (event.data as { message?: string })?.message || 'Generating insights...'
+        const existingThinking = get().messages.find(m => m.type === 'thinking' && m.isLive)
+        if (existingThinking) {
+          // Update existing thinking message
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === existingThinking.id ? { ...m, content: insightMsg } : m
+            ),
+            executionPhase: 'synthesizing',
+            thinkingMessageId: existingThinking.id,  // Track it for clearLiveMessage
+          }))
+        } else {
+          // Create new thinking message and track its ID
+          const newId = Date.now().toString()
+          const thinkingMessage: Message = {
+            id: newId,
+            type: 'thinking',
+            content: insightMsg,
+            timestamp: new Date(),
+            isLive: true,
+          }
+          set((state) => ({
+            messages: [...state.messages, thinkingMessage],
+            executionPhase: 'synthesizing',
+            thinkingMessageId: newId,  // Track it for clearLiveMessage
+          }))
+        }
+
+        // Auto-expand best results in artifact panel before insights are generated
+        // and select the best artifact to render its contents
+        const { session } = get()
+        if (session) {
+          console.log('[synthesizing] Starting artifact promotion for session:', session.session_id)
+          const artifactStore = useArtifactStore.getState()
+          // Refresh data to get latest artifacts and tables
+          Promise.all([
+            artifactStore.fetchArtifacts(session.session_id),
+            artifactStore.fetchTables(session.session_id),
+          ]).then(() => {
+            // Import uiStore dynamically to avoid circular deps
+            import('./uiStore').then(({ useUIStore }) => {
+              const { artifacts, tables, selectArtifact } = useArtifactStore.getState()
+              console.log('[synthesizing] Fetched - Artifacts:', artifacts.length, 'Tables:', tables.length)
+              console.log('[synthesizing] All artifacts:', artifacts.map(a => `${a.name} (type=${a.artifact_type}, is_key_result=${a.is_key_result})`))
+
+              const sectionsToExpand: string[] = []
+
+              // Visualization types for identifying key results
+              const visualizationTypes = ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown']
+
+              // Find visualizations
+              const visualizations = artifacts.filter((a) =>
+                visualizationTypes.includes(a.artifact_type.toLowerCase())
+              )
+              console.log('[synthesizing] Visualizations found:', visualizations.length)
+              if (visualizations.length > 0) {
+                sectionsToExpand.push('visualizations')
+              }
+
+              // Find key artifacts (marked as key results)
+              const keyArtifacts = artifacts.filter((a) => a.is_key_result)
+              console.log('[synthesizing] Key artifacts found:', keyArtifacts.length)
+              if (keyArtifacts.length > 0) {
+                sectionsToExpand.push('artifacts')
+              }
+
+              // Always expand tables if we have any
+              if (tables.length > 0) {
+                sectionsToExpand.push('tables')
+              }
+
+              // Expand the sections
+              console.log('[synthesizing] Expanding sections:', sectionsToExpand)
+              if (sectionsToExpand.length > 0) {
+                useUIStore.getState().expandArtifactSections(sectionsToExpand)
+              }
+
+              // Select the best artifact to render it:
+              // Priority: 1) Latest visualization, 2) Latest key result artifact, 3) None
+              const bestVisualization = visualizations.length > 0
+                ? visualizations.reduce((best, curr) =>
+                    (curr.step_number > best.step_number) ? curr : best
+                  )
+                : null
+
+              const bestKeyResult = keyArtifacts.length > 0
+                ? keyArtifacts.reduce((best, curr) =>
+                    (curr.step_number > best.step_number) ? curr : best
+                  )
+                : null
+
+              // Select visualization first (more visual impact), otherwise key result
+              const bestArtifact = bestVisualization || bestKeyResult
+              console.log('[synthesizing] Best artifact to open:', bestArtifact ? `${bestArtifact.name} (id=${bestArtifact.id})` : 'none')
+              if (bestArtifact) {
+                console.log('[synthesizing] Calling selectArtifact for:', bestArtifact.id)
+                selectArtifact(session.session_id, bestArtifact.id)
+              }
+            }).catch(err => {
+              console.error('[synthesizing] Error importing uiStore:', err)
+            })
+          }).catch(err => {
+            console.error('[synthesizing] Error fetching artifacts/tables:', err)
           })
         }
         break
@@ -415,13 +597,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Finalize all step messages
         finalizeAllSteps()
         clearLiveMessage()
-        set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1 })
+        // Extract suggestions for number shortcuts
+        const completeSuggestions = (event.data.suggestions as string[]) || []
+        set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1, suggestions: completeSuggestions })
         // Add final insights bubble
         const output = (event.data.output as string) || 'Analysis complete'
         addMessage({
           type: 'output',
           content: output,
         })
+        // Refresh artifact panel with final data
+        const { session } = get()
+        if (session) {
+          const artifactStore = useArtifactStore.getState()
+          artifactStore.fetchTables(session.session_id)
+          artifactStore.fetchArtifacts(session.session_id)
+          artifactStore.fetchFacts(session.session_id)
+        }
         break
       }
 

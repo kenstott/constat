@@ -38,6 +38,11 @@ if sys.platform == "darwin":
     os.close(_original_stderr_fd)
     os.close(_devnull)
 
+# Suppress multiprocessing resource_tracker warnings at shutdown
+# (leaked semaphores from DuckDB/SentenceTransformer are cleaned up anyway)
+import warnings
+warnings.filterwarnings("ignore", message="resource_tracker:")
+
 console = Console()
 
 

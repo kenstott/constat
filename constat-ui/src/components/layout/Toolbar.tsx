@@ -5,30 +5,31 @@ import { useArtifactStore } from '@/store/artifactStore'
 import {
   PlusIcon,
   StopIcon,
-  TrashIcon,
   QuestionMarkCircleIcon,
   CircleStackIcon,
   LightBulbIcon,
   ChartBarIcon,
   TableCellsIcon,
   DocumentIcon,
+  CheckBadgeIcon,
 } from '@heroicons/react/24/outline'
 
 interface ToolbarProps {
   onNewQuery?: () => void
+  onShowProof?: () => void
 }
 
-export function Toolbar({ onNewQuery }: ToolbarProps) {
-  const { session, status, cancelExecution, clearMessages } = useSessionStore()
+export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
+  const { session, status, cancelExecution } = useSessionStore()
   const { databases, apis, documents, facts, artifacts, tables } = useArtifactStore()
 
   // Count datasources (databases + APIs + documents)
   const datasourceCount = databases.length + apis.length + documents.length
 
-  // Count visualizations (charts, diagrams, images)
-  const visualizationTypes = ['chart', 'diagram', 'image', 'html', 'vega']
+  // Count visualizations (charts, diagrams, images, markdown)
+  const visualizationTypes = ['chart', 'diagram', 'image', 'html', 'vega', 'markdown', 'plotly', 'svg', 'png', 'jpeg']
   const visualizationCount = artifacts.filter(a =>
-    visualizationTypes.some(t => a.type?.toLowerCase().includes(t))
+    visualizationTypes.some(t => a.artifact_type?.toLowerCase().includes(t))
   ).length
 
   const isExecuting = status === 'planning' || status === 'executing'
@@ -46,6 +47,16 @@ export function Toolbar({ onNewQuery }: ToolbarProps) {
           New Query
         </button>
 
+        <button
+          onClick={onShowProof}
+          disabled={isExecuting}
+          className="btn-secondary text-xs disabled:opacity-50"
+          title="Show proof tree / reasoning chain"
+        >
+          <CheckBadgeIcon className="w-4 h-4 mr-1" />
+          Proof
+        </button>
+
         {isExecuting && (
           <button
             onClick={cancelExecution}
@@ -56,14 +67,12 @@ export function Toolbar({ onNewQuery }: ToolbarProps) {
           </button>
         )}
 
-        <button
-          onClick={clearMessages}
-          disabled={isExecuting}
-          className="btn-ghost text-xs disabled:opacity-50"
-        >
-          <TrashIcon className="w-4 h-4 mr-1" />
-          Clear
-        </button>
+        {/* Input hints */}
+        <span className="text-xs text-gray-400 dark:text-gray-500 ml-2">
+          <kbd className="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-[10px]">Enter</kbd> send
+          <span className="mx-1">·</span>
+          <kbd className="px-1 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-[10px]">/</kbd> commands
+        </span>
       </div>
 
       {/* Spacer */}

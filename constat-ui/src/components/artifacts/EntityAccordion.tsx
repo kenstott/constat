@@ -15,6 +15,12 @@ interface EntityItemProps {
 function EntityItem({ entity }: EntityItemProps) {
   const [isOpen, setIsOpen] = useState(false)
 
+  // Get original name for display (if different from normalized name)
+  const originalName: string | undefined =
+    (typeof entity.original_name === 'string' ? entity.original_name : undefined) ||
+    (typeof entity.metadata?.original_name === 'string' ? entity.metadata.original_name : undefined)
+  const showOriginalName = originalName && originalName !== entity.name
+
   // Type badge color
   const typeColor = {
     table: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
@@ -55,17 +61,10 @@ function EntityItem({ entity }: EntityItemProps) {
       {isOpen && (
         <div className="pl-6 pb-2 space-y-2">
           {/* Original name if different from display name */}
-          {entity.original_name && entity.original_name !== entity.name && (
+          {showOriginalName && (
             <div className="text-xs text-gray-400 dark:text-gray-500">
               <span className="italic">Original: </span>
-              <span className="font-mono text-gray-500 dark:text-gray-400">{entity.original_name}</span>
-            </div>
-          )}
-          {/* Check metadata for original_name as fallback */}
-          {!entity.original_name && entity.metadata?.original_name && entity.metadata.original_name !== entity.name && (
-            <div className="text-xs text-gray-400 dark:text-gray-500">
-              <span className="italic">Original: </span>
-              <span className="font-mono text-gray-500 dark:text-gray-400">{String(entity.metadata.original_name)}</span>
+              <span className="font-mono text-gray-500 dark:text-gray-400">{originalName}</span>
             </div>
           )}
           {/* Sources */}

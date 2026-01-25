@@ -1,9 +1,10 @@
 // WebSocket Manager with reconnection logic
 
-import type { WSMessage, WSEvent } from '@/types/api'
+import type { WSMessage, WSEvent, CompletionItem } from '@/types/api'
 
 export type WSEventHandler = (event: WSEvent) => void
 export type WSStatusHandler = (connected: boolean) => void
+export type AutocompleteCallback = (items: CompletionItem[]) => void
 
 interface WSManagerOptions {
   reconnectInterval?: number
@@ -15,6 +16,8 @@ export class WebSocketManager {
   private sessionId: string | null = null
   private eventHandlers: Set<WSEventHandler> = new Set()
   private statusHandlers: Set<WSStatusHandler> = new Set()
+  private autocompleteCallbacks: Map<string, AutocompleteCallback> = new Map()
+  private autocompleteRequestId = 0
   private reconnectAttempts = 0
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   private options: Required<WSManagerOptions>
@@ -59,7 +62,19 @@ export class WebSocketManager {
         const message: WSMessage = JSON.parse(event.data)
         if (message.type === 'event') {
           const wsEvent = message.payload as unknown as WSEvent
-          this.notifyEvent(wsEvent)
+          // Handle autocomplete responses
+          if (wsEvent.event_type === 'autocomplete_response') {
+            const data = wsEvent.data as { request_id?: string; items?: CompletionItem[] }
+            const requestId = data.request_id
+            const items = data.items || []
+            if (requestId && this.autocompleteCallbacks.has(requestId)) {
+              const callback = this.autocompleteCallbacks.get(requestId)!
+              this.autocompleteCallbacks.delete(requestId)
+              callback(items)
+            }
+          } else {
+            this.notifyEvent(wsEvent)
+          }
         }
       } catch (error) {
         console.error('Failed to parse WebSocket message:', error)
@@ -83,6 +98,7 @@ export class WebSocketManager {
     // Clear all handlers to prevent duplicates on reconnect
     this.eventHandlers.clear()
     this.statusHandlers.clear()
+    this.autocompleteCallbacks.clear()
   }
 
   private scheduleReconnect(): void {
@@ -121,6 +137,36 @@ export class WebSocketManager {
 
   cancel(): void {
     this.send('cancel')
+  }
+
+  requestAutocomplete(
+    context: 'table' | 'column' | 'entity',
+    prefix: string,
+    callback: AutocompleteCallback,
+    parent?: string
+  ): void {
+    if (!this.isConnected) {
+      callback([])
+      return
+    }
+
+    const requestId = `ac_${++this.autocompleteRequestId}`
+    this.autocompleteCallbacks.set(requestId, callback)
+
+    this.send('autocomplete', {
+      context,
+      prefix,
+      parent,
+      request_id: requestId,
+    })
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      if (this.autocompleteCallbacks.has(requestId)) {
+        this.autocompleteCallbacks.delete(requestId)
+        callback([])
+      }
+    }, 5000)
   }
 
   onEvent(handler: WSEventHandler): () => void {
