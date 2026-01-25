@@ -2,16 +2,12 @@
 
 import { useSessionStore } from '@/store/sessionStore'
 import { useUIStore } from '@/store/uiStore'
-import { useArtifactStore } from '@/store/artifactStore'
 import {
   Bars3Icon,
   SignalIcon,
   SignalSlashIcon,
   SunIcon,
   MoonIcon,
-  CircleStackIcon,
-  LightBulbIcon,
-  ChartBarIcon,
 } from '@heroicons/react/24/outline'
 
 const statusColors: Record<string, string> = {
@@ -27,16 +23,6 @@ const statusColors: Record<string, string> = {
 export function StatusBar() {
   const { session, status, wsConnected } = useSessionStore()
   const { theme, setTheme, toggleMenu } = useUIStore()
-  const { databases, apis, documents, facts, artifacts } = useArtifactStore()
-
-  // Count datasources (databases + APIs + documents)
-  const datasourceCount = databases.length + apis.length + documents.length
-
-  // Count visualizations (charts, diagrams, images)
-  const visualizationTypes = ['chart', 'diagram', 'image', 'html', 'vega']
-  const visualizationCount = artifacts.filter(a =>
-    visualizationTypes.some(t => a.type?.toLowerCase().includes(t))
-  ).length
 
   const toggleTheme = () => {
     const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
@@ -80,24 +66,6 @@ export function StatusBar() {
 
       {/* Spacer */}
       <div className="flex-1" />
-
-      {/* Counts */}
-      {session && (
-        <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-          <div className="flex items-center gap-1" title="Data Sources">
-            <CircleStackIcon className="w-4 h-4" />
-            <span>{datasourceCount}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Facts">
-            <LightBulbIcon className="w-4 h-4" />
-            <span>{facts.length}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Visualizations">
-            <ChartBarIcon className="w-4 h-4" />
-            <span>{visualizationCount}</span>
-          </div>
-        </div>
-      )}
 
       {/* Connection status */}
       <div className="flex items-center gap-1.5">

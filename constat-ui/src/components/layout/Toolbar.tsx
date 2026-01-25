@@ -7,6 +7,9 @@ import {
   StopIcon,
   TrashIcon,
   QuestionMarkCircleIcon,
+  CircleStackIcon,
+  LightBulbIcon,
+  ChartBarIcon,
 } from '@heroicons/react/24/outline'
 
 interface ToolbarProps {
@@ -15,7 +18,16 @@ interface ToolbarProps {
 
 export function Toolbar({ onNewQuery }: ToolbarProps) {
   const { session, status, cancelExecution, clearMessages } = useSessionStore()
-  const { tables, artifacts } = useArtifactStore()
+  const { databases, apis, documents, facts, artifacts } = useArtifactStore()
+
+  // Count datasources (databases + APIs + documents)
+  const datasourceCount = databases.length + apis.length + documents.length
+
+  // Count visualizations (charts, diagrams, images)
+  const visualizationTypes = ['chart', 'diagram', 'image', 'html', 'vega']
+  const visualizationCount = artifacts.filter(a =>
+    visualizationTypes.some(t => a.type?.toLowerCase().includes(t))
+  ).length
 
   const isExecuting = status === 'planning' || status === 'executing'
 
@@ -58,8 +70,18 @@ export function Toolbar({ onNewQuery }: ToolbarProps) {
       {/* Stats */}
       {session && (
         <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-          <span>{tables.length} tables</span>
-          <span>{artifacts.length} artifacts</span>
+          <div className="flex items-center gap-1" title="Data Sources">
+            <CircleStackIcon className="w-4 h-4" />
+            <span>{datasourceCount}</span>
+          </div>
+          <div className="flex items-center gap-1" title="Facts">
+            <LightBulbIcon className="w-4 h-4" />
+            <span>{facts.length}</span>
+          </div>
+          <div className="flex items-center gap-1" title="Visualizations">
+            <ChartBarIcon className="w-4 h-4" />
+            <span>{visualizationCount}</span>
+          </div>
         </div>
       )}
 
