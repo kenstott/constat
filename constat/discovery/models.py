@@ -17,22 +17,109 @@ from typing import Optional, Any
 from constat.core.config import DocumentConfig
 
 
-def normalize_entity_name(name: str) -> str:
-    """Normalize an entity name for display.
+def singularize(word: str) -> str:
+    """Convert a word to its singular form.
 
-    Converts underscores and hyphens to spaces for readability.
+    Simple heuristic-based singularization for common English patterns.
 
     Args:
-        name: Raw entity name (e.g., "employee_salary", "user-profile")
+        word: Word to singularize (e.g., "orders", "employees", "categories")
 
     Returns:
-        Normalized name (e.g., "employee salary", "user profile")
+        Singular form (e.g., "order", "employee", "category")
+    """
+    if not word or len(word) < 3:
+        return word
+
+    lower = word.lower()
+
+    # Handle common irregular plurals
+    irregulars = {
+        'people': 'person',
+        'children': 'child',
+        'men': 'man',
+        'women': 'woman',
+        'mice': 'mouse',
+        'geese': 'goose',
+        'teeth': 'tooth',
+        'feet': 'foot',
+        'data': 'datum',
+        'criteria': 'criterion',
+        'indices': 'index',
+        'vertices': 'vertex',
+        'matrices': 'matrix',
+    }
+    if lower in irregulars:
+        # Preserve original case pattern
+        if word[0].isupper():
+            return irregulars[lower].capitalize()
+        return irregulars[lower]
+
+    # Don't singularize words ending in 'ss', 'us', 'is'
+    if lower.endswith(('ss', 'us', 'is')):
+        return word
+
+    # Handle -ies -> -y (categories -> category)
+    if lower.endswith('ies') and len(word) > 3:
+        return word[:-3] + 'y'
+
+    # Handle -es -> remove (boxes -> box, watches -> watch)
+    if lower.endswith('es') and len(word) > 2:
+        # Check for -ches, -shes, -xes, -zes, -ses
+        if lower.endswith(('ches', 'shes', 'xes', 'zes', 'ses')):
+            return word[:-2]
+        # Check for -oes (heroes -> hero, but not shoes)
+        if lower.endswith('oes') and lower not in ('shoes', 'toes'):
+            return word[:-2]
+        # Default: try removing -es, fall back to -s
+        if lower.endswith('ves'):
+            return word[:-3] + 'f'  # leaves -> leaf
+        return word[:-1]  # Just remove the 's'
+
+    # Handle simple -s -> remove
+    if lower.endswith('s') and not lower.endswith('ss'):
+        return word[:-1]
+
+    return word
+
+
+def normalize_entity_name(name: str, to_singular: bool = True) -> str:
+    """Normalize an entity name to a canonical form.
+
+    Converts underscores and hyphens to spaces, optionally singularizes.
+
+    Args:
+        name: Raw entity name (e.g., "order_items", "user-profiles")
+        to_singular: If True, convert to singular form (default True)
+
+    Returns:
+        Normalized name (e.g., "order item", "user profile")
     """
     # Replace underscores and hyphens with spaces
     normalized = re.sub(r'[_-]+', ' ', name)
     # Collapse multiple spaces
-    normalized = re.sub(r'\s+', ' ', normalized)
-    return normalized.strip()
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+
+    # Singularize each word if requested
+    if to_singular and normalized:
+        words = normalized.split()
+        words = [singularize(w) for w in words]
+        normalized = ' '.join(words)
+
+    return normalized
+
+
+def display_entity_name(name: str) -> str:
+    """Get the display name for an entity (title case of normalized name).
+
+    Args:
+        name: Raw or normalized entity name
+
+    Returns:
+        Title case display name (e.g., "Order Item", "User Profile")
+    """
+    normalized = normalize_entity_name(name, to_singular=True)
+    return normalized.title()
 
 
 def extract_resource_from_path(path: str) -> str:

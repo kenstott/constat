@@ -33,6 +33,7 @@ from constat.discovery.models import (
     EntityType,
     ChunkEntity,
     normalize_entity_name,
+    display_entity_name,
 )
 
 # Load spaCy model once at module level
@@ -228,23 +229,28 @@ class EntityExtractor:
         """Get cached entity or create new one.
 
         Ensures entity deduplication across chunks using normalized names.
-        Stores normalized name as display name, original in metadata.
+        Stores:
+        - name: Display name (title case, singular) e.g., "Order Item"
+        - metadata.normalized: Normalized form (lowercase, singular) e.g., "order item"
+        - metadata.original_name: Original as found e.g., "order_items"
         """
         # Use normalized name for cache key to dedupe "order_id" and "order id"
-        normalized = normalize_entity_name(name)
+        normalized = normalize_entity_name(name)  # lowercase singular
+        display_name = display_entity_name(name)  # title case singular
         cache_key = f"{entity_type}:{normalized.lower()}"
 
         if cache_key in self._entity_cache:
             return self._entity_cache[cache_key]
 
-        # Store original name in metadata if different from normalized
+        # Store names in metadata
         entity_metadata = metadata.copy() if metadata else {}
-        if name != normalized:
+        entity_metadata["normalized"] = normalized
+        if name != normalized and name != display_name:
             entity_metadata["original_name"] = name
 
         entity = Entity(
             id=self._generate_entity_id(name, entity_type),
-            name=normalized,  # Use normalized name for display
+            name=display_name,  # Use display name (title case, singular)
             type=entity_type,
             metadata=entity_metadata,
         )
@@ -627,21 +633,33 @@ def create_schema_entities_from_catalog(
     entities = []
 
     for table in tables:
-        entity_id = hashlib.sha256(f"table:{table.lower()}".encode()).hexdigest()[:16]
+        normalized = normalize_entity_name(table)
+        display_name = display_entity_name(table)
+        entity_id = hashlib.sha256(f"table:{normalized.lower()}".encode()).hexdigest()[:16]
         entities.append(Entity(
             id=entity_id,
-            name=table,
+            name=display_name,
             type=EntityType.TABLE,
-            metadata={"source": "catalog"},
+            metadata={
+                "source": "catalog",
+                "normalized": normalized,
+                "original_name": table if table != normalized else None,
+            },
         ))
 
     for column in columns:
-        entity_id = hashlib.sha256(f"column:{column.lower()}".encode()).hexdigest()[:16]
+        normalized = normalize_entity_name(column)
+        display_name = display_entity_name(column)
+        entity_id = hashlib.sha256(f"column:{normalized.lower()}".encode()).hexdigest()[:16]
         entities.append(Entity(
             id=entity_id,
-            name=column,
+            name=display_name,
             type=EntityType.COLUMN,
-            metadata={"source": "catalog"},
+            metadata={
+                "source": "catalog",
+                "normalized": normalized,
+                "original_name": column if column != normalized else None,
+            },
         ))
 
     return entities
