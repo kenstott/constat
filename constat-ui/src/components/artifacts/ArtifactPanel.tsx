@@ -437,6 +437,37 @@ export function ArtifactPanel() {
                       title={selectedArtifact.name}
                       sandbox="allow-scripts"
                     />
+                  ) : selectedArtifact.artifact_type === 'markdown' || selectedArtifact.mime_type === 'text/markdown' ? (
+                    <iframe
+                      srcDoc={`
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                          <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+                          <style>
+                            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; margin: 0; line-height: 1.6; }
+                            table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+                            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                            th { background: #f5f5f5; }
+                            code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
+                            pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+                            pre code { background: none; padding: 0; }
+                            h1, h2, h3 { margin-top: 1em; margin-bottom: 0.5em; }
+                            ul, ol { padding-left: 1.5em; }
+                          </style>
+                        </head>
+                        <body>
+                          <div id="content"></div>
+                          <script>
+                            document.getElementById('content').innerHTML = marked.parse(${JSON.stringify(selectedArtifact.content)});
+                          </script>
+                        </body>
+                        </html>
+                      `}
+                      className="w-full h-64 border-0"
+                      title={selectedArtifact.name}
+                      sandbox="allow-scripts"
+                    />
                   ) : (
                     <pre className="p-3 text-xs text-gray-600 dark:text-gray-400 overflow-auto max-h-48">
                       {selectedArtifact.content.substring(0, 2000)}
