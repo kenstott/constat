@@ -169,14 +169,25 @@ export interface Fact {
   confidence?: number
 }
 
+// Entity Reference
+export interface EntityReference {
+  document: string
+  section?: string
+  mentions: number
+  mention_text?: string  // Exact text as it appeared in the source
+}
+
 // Entities
 export interface Entity {
   id: string
-  name: string
+  name: string  // Normalized display name
   type: EntityType
+  sources: string[]
   metadata: Record<string, unknown>
+  references: EntityReference[]
   created_at?: string
   mention_count: number
+  original_name?: string  // Original name before normalization (if different)
 }
 
 // Proof Tree
@@ -248,8 +259,27 @@ export interface Config {
   execution_timeout: number
 }
 
+// API Source Info
+export interface ApiSourceInfo {
+  name: string
+  type?: string
+  description?: string
+  base_url?: string
+  connected: boolean
+}
+
+// Document Source Info
+export interface DocumentSourceInfo {
+  name: string
+  type?: string
+  description?: string
+  path?: string
+  indexed: boolean
+}
+
 // WebSocket Events
 export type EventType =
+  | 'welcome'
   | 'session_created'
   | 'session_closed'
   | 'planning_start'

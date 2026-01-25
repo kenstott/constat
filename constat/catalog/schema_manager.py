@@ -1070,15 +1070,17 @@ class SchemaManager:
         """Return list of all table full names."""
         return list(self.metadata_cache.keys())
 
-    def get_entity_names(self) -> list[str]:
-        """Return all table and column names for entity extraction.
+    def get_entity_names(self, include_columns: bool = False) -> list[str]:
+        """Return table names (and optionally column names) for entity extraction.
 
-        Returns a deduplicated list of names that can be used to identify
-        schema entities in documents. Includes both table names and column
-        names (without database prefix).
+        By default, only returns table names since column names are often too
+        generic ("date", "name", "status") and cause false matches in documents.
+
+        Args:
+            include_columns: If True, also include column names (default False)
 
         Returns:
-            List of unique entity names (tables and columns)
+            List of unique entity names
         """
         entities = set()
 
@@ -1086,9 +1088,10 @@ class SchemaManager:
             # Add table name (without database prefix for matching)
             entities.add(table_meta.name)
 
-            # Add column names
-            for col in table_meta.columns:
-                entities.add(col.name)
+            # Optionally add column names
+            if include_columns:
+                for col in table_meta.columns:
+                    entities.add(col.name)
 
         return list(entities)
 

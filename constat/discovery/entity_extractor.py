@@ -86,14 +86,13 @@ class EntityExtractor:
     database, OpenAPI, and GraphQL schemas.
     """
 
-    # spaCy entity types to extract (excluding numeric types like MONEY, PERCENT, CARDINAL, etc.)
+    # spaCy entity types to extract
+    # Excluding: MONEY, PERCENT, CARDINAL (numeric), PERSON (too many false positives)
     SPACY_ENTITY_TYPES = {
         'ORG',      # Organizations, companies
         'PRODUCT',  # Products, software
-        'GPE',      # Countries, cities, states
-        'PERSON',   # People
+        'GPE',      # Countries, cities, states (geographic)
         'EVENT',    # Named events
-        'WORK_OF_ART',  # Titles of books, songs, etc.
         'LAW',      # Legal documents, treaties
     }
 
@@ -104,7 +103,33 @@ class EntityExtractor:
         r'|^\*+$'                                 # Markdown bold/italic
         r'|^-+$'                                  # Markdown hr
         r'|^_{2,}$'                               # Underscores
+        r'|[+/]'                                  # Contains + or / (e.g., "Email + Chat")
     )
+
+    # Common words that spaCy misclassifies as entities
+    NOISE_WORDS = {
+        # Tier/level names
+        'bronze', 'silver', 'gold', 'platinum', 'diamond', 'basic', 'premium',
+        'standard', 'enterprise', 'pro', 'plus', 'elite', 'vip',
+        # Generic terms
+        'level', 'tier', 'type', 'status', 'category', 'alert', 'escalate',
+        'priority', 'severity', 'criteria', 'eligible', 'guidelines',
+        'increase', 'decrease', 'max', 'min', 'total', 'average',
+        'stockout', 'reorder', 'backorder', 'inventory', 'quantity',
+        # Job titles/roles (fragments)
+        'manager', 'director', 'executive', 'vp', 'ceo', 'cto', 'cfo',
+        'admin', 'user', 'customer', 'employee', 'staff', 'team',
+        # Actions
+        'create', 'update', 'delete', 'read', 'write', 'send', 'receive',
+        # Common columns/fields
+        'name', 'email', 'phone', 'address', 'date', 'time', 'id',
+        # Time periods
+        'q1', 'q2', 'q3', 'q4', 'year', 'month', 'week', 'day', 'hour',
+        'fy', 'ytd', 'mtd', 'qtd',
+        # Common document terms
+        'page', 'section', 'table', 'figure', 'appendix', 'chapter',
+        'rating', 'salary', 'order', 'tiers',
+    }
 
     def __init__(
         self,
@@ -468,11 +493,18 @@ class EntityExtractor:
                 text = ent.text.strip()
                 if len(text) < 2:
                     continue
-                if self.NOISE_PATTERNS.match(text):
+                if self.NOISE_PATTERNS.search(text):
                     continue
                 # Skip if mostly non-alphanumeric
                 alpha_count = sum(1 for c in text if c.isalnum())
                 if alpha_count < len(text) * 0.5:
+                    continue
+                # Skip common noise words
+                if text.lower() in self.NOISE_WORDS:
+                    continue
+                # Skip if any word is a noise word (for multi-word entities)
+                words = text.lower().split()
+                if any(w in self.NOISE_WORDS for w in words):
                     continue
 
                 key = (text, ent.label_)

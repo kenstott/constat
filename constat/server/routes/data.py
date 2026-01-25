@@ -357,89 +357,160 @@ async def list_entities(
 ) -> dict[str, Any]:
     """List extracted entities from the session.
 
+    Returns deduplicated entities with their reference locations.
+
     Args:
         session_id: Session ID
         entity_type: Optional filter by type (table, column, concept, etc.)
 
     Returns:
-        List of entities
+        List of entities with references
 
     Raises:
         404: Session not found
     """
     managed = session_manager.get_session(session_id)
 
-    entities = []
-    seen_ids = set()
+    # Use dict keyed by (name, type) for deduplication
+    entity_map: dict[tuple[str, str], dict[str, Any]] = {}
 
-    # Try to get entities from session's entity extractor if available
+    def add_entity(name: str, etype: str, source: str, metadata: dict, references: list[dict] | None = None):
+        """Add or merge an entity into the map."""
+        key = (name.lower(), etype)
+        # Extract original_name from metadata if present
+        original_name = metadata.get("original_name")
+        if key not in entity_map:
+            entity_map[key] = {
+                "id": str(hash(f"{name}_{etype}")),
+                "name": name,
+                "type": etype,
+                "sources": [source],
+                "metadata": metadata,
+                "references": references or [],
+                "mention_count": len(references) if references else 0,
+                "original_name": original_name,
+            }
+        else:
+            # Merge: add source if new, extend references
+            if source not in entity_map[key]["sources"]:
+                entity_map[key]["sources"].append(source)
+            if references:
+                entity_map[key]["references"].extend(references)
+                entity_map[key]["mention_count"] = len(entity_map[key]["references"])
+            # Merge metadata
+            entity_map[key]["metadata"].update(metadata)
+            # Update original_name if not already set
+            if original_name and not entity_map[key].get("original_name"):
+                entity_map[key]["original_name"] = original_name
+
+    # 1. Get entities from vector store (includes schema, api, document sources)
     try:
-        if hasattr(managed.session, "entity_extractor"):
-            all_entities = managed.session.entity_extractor.get_entities()
-            for ent in all_entities:
-                if entity_type and ent.type.value != entity_type:
+        # Vector store is accessed via doc_tools
+        vs = None
+        if hasattr(managed.session, "doc_tools") and managed.session.doc_tools:
+            vs = managed.session.doc_tools._vector_store
+        if vs:
+            # Get all entities from the store
+            result = vs._conn.execute("""
+                SELECT e.id, e.name, e.type, e.source, e.metadata,
+                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
+                FROM entities e
+                ORDER BY e.name
+            """).fetchall()
+
+            for row in result:
+                ent_id, name, etype, source, metadata_json, ref_count = row
+                if entity_type and etype != entity_type:
                     continue
-                ent_id = str(hash(f"{ent.name}_{ent.type.value}"))
-                if ent_id not in seen_ids:
-                    seen_ids.add(ent_id)
-                    entities.append({
-                        "id": ent_id,
-                        "name": ent.name,
-                        "type": ent.type.value,
-                        "metadata": ent.metadata or {},
-                        "mention_count": getattr(ent, "mention_count", 0),
-                    })
-    except Exception as e:
-        logger.warning(f"Could not get entities from entity_extractor: {e}")
 
-    # Also get schema entities (tables and columns) from schema_manager
+                metadata = {}
+                if metadata_json:
+                    import json
+                    metadata = json.loads(metadata_json)
+
+                # Get reference locations for this entity (including mention_text)
+                references = []
+                if ref_count > 0:
+                    ref_result = vs._conn.execute("""
+                        SELECT em.document_name, em.section, ce.mention_count, ce.mention_text
+                        FROM chunk_entities ce
+                        JOIN embeddings em ON ce.chunk_id = em.chunk_id
+                        WHERE ce.entity_id = ?
+                        ORDER BY ce.mention_count DESC
+                        LIMIT 10
+                    """, [ent_id]).fetchall()
+                    for ref_row in ref_result:
+                        doc_name, section, mentions, mention_text = ref_row
+                        references.append({
+                            "document": doc_name,
+                            "section": section,
+                            "mentions": mentions,
+                            "mention_text": mention_text,
+                        })
+
+                add_entity(name, etype, source or "unknown", metadata, references)
+    except Exception as e:
+        logger.warning(f"Could not get entities from vector_store: {e}")
+
+    # 2. Get schema entities from schema_manager (in case vector store doesn't have them)
     try:
-        print(f"[list_entities] Checking schema_manager: {managed.session.schema_manager}")
         if managed.session.schema_manager:
             metadata_cache = managed.session.schema_manager.metadata_cache
-            print(f"[list_entities] metadata_cache has {len(metadata_cache)} tables")
             for full_name, table_meta in metadata_cache.items():
-                print(f"[list_entities] Table: {full_name}, columns: {len(table_meta.columns)}")
                 db_name = table_meta.database
                 table_name = table_meta.name
 
                 # Add table entity
                 if not entity_type or entity_type == "table":
-                    ent_id = str(hash(f"{full_name}_table"))
-                    if ent_id not in seen_ids:
-                        seen_ids.add(ent_id)
-                        entities.append({
-                            "id": ent_id,
-                            "name": table_name,
-                            "type": "table",
-                            "metadata": {"database": db_name, "full_name": full_name},
-                            "mention_count": 0,
-                        })
+                    add_entity(
+                        table_name, "table", "schema",
+                        {"database": db_name, "full_name": full_name},
+                        [{"document": f"Database: {db_name}", "section": "Schema", "mentions": 1}]
+                    )
 
                 # Add column entities
                 if not entity_type or entity_type == "column":
                     for col in table_meta.columns:
-                        col_name = col.name
-                        ent_id = str(hash(f"{full_name}.{col_name}_column"))
-                        if ent_id not in seen_ids:
-                            seen_ids.add(ent_id)
-                            entities.append({
-                                "id": ent_id,
-                                "name": col_name,
-                                "type": "column",
-                                "metadata": {
-                                    "table": table_name,
-                                    "database": db_name,
-                                    "dtype": col.type if col.type else None,
-                                },
-                                "mention_count": 0,
-                            })
+                        add_entity(
+                            col.name, "column", "schema",
+                            {
+                                "table": table_name,
+                                "database": db_name,
+                                "dtype": col.type if col.type else None,
+                            },
+                            [{"document": f"Table: {table_name}", "section": f"Database: {db_name}", "mentions": 1}]
+                        )
     except Exception as e:
-        import traceback
-        print(f"[list_entities] ERROR from schema_manager: {e}")
-        print(f"[list_entities] Traceback: {traceback.format_exc()}")
+        logger.warning(f"Could not get entities from schema_manager: {e}")
 
-    print(f"[list_entities] Returning {len(entities)} entities total")
+    # 3. Get API entities from config
+    try:
+        if managed.session.config and managed.session.config.apis:
+            for api_name, api_config in managed.session.config.apis.items():
+                if not entity_type or entity_type == "api_endpoint":
+                    add_entity(
+                        api_name, "api_endpoint", "api",
+                        {"base_url": getattr(api_config, "base_url", None)},
+                        [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
+                    )
+    except Exception as e:
+        logger.warning(f"Could not get API entities: {e}")
+
+    # 4. Get document entities from config
+    try:
+        if managed.session.config and managed.session.config.documents:
+            for doc_name in managed.session.config.documents.keys():
+                if not entity_type or entity_type == "concept":
+                    add_entity(
+                        doc_name, "concept", "document",
+                        {"source": "document_config"},
+                        [{"document": doc_name, "section": "Indexed Document", "mentions": 1}]
+                    )
+    except Exception as e:
+        logger.warning(f"Could not get document entities: {e}")
+
+    entities = list(entity_map.values())
+    logger.debug(f"[list_entities] Returning {len(entities)} deduplicated entities")
     return {"entities": entities}
 
 
@@ -477,6 +548,53 @@ async def add_entity_to_glossary(
 # ============================================================================
 # Fact Action Endpoints
 # ============================================================================
+
+
+@router.post("/{session_id}/facts")
+async def add_fact(
+    session_id: str,
+    body: dict[str, Any],
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Add a new fact to the session.
+
+    Args:
+        session_id: Session ID
+        body: Request body with name and value
+
+    Returns:
+        Created fact
+
+    Raises:
+        400: Missing name or value
+    """
+    managed = session_manager.get_session(session_id)
+
+    if "name" not in body:
+        raise HTTPException(status_code=400, detail="Missing 'name' in request body")
+    if "value" not in body:
+        raise HTTPException(status_code=400, detail="Missing 'value' in request body")
+
+    try:
+        fact_name = body["name"]
+        fact_value = body["value"]
+
+        # Add the fact via fact_resolver
+        if hasattr(managed.session.fact_resolver, "set_fact"):
+            managed.session.fact_resolver.set_fact(fact_name, fact_value, source="user")
+
+        return {
+            "status": "created",
+            "fact": {
+                "name": fact_name,
+                "value": fact_value,
+                "source": "user",
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error adding fact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{session_id}/facts/{fact_name}/persist")
