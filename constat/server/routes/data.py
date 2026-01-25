@@ -371,22 +371,47 @@ async def list_entities(
     """
     managed = session_manager.get_session(session_id)
 
-    # Use dict keyed by (normalized_name, type) for deduplication
+    # Use dict keyed by normalized_name only for deduplication (merge across types)
     from constat.discovery.models import normalize_entity_name, display_entity_name
 
-    entity_map: dict[tuple[str, str], dict[str, Any]] = {}
+    # Consolidate similar types into simpler categories
+    TYPE_CONSOLIDATION = {
+        "api_endpoint": "api",
+        "api_schema": "api",
+        "graphql_type": "graphql",
+        "graphql_field": "graphql",
+    }
+
+    # Type priority for picking primary type when merging (higher = preferred)
+    TYPE_PRIORITY = {
+        "table": 100,
+        "api": 90,
+        "graphql": 80,
+        "column": 60,
+        "concept": 40,
+        "business_term": 30,
+        "organization": 20,
+        "product": 20,
+        "location": 20,
+        "event": 20,
+    }
+
+    entity_map: dict[str, dict[str, Any]] = {}
 
     def add_entity(name: str, etype: str, source: str, metadata: dict, references: list[dict] | None = None):
         """Add or merge an entity into the map.
 
         Normalizes entity names for deduplication and display:
-        - Cache key uses normalized (lowercase, singular) form
-        - Display name uses title case (or preserved case for proper nouns)
-        - Original name stored in metadata if different
+        - Cache key uses normalized (lowercase, singular) form only
+        - Entities with same name but different types are merged
+        - API endpoint/schema types are consolidated to just "api"
+        - GraphQL type/field types are consolidated to just "graphql"
         """
+        # Consolidate type
+        etype = TYPE_CONSOLIDATION.get(etype, etype)
         normalized = normalize_entity_name(name)
         display = display_entity_name(name)
-        key = (normalized.lower(), etype)
+        key = normalized.lower()
 
         # Get original_name from metadata, or use raw name if different from display
         original_name = metadata.get("original_name")
@@ -396,9 +421,10 @@ async def list_entities(
 
         if key not in entity_map:
             entity_map[key] = {
-                "id": str(hash(f"{display}_{etype}")),
+                "id": str(hash(f"{display}")),
                 "name": display,
                 "type": etype,
+                "types": [etype],
                 "sources": [source],
                 "metadata": metadata,
                 "references": references or [],
@@ -406,17 +432,24 @@ async def list_entities(
                 "original_name": original_name,
             }
         else:
+            existing = entity_map[key]
+            # Add type if new
+            if etype not in existing["types"]:
+                existing["types"].append(etype)
+                # Update primary type if new type has higher priority
+                if TYPE_PRIORITY.get(etype, 0) > TYPE_PRIORITY.get(existing["type"], 0):
+                    existing["type"] = etype
             # Merge: add source if new, extend references
-            if source not in entity_map[key]["sources"]:
-                entity_map[key]["sources"].append(source)
+            if source not in existing["sources"]:
+                existing["sources"].append(source)
             if references:
-                entity_map[key]["references"].extend(references)
-                entity_map[key]["mention_count"] = len(entity_map[key]["references"])
+                existing["references"].extend(references)
+                existing["mention_count"] = len(existing["references"])
             # Merge metadata
-            entity_map[key]["metadata"].update(metadata)
+            existing["metadata"].update(metadata)
             # Update original_name if not already set
-            if original_name and not entity_map[key].get("original_name"):
-                entity_map[key]["original_name"] = original_name
+            if original_name and not existing.get("original_name"):
+                existing["original_name"] = original_name
 
     # 1. Get entities from vector store (includes schema, api, document sources)
     try:
@@ -463,6 +496,26 @@ async def list_entities(
                             "mention_text": mention_text,
                         })
 
+                # For API entities without chunk refs, create synthetic reference from metadata
+                if not references and source == "api":
+                    api_name = metadata.get("api_name", "API")
+                    http_method = metadata.get("http_method", "")
+                    http_path = metadata.get("http_path", "")
+                    if http_method and http_path:
+                        references.append({
+                            "document": f"API: {api_name}",
+                            "section": f"{http_method} {http_path}",
+                            "mentions": 1,
+                            "mention_text": metadata.get("original_name", name),
+                        })
+                    else:
+                        references.append({
+                            "document": f"API: {api_name}",
+                            "section": "Schema Definition",
+                            "mentions": 1,
+                            "mention_text": name,
+                        })
+
                 add_entity(name, etype, source or "unknown", metadata, references)
     except Exception as e:
         logger.warning(f"Could not get entities from vector_store: {e}")
@@ -502,9 +555,9 @@ async def list_entities(
     try:
         if managed.session.config and managed.session.config.apis:
             for api_name, api_config in managed.session.config.apis.items():
-                if not entity_type or entity_type == "api_endpoint":
+                if not entity_type or entity_type in ("api", "api_endpoint"):
                     add_entity(
-                        api_name, "api_endpoint", "api",
+                        api_name, "api", "api",
                         {"base_url": getattr(api_config, "base_url", None)},
                         [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
                     )
