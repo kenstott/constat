@@ -10,6 +10,8 @@ import {
   CircleStackIcon,
   LightBulbIcon,
   ChartBarIcon,
+  TableCellsIcon,
+  DocumentIcon,
 } from '@heroicons/react/24/outline'
 
 interface ToolbarProps {
@@ -18,7 +20,7 @@ interface ToolbarProps {
 
 export function Toolbar({ onNewQuery }: ToolbarProps) {
   const { session, status, cancelExecution, clearMessages } = useSessionStore()
-  const { databases, apis, documents, facts, artifacts } = useArtifactStore()
+  const { databases, apis, documents, facts, artifacts, tables } = useArtifactStore()
 
   // Count datasources (databases + APIs + documents)
   const datasourceCount = databases.length + apis.length + documents.length
@@ -74,6 +76,10 @@ export function Toolbar({ onNewQuery }: ToolbarProps) {
             <CircleStackIcon className="w-4 h-4" />
             <span>{datasourceCount}</span>
           </div>
+          <div className="flex items-center gap-1" title="Tables">
+            <TableCellsIcon className="w-4 h-4" />
+            <span>{tables.length}</span>
+          </div>
           <div className="flex items-center gap-1" title="Facts">
             <LightBulbIcon className="w-4 h-4" />
             <span>{facts.length}</span>
@@ -81,6 +87,10 @@ export function Toolbar({ onNewQuery }: ToolbarProps) {
           <div className="flex items-center gap-1" title="Visualizations">
             <ChartBarIcon className="w-4 h-4" />
             <span>{visualizationCount}</span>
+          </div>
+          <div className="flex items-center gap-1" title="Artifacts">
+            <DocumentIcon className="w-4 h-4" />
+            <span>{artifacts.length}</span>
           </div>
         </div>
       )}
