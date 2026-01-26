@@ -154,13 +154,13 @@ async def list_artifacts(
 
     try:
         artifacts = managed.session.datastore.list_artifacts()
+        tables = managed.session.datastore.list_tables()
 
         # Determine which artifacts are key results
-        # Key results: ONLY visualizations and consequential tables - NOT code
-        visualization_types = {'chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown'}
-        table_types = {'dataframe', 'table', 'csv', 'parquet'}
+        # Key results: visualizations - NOT code
+        visualization_types = {'chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown', 'md'}
         # Code types are explicitly excluded from key results
-        code_types = {'code', 'python', 'sql', 'script', 'text'}
+        code_types = {'code', 'python', 'sql', 'script', 'text', 'output', 'error'}
 
         def is_key_result(a: dict) -> bool:
             artifact_type = a.get("type", "").lower()
@@ -170,27 +170,57 @@ async def list_artifacts(
             # Visualizations are always key results
             if artifact_type in visualization_types:
                 return True
-            # Tables marked as consequential are key results
-            if artifact_type in table_types and a.get("is_consequential", False):
-                return True
             return False
 
-        return ArtifactListResponse(
-            artifacts=[
-                ArtifactInfo(
-                    id=a["id"],
-                    name=a["name"],
-                    artifact_type=a["type"],
-                    step_number=a.get("step_number", 0),
-                    title=a.get("title"),
-                    description=a.get("description"),
-                    mime_type=a.get("content_type") or "application/octet-stream",
-                    created_at=a.get("created_at"),
-                    is_key_result=is_key_result(a),
-                )
-                for a in artifacts
-            ]
-        )
+        # Build artifact list
+        artifact_list = [
+            ArtifactInfo(
+                id=a["id"],
+                name=a["name"],
+                artifact_type=a["type"],
+                step_number=a.get("step_number", 0),
+                title=a.get("title"),
+                description=a.get("description"),
+                mime_type=a.get("content_type") or "application/octet-stream",
+                created_at=a.get("created_at"),
+                is_key_result=is_key_result(a),
+            )
+            for a in artifacts
+        ]
+
+        # Add consequential tables as virtual artifacts
+        # A table is consequential if it's from the final step or has significant data
+        if tables:
+            max_step = max((t.get("step_number", 0) for t in tables), default=0)
+            for t in tables:
+                table_name = t["name"]
+                # Skip internal tables
+                if table_name.startswith("_"):
+                    continue
+                # Final step tables are consequential
+                is_final_step = t.get("step_number", 0) == max_step and max_step > 0
+                # Tables with substantial data are consequential
+                has_data = t.get("row_count", 0) > 0
+                if is_final_step and has_data:
+                    # Create a virtual artifact entry for this table
+                    # Use negative IDs to distinguish from real artifacts
+                    virtual_id = -hash(table_name) % 1000000
+                    artifact_list.append(
+                        ArtifactInfo(
+                            id=virtual_id,
+                            name=table_name,
+                            artifact_type="table",
+                            step_number=t.get("step_number", 0),
+                            title=f"Table: {table_name}",
+                            description=f"{t.get('row_count', 0)} rows",
+                            mime_type="application/x-dataframe",
+                            created_at=None,
+                            is_key_result=True,
+                        )
+                    )
+
+        logger.debug(f"[list_artifacts] Returning {len(artifact_list)} artifacts (including {len([a for a in artifact_list if a.artifact_type == 'table'])} tables)")
+        return ArtifactListResponse(artifacts=artifact_list)
     except Exception as e:
         logger.error(f"Error listing artifacts: {e}")
         raise HTTPException(status_code=500, detail=str(e))

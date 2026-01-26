@@ -27,6 +27,65 @@ import * as sessionsApi from '@/api/sessions'
 
 type ModalType = 'database' | 'api' | 'document' | 'fact' | null
 
+// Component to fetch and render table data inline
+function TablePreview({ tableName, sessionId }: { tableName: string; sessionId: string }) {
+  const [data, setData] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!sessionId || !tableName) return
+    setLoading(true)
+    setError(null)
+    sessionsApi.getTableData(sessionId, tableName, 1, 50)
+      .then((result) => {
+        setData({ columns: result.columns, rows: result.data })
+        setLoading(false)
+      })
+      .catch((err) => {
+        setError(err.message || 'Failed to load table')
+        setLoading(false)
+      })
+  }, [sessionId, tableName])
+
+  if (loading) {
+    return <div className="p-4 text-center text-gray-500">Loading table...</div>
+  }
+  if (error) {
+    return <div className="p-4 text-center text-red-500">{error}</div>
+  }
+  if (!data || data.rows.length === 0) {
+    return <div className="p-4 text-center text-gray-500">No data</div>
+  }
+
+  return (
+    <div className="overflow-auto max-h-64">
+      <table className="min-w-full text-xs">
+        <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0">
+          <tr>
+            {data.columns.map((col) => (
+              <th key={col} className="px-2 py-1 text-left font-medium text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.rows.map((row, i) => (
+            <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+              {data.columns.map((col) => (
+                <td key={col} className="px-2 py-1 text-gray-600 dark:text-gray-400 border-b border-gray-100 dark:border-gray-800 truncate max-w-xs">
+                  {String(row[col] ?? '')}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function ArtifactPanel() {
   const { session } = useSessionStore()
   const {
@@ -111,7 +170,7 @@ export function ArtifactPanel() {
 
   // Visualizations: charts, images, HTML reports, markdown, etc.
   const visualArtifacts = artifacts.filter((a) =>
-    ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'vega'].includes(a.artifact_type)
+    ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
   )
   // Key artifacts: marked as important results to keep
   const keyArtifacts = artifacts.filter((a) => a.is_key_result)
@@ -437,7 +496,7 @@ export function ArtifactPanel() {
                       title={selectedArtifact.name}
                       sandbox="allow-scripts"
                     />
-                  ) : selectedArtifact.artifact_type === 'markdown' || selectedArtifact.mime_type === 'text/markdown' ? (
+                  ) : ['markdown', 'md'].includes(selectedArtifact.artifact_type?.toLowerCase()) || selectedArtifact.mime_type === 'text/markdown' ? (
                     <iframe
                       srcDoc={`
                         <!DOCTYPE html>
@@ -468,10 +527,12 @@ export function ArtifactPanel() {
                       title={selectedArtifact.name}
                       sandbox="allow-scripts"
                     />
+                  ) : selectedArtifact.artifact_type === 'table' ? (
+                    <TablePreview tableName={selectedArtifact.name} sessionId={session?.session_id || ''} />
                   ) : (
                     <pre className="p-3 text-xs text-gray-600 dark:text-gray-400 overflow-auto max-h-48">
-                      {selectedArtifact.content.substring(0, 2000)}
-                      {selectedArtifact.content.length > 2000 && '...'}
+                      {selectedArtifact.content?.substring(0, 2000) || 'No content'}
+                      {selectedArtifact.content?.length > 2000 && '...'}
                     </pre>
                   )}
                 </div>

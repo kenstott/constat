@@ -533,7 +533,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               const sectionsToExpand: string[] = []
 
               // Visualization types for identifying key results
-              const visualizationTypes = ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown']
+              const visualizationTypes = ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown', 'md', 'table']
 
               // Find visualizations
               const visualizations = artifacts.filter((a) =>
