@@ -239,6 +239,8 @@ class RegistryAwareDataStore:
                 "row_count": t.row_count,
                 "created_at": t.created_at,
                 "description": t.description,
+                "is_published": t.is_published,
+                "is_final_step": t.is_final_step,
             }
             for t in tables
         ]
