@@ -394,6 +394,7 @@ async def add_file_reference(
         has_auth=body.auth is not None,
         description=body.description,
         added_at=now,
+        session_id=session_id,
     )
 
 
@@ -424,6 +425,7 @@ async def list_file_references(
                 has_auth=ref["has_auth"],
                 description=ref.get("description"),
                 added_at=datetime.fromisoformat(ref["added_at"]),
+                session_id=session_id,
             )
             for ref in file_refs
         ]

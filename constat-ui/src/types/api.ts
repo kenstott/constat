@@ -228,6 +228,7 @@ export interface FileReference {
   has_auth: boolean
   description?: string
   added_at: string
+  session_id?: string
 }
 
 // Databases

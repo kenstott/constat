@@ -441,6 +441,7 @@ class FileRefInfo(BaseModel):
     has_auth: bool = Field(description="Whether auth was provided")
     description: Optional[str] = Field(default=None, description="File description")
     added_at: datetime = Field(description="When the reference was added")
+    session_id: Optional[str] = Field(default=None, description="Session ID for persistence")
 
 
 class FileRefListResponse(BaseModel):

@@ -154,22 +154,46 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       // Fetch databases
       const dbResponse = await sessionsApi.listDatabases(sessionId)
 
-      // Fetch config for APIs and documents (global endpoint)
+      // Fetch session file refs (documents added to this session)
+      let sessionDocs: DocumentSourceInfo[] = []
+      try {
+        const fileRefsResponse = await sessionsApi.listFileRefs(sessionId)
+        sessionDocs = fileRefsResponse.file_refs.map((ref) => ({
+          name: ref.name,
+          indexed: true,
+          type: ref.uri?.split('.').pop() || undefined,
+          description: ref.description || undefined,
+        }))
+      } catch {
+        // File refs endpoint might not exist, that's ok
+      }
+
+      // Fetch config for APIs and config-defined documents (global endpoint)
       let apis: ApiSourceInfo[] = []
-      let docs: DocumentSourceInfo[] = []
+      let configDocs: DocumentSourceInfo[] = []
       try {
         const config = await sessionsApi.getConfig()
         apis = config.apis.map((name) => ({
           name,
           connected: true, // Assume connected if in config
         }))
-        docs = config.documents.map((name) => ({
+        configDocs = config.documents.map((name) => ({
           name,
           indexed: true, // Assume indexed if in config
         }))
       } catch {
         // Config endpoint might not exist, that's ok
       }
+
+      // Merge config docs and session docs (session docs take precedence)
+      const docMap = new Map<string, DocumentSourceInfo>()
+      for (const doc of configDocs) {
+        docMap.set(doc.name, doc)
+      }
+      for (const doc of sessionDocs) {
+        docMap.set(doc.name, doc)
+      }
+      const docs = Array.from(docMap.values())
 
       set({
         databases: dbResponse.databases,
