@@ -745,6 +745,33 @@ async def list_entities(
     except Exception as e:
         logger.warning(f"Could not get document entities: {e}")
 
+    # 5. Get entities from active projects (APIs and documents not in config)
+    try:
+        active_projects = getattr(managed, "active_projects", [])
+        if active_projects and managed.session.config:
+            for project_filename in active_projects:
+                project = managed.session.config.load_project(project_filename)
+                if project:
+                    # Add project API entities
+                    if not entity_type or entity_type in ("api", "api_endpoint"):
+                        for api_name, api_config in project.apis.items():
+                            add_entity(
+                                api_name, "api", "api",
+                                {"base_url": getattr(api_config, "base_url", None), "project": project_filename},
+                                [{"document": f"API: {api_name}", "section": f"Project: {project_filename}", "mentions": 1}]
+                            )
+
+                    # Add project document entities
+                    if not entity_type or entity_type == "concept":
+                        for doc_name in project.documents.keys():
+                            add_entity(
+                                doc_name, "concept", "document",
+                                {"source": "project", "project": project_filename},
+                                [{"document": doc_name, "section": f"Project: {project_filename}", "mentions": 1}]
+                            )
+    except Exception as e:
+        logger.warning(f"Could not get entities from active projects: {e}")
+
     entities = list(entity_map.values())
     logger.debug(f"[list_entities] Returning {len(entities)} deduplicated entities")
     return {"entities": entities}

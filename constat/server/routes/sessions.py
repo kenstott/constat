@@ -314,12 +314,15 @@ async def set_active_projects(
                             )
                             logger.info("Initialized doc_tools for project documents")
 
-                        managed.session.doc_tools.index_document(
+                        success, msg = managed.session.doc_tools.add_ephemeral_document_from_file(
                             str(doc_path),
                             name=name,
-                            description=doc_config.description,
+                            description=doc_config.description or "",
                         )
-                        logger.info(f"Indexed project document: {name} from {filename}")
+                        if success:
+                            logger.info(f"Indexed project document: {name} from {filename} - {msg}")
+                        else:
+                            logger.warning(f"Failed to index project document {name}: {msg}")
                     else:
                         logger.warning(f"Project document path does not exist: {doc_path}")
             except Exception as e:
