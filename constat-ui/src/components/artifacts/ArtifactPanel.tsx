@@ -500,19 +500,26 @@ export function ArtifactPanel() {
                     <iframe
                       srcDoc={`
                         <!DOCTYPE html>
-                        <html>
+                        <html class="${document.documentElement.classList.contains('dark') ? 'dark' : ''}">
                         <head>
                           <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
                           <style>
-                            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; margin: 0; line-height: 1.6; }
+                            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; margin: 0; line-height: 1.6; color: #1f2937; background: #fff; }
+                            html.dark body { color: #e5e7eb; background: #111827; }
                             table { border-collapse: collapse; width: 100%; margin: 1em 0; }
                             th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                            html.dark th, html.dark td { border-color: #374151; }
                             th { background: #f5f5f5; }
+                            html.dark th { background: #1f2937; }
                             code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
+                            html.dark code { background: #1f2937; }
                             pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+                            html.dark pre { background: #1f2937; }
                             pre code { background: none; padding: 0; }
                             h1, h2, h3 { margin-top: 1em; margin-bottom: 0.5em; }
                             ul, ol { padding-left: 1.5em; }
+                            a { color: #3b82f6; }
+                            html.dark a { color: #60a5fa; }
                           </style>
                         </head>
                         <body>

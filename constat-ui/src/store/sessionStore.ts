@@ -459,23 +459,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (result.code) {
           useArtifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code)
         }
-        // Fetch artifacts/facts after each step completes (server doesn't emit real-time events)
+        // Fetch artifacts/facts/tables after each step completes
         const { session } = get()
         if (session) {
           const artifactStore = useArtifactStore.getState()
           artifactStore.fetchArtifacts(session.session_id)
           artifactStore.fetchFacts(session.session_id)
-        }
-        // Add tables created in this step to artifact store
-        if (result.tables_created && result.tables_created.length > 0) {
-          result.tables_created.forEach((tableName) => {
-            useArtifactStore.getState().addTable({
-              name: tableName,
-              row_count: 0, // Will be fetched on demand
-              step_number: event.step_number,
-              columns: [],
-            })
-          })
+          artifactStore.fetchTables(session.session_id)
         }
         break
       }

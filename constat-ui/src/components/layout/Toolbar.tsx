@@ -21,7 +21,7 @@ interface ToolbarProps {
 
 export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
   const { session, status, cancelExecution } = useSessionStore()
-  const { databases, apis, documents, facts, artifacts, tables } = useArtifactStore()
+  const { databases, apis, documents, facts, artifacts, tables, stepCodes } = useArtifactStore()
 
   // Count datasources (databases + APIs + documents)
   const datasourceCount = databases.length + apis.length + documents.length
@@ -33,6 +33,9 @@ export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
   ).length
 
   const isExecuting = status === 'planning' || status === 'executing'
+
+  // Proof button is only enabled after at least one plan has been executed
+  const hasExecutedPlan = stepCodes.length > 0 || tables.length > 0
 
   return (
     <footer className="h-12 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 flex items-center px-4 gap-4">
@@ -49,9 +52,9 @@ export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
 
         <button
           onClick={onShowProof}
-          disabled={isExecuting}
+          disabled={isExecuting || !hasExecutedPlan}
           className="btn-secondary text-xs disabled:opacity-50"
-          title="Show proof tree / reasoning chain"
+          title={hasExecutedPlan ? "Show proof tree / reasoning chain" : "Execute a query first to view proof"}
         >
           <CheckBadgeIcon className="w-4 h-4 mr-1" />
           Proof
