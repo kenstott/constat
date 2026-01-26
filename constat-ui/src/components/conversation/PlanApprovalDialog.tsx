@@ -10,6 +10,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ClockIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline'
 import { CheckCircleIcon as CheckCircleSolid, XCircleIcon } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
@@ -23,13 +24,14 @@ const stepStatusIcons: Record<string, { icon: typeof ClockIcon; color: string }>
   skipped: { icon: XCircleIcon, color: 'text-gray-400' },
 }
 
-function StepItem({ step, index, isExpanded, onToggle, modification, onModificationChange }: {
+function StepItem({ step, index, isExpanded, onToggle, modification, onModificationChange, onDelete }: {
   step: Step
   index: number
   isExpanded: boolean
   onToggle: () => void
   modification: string
   onModificationChange: (value: string) => void
+  onDelete: () => void
 }) {
   const status = stepStatusIcons[step.status] || stepStatusIcons.pending
   const StatusIcon = status.icon
@@ -63,6 +65,16 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
             Modified
           </span>
         )}
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+          title="Delete step"
+        >
+          <TrashIcon className="w-4 h-4" />
+        </button>
       </button>
 
       {isExpanded && (
@@ -116,6 +128,7 @@ export function PlanApprovalDialog() {
   const { status, plan, approvePlan, rejectPlan } = useSessionStore()
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set())
   const [stepModifications, setStepModifications] = useState<Record<number, string>>({})
+  const [deletedSteps, setDeletedSteps] = useState<Set<number>>(new Set())
   const [additionalInstructions, setAdditionalInstructions] = useState('')
 
   const isOpen = status === 'awaiting_approval' && plan !== null
@@ -133,9 +146,16 @@ export function PlanApprovalDialog() {
     return `Clarifications:\n${renumbered}`
   })
 
+  // Filter out deleted steps for display
+  const visibleSteps = steps.filter((step, index) => {
+    const stepNum = step.number ?? index + 1
+    return !deletedSteps.has(stepNum)
+  })
+
   // Check if any modifications exist
   const hasModifications = Object.values(stepModifications).some((m) => m.trim().length > 0)
-  const hasAnyChanges = hasModifications || additionalInstructions.trim().length > 0
+  const hasDeletedSteps = deletedSteps.size > 0
+  const hasAnyChanges = hasModifications || hasDeletedSteps || additionalInstructions.trim().length > 0
 
   const toggleStep = (stepNumber: number) => {
     setExpandedSteps((prev) => {
@@ -153,20 +173,46 @@ export function PlanApprovalDialog() {
     setStepModifications((prev) => ({ ...prev, [stepNumber]: value }))
   }
 
+  const deleteStep = (stepNumber: number) => {
+    setDeletedSteps((prev) => {
+      const next = new Set(prev)
+      next.add(stepNumber)
+      return next
+    })
+    // Also remove any modifications for this step
+    setStepModifications((prev) => {
+      const next = { ...prev }
+      delete next[stepNumber]
+      return next
+    })
+  }
+
   const handleApprove = () => {
-    approvePlan()
+    // Pass deleted step numbers to backend if any
+    const deletedStepNumbers = deletedSteps.size > 0 ? Array.from(deletedSteps) : undefined
+    approvePlan(deletedStepNumbers)
     setAdditionalInstructions('')
     setStepModifications({})
+    setDeletedSteps(new Set())
     setExpandedSteps(new Set())
   }
 
   const handleRevise = () => {
-    // Build feedback from step modifications and additional instructions
+    // Build feedback from step modifications, deletions, and additional instructions
     const feedbackParts: string[] = []
+
+    // Add deleted steps
+    if (deletedSteps.size > 0) {
+      const deletedStepsList = steps
+        .filter((step, index) => deletedSteps.has(step.number ?? index + 1))
+        .map((step, index) => `Step ${step.number ?? index + 1} (${step.goal})`)
+      feedbackParts.push(`DELETE these steps:\n${deletedStepsList.join('\n')}`)
+    }
 
     // Add step-specific modifications
     steps.forEach((step) => {
       const stepNum = step.number ?? steps.indexOf(step) + 1
+      if (deletedSteps.has(stepNum)) return // Skip deleted steps
       const mod = stepModifications[stepNum]?.trim()
       if (mod) {
         feedbackParts.push(`Step ${stepNum} (${step.goal}): ${mod}`)
@@ -182,6 +228,7 @@ export function PlanApprovalDialog() {
       rejectPlan(feedbackParts.join('\n\n'))
       setAdditionalInstructions('')
       setStepModifications({})
+      setDeletedSteps(new Set())
       setExpandedSteps(new Set())
     }
   }
@@ -190,6 +237,7 @@ export function PlanApprovalDialog() {
     rejectPlan('Cancelled by user')
     setAdditionalInstructions('')
     setStepModifications({})
+    setDeletedSteps(new Set())
     setExpandedSteps(new Set())
   }
 
@@ -211,7 +259,12 @@ export function PlanApprovalDialog() {
                 Review Execution Plan
               </DialogTitle>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                {steps.length} step{steps.length !== 1 ? 's' : ''} to execute
+                {visibleSteps.length} step{visibleSteps.length !== 1 ? 's' : ''} to execute
+                {deletedSteps.size > 0 && (
+                  <span className="text-red-500 dark:text-red-400">
+                    {' '}({deletedSteps.size} deleted)
+                  </span>
+                )}
               </p>
             </div>
             <button
@@ -236,14 +289,14 @@ export function PlanApprovalDialog() {
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                 Plan Steps
               </p>
-              {steps.length === 0 ? (
+              {visibleSteps.length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 italic">
-                  No steps defined
+                  {deletedSteps.size > 0 ? 'All steps deleted' : 'No steps defined'}
                 </p>
               ) : (
                 <div className="space-y-1.5">
-                  {steps.map((step, index) => {
-                    const stepNum = step.number ?? index + 1
+                  {visibleSteps.map((step, index) => {
+                    const stepNum = step.number ?? steps.indexOf(step) + 1
                     return (
                       <StepItem
                         key={stepNum}
@@ -253,6 +306,7 @@ export function PlanApprovalDialog() {
                         onToggle={() => toggleStep(stepNum)}
                         modification={stepModifications[stepNum] || ''}
                         onModificationChange={(value) => setStepModification(stepNum, value)}
+                        onDelete={() => deleteStep(stepNum)}
                       />
                     )
                   })}

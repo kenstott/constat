@@ -6909,6 +6909,15 @@ REMEMBER:
                 # Replan with feedback - for now, just include feedback in context
                 problem = f"{problem}\n\nUser guidance: {approval.suggestion}"
 
+            # Filter out deleted steps if any
+            if approval.deleted_steps:
+                deleted_set = set(approval.deleted_steps)
+                # Filter premises by step number (P1, P2, etc. -> 1, 2, etc.)
+                premises = [p for p in premises if p.get('number', 0) not in deleted_set]
+                # Filter inferences by step number
+                inferences = [i for i in inferences if i.get('number', 0) not in deleted_set]
+                logger.info(f"Filtered out {len(deleted_set)} deleted steps: {approval.deleted_steps}")
+
         # Step 2: Execute plan using DAG-based parallel resolution
         # Start proof tree display for auditable mode (will print at end)
         self._emit_event(StepEvent(

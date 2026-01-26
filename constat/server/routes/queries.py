@@ -175,7 +175,8 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
 
         if response.get("approved"):
             managed.status = SessionStatus.EXECUTING
-            return PlanApprovalResponse.approve()
+            deleted_steps = response.get("deleted_steps")
+            return PlanApprovalResponse.approve(deleted_steps=deleted_steps)
         else:
             managed.status = SessionStatus.IDLE
             feedback = response.get("feedback", "Rejected by user")
@@ -550,6 +551,7 @@ async def approve_plan(
     managed.approval_response = {
         "approved": body.approved,
         "feedback": body.feedback,
+        "deleted_steps": body.deleted_steps,
     }
 
     if managed.approval_event:
@@ -557,7 +559,11 @@ async def approve_plan(
 
     if body.approved:
         managed.status = SessionStatus.EXECUTING
-        return ApprovalResponse(status="approved", message="Plan approved, execution continuing")
+        deleted_count = len(body.deleted_steps) if body.deleted_steps else 0
+        message = "Plan approved, execution continuing"
+        if deleted_count > 0:
+            message += f" ({deleted_count} step(s) removed)"
+        return ApprovalResponse(status="approved", message=message)
     else:
         managed.status = SessionStatus.IDLE
         return ApprovalResponse(status="rejected", message=f"Plan rejected: {body.feedback}")

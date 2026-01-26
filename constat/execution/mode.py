@@ -220,11 +220,12 @@ class PlanApprovalResponse:
     suggestion: Optional[str] = None
     reason: Optional[str] = None
     command: Optional[str] = None
+    deleted_steps: Optional[list[int]] = None
 
     @classmethod
-    def approve(cls) -> "PlanApprovalResponse":
+    def approve(cls, deleted_steps: Optional[list[int]] = None) -> "PlanApprovalResponse":
         """Create an approval response."""
-        return cls(decision=PlanApproval.APPROVE)
+        return cls(decision=PlanApproval.APPROVE, deleted_steps=deleted_steps)
 
     @classmethod
     def reject(cls, reason: Optional[str] = None) -> "PlanApprovalResponse":

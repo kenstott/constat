@@ -77,7 +77,7 @@ interface SessionState {
   setSession: (session: Session | null) => void
   submitQuery: (problem: string, isFollowup?: boolean) => Promise<void>
   cancelExecution: () => Promise<void>
-  approvePlan: () => Promise<void>
+  approvePlan: (deletedSteps?: number[]) => Promise<void>
   rejectPlan: (feedback: string) => Promise<void>
   answerClarification: (answers: Record<number, string>) => void
   skipClarification: () => void
@@ -185,17 +185,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ status: 'cancelled' })
   },
 
-  approvePlan: async () => {
+  approvePlan: async (deletedSteps?: number[]) => {
     const { session, plan } = get()
     if (!session) return
 
-    const steps = plan?.steps || []
+    const allSteps = plan?.steps || []
+    // Filter out deleted steps
+    const deletedSet = new Set(deletedSteps || [])
+    const steps = allSteps.filter((step, index) => {
+      const stepNum = step.number ?? index + 1
+      return !deletedSet.has(stepNum)
+    })
 
-    // Create message bubbles for all steps upfront (pending until step_start)
+    // Create message bubbles for remaining steps (pending until step_start)
     const stepMessageIds: Record<number, string> = {}
-    const stepMessages: Message[] = steps.map((step) => {
+    const stepMessages: Message[] = steps.map((step, index) => {
       const id = crypto.randomUUID()
-      const stepNum = step.number ?? steps.indexOf(step) + 1
+      const stepNum = step.number ?? allSteps.indexOf(step) + 1
       stepMessageIds[stepNum] = id
       return {
         id,
@@ -208,7 +214,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     })
 
-    await queriesApi.approvePlan(session.session_id, true)
+    await queriesApi.approvePlan(session.session_id, true, undefined, deletedSteps)
     wsManager.approve()
     set((state) => ({
       messages: [...state.messages, ...stepMessages],

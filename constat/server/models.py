@@ -210,6 +210,10 @@ class ApprovalRequest(BaseModel):
         default=None,
         description="Optional feedback (required if rejected)",
     )
+    deleted_steps: Optional[list[int]] = Field(
+        default=None,
+        description="Step numbers to skip/delete from execution",
+    )
 
 
 class ApprovalResponse(BaseModel):

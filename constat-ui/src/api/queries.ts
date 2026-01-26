@@ -27,10 +27,12 @@ export async function getPlan(sessionId: string): Promise<Plan> {
 export async function approvePlan(
   sessionId: string,
   approved: boolean,
-  feedback?: string
+  feedback?: string,
+  deletedSteps?: number[]
 ): Promise<{ status: string; message: string }> {
   return post<{ status: string; message: string }>(`/sessions/${sessionId}/plan/approve`, {
     approved,
     feedback,
+    deleted_steps: deletedSteps,
   })
 }
