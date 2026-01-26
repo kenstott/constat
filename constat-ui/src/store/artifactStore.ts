@@ -51,9 +51,9 @@ interface ArtifactState {
   addArtifact: (artifact: Artifact) => void
   addFact: (fact: Fact) => void
   addStepCode: (stepNumber: number, goal: string, code: string) => void
-  // Star/promote actions
-  toggleArtifactStar: (artifactId: number) => void
-  toggleTableStar: (tableName: string) => void
+  // Star/promote actions (persist to server)
+  toggleArtifactStar: (sessionId: string, artifactId: number) => Promise<void>
+  toggleTableStar: (sessionId: string, tableName: string) => Promise<void>
   clear: () => void
 }
 
@@ -260,20 +260,48 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     })
   },
 
-  toggleArtifactStar: (artifactId) => {
+  toggleArtifactStar: async (sessionId, artifactId) => {
+    // Optimistic update
     set((state) => ({
       artifacts: state.artifacts.map((a) =>
         a.id === artifactId ? { ...a, is_key_result: !a.is_key_result } : a
       ),
     }))
+
+    try {
+      // Persist to server
+      await sessionsApi.toggleArtifactStar(sessionId, artifactId)
+    } catch (error) {
+      // Revert on error
+      set((state) => ({
+        artifacts: state.artifacts.map((a) =>
+          a.id === artifactId ? { ...a, is_key_result: !a.is_key_result } : a
+        ),
+        error: String(error),
+      }))
+    }
   },
 
-  toggleTableStar: (tableName) => {
+  toggleTableStar: async (sessionId, tableName) => {
+    // Optimistic update
     set((state) => ({
       tables: state.tables.map((t) =>
         t.name === tableName ? { ...t, is_starred: !t.is_starred } : t
       ),
     }))
+
+    try {
+      // Persist to server
+      await sessionsApi.toggleTableStar(sessionId, tableName)
+    } catch (error) {
+      // Revert on error
+      set((state) => ({
+        tables: state.tables.map((t) =>
+          t.name === tableName ? { ...t, is_starred: !t.is_starred } : t
+        ),
+        error: String(error),
+      }))
+    }
   },
 
   clear: () =>

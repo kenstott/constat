@@ -59,6 +59,7 @@ async def list_tables(
 
     try:
         tables = managed.session.datastore.list_tables()
+        starred_tables = set(managed.session.datastore.get_starred_tables())
         return TableListResponse(
             tables=[
                 TableInfo(
@@ -66,6 +67,7 @@ async def list_tables(
                     row_count=t.get("row_count", 0),
                     step_number=t.get("step_number", 0),
                     columns=t.get("columns", []),
+                    is_starred=t["name"] in starred_tables,
                 )
                 for t in tables
             ]
@@ -157,14 +159,19 @@ async def list_artifacts(
         tables = managed.session.datastore.list_tables()
 
         # Determine which artifacts are key results
-        # Key results: visualizations - NOT code
+        # Key results: visualizations OR user-starred - NOT code (unless starred)
         visualization_types = {'chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown', 'md'}
-        # Code types are explicitly excluded from key results
+        # Code types are explicitly excluded from key results (unless user-starred)
         code_types = {'code', 'python', 'sql', 'script', 'text', 'output', 'error'}
 
         def is_key_result(a: dict) -> bool:
+            # Check if user has explicitly starred this artifact
+            artifact_obj = managed.session.datastore.get_artifact_by_id(a["id"])
+            if artifact_obj and artifact_obj.metadata.get("is_starred"):
+                return True
+
             artifact_type = a.get("type", "").lower()
-            # Code is NEVER a key result
+            # Code is NEVER a key result (unless starred above)
             if artifact_type in code_types:
                 return False
             # Visualizations are always key results
@@ -887,6 +894,94 @@ async def edit_fact(
         raise
     except Exception as e:
         logger.error(f"Error editing fact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Star/Promote Endpoints
+# ============================================================================
+
+
+@router.post("/{session_id}/artifacts/{artifact_id}/star")
+async def toggle_artifact_star(
+    session_id: str,
+    artifact_id: int,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Toggle an artifact's starred/key-result status.
+
+    Args:
+        session_id: Session ID
+        artifact_id: Artifact ID
+
+    Returns:
+        New starred status
+
+    Raises:
+        404: Session or artifact not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    try:
+        if not managed.session.datastore:
+            raise HTTPException(status_code=404, detail="No datastore")
+
+        artifact = managed.session.datastore.get_artifact_by_id(artifact_id)
+        if not artifact:
+            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+
+        # Toggle is_starred in metadata
+        current = artifact.metadata.get("is_starred", False)
+        new_status = not current
+        managed.session.datastore.update_artifact_metadata(artifact_id, {"is_starred": new_status})
+
+        return {"artifact_id": artifact_id, "is_starred": new_status}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling artifact star: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{session_id}/tables/{table_name}/star")
+async def toggle_table_star(
+    session_id: str,
+    table_name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Toggle a table's starred status.
+
+    Args:
+        session_id: Session ID
+        table_name: Table name
+
+    Returns:
+        New starred status
+
+    Raises:
+        404: Session or table not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    try:
+        if not managed.session.datastore:
+            raise HTTPException(status_code=404, detail="No datastore")
+
+        # Verify table exists
+        tables = managed.session.datastore.list_tables()
+        if not any(t["name"] == table_name for t in tables):
+            raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
+
+        # Toggle starred status
+        is_starred = managed.session.datastore.toggle_table_star(table_name)
+
+        return {"table_name": table_name, "is_starred": is_starred}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling table star: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

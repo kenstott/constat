@@ -75,7 +75,9 @@ export function TableAccordion({ table }: TableAccordionProps) {
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
-    toggleTableStar(table.name)
+    if (session) {
+      toggleTableStar(session.session_id, table.name)
+    }
   }
 
   const renderTable = (maxHeight?: string) => {

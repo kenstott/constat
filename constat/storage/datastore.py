@@ -1233,6 +1233,75 @@ class DataStore:
         type_str = artifact_type.value if isinstance(artifact_type, ArtifactType) else artifact_type
         return self.get_artifacts(artifact_type=type_str)
 
+    def update_artifact_metadata(self, artifact_id: int, metadata_updates: dict) -> bool:
+        """
+        Update an artifact's metadata (merge with existing).
+
+        Args:
+            artifact_id: Artifact ID
+            metadata_updates: Dict of metadata keys to update/add
+
+        Returns:
+            True if updated, False if artifact not found
+        """
+        # Get existing metadata
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT metadata_json FROM _constat_artifacts WHERE id = :id"),
+                {"id": artifact_id}
+            ).fetchone()
+
+        if not result:
+            return False
+
+        # Merge with existing metadata
+        existing = {}
+        if result[0]:
+            try:
+                existing = json.loads(result[0])
+            except json.JSONDecodeError:
+                pass
+
+        existing.update(metadata_updates)
+        new_metadata_json = json.dumps(existing)
+
+        # Update
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE _constat_artifacts SET metadata_json = :metadata WHERE id = :id"),
+                {"metadata": new_metadata_json, "id": artifact_id}
+            )
+
+        return True
+
+    def set_starred_tables(self, table_names: list[str]) -> None:
+        """Set the list of starred table names."""
+        self.set_state("_starred_tables", table_names)
+
+    def get_starred_tables(self) -> list[str]:
+        """Get the list of starred table names."""
+        return self.get_state("_starred_tables") or []
+
+    def toggle_table_star(self, table_name: str) -> bool:
+        """
+        Toggle a table's starred status.
+
+        Args:
+            table_name: Table name
+
+        Returns:
+            New starred status (True if now starred, False if unstarred)
+        """
+        starred = self.get_starred_tables()
+        if table_name in starred:
+            starred.remove(table_name)
+            is_starred = False
+        else:
+            starred.append(table_name)
+            is_starred = True
+        self.set_starred_tables(starred)
+        return is_starred
+
     # --- Session metadata methods ---
 
     def set_session_meta(self, key: str, value: str) -> None:

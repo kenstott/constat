@@ -234,6 +234,7 @@ class TableInfo(BaseModel):
         default_factory=list,
         description="Column names",
     )
+    is_starred: bool = Field(default=False, description="Whether the table is starred/promoted")
 
 
 class TableListResponse(BaseModel):

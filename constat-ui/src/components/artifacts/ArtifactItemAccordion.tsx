@@ -29,7 +29,9 @@ export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) 
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
-    toggleArtifactStar(artifact.id)
+    if (session) {
+      toggleArtifactStar(session.session_id, artifact.id)
+    }
   }
 
   // Fetch content when opened

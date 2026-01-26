@@ -100,6 +100,25 @@ export async function editFact(
   return post<{ status: string }>(`/sessions/${sessionId}/facts/${factName}`, { value })
 }
 
+// Star/Promote
+export async function toggleArtifactStar(
+  sessionId: string,
+  artifactId: number
+): Promise<{ artifact_id: number; is_starred: boolean }> {
+  return post<{ artifact_id: number; is_starred: boolean }>(
+    `/sessions/${sessionId}/artifacts/${artifactId}/star`
+  )
+}
+
+export async function toggleTableStar(
+  sessionId: string,
+  tableName: string
+): Promise<{ table_name: string; is_starred: boolean }> {
+  return post<{ table_name: string; is_starred: boolean }>(
+    `/sessions/${sessionId}/tables/${encodeURIComponent(tableName)}/star`
+  )
+}
+
 // Entities
 export async function listEntities(
   sessionId: string,
