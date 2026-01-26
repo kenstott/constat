@@ -6,8 +6,11 @@ import {
   ChevronRightIcon,
   ArrowsPointingOutIcon,
   XMarkIcon,
+  StarIcon as StarOutline,
 } from '@heroicons/react/24/outline'
+import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
+import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Artifact, ArtifactContent } from '@/types/api'
 
@@ -17,11 +20,17 @@ interface ArtifactItemAccordionProps {
 
 export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) {
   const { session } = useSessionStore()
+  const { toggleArtifactStar } = useArtifactStore()
   const [isOpen, setIsOpen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [content, setContent] = useState<ArtifactContent | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const handleToggleStar = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    toggleArtifactStar(artifact.id)
+  }
 
   // Fetch content when opened
   useEffect(() => {
@@ -270,13 +279,26 @@ export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) 
               ({typeLabel})
             </span>
           </div>
-          <button
-            onClick={openFullscreen}
-            className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors flex-shrink-0"
-            title="Expand to fullscreen"
-          >
-            <ArrowsPointingOutIcon className="w-4 h-4 text-gray-500" />
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={handleToggleStar}
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+              title={artifact.is_key_result ? "Remove from key results" : "Add to key results"}
+            >
+              {artifact.is_key_result ? (
+                <StarSolid className="w-4 h-4 text-yellow-500" />
+              ) : (
+                <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
+              )}
+            </button>
+            <button
+              onClick={openFullscreen}
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+              title="Expand to fullscreen"
+            >
+              <ArrowsPointingOutIcon className="w-4 h-4 text-gray-500" />
+            </button>
+          </div>
         </button>
 
         {/* Collapsible Content */}

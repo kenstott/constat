@@ -132,6 +132,7 @@ export interface TableInfo {
   row_count: number
   step_number: number
   columns: string[]
+  is_starred?: boolean
 }
 
 export interface TableData {

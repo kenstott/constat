@@ -51,6 +51,9 @@ interface ArtifactState {
   addArtifact: (artifact: Artifact) => void
   addFact: (fact: Fact) => void
   addStepCode: (stepNumber: number, goal: string, code: string) => void
+  // Star/promote actions
+  toggleArtifactStar: (artifactId: number) => void
+  toggleTableStar: (tableName: string) => void
   clear: () => void
 }
 
@@ -255,6 +258,22 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       }
       return { stepCodes: [...state.stepCodes, { step_number: stepNumber, goal, code }] }
     })
+  },
+
+  toggleArtifactStar: (artifactId) => {
+    set((state) => ({
+      artifacts: state.artifacts.map((a) =>
+        a.id === artifactId ? { ...a, is_key_result: !a.is_key_result } : a
+      ),
+    }))
+  },
+
+  toggleTableStar: (tableName) => {
+    set((state) => ({
+      tables: state.tables.map((t) =>
+        t.name === tableName ? { ...t, is_starred: !t.is_starred } : t
+      ),
+    }))
   },
 
   clear: () =>
