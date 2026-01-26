@@ -196,9 +196,10 @@ async def list_artifacts(
         ]
 
         # Add consequential tables as virtual artifacts
-        # A table is consequential if it's from the final step or has significant data
+        # A table is consequential if it's from the final step, has significant data, or is starred
         if tables:
             max_step = max((t.get("step_number", 0) for t in tables), default=0)
+            starred_tables = set(managed.session.datastore.get_starred_tables())
             for t in tables:
                 table_name = t["name"]
                 # Skip internal tables
@@ -208,7 +209,9 @@ async def list_artifacts(
                 is_final_step = t.get("step_number", 0) == max_step and max_step > 0
                 # Tables with substantial data are consequential
                 has_data = t.get("row_count", 0) > 0
-                if is_final_step and has_data:
+                # Starred tables are always included
+                is_starred = table_name in starred_tables
+                if (is_final_step and has_data) or is_starred:
                     # Create a virtual artifact entry for this table
                     # Use negative IDs to distinguish from real artifacts
                     virtual_id = -hash(table_name) % 1000000
