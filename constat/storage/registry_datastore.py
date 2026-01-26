@@ -277,6 +277,20 @@ class RegistryAwareDataStore:
         """Get all state variables."""
         return self._datastore.get_all_state()
 
+    # --- Starred Tables Operations (delegated) ---
+
+    def set_starred_tables(self, table_names: list[str]) -> None:
+        """Set the list of starred table names."""
+        self._datastore.set_starred_tables(table_names)
+
+    def get_starred_tables(self) -> list[str]:
+        """Get the list of starred table names."""
+        return self._datastore.get_starred_tables()
+
+    def toggle_table_star(self, table_name: str) -> bool:
+        """Toggle a table's starred status."""
+        return self._datastore.toggle_table_star(table_name)
+
     # --- Scratchpad Operations (delegated) ---
 
     def add_scratchpad_entry(
@@ -337,6 +351,10 @@ class RegistryAwareDataStore:
     def get_artifact_by_id(self, artifact_id: int):
         """Get artifact by ID."""
         return self._datastore.get_artifact_by_id(artifact_id)
+
+    def update_artifact_metadata(self, artifact_id: int, metadata_updates: dict) -> bool:
+        """Update an artifact's metadata."""
+        return self._datastore.update_artifact_metadata(artifact_id, metadata_updates)
 
     def save_rich_artifact(self, *args, **kwargs):
         """Save a rich artifact."""
