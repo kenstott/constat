@@ -509,15 +509,37 @@ export function ArtifactPanel() {
             {databases.map((db) => (
               <div
                 key={db.name}
-                className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
+                className="group p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
               >
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                     {db.name}
                   </span>
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-                    {db.type}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+                      {db.type}
+                    </span>
+                    {/* Only show delete for session-added databases (is_dynamic) */}
+                    {db.is_dynamic && (
+                      <button
+                        onClick={async () => {
+                          if (!session) return
+                          if (!confirm(`Remove database "${db.name}" from this session?`)) return
+                          try {
+                            await sessionsApi.removeDatabase(session.session_id, db.name)
+                            fetchDataSources(session.session_id)
+                          } catch (err) {
+                            console.error('Failed to remove database:', err)
+                            alert('Failed to remove database. Please try again.')
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                        title="Remove database"
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {db.table_count !== undefined && db.table_count > 0 && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -631,13 +653,16 @@ export function ArtifactPanel() {
                     >
                       {doc.indexed ? 'Indexed' : 'Pending'}
                     </span>
-                    <button
-                      onClick={() => handleDeleteDocument(doc.name)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
-                      title="Delete document"
-                    >
-                      <TrashIcon className="w-3.5 h-3.5" />
-                    </button>
+                    {/* Only show delete for session-added documents (not from_config) */}
+                    {!doc.from_config && (
+                      <button
+                        onClick={() => handleDeleteDocument(doc.name)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                        title="Remove document"
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
                 {doc.type && (

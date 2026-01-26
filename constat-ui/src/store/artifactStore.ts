@@ -163,6 +163,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
           indexed: true,
           type: ref.uri?.split('.').pop() || undefined,
           description: ref.description || undefined,
+          from_config: false,  // Session-added, can be removed
         }))
       } catch {
         // File refs endpoint might not exist, that's ok
@@ -176,10 +177,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         apis = config.apis.map((name) => ({
           name,
           connected: true, // Assume connected if in config
+          from_config: true,  // From config, cannot be removed
         }))
         configDocs = config.documents.map((name) => ({
           name,
           indexed: true, // Assume indexed if in config
+          from_config: true,  // From config, cannot be removed
         }))
       } catch {
         // Config endpoint might not exist, that's ok

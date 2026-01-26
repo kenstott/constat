@@ -282,6 +282,7 @@ export interface ApiSourceInfo {
   description?: string
   base_url?: string
   connected: boolean
+  from_config?: boolean  // true if from config file (cannot be removed)
 }
 
 // Document Source Info
@@ -291,6 +292,7 @@ export interface DocumentSourceInfo {
   description?: string
   path?: string
   indexed: boolean
+  from_config?: boolean  // true if from config file (cannot be removed)
 }
 
 // Autocomplete

@@ -61,18 +61,35 @@ async def list_tables(
     try:
         tables = managed.session.datastore.list_tables()
         starred_tables = set(managed.session.datastore.get_starred_tables())
-        return TableListResponse(
-            tables=[
+        unstarred_tables = set(managed.session.datastore.get_state("_unstarred_tables") or [])
+
+        result_tables = []
+        for t in tables:
+            table_name = t["name"]
+            # Unified starred logic (same as list_artifacts)
+            is_published = t.get("is_published", False)
+            is_final_step = t.get("is_final_step", False)
+            has_data = t.get("row_count", 0) > 0
+
+            if table_name in starred_tables:
+                is_starred = True
+            elif table_name in unstarred_tables:
+                is_starred = False
+            else:
+                # Auto-star tables that are published or from final step with data
+                is_starred = is_published or (is_final_step and has_data)
+
+            result_tables.append(
                 TableInfo(
-                    name=t["name"],
+                    name=table_name,
                     row_count=t.get("row_count", 0),
                     step_number=t.get("step_number", 0),
                     columns=t.get("columns", []),
-                    is_starred=t["name"] in starred_tables,
+                    is_starred=is_starred,
                 )
-                for t in tables
-            ]
-        )
+            )
+
+        return TableListResponse(tables=result_tables)
     except Exception as e:
         logger.error(f"Error listing tables: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -208,28 +225,32 @@ async def list_artifacts(
         def get_starred_and_key_result(a: dict) -> tuple[bool, bool]:
             """Get is_starred and is_key_result for an artifact.
 
+            Uses a unified flag: is_starred is the single source of truth.
+            - If user explicitly set is_starred, use that value
+            - Otherwise, auto-determine: visualizations are starred by default
+
             Returns:
-                (is_starred, is_key_result) tuple
+                (is_starred, is_key_result) tuple - both will have the same value
             """
             artifact_obj = managed.session.datastore.get_artifact_by_id(a["id"])
             metadata = artifact_obj.metadata if artifact_obj else {}
             artifact_type = a.get("type", "").lower()
 
-            # is_starred: explicit user action
-            is_starred = metadata.get("is_starred", False)
-
-            # is_key_result: determines if shown in Artifacts section
+            # is_starred: single source of truth for starred state
             if "is_starred" in metadata:
                 # User has explicitly set starred status - use that
-                is_key_result = metadata["is_starred"]
+                is_starred = metadata["is_starred"]
             elif artifact_type in code_types:
-                # Code is NEVER a key result by default
-                is_key_result = False
+                # Code is NEVER starred by default
+                is_starred = False
             elif artifact_type in visualization_types:
-                # Visualizations are key results by default
-                is_key_result = True
+                # Visualizations are starred by default
+                is_starred = True
             else:
-                is_key_result = False
+                is_starred = False
+
+            # is_key_result matches is_starred (unified behavior)
+            is_key_result = is_starred
 
             return is_starred, is_key_result
 
@@ -256,6 +277,8 @@ async def list_artifacts(
         # A table is consequential if it's published, from the final step, or starred
         if tables:
             starred_tables = set(managed.session.datastore.get_starred_tables())
+            # Track tables that user has explicitly unstarred
+            unstarred_tables = set(managed.session.datastore.get_state("_unstarred_tables") or [])
             for t in tables:
                 table_name = t["name"]
                 # Skip internal tables
@@ -266,20 +289,28 @@ async def list_artifacts(
                 is_final_step = t.get("is_final_step", False)
                 # Tables with substantial data are consequential
                 has_data = t.get("row_count", 0) > 0
-                # Check starred status
-                is_starred = table_name in starred_tables
+
+                # Unified starred logic:
+                # - If user explicitly starred it, is_starred=True
+                # - If user explicitly unstarred it, is_starred=False
+                # - Otherwise, auto-star if published or final step with data
+                if table_name in starred_tables:
+                    is_starred = True
+                elif table_name in unstarred_tables:
+                    is_starred = False
+                else:
+                    # Auto-star tables that are published or from final step with data
+                    is_starred = is_published or (is_final_step and has_data)
 
                 # Determine if table should appear in artifacts list
-                # Tables appear if: published, final step with data, OR explicitly starred
-                should_include = is_published or (is_final_step and has_data) or is_starred
+                # Tables appear if starred (including auto-starred) or explicitly starred
+                should_include = is_starred or table_name in starred_tables
 
                 if should_include:
                     # Create a virtual artifact entry for this table
                     # Use negative IDs to distinguish from real artifacts
                     virtual_id = -hash(table_name) % 1000000
-                    # Table is a key result if starred, or auto-published (but user can unstar)
-                    # is_starred tracks explicit user action
-                    # is_key_result determines if shown in Artifacts section
+                    # is_starred and is_key_result are unified (same value)
                     artifact_list.append(
                         ArtifactInfo(
                             id=virtual_id,
@@ -290,7 +321,7 @@ async def list_artifacts(
                             description=f"{t.get('row_count', 0)} rows",
                             mime_type="application/x-dataframe",
                             created_at=None,
-                            is_key_result=is_starred or is_published or is_final_step,
+                            is_key_result=is_starred,
                             is_starred=is_starred,
                         )
                     )
@@ -1021,6 +1052,9 @@ async def toggle_table_star(
 ) -> dict[str, Any]:
     """Toggle a table's starred status.
 
+    Uses unified logic: toggles between starred and unstarred state.
+    Tracks explicit user actions to override auto-star defaults.
+
     Args:
         session_id: Session ID
         table_name: Table name
@@ -1039,13 +1073,45 @@ async def toggle_table_star(
 
         # Verify table exists
         tables = managed.session.datastore.list_tables()
-        if not any(t["name"] == table_name for t in tables):
+        table_info = next((t for t in tables if t["name"] == table_name), None)
+        if not table_info:
             raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
 
-        # Toggle starred status
-        is_starred = managed.session.datastore.toggle_table_star(table_name)
+        # Get current state
+        starred_tables = set(managed.session.datastore.get_starred_tables())
+        unstarred_tables = set(managed.session.datastore.get_state("_unstarred_tables") or [])
 
-        return {"table_name": table_name, "is_starred": is_starred}
+        # Determine current starred state (same logic as list_artifacts)
+        is_published = table_info.get("is_published", False)
+        is_final_step = table_info.get("is_final_step", False)
+        has_data = table_info.get("row_count", 0) > 0
+
+        if table_name in starred_tables:
+            current_starred = True
+        elif table_name in unstarred_tables:
+            current_starred = False
+        else:
+            # Auto-star logic
+            current_starred = is_published or (is_final_step and has_data)
+
+        # Toggle to the opposite state
+        new_starred = not current_starred
+
+        # Update starred/unstarred tracking
+        if new_starred:
+            # Add to starred, remove from unstarred
+            starred_tables.add(table_name)
+            unstarred_tables.discard(table_name)
+        else:
+            # Remove from starred, add to unstarred
+            starred_tables.discard(table_name)
+            unstarred_tables.add(table_name)
+
+        # Persist changes
+        managed.session.datastore.set_starred_tables(list(starred_tables))
+        managed.session.datastore.set_state("_unstarred_tables", list(unstarred_tables))
+
+        return {"table_name": table_name, "is_starred": new_starred}
 
     except HTTPException:
         raise

@@ -466,7 +466,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
               title={artifact.is_starred ? "Unstar" : "Star"}
             >
-              {(artifact.is_starred || artifact.is_key_result) ? (
+              {artifact.is_starred ? (
                 <StarSolid className="w-4 h-4 text-yellow-500" />
               ) : (
                 <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
