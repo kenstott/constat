@@ -290,7 +290,7 @@ export function ArtifactPanel() {
                       <input
                         type="file"
                         multiple
-                        accept=".md,.txt,.pdf,.docx,.html,.htm"
+                        accept=".md,.txt,.pdf,.docx,.html,.htm,.pptx,.xlsx,.csv,.parquet,.json"
                         onChange={(e) => setSelectedFiles(Array.from(e.target.files || []))}
                         className="w-full text-sm text-gray-600 dark:text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-sm file:bg-primary-50 file:text-primary-700 dark:file:bg-primary-900/30 dark:file:text-primary-400 hover:file:bg-primary-100 dark:hover:file:bg-primary-900/50 cursor-pointer"
                       />

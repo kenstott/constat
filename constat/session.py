@@ -7898,7 +7898,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
         # Index document files in the vector store as ephemeral
         if self.doc_tools:
-            doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
+            doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx'}
             from pathlib import Path
 
             # Handle file:// URIs
@@ -7909,7 +7909,7 @@ Prove all of the above claims and provide a complete audit trail."""
             path = Path(file_path)
             if path.suffix.lower() in doc_extensions and path.exists():
                 try:
-                    # Read file content
+                    # Read file content based on type
                     if path.suffix.lower() == '.pdf':
                         from pypdf import PdfReader
                         reader = PdfReader(path)
@@ -7920,6 +7920,15 @@ Prove all of the above claims and provide a complete audit trail."""
                         from docx import Document
                         doc = Document(path)
                         content = "\n\n".join(para.text for para in doc.paragraphs if para.text)
+                    elif path.suffix.lower() == '.pptx':
+                        from pptx import Presentation
+                        prs = Presentation(path)
+                        texts = []
+                        for slide in prs.slides:
+                            for shape in slide.shapes:
+                                if hasattr(shape, "text") and shape.text:
+                                    texts.append(shape.text)
+                        content = "\n\n".join(texts)
                     else:
                         content = path.read_text()
 

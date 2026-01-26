@@ -436,14 +436,14 @@ async def delete_file_reference(
     name: str,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
-    """Delete a file reference.
+    """Delete a file reference and its indexed content/entities.
 
     Args:
         session_id: Session ID
         name: File reference name
 
     Returns:
-        Deletion confirmation
+        Deletion confirmation with counts
 
     Raises:
         404: Session or file reference not found
@@ -451,16 +451,29 @@ async def delete_file_reference(
     managed = session_manager.get_session(session_id)
     file_refs = _get_file_refs(managed)
 
-    # Find and remove
+    # Find and remove from file refs
     original_len = len(file_refs)
     managed._file_refs = [ref for ref in file_refs if ref["name"] != name]
 
     if len(managed._file_refs) == original_len:
         raise HTTPException(status_code=404, detail=f"File reference not found: {name}")
 
+    # Remove from session files
+    if hasattr(managed.session, 'session_files') and name in managed.session.session_files:
+        del managed.session.session_files[name]
+
+    # Remove document and entities from vector store
+    chunks_deleted = 0
+    if managed.session.doc_tools and hasattr(managed.session.doc_tools, '_vector_store'):
+        vector_store = managed.session.doc_tools._vector_store
+        # Document is stored as "session:{name}"
+        doc_name = f"session:{name}"
+        chunks_deleted = vector_store.delete_document(doc_name, session_id)
+
     return {
         "status": "deleted",
         "name": name,
+        "chunks_deleted": chunks_deleted,
     }
 
 
@@ -480,7 +493,9 @@ async def upload_documents(
     Accepts multiple files via multipart form data. Files are saved to the
     session's upload directory and indexed for search (which extracts entities).
 
-    Supported formats: .md, .txt, .pdf, .docx, .html, .htm
+    Supported formats:
+    - Documents: .md, .txt, .pdf, .docx, .html, .htm, .pptx
+    - Data files: .xlsx, .csv, .parquet, .json (added as queryable databases)
 
     Args:
         session_id: Session ID
@@ -495,8 +510,10 @@ async def upload_documents(
     """
     managed = session_manager.get_session(session_id)
 
-    # Supported document extensions
-    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
+    # Document extensions (indexed for search)
+    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx'}
+    # Data file extensions (added as databases)
+    data_extensions = {'.xlsx', '.csv', '.parquet', '.json'}
 
     upload_dir = _get_upload_dir(session_id)
     results = []
@@ -507,7 +524,10 @@ async def upload_documents(
 
         # Check extension
         suffix = Path(file.filename).suffix.lower()
-        if suffix not in doc_extensions:
+        is_document = suffix in doc_extensions
+        is_data_file = suffix in data_extensions
+
+        if not is_document and not is_data_file:
             results.append({
                 "filename": file.filename,
                 "status": "skipped",
@@ -531,35 +551,50 @@ async def upload_documents(
             content = await file.read()
             file_path.write_bytes(content)
 
-            # Create a name for the document (filename without extension)
-            doc_name = file_path.stem
-
-            # Index the document using session.add_file
-            # This triggers entity extraction via doc_tools
+            # Create a name (filename without extension)
+            name = file_path.stem
             uri = f"file://{file_path}"
-            managed.session.add_file(
-                name=doc_name,
-                uri=uri,
-                description=f"Uploaded document: {file.filename}",
-            )
-
-            # Also track as a file reference
             now = datetime.now(timezone.utc)
-            file_refs = _get_file_refs(managed)
-            file_refs.append({
-                "name": doc_name,
-                "uri": uri,
-                "has_auth": False,
-                "description": f"Uploaded: {file.filename}",
-                "added_at": now.isoformat(),
-            })
 
-            results.append({
-                "filename": file.filename,
-                "name": doc_name,
-                "status": "indexed",
-                "path": str(file_path),
-            })
+            if is_data_file:
+                # Add as a queryable database
+                managed.session.add_database(
+                    name=name,
+                    uri=str(file_path),
+                    db_type="duckdb",  # DuckDB can read xlsx, csv, parquet, json
+                    description=f"Uploaded data file: {file.filename}",
+                )
+
+                results.append({
+                    "filename": file.filename,
+                    "name": name,
+                    "status": "database",
+                    "path": str(file_path),
+                })
+            else:
+                # Index as a document (triggers entity extraction)
+                managed.session.add_file(
+                    name=name,
+                    uri=uri,
+                    description=f"Uploaded document: {file.filename}",
+                )
+
+                # Track as a file reference
+                file_refs = _get_file_refs(managed)
+                file_refs.append({
+                    "name": name,
+                    "uri": uri,
+                    "has_auth": False,
+                    "description": f"Uploaded: {file.filename}",
+                    "added_at": now.isoformat(),
+                })
+
+                results.append({
+                    "filename": file.filename,
+                    "name": name,
+                    "status": "indexed",
+                    "path": str(file_path),
+                })
 
         except Exception as e:
             logger.error(f"Error uploading {file.filename}: {e}")

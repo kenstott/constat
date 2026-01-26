@@ -235,7 +235,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
-                ephemeral BOOLEAN DEFAULT FALSE
+                ephemeral BOOLEAN DEFAULT FALSE,
+                session_id VARCHAR
             )
         """)
 
@@ -252,7 +253,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 metadata JSON,
                 config_hash VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ephemeral BOOLEAN DEFAULT FALSE
+                ephemeral BOOLEAN DEFAULT FALSE,
+                session_id VARCHAR
             )
         """)
         # type: table, column, api_endpoint, api_field, api_schema, extracted
@@ -267,6 +269,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 confidence FLOAT DEFAULT 1.0,
                 mention_text VARCHAR,
                 ephemeral BOOLEAN DEFAULT FALSE,
+                session_id VARCHAR,
                 PRIMARY KEY (chunk_id, entity_id)
             )
         """)
@@ -287,6 +290,12 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entities_parent ON entities(parent_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_session ON embeddings(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(session_id)"
             )
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
@@ -317,6 +326,18 @@ class DuckDBVectorStore(VectorStoreBackend):
                     )
             except Exception as e:
                 logger.debug(f"_migrate_schema: failed to add ephemeral to {table}: {e}")
+
+        # Add session_id column to tables if missing (for multi-session isolation)
+        for table in ['embeddings', 'entities', 'chunk_entities']:
+            try:
+                col_names = get_column_names(table)
+                if col_names and 'session_id' not in col_names:
+                    logger.debug(f"_migrate_schema: adding session_id column to {table}")
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN session_id VARCHAR"
+                    )
+            except Exception as e:
+                logger.debug(f"_migrate_schema: failed to add session_id to {table}: {e}")
 
         # Add mention_text column to chunk_entities if missing
         try:
@@ -385,6 +406,89 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         logger.debug(f"clear_ephemeral: deleted ephemeral data")
 
+    def clear_session_data(self, session_id: str) -> None:
+        """Remove all data for a specific session.
+
+        Args:
+            session_id: Session ID to clear
+        """
+        # Count rows before deletion
+        emb_count = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE session_id = ?", [session_id]
+        ).fetchone()[0]
+        ent_count = self._conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE session_id = ?", [session_id]
+        ).fetchone()[0]
+        link_count = self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_entities WHERE session_id = ?", [session_id]
+        ).fetchone()[0]
+        logger.debug(f"clear_session_data({session_id}): found {emb_count} embeddings, {ent_count} entities, {link_count} links")
+
+        # Delete in order (links first)
+        self._conn.execute("DELETE FROM chunk_entities WHERE session_id = ?", [session_id])
+        self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
+        self._conn.execute("DELETE FROM embeddings WHERE session_id = ?", [session_id])
+
+        logger.debug(f"clear_session_data({session_id}): deleted session data")
+
+    def delete_document(self, document_name: str, session_id: str | None = None) -> int:
+        """Delete a document and its associated entities.
+
+        Args:
+            document_name: Name of the document to delete
+            session_id: Optional session ID (if None, deletes from all sessions)
+
+        Returns:
+            Number of chunks deleted
+        """
+        # Get chunk IDs for this document
+        if session_id:
+            chunk_ids = self._conn.execute(
+                "SELECT chunk_id FROM embeddings WHERE document_name = ? AND session_id = ?",
+                [document_name, session_id]
+            ).fetchall()
+        else:
+            chunk_ids = self._conn.execute(
+                "SELECT chunk_id FROM embeddings WHERE document_name = ?",
+                [document_name]
+            ).fetchall()
+
+        chunk_ids = [row[0] for row in chunk_ids]
+
+        if not chunk_ids:
+            return 0
+
+        # Delete chunk-entity links for these chunks
+        placeholders = ",".join(["?" for _ in chunk_ids])
+        self._conn.execute(
+            f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+            chunk_ids
+        )
+
+        # Delete orphaned entities (entities with no remaining chunk links)
+        # Only for session-specific entities
+        if session_id:
+            self._conn.execute("""
+                DELETE FROM entities
+                WHERE session_id = ?
+                AND id NOT IN (SELECT DISTINCT entity_id FROM chunk_entities)
+            """, [session_id])
+
+        # Delete the document chunks
+        if session_id:
+            self._conn.execute(
+                "DELETE FROM embeddings WHERE document_name = ? AND session_id = ?",
+                [document_name, session_id]
+            )
+        else:
+            self._conn.execute(
+                "DELETE FROM embeddings WHERE document_name = ?",
+                [document_name]
+            )
+
+        logger.debug(f"delete_document({document_name}, {session_id}): deleted {len(chunk_ids)} chunks")
+        return len(chunk_ids)
+
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         """Generate a unique ID for a chunk."""
         content_hash = hashlib.sha256(
@@ -397,6 +501,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
         ephemeral: bool = False,
+        session_id: str | None = None,
     ) -> None:
         """Add chunks with embeddings to DuckDB.
 
@@ -404,12 +509,13 @@ class DuckDBVectorStore(VectorStoreBackend):
             chunks: List of DocumentChunk objects
             embeddings: numpy array of embeddings
             ephemeral: If True, marks chunks as session-only (cleaned up on restart)
+            session_id: Optional session ID for multi-session isolation
         """
         if len(chunks) == 0:
             return
 
         doc_names = set(c.document_name for c in chunks)
-        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, ephemeral={ephemeral}")
+        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, ephemeral={ephemeral}, session_id={session_id}")
 
         # Prepare data for insertion
         records = []
@@ -424,14 +530,15 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk.content,
                 embedding,
                 ephemeral,
+                session_id,
             ))
 
         # Use INSERT OR REPLACE to handle updates
         self._conn.executemany(
             """
             INSERT OR REPLACE INTO embeddings
-            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
@@ -570,6 +677,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         embeddings: Optional[np.ndarray] = None,
         ephemeral: bool = False,
         source: str = "document",
+        session_id: str | None = None,
     ) -> None:
         """Add multiple entities to the store.
 
@@ -578,6 +686,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             embeddings: Optional embeddings array of shape (n_entities, embedding_dim)
             ephemeral: If True, marks entities as session-only (cleaned up on restart)
             source: Source category ('document', 'schema', 'api')
+            session_id: Optional session ID for multi-session isolation
         """
         if not entities:
             return
@@ -595,12 +704,13 @@ class DuckDBVectorStore(VectorStoreBackend):
                 metadata_json,
                 entity.created_at,
                 ephemeral,
+                session_id,
             ))
 
         self._conn.executemany(
             """
-            INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
@@ -609,26 +719,28 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         links: list[ChunkEntity],
         ephemeral: bool = False,
+        session_id: str | None = None,
     ) -> None:
         """Create links between chunks and entities.
 
         Args:
             links: List of ChunkEntity objects defining the relationships
             ephemeral: If True, marks links as session-only (cleaned up on restart)
+            session_id: Optional session ID for multi-session isolation
         """
         if not links:
             return
 
         records = [
-            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, ephemeral)
+            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, ephemeral, session_id)
             for l in links
         ]
 
         self._conn.executemany(
             """
             INSERT OR REPLACE INTO chunk_entities
-                (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
