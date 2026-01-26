@@ -462,3 +462,121 @@ async def delete_file_reference(
         "status": "deleted",
         "name": name,
     }
+
+
+# ============================================================================
+# Document Upload Endpoints (for file picker)
+# ============================================================================
+
+
+@router.post("/{session_id}/documents/upload")
+async def upload_documents(
+    session_id: str,
+    files: list[UploadFile] = File(...),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Upload and index documents from local files.
+
+    Accepts multiple files via multipart form data. Files are saved to the
+    session's upload directory and indexed for search (which extracts entities).
+
+    Supported formats: .md, .txt, .pdf, .docx, .html, .htm
+
+    Args:
+        session_id: Session ID
+        files: List of files to upload
+
+    Returns:
+        Upload results including indexed document names
+
+    Raises:
+        404: Session not found
+        400: No valid documents provided
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Supported document extensions
+    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm'}
+
+    upload_dir = _get_upload_dir(session_id)
+    results = []
+
+    for file in files:
+        if not file.filename:
+            continue
+
+        # Check extension
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in doc_extensions:
+            results.append({
+                "filename": file.filename,
+                "status": "skipped",
+                "reason": f"Unsupported format: {suffix}",
+            })
+            continue
+
+        try:
+            # Save file to upload directory
+            safe_name = Path(file.filename).name  # Strip any path components
+            file_path = upload_dir / safe_name
+
+            # Handle duplicate names
+            counter = 1
+            original_stem = file_path.stem
+            while file_path.exists():
+                file_path = upload_dir / f"{original_stem}_{counter}{suffix}"
+                counter += 1
+
+            # Write file
+            content = await file.read()
+            file_path.write_bytes(content)
+
+            # Create a name for the document (filename without extension)
+            doc_name = file_path.stem
+
+            # Index the document using session.add_file
+            # This triggers entity extraction via doc_tools
+            uri = f"file://{file_path}"
+            managed.session.add_file(
+                name=doc_name,
+                uri=uri,
+                description=f"Uploaded document: {file.filename}",
+            )
+
+            # Also track as a file reference
+            now = datetime.now(timezone.utc)
+            file_refs = _get_file_refs(managed)
+            file_refs.append({
+                "name": doc_name,
+                "uri": uri,
+                "has_auth": False,
+                "description": f"Uploaded: {file.filename}",
+                "added_at": now.isoformat(),
+            })
+
+            results.append({
+                "filename": file.filename,
+                "name": doc_name,
+                "status": "indexed",
+                "path": str(file_path),
+            })
+
+        except Exception as e:
+            logger.error(f"Error uploading {file.filename}: {e}")
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "reason": str(e),
+            })
+
+    if not results:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    indexed_count = sum(1 for r in results if r.get("status") == "indexed")
+
+    return {
+        "status": "success",
+        "indexed_count": indexed_count,
+        "total_files": len(files),
+        "results": results,
+    }

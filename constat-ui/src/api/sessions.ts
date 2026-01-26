@@ -201,6 +201,43 @@ export async function deleteFileRef(
   return del<{ status: string }>(`/sessions/${sessionId}/file-refs/${name}`)
 }
 
+interface UploadResult {
+  filename: string
+  name?: string
+  status: string
+  reason?: string
+  path?: string
+}
+
+interface UploadDocumentsResponse {
+  status: string
+  indexed_count: number
+  total_files: number
+  results: UploadResult[]
+}
+
+export async function uploadDocuments(
+  sessionId: string,
+  files: File[]
+): Promise<UploadDocumentsResponse> {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('files', file)
+  }
+
+  const response = await fetch(`/api/sessions/${sessionId}/documents/upload`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Upload failed' }))
+    throw new Error(error.detail || 'Upload failed')
+  }
+
+  return response.json()
+}
+
 // Databases
 export async function listDatabases(
   sessionId: string
