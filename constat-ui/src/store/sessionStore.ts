@@ -123,6 +123,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setSession: (session) => {
     if (session) {
+      // Clear messages for fresh session, welcome will come from server
+      set({ messages: [], suggestions: [], plan: null })
       wsManager.connect(session.session_id)
       wsManager.onStatus((connected) => set({ wsConnected: connected }))
       wsManager.onEvent((event) => get().handleWSEvent(event))
@@ -374,6 +376,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     switch (event.event_type) {
       case 'welcome': {
         // Welcome message from server (unified with REPL)
+        // Only add if no messages exist yet (prevents duplicate on reconnect)
+        const { messages } = get()
+        if (messages.length > 0) {
+          // Already have messages, just update suggestions
+          const data = event.data as { suggestions: string[] }
+          set({ suggestions: data.suggestions || [] })
+          break
+        }
         const data = event.data as {
           message_markdown: string
           suggestions: string[]

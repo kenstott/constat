@@ -602,6 +602,15 @@ async def websocket_endpoint(
         await websocket.close(code=4404, reason="Session not found")
         return
 
+    # Reset stuck session status on reconnect (e.g., browser refresh mid-operation)
+    if managed.status in (SessionStatus.PLANNING, SessionStatus.EXECUTING, SessionStatus.AWAITING_APPROVAL):
+        logger.info(f"Resetting stuck session {session_id} from {managed.status.value} to idle")
+        managed.status = SessionStatus.IDLE
+        managed.current_query = None
+        managed.execution_id = None
+        managed.approval_event = None
+        managed.approval_response = None
+
     # Send welcome message on connection
     welcome = WelcomeMessage.create()
     await websocket.send_json({
