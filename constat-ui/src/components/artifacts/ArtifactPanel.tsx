@@ -207,10 +207,10 @@ export function ArtifactPanel() {
         </div>
       )}
 
-      {/* ═══════════════ SETUP ═══════════════ */}
+      {/* ═══════════════ SOURCES ═══════════════ */}
       <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-          Setup
+          Sources
         </span>
       </div>
 
