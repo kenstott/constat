@@ -12,7 +12,7 @@ import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
-import type { Artifact, ArtifactContent } from '@/types/api'
+import type { Artifact, ArtifactContent, TableData } from '@/types/api'
 
 interface ArtifactItemAccordionProps {
   artifact: Artifact
@@ -20,33 +20,54 @@ interface ArtifactItemAccordionProps {
 
 export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) {
   const { session } = useSessionStore()
-  const { toggleArtifactStar } = useArtifactStore()
+  const { toggleArtifactStar, toggleTableStar } = useArtifactStore()
   const [isOpen, setIsOpen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [content, setContent] = useState<ArtifactContent | null>(null)
+  const [tableData, setTableData] = useState<TableData | null>(null)
+  const [tablePage, setTablePage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const isTable = artifact.artifact_type === 'table'
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (session) {
-      toggleArtifactStar(session.session_id, artifact.id)
+      if (isTable) {
+        // For tables, use toggleTableStar with the table name
+        toggleTableStar(session.session_id, artifact.name)
+      } else {
+        toggleArtifactStar(session.session_id, artifact.id)
+      }
     }
   }
 
-  // Fetch content when opened
+  // Fetch content when opened (or when table page changes)
   useEffect(() => {
-    if (!session || !isOpen || content) return
+    if (!session || !isOpen) return
+    // Skip if already loaded for non-tables
+    if (!isTable && content) return
 
     const fetchContent = async () => {
       setLoading(true)
       setError(null)
       try {
-        const artifactContent = await sessionsApi.getArtifact(
-          session.session_id,
-          artifact.id
-        )
-        setContent(artifactContent)
+        if (isTable) {
+          // Fetch table data instead of artifact content
+          const data = await sessionsApi.getTableData(
+            session.session_id,
+            artifact.name,
+            tablePage
+          )
+          setTableData(data)
+        } else {
+          const artifactContent = await sessionsApi.getArtifact(
+            session.session_id,
+            artifact.id
+          )
+          setContent(artifactContent)
+        }
       } catch (err) {
         setError(String(err))
       } finally {
@@ -55,7 +76,7 @@ export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) 
     }
 
     fetchContent()
-  }, [session, artifact.id, isOpen, content])
+  }, [session, artifact.id, artifact.name, isOpen, content, isTable, tablePage])
 
   // Close fullscreen on Escape
   useEffect(() => {
@@ -91,6 +112,81 @@ export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) 
       return (
         <div className="text-sm text-red-500 dark:text-red-400 py-4">
           Error: {error}
+        </div>
+      )
+    }
+
+    // Handle table rendering
+    if (isTable) {
+      if (!tableData || tableData.data.length === 0) {
+        return (
+          <div className="text-sm text-gray-500 dark:text-gray-400 py-4">
+            No data available
+          </div>
+        )
+      }
+
+      return (
+        <div className="space-y-3">
+          {/* Table with scrollable container */}
+          <div
+            className="overflow-auto"
+            style={{ maxHeight: maxHeight || '200px' }}
+          >
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-white dark:bg-gray-900">
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  {tableData.columns.map((col) => (
+                    <th
+                      key={col}
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap"
+                    >
+                      {col}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {tableData.data.map((row, i) => (
+                  <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    {tableData.columns.map((col) => (
+                      <td
+                        key={col}
+                        className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
+                      >
+                        {String(row[col] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {(tableData.has_more || tablePage > 1) && (
+            <div className="flex items-center justify-between text-sm px-1">
+              <span className="text-gray-500 dark:text-gray-400">
+                Page {tablePage} of {Math.ceil(tableData.total_rows / tableData.page_size)}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setTablePage((p) => Math.max(1, p - 1))}
+                  disabled={tablePage === 1}
+                  className="btn-ghost text-xs disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setTablePage((p) => p + 1)}
+                  disabled={!tableData.has_more}
+                  className="btn-ghost text-xs disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )
     }
