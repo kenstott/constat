@@ -93,7 +93,7 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 - `db_<name>`: Database connections (SQL or NoSQL depending on config)
 - `api_<name>`: GraphQL/REST API clients (response is data payload directly, no 'data' wrapper)
 - `file_<name>`: File paths for CSV/JSON/Parquet
-- `send_email(to, subject, body, df=None)`: Email with optional attachment
+- `send_email(to, subject, body, format="markdown", df=None)`: Email with optional attachment. ALWAYS use format="markdown" when body contains markdown formatting (headers, lists, bold, etc.) - this converts to styled HTML
 
 ## Data Loading
 **SQL databases** (SQLite, PostgreSQL, DuckDB):
