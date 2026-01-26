@@ -238,13 +238,13 @@ export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
                           <PlusIcon className="w-4 h-4" />
                         </button>
                       </div>
-                      <div className="space-y-1 max-h-48 overflow-y-auto">
+                      <div className="space-y-1 max-h-64 overflow-y-auto">
                         {loadingSessions ? (
                           <p className="text-xs text-gray-400 py-2">Loading sessions...</p>
                         ) : sessions.length === 0 ? (
                           <p className="text-xs text-gray-400 py-2">No sessions yet</p>
                         ) : (
-                          sessions.slice(0, 10).map((session) => (
+                          sessions.map((session) => (
                             <button
                               key={session.session_id}
                               onClick={() => handleSwitchSession(session.session_id)}
