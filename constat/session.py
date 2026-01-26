@@ -2339,12 +2339,8 @@ Return ONLY Python code, no markdown."""
             fixed_code: The code that successfully fixed the error
         """
         try:
-            # Determine category based on step goal
-            step_goal_lower = context.get("step_goal", "").lower()
-            if "api" in step_goal_lower or "api_" in context.get("original_code", ""):
-                category = LearningCategory.API_ERROR
-            else:
-                category = LearningCategory.CODEGEN_ERROR
+            # Determine category based on error type and context
+            category = self._categorize_error(context)
 
             # Use LLM to generate a concise learning summary
             summary = self._summarize_error_fix(context, fixed_code)
@@ -2365,6 +2361,52 @@ Return ONLY Python code, no markdown."""
             )
         except Exception as e:
             logger.debug(f"Learning capture failed (non-fatal): {e}")
+
+    def _categorize_error(self, context: dict) -> LearningCategory:
+        """Categorize an error for learning storage.
+
+        Categories:
+        - HTTP_ERROR: 4xx/5xx errors from external API calls
+        - EXTERNAL_API_ERROR: Other errors in API integration code
+        - CODEGEN_ERROR: General code generation errors (default)
+        """
+        error_msg = context.get("error_message", "").lower()
+        original_code = context.get("original_code", "").lower()
+        step_goal = context.get("step_goal", "").lower()
+
+        # Check for HTTP errors (4xx/5xx)
+        http_error_patterns = [
+            "status code 4", "status code 5",
+            "status_code=4", "status_code=5",
+            "http 4", "http 5",
+            "400 ", "401 ", "403 ", "404 ", "405 ",
+            "500 ", "502 ", "503 ", "504 ",
+            "bad request", "unauthorized", "forbidden", "not found",
+            "internal server error", "bad gateway", "service unavailable",
+            "httperror", "httpstatuserror",
+        ]
+        for pattern in http_error_patterns:
+            if pattern in error_msg:
+                return LearningCategory.HTTP_ERROR
+
+        # Check for external API integration errors (not HTTP status errors)
+        api_indicators = [
+            "requests.", "httpx.", "aiohttp.",
+            "rest api", "graphql", "openapi",
+            "api_client", "api_response",
+            "response.json()", "response.text",
+        ]
+        is_api_code = any(ind in original_code for ind in api_indicators)
+
+        # Also check step goal for API-related work
+        api_goal_keywords = ["fetch", "call api", "api request", "rest", "graphql", "webhook"]
+        is_api_goal = any(kw in step_goal for kw in api_goal_keywords)
+
+        if is_api_code or is_api_goal:
+            return LearningCategory.EXTERNAL_API_ERROR
+
+        # Default to general code generation error
+        return LearningCategory.CODEGEN_ERROR
 
     def _save_correction_as_learning(self, user_input: str) -> None:
         """Save a user correction as a reusable learning.

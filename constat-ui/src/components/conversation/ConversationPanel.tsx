@@ -30,12 +30,20 @@ export function ConversationPanel() {
     submitQuery(query, isFollowup)
   }
 
-  // Find and open the best artifact fullscreen
+  // Find and open the best artifact fullscreen (prioritize most recent)
   const handleViewResult = useCallback(() => {
     // Priority keywords for finding the best result
     const hasPriorityKeyword = (name?: string, title?: string): boolean => {
       const text = `${name || ''} ${title || ''}`.toLowerCase()
       return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
+    }
+
+    // Helper to get the most recent item (highest step_number)
+    const getMostRecent = <T extends { step_number?: number }>(items: T[]): T | undefined => {
+      if (items.length === 0) return undefined
+      return items.reduce((best, curr) =>
+        (curr.step_number ?? 0) > (best.step_number ?? 0) ? curr : best
+      )
     }
 
     // Key artifacts (published/starred)
@@ -49,17 +57,28 @@ export function ConversationPanel() {
     // Tables in key artifacts
     const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
 
-    // Find best item
+    // Find best item - prioritize most recent, then priority keywords
     if (keyVisualizations.length > 0) {
-      const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || keyVisualizations[0]
-      openFullscreenArtifact({ type: 'artifact', id: best.id })
+      // Get most recent visualization
+      const mostRecent = getMostRecent(keyVisualizations)
+      // Check if there's a priority keyword match among recent items (same step)
+      const recentStep = mostRecent?.step_number ?? 0
+      const recentViz = keyVisualizations.filter(a => (a.step_number ?? 0) >= recentStep - 1)
+      const best = recentViz.find(a => hasPriorityKeyword(a.name, a.title)) || mostRecent
+      if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
     } else if (keyTables.length > 0) {
-      const best = keyTables.find(a => hasPriorityKeyword(a.name, a.title)) || keyTables[0]
-      openFullscreenArtifact({ type: 'table', name: best.name })
+      const mostRecent = getMostRecent(keyTables)
+      const recentStep = mostRecent?.step_number ?? 0
+      const recentTables = keyTables.filter(a => (a.step_number ?? 0) >= recentStep - 1)
+      const best = recentTables.find(a => hasPriorityKeyword(a.name, a.title)) || mostRecent
+      if (best) openFullscreenArtifact({ type: 'table', name: best.name })
     } else if (tables.length > 0) {
-      // Fallback to tables list
-      const best = tables.find(t => hasPriorityKeyword(t.name)) || tables[tables.length - 1]
-      openFullscreenArtifact({ type: 'table', name: best.name })
+      // Fallback to tables list - get most recent
+      const mostRecent = getMostRecent(tables)
+      const recentStep = mostRecent?.step_number ?? 0
+      const recentTables = tables.filter(t => (t.step_number ?? 0) >= recentStep - 1)
+      const best = recentTables.find(t => hasPriorityKeyword(t.name)) || mostRecent
+      if (best) openFullscreenArtifact({ type: 'table', name: best.name })
     }
   }, [artifacts, tables, openFullscreenArtifact])
 

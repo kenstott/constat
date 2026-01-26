@@ -13,8 +13,11 @@ from abc import ABC, abstractmethod
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+import logging
 from typing import Any, Callable, Optional
 import re
+
+logger = logging.getLogger(__name__)
 
 # Shared thread pool for running sync operations in async context
 _DEFAULT_EXECUTOR = ThreadPoolExecutor(max_workers=10)
@@ -87,7 +90,7 @@ class BaseLLMProvider(ABC):
         user_message: str,
         tools: Optional[list[dict]] = None,
         tool_handlers: Optional[dict[str, Callable]] = None,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         model: Optional[str] = None,
     ) -> str:
         """
@@ -103,7 +106,10 @@ class BaseLLMProvider(ABC):
             max_tokens=max_tokens,
             model=model,
         )
-        return self._extract_code(response)
+        code, was_truncated = self._extract_code_with_truncation_check(response)
+        if was_truncated:
+            logger.warning(f"[TRUNCATION] Code generation response appears truncated (max_tokens={max_tokens})")
+        return code
 
     def _extract_code(self, text: str) -> str:
         """Extract Python code from markdown code blocks.
@@ -113,19 +119,29 @@ class BaseLLMProvider(ABC):
         - Incomplete blocks (no closing fence from truncated responses)
         - Generic ``` ... ``` blocks
         """
+        code, _ = self._extract_code_with_truncation_check(text)
+        return code
+
+    def _extract_code_with_truncation_check(self, text: str) -> tuple[str, bool]:
+        """Extract Python code and detect if response was truncated.
+
+        Returns:
+            Tuple of (code, was_truncated)
+        """
         text = text.strip()
+        was_truncated = False
 
         # Try to find ```python ... ``` block
         pattern = r"```python\s*(.*?)\s*```"
         match = re.search(pattern, text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            return match.group(1).strip(), False
 
         # Try generic ``` ... ``` block
         pattern = r"```\s*(.*?)\s*```"
         match = re.search(pattern, text, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            return match.group(1).strip(), False
 
         # Handle incomplete code blocks (truncated response without closing fence)
         if text.startswith("```"):
@@ -136,10 +152,66 @@ class BaseLLMProvider(ABC):
                 # Remove trailing ``` if present at the end
                 if code.rstrip().endswith("```"):
                     code = code.rstrip()[:-3]
-                return code.strip()
+                else:
+                    # No closing fence - likely truncated
+                    was_truncated = True
+                code = code.strip()
 
-        # No code block found, return as-is
-        return text
+                # Additional truncation indicators
+                if self._looks_truncated(code):
+                    was_truncated = True
+
+                return code, was_truncated
+
+        # No code block found, check for truncation indicators
+        if self._looks_truncated(text):
+            was_truncated = True
+
+        return text, was_truncated
+
+    def _looks_truncated(self, code: str) -> bool:
+        """Detect if code appears truncated based on common patterns."""
+        if not code:
+            return False
+
+        # Check for unterminated strings
+        # Count quotes - odd number suggests truncation
+        single_quotes = code.count("'") - code.count("\\'")
+        double_quotes = code.count('"') - code.count('\\"')
+        triple_single = code.count("'''")
+        triple_double = code.count('"""')
+
+        # Adjust for triple quotes (each triple quote is 3 single/double)
+        single_quotes -= triple_single * 3
+        double_quotes -= triple_double * 3
+
+        if single_quotes % 2 != 0 or double_quotes % 2 != 0:
+            return True
+        if triple_single % 2 != 0 or triple_double % 2 != 0:
+            return True
+
+        # Check for unclosed brackets/parens
+        if code.count('(') != code.count(')'):
+            return True
+        if code.count('[') != code.count(']'):
+            return True
+        if code.count('{') != code.count('}'):
+            return True
+
+        # Check if ends mid-statement (common truncation patterns)
+        stripped = code.rstrip()
+        truncation_endings = [
+            ',', ':', '=', '+', '-', '*', '/', '(', '[', '{',
+            'and', 'or', 'not', 'in', 'is', 'if', 'else', 'elif',
+            'for', 'while', 'with', 'try', 'except', 'finally',
+            'def', 'class', 'return', 'yield', 'import', 'from',
+        ]
+        last_line = stripped.split('\n')[-1].strip()
+        for ending in truncation_endings:
+            if last_line.endswith(ending):
+                return True
+
+        return False
 
     async def async_generate(
         self,

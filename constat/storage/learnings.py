@@ -25,9 +25,20 @@ import yaml
 
 
 class LearningCategory(Enum):
-    """Categories of learnings."""
+    """Categories of learnings.
+
+    Categories:
+    - USER_CORRECTION: User manually corrected an output
+    - CODEGEN_ERROR: General code generation error (syntax, logic, column names, etc.)
+    - EXTERNAL_API_ERROR: Error in code calling external REST/GraphQL APIs
+    - HTTP_ERROR: HTTP 4xx/5xx errors from external API calls
+    - NL_CORRECTION: Natural language interpretation correction
+    - API_ERROR: (deprecated, alias for EXTERNAL_API_ERROR for backward compatibility)
+    """
     USER_CORRECTION = "user_correction"
-    API_ERROR = "api_error"
+    API_ERROR = "api_error"  # Deprecated: kept for backward compatibility
+    EXTERNAL_API_ERROR = "external_api_error"  # Clearer name for API integration errors
+    HTTP_ERROR = "http_error"  # 4xx/5xx errors from external APIs
     CODEGEN_ERROR = "codegen_error"
     NL_CORRECTION = "nl_correction"
 
