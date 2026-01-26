@@ -17,6 +17,7 @@ interface Message {
   isLive?: boolean // Message that updates in place during execution
   isPending?: boolean // Step that hasn't started yet (shows pending animation)
   defaultExpanded?: boolean // Start expanded (don't collapse)
+  isFinalInsight?: boolean // Final insight message with View Result button
 }
 
 // Execution phases for live status updates
@@ -605,6 +606,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         addMessage({
           type: 'output',
           content: output,
+          isFinalInsight: true,
         })
         // Refresh artifact panel with final data
         const { session } = get()

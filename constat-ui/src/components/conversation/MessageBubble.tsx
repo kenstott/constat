@@ -14,6 +14,7 @@ import {
   ChevronUpIcon,
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
+  EyeIcon,
 } from '@heroicons/react/24/outline'
 
 // Animated dots component for loading states
@@ -37,6 +38,8 @@ interface MessageBubbleProps {
   isLive?: boolean
   isPending?: boolean
   defaultExpanded?: boolean
+  isFinalInsight?: boolean
+  onViewResult?: () => void
   children?: ReactNode
 }
 
@@ -96,6 +99,8 @@ export function MessageBubble({
   isLive,
   isPending,
   defaultExpanded,
+  isFinalInsight,
+  onViewResult,
   children,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
@@ -235,6 +240,16 @@ export function MessageBubble({
               </ReactMarkdown>
             )}
           </div>
+          {/* View Result button for final insights */}
+          {isFinalInsight && onViewResult && (
+            <button
+              onClick={onViewResult}
+              className="mt-3 flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+            >
+              <EyeIcon className="w-4 h-4" />
+              View Result
+            </button>
+          )}
           {/* Expand/Collapse button */}
           {needsExpansion && (
             <button

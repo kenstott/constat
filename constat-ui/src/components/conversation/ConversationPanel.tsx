@@ -1,7 +1,9 @@
 // Conversation Panel container
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
+import { useArtifactStore } from '@/store/artifactStore'
+import { useUIStore } from '@/store/uiStore'
 import { MessageBubble } from './MessageBubble'
 import { AutocompleteInput } from './AutocompleteInput'
 import {
@@ -11,6 +13,8 @@ import {
 
 export function ConversationPanel() {
   const { session, messages, submitQuery } = useSessionStore()
+  const { artifacts, tables } = useArtifactStore()
+  const { openFullscreenArtifact } = useUIStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
 
@@ -23,6 +27,39 @@ export function ConversationPanel() {
     const isFollowup = messages.some((m) => m.type === 'user')
     submitQuery(query, isFollowup)
   }
+
+  // Find and open the best artifact fullscreen
+  const handleViewResult = useCallback(() => {
+    // Priority keywords for finding the best result
+    const hasPriorityKeyword = (name?: string, title?: string): boolean => {
+      const text = `${name || ''} ${title || ''}`.toLowerCase()
+      return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
+    }
+
+    // Key artifacts (published/starred)
+    const keyArtifacts = artifacts.filter((a) => a.is_key_result)
+
+    // Visualizations in key artifacts
+    const keyVisualizations = keyArtifacts.filter((a) =>
+      ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
+    )
+
+    // Tables in key artifacts
+    const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
+
+    // Find best item
+    if (keyVisualizations.length > 0) {
+      const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || keyVisualizations[0]
+      openFullscreenArtifact({ type: 'artifact', id: best.id })
+    } else if (keyTables.length > 0) {
+      const best = keyTables.find(a => hasPriorityKeyword(a.name, a.title)) || keyTables[0]
+      openFullscreenArtifact({ type: 'table', name: best.name })
+    } else if (tables.length > 0) {
+      // Fallback to tables list
+      const best = tables.find(t => hasPriorityKeyword(t.name)) || tables[tables.length - 1]
+      openFullscreenArtifact({ type: 'table', name: best.name })
+    }
+  }, [artifacts, tables, openFullscreenArtifact])
 
   // Copy entire conversation to clipboard
   const handleCopyAll = async () => {
@@ -105,6 +142,8 @@ export function ConversationPanel() {
                 isLive={message.isLive}
                 isPending={message.isPending}
                 defaultExpanded={message.defaultExpanded}
+                isFinalInsight={message.isFinalInsight}
+                onViewResult={message.isFinalInsight ? handleViewResult : undefined}
               />
             ))}
             <div ref={messagesEndRef} />

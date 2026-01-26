@@ -5,6 +5,13 @@ import { persist } from 'zustand/middleware'
 
 type Theme = 'light' | 'dark' | 'system'
 
+// Artifact reference for fullscreen display
+interface FullscreenArtifact {
+  type: 'artifact' | 'table'
+  id?: number  // For artifacts
+  name?: string  // For tables
+}
+
 interface UIState {
   // Theme
   theme: Theme
@@ -14,6 +21,11 @@ interface UIState {
   menuOpen: boolean
   artifactPanelWidth: number
   expandedArtifactSections: string[]
+
+  // Fullscreen artifact modal
+  fullscreenArtifact: FullscreenArtifact | null
+  openFullscreenArtifact: (artifact: FullscreenArtifact) => void
+  closeFullscreenArtifact: () => void
 
   // Actions
   toggleMenu: () => void
@@ -31,6 +43,10 @@ export const useUIStore = create<UIState>()(
       menuOpen: false,
       artifactPanelWidth: 400,
       expandedArtifactSections: ['charts', 'tables'],
+      fullscreenArtifact: null,
+
+      openFullscreenArtifact: (artifact) => set({ fullscreenArtifact: artifact }),
+      closeFullscreenArtifact: () => set({ fullscreenArtifact: null }),
 
       setTheme: (theme) => {
         set({ theme })

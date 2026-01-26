@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { ConversationPanel } from '@/components/conversation/ConversationPanel'
 import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel'
+import { FullscreenArtifactModal } from '@/components/artifacts/FullscreenArtifactModal'
 import { ClarificationDialog } from '@/components/conversation/ClarificationDialog'
 import { PlanApprovalDialog } from '@/components/conversation/PlanApprovalDialog'
 import { useSessionStore } from '@/store/sessionStore'
@@ -115,6 +116,7 @@ function App() {
       />
       <ClarificationDialog />
       <PlanApprovalDialog />
+      <FullscreenArtifactModal />
     </>
   )
 }
