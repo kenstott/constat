@@ -1,8 +1,33 @@
 # React UI Implementation Plan
 
+> **Last Updated**: 2026-01-23
+> **Verified Against**: Current codebase (session.py, core/models.py, proof_tree.py, discovery/models.py, storage/learnings.py)
+> **Status**: Phase 1 Complete - API Server Mode implemented
+
+## Implementation Progress
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1: API Server Mode | ✅ Complete | All endpoints implemented, 53 tests passing |
+| Phase 2: React Frontend | ✅ Complete | Project structure, components, and stores implemented |
+| Phase 3: Implementation Steps | ✅ Complete | Steps 1-7 complete |
+
 ## Overview
 
 This plan outlines the implementation of a React-based web UI for Constat, including an API server mode to expose the existing functionality via HTTP/WebSocket.
+
+### Existing Infrastructure
+
+The following components already exist and will be wrapped by the API:
+
+- **Session class** (`constat/session.py`): Core orchestrator with methods for `solve()`, `follow_up()`, `add_file()`, `add_database()`
+- **StepEvent system**: Event emission via `_emit_event()` for real-time progress updates
+- **Approval/Clarification callbacks**: `set_approval_callback()`, `set_clarification_callback()`
+- **ProofNode** (`constat/proof_tree.py`): Hierarchical fact resolution tree for auditable mode
+- **Artifact system** (`constat/core/models.py`): ArtifactType enum with 17 artifact types
+- **Entity extraction** (`constat/discovery/models.py`): Entity and EntityType classes
+- **Learning storage** (`constat/storage/learnings.py`): Two-tier learning/rule system
+- **Dependencies**: FastAPI and uvicorn already in `pyproject.toml`
 
 ## Architecture
 
@@ -31,7 +56,7 @@ This plan outlines the implementation of a React-based web UI for Constat, inclu
 
 ### 1.1 Server Framework
 
-**Technology**: FastAPI with uvicorn
+**Technology**: FastAPI with uvicorn (already in pyproject.toml dependencies)
 
 **Location**: `constat/server/` (new module)
 
@@ -388,19 +413,23 @@ constat-ui/
 #### Hamburger Menu
 **Location**: Left side, collapsible drawer
 
-**Global Commands**:
+**Global Commands** (mirrors CLI REPL commands):
 - `/tables` - View session tables
-- `/code` - Show recent generated code
+- `/show <table>` - Display table contents
+- `/code [step]` - Show generated code (all or specific step)
+- `/query <sql>` - Run SQL query on datastore
 - `/facts` - View resolved facts
-- `/learnings` - View/manage learnings
-- `/schema` - Browse database schemas
-- `/history` - Session history
-- `/remember <note>` - Add learning
-- `/mode` - Switch execution mode
-- `/export` - Export session data
+- `/learnings [category]` - View/manage learnings
+- `/history`, `/sessions` - Session history
+- `/remember <fact>` - Persist a session fact
+- `/forget <name>` - Forget a remembered fact
+- `/export <table> [file]` - Export table to CSV/XLSX
+- `/artifacts` - Show saved artifacts with file:// URIs
+- `/audit` - Re-derive last result with full audit trail
+- `/prove` - Switch to auditable mode derivation
 - `/add` - Upload file from browser (opens file picker, uploads as data URI → stored as temp file → returns file:// URI) *[new for web UI]*
 - `/file` - Add file reference (wraps existing REPL command `session.add_file()` - for URLs or local paths with optional auth)
-- `/database` - Add database connection (wraps existing REPL command `session.add_database()` - opens dialog for name, type, URI)
+- `/database`, `/db` - Add/manage database connections (wraps `session.add_database()`)
 
 **Settings**:
 - Theme toggle (light/dark)
@@ -466,7 +495,7 @@ constat-ui/
    - Edit fact value
    - View fact source/provenance
 7. **Entities** - Extracted entities from session with actions:
-   - Filter by type (table, column, concept, business_term)
+   - Filter by type (table, column, concept, business_term, api_endpoint, api_field, api_schema)
    - View related documents/chunks
    - Add to glossary/business terms
    - Explore entity (trigger entity search)
@@ -567,40 +596,71 @@ interface Session {
 }
 
 // Plan
+// Note: Maps to constat/core/models.py Plan dataclass
 interface Plan {
-  id: string;
-  problem: string;
+  problem: string;                        // Original user problem
   steps: Step[];
-  reasoning: string;
   created_at: string;
-  status: "pending_approval" | "approved" | "executing" | "completed" | "failed";
+  // Execution state
+  current_step: number;
+  completed_steps: number[];
+  failed_steps: number[];
+  is_complete: boolean;                   // Computed: all steps complete
+  contains_sensitive_data: boolean;       // If true, email ops need auth
+  // Added for API (not in Python model)
+  id?: string;                            // Server-assigned ID
+  status?: "pending_approval" | "approved" | "executing" | "completed" | "failed";
 }
 
+// Note: Maps to constat/core/models.py Step dataclass
 interface Step {
   number: number;
-  goal: string;
-  task_type: string;
-  depends_on: number[];
-  status: "pending" | "running" | "completed" | "failed" | "skipped";
-  code?: string;
+  goal: string;                           // Natural language description
+  expected_inputs: string[];
+  expected_outputs: string[];
+  depends_on: number[];                   // Explicit step dependencies
+  step_type: "python";                    // Currently only Python supported
+  task_type: TaskType;
+  complexity: "low" | "medium" | "high";  // Hint for model selection
+  status: StepStatus;
+  code?: string;                          // Populated during execution
   result?: StepResult;
 }
 
+type TaskType =
+  | "planning" | "replanning"
+  | "sql_generation" | "python_analysis"
+  | "intent_classification" | "mode_selection"
+  | "fact_resolution" | "summarization"
+  | "embedding" | "quick_response";
+
+type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+// Note: Maps to constat/core/models.py StepResult dataclass
 interface StepResult {
   success: boolean;
-  stdout?: string;
+  stdout: string;
   error?: string;
-  tables_created: string[];
-  variables: Record<string, any>;
-  execution_time_ms: number;
   attempts: number;
+  duration_ms: number;
+  tables_created: string[];
+  tables_modified: string[];
+  variables: Record<string, any>;
+  code: string;                           // Generated code (for replay)
+  suggestions?: FailureSuggestion[];      // Alternative approaches on failure
+}
+
+interface FailureSuggestion {
+  approach: string;
+  reason: string;
 }
 
 // Artifact
+// Note: Maps to constat/core/models.py ArtifactType enum
 interface Artifact {
   id: string;
   name: string;
-  type: "CODE" | "OUTPUT" | "HTML" | "CHART" | "PLOTLY" | "TABLE" | "FACT_TABLE" | "SVG" | "PNG" | "MARKDOWN";
+  type: ArtifactType;
   content: string;
   mime_type: string;
   is_binary: boolean;
@@ -608,6 +668,22 @@ interface Artifact {
   created_at: string;
   metadata?: Record<string, any>;
 }
+
+type ArtifactType =
+  // Code and execution artifacts
+  | "code" | "output" | "error"
+  // Data artifacts
+  | "table" | "json"
+  // Rich content artifacts
+  | "html" | "markdown" | "text"
+  // Chart/visualization artifacts
+  | "chart" | "plotly"
+  // Image artifacts
+  | "svg" | "png" | "jpeg"
+  // Diagram artifacts
+  | "mermaid" | "graphviz" | "diagram"
+  // Interactive artifacts
+  | "react" | "javascript";
 
 // Fact (auditable mode) - displayed in FactTableViewer artifact
 interface Fact {
@@ -631,40 +707,83 @@ interface FactActions {
 }
 
 // Entity (for EntityViewer)
+// Note: Maps to constat/discovery/models.py Entity and EntityType
 interface Entity {
   id: string;
   name: string;
-  type: "table" | "column" | "concept" | "business_term";
+  type: EntityType;
   metadata: Record<string, any>;
   created_at: string;
   mention_count?: number;        // How often referenced in session
   related_chunks?: string[];     // Document chunks mentioning this entity
 }
 
+type EntityType =
+  // Schema entities
+  | "table" | "column"
+  // Semantic entities
+  | "concept" | "business_term"
+  // API entities (from API catalog)
+  | "api_endpoint" | "api_field" | "api_schema";
+
 // Learning (for LearningViewer)
+// Note: Maps to constat/storage/learnings.py LearningStore structure
 interface Learning {
   id: string;
-  content: string;
-  category: "business_rule" | "correction" | "code_pattern" | "schema_mapping";
-  source: "user_explicit" | "auto_detected" | "compaction";
-  is_global: boolean;            // Applies to all sessions or just current
-  session_id?: string;           // If session-specific
+  content: string;               // The correction text
+  category: LearningCategory;
+  source: LearningSource;
+  context?: Record<string, any>; // Original context when captured
+  applied_count: number;         // Times this learning was applied
+  promoted_to?: string;          // Rule ID if promoted
   created_at: string;
-  last_used_at?: string;
+}
+
+// Matches constat/storage/learnings.py LearningCategory
+type LearningCategory =
+  | "user_correction"  // Explicit user corrections
+  | "api_error"        // API-related errors/fixes
+  | "codegen_error"    // Code generation errors/fixes
+  | "nl_correction";   // Natural language detected corrections
+
+// Matches constat/storage/learnings.py LearningSource
+type LearningSource =
+  | "auto_capture"      // Automatically captured from errors
+  | "explicit_command"  // Via /correct or /remember command
+  | "nl_detection";     // Detected from natural language
+
+// Compacted rules (promoted from learnings)
+interface Rule {
+  id: string;
+  category: LearningCategory;
+  summary: string;               // Generalized rule text
+  confidence: number;            // 0.0-1.0
+  source_learnings: string[];    // IDs of learnings that formed this rule
+  tags: string[];
+  applied_count: number;
+  created_at: string;
 }
 
 // Proof Tree Node (for ProofTreeRenderer - inline in conversation)
+// Note: Maps to constat/proof_tree.py ProofNode dataclass
 interface ProofNode {
   name: string;
   description: string;
-  status: "pending" | "resolving" | "resolved" | "failed" | "cached";
+  status: NodeStatus;
   value?: any;
-  source: "cache" | "database" | "document" | "api" | "llm" | "derived" | "user";
-  confidence?: number;
+  source: string;                // "cache", "database", "config", "llm", "derived", "user"
+  confidence: number;            // 0.0-1.0
   children: ProofNode[];
-  query?: string;
+  query?: string;                // SQL query, code snippet, or other context
   error?: string;
+  // Additional fields from actual implementation
+  result_summary?: string;       // Brief summary for intermediate display
+  depth: number;                 // Depth in tree for indentation
+  all_dependencies: string[];    // All dependencies (may differ from visual tree)
+  visual_parent?: string;        // Parent name shown in tree
 }
+
+type NodeStatus = "pending" | "resolving" | "resolved" | "failed" | "cached";
 
 // DFD Node (for DFDRenderer - inline in conversation)
 interface DFDNode {
@@ -723,26 +842,53 @@ interface SessionDatabase {
 }
 
 // WebSocket Events
+// Note: These map to StepEvent from constat/session.py, transformed for WebSocket transport
+// The server adapter converts internal StepEvent.event_type to these WebSocket event types
+
 type WSEvent =
-  // Plan & Steps
+  // Planning phase
+  | { type: "planning_start"; data: Record<string, any> }
   | { type: "plan_generated"; plan: Plan }
-  | { type: "step_started"; step_number: number; goal: string }
-  | { type: "step_progress"; step_number: number; message: string }
-  | { type: "step_completed"; step_number: number; result: StepResult }
-  | { type: "step_failed"; step_number: number; error: string; retry_count: number }
-  // Proof Tree (auditable mode)
+  | { type: "clarification_needed"; data: { question: string; options?: string[] } }
+
+  // Step lifecycle (maps to StepEvent event_types: step_start, generating, executing, step_complete, step_error, step_failed)
+  | { type: "step_start"; step_number: number; goal: string }
+  | { type: "generating"; step_number: number; data: Record<string, any> }
+  | { type: "executing"; step_number: number; data: Record<string, any> }
+  | { type: "step_complete"; step_number: number; result: StepResult }
+  | { type: "step_error"; step_number: number; error: string; data: Record<string, any> }
+  | { type: "step_failed"; step_number: number; error: string }
+
+  // SQL-specific events (for SQL steps)
+  | { type: "sql_generating"; step_number: number; data: Record<string, any> }
+  | { type: "sql_executing"; step_number: number; data: Record<string, any> }
+  | { type: "sql_error"; step_number: number; error: string }
+
+  // Progress and display
+  | { type: "progress"; step_number: number; message: string }
+  | { type: "quick_display"; data: { content: string; format?: string } }
+
+  // Proof Tree (auditable mode) - fact resolver events
   | { type: "proof_tree_created"; root: ProofNode }
   | { type: "proof_node_resolving"; node_path: string[]; name: string }
   | { type: "proof_node_resolved"; node_path: string[]; value: any; source: string; confidence?: number }
   | { type: "proof_node_failed"; node_path: string[]; error: string }
   | { type: "proof_node_cached"; node_path: string[]; value: any }
   | { type: "proof_node_added"; parent_path: string[]; node: ProofNode }
+
+  // Data extraction events
+  | { type: "facts_extracted"; data: { facts: Fact[] } }
+  | { type: "correction_saved"; data: { correction: string } }
+
   // Artifacts & Entities
   | { type: "artifact_created"; artifact: Artifact }
   | { type: "entity_extracted"; entity: Entity }
-  // Execution
+
+  // Execution control
+  | { type: "execution_cancelled"; data: Record<string, any> }
   | { type: "execution_complete"; success: boolean; output: string }
   | { type: "execution_error"; error: string }
+
   // Session
   | { type: "session_state_changed"; state: SessionState };
 ```
@@ -803,6 +949,59 @@ RUN cd constat-ui && npm ci && npm run build
 EXPOSE 8000
 CMD ["constat", "serve", "--host", "0.0.0.0", "--static-dir", "./constat-ui/dist"]
 ```
+
+---
+
+## Implementation Notes
+
+### Session Event Adaptation
+
+The existing `Session` class emits `StepEvent` objects with these actual event types (from `session.py`):
+
+| Internal Event Type | WebSocket Mapping | Notes |
+|---------------------|-------------------|-------|
+| `step_start` | `step_start` | Step execution begins |
+| `generating` | `generating` | Code generation in progress |
+| `executing` | `executing` | Code execution in progress |
+| `step_complete` | `step_complete` | Step finished successfully |
+| `step_error` | `step_error` | Recoverable error (will retry) |
+| `step_failed` | `step_failed` | Step failed after retries |
+| `sql_generating` | `sql_generating` | SQL-specific generation |
+| `sql_executing` | `sql_executing` | SQL execution |
+| `sql_error` | `sql_error` | SQL error |
+| `planning_start` | `planning_start` | Planning phase begins |
+| `progress` | `progress` | General progress message |
+| `quick_display` | `quick_display` | Fast inline display |
+| `facts_extracted` | `facts_extracted` | Facts discovered |
+| `correction_saved` | `correction_saved` | Learning captured |
+| `execution_cancelled` | `execution_cancelled` | User cancelled |
+| `clarification_needed` | `clarification_needed` | Need user input |
+
+The server adapter layer should:
+1. Register as an event handler via `session.add_event_handler()`
+2. Transform `StepEvent` to WebSocket JSON format
+3. Broadcast to connected clients
+
+### Key Session Methods to Expose
+
+| Method | API Endpoint | Notes |
+|--------|--------------|-------|
+| `Session.solve(problem)` | `POST /api/sessions/{id}/query` | Main entry point |
+| `Session.follow_up(question)` | `POST /api/sessions/{id}/query` | With `is_followup: true` |
+| `Session.add_file(name, uri, auth, description)` | `POST /api/sessions/{id}/file-refs` | Wraps existing method |
+| `Session.add_database(name, type, uri, description)` | `POST /api/sessions/{id}/databases` | Wraps existing method |
+| `Session.set_approval_callback(cb)` | WebSocket approve/reject | Hook for manual plan approval |
+| `Session.set_clarification_callback(cb)` | WebSocket clarification | Hook for user clarifications |
+| `Session.cancel()` | `POST /api/sessions/{id}/cancel` | Cancel running execution |
+| `Session.get_context_stats()` | Include in session details | Token usage info |
+
+### Proof Tree WebSocket Events
+
+For auditable mode, the FactResolver emits events that are forwarded through `_handle_fact_resolver_event()`. The server should:
+
+1. Subscribe to these events when session is in auditable mode
+2. Transform `ProofNode` updates to incremental WebSocket events
+3. Support full tree retrieval via `GET /api/sessions/{id}/proof-tree`
 
 ---
 
