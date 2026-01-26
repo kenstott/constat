@@ -105,15 +105,18 @@ export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
       sessionsApi.listSessions()
         .then((response) => {
           // Sort by last_activity descending (most recent first)
-          const sorted = [...response.sessions].sort(
-            (a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
-          )
+          // Exclude current session - it will be shown separately at the top
+          const sorted = [...response.sessions]
+            .filter(s => s.session_id !== currentSession?.session_id)
+            .sort(
+              (a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+            )
           setSessions(sorted)
         })
         .catch(console.error)
         .finally(() => setLoadingSessions(false))
     }
-  }, [menuOpen])
+  }, [menuOpen, currentSession?.session_id])
 
   const handleCommand = (command: string) => {
     onCommand?.(command)
@@ -239,20 +242,36 @@ export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
                         </button>
                       </div>
                       <div className="space-y-1 max-h-64 overflow-y-auto">
+                        {/* Current session - always shown first */}
+                        {currentSession && (
+                          <button
+                            key={currentSession.session_id}
+                            onClick={() => setMenuOpen(false)}
+                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300"
+                          >
+                            <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 text-primary-500" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">
+                                {getSessionTitle(currentSession)}
+                              </p>
+                              <p className="text-xs opacity-75">
+                                Current session
+                                {currentSession.tables_count > 0 && ` · ${currentSession.tables_count} tables`}
+                              </p>
+                            </div>
+                          </button>
+                        )}
+                        {/* Historical sessions */}
                         {loadingSessions ? (
                           <p className="text-xs text-gray-400 py-2">Loading sessions...</p>
-                        ) : sessions.length === 0 ? (
+                        ) : sessions.length === 0 && !currentSession ? (
                           <p className="text-xs text-gray-400 py-2">No sessions yet</p>
                         ) : (
                           sessions.map((session) => (
                             <button
                               key={session.session_id}
                               onClick={() => handleSwitchSession(session.session_id)}
-                              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors ${
-                                session.session_id === currentSession?.session_id
-                                  ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
-                                  : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                              }`}
+                              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
                             >
                               <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 text-gray-400" />
                               <div className="flex-1 min-w-0">
