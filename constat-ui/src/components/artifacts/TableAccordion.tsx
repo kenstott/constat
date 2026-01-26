@@ -16,12 +16,13 @@ import type { TableData, TableInfo } from '@/types/api'
 
 interface TableAccordionProps {
   table: TableInfo
+  initiallyOpen?: boolean
 }
 
-export function TableAccordion({ table }: TableAccordionProps) {
+export function TableAccordion({ table, initiallyOpen = false }: TableAccordionProps) {
   const { session } = useSessionStore()
   const { toggleTableStar } = useArtifactStore()
-  const [isOpen, setIsOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [data, setData] = useState<TableData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -196,7 +197,7 @@ export function TableAccordion({ table }: TableAccordionProps) {
             <button
               onClick={handleToggleStar}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title={table.is_starred ? "Remove from key results" : "Add to key results"}
+              title={table.is_starred ? "Unstar" : "Star"}
             >
               {table.is_starred ? (
                 <StarSolid className="w-4 h-4 text-yellow-500" />

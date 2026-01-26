@@ -16,9 +16,14 @@ import {
   AcademicCapIcon,
   ArrowPathIcon,
   ArrowDownTrayIcon,
+  PencilIcon,
+  TrashIcon,
+  CheckIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import { useUIStore } from '@/store/uiStore'
 import { AccordionSection } from './ArtifactAccordion'
 import { TableAccordion } from './TableAccordion'
 import { ArtifactItemAccordion } from './ArtifactItemAccordion'
@@ -26,10 +31,11 @@ import { CodeViewer } from './CodeViewer'
 import { EntityAccordion } from './EntityAccordion'
 import * as sessionsApi from '@/api/sessions'
 
-type ModalType = 'database' | 'api' | 'document' | 'fact' | null
+type ModalType = 'database' | 'api' | 'document' | 'fact' | 'rule' | null
 
 export function ArtifactPanel() {
   const { session } = useSessionStore()
+  const { expandedArtifactSections } = useUIStore()
   const {
     artifacts,
     tables,
@@ -52,6 +58,7 @@ export function ArtifactPanel() {
   const [showModal, setShowModal] = useState<ModalType>(null)
   const [modalInput, setModalInput] = useState({ name: '', value: '', uri: '', type: '', persist: false })
   const [compacting, setCompacting] = useState(false)
+  const [editingRule, setEditingRule] = useState<{ id: string; summary: string } | null>(null)
 
   // Fetch data when session changes
   useEffect(() => {
@@ -108,12 +115,78 @@ export function ArtifactPanel() {
     setShowModal(type)
   }
 
+  const handleAddRule = async () => {
+    if (!modalInput.value.trim()) return
+    await useArtifactStore.getState().addRule(modalInput.value.trim())
+    setShowModal(null)
+    setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
+  }
+
+  const handleUpdateRule = async () => {
+    if (!editingRule || !editingRule.summary.trim()) return
+    await useArtifactStore.getState().updateRule(editingRule.id, editingRule.summary.trim())
+    setEditingRule(null)
+  }
+
+  const handleDeleteRule = async (ruleId: string) => {
+    await useArtifactStore.getState().deleteRule(ruleId)
+  }
+
+  const handleDeleteLearning = async (learningId: string) => {
+    await useArtifactStore.getState().deleteLearning(learningId)
+  }
+
   // Visualizations: charts, images, HTML reports, markdown, etc.
   const visualArtifacts = artifacts.filter((a) =>
     ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
   )
   // Key artifacts: marked as important results to keep
   const keyArtifacts = artifacts.filter((a) => a.is_key_result)
+
+  // Helper to check if name/title contains priority keywords
+  const hasPriorityKeyword = (name?: string, title?: string): boolean => {
+    const text = `${name || ''} ${title || ''}`.toLowerCase()
+    return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
+  }
+
+  // Helper to find best item from a list (prefers items with priority keywords)
+  const findBestItem = <T extends { name: string; title?: string }>(items: T[]): T | null => {
+    if (items.length === 0) return null
+    if (items.length === 1) return items[0]
+    // Multiple items: prefer one with priority keyword
+    const withKeyword = items.find(item => hasPriorityKeyword(item.name, item.title))
+    return withKeyword || items[0]
+  }
+
+  // Determine the "best" artifact to auto-expand
+  // Priority: 1) visualizations in key artifacts, 2) tables in key artifacts
+  // Only auto-expand if the parent section is already expanded
+  const keyVisualizations = keyArtifacts.filter((a) =>
+    ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
+  )
+  const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
+
+  // Check which sections are expanded
+  const isArtifactsSectionExpanded = expandedArtifactSections.includes('artifacts')
+  const isTablesSectionExpanded = expandedArtifactSections.includes('tables')
+
+  let bestArtifactId: number | null = null
+  let bestTableName: string | null = null
+
+  // Only auto-expand items if their parent section is expanded
+  if (isArtifactsSectionExpanded && keyVisualizations.length > 0) {
+    // Rule 1 & 2: Use visualization (prefer one with priority keyword if multiple)
+    const best = findBestItem(keyVisualizations)
+    bestArtifactId = best?.id ?? null
+  } else if (isArtifactsSectionExpanded && keyTables.length > 0) {
+    // Rule 3 & 4: Use table from key artifacts (prefer one with priority keyword if multiple)
+    const best = findBestItem(keyTables)
+    bestArtifactId = best?.id ?? null
+  } else if (isTablesSectionExpanded && tables.length > 0) {
+    // Fallback: No key artifacts, expand first table in Tables section (only if section expanded)
+    const best = findBestItem(tables)
+    bestTableName = best?.name ?? null
+  }
 
   if (!session) {
     return (
@@ -132,43 +205,55 @@ export function ArtifactPanel() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-80 shadow-xl">
             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
-              Add {showModal === 'fact' ? 'Fact' : showModal === 'database' ? 'Database' : showModal === 'api' ? 'API' : 'Document'}
+              Add {showModal === 'fact' ? 'Fact' : showModal === 'database' ? 'Database' : showModal === 'api' ? 'API' : showModal === 'rule' ? 'Rule' : 'Document'}
             </h3>
             <div className="space-y-3">
-              <input
-                type="text"
-                placeholder="Name"
-                value={modalInput.name}
-                onChange={(e) => setModalInput({ ...modalInput, name: e.target.value })}
-                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-              />
-              {showModal === 'fact' ? (
+              {showModal === 'rule' ? (
+                <textarea
+                  placeholder="Enter the rule text..."
+                  value={modalInput.value}
+                  onChange={(e) => setModalInput({ ...modalInput, value: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
+                  rows={3}
+                />
+              ) : (
                 <>
                   <input
                     type="text"
-                    placeholder="Value"
-                    value={modalInput.value}
-                    onChange={(e) => setModalInput({ ...modalInput, value: e.target.value })}
+                    placeholder="Name"
+                    value={modalInput.name}
+                    onChange={(e) => setModalInput({ ...modalInput, name: e.target.value })}
                     className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                   />
-                  <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                  {showModal === 'fact' ? (
+                    <>
+                      <input
+                        type="text"
+                        placeholder="Value"
+                        value={modalInput.value}
+                        onChange={(e) => setModalInput({ ...modalInput, value: e.target.value })}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                      />
+                      <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                        <input
+                          type="checkbox"
+                          checked={modalInput.persist}
+                          onChange={(e) => setModalInput({ ...modalInput, persist: e.target.checked })}
+                          className="rounded border-gray-300 dark:border-gray-600"
+                        />
+                        Save for future sessions
+                      </label>
+                    </>
+                  ) : (
                     <input
-                      type="checkbox"
-                      checked={modalInput.persist}
-                      onChange={(e) => setModalInput({ ...modalInput, persist: e.target.checked })}
-                      className="rounded border-gray-300 dark:border-gray-600"
+                      type="text"
+                      placeholder="URI / Path"
+                      value={modalInput.uri}
+                      onChange={(e) => setModalInput({ ...modalInput, uri: e.target.value })}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                     />
-                    Save for future sessions
-                  </label>
+                  )}
                 </>
-              ) : (
-                <input
-                  type="text"
-                  placeholder="URI / Path"
-                  value={modalInput.uri}
-                  onChange={(e) => setModalInput({ ...modalInput, uri: e.target.value })}
-                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                />
               )}
               {showModal === 'database' && (
                 <select
@@ -196,6 +281,7 @@ export function ArtifactPanel() {
                   if (showModal === 'fact') handleAddFact()
                   else if (showModal === 'database') handleAddDatabase()
                   else if (showModal === 'document') handleAddDocument()
+                  else if (showModal === 'rule') handleAddRule()
                   else setShowModal(null) // API - not implemented yet
                 }}
                 className="px-3 py-1.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700"
@@ -205,6 +291,82 @@ export function ArtifactPanel() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ═══════════════ RESULTS ═══════════════ */}
+      {(keyArtifacts.length > 0 || visualArtifacts.length > 0 || tables.length > 0) && (
+        <>
+          <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+            <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Results
+            </span>
+          </div>
+
+          {/* Key Artifacts */}
+          {keyArtifacts.length > 0 && (
+            <AccordionSection
+              id="artifacts"
+              title="Artifacts"
+              count={keyArtifacts.length}
+              icon={<StarIcon className="w-4 h-4" />}
+              command="/artifacts"
+              action={<div className="w-6 h-6" />}
+            >
+              <div className="space-y-2">
+                {keyArtifacts.map((artifact) => (
+                  <ArtifactItemAccordion
+                    key={artifact.id}
+                    artifact={artifact}
+                    initiallyOpen={artifact.id === bestArtifactId}
+                  />
+                ))}
+              </div>
+            </AccordionSection>
+          )}
+
+          {/* Visualizations */}
+          {visualArtifacts.length > 0 && (
+            <AccordionSection
+              id="visualizations"
+              title="Visualizations"
+              count={visualArtifacts.length}
+              icon={<ChartBarIcon className="w-4 h-4" />}
+              action={<div className="w-6 h-6" />}
+            >
+              <div className="space-y-2">
+                {visualArtifacts.map((artifact) => (
+                  <ArtifactItemAccordion
+                    key={artifact.id}
+                    artifact={artifact}
+                    initiallyOpen={artifact.id === bestArtifactId}
+                  />
+                ))}
+              </div>
+            </AccordionSection>
+          )}
+
+          {/* Tables */}
+          {tables.length > 0 && (
+            <AccordionSection
+              id="tables"
+              title="Tables"
+              count={tables.length}
+              icon={<TableCellsIcon className="w-4 h-4" />}
+              command="/tables"
+              action={<div className="w-6 h-6" />}
+            >
+              <div className="space-y-2">
+                {tables.map((table) => (
+                  <TableAccordion
+                    key={table.name}
+                    table={table}
+                    initiallyOpen={table.name === bestTableName}
+                  />
+                ))}
+              </div>
+            </AccordionSection>
+          )}
+        </>
       )}
 
       {/* ═══════════════ SOURCES ═══════════════ */}
@@ -376,70 +538,6 @@ export function ArtifactPanel() {
         )}
       </AccordionSection>
 
-      {/* ═══════════════ RESULTS ═══════════════ */}
-      {(keyArtifacts.length > 0 || visualArtifacts.length > 0 || tables.length > 0) && (
-        <>
-          <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-            <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Results
-            </span>
-          </div>
-
-          {/* Key Artifacts */}
-          {keyArtifacts.length > 0 && (
-            <AccordionSection
-              id="artifacts"
-              title="Artifacts"
-              count={keyArtifacts.length}
-              icon={<StarIcon className="w-4 h-4" />}
-              command="/artifacts"
-              action={<div className="w-6 h-6" />}
-            >
-              <div className="space-y-2">
-                {keyArtifacts.map((artifact) => (
-                  <ArtifactItemAccordion key={artifact.id} artifact={artifact} />
-                ))}
-              </div>
-            </AccordionSection>
-          )}
-
-          {/* Visualizations */}
-          {visualArtifacts.length > 0 && (
-            <AccordionSection
-              id="visualizations"
-              title="Visualizations"
-              count={visualArtifacts.length}
-              icon={<ChartBarIcon className="w-4 h-4" />}
-              action={<div className="w-6 h-6" />}
-            >
-              <div className="space-y-2">
-                {visualArtifacts.map((artifact) => (
-                  <ArtifactItemAccordion key={artifact.id} artifact={artifact} />
-                ))}
-              </div>
-            </AccordionSection>
-          )}
-
-          {/* Tables */}
-          {tables.length > 0 && (
-            <AccordionSection
-              id="tables"
-              title="Tables"
-              count={tables.length}
-              icon={<TableCellsIcon className="w-4 h-4" />}
-              command="/tables"
-              action={<div className="w-6 h-6" />}
-            >
-              <div className="space-y-2">
-                {tables.map((table) => (
-                  <TableAccordion key={table.name} table={table} />
-                ))}
-              </div>
-            </AccordionSection>
-          )}
-        </>
-      )}
-
       {/* ═══════════════ REASONING ═══════════════ */}
       {/* Always show header since Facts always has an action */}
       <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
@@ -598,16 +696,16 @@ export function ArtifactPanel() {
         </AccordionSection>
       )}
 
-      {/* Learnings - only show when there are learnings or rules */}
-      {(learnings.length > 0 || rules.length > 0) && (
-        <AccordionSection
-          id="learnings"
-          title="Learnings"
-          count={learnings.length + rules.length}
-          icon={<AcademicCapIcon className="w-4 h-4" />}
-          command="/learnings"
-          action={
-            learnings.length >= 2 ? (
+      {/* Learnings - always show (has add action) */}
+      <AccordionSection
+        id="learnings"
+        title="Learnings"
+        count={learnings.length + rules.length}
+        icon={<AcademicCapIcon className="w-4 h-4" />}
+        command="/learnings"
+        action={
+          <div className="flex items-center gap-1">
+            {learnings.length >= 2 && (
               <button
                 onClick={async () => {
                   setCompacting(true)
@@ -626,11 +724,20 @@ export function ArtifactPanel() {
               >
                 <ArrowPathIcon className={`w-4 h-4 ${compacting ? 'animate-spin' : ''}`} />
               </button>
-            ) : (
-              <div className="w-6 h-6" />
-            )
-          }
-        >
+            )}
+            <button
+              onClick={() => openModal('rule')}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Add rule"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          </div>
+        }
+      >
+        {learnings.length === 0 && rules.length === 0 ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No learnings yet</p>
+        ) : (
           <div className="space-y-3">
             {/* Rules section */}
             {rules.length > 0 && (
@@ -641,22 +748,70 @@ export function ArtifactPanel() {
                 {rules.map((rule) => (
                   <div
                     key={rule.id}
-                    className="p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg"
+                    className="p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg group"
                   >
-                    <p className="text-sm text-gray-700 dark:text-gray-300">
-                      {rule.summary}
-                    </p>
-                    <div className="mt-1 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
-                      <span className="px-1.5 py-0.5 bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 rounded">
-                        {Math.round(rule.confidence * 100)}% confidence
-                      </span>
-                      <span>{rule.source_count} sources</span>
-                      {rule.tags.length > 0 && (
-                        <span className="text-gray-300 dark:text-gray-600">
-                          {rule.tags.join(', ')}
-                        </span>
-                      )}
-                    </div>
+                    {editingRule?.id === rule.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editingRule.summary}
+                          onChange={(e) => setEditingRule({ ...editingRule, summary: e.target.value })}
+                          className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
+                          rows={2}
+                          autoFocus
+                        />
+                        <div className="flex gap-1">
+                          <button
+                            onClick={handleUpdateRule}
+                            className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                            title="Save"
+                          >
+                            <CheckIcon className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setEditingRule(null)}
+                            className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                            title="Cancel"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm text-gray-700 dark:text-gray-300 flex-1">
+                            {rule.summary}
+                          </p>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => setEditingRule({ id: rule.id, summary: rule.summary })}
+                              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                              title="Edit rule"
+                            >
+                              <PencilIcon className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteRule(rule.id)}
+                              className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
+                              title="Delete rule"
+                            >
+                              <TrashIcon className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
+                          <span className="px-1.5 py-0.5 bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 rounded">
+                            {Math.round(rule.confidence * 100)}% confidence
+                          </span>
+                          <span>{rule.source_count} sources</span>
+                          {rule.tags.length > 0 && (
+                            <span className="text-gray-300 dark:text-gray-600">
+                              {rule.tags.join(', ')}
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -672,11 +827,20 @@ export function ArtifactPanel() {
                 {learnings.map((learning) => (
                   <div
                     key={learning.id}
-                    className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg"
+                    className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg group"
                   >
-                    <p className="text-sm text-gray-700 dark:text-gray-300">
-                      {learning.content}
-                    </p>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm text-gray-700 dark:text-gray-300 flex-1">
+                        {learning.content}
+                      </p>
+                      <button
+                        onClick={() => handleDeleteLearning(learning.id)}
+                        className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete learning"
+                      >
+                        <TrashIcon className="w-3 h-3" />
+                      </button>
+                    </div>
                     <div className="mt-1 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
                       <span className="px-1.5 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
                         {learning.category}
@@ -690,8 +854,8 @@ export function ArtifactPanel() {
               </div>
             )}
           </div>
-        </AccordionSection>
-      )}
+        )}
+      </AccordionSection>
     </div>
   )
 }

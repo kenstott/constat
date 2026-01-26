@@ -10,6 +10,7 @@
 """Session management REST endpoints."""
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -21,6 +22,7 @@ from constat.server.models import (
     SessionStatus,
 )
 from constat.server.session_manager import SessionManager, ManagedSession
+from constat.storage.history import SessionHistory
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +87,7 @@ async def list_sessions(
     user_id: Optional[str] = None,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> SessionListResponse:
-    """List all sessions.
+    """List all sessions (in-memory + historical from disk).
 
     Optionally filter by user ID.
 
@@ -93,12 +95,47 @@ async def list_sessions(
         user_id: Optional user ID filter
 
     Returns:
-        List of sessions
+        List of sessions, newest first
     """
-    sessions = session_manager.list_sessions(user_id=user_id)
+    # Get in-memory sessions
+    in_memory = session_manager.list_sessions(user_id=user_id)
+    in_memory_ids = {s.session_id for s in in_memory}
+
+    # Convert in-memory sessions to responses
+    responses = [_session_to_response(s) for s in in_memory]
+
+    # Get historical sessions from disk (not already in memory)
+    try:
+        history = SessionHistory(user_id=user_id or "default")
+        historical = history.list_sessions(limit=50)
+
+        for hist in historical:
+            if hist.session_id not in in_memory_ids:
+                # Convert historical session to response format
+                try:
+                    created_at = datetime.fromisoformat(hist.created_at.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    created_at = datetime.now(timezone.utc)
+
+                responses.append(SessionResponse(
+                    session_id=hist.session_id,
+                    user_id=hist.user_id or user_id or "default",
+                    status=SessionStatus.IDLE,  # Historical sessions are idle
+                    created_at=created_at,
+                    last_activity=created_at,  # Use created_at as last activity for historical
+                    current_query=hist.summary,
+                    tables_count=0,
+                    artifacts_count=0,
+                ))
+    except Exception as e:
+        logger.warning(f"Failed to load historical sessions: {e}")
+
+    # Sort by last_activity descending
+    responses.sort(key=lambda s: s.last_activity, reverse=True)
+
     return SessionListResponse(
-        sessions=[_session_to_response(s) for s in sessions],
-        total=len(sessions),
+        sessions=responses,
+        total=len(responses),
     )
 
 

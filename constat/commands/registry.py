@@ -30,6 +30,11 @@ from constat.commands.session_cmds import (
     facts_command,
     context_command,
     preferences_command,
+    learnings_command,
+    rule_command,
+    rule_edit_command,
+    rule_delete_command,
+    correct_command,
 )
 from constat.commands.sources import (
     databases_command,
@@ -63,6 +68,12 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/apis",), apis_command, "List APIs"),
     (("/documents", "/docs"), documents_command, "List documents"),
     (("/files",), files_command, "List data files"),
+    # Learnings & Rules
+    (("/learnings",), learnings_command, "Show learnings and rules"),
+    (("/rule",), rule_command, "Add a new rule"),
+    (("/rule-edit",), rule_edit_command, "Edit an existing rule"),
+    (("/rule-delete",), rule_delete_command, "Delete a rule"),
+    (("/correct",), correct_command, "Record a correction"),
 ]
 
 # Build lookup dict for fast access

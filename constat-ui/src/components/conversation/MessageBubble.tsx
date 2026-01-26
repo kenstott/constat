@@ -12,6 +12,8 @@ import {
   CheckCircleIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  ClipboardDocumentIcon,
+  ClipboardDocumentCheckIcon,
 } from '@heroicons/react/24/outline'
 
 // Animated dots component for loading states
@@ -103,7 +105,15 @@ export function MessageBubble({
   // Expand/collapse state
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false)
   const [needsExpansion, setNeedsExpansion] = useState(false)
+  const [copied, setCopied] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
+
+  // Copy message content to clipboard
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(content)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   // Check if content exceeds max height
   useEffect(() => {
@@ -118,7 +128,7 @@ export function MessageBubble({
   const displayContent = showAnimatedDots ? content.slice(0, -3) : content
 
   return (
-    <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
+    <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
       {/* Avatar */}
       <div
         className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
@@ -131,10 +141,26 @@ export function MessageBubble({
       {/* Content */}
       <div className={`flex-1 max-w-[80%] ${isUser ? 'text-right' : ''}`}>
         <div
-          className={`inline-block rounded-lg px-4 py-3 ${styles.bg} ${
+          className={`relative inline-block rounded-lg px-4 py-3 ${styles.bg} ${
             isUser ? 'rounded-tr-none' : 'rounded-tl-none'
           } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''}`}
         >
+          {/* Copy button - appears on hover */}
+          <button
+            onClick={handleCopy}
+            className={`absolute top-2 right-2 p-1 rounded transition-all ${
+              copied
+                ? 'text-green-500 dark:text-green-400'
+                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
+            }`}
+            title={copied ? 'Copied!' : 'Copy message'}
+          >
+            {copied ? (
+              <ClipboardDocumentCheckIcon className="w-4 h-4" />
+            ) : (
+              <ClipboardDocumentIcon className="w-4 h-4" />
+            )}
+          </button>
           {stepNumber !== undefined && (
             <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
               Step {stepNumber}

@@ -184,3 +184,151 @@ def preferences_command(ctx: CommandContext) -> KeyValueResult:
         title="Preferences",
         pairs=pairs,
     )
+
+
+# ============================================================================
+# Learnings & Rules Commands
+# ============================================================================
+
+
+def learnings_command(ctx: CommandContext) -> CommandResult:
+    """Show learnings and rules."""
+    from constat.storage.learnings import LearningStore
+
+    try:
+        store = LearningStore(user_id=ctx.session.user_id)
+        learnings = store.list_raw_learnings(limit=20)
+        rules = store.list_rules(limit=20)
+        stats = store.get_stats()
+
+        sections = []
+
+        # Rules section
+        if rules:
+            rule_pairs = {}
+            for r in rules:
+                tags_str = f" [{', '.join(r.get('tags', []))}]" if r.get('tags') else ""
+                conf_str = f" ({r.get('confidence', 0):.0%})"
+                rule_pairs[r['id']] = f"{r['summary']}{conf_str}{tags_str}"
+            sections.append(("Rules", rule_pairs))
+
+        # Learnings section
+        if learnings:
+            learn_pairs = {}
+            for l in learnings:
+                cat_str = f" [{l.get('category', '')}]"
+                learn_pairs[l['id']] = f"{l.get('correction', '')}{cat_str}"
+            sections.append(("Pending Learnings", learn_pairs))
+
+        # Stats
+        stat_pairs = {
+            "Total Rules": stats.get("total_rules", 0),
+            "Pending Learnings": stats.get("unpromoted", 0),
+            "Archived": stats.get("total_archived", 0),
+        }
+        sections.append(("Stats", stat_pairs))
+
+        if not rules and not learnings:
+            return TextResult(
+                success=True,
+                content="No learnings or rules yet. Use `/correct <text>` to add corrections or `/rule <text>` to add rules directly.",
+            )
+
+        return KeyValueResult(
+            success=True,
+            title="Learnings & Rules",
+            sections=sections,
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to load learnings: {e}")
+
+
+def rule_command(ctx: CommandContext) -> CommandResult:
+    """Add a new rule directly."""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /rule <rule text>")
+
+    from constat.storage.learnings import LearningStore, LearningCategory
+
+    try:
+        store = LearningStore(user_id=ctx.session.user_id)
+        rule_id = store.save_rule(
+            summary=ctx.args.strip(),
+            category=LearningCategory.USER_CORRECTION,
+            confidence=0.9,
+            source_learnings=[],
+            tags=[],
+        )
+        return TextResult(
+            success=True,
+            content=f"Rule added: `{rule_id}`\n\n> {ctx.args.strip()}",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to add rule: {e}")
+
+
+def rule_edit_command(ctx: CommandContext) -> CommandResult:
+    """Edit an existing rule."""
+    parts = ctx.args.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /rule-edit <rule_id> <new text>")
+
+    rule_id, new_text = parts[0], parts[1]
+
+    from constat.storage.learnings import LearningStore
+
+    try:
+        store = LearningStore(user_id=ctx.session.user_id)
+        success = store.update_rule(rule_id=rule_id, summary=new_text)
+        if success:
+            return TextResult(
+                success=True,
+                content=f"Rule `{rule_id}` updated.\n\n> {new_text}",
+            )
+        return ErrorResult(error=f"Rule not found: {rule_id}")
+    except Exception as e:
+        return ErrorResult(error=f"Failed to update rule: {e}")
+
+
+def rule_delete_command(ctx: CommandContext) -> CommandResult:
+    """Delete a rule."""
+    rule_id = ctx.args.strip()
+    if not rule_id:
+        return ErrorResult(error="Usage: /rule-delete <rule_id>")
+
+    from constat.storage.learnings import LearningStore
+
+    try:
+        store = LearningStore(user_id=ctx.session.user_id)
+        success = store.delete_rule(rule_id)
+        if success:
+            return TextResult(
+                success=True,
+                content=f"Rule `{rule_id}` deleted.",
+            )
+        return ErrorResult(error=f"Rule not found: {rule_id}")
+    except Exception as e:
+        return ErrorResult(error=f"Failed to delete rule: {e}")
+
+
+def correct_command(ctx: CommandContext) -> CommandResult:
+    """Record a correction for future reference."""
+    if not ctx.args.strip():
+        return ErrorResult(error="Usage: /correct <correction text>")
+
+    from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
+
+    try:
+        store = LearningStore(user_id=ctx.session.user_id)
+        learning_id = store.save_learning(
+            category=LearningCategory.USER_CORRECTION,
+            context={},
+            correction=ctx.args.strip(),
+            source=LearningSource.EXPLICIT_COMMAND,
+        )
+        return TextResult(
+            success=True,
+            content=f"Correction recorded: `{learning_id}`\n\n> {ctx.args.strip()}\n\nUse `/compact-learnings` to promote similar corrections to rules.",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to record correction: {e}")

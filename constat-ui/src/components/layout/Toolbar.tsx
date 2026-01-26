@@ -84,23 +84,23 @@ export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
       {/* Stats */}
       {session && (
         <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-          <div className="flex items-center gap-1" title="Data Sources">
+          <div className="flex items-center gap-1" title="Data Sources: Connected databases, APIs, and documents available for querying">
             <CircleStackIcon className="w-4 h-4" />
             <span>{datasourceCount}</span>
           </div>
-          <div className="flex items-center gap-1" title="Tables">
+          <div className="flex items-center gap-1" title="Tables: Data tables created during analysis">
             <TableCellsIcon className="w-4 h-4" />
             <span>{tables.length}</span>
           </div>
-          <div className="flex items-center gap-1" title="Facts">
+          <div className="flex items-center gap-1" title="Facts: Discovered insights and computed values stored for reference">
             <LightBulbIcon className="w-4 h-4" />
             <span>{facts.length}</span>
           </div>
-          <div className="flex items-center gap-1" title="Visualizations">
+          <div className="flex items-center gap-1" title="Visualizations: Charts, diagrams, and visual outputs">
             <ChartBarIcon className="w-4 h-4" />
             <span>{visualizationCount}</span>
           </div>
-          <div className="flex items-center gap-1" title="Artifacts">
+          <div className="flex items-center gap-1" title="Artifacts: All generated outputs including tables, charts, and reports">
             <DocumentIcon className="w-4 h-4" />
             <span>{artifacts.length}</span>
           </div>

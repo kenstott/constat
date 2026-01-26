@@ -58,6 +58,9 @@ HELP_COMMANDS: list[tuple[str, str, str]] = [
     ("/correct <text>", "Record a correction for future reference", "Analysis"),
     ("/learnings", "Show learnings and rules", "Analysis"),
     ("/compact-learnings", "Promote similar learnings into rules", "Analysis"),
+    ("/rule <text>", "Add a new rule directly", "Analysis"),
+    ("/rule-edit <id> <text>", "Edit an existing rule", "Analysis"),
+    ("/rule-delete <id>", "Delete a rule", "Analysis"),
     # Exit
     ("/quit, /q", "Exit the session", "Exit"),
 ]

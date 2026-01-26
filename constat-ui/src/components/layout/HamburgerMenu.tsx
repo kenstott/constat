@@ -4,15 +4,6 @@ import { Fragment, useEffect, useState } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import {
-  TableCellsIcon,
-  CodeBracketIcon,
-  CircleStackIcon,
-  DocumentTextIcon,
-  ClockIcon,
-  BookOpenIcon,
-  ArrowUpTrayIcon,
-  LinkIcon,
-  ServerIcon,
   Cog6ToothIcon,
   ChatBubbleLeftRightIcon,
   PlusIcon,
@@ -23,76 +14,11 @@ import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Session } from '@/types/api'
 
-interface MenuItem {
-  name: string
-  icon: React.ComponentType<{ className?: string }>
-  command: string
-  description: string
-}
-
-const menuItems: MenuItem[] = [
-  {
-    name: 'Tables',
-    icon: TableCellsIcon,
-    command: '/tables',
-    description: 'View session tables',
-  },
-  {
-    name: 'Code',
-    icon: CodeBracketIcon,
-    command: '/code',
-    description: 'Show generated code',
-  },
-  {
-    name: 'Query',
-    icon: CircleStackIcon,
-    command: '/query',
-    description: 'Run SQL query',
-  },
-  {
-    name: 'Facts',
-    icon: DocumentTextIcon,
-    command: '/facts',
-    description: 'View resolved facts',
-  },
-  {
-    name: 'History',
-    icon: ClockIcon,
-    command: '/history',
-    description: 'Session history',
-  },
-  {
-    name: 'Learnings',
-    icon: BookOpenIcon,
-    command: '/learnings',
-    description: 'View learnings',
-  },
-  {
-    name: 'Upload File',
-    icon: ArrowUpTrayIcon,
-    command: '/add',
-    description: 'Upload a file',
-  },
-  {
-    name: 'Add File Ref',
-    icon: LinkIcon,
-    command: '/file',
-    description: 'Add file reference',
-  },
-  {
-    name: 'Database',
-    icon: ServerIcon,
-    command: '/database',
-    description: 'Manage databases',
-  },
-]
-
 interface HamburgerMenuProps {
-  onCommand?: (command: string) => void
   onNewSession?: () => void
 }
 
-export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
+export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   const { menuOpen, setMenuOpen, theme, setTheme } = useUIStore()
   const { session: currentSession, setSession, createSession } = useSessionStore()
   const [sessions, setSessions] = useState<Session[]>([])
@@ -117,11 +43,6 @@ export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
         .finally(() => setLoadingSessions(false))
     }
   }, [menuOpen, currentSession?.session_id])
-
-  const handleCommand = (command: string) => {
-    onCommand?.(command)
-    setMenuOpen(false)
-  }
 
   const handleSwitchSession = async (sessionId: string) => {
     if (sessionId === currentSession?.session_id) {
@@ -288,35 +209,6 @@ export function HamburgerMenu({ onCommand, onNewSession }: HamburgerMenuProps) {
                         )}
                       </div>
                     </div>
-
-                    {/* Commands section */}
-                    <div className="px-4 pt-3 pb-1">
-                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                        Commands
-                      </h3>
-                    </div>
-                    <nav className="flex-1 px-2 pb-4 space-y-1">
-                      {menuItems.map((item) => (
-                        <button
-                          key={item.command}
-                          onClick={() => handleCommand(item.command)}
-                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                        >
-                          <item.icon className="w-5 h-5 text-gray-500 dark:text-gray-400" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                              {item.name}
-                            </p>
-                            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                              {item.description}
-                            </p>
-                          </div>
-                          <span className="text-xs text-gray-400 dark:text-gray-500 font-mono">
-                            {item.command}
-                          </span>
-                        </button>
-                      ))}
-                    </nav>
 
                     {/* Settings */}
                     <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4">

@@ -54,6 +54,11 @@ interface ArtifactState {
   // Star/promote actions (persist to server)
   toggleArtifactStar: (sessionId: string, artifactId: number) => Promise<void>
   toggleTableStar: (sessionId: string, tableName: string) => Promise<void>
+  // Rule management
+  addRule: (summary: string, tags?: string[]) => Promise<void>
+  updateRule: (ruleId: string, summary: string, tags?: string[]) => Promise<void>
+  deleteRule: (ruleId: string) => Promise<void>
+  deleteLearning: (learningId: string) => Promise<void>
   clear: () => void
 }
 
@@ -261,24 +266,24 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   toggleArtifactStar: async (sessionId, artifactId) => {
-    // Optimistic update
+    // Optimistic update - toggle is_starred
     set((state) => ({
       artifacts: state.artifacts.map((a) =>
-        a.id === artifactId ? { ...a, is_key_result: !a.is_key_result } : a
+        a.id === artifactId ? { ...a, is_starred: !a.is_starred } : a
       ),
     }))
 
     try {
       // Persist to server
       await sessionsApi.toggleArtifactStar(sessionId, artifactId)
-      // Refresh artifacts list to reflect changes
+      // Refresh artifacts list to reflect changes (is_key_result may change too)
       const response = await sessionsApi.listArtifacts(sessionId)
       set({ artifacts: response.artifacts })
     } catch (error) {
       // Revert on error
       set((state) => ({
         artifacts: state.artifacts.map((a) =>
-          a.id === artifactId ? { ...a, is_key_result: !a.is_key_result } : a
+          a.id === artifactId ? { ...a, is_starred: !a.is_starred } : a
         ),
         error: String(error),
       }))
@@ -307,6 +312,56 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         ),
         error: String(error),
       }))
+    }
+  },
+
+  addRule: async (summary, tags = []) => {
+    try {
+      await sessionsApi.addRule({ summary, tags })
+      // Refresh learnings list
+      get().fetchLearnings()
+    } catch (error) {
+      set({ error: String(error) })
+    }
+  },
+
+  updateRule: async (ruleId, summary, tags) => {
+    try {
+      await sessionsApi.updateRule(ruleId, { summary, tags })
+      // Refresh learnings list
+      get().fetchLearnings()
+    } catch (error) {
+      set({ error: String(error) })
+    }
+  },
+
+  deleteRule: async (ruleId) => {
+    // Optimistic update
+    set((state) => ({
+      rules: state.rules.filter((r) => r.id !== ruleId),
+    }))
+
+    try {
+      await sessionsApi.deleteRule(ruleId)
+    } catch (error) {
+      // Refresh to restore state on error
+      get().fetchLearnings()
+      set({ error: String(error) })
+    }
+  },
+
+  deleteLearning: async (learningId) => {
+    // Optimistic update
+    set((state) => ({
+      learnings: state.learnings.filter((l) => l.id !== learningId),
+    }))
+
+    try {
+      await sessionsApi.deleteLearning(learningId)
+    } catch (error) {
+      // Refresh to restore state on error
+      get().fetchLearnings()
+      set({ error: String(error) })
     }
   },
 

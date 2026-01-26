@@ -16,12 +16,13 @@ import type { Artifact, ArtifactContent, TableData } from '@/types/api'
 
 interface ArtifactItemAccordionProps {
   artifact: Artifact
+  initiallyOpen?: boolean
 }
 
-export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) {
+export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: ArtifactItemAccordionProps) {
   const { session } = useSessionStore()
   const { toggleArtifactStar, toggleTableStar } = useArtifactStore()
-  const [isOpen, setIsOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState(initiallyOpen)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [content, setContent] = useState<ArtifactContent | null>(null)
   const [tableData, setTableData] = useState<TableData | null>(null)
@@ -381,9 +382,9 @@ export function ArtifactItemAccordion({ artifact }: ArtifactItemAccordionProps) 
             <button
               onClick={handleToggleStar}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
-              title={artifact.is_key_result ? "Remove from key results" : "Add to key results"}
+              title={artifact.is_starred ? "Unstar" : "Star"}
             >
-              {artifact.is_key_result ? (
+              {artifact.is_starred ? (
                 <StarSolid className="w-4 h-4 text-yellow-500" />
               ) : (
                 <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />

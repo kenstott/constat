@@ -234,7 +234,7 @@ export function PlanApprovalDialog() {
             {/* Steps */}
             <div className="space-y-2 mb-4">
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Execution Steps
+                Plan Steps
               </p>
               {steps.length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 italic">

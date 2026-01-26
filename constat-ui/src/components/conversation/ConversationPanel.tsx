@@ -1,13 +1,18 @@
 // Conversation Panel container
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
 import { MessageBubble } from './MessageBubble'
 import { AutocompleteInput } from './AutocompleteInput'
+import {
+  ClipboardDocumentIcon,
+  ClipboardDocumentCheckIcon,
+} from '@heroicons/react/24/outline'
 
 export function ConversationPanel() {
   const { session, messages, submitQuery } = useSessionStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const [copiedAll, setCopiedAll] = useState(false)
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -17,6 +22,19 @@ export function ConversationPanel() {
   const handleSubmit = (query: string) => {
     const isFollowup = messages.some((m) => m.type === 'user')
     submitQuery(query, isFollowup)
+  }
+
+  // Copy entire conversation to clipboard
+  const handleCopyAll = async () => {
+    const conversationText = messages
+      .map((m) => {
+        const role = m.type === 'user' ? 'User' : 'Assistant'
+        return `${role}: ${m.content}`
+      })
+      .join('\n\n')
+    await navigator.clipboard.writeText(conversationText)
+    setCopiedAll(true)
+    setTimeout(() => setCopiedAll(false), 2000)
   }
 
   if (!session) {
@@ -32,6 +50,33 @@ export function ConversationPanel() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Copy All button - shown when there are messages */}
+      {messages.length > 0 && (
+        <div className="flex justify-end px-4 pt-2">
+          <button
+            onClick={handleCopyAll}
+            className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+              copiedAll
+                ? 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+            }`}
+            title="Copy entire conversation"
+          >
+            {copiedAll ? (
+              <>
+                <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                Copied!
+              </>
+            ) : (
+              <>
+                <ClipboardDocumentIcon className="w-4 h-4" />
+                Copy All
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 ? (

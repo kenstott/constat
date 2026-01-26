@@ -156,6 +156,7 @@ export interface Artifact {
   mime_type: string
   created_at?: string
   is_key_result?: boolean
+  is_starred?: boolean
 }
 
 export interface ArtifactContent extends Artifact {

@@ -1,6 +1,6 @@
 // Session API calls
 
-import { get, post, del } from './client'
+import { get, post, put, del } from './client'
 import type {
   Session,
   SessionListResponse,
@@ -262,4 +262,33 @@ export async function compactLearnings(): Promise<{
     rules_created: number
     learnings_archived: number
   }>('/learnings/compact', {})
+}
+
+// Rules (global, not per-session)
+export async function addRule(data: {
+  summary: string
+  category?: string
+  confidence?: number
+  tags?: string[]
+}): Promise<Rule> {
+  return post<Rule>('/rules', data)
+}
+
+export async function updateRule(
+  ruleId: string,
+  data: {
+    summary?: string
+    confidence?: number
+    tags?: string[]
+  }
+): Promise<Rule> {
+  return put<Rule>(`/rules/${ruleId}`, data)
+}
+
+export async function deleteRule(ruleId: string): Promise<{ status: string; id: string }> {
+  return del<{ status: string; id: string }>(`/rules/${ruleId}`)
+}
+
+export async function deleteLearning(learningId: string): Promise<{ status: string; id: string }> {
+  return del<{ status: string; id: string }>(`/learnings/${learningId}`)
 }

@@ -267,6 +267,7 @@ class ArtifactInfo(BaseModel):
     mime_type: str = Field(description="MIME type of content")
     created_at: Optional[str] = Field(default=None, description="Creation timestamp")
     is_key_result: bool = Field(default=False, description="Whether this is a key result")
+    is_starred: bool = Field(default=False, description="Whether user has explicitly starred this")
 
 
 class ArtifactListResponse(BaseModel):
@@ -547,6 +548,26 @@ class RuleInfo(BaseModel):
     confidence: float = Field(description="Confidence score 0-1")
     source_count: int = Field(default=0, description="Number of source learnings")
     tags: list[str] = Field(default_factory=list, description="Tags for searching")
+
+
+class RuleCreateRequest(BaseModel):
+    """Request to create a new rule."""
+
+    summary: str = Field(description="The rule text/summary")
+    category: str = Field(
+        default="user_correction",
+        description="Rule category (user_correction, api_error, codegen_error, nl_correction)",
+    )
+    confidence: float = Field(default=0.9, description="Confidence score 0-1")
+    tags: list[str] = Field(default_factory=list, description="Tags for searching")
+
+
+class RuleUpdateRequest(BaseModel):
+    """Request to update an existing rule."""
+
+    summary: Optional[str] = Field(default=None, description="New rule text/summary")
+    confidence: Optional[float] = Field(default=None, description="New confidence score")
+    tags: Optional[list[str]] = Field(default=None, description="New tags")
 
 
 class LearningListResponse(BaseModel):

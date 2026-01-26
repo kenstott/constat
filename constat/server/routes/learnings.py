@@ -23,7 +23,9 @@ from constat.server.models import (
     LearningCreateRequest,
     LearningInfo,
     LearningListResponse,
+    RuleCreateRequest,
     RuleInfo,
+    RuleUpdateRequest,
 )
 from constat.storage.learnings import LearningCategory, LearningSource
 
@@ -287,3 +289,142 @@ async def get_config_sanitized(
         llm_model=config.llm.model,
         execution_timeout=config.execution.timeout_seconds,
     )
+
+
+# ============================================================================
+# Rule Endpoints
+# ============================================================================
+
+
+@router.post("/rules", response_model=RuleInfo)
+async def add_rule(
+    body: RuleCreateRequest,
+    config: Config = Depends(get_config),
+) -> RuleInfo:
+    """Add a new rule directly.
+
+    Args:
+        body: Rule content and metadata
+
+    Returns:
+        Created rule
+    """
+    try:
+        from constat.storage.learnings import LearningStore
+
+        store = LearningStore()
+
+        # Map string category to enum
+        try:
+            category = LearningCategory(body.category)
+        except ValueError:
+            category = LearningCategory.USER_CORRECTION
+
+        rule_id = store.save_rule(
+            summary=body.summary,
+            category=category,
+            confidence=body.confidence,
+            source_learnings=[],  # User-created rules have no source learnings
+            tags=body.tags,
+        )
+
+        return RuleInfo(
+            id=rule_id,
+            summary=body.summary,
+            category=body.category,
+            confidence=body.confidence,
+            source_count=0,
+            tags=body.tags,
+        )
+    except Exception as e:
+        logger.error(f"Error creating rule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/rules/{rule_id}", response_model=RuleInfo)
+async def update_rule(
+    rule_id: str,
+    body: RuleUpdateRequest,
+    config: Config = Depends(get_config),
+) -> RuleInfo:
+    """Update an existing rule.
+
+    Args:
+        rule_id: Rule ID to update
+        body: Fields to update
+
+    Returns:
+        Updated rule
+
+    Raises:
+        404: Rule not found
+    """
+    try:
+        from constat.storage.learnings import LearningStore
+
+        store = LearningStore()
+
+        # Check if rule exists
+        rules = store.list_rules()
+        existing = next((r for r in rules if r["id"] == rule_id), None)
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
+
+        # Update rule
+        success = store.update_rule(
+            rule_id=rule_id,
+            summary=body.summary,
+            tags=body.tags,
+            confidence=body.confidence,
+        )
+
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
+
+        # Fetch updated rule
+        rules = store.list_rules()
+        updated = next((r for r in rules if r["id"] == rule_id), None)
+
+        return RuleInfo(
+            id=rule_id,
+            summary=updated["summary"] if updated else body.summary or existing["summary"],
+            category=updated["category"] if updated else existing["category"],
+            confidence=updated["confidence"] if updated else body.confidence or existing["confidence"],
+            source_count=len(updated.get("source_learnings", [])) if updated else existing.get("source_count", 0),
+            tags=updated["tags"] if updated else body.tags or existing.get("tags", []),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating rule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/rules/{rule_id}")
+async def delete_rule(
+    rule_id: str,
+    config: Config = Depends(get_config),
+) -> dict:
+    """Delete a rule.
+
+    Args:
+        rule_id: Rule ID to delete
+
+    Returns:
+        Deletion confirmation
+
+    Raises:
+        404: Rule not found
+    """
+    try:
+        from constat.storage.learnings import LearningStore
+
+        store = LearningStore()
+        if store.delete_rule(rule_id):
+            return {"status": "deleted", "id": rule_id}
+        raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting rule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

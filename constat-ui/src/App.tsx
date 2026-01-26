@@ -73,12 +73,6 @@ function App() {
     }
   }, [session, createSession])
 
-  const handleCommand = (command: string) => {
-    // Handle menu commands
-    console.log('Command:', command)
-    // Could dispatch to a command handler or inject into query input
-  }
-
   const handleNewQuery = async () => {
     // Clear artifact store and create a new session (equivalent to /reset)
     useArtifactStore.getState().clear()
@@ -106,7 +100,6 @@ function App() {
       <MainLayout
         conversationPanel={<ConversationPanel />}
         artifactPanel={<ArtifactPanel />}
-        onCommand={handleCommand}
         onNewQuery={handleNewQuery}
         onShowProof={handleShowProof}
       />

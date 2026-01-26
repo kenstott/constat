@@ -65,7 +65,8 @@ export function QueryInput({ onSubmit, disabled }: QueryInputProps) {
           <button
             onClick={handleSubmit}
             disabled={isDisabled || !query.trim()}
-            className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-md text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="absolute p-2 rounded-md text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            style={{ right: '7px', top: '50%', transform: 'translateY(calc(-50% - 5px))' }}
           >
             <PaperAirplaneIcon className="w-4 h-4" />
           </button>

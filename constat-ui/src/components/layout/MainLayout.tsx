@@ -8,7 +8,6 @@ import { Toolbar } from './Toolbar'
 interface MainLayoutProps {
   conversationPanel: ReactNode
   artifactPanel: ReactNode
-  onCommand?: (command: string) => void
   onNewQuery?: () => void
   onShowProof?: () => void
 }
@@ -37,7 +36,6 @@ function getSavedPanelWidth(): number {
 export function MainLayout({
   conversationPanel,
   artifactPanel,
-  onCommand,
   onNewQuery,
   onShowProof,
 }: MainLayoutProps) {
@@ -93,7 +91,7 @@ export function MainLayout({
       <StatusBar />
 
       {/* Hamburger Menu (drawer) */}
-      <HamburgerMenu onCommand={onCommand} />
+      <HamburgerMenu />
 
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden">
