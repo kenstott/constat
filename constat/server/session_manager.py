@@ -42,6 +42,9 @@ class ManagedSession:
     current_query: Optional[str] = None
     execution_id: Optional[str] = None
 
+    # Active project filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
+    active_projects: list[str] = field(default_factory=list)
+
     # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
 
@@ -52,6 +55,11 @@ class ManagedSession:
     # Clarification event for blocking on user clarification
     clarification_event: Optional[asyncio.Event] = None
     clarification_response: Optional[dict] = None
+
+    @property
+    def history_session_id(self) -> Optional[str]:
+        """Get the session ID used for history storage."""
+        return self.session.session_id if self.session else None
 
     def touch(self) -> None:
         """Update last activity timestamp."""

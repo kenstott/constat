@@ -109,6 +109,10 @@ class SessionResponse(BaseModel):
         default=None,
         description="Current query being processed",
     )
+    active_projects: list[str] = Field(
+        default_factory=list,
+        description="Active project filenames (e.g., ['sales-analytics.yaml'])",
+    )
     tables_count: int = Field(
         default=0,
         description="Number of tables in datastore",
@@ -497,12 +501,45 @@ class SessionDatabaseInfo(BaseModel):
     added_at: datetime = Field(description="When the database was added")
     is_dynamic: bool = Field(description="Whether dynamically added (vs config)")
     file_id: Optional[str] = Field(default=None, description="Uploaded file ID if any")
+    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
 
 
 class SessionDatabaseListResponse(BaseModel):
     """Response containing list of session databases."""
 
     databases: list[SessionDatabaseInfo] = Field(description="List of databases")
+
+
+class SessionApiInfo(BaseModel):
+    """Information about a session API source."""
+
+    name: str = Field(description="API name")
+    type: Optional[str] = Field(default=None, description="API type (rest, graphql, openapi)")
+    description: Optional[str] = Field(default=None, description="Description")
+    base_url: Optional[str] = Field(default=None, description="Base URL")
+    connected: bool = Field(description="Whether API is reachable")
+    from_config: bool = Field(description="Whether from config (vs session-added)")
+    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+
+
+class SessionDocumentInfo(BaseModel):
+    """Information about a session document source."""
+
+    name: str = Field(description="Document name")
+    type: Optional[str] = Field(default=None, description="Document type")
+    description: Optional[str] = Field(default=None, description="Description")
+    path: Optional[str] = Field(default=None, description="File path")
+    indexed: bool = Field(description="Whether document is indexed")
+    from_config: bool = Field(description="Whether from config (vs session-added)")
+    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+
+
+class SessionDataSourcesResponse(BaseModel):
+    """Response containing all data sources for a session."""
+
+    databases: list[SessionDatabaseInfo] = Field(description="Database sources")
+    apis: list[SessionApiInfo] = Field(description="API sources")
+    documents: list[SessionDocumentInfo] = Field(description="Document sources")
 
 
 class DatabaseTestResponse(BaseModel):
@@ -618,6 +655,36 @@ class ConfigResponse(BaseModel):
     llm_provider: str = Field(description="LLM provider")
     llm_model: str = Field(description="LLM model")
     execution_timeout: int = Field(description="Execution timeout seconds")
+
+
+# ============================================================================
+# Project Models
+# ============================================================================
+
+
+class ProjectInfo(BaseModel):
+    """Summary info for a project."""
+
+    filename: str = Field(description="Project YAML filename")
+    name: str = Field(description="Project display name")
+    description: str = Field(default="", description="Project description")
+
+
+class ProjectListResponse(BaseModel):
+    """List of available projects."""
+
+    projects: list[ProjectInfo] = Field(description="Available projects")
+
+
+class ProjectDetailResponse(BaseModel):
+    """Full project details."""
+
+    filename: str = Field(description="Project YAML filename")
+    name: str = Field(description="Project display name")
+    description: str = Field(default="", description="Project description")
+    databases: list[str] = Field(description="Database names in project")
+    apis: list[str] = Field(description="API names in project")
+    documents: list[str] = Field(description="Document names in project")
 
 
 # ============================================================================

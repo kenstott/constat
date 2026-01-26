@@ -9,19 +9,21 @@ import { AutocompleteInput } from './AutocompleteInput'
 import {
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
+  XMarkIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline'
 
 export function ConversationPanel() {
-  const { session, messages, submitQuery } = useSessionStore()
+  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage } = useSessionStore()
   const { artifacts, tables } = useArtifactStore()
   const { openFullscreenArtifact } = useUIStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages or queued messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, queuedMessages])
 
   const handleSubmit = (query: string) => {
     const isFollowup = messages.some((m) => m.type === 'user')
@@ -145,6 +147,36 @@ export function ConversationPanel() {
                 isFinalInsight={message.isFinalInsight}
                 onViewResult={message.isFinalInsight ? handleViewResult : undefined}
               />
+            ))}
+            {/* Queued messages */}
+            {queuedMessages.map((queued, index) => (
+              <div key={queued.id} className="group flex gap-3 flex-row-reverse">
+                {/* Avatar placeholder for alignment */}
+                <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-primary-100 dark:bg-primary-900 opacity-50">
+                  <ClockIcon className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                </div>
+                {/* Queued message content */}
+                <div className="flex-1 max-w-[80%] text-right">
+                  <div className="relative inline-block rounded-lg rounded-tr-none px-4 py-3 bg-primary-100/50 dark:bg-primary-900/30 border border-dashed border-primary-300 dark:border-primary-700">
+                    {/* Cancel button */}
+                    <button
+                      onClick={() => removeQueuedMessage(queued.id)}
+                      className="absolute top-2 right-2 p-1 rounded text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Cancel queued message"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                    {/* Queued badge */}
+                    <div className="flex items-center gap-1.5 text-xs text-primary-600 dark:text-primary-400 mb-1">
+                      <ClockIcon className="w-3 h-3" />
+                      <span>Queued {index > 0 ? `#${index + 1}` : ''}</span>
+                    </div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                      {queued.content}
+                    </p>
+                  </div>
+                </div>
+              </div>
             ))}
             <div ref={messagesEndRef} />
           </>

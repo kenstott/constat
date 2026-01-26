@@ -66,6 +66,7 @@ export interface Session {
   last_activity: string
   current_query?: string
   summary?: string // LLM-generated session summary
+  active_projects?: string[] // Active project filenames
   tables_count: number
   artifacts_count: number
 }
@@ -242,6 +243,7 @@ export interface SessionDatabase {
   added_at: string
   is_dynamic: boolean
   file_id?: string
+  source?: string  // 'config', project filename, or 'session'
 }
 
 // Learnings
@@ -283,6 +285,7 @@ export interface ApiSourceInfo {
   base_url?: string
   connected: boolean
   from_config?: boolean  // true if from config file (cannot be removed)
+  source?: string  // 'config', project filename, or 'session'
 }
 
 // Document Source Info
@@ -293,6 +296,7 @@ export interface DocumentSourceInfo {
   path?: string
   indexed: boolean
   from_config?: boolean  // true if from config file (cannot be removed)
+  source?: string  // 'config', project filename, or 'session'
 }
 
 // Autocomplete

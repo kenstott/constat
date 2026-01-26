@@ -150,7 +150,8 @@ class DatabaseConfig(BaseModel):
         Returns:
             Connection URI with credentials applied
         """
-        if self.type not in ("sql", "mongodb"):
+        # Allow None type for SQL databases (inferred from URI)
+        if self.type is not None and self.type not in ("sql", "mongodb"):
             raise ValueError(f"get_connection_uri() not supported for type: {self.type}")
 
         if not self.uri:
@@ -672,11 +673,69 @@ class ContextPreloadConfig(BaseModel):
     max_columns_per_table: int = 30
 
 
+class ProjectConfig(BaseModel):
+    """Project configuration - a reusable collection of data sources.
+
+    Projects are defined in YAML files and can be shared across sessions.
+    A session can select a project to load its databases, APIs, and documents.
+
+    Example project file (projects/sales-analytics.yaml):
+        name: Sales Analytics
+        description: Sales data from warehouse and CRM
+
+        databases:
+          snowflake_sales:
+            uri: snowflake://...
+            description: Sales data warehouse
+
+        apis:
+          salesforce:
+            type: rest
+            url: https://api.salesforce.com/...
+
+        documents:
+          sales_glossary:
+            path: ./docs/sales-terms.md
+    """
+    name: str
+    description: str = ""
+
+    # Data sources (same structure as main config)
+    databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
+    apis: dict[str, APIConfig] = Field(default_factory=dict)
+    documents: dict[str, DocumentConfig] = Field(default_factory=dict)
+
+    # Optional project-specific settings
+    databases_description: str = ""
+    system_prompt: str = ""
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "ProjectConfig":
+        """Load project config from YAML file."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Project file not found: {path}")
+
+        with open(path) as f:
+            raw_content = f.read()
+
+        # Substitute environment variables
+        substituted = _substitute_env_vars(raw_content)
+        data = yaml.safe_load(substituted)
+
+        return cls.model_validate(data)
+
+
 class Config(BaseModel):
     """Root configuration model."""
     model_config = {"extra": "ignore"}
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
+
+    # Path to directory containing project YAML files
+    # Can be a shared network path for team collaboration
+    # Default: ~/.constat/projects/
+    projects_path: Optional[str] = None
 
     # Databases keyed by name for easy merging
     # YAML format: databases: {main: {uri: ...}, analytics: {uri: ...}}
@@ -701,6 +760,61 @@ class Config(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     email: Optional[EmailConfig] = None  # Email configuration for send_email
+
+    def get_projects_directory(self) -> Path:
+        """Get the projects directory path.
+
+        Returns:
+            Path to projects directory (creates if doesn't exist)
+        """
+        if self.projects_path:
+            path = Path(self.projects_path).expanduser()
+        else:
+            # Default: ~/.constat/projects/
+            path = Path.home() / ".constat" / "projects"
+
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def list_projects(self) -> list[dict]:
+        """List available projects from the projects directory.
+
+        Returns:
+            List of project info dicts with 'filename', 'name', 'description'
+        """
+        projects_dir = self.get_projects_directory()
+        projects = []
+
+        for yaml_file in sorted(projects_dir.glob("*.yaml")):
+            try:
+                project = ProjectConfig.from_yaml(yaml_file)
+                projects.append({
+                    "filename": yaml_file.name,
+                    "name": project.name,
+                    "description": project.description,
+                })
+            except Exception:
+                # Skip invalid project files
+                continue
+
+        return projects
+
+    def load_project(self, filename: str) -> Optional["ProjectConfig"]:
+        """Load a project by filename.
+
+        Args:
+            filename: Project YAML filename (e.g., 'sales-analytics.yaml')
+
+        Returns:
+            ProjectConfig or None if not found
+        """
+        projects_dir = self.get_projects_directory()
+        project_path = projects_dir / filename
+
+        if not project_path.exists():
+            return None
+
+        return ProjectConfig.from_yaml(project_path)
 
     @classmethod
     def from_yaml(

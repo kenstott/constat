@@ -1,10 +1,11 @@
 // Autocomplete-enabled query input wrapper
 
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from 'react'
-import { PaperAirplaneIcon } from '@heroicons/react/24/solid'
+import { PaperAirplaneIcon, QueueListIcon } from '@heroicons/react/24/solid'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import { AutocompleteDropdown, AutocompleteItem } from './AutocompleteDropdown'
 import { wsManager } from '@/api/websocket'
+import { useSessionStore } from '@/store/sessionStore'
 import {
   filterCommands,
   getCommandByName,
@@ -138,6 +139,11 @@ export function AutocompleteInput({ onSubmit, disabled }: AutocompleteInputProps
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Check if session is busy (will queue instead of send)
+  const { status, executionPhase } = useSessionStore()
+  const isBusy = status === 'planning' || status === 'executing' || status === 'awaiting_approval' ||
+    executionPhase !== 'idle'
 
   const isDisabled = disabled
 
@@ -341,6 +347,13 @@ export function AutocompleteInput({ onSubmit, disabled }: AutocompleteInputProps
 
   return (
     <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
+      {/* Queue indicator when busy */}
+      {isBusy && query.trim() && (
+        <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 mb-2">
+          <QueueListIcon className="w-3.5 h-3.5" />
+          <span>Message will be queued and sent when current task completes</span>
+        </div>
+      )}
       <div className="flex gap-3">
         <div className="flex-1 relative">
           <AutocompleteDropdown
@@ -385,10 +398,19 @@ export function AutocompleteInput({ onSubmit, disabled }: AutocompleteInputProps
           <button
             onClick={handleSubmit}
             disabled={isDisabled || !query.trim()}
-            className="absolute p-2 rounded-md text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className={`absolute p-2 rounded-md text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              isBusy && query.trim()
+                ? 'bg-amber-500 hover:bg-amber-600'
+                : 'bg-primary-600 hover:bg-primary-700'
+            }`}
             style={{ right: '7px', top: '50%', transform: 'translateY(calc(-50% - 3px))' }}
+            title={isBusy && query.trim() ? 'Queue message' : 'Send message'}
           >
-            <PaperAirplaneIcon className="w-4 h-4" />
+            {isBusy && query.trim() ? (
+              <QueueListIcon className="w-4 h-4" />
+            ) : (
+              <PaperAirplaneIcon className="w-4 h-4" />
+            )}
           </button>
         </div>
       </div>

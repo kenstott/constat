@@ -45,6 +45,12 @@ interface ClarificationState {
   answers: Record<number, string>
 }
 
+interface QueuedMessage {
+  id: string
+  content: string
+  timestamp: Date
+}
+
 interface SessionState {
   // Current session
   session: Session | null
@@ -72,9 +78,13 @@ interface SessionState {
   // Suggestions (for number shortcuts)
   suggestions: string[]
 
+  // Queued messages (submitted while busy)
+  queuedMessages: QueuedMessage[]
+
   // Actions
   createSession: (userId?: string) => Promise<void>
   setSession: (session: Session | null) => void
+  updateSession: (updates: Partial<Session>) => void
   submitQuery: (problem: string, isFollowup?: boolean) => Promise<void>
   cancelExecution: () => Promise<void>
   approvePlan: (deletedSteps?: number[]) => Promise<void>
@@ -89,6 +99,8 @@ interface SessionState {
   clearMessages: () => void
   setCurrentQuery: (query: string) => void
   handleWSEvent: (event: WSEvent) => void
+  removeQueuedMessage: (id: string) => void
+  clearQueue: () => void
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -106,6 +118,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   plan: null,
   clarification: null,
   suggestions: [],
+  queuedMessages: [],
 
   createSession: async (userId = 'default') => {
     const session = await sessionsApi.createSession(userId)
@@ -135,8 +148,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ session, status: session?.status ?? 'idle' })
   },
 
+  updateSession: (updates) => {
+    // Update session properties without clearing messages or reconnecting WebSocket
+    const { session } = get()
+    if (session) {
+      set({ session: { ...session, ...updates } })
+    }
+  },
+
   submitQuery: async (problem, isFollowup = false) => {
-    const { session, addMessage, suggestions } = get()
+    const { session, addMessage, suggestions, status, executionPhase } = get()
     if (!session) return
 
     // Expand number shortcuts (e.g., "1" -> first suggestion)
@@ -147,6 +168,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (idx >= 0 && idx < suggestions.length) {
         expandedProblem = suggestions[idx]
       }
+    }
+
+    // Check if session is busy (planning, executing, awaiting approval)
+    const isBusy = status === 'planning' || status === 'executing' || status === 'awaiting_approval' ||
+      executionPhase !== 'idle'
+
+    if (isBusy) {
+      // Queue the message instead of submitting
+      const queuedMessage: QueuedMessage = {
+        id: crypto.randomUUID(),
+        content: expandedProblem,
+        timestamp: new Date(),
+      }
+      set((state) => ({
+        queuedMessages: [...state.queuedMessages, queuedMessage],
+      }))
+      return
     }
 
     // Add user message (show expanded form)
@@ -308,6 +346,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   clearMessages: () => set({ messages: [], thinkingMessageId: null }),
 
   setCurrentQuery: (query) => set({ currentQuery: query }),
+
+  removeQueuedMessage: (id) => {
+    set((state) => ({
+      queuedMessages: state.queuedMessages.filter((m) => m.id !== id),
+    }))
+  },
+
+  clearQueue: () => set({ queuedMessages: [] }),
 
   handleWSEvent: (event) => {
     const { addMessage, thinkingMessageId, liveMessageId, stepMessageIds, updateMessage, removeMessage, stepAttempt } = get()
@@ -606,7 +652,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         clearLiveMessage()
         // Extract suggestions for number shortcuts
         const completeSuggestions = (event.data.suggestions as string[]) || []
-        set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1, suggestions: completeSuggestions })
+        set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1, suggestions: completeSuggestions, executionPhase: 'idle' })
         // Add final insights bubble
         const output = (event.data.output as string) || 'Analysis complete'
         addMessage({
@@ -622,24 +668,57 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           artifactStore.fetchArtifacts(session.session_id)
           artifactStore.fetchFacts(session.session_id)
         }
+        // Process queued messages after a short delay to let UI update
+        setTimeout(() => {
+          const { queuedMessages, submitQuery: submit } = get()
+          if (queuedMessages.length > 0) {
+            const nextMessage = queuedMessages[0]
+            set((state) => ({
+              queuedMessages: state.queuedMessages.slice(1),
+            }))
+            submit(nextMessage.content, true)
+          }
+        }, 500)
         break
       }
 
       case 'query_error':
         finalizeAllSteps()
         clearLiveMessage()
-        set({ status: 'error', currentStepNumber: 0, stepAttempt: 1 })
+        set({ status: 'error', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })
         addMessage({
           type: 'error',
           content: (event.data.error as string) || 'Query failed',
         })
+        // Process queued messages after error too
+        setTimeout(() => {
+          const { queuedMessages, submitQuery: submit } = get()
+          if (queuedMessages.length > 0) {
+            const nextMessage = queuedMessages[0]
+            set((state) => ({
+              queuedMessages: state.queuedMessages.slice(1),
+            }))
+            submit(nextMessage.content, true)
+          }
+        }, 500)
         break
 
       case 'query_cancelled':
         finalizeAllSteps()
         clearLiveMessage()
-        set({ status: 'cancelled', currentStepNumber: 0, stepAttempt: 1 })
+        set({ status: 'cancelled', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })
         addMessage({ type: 'system', content: 'Execution cancelled' })
+        // Process queued messages after cancellation too
+        setTimeout(() => {
+          const { queuedMessages, submitQuery: submit } = get()
+          if (queuedMessages.length > 0) {
+            const nextMessage = queuedMessages[0]
+            set((state) => ({
+              queuedMessages: state.queuedMessages.slice(1),
+            }))
+            submit(nextMessage.content, true)
+          }
+        }, 500)
         break
 
       case 'clarification_needed': {

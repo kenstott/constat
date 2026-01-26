@@ -107,6 +107,11 @@ export function MessageBubble({
   const Icon = styles.icon
   const isUser = type === 'user'
 
+  // Strip "Step X:" or "Step X" prefix from content if stepNumber is shown in header
+  const cleanedContent = stepNumber !== undefined
+    ? content.replace(/^Step\s+\d+:?\s*/i, '')
+    : content
+
   // Expand/collapse state
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false)
   const [needsExpansion, setNeedsExpansion] = useState(false)
@@ -129,8 +134,8 @@ export function MessageBubble({
   }, [content])
 
   // Check if content ends with "..." to show animated dots
-  const showAnimatedDots = (isLive || isPending) && content.endsWith('...')
-  const displayContent = showAnimatedDots ? content.slice(0, -3) : content
+  const showAnimatedDots = (isLive || isPending) && cleanedContent.endsWith('...')
+  const displayContent = showAnimatedDots ? cleanedContent.slice(0, -3) : cleanedContent
 
   return (
     <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
@@ -183,7 +188,7 @@ export function MessageBubble({
             }}
           >
             {type === 'thinking' ? (
-              <span>{content.replace(/\.+$/, '')}<AnimatedDots /></span>
+              <span>{cleanedContent.replace(/\.+$/, '')}<AnimatedDots /></span>
             ) : showAnimatedDots ? (
               <span>{displayContent}<AnimatedDots /></span>
             ) : (
@@ -236,7 +241,7 @@ export function MessageBubble({
                   ),
                 }}
               >
-                {content}
+                {displayContent}
               </ReactMarkdown>
             )}
           </div>

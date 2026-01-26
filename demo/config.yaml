@@ -1,6 +1,9 @@
 # Constat Demo Configuration
 # Run from project root: constat repl -c demo/config.yaml
 
+# Projects directory for reusable data source collections
+projects_path: demo/projects
+
 llm:
 #  provider: ollama
 #  model: qwen2.5:7b
@@ -21,25 +24,12 @@ email:
 # SQL Databases and File-based Data Sources
 databases:
   # SQL Databases (SQLite)
-  sales:
-    uri: sqlite:///demo/data/sales.db
-    description: |
-      Sales data with customers (name, email, tier, region), products (name, category,
-      price, cost), orders (date, status, total), and order_items (quantity, unit_price).
-      Customer tiers: bronze/silver/gold/platinum. Order status: pending/shipped/delivered/cancelled.
-
   inventory:
     uri: sqlite:///demo/data/inventory.db
     description: |
       Warehouse inventory with warehouses (location, capacity, manager), inventory
       (sku, quantity, reorder_level), and shipments (direction, carrier, date).
       SKUs link to sales.products via naming convention.
-
-  hr:
-    uri: sqlite:///demo/data/hr.db
-    description: |
-      HR data with departments (budget, headcount_limit), employees (salary, title,
-      manager_id for hierarchy), and performance_reviews (1-5 rating scale).
 
   # File-based data sources (CSV, JSON, Parquet, Arrow)
   web_metrics:
@@ -64,18 +54,6 @@ databases_description: |
   - web_metrics: Daily web analytics CSV (use file_web_metrics path)
   - events: Clickstream events JSON (use file_events path)
 
-# Reference Documents (unstructured files - markdown, text, PDFs)
-documents:
-  business_rules:
-    type: file
-    path: demo/docs/business_rules.md
-    description: Business policies for customer tiers, inventory reorder, and performance reviews
-
-  compensation_policy:
-    type: file
-    path: demo/docs/compensation_policy.pdf
-    description: Employee compensation policy including salary bands, merit increase matrix, bonus structure, and promotion guidelines
-
 system_prompt: |
   You are a business analyst assistant analyzing company data.
 
@@ -90,10 +68,6 @@ system_prompt: |
   - employees.manager_id is self-referential for org hierarchy
   - orders.customer_id -> customers.customer_id
   - order_items.product_id -> products.product_id
-
-  FILE ACCESS:
-  - For CSV files: pd.read_csv(file_web_metrics)
-  - For JSON files: pd.read_json(file_events)
 
 # External APIs (examples - these are public demo APIs)
 apis:

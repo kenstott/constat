@@ -238,6 +238,39 @@ export async function uploadDocuments(
   return response.json()
 }
 
+// Data Sources (combined: databases, APIs, documents)
+export interface SessionApiSource {
+  name: string
+  type?: string
+  description?: string
+  base_url?: string
+  connected: boolean
+  from_config: boolean
+  source: string  // 'config', project filename, or 'session'
+}
+
+export interface SessionDocumentSource {
+  name: string
+  type?: string
+  description?: string
+  path?: string
+  indexed: boolean
+  from_config: boolean
+  source: string  // 'config', project filename, or 'session'
+}
+
+export interface DataSourcesResponse {
+  databases: SessionDatabase[]
+  apis: SessionApiSource[]
+  documents: SessionDocumentSource[]
+}
+
+export async function listDataSources(
+  sessionId: string
+): Promise<DataSourcesResponse> {
+  return get<DataSourcesResponse>(`/sessions/${sessionId}/sources`)
+}
+
 // Databases
 export async function listDatabases(
   sessionId: string
@@ -349,4 +382,46 @@ export async function saveMessages(
   messages: StoredMessage[]
 ): Promise<{ status: string; count: number }> {
   return post<{ status: string; count: number }>(`/sessions/${sessionId}/messages`, { messages })
+}
+
+// Projects
+export interface ProjectInfo {
+  filename: string
+  name: string
+  description: string
+}
+
+export async function listProjects(): Promise<{ projects: ProjectInfo[] }> {
+  return get<{ projects: ProjectInfo[] }>('/projects')
+}
+
+export async function getProject(filename: string): Promise<{
+  filename: string
+  name: string
+  description: string
+  databases: string[]
+  apis: string[]
+  documents: string[]
+}> {
+  return get(`/projects/${encodeURIComponent(filename)}`)
+}
+
+export async function setActiveProjects(
+  sessionId: string,
+  projects: string[]
+): Promise<{ status: string; session_id: string; active_projects: string[] }> {
+  return post(`/sessions/${sessionId}/projects`, { projects })
+}
+
+export async function getProjectContent(
+  filename: string
+): Promise<{ content: string; path: string; filename: string }> {
+  return get(`/projects/${encodeURIComponent(filename)}/content`)
+}
+
+export async function updateProjectContent(
+  filename: string,
+  content: string
+): Promise<{ status: string; filename: string; path: string }> {
+  return put(`/projects/${encodeURIComponent(filename)}/content`, { content })
 }

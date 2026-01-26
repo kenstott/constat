@@ -18,8 +18,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from constat.server.models import (
     DatabaseAddRequest,
     DatabaseTestResponse,
+    SessionApiInfo,
     SessionDatabaseInfo,
     SessionDatabaseListResponse,
+    SessionDataSourcesResponse,
+    SessionDocumentInfo,
 )
 from constat.server.session_manager import ManagedSession, SessionManager
 
@@ -188,7 +191,7 @@ async def list_databases(
 ) -> SessionDatabaseListResponse:
     """List all databases available to the session.
 
-    Includes both config-defined and dynamically added databases.
+    Includes config-defined, project-defined, and dynamically added databases.
 
     Args:
         session_id: Session ID
@@ -201,8 +204,9 @@ async def list_databases(
     """
     managed = session_manager.get_session(session_id)
     databases = []
+    seen_names = set()
 
-    # Add config databases
+    # Add config databases (from global config)
     for name, db_config in managed.session.config.databases.items():
         connected = False
         table_count = 0
@@ -225,11 +229,48 @@ async def list_databases(
             added_at=managed.created_at,
             is_dynamic=False,
             file_id=None,
+            source="config",
         ))
+        seen_names.add(name)
 
-    # Add dynamic databases
+    # Add project databases (from all active projects)
+    for project_filename in managed.active_projects:
+        project = managed.session.config.load_project(project_filename)
+        if project:
+            for name, db_config in project.databases.items():
+                if name in seen_names:
+                    continue  # Skip duplicates (conflicts checked at project selection)
+
+                # Check if this database was loaded into the session
+                connected = name in getattr(managed, "_project_databases", set())
+                table_count = 0
+                if connected and managed.session.schema_manager:
+                    try:
+                        tables = managed.session.schema_manager.get_tables_for_db(name)
+                        table_count = len(tables)
+                    except Exception:
+                        pass
+
+                databases.append(SessionDatabaseInfo(
+                    name=name,
+                    type=db_config.type,
+                    dialect=None,
+                    description=db_config.description,
+                    connected=connected,
+                    table_count=table_count,
+                    added_at=managed.created_at,
+                    is_dynamic=False,
+                    file_id=None,
+                    source=project_filename,
+                ))
+                seen_names.add(name)
+
+    # Add dynamic databases (session-added)
     dynamic_dbs = _get_dynamic_dbs(managed)
     for db in dynamic_dbs:
+        if db["name"] in seen_names:
+            continue  # Skip duplicates
+
         databases.append(SessionDatabaseInfo(
             name=db["name"],
             type=db["type"],
@@ -240,9 +281,132 @@ async def list_databases(
             added_at=datetime.fromisoformat(db["added_at"]),
             is_dynamic=True,
             file_id=db.get("file_id"),
+            source="session",
         ))
 
     return SessionDatabaseListResponse(databases=databases)
+
+
+@router.get("/{session_id}/sources", response_model=SessionDataSourcesResponse)
+async def list_data_sources(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> SessionDataSourcesResponse:
+    """List all data sources available to the session.
+
+    Returns databases, APIs, and documents from config, active projects,
+    and session-added sources.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Combined list of all data sources
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+    config = managed.session.config
+
+    # Get databases (reuse existing logic)
+    db_response = await list_databases(session_id, session_manager)
+    databases = db_response.databases
+
+    # Collect APIs
+    apis: list[SessionApiInfo] = []
+    seen_apis: set[str] = set()
+
+    # Config APIs
+    for name, api_config in config.apis.items():
+        apis.append(SessionApiInfo(
+            name=name,
+            type=api_config.type,
+            description=api_config.description,
+            base_url=api_config.url,
+            connected=True,  # Assume connected if in config
+            from_config=True,
+            source="config",
+        ))
+        seen_apis.add(name)
+
+    # Project APIs
+    for project_filename in managed.active_projects:
+        project = config.load_project(project_filename)
+        if project:
+            for name, api_config in project.apis.items():
+                if name in seen_apis:
+                    continue  # Skip duplicates (conflicts checked at selection)
+                apis.append(SessionApiInfo(
+                    name=name,
+                    type=api_config.type,
+                    description=api_config.description,
+                    base_url=api_config.url,
+                    connected=True,
+                    from_config=False,
+                    source=project_filename,
+                ))
+                seen_apis.add(name)
+
+    # Collect Documents
+    documents: list[SessionDocumentInfo] = []
+    seen_docs: set[str] = set()
+
+    # Config documents
+    for name, doc_config in config.documents.items():
+        documents.append(SessionDocumentInfo(
+            name=name,
+            type=doc_config.type,
+            description=doc_config.description,
+            path=doc_config.path,
+            indexed=True,  # Assume indexed if in config
+            from_config=True,
+            source="config",
+        ))
+        seen_docs.add(name)
+
+    # Project documents
+    for project_filename in managed.active_projects:
+        project = config.load_project(project_filename)
+        if project:
+            for name, doc_config in project.documents.items():
+                if name in seen_docs:
+                    continue  # Skip duplicates
+                documents.append(SessionDocumentInfo(
+                    name=name,
+                    type=doc_config.type,
+                    description=doc_config.description,
+                    path=doc_config.path,
+                    indexed=True,
+                    from_config=False,
+                    source=project_filename,
+                ))
+                seen_docs.add(name)
+
+    # Session-added file refs (documents)
+    try:
+        from constat.server.routes.files import _get_file_refs
+        file_refs = _get_file_refs(managed)
+        for ref in file_refs:
+            if ref["name"] in seen_docs:
+                continue
+            documents.append(SessionDocumentInfo(
+                name=ref["name"],
+                type=ref.get("uri", "").split(".")[-1] if ref.get("uri") else None,
+                description=ref.get("description"),
+                path=ref.get("uri"),
+                indexed=True,
+                source="session",
+                from_config=False,
+            ))
+    except Exception:
+        pass  # File refs might not exist
+
+    return SessionDataSourcesResponse(
+        databases=databases,
+        apis=apis,
+        documents=documents,
+    )
 
 
 @router.delete("/{session_id}/databases/{db_name}")

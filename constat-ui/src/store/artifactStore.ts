@@ -151,55 +151,32 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchDataSources: async (sessionId) => {
     set({ loading: true, error: null })
     try {
-      // Fetch databases
-      const dbResponse = await sessionsApi.listDatabases(sessionId)
+      // Use unified sources endpoint that includes config + active projects + session data
+      const response = await sessionsApi.listDataSources(sessionId)
 
-      // Fetch session file refs (documents added to this session)
-      let sessionDocs: DocumentSourceInfo[] = []
-      try {
-        const fileRefsResponse = await sessionsApi.listFileRefs(sessionId)
-        sessionDocs = fileRefsResponse.file_refs.map((ref) => ({
-          name: ref.name,
-          indexed: true,
-          type: ref.uri?.split('.').pop() || undefined,
-          description: ref.description || undefined,
-          from_config: false,  // Session-added, can be removed
-        }))
-      } catch {
-        // File refs endpoint might not exist, that's ok
-      }
+      // Map to frontend types
+      const apis: ApiSourceInfo[] = response.apis.map((api) => ({
+        name: api.name,
+        type: api.type,
+        description: api.description,
+        base_url: api.base_url,
+        connected: api.connected,
+        from_config: api.from_config,
+        source: api.source,
+      }))
 
-      // Fetch config for APIs and config-defined documents (global endpoint)
-      let apis: ApiSourceInfo[] = []
-      let configDocs: DocumentSourceInfo[] = []
-      try {
-        const config = await sessionsApi.getConfig()
-        apis = config.apis.map((name) => ({
-          name,
-          connected: true, // Assume connected if in config
-          from_config: true,  // From config, cannot be removed
-        }))
-        configDocs = config.documents.map((name) => ({
-          name,
-          indexed: true, // Assume indexed if in config
-          from_config: true,  // From config, cannot be removed
-        }))
-      } catch {
-        // Config endpoint might not exist, that's ok
-      }
-
-      // Merge config docs and session docs (session docs take precedence)
-      const docMap = new Map<string, DocumentSourceInfo>()
-      for (const doc of configDocs) {
-        docMap.set(doc.name, doc)
-      }
-      for (const doc of sessionDocs) {
-        docMap.set(doc.name, doc)
-      }
-      const docs = Array.from(docMap.values())
+      const docs: DocumentSourceInfo[] = response.documents.map((doc) => ({
+        name: doc.name,
+        type: doc.type,
+        description: doc.description,
+        path: doc.path,
+        indexed: doc.indexed,
+        from_config: doc.from_config,
+        source: doc.source,
+      }))
 
       set({
-        databases: dbResponse.databases,
+        databases: response.databases,
         apis,
         documents: docs,
         loading: false,

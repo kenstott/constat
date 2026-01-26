@@ -219,6 +219,98 @@ class SchemaManager:
         self._generate_overview()
         self._progress_callback = None
 
+    def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig) -> bool:
+        """Dynamically add and introspect a database after initialization.
+
+        This allows adding project databases at runtime without reinitializing
+        the entire schema manager.
+
+        Args:
+            db_name: Name for the database
+            db_config: Database configuration
+
+        Returns:
+            True if successfully added
+        """
+        try:
+            # Connect based on type
+            source_type = db_config.type or "sql"
+            logger.info(f"add_database_dynamic: {db_name}, type={source_type}, uri={db_config.uri}")
+            logger.info(f"  is_file_source={db_config.is_file_source()}, is_nosql={db_config.is_nosql()}")
+
+            if db_config.is_file_source():
+                logger.info(f"  Connecting as file source")
+                self._connect_file(db_name, db_config)
+                # Introspect file source
+                connector = self.file_connections.get(db_name)
+                if connector:
+                    table_meta = TableMetadata(
+                        database=db_name,
+                        name=db_name,
+                        comment=db_config.description,
+                        database_type=source_type,
+                    )
+                    # Get columns from file
+                    try:
+                        columns = connector.get_columns()
+                        table_meta.columns = [
+                            ColumnMetadata(name=c["name"], type=c.get("type", "unknown"))
+                            for c in columns
+                        ]
+                        logger.info(f"  File source has {len(table_meta.columns)} columns")
+                    except Exception as e:
+                        logger.warning(f"  Failed to get columns: {e}")
+                    self.metadata_cache[f"{db_name}.{db_name}"] = table_meta
+                    logger.info(f"  Added to metadata_cache: {db_name}.{db_name}")
+            elif db_config.is_nosql():
+                logger.info(f"  Connecting as NoSQL")
+                self._connect_nosql(db_name, db_config)
+                # Introspect NoSQL
+                connector = self.nosql_connections.get(db_name)
+                if connector:
+                    collections = connector.list_collections()
+                    logger.info(f"  NoSQL has {len(collections)} collections")
+                    for coll_name in collections:
+                        schema = connector.infer_schema(coll_name)
+                        table_meta = TableMetadata(
+                            database=db_name,
+                            name=coll_name,
+                            comment=db_config.description,
+                            database_type=source_type,
+                        )
+                        if schema:
+                            table_meta.columns = [
+                                ColumnMetadata(name=f["name"], type=f.get("type", "unknown"))
+                                for f in schema.get("fields", [])
+                            ]
+                        self.metadata_cache[f"{db_name}.{coll_name}"] = table_meta
+            else:
+                # SQL database
+                logger.info(f"  Connecting as SQL database")
+                self._connect_sql(db_name, db_config)
+                engine = self.connections.get(db_name)
+                if engine:
+                    inspector = inspect(engine)
+                    table_names = inspector.get_table_names()
+                    logger.info(f"  SQL database has {len(table_names)} tables: {table_names}")
+                    for table_name in table_names:
+                        table_meta = self._introspect_table(db_name, engine, inspector, table_name)
+                        self.metadata_cache[table_meta.full_name] = table_meta
+                        logger.info(f"  Introspected table: {db_name}.{table_name}")
+                else:
+                    logger.warning(f"  No engine created for {db_name}")
+
+            # Rebuild vector index to include new entities
+            logger.info(f"  Rebuilding vector index...")
+            self._build_vector_index()
+            logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
+
+            logger.info(f"Dynamically added database: {db_name} ({source_type})")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to dynamically add database {db_name}: {e}")
+            return False
+
     def refresh(self, progress_callback: Optional[Callable[[str, int, int, str], None]] = None) -> None:
         """Clear caches and re-introspect all schemas.
 

@@ -23,6 +23,9 @@ from constat.server.models import (
     LearningCreateRequest,
     LearningInfo,
     LearningListResponse,
+    ProjectDetailResponse,
+    ProjectInfo,
+    ProjectListResponse,
     RuleCreateRequest,
     RuleInfo,
     RuleUpdateRequest,
@@ -289,6 +292,140 @@ async def get_config_sanitized(
         llm_model=config.llm.model,
         execution_timeout=config.execution.timeout_seconds,
     )
+
+
+# ============================================================================
+# Project Endpoints
+# ============================================================================
+
+
+@router.get("/projects", response_model=ProjectListResponse)
+async def list_projects(
+    config: Config = Depends(get_config),
+) -> ProjectListResponse:
+    """List available projects from the projects directory.
+
+    Projects are YAML files defining reusable collections of databases,
+    APIs, and documents. The projects_path in config determines where
+    to look for project files.
+
+    Returns:
+        List of available projects
+    """
+    project_infos = config.list_projects()
+    return ProjectListResponse(
+        projects=[ProjectInfo(**p) for p in project_infos]
+    )
+
+
+@router.get("/projects/{filename}", response_model=ProjectDetailResponse)
+async def get_project(
+    filename: str,
+    config: Config = Depends(get_config),
+) -> ProjectDetailResponse:
+    """Get details for a specific project.
+
+    Args:
+        filename: Project YAML filename (e.g., 'sales-analytics.yaml')
+
+    Returns:
+        Project details including data source names
+
+    Raises:
+        404: Project not found
+    """
+    project = config.load_project(filename)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+
+    return ProjectDetailResponse(
+        filename=filename,
+        name=project.name,
+        description=project.description,
+        databases=list(project.databases.keys()),
+        apis=list(project.apis.keys()),
+        documents=list(project.documents.keys()),
+    )
+
+
+@router.get("/projects/{filename}/content")
+async def get_project_content(
+    filename: str,
+    config: Config = Depends(get_config),
+) -> dict:
+    """Get the raw YAML content of a project file.
+
+    Args:
+        filename: Project YAML filename
+
+    Returns:
+        Dict with 'content' (YAML string) and 'path' (full file path)
+
+    Raises:
+        404: Project not found
+    """
+    projects_dir = config.get_projects_directory()
+    if not projects_dir:
+        raise HTTPException(status_code=404, detail="No projects directory configured")
+
+    project_path = projects_dir / filename
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+
+    content = project_path.read_text()
+    return {
+        "content": content,
+        "path": str(project_path),
+        "filename": filename,
+    }
+
+
+@router.put("/projects/{filename}/content")
+async def update_project_content(
+    filename: str,
+    body: dict,
+    config: Config = Depends(get_config),
+) -> dict:
+    """Update the YAML content of a project file.
+
+    Args:
+        filename: Project YAML filename
+        body: Dict with 'content' (new YAML string)
+
+    Returns:
+        Status confirmation
+
+    Raises:
+        404: Project not found
+        400: Invalid YAML
+    """
+    projects_dir = config.get_projects_directory()
+    if not projects_dir:
+        raise HTTPException(status_code=404, detail="No projects directory configured")
+
+    project_path = projects_dir / filename
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+
+    content = body.get("content")
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+
+    # Validate YAML before saving
+    import yaml
+    try:
+        yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+
+    # Write the file
+    project_path.write_text(content)
+
+    return {
+        "status": "saved",
+        "filename": filename,
+        "path": str(project_path),
+    }
 
 
 # ============================================================================

@@ -512,9 +512,20 @@ export function ArtifactPanel() {
                 className="group p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {db.name}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {db.name}
+                    </span>
+                    {db.source && db.source !== 'config' && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        db.source === 'session'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                      }`}>
+                        {db.source === 'session' ? 'session' : db.source.replace('.yaml', '')}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
                       {db.type}
@@ -584,9 +595,20 @@ export function ArtifactPanel() {
                 className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {api.name}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {api.name}
+                    </span>
+                    {api.source && api.source !== 'config' && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        api.source === 'session'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                      }`}>
+                        {api.source === 'session' ? 'session' : api.source.replace('.yaml', '')}
+                      </span>
+                    )}
+                  </div>
                   <span
                     className={`text-xs px-1.5 py-0.5 rounded ${
                       api.connected
@@ -640,9 +662,20 @@ export function ArtifactPanel() {
                 className="group p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {doc.name}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {doc.name}
+                    </span>
+                    {doc.source && doc.source !== 'config' && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        doc.source === 'session'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                      }`}>
+                        {doc.source === 'session' ? 'session' : doc.source.replace('.yaml', '')}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     <span
                       className={`text-xs px-1.5 py-0.5 rounded ${

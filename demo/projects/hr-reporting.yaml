@@ -1,0 +1,18 @@
+# HR Reporting Project
+# Provides access to HR and employee data
+
+name: HR Reporting
+description: Employee and performance data for HR analysis
+
+databases:
+  hr:
+    uri: sqlite:///demo/data/hr.db
+    description: |
+      HR data with departments, employees, and performance reviews.
+      Ratings: 1-5 scale (5=exceptional, 1=unsatisfactory).
+
+documents:
+  compensation_policy:
+    type: file
+    path: demo/docs/compensation_policy.pdf
+    description: Salary bands, merit increases, and bonus structure
