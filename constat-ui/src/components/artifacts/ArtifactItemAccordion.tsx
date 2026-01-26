@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ArrowsPointingOutIcon,
+  ArrowDownTrayIcon,
   XMarkIcon,
   StarIcon as StarOutline,
 } from '@heroicons/react/24/outline'
@@ -98,6 +99,87 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     e.stopPropagation()
     setIsOpen(true) // Ensure content is loaded
     setIsFullscreen(true)
+  }
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session) return
+
+    try {
+      if (isTable) {
+        // Download table as CSV
+        const response = await fetch(
+          `/api/sessions/${session.session_id}/tables/${artifact.name}/download`
+        )
+        if (!response.ok) throw new Error('Failed to download')
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${artifact.name}.csv`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      } else {
+        // For other artifacts, fetch content and download
+        const artifactContent = content || await sessionsApi.getArtifact(session.session_id, artifact.id)
+
+        let blob: Blob
+        let filename: string
+
+        if (artifactContent.is_binary && artifactContent.mime_type.startsWith('image/')) {
+          // Binary image - decode base64
+          const binary = atob(artifactContent.content)
+          const bytes = new Uint8Array(binary.length)
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i)
+          }
+          blob = new Blob([bytes], { type: artifactContent.mime_type })
+          const ext = artifactContent.mime_type.split('/')[1] || 'png'
+          filename = `${artifact.name}.${ext}`
+        } else if (artifactContent.artifact_type === 'plotly') {
+          // Plotly chart - wrap in HTML
+          const html = `<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body style="margin:0">
+  <div id="plot"></div>
+  <script>
+    const data = ${artifactContent.content};
+    Plotly.newPlot('plot', data.data || data, data.layout || {}, {responsive: true});
+  </script>
+</body>
+</html>`
+          blob = new Blob([html], { type: 'text/html' })
+          filename = `${artifact.name}.html`
+        } else if (['markdown', 'md'].includes(artifactContent.artifact_type?.toLowerCase())) {
+          blob = new Blob([artifactContent.content], { type: 'text/markdown' })
+          filename = `${artifact.name}.md`
+        } else if (artifactContent.artifact_type === 'html' || artifactContent.mime_type === 'text/html') {
+          blob = new Blob([artifactContent.content], { type: 'text/html' })
+          filename = `${artifact.name}.html`
+        } else {
+          // Default: download as text
+          blob = new Blob([artifactContent.content], { type: 'text/plain' })
+          filename = `${artifact.name}.txt`
+        }
+
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
+    } catch (err) {
+      console.error('Download failed:', err)
+      alert('Failed to download. Please try again.')
+    }
   }
 
   const renderContent = (maxHeight?: string) => {
@@ -384,11 +466,18 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
               title={artifact.is_starred ? "Unstar" : "Star"}
             >
-              {artifact.is_starred ? (
+              {(artifact.is_starred || artifact.is_key_result) ? (
                 <StarSolid className="w-4 h-4 text-yellow-500" />
               ) : (
                 <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
               )}
+            </button>
+            <button
+              onClick={handleDownload}
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+              title="Download"
+            >
+              <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
             </button>
             <button
               onClick={openFullscreen}

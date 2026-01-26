@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from constat.server.models import (
     ArtifactContentResponse,
@@ -130,6 +131,46 @@ async def get_table_data(
 
     except Exception as e:
         logger.error(f"Error getting table data: {e}")
+        raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
+
+
+@router.get("/{session_id}/tables/{table_name}/download")
+async def download_table(
+    session_id: str,
+    table_name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> Response:
+    """Download table data as CSV.
+
+    Args:
+        session_id: Session ID
+        table_name: Table name to download
+
+    Returns:
+        CSV file response
+
+    Raises:
+        404: Session or table not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore for this session")
+
+    try:
+        df = managed.session.datastore.load_dataframe(table_name)
+        csv_content = df.to_csv(index=False)
+
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{table_name}.csv"'
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"Error downloading table: {e}")
         raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
 
 

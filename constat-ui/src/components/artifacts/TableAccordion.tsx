@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ArrowsPointingOutIcon,
+  ArrowDownTrayIcon,
   XMarkIcon,
   StarIcon as StarOutline,
 } from '@heroicons/react/24/outline'
@@ -78,6 +79,30 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     e.stopPropagation()
     if (session) {
       toggleTableStar(session.session_id, table.name)
+    }
+  }
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session) return
+
+    try {
+      const response = await fetch(
+        `/api/sessions/${session.session_id}/tables/${table.name}/download`
+      )
+      if (!response.ok) throw new Error('Failed to download')
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${table.name}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Download failed:', err)
+      alert('Failed to download. Please try again.')
     }
   }
 
@@ -204,6 +229,13 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
               ) : (
                 <StarOutline className="w-4 h-4 text-gray-400 hover:text-yellow-500" />
               )}
+            </button>
+            <button
+              onClick={handleDownload}
+              className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+              title="Download as CSV"
+            >
+              <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
             </button>
             <button
               onClick={openFullscreen}
