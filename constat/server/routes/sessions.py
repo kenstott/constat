@@ -184,3 +184,68 @@ async def delete_session(
         "status": "deleted",
         "session_id": session_id,
     }
+
+
+@router.get("/{session_id}/messages")
+async def get_messages(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Get conversation messages for a session.
+
+    Returns stored messages for UI restoration after refresh/reconnect.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Dict with messages list
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Get messages from session history
+    history = SessionHistory(user_id=managed.session.session_config.user_id or "default")
+    history_session_id = managed.history_session_id
+
+    if history_session_id:
+        messages = history.load_messages(history_session_id)
+    else:
+        messages = []
+
+    return {"messages": messages}
+
+
+@router.post("/{session_id}/messages")
+async def save_messages(
+    session_id: str,
+    body: dict,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Save conversation messages for a session.
+
+    Persists messages for UI restoration after refresh/reconnect.
+
+    Args:
+        session_id: Session ID
+        body: Dict with messages list
+
+    Returns:
+        Status confirmation
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+    messages = body.get("messages", [])
+
+    # Save messages to session history
+    history = SessionHistory(user_id=managed.session.session_config.user_id or "default")
+    history_session_id = managed.history_session_id
+
+    if history_session_id:
+        history.save_messages(history_session_id, messages)
+
+    return {"status": "saved", "count": len(messages)}

@@ -199,7 +199,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Create message bubbles for remaining steps (pending until step_start)
     const stepMessageIds: Record<number, string> = {}
-    const stepMessages: Message[] = steps.map((step, index) => {
+    const stepMessages: Message[] = steps.map((step) => {
       const id = crypto.randomUUID()
       const stepNum = step.number ?? allSteps.indexOf(step) + 1
       stepMessageIds[stepNum] = id

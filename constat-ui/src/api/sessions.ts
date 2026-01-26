@@ -329,3 +329,24 @@ export async function deleteRule(ruleId: string): Promise<{ status: string; id: 
 export async function deleteLearning(learningId: string): Promise<{ status: string; id: string }> {
   return del<{ status: string; id: string }>(`/learnings/${learningId}`)
 }
+
+// Messages (for session restoration)
+export interface StoredMessage {
+  id: string
+  type: 'user' | 'system' | 'plan' | 'step' | 'output' | 'error' | 'thinking'
+  content: string
+  timestamp: string
+  stepNumber?: number
+  isFinalInsight?: boolean
+}
+
+export async function getMessages(sessionId: string): Promise<{ messages: StoredMessage[] }> {
+  return get<{ messages: StoredMessage[] }>(`/sessions/${sessionId}/messages`)
+}
+
+export async function saveMessages(
+  sessionId: string,
+  messages: StoredMessage[]
+): Promise<{ status: string; count: number }> {
+  return post<{ status: string; count: number }>(`/sessions/${sessionId}/messages`, { messages })
+}

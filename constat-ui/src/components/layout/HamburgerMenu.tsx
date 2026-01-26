@@ -56,7 +56,11 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
 
       // Clear current state and set new session
       useArtifactStore.getState().clear()
+      useSessionStore.getState().clearMessages()
       setSession(session)
+
+      // Update localStorage with new session ID
+      localStorage.setItem('constat-session-id', sessionId)
 
       // Fetch all session data to restore state
       const artifactStore = useArtifactStore.getState()
@@ -68,6 +72,20 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         artifactStore.fetchDataSources(sessionId),
         artifactStore.fetchStepCodes(sessionId),
       ])
+
+      // Restore conversation messages from server
+      try {
+        const { messages } = await sessionsApi.getMessages(sessionId)
+        if (messages && messages.length > 0) {
+          const restoredMessages = messages.map(m => ({
+            ...m,
+            timestamp: new Date(m.timestamp),
+          }))
+          useSessionStore.setState({ messages: restoredMessages })
+        }
+      } catch (e) {
+        console.error('Failed to restore messages:', e)
+      }
 
       setMenuOpen(false)
     } catch (error) {

@@ -1,6 +1,6 @@
 // Main App component
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { ConversationPanel } from '@/components/conversation/ConversationPanel'
 import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel'
@@ -9,6 +9,7 @@ import { ClarificationDialog } from '@/components/conversation/ClarificationDial
 import { PlanApprovalDialog } from '@/components/conversation/PlanApprovalDialog'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import * as sessionsApi from '@/api/sessions'
 
 const SESSION_STORAGE_KEY = 'constat-session-id'
 
@@ -36,9 +37,62 @@ function ConnectingOverlay() {
 }
 
 function App() {
-  const { session, wsConnected, createSession } = useSessionStore()
+  const { session, wsConnected, createSession, messages } = useSessionStore()
   const queryInputRef = useRef<HTMLTextAreaElement>(null)
   const initializingRef = useRef(false)
+
+  // Debounce timer ref for message persistence
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastSavedRef = useRef<string>('')
+
+  // Persist messages to server whenever they change (debounced)
+  useEffect(() => {
+    if (!session || messages.length === 0) return
+
+    // Filter out transient messages (live, pending) and save stable ones
+    const stableMessages = messages.filter(m => !m.isLive && !m.isPending)
+    if (stableMessages.length === 0) return
+
+    // Serialize for comparison
+    const serialized = JSON.stringify(stableMessages.map(m => ({
+      id: m.id,
+      type: m.type,
+      content: m.content,
+      timestamp: m.timestamp.toISOString(),
+      stepNumber: m.stepNumber,
+      isFinalInsight: m.isFinalInsight,
+    })))
+
+    // Skip if nothing changed
+    if (serialized === lastSavedRef.current) return
+
+    // Debounce saves to avoid hammering the server
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+    }
+
+    saveTimerRef.current = setTimeout(() => {
+      const messagesToSave = stableMessages.map(m => ({
+        id: m.id,
+        type: m.type,
+        content: m.content,
+        timestamp: m.timestamp.toISOString(),
+        stepNumber: m.stepNumber,
+        isFinalInsight: m.isFinalInsight,
+      }))
+      sessionsApi.saveMessages(session.session_id, messagesToSave)
+        .then(() => {
+          lastSavedRef.current = serialized
+        })
+        .catch(err => console.error('Failed to save messages:', err))
+    }, 1000) // Save after 1 second of inactivity
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+      }
+    }
+  }, [session, messages])
 
   // Create or restore session on mount
   useEffect(() => {
@@ -48,35 +102,47 @@ function App() {
     }
     initializingRef.current = true
 
-    // Try to restore from sessionStorage (persists within browser tab)
-    const savedSessionId = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    // Try to restore from localStorage (persists across browser refreshes)
+    const savedSessionId = localStorage.getItem(SESSION_STORAGE_KEY)
     if (savedSessionId) {
       // Try to reconnect to existing session
-      import('@/api/sessions').then(({ getSession }) => {
-        getSession(savedSessionId)
-          .then((restoredSession) => {
-            useSessionStore.getState().setSession(restoredSession)
+      sessionsApi.getSession(savedSessionId)
+        .then(async (restoredSession) => {
+          useSessionStore.getState().setSession(restoredSession)
+          // Restore conversation messages from server
+          try {
+            const { messages: serverMessages } = await sessionsApi.getMessages(savedSessionId)
+            if (serverMessages && serverMessages.length > 0) {
+              // Restore timestamps as Date objects
+              const restoredMessages = serverMessages.map(m => ({
+                ...m,
+                timestamp: new Date(m.timestamp),
+              }))
+              useSessionStore.setState({ messages: restoredMessages })
+            }
+          } catch (e) {
+            console.error('Failed to restore messages from server:', e)
+          }
+        })
+        .catch(() => {
+          // Session no longer exists on server, create new one
+          localStorage.removeItem(SESSION_STORAGE_KEY)
+          createSession().then(() => {
+            const newSession = useSessionStore.getState().session
+            if (newSession) {
+              localStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+            }
           })
-          .catch(() => {
-            // Session no longer exists on server, create new one
-            sessionStorage.removeItem(SESSION_STORAGE_KEY)
-            createSession().then(() => {
-              const newSession = useSessionStore.getState().session
-              if (newSession) {
-                sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
-              }
-            })
-          })
-          .finally(() => {
-            initializingRef.current = false
-          })
-      })
+        })
+        .finally(() => {
+          initializingRef.current = false
+        })
     } else {
       // No saved session, create new one
       createSession().then(() => {
         const newSession = useSessionStore.getState().session
         if (newSession) {
-          sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+          localStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
         }
       }).finally(() => {
         initializingRef.current = false
@@ -87,11 +153,12 @@ function App() {
   const handleNewQuery = async () => {
     // Clear artifact store and create a new session (equivalent to /reset)
     useArtifactStore.getState().clear()
-    sessionStorage.removeItem(SESSION_STORAGE_KEY)
+    localStorage.removeItem(SESSION_STORAGE_KEY)
+    lastSavedRef.current = '' // Reset saved state for new session
     await createSession()
     const newSession = useSessionStore.getState().session
     if (newSession) {
-      sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+      localStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
     }
     queryInputRef.current?.focus()
   }

@@ -639,6 +639,38 @@ class SessionHistory:
         with open(state_file) as f:
             return json.load(f)
 
+    def save_messages(self, session_id: str, messages: list[dict]) -> None:
+        """
+        Save conversation messages for UI restoration.
+
+        Args:
+            session_id: Session ID
+            messages: List of message dictionaries
+        """
+        messages_file = self._session_dir(session_id) / "messages.json"
+        with open(messages_file, "w") as f:
+            json.dump(messages, f, indent=2)
+
+    def load_messages(self, session_id: str) -> list[dict]:
+        """
+        Load conversation messages for UI restoration.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            List of message dictionaries, or empty list if not found
+        """
+        messages_file = self._session_dir(session_id) / "messages.json"
+        if not messages_file.exists():
+            return []
+
+        try:
+            with open(messages_file) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
+
     def delete_session(self, session_id: str) -> bool:
         """
         Delete a session and all its artifacts.
