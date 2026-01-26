@@ -289,18 +289,29 @@ For any final output that should be viewable by the user, use `viz` to create cl
 
 ### Summary Reports (Markdown)
 ```python
-# Build a formatted markdown report
+# Use llm_ask for narrative prose (adapts to data at runtime)
+summary = llm_ask(f"Write 2-3 sentence summary of analysis with {len(df)} records, avg value ${df['amount'].mean():,.2f}")
+insights = llm_ask(f"List 3 key insights from: {df.groupby('category')['amount'].sum().to_dict()}")
+
+# Build report with generated prose + data
 report = f\"\"\"# Analysis Report
 
 ## Summary
+{summary}
+
 - Total records: {len(df)}
 - Average value: ${df['amount'].mean():,.2f}
+
+## Key Insights
+{insights}
 
 ## Details
 {df.head(10).to_markdown(index=False)}
 \"\"\"
 viz.save_file('report', report, ext='md', title='Analysis Report')
 ```
+
+**IMPORTANT:** Never write literal prose that describes data. Use `llm_ask()` so prose adapts when data changes.
 
 ### Data Exports (CSV/Excel)
 ```python
@@ -406,6 +417,82 @@ result = llm_ask(f"For each country, list 2-3 tourist attractions. Countries: {c
 ```
 
 Note: llm_ask returns a string. Parse numeric values or structured data if needed.
+""",
+    ),
+    # -------------------------------------------------------------------------
+    # Prose Generation (Reports, Summaries, Narratives)
+    # -------------------------------------------------------------------------
+    "prose_generation": PromptSection(
+        concept_id="prose_generation",
+        targets=["step"],
+        exemplars=[
+            "Create a markdown report",
+            "Generate a summary document",
+            "Write an executive summary",
+            "Produce a narrative analysis",
+            "Create a report with insights",
+            "Generate documentation",
+            "Write a comprehensive report",
+            "Build a formatted report",
+            "Create an analysis report",
+            "Generate a summary of findings",
+        ],
+        content="""## Prose Generation (CRITICAL)
+
+**NEVER write literal prose/narrative text in code.** The code may be re-run with different data, making literals incorrect.
+
+**ALWAYS use `llm_ask()` to generate prose that describes or analyzes data:**
+
+```python
+# BAD - Literal prose becomes wrong if data changes!
+summary = "This analysis covers 10 cat breeds including the Abyssinian and Siamese..."
+
+# GOOD - Prose adapts to actual data at runtime
+summary = llm_ask(
+    f"Write a 2-3 sentence executive summary for a cat breeds analysis. "
+    f"Number of breeds: {len(df)}. "
+    f"Countries represented: {df['country'].nunique()}. "
+    f"Top coat types: {df['coat'].value_counts().head(3).to_dict()}"
+)
+```
+
+### What to Generate with llm_ask()
+- Executive summaries
+- Section narratives ("The data reveals...")
+- Analytical insights
+- Conclusions and recommendations
+- Any prose that references data values or patterns
+
+### What Can Be Literal
+- Section headers/titles
+- Table column headers
+- Static methodology descriptions
+- Fixed labels and formatting
+
+### Pattern for Reports
+```python
+# Generate prose sections with llm_ask
+intro = llm_ask(f"Write intro paragraph for {topic} analysis with {len(df)} records")
+insights = llm_ask(f"List 3-4 key insights from this data: {df.describe().to_dict()}")
+conclusion = llm_ask(f"Write conclusion for analysis showing {key_finding}")
+
+# Combine with structure
+report = f\"\"\"# {title}
+
+## Introduction
+{intro}
+
+## Data Summary
+{df.describe().to_markdown()}
+
+## Key Insights
+{insights}
+
+## Conclusion
+{conclusion}
+\"\"\"
+viz.save_file('report', report, ext='md', title=title)
+```
 """,
     ),
     # -------------------------------------------------------------------------
