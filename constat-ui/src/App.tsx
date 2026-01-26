@@ -1,6 +1,6 @@
 // Main App component
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { ConversationPanel } from '@/components/conversation/ConversationPanel'
 import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel'
@@ -37,39 +37,49 @@ function ConnectingOverlay() {
 function App() {
   const { session, wsConnected, createSession } = useSessionStore()
   const queryInputRef = useRef<HTMLTextAreaElement>(null)
+  const initializingRef = useRef(false)
 
   // Create or restore session on mount
   useEffect(() => {
-    if (!session) {
-      // Try to restore from sessionStorage (persists within browser tab)
-      const savedSessionId = sessionStorage.getItem(SESSION_STORAGE_KEY)
-      if (savedSessionId) {
-        // Try to reconnect to existing session
-        import('@/api/sessions').then(({ getSession }) => {
-          getSession(savedSessionId)
-            .then((restoredSession) => {
-              useSessionStore.getState().setSession(restoredSession)
+    // Guard against double initialization (React Strict Mode, race conditions)
+    if (session || initializingRef.current) {
+      return
+    }
+    initializingRef.current = true
+
+    // Try to restore from sessionStorage (persists within browser tab)
+    const savedSessionId = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    if (savedSessionId) {
+      // Try to reconnect to existing session
+      import('@/api/sessions').then(({ getSession }) => {
+        getSession(savedSessionId)
+          .then((restoredSession) => {
+            useSessionStore.getState().setSession(restoredSession)
+          })
+          .catch(() => {
+            // Session no longer exists on server, create new one
+            sessionStorage.removeItem(SESSION_STORAGE_KEY)
+            createSession().then(() => {
+              const newSession = useSessionStore.getState().session
+              if (newSession) {
+                sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+              }
             })
-            .catch(() => {
-              // Session no longer exists on server, create new one
-              sessionStorage.removeItem(SESSION_STORAGE_KEY)
-              createSession().then(() => {
-                const newSession = useSessionStore.getState().session
-                if (newSession) {
-                  sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
-                }
-              })
-            })
-        })
-      } else {
-        // No saved session, create new one
-        createSession().then(() => {
-          const newSession = useSessionStore.getState().session
-          if (newSession) {
-            sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
-          }
-        })
-      }
+          })
+          .finally(() => {
+            initializingRef.current = false
+          })
+      })
+    } else {
+      // No saved session, create new one
+      createSession().then(() => {
+        const newSession = useSessionStore.getState().session
+        if (newSession) {
+          sessionStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+        }
+      }).finally(() => {
+        initializingRef.current = false
+      })
     }
   }, [session, createSession])
 

@@ -610,6 +610,12 @@ async def websocket_endpoint(
         managed.execution_id = None
         managed.approval_event = None
         managed.approval_response = None
+        # Clear stale events from previous execution to prevent duplicates
+        while not managed.event_queue.empty():
+            try:
+                managed.event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     # Send welcome message on connection
     welcome = WelcomeMessage.create()

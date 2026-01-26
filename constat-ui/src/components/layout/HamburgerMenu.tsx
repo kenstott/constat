@@ -32,8 +32,10 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         .then((response) => {
           // Sort by last_activity descending (most recent first)
           // Exclude current session - it will be shown separately at the top
+          // Exclude empty sessions (no tables and no query executed)
           const sorted = [...response.sessions]
             .filter(s => s.session_id !== currentSession?.session_id)
+            .filter(s => s.tables_count > 0 || s.current_query)
             .sort(
               (a, b) => new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
             )
