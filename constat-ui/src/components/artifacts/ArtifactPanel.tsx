@@ -21,70 +21,12 @@ import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { AccordionSection } from './ArtifactAccordion'
 import { TableAccordion } from './TableAccordion'
+import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import { EntityAccordion } from './EntityAccordion'
 import * as sessionsApi from '@/api/sessions'
 
 type ModalType = 'database' | 'api' | 'document' | 'fact' | null
-
-// Component to fetch and render table data inline
-function TablePreview({ tableName, sessionId }: { tableName: string; sessionId: string }) {
-  const [data, setData] = useState<{ columns: string[]; rows: Record<string, unknown>[] } | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!sessionId || !tableName) return
-    setLoading(true)
-    setError(null)
-    sessionsApi.getTableData(sessionId, tableName, 1, 50)
-      .then((result) => {
-        setData({ columns: result.columns, rows: result.data })
-        setLoading(false)
-      })
-      .catch((err) => {
-        setError(err.message || 'Failed to load table')
-        setLoading(false)
-      })
-  }, [sessionId, tableName])
-
-  if (loading) {
-    return <div className="p-4 text-center text-gray-500">Loading table...</div>
-  }
-  if (error) {
-    return <div className="p-4 text-center text-red-500">{error}</div>
-  }
-  if (!data || data.rows.length === 0) {
-    return <div className="p-4 text-center text-gray-500">No data</div>
-  }
-
-  return (
-    <div className="overflow-auto max-h-64">
-      <table className="min-w-full text-xs">
-        <thead className="bg-gray-100 dark:bg-gray-800 sticky top-0">
-          <tr>
-            {data.columns.map((col) => (
-              <th key={col} className="px-2 py-1 text-left font-medium text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
-                {col}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.rows.map((row, i) => (
-            <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-              {data.columns.map((col) => (
-                <td key={col} className="px-2 py-1 text-gray-600 dark:text-gray-400 border-b border-gray-100 dark:border-gray-800 truncate max-w-xs">
-                  {String(row[col] ?? '')}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
 
 export function ArtifactPanel() {
   const { session } = useSessionStore()
@@ -99,14 +41,12 @@ export function ArtifactPanel() {
     apis,
     documents,
     stepCodes,
-    selectedArtifact,
     fetchArtifacts,
     fetchTables,
     fetchFacts,
     fetchEntities,
     fetchLearnings,
     fetchDataSources,
-    selectArtifact,
   } = useArtifactStore()
 
   const [showModal, setShowModal] = useState<ModalType>(null)
@@ -437,115 +377,13 @@ export function ArtifactPanel() {
       </AccordionSection>
 
       {/* ═══════════════ RESULTS ═══════════════ */}
-      {(keyArtifacts.length > 0 || visualArtifacts.length > 0 || tables.length > 0 || selectedArtifact) && (
+      {(keyArtifacts.length > 0 || visualArtifacts.length > 0 || tables.length > 0) && (
         <>
           <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
             <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Results
             </span>
           </div>
-
-          {/* Selected Artifact Viewer */}
-          {selectedArtifact && (
-            <div className="border-b border-gray-200 dark:border-gray-700">
-              <div className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {selectedArtifact.name}
-                  </h4>
-                  <button
-                    onClick={() => useArtifactStore.setState({ selectedArtifact: null })}
-                    className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  >
-                    Close
-                  </button>
-                </div>
-                <div className="rounded-lg overflow-hidden bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-                  {/* Render based on artifact type */}
-                  {selectedArtifact.is_binary && selectedArtifact.mime_type.startsWith('image/') ? (
-                    <img
-                      src={`data:${selectedArtifact.mime_type};base64,${selectedArtifact.content}`}
-                      alt={selectedArtifact.name}
-                      className="max-w-full h-auto"
-                    />
-                  ) : selectedArtifact.mime_type === 'text/html' ? (
-                    <iframe
-                      srcDoc={selectedArtifact.content}
-                      className="w-full h-64 border-0"
-                      title={selectedArtifact.name}
-                      sandbox="allow-scripts"
-                    />
-                  ) : selectedArtifact.artifact_type === 'plotly' ? (
-                    <iframe
-                      srcDoc={`
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                          <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-                        </head>
-                        <body style="margin:0">
-                          <div id="plot"></div>
-                          <script>
-                            const data = ${selectedArtifact.content};
-                            Plotly.newPlot('plot', data.data || data, data.layout || {}, {responsive: true});
-                          </script>
-                        </body>
-                        </html>
-                      `}
-                      className="w-full h-64 border-0"
-                      title={selectedArtifact.name}
-                      sandbox="allow-scripts"
-                    />
-                  ) : ['markdown', 'md'].includes(selectedArtifact.artifact_type?.toLowerCase()) || selectedArtifact.mime_type === 'text/markdown' ? (
-                    <iframe
-                      srcDoc={`
-                        <!DOCTYPE html>
-                        <html class="${document.documentElement.classList.contains('dark') ? 'dark' : ''}">
-                        <head>
-                          <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-                          <style>
-                            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; margin: 0; line-height: 1.6; color: #1f2937; background: #fff; }
-                            html.dark body { color: #e5e7eb; background: #111827; }
-                            table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-                            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-                            html.dark th, html.dark td { border-color: #374151; }
-                            th { background: #f5f5f5; }
-                            html.dark th { background: #1f2937; }
-                            code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
-                            html.dark code { background: #1f2937; }
-                            pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
-                            html.dark pre { background: #1f2937; }
-                            pre code { background: none; padding: 0; }
-                            h1, h2, h3 { margin-top: 1em; margin-bottom: 0.5em; }
-                            ul, ol { padding-left: 1.5em; }
-                            a { color: #3b82f6; }
-                            html.dark a { color: #60a5fa; }
-                          </style>
-                        </head>
-                        <body>
-                          <div id="content"></div>
-                          <script>
-                            document.getElementById('content').innerHTML = marked.parse(${JSON.stringify(selectedArtifact.content)});
-                          </script>
-                        </body>
-                        </html>
-                      `}
-                      className="w-full h-64 border-0"
-                      title={selectedArtifact.name}
-                      sandbox="allow-scripts"
-                    />
-                  ) : selectedArtifact.artifact_type === 'table' ? (
-                    <TablePreview tableName={selectedArtifact.name} sessionId={session?.session_id || ''} />
-                  ) : (
-                    <pre className="p-3 text-xs text-gray-600 dark:text-gray-400 overflow-auto max-h-48">
-                      {selectedArtifact.content?.substring(0, 2000) || 'No content'}
-                      {selectedArtifact.content?.length > 2000 && '...'}
-                    </pre>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Key Artifacts */}
           {keyArtifacts.length > 0 && (
@@ -557,24 +395,9 @@ export function ArtifactPanel() {
               command="/artifacts"
               action={<div className="w-6 h-6" />}
             >
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {keyArtifacts.map((artifact) => (
-                  <button
-                    key={artifact.id}
-                    onClick={() => session && selectArtifact(session.session_id, artifact.id)}
-                    className={`w-full text-left p-3 rounded-lg transition-colors ${
-                      selectedArtifact?.id === artifact.id
-                        ? 'bg-yellow-100 dark:bg-yellow-900/40 border-2 border-yellow-400 dark:border-yellow-600'
-                        : 'bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 hover:bg-yellow-100 dark:hover:bg-yellow-900/30'
-                    }`}
-                  >
-                    <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {artifact.title || artifact.name}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {artifact.artifact_type} · Step {artifact.step_number}
-                    </p>
-                  </button>
+                  <ArtifactItemAccordion key={artifact.id} artifact={artifact} />
                 ))}
               </div>
             </AccordionSection>
@@ -589,24 +412,9 @@ export function ArtifactPanel() {
               icon={<ChartBarIcon className="w-4 h-4" />}
               action={<div className="w-6 h-6" />}
             >
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {visualArtifacts.map((artifact) => (
-                  <button
-                    key={artifact.id}
-                    onClick={() => session && selectArtifact(session.session_id, artifact.id)}
-                    className={`w-full text-left p-3 rounded-lg transition-colors ${
-                      selectedArtifact?.id === artifact.id
-                        ? 'bg-primary-100 dark:bg-primary-900/40 border-2 border-primary-400 dark:border-primary-600'
-                        : 'bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-700/50'
-                    }`}
-                  >
-                    <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {artifact.title || artifact.name}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Step {artifact.step_number}
-                    </p>
-                  </button>
+                  <ArtifactItemAccordion key={artifact.id} artifact={artifact} />
                 ))}
               </div>
             </AccordionSection>

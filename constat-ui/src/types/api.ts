@@ -34,6 +34,7 @@ export type ArtifactType =
   | 'text'
   | 'chart'
   | 'plotly'
+  | 'vega'
   | 'svg'
   | 'png'
   | 'jpeg'
