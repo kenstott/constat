@@ -69,7 +69,7 @@ const typeStyles: Record<MessageType, { bg: string; text: string; icon: typeof U
     iconColor: 'text-blue-600 dark:text-blue-400',
   },
   step: {
-    bg: 'bg-gray-50 dark:bg-gray-800',
+    bg: 'bg-slate-100 dark:bg-gray-800',
     text: 'text-gray-900 dark:text-gray-100',
     icon: CpuChipIcon,
     iconColor: 'text-gray-500 dark:text-gray-400',
