@@ -14,7 +14,7 @@ import {
 } from '@heroicons/react/24/outline'
 
 export function ConversationPanel() {
-  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage } = useSessionStore()
+  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, lastQueryStartStep } = useSessionStore()
   const { artifacts, tables } = useArtifactStore()
   const { openFullscreenArtifact } = useUIStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -30,12 +30,18 @@ export function ConversationPanel() {
     submitQuery(query, isFollowup)
   }
 
-  // Find and open the best artifact fullscreen (prioritize most recent)
+  // Find and open the best artifact fullscreen (prioritize current query's artifacts)
   const handleViewResult = useCallback(() => {
     // Priority keywords for finding the best result
     const hasPriorityKeyword = (name?: string, title?: string): boolean => {
       const text = `${name || ''} ${title || ''}`.toLowerCase()
       return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
+    }
+
+    // Filter to only include items from the current query (step >= lastQueryStartStep)
+    const isFromCurrentQuery = (stepNumber?: number): boolean => {
+      if (lastQueryStartStep === 0) return true // No query started yet, include all
+      return (stepNumber ?? 0) >= lastQueryStartStep
     }
 
     // Helper to get the most recent item (highest step_number)
@@ -46,8 +52,9 @@ export function ConversationPanel() {
       )
     }
 
-    // Key artifacts (published/starred)
-    const keyArtifacts = artifacts.filter((a) => a.is_key_result)
+    // Key artifacts from current query (published/starred)
+    const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
+    const keyArtifacts = currentQueryArtifacts.filter((a) => a.is_key_result)
 
     // Visualizations in key artifacts
     const keyVisualizations = keyArtifacts.filter((a) =>
@@ -57,30 +64,26 @@ export function ConversationPanel() {
     // Tables in key artifacts
     const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
 
-    // Find best item - prioritize most recent, then priority keywords
+    // Find best item from current query
     if (keyVisualizations.length > 0) {
-      // Get most recent visualization
-      const mostRecent = getMostRecent(keyVisualizations)
-      // Check if there's a priority keyword match among recent items (same step)
-      const recentStep = mostRecent?.step_number ?? 0
-      const recentViz = keyVisualizations.filter(a => (a.step_number ?? 0) >= recentStep - 1)
-      const best = recentViz.find(a => hasPriorityKeyword(a.name, a.title)) || mostRecent
+      const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyVisualizations)
       if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
     } else if (keyTables.length > 0) {
-      const mostRecent = getMostRecent(keyTables)
-      const recentStep = mostRecent?.step_number ?? 0
-      const recentTables = keyTables.filter(a => (a.step_number ?? 0) >= recentStep - 1)
-      const best = recentTables.find(a => hasPriorityKeyword(a.name, a.title)) || mostRecent
+      const best = keyTables.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyTables)
       if (best) openFullscreenArtifact({ type: 'table', name: best.name })
     } else if (tables.length > 0) {
-      // Fallback to tables list - get most recent
-      const mostRecent = getMostRecent(tables)
-      const recentStep = mostRecent?.step_number ?? 0
-      const recentTables = tables.filter(t => (t.step_number ?? 0) >= recentStep - 1)
-      const best = recentTables.find(t => hasPriorityKeyword(t.name)) || mostRecent
-      if (best) openFullscreenArtifact({ type: 'table', name: best.name })
+      // Fallback to tables from current query
+      const currentQueryTables = tables.filter(t => isFromCurrentQuery(t.step_number))
+      if (currentQueryTables.length > 0) {
+        const best = currentQueryTables.find(t => hasPriorityKeyword(t.name)) || getMostRecent(currentQueryTables)
+        if (best) openFullscreenArtifact({ type: 'table', name: best.name })
+      } else {
+        // Ultimate fallback - most recent table overall
+        const best = getMostRecent(tables)
+        if (best) openFullscreenArtifact({ type: 'table', name: best.name })
+      }
     }
-  }, [artifacts, tables, openFullscreenArtifact])
+  }, [artifacts, tables, lastQueryStartStep, openFullscreenArtifact])
 
   // Copy entire conversation to clipboard
   const handleCopyAll = async () => {

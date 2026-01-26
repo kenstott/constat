@@ -68,6 +68,7 @@ interface SessionState {
   stepMessageIds: Record<number, string> // Maps step number to message ID
   currentStepNumber: number
   stepAttempt: number
+  lastQueryStartStep: number // First step number of the current/last query (for View Result)
 
   // Plan
   plan: Plan | null
@@ -119,6 +120,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   clarification: null,
   suggestions: [],
   queuedMessages: [],
+  lastQueryStartStep: 0,
 
   createSession: async (userId = 'default') => {
     const session = await sessionsApi.createSession(userId)
@@ -469,7 +471,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'step_start': {
         const goal = (event.data.goal as string) || 'Processing'
         updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
-        set({ status: 'executing', currentStepNumber: event.step_number, stepAttempt: 1 })
+        // Track the starting step of this query for View Result
+        const { currentStepNumber: prevStep } = get()
+        const isFirstStep = prevStep === 0
+        set({
+          status: 'executing',
+          currentStepNumber: event.step_number,
+          stepAttempt: 1,
+          ...(isFirstStep ? { lastQueryStartStep: event.step_number } : {}),
+        })
         break
       }
 
