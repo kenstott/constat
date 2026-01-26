@@ -271,6 +271,9 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     try {
       // Persist to server
       await sessionsApi.toggleArtifactStar(sessionId, artifactId)
+      // Refresh artifacts list to reflect changes
+      const response = await sessionsApi.listArtifacts(sessionId)
+      set({ artifacts: response.artifacts })
     } catch (error) {
       // Revert on error
       set((state) => ({
@@ -283,7 +286,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   toggleTableStar: async (sessionId, tableName) => {
-    // Optimistic update
+    // Optimistic update for tables list
     set((state) => ({
       tables: state.tables.map((t) =>
         t.name === tableName ? { ...t, is_starred: !t.is_starred } : t
@@ -293,6 +296,9 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     try {
       // Persist to server
       await sessionsApi.toggleTableStar(sessionId, tableName)
+      // Refresh artifacts list to reflect starred table changes
+      const response = await sessionsApi.listArtifacts(sessionId)
+      set({ artifacts: response.artifacts })
     } catch (error) {
       // Revert on error
       set((state) => ({
