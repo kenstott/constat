@@ -494,8 +494,11 @@ async def upload_documents(
     session's upload directory and indexed for search (which extracts entities).
 
     Supported formats:
-    - Documents: .md, .txt, .pdf, .docx, .html, .htm, .pptx
-    - Data files: .xlsx, .csv, .parquet, .json (added as queryable databases)
+    - Documents: .md, .txt, .pdf, .docx, .html, .htm, .pptx, .xlsx (indexed for search)
+    - Data files: .csv, .tsv, .parquet, .json (added as queryable databases)
+
+    Note: xlsx files are indexed as documents only (multi-sheet complexity).
+    JSON files must be arrays of objects to be used as databases.
 
     Args:
         session_id: Session ID
@@ -511,9 +514,9 @@ async def upload_documents(
     managed = session_manager.get_session(session_id)
 
     # Document extensions (indexed for search)
-    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx'}
-    # Data file extensions (added as databases)
-    data_extensions = {'.xlsx', '.csv', '.parquet', '.json'}
+    doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx', '.xlsx'}
+    # Data file extensions (added as databases) - xlsx excluded due to multi-sheet complexity
+    data_extensions = {'.csv', '.tsv', '.parquet', '.json'}
 
     upload_dir = _get_upload_dir(session_id)
     results = []
@@ -557,11 +560,38 @@ async def upload_documents(
             now = datetime.now(timezone.utc)
 
             if is_data_file:
+                # For JSON files, validate structure (must be array of objects)
+                if suffix == '.json':
+                    import json as json_module
+                    try:
+                        data = json_module.loads(content.decode('utf-8'))
+                        if not isinstance(data, list):
+                            results.append({
+                                "filename": file.filename,
+                                "status": "error",
+                                "reason": "JSON must be an array of objects to be used as a database",
+                            })
+                            continue
+                        if data and not isinstance(data[0], dict):
+                            results.append({
+                                "filename": file.filename,
+                                "status": "error",
+                                "reason": "JSON array must contain objects (not primitives) to be used as a database",
+                            })
+                            continue
+                    except json_module.JSONDecodeError as e:
+                        results.append({
+                            "filename": file.filename,
+                            "status": "error",
+                            "reason": f"Invalid JSON: {e}",
+                        })
+                        continue
+
                 # Add as a queryable database
                 managed.session.add_database(
                     name=name,
                     uri=str(file_path),
-                    db_type="duckdb",  # DuckDB can read xlsx, csv, parquet, json
+                    db_type="duckdb",  # DuckDB can read csv, tsv, parquet, json
                     description=f"Uploaded data file: {file.filename}",
                 )
 

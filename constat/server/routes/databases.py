@@ -79,6 +79,42 @@ async def add_database(
     if not uri:
         raise HTTPException(status_code=400, detail="Either uri or file_id is required")
 
+    # Validate file type for file-based databases
+    uri_lower = uri.lower()
+    if uri_lower.startswith("file://"):
+        file_path = uri[7:]  # Strip file:// prefix
+    else:
+        file_path = uri
+
+    # Block xlsx as database (multi-sheet complexity)
+    if file_path.endswith('.xlsx'):
+        raise HTTPException(
+            status_code=400,
+            detail="Excel files (.xlsx) cannot be added as databases due to multi-sheet complexity. "
+                   "Use 'Add Document' to index for search, or convert to CSV/Parquet."
+        )
+
+    # Validate JSON structure for JSON files
+    if file_path.endswith('.json'):
+        import json
+        from pathlib import Path
+        json_path = Path(file_path)
+        if json_path.exists():
+            try:
+                data = json.loads(json_path.read_text())
+                if not isinstance(data, list):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="JSON file must contain an array of objects to be used as a database"
+                    )
+                if data and not isinstance(data[0], dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="JSON array must contain objects (not primitives) to be used as a database"
+                    )
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
+
     # Try to add database via session
     connected = False
     table_count = 0
