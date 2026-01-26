@@ -134,6 +134,20 @@ export function ArtifactPanel() {
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
 
+  const handleDeleteDocument = async (docName: string) => {
+    if (!session) return
+    if (!confirm(`Delete document "${docName}" and its extracted entities?`)) return
+
+    try {
+      await sessionsApi.deleteFileRef(session.session_id, docName)
+      fetchDataSources(session.session_id)
+      fetchEntities(session.session_id)  // Refresh entities after deletion
+    } catch (err) {
+      console.error('Failed to delete document:', err)
+      alert('Failed to delete document. Please try again.')
+    }
+  }
+
   const openModal = (type: ModalType) => {
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
     setDocSourceType('uri')
@@ -601,21 +615,30 @@ export function ArtifactPanel() {
             {documents.map((doc) => (
               <div
                 key={doc.name}
-                className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
+                className="group p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
               >
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                     {doc.name}
                   </span>
-                  <span
-                    className={`text-xs px-1.5 py-0.5 rounded ${
-                      doc.indexed
-                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
-                    }`}
-                  >
-                    {doc.indexed ? 'Indexed' : 'Pending'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-xs px-1.5 py-0.5 rounded ${
+                        doc.indexed
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                      }`}
+                    >
+                      {doc.indexed ? 'Indexed' : 'Pending'}
+                    </span>
+                    <button
+                      onClick={() => handleDeleteDocument(doc.name)}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                      title="Delete document"
+                    >
+                      <TrashIcon className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 {doc.type && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
