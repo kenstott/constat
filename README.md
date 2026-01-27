@@ -910,7 +910,7 @@ Use `${VAR_NAME}` syntax to reference environment variables:
 
 ```yaml
 databases:
-  - name: production
+  production:
     uri: postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}
     username: ${DB_USER}
     password: ${DB_PASSWORD}
@@ -920,6 +920,122 @@ llm:
 ```
 
 Environment variables are substituted at config load time. Missing variables raise an error.
+
+### File References with $ref
+
+Use `$ref` syntax (JSON Schema style) to include content from external files:
+
+```yaml
+# Include a single file
+permissions:
+  $ref: ./permissions.yaml
+
+# Reference in nested structures
+projects:
+  sales-analytics.yaml:
+    $ref: ./projects/sales-analytics.yaml
+  hr-reporting.yaml:
+    $ref: ./projects/hr-reporting.yaml
+```
+
+The `$ref` syntax:
+- Follows JSON Schema/OpenAPI conventions
+- Supports recursive references (included files can use `$ref`)
+- Environment variables are substituted in included files
+- Paths are relative to the including file's directory
+
+### Projects Configuration
+
+Projects are reusable collections of data sources (databases, APIs, documents) that can be activated per-session:
+
+```yaml
+# config.yaml
+projects:
+  sales-analytics.yaml:
+    $ref: ./projects/sales-analytics.yaml
+  hr-reporting.yaml:
+    $ref: ./projects/hr-reporting.yaml
+```
+
+Each project file defines its data sources:
+
+```yaml
+# projects/sales-analytics.yaml
+name: Sales Analytics
+description: Sales and customer data for revenue analysis
+
+databases:
+  sales:
+    uri: sqlite:///demo/data/sales.db
+    description: Customer transactions and orders
+
+apis:
+  salesforce:
+    type: rest
+    url: https://api.salesforce.com/...
+
+documents:
+  sales_glossary:
+    type: file
+    path: ./docs/sales-terms.md
+```
+
+### Server Configuration
+
+For API server mode, configure authentication and user permissions:
+
+```yaml
+# config.yaml
+server:
+  # Firebase authentication
+  auth_disabled: false                    # Set true for development
+  firebase_project_id: your-project-id
+
+  # User permissions (or use $ref to separate file)
+  permissions:
+    $ref: ./permissions.yaml
+```
+
+### User Permissions
+
+Control access to resources per-user:
+
+```yaml
+# permissions.yaml
+users:
+  admin@company.com:
+    admin: true          # Full access to ALL resources + can manage projects
+    projects: []         # (ignored for admins)
+    databases: []        # (ignored for admins)
+    documents: []        # (ignored for admins)
+    apis: []             # (ignored for admins)
+
+  analyst@company.com:
+    admin: false
+    projects:
+      - sales-analytics.yaml    # Can activate these projects
+    databases:
+      - inventory               # Can query these databases
+      - web_metrics
+    documents:
+      - business_rules          # Can access these documents
+    apis:
+      - countries               # Can call these APIs
+
+# Default permissions for unlisted users
+default:
+  admin: false
+  projects: []
+  databases: []
+  documents: []
+  apis: []
+```
+
+**Permission Rules:**
+- `admin: true` grants full access to ALL resources (arrays are ignored)
+- Admins can also manage projects from the UI
+- Non-admins only access resources explicitly listed in their arrays
+- Unlisted users get `default` permissions
 
 ### Database Credentials
 
