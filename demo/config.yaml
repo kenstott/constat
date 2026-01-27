@@ -11,7 +11,7 @@ server:
   permissions:
     $ref: ./permissions.yaml
 
-# Projects keyed by filename with $ref to external files
+# Projects keyed by identifier (used for permissions)
 projects:
   sales-analytics:
     $ref: ./projects/sales-analytics.yaml

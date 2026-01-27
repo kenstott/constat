@@ -12,6 +12,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -372,13 +373,16 @@ async def get_project_content(
     Raises:
         404: Project not found
     """
-    projects_dir = config.get_projects_directory()
-    if not projects_dir:
-        raise HTTPException(status_code=404, detail="No projects directory configured")
-
-    project_path = projects_dir / filename
-    if not project_path.exists():
+    project = config.load_project(filename)
+    if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+
+    if not project.source_path:
+        raise HTTPException(status_code=400, detail="Project has no source path (inline config)")
+
+    project_path = Path(project.source_path)
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project file not found: {project_path}")
 
     content = project_path.read_text()
     return {
@@ -407,13 +411,16 @@ async def update_project_content(
         404: Project not found
         400: Invalid YAML
     """
-    projects_dir = config.get_projects_directory()
-    if not projects_dir:
-        raise HTTPException(status_code=404, detail="No projects directory configured")
-
-    project_path = projects_dir / filename
-    if not project_path.exists():
+    project = config.load_project(filename)
+    if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+
+    if not project.source_path:
+        raise HTTPException(status_code=400, detail="Project has no source path (inline config)")
+
+    project_path = Path(project.source_path)
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project file not found: {project_path}")
 
     content = body.get("content")
     if not content:

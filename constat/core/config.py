@@ -57,7 +57,9 @@ def _resolve_refs(data: Any, base_dir: Path) -> Any:
 def _load_ref(ref_path: str, base_dir: Path) -> Any:
     """Load content from a $ref path (file or glob pattern).
 
-    For glob patterns, injects '_source_file' into dict results to track origin.
+    For dict results, injects:
+    - '_source_file': filename only (e.g., 'sales.yaml')
+    - '_source_path': full absolute path (for editing)
     """
     full_pattern = base_dir / ref_path
 
@@ -75,9 +77,10 @@ def _load_ref(ref_path: str, base_dir: Path) -> Any:
             data = yaml.safe_load(content)
             # Recursively resolve refs in included file
             data = _resolve_refs(data, Path(file_path).parent)
-            # Inject source filename for tracking (useful for projects)
+            # Inject source info for tracking (useful for projects)
             if isinstance(data, dict):
                 data["_source_file"] = Path(file_path).name
+                data["_source_path"] = str(Path(file_path).resolve())
             results.append(data)
         return results
     else:
@@ -91,7 +94,12 @@ def _load_ref(ref_path: str, base_dir: Path) -> Any:
         content = _substitute_env_vars(content)
         data = yaml.safe_load(content)
         # Recursively resolve refs in included file
-        return _resolve_refs(data, file_path.parent)
+        data = _resolve_refs(data, file_path.parent)
+        # Inject source info for tracking (useful for projects)
+        if isinstance(data, dict):
+            data["_source_file"] = file_path.name
+            data["_source_path"] = str(file_path.resolve())
+        return data
 
 
 class DatabaseCredentials(BaseModel):
@@ -777,6 +785,7 @@ class ProjectConfig(BaseModel):
     name: str
     description: str = ""
     filename: str = ""  # Source filename, auto-populated from _source_file
+    source_path: str = ""  # Full path to source file, for editing
 
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
@@ -801,15 +810,19 @@ class ProjectConfig(BaseModel):
         substituted = _substitute_env_vars(raw_content)
         data = yaml.safe_load(substituted)
         data["filename"] = path.name
+        data["source_path"] = str(path.resolve())
 
         return cls.model_validate(data)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectConfig":
-        """Create ProjectConfig from dict, handling _source_file."""
+        """Create ProjectConfig from dict, handling _source_file/_source_path."""
         # Map _source_file to filename if present
         if "_source_file" in data and not data.get("filename"):
             data["filename"] = data["_source_file"]
+        # Map _source_path to source_path if present
+        if "_source_path" in data and not data.get("source_path"):
+            data["source_path"] = data["_source_path"]
         return cls.model_validate(data)
 
 
@@ -822,6 +835,24 @@ class Config(BaseModel):
     # Projects keyed by filename
     # YAML format: projects: { sales.yaml: { $ref: ./projects/sales.yaml } }
     projects: dict[str, ProjectConfig] = Field(default_factory=dict)
+
+    @field_validator("projects", mode="before")
+    @classmethod
+    def _convert_projects(cls, v):
+        """Convert raw project dicts, mapping _source_file/_source_path."""
+        if not v:
+            return {}
+        result = {}
+        for key, item in v.items():
+            if isinstance(item, dict):
+                # Map _source_file to filename
+                if "_source_file" in item and not item.get("filename"):
+                    item["filename"] = item["_source_file"]
+                # Map _source_path to source_path
+                if "_source_path" in item and not item.get("source_path"):
+                    item["source_path"] = item["_source_path"]
+            result[key] = item
+        return result
 
     # Databases keyed by name for easy merging
     # YAML format: databases: {main: {uri: ...}, analytics: {uri: ...}}

@@ -21,7 +21,7 @@ users:
   # analyst@company.com:
   #   admin: false
   #   projects:
-  #     - sales-analytics.yaml
+  #     - sales-analytics
   #   databases:
   #     - inventory
   #     - web_metrics
