@@ -363,8 +363,20 @@ class DocumentDiscoveryTools:
         cache_dir: Optional[Path] = None,
         vector_store: Optional[VectorStoreBackend] = None,
         schema_entities: Optional[list[str]] = None,
+        allowed_documents: Optional[set[str]] = None,
     ):
+        """Initialize document discovery tools.
+
+        Args:
+            config: Config with document definitions
+            cache_dir: Directory for caching document metadata
+            vector_store: Vector store backend for semantic search
+            schema_entities: Schema entities for entity extraction
+            allowed_documents: Set of allowed document names. If None, all documents
+                are visible. If empty set, no documents are visible.
+        """
         self.config = config
+        self.allowed_documents = allowed_documents
         self._loaded_documents: dict[str, LoadedDocument] = {}
 
         # Use shared embedding model loader (may already be loading in background)
@@ -414,6 +426,12 @@ class DocumentDiscoveryTools:
                     logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
             self._build_index(self._schema_entities)
             logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
+
+    def _is_document_allowed(self, doc_name: str) -> bool:
+        """Check if a document is allowed based on permissions."""
+        if self.allowed_documents is None:
+            return True  # No filtering
+        return doc_name in self.allowed_documents
 
     def _create_vector_store(self) -> VectorStoreBackend:
         """Create vector store based on config."""
@@ -880,6 +898,9 @@ class DocumentDiscoveryTools:
         results = []
 
         for doc_name, doc_config in self.config.documents.items():
+            # Skip documents not allowed by permissions
+            if not self._is_document_allowed(doc_name):
+                continue
             # For file types, check if it's a glob/directory that needs expansion
             if doc_config.type == "file" and doc_config.path:
                 expanded = _expand_file_paths(doc_config.path)
@@ -956,6 +977,9 @@ class DocumentDiscoveryTools:
         # Handle expanded names from glob/directory (format: "parent:filename")
         if ":" in name:
             parent_name, filename = name.split(":", 1)
+            # Check permissions on parent name
+            if not self._is_document_allowed(parent_name):
+                return {"error": f"Access denied to document: {parent_name}"}
             if parent_name not in self.config.documents:
                 return {"error": f"Document config not found: {parent_name}"}
 
@@ -980,6 +1004,9 @@ class DocumentDiscoveryTools:
                     return {"error": f"Failed to load file: {str(e)}"}
         else:
             # Standard document name
+            # Check permissions
+            if not self._is_document_allowed(name):
+                return {"error": f"Access denied to document: {name}"}
             if name not in self.config.documents:
                 return {"error": f"Document not found: {name}"}
 

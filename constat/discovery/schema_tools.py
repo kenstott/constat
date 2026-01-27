@@ -28,9 +28,25 @@ class SchemaDiscoveryTools:
         self,
         schema_manager: SchemaManager,
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
+        allowed_databases: Optional[set[str]] = None,
     ):
+        """Initialize schema discovery tools.
+
+        Args:
+            schema_manager: Schema manager for database metadata
+            doc_tools: Optional document discovery tools
+            allowed_databases: Set of allowed database names. If None, all databases
+                are visible. If empty set, no databases are visible.
+        """
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools
+        self.allowed_databases = allowed_databases
+
+    def _is_database_allowed(self, db_name: str) -> bool:
+        """Check if a database is allowed based on permissions."""
+        if self.allowed_databases is None:
+            return True  # No filtering
+        return db_name in self.allowed_databases
 
     def list_databases(self) -> list[dict]:
         """
@@ -43,6 +59,10 @@ class SchemaDiscoveryTools:
 
         # Get database configs
         for db_name, db_config in self.schema_manager.config.databases.items():
+            # Skip databases not allowed by permissions
+            if not self._is_database_allowed(db_name):
+                continue
+
             # Count tables in this database
             table_count = sum(
                 1 for meta in self.schema_manager.metadata_cache.values()
@@ -68,6 +88,10 @@ class SchemaDiscoveryTools:
         Returns:
             List of table info dicts with name, row_count, description, column_count
         """
+        # Check permissions
+        if not self._is_database_allowed(database):
+            return []
+
         results = []
 
         for meta in self.schema_manager.metadata_cache.values():
@@ -95,6 +119,10 @@ class SchemaDiscoveryTools:
         Returns:
             Dict with full column details, types, keys, relationships, sample values
         """
+        # Check permissions
+        if not self._is_database_allowed(database):
+            return {"error": f"Access denied to database: {database}"}
+
         full_name = f"{database}.{table}"
 
         if full_name not in self.schema_manager.metadata_cache:
@@ -118,17 +146,28 @@ class SchemaDiscoveryTools:
         Returns:
             List of relevant tables with database, name, relevance score, and summary
         """
-        results = self.schema_manager.find_relevant_tables(query, top_k=limit)
+        # Get more results to account for filtering
+        fetch_limit = limit * 3 if self.allowed_databases is not None else limit
+        results = self.schema_manager.find_relevant_tables(query, top_k=fetch_limit)
 
-        # Enhance with descriptions
+        # Filter by allowed databases and enhance with descriptions
+        filtered = []
         for result in results:
-            full_name = result.get("full_name", f"{result['database']}.{result['table']}")
+            db_name = result.get("database")
+            if not self._is_database_allowed(db_name):
+                continue
+
+            full_name = result.get("full_name", f"{db_name}.{result['table']}")
             if full_name in self.schema_manager.metadata_cache:
                 meta = self.schema_manager.metadata_cache[full_name]
                 if meta.comment:
                     result["description"] = meta.comment
 
-        return results
+            filtered.append(result)
+            if len(filtered) >= limit:
+                break
+
+        return filtered
 
     def get_table_relationships(self, database: str, table: str) -> dict:
         """
@@ -142,6 +181,10 @@ class SchemaDiscoveryTools:
             Dict with outgoing relationships (this table references) and
             incoming relationships (tables that reference this table)
         """
+        # Check permissions
+        if not self._is_database_allowed(database):
+            return {"error": f"Access denied to database: {database}"}
+
         full_name = f"{database}.{table}"
 
         if full_name not in self.schema_manager.metadata_cache:

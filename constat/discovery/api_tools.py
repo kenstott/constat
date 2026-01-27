@@ -24,10 +24,29 @@ from constat.core.config import Config
 class APIDiscoveryTools:
     """Tools for discovering and executing API operations."""
 
-    def __init__(self, api_catalog: APICatalog, config: Optional[Config] = None):
+    def __init__(
+        self,
+        api_catalog: APICatalog,
+        config: Optional[Config] = None,
+        allowed_apis: Optional[set[str]] = None,
+    ):
+        """Initialize API discovery tools.
+
+        Args:
+            api_catalog: API catalog with operation metadata
+            config: Optional config with API definitions
+            allowed_apis: Set of allowed API names. If None, all APIs are visible.
+        """
         self.api_catalog = api_catalog
         self.config = config
+        self.allowed_apis = allowed_apis
         self._executor: Optional[APIExecutor] = None
+
+    def _is_api_allowed(self, api_name: str) -> bool:
+        """Check if an API is allowed based on permissions."""
+        if self.allowed_apis is None:
+            return True  # No filtering
+        return api_name in self.allowed_apis
 
     @property
     def executor(self) -> Optional[APIExecutor]:
@@ -48,6 +67,10 @@ class APIDiscoveryTools:
         if self.config:
             # Get API info from config
             for api_name, api_config in self.config.apis.items():
+                # Skip APIs not allowed by permissions
+                if not self._is_api_allowed(api_name):
+                    continue
+
                 # Count operations for this API
                 operation_count = sum(
                     1 for op in self.api_catalog.operations.values()

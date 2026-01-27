@@ -159,3 +159,70 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
             "apis": perms.apis,
         })
     return result
+
+
+def compute_effective_permissions(
+    user_perms: Optional[UserPermissions],
+    config: "Config",
+    active_projects: Optional[list[str]] = None,
+    permissions_configured: bool = True,
+) -> dict[str, Optional[set[str]]]:
+    """Compute effective allowed resources by merging permissions and active projects.
+
+    Rules:
+    - If no permissions configured (permissions_configured=False) → no filtering
+    - If user is admin → no filtering
+    - Otherwise, merge explicit permissions + active project resources
+
+    Args:
+        user_perms: User's base permissions (None if no permissions configured)
+        config: Config with project definitions
+        active_projects: Currently active project IDs (if any)
+        permissions_configured: Whether permissions are configured at all
+
+    Returns:
+        Dict with allowed_databases, allowed_apis, allowed_documents.
+        None values mean no filtering.
+    """
+    from constat.core.config import Config  # Import here to avoid circular
+
+    # No permissions configured = everything available
+    if not permissions_configured or user_perms is None:
+        return {
+            "allowed_databases": None,
+            "allowed_apis": None,
+            "allowed_documents": None,
+        }
+
+    # Admins see everything
+    if user_perms.admin:
+        return {
+            "allowed_databases": None,
+            "allowed_apis": None,
+            "allowed_documents": None,
+        }
+
+    # Start with explicit permissions
+    allowed_databases = set(user_perms.databases)
+    allowed_apis = set(user_perms.apis)
+    allowed_documents = set(user_perms.documents)
+
+    # Add resources from active projects the user has access to
+    active_projects = active_projects or []
+    for project_id in active_projects:
+        # Check user has access to this project
+        if not user_perms.can_access_project(project_id):
+            continue
+
+        # Load project and add all its resources
+        project = config.load_project(project_id)
+        if project:
+            allowed_databases.update(project.databases.keys())
+            allowed_apis.update(project.apis.keys())
+            allowed_documents.update(project.documents.keys())
+
+    return {
+        "allowed_databases": allowed_databases,
+        "allowed_apis": allowed_apis,
+        "allowed_documents": allowed_documents,
+    }
