@@ -311,7 +311,9 @@ report = f\"\"\"# Analysis Report
 viz.save_file('report', report, ext='md', title='Analysis Report')
 ```
 
-**IMPORTANT:** Never write literal prose that describes data. Use `llm_ask()` so prose adapts when data changes.
+**IMPORTANT:**
+- Never write literal prose that describes data. Use `llm_ask()` so prose adapts when data changes.
+- When using `df.to_markdown()`, do NOT add a manual table header - it includes its own. Just put a section heading like "## Results" and then `{df.to_markdown(index=False)}` directly.
 
 ### Data Exports (CSV/Excel)
 ```python

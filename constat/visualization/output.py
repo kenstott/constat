@@ -353,6 +353,8 @@ class VisualizationHelper:
         Returns:
             Path to the saved file
         """
+        import base64
+
         # Normalize extension
         ext = ext.lstrip(".")
 
@@ -360,8 +362,27 @@ class VisualizationHelper:
         filepath = self._generate_filename(name, ext)
         filepath.write_bytes(content)
 
-        # Register in central registry
+        # Register as artifact if datastore available
         artifact_type = FILE_EXT_ARTIFACT_TYPES.get(ext, "document")
+        if self.datastore:
+            try:
+                # Base64 encode binary content for storage
+                content_b64 = base64.b64encode(content).decode("utf-8")
+                self.datastore.save_rich_artifact(
+                    name=name,
+                    artifact_type=artifact_type,
+                    content=content_b64,
+                    step_number=self.step_number,
+                    title=title or name,
+                    description=description,
+                    metadata={"file_path": str(filepath), "is_binary": True, "extension": ext},
+                )
+            except Exception as e:
+                # Don't fail if artifact save fails - file is already saved
+                if self.print_file_refs:
+                    print(f"Note: Could not register artifact: {e}")
+
+        # Register in central registry
         self._register_artifact(filepath, artifact_type, description=title or name)
 
         self._print_ref(f"File saved ({ext})", filepath, description=title or name)
