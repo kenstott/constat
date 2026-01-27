@@ -224,6 +224,9 @@ class VisualizationHelper:
 
         In REPL mode, outputs are collected and displayed in an "Outputs:" section
         at the end of execution rather than printed inline.
+
+        In server/web mode (when datastore is present), prints just the filename
+        since artifacts appear in the Results panel. Full paths are hidden for security.
         """
         if not self.print_file_refs and not self.open_with_system_viewer:
             return
@@ -245,8 +248,14 @@ class VisualizationHelper:
             # REPL will collect from pending_outputs, CLI will show the print
             add_pending_output(file_uri, desc, filepath.suffix.lstrip("."))
             if not is_repl_mode():
-                # Also print directly for non-REPL contexts
-                print(f"{label}: {file_uri}")
+                # In server/web mode, show just filename (artifacts visible in Results panel)
+                # In CLI mode without datastore, show full URI for clickable links
+                if self.datastore:
+                    # Web UI mode - just show filename, hide server paths for security
+                    print(f"Saved: {filepath.name}")
+                else:
+                    # CLI mode - show full file:// URI for clickable terminal links
+                    print(f"{label}: {file_uri}")
 
     def _register_artifact(
         self,

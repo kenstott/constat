@@ -436,7 +436,21 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     )
   }
 
-  const typeLabel = artifact.artifact_type || 'artifact'
+  // Use source_type from metadata if available (for converted binary files like XLSX)
+  // Otherwise fall back to artifact_type
+  const sourceType = artifact.metadata?.source_type
+  const extensionMap: Record<string, string> = {
+    xlsx: 'excel',
+    xls: 'excel',
+    docx: 'word',
+    doc: 'word',
+    pptx: 'powerpoint',
+    ppt: 'powerpoint',
+    pdf: 'pdf',
+  }
+  const typeLabel = sourceType
+    ? extensionMap[sourceType] || sourceType
+    : artifact.artifact_type || 'artifact'
 
   return (
     <>

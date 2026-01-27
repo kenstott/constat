@@ -50,9 +50,10 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 - `llm_ask(question)` for general knowledge, `send_email(to, subject, body, format="markdown", df=None)` for emails (use format="markdown" for styled HTML)
 
 ## Data Source Selection
-1. Check configured sources first (databases, APIs, documents)
-2. Fall back to `llm_ask()` for world knowledge not in databases
-3. Use documents for policies/rules and business thresholds
+1. For policies, guidelines, rules, or business definitions: use `search_documents(query)` FIRST
+2. For structured data (records, transactions, entities): use `find_relevant_tables(query)` or `find_relevant_apis(query)`
+3. Fall back to `llm_ask()` only for world knowledge not in configured sources
+4. ALWAYS use discovery tools before assuming data doesn't exist
 
 ## Planning Guidelines
 1. **PREFER SQL OVER PANDAS** - SQL is more robust, scalable, and has clearer error messages
@@ -304,6 +305,12 @@ class Planner:
             ),
         }
 
+        # Add document discovery tools if available
+        if self.doc_tools:
+            handlers["list_documents"] = self.doc_tools.list_documents
+            handlers["search_documents"] = lambda query, limit=5: self.doc_tools.search_documents(query, limit)
+            handlers["get_document"] = lambda name: self.doc_tools.get_document(name)
+
         # Add API schema handlers if APIs are configured
         if self.config.apis:
             from constat.catalog.api_executor import APIExecutor
@@ -445,6 +452,59 @@ class Planner:
                             "required": ["query"]
                         }
                     })
+
+        # Add document discovery tools if documents are configured (filtered by permissions)
+        if self.doc_tools and self.config.documents:
+            # Filter document names by permissions
+            doc_names = [
+                name for name in self.config.documents.keys()
+                if self._is_document_allowed(name)
+            ]
+            if doc_names:
+                schema_tools.extend([
+                    {
+                        "name": "list_documents",
+                        "description": "List all available reference documents with descriptions.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        }
+                    },
+                    {
+                        "name": "search_documents",
+                        "description": "Search across all documents for relevant content using semantic search. Use this to find policies, rules, guidelines, or business definitions.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Natural language description of what information you're looking for"
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Maximum number of results (default 5)",
+                                    "default": 5
+                                }
+                            },
+                            "required": ["query"]
+                        }
+                    },
+                    {
+                        "name": "get_document",
+                        "description": f"Get the full content of a reference document. Available documents: {doc_names}",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Name of the document to retrieve"
+                                }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                ])
 
         system_prompt = self._build_system_prompt(problem)
 

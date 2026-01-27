@@ -70,9 +70,13 @@ class DiscoveryTools:
         self.config = config
 
         # Initialize tool classes
-        self.schema_tools = SchemaDiscoveryTools(schema_manager) if schema_manager else None
         self.api_tools = APIDiscoveryTools(api_catalog, config) if api_catalog else None
         self.doc_tools = DocumentDiscoveryTools(config) if config else None
+        self.schema_tools = SchemaDiscoveryTools(
+            schema_manager,
+            doc_tools=self.doc_tools,
+            api_tools=self.api_tools,
+        ) if schema_manager else None
         self.fact_tools = FactResolutionTools(fact_resolver, self.doc_tools)
 
         # Initialize skill tools with configured paths
@@ -97,6 +101,8 @@ class DiscoveryTools:
                 "search_tables": self.schema_tools.search_tables,
                 "get_table_relationships": self.schema_tools.get_table_relationships,
                 "get_sample_values": self.schema_tools.get_sample_values,
+                "find_entity": self.schema_tools.find_entity,
+                "search_all": self.schema_tools.search_all,
             })
 
         # API tools
@@ -192,6 +198,10 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 
 ## Discovery Tools
 
+### Universal Search (USE THIS FIRST)
+- search_all(query) - **PRIMARY TOOL**: Semantic search across ALL sources (tables, APIs, documents) at once
+- find_entity(name) - Find all occurrences of an entity across schema and documents
+
 ### Schema Discovery (Databases)
 - list_databases() - See available databases
 - list_tables(database) - See tables in a database
@@ -230,12 +240,13 @@ relevant skills to your context when they match the user's task.
 ## Planning Process
 
 1. UNDERSTAND the user's question
-2. DISCOVER relevant resources using tools (including skills)
-3. CLARIFY unclear terms with resolve_fact()
-4. PLAN the analysis steps
-5. OUTPUT a structured plan
+2. USE search_all(query) FIRST to find relevant tables, APIs, and documents
+3. EXPLORE specific resources found in search_all results
+4. CLARIFY unclear terms with resolve_fact()
+5. PLAN the analysis steps
+6. OUTPUT a structured plan
 
-Always verify resources exist before planning to use them.
+Always start with search_all() to discover what's relevant before exploring specific resources.
 """
 
 

@@ -4126,19 +4126,18 @@ Return ONLY the suggestions, one per line, no numbering or bullets."""
         """
         Generate a new plan incorporating user feedback.
 
+        Feedback is appended verbatim to the problem, similar to how clarifications
+        are handled. This preserves the exact user input for the planner.
+
         Args:
             problem: Original problem
-            feedback: User's suggested changes
+            feedback: User's suggested changes (passed verbatim)
 
         Returns:
             New PlannerResponse with updated plan
         """
-        enhanced_problem = f"""{problem}
-
-User feedback on previous plan:
-{feedback}
-
-Please create a revised plan that addresses this feedback."""
+        # Append feedback verbatim, similar to clarifications format
+        enhanced_problem = f"{problem}\n\nPlan Adjustments:\n{feedback}"
 
         self._sync_user_facts_to_planner()
         return self.planner.plan(enhanced_problem)
@@ -4481,13 +4480,8 @@ Provide a brief, high-level summary of the key findings."""
             # No previous context - treat as a new plan
             return self._handle_plan_new_intent(turn_intent, user_input)
 
-        # Build enhanced problem with user's modification context
-        enhanced_problem = f"""{previous_problem}
-
-User modification request:
-{user_input}
-
-Please revise the plan to incorporate this feedback."""
+        # Build enhanced problem with user's modification context (verbatim like clarifications)
+        enhanced_problem = f"{previous_problem}\n\nPlan Adjustments:\n{user_input}"
 
         # Delegate to existing follow_up() method which handles replanning
         result = self.follow_up(user_input, auto_classify=False)

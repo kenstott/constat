@@ -19,6 +19,7 @@ from constat.catalog.schema_manager import SchemaManager
 
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
+    from constat.discovery.api_tools import APIDiscoveryTools
 
 
 class SchemaDiscoveryTools:
@@ -28,6 +29,7 @@ class SchemaDiscoveryTools:
         self,
         schema_manager: SchemaManager,
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
+        api_tools: Optional["APIDiscoveryTools"] = None,
         allowed_databases: Optional[set[str]] = None,
     ):
         """Initialize schema discovery tools.
@@ -35,11 +37,13 @@ class SchemaDiscoveryTools:
         Args:
             schema_manager: Schema manager for database metadata
             doc_tools: Optional document discovery tools
+            api_tools: Optional API discovery tools
             allowed_databases: Set of allowed database names. If None, all databases
                 are visible. If empty set, no databases are visible.
         """
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools
+        self.api_tools = api_tools
         self.allowed_databases = allowed_databases
 
     def _is_database_allowed(self, db_name: str) -> bool:
@@ -337,6 +341,96 @@ class SchemaDiscoveryTools:
 
         return results
 
+    def search_all(self, query: str, limit: int = 10) -> dict:
+        """
+        Universal semantic search across ALL data sources: tables, APIs, and documents.
+
+        Uses vector embeddings to find relevant resources based on natural language query.
+        This is the primary discovery tool - use it first to find what's relevant to
+        your question before exploring specific resources.
+
+        Args:
+            query: Natural language query (e.g., "employee compensation", "order history")
+            limit: Maximum total results to return (distributed across sources)
+
+        Returns:
+            Dict with categorized results:
+            - tables: Relevant database tables with similarity scores
+            - apis: Relevant API endpoints with similarity scores
+            - documents: Relevant document excerpts with similarity scores
+            - summary: Counts per category
+        """
+        results = {
+            "query": query,
+            "tables": [],
+            "apis": [],
+            "documents": [],
+        }
+
+        # Calculate per-source limits (distribute evenly, favor tables)
+        per_source_limit = max(3, limit // 3)
+
+        # 1. Search tables via vector store
+        try:
+            table_results = self.schema_manager.find_relevant_tables(query, top_k=per_source_limit * 2)
+            for r in table_results:
+                db_name = r.get("database")
+                if not self._is_database_allowed(db_name):
+                    continue
+                results["tables"].append({
+                    "type": "table",
+                    "name": r.get("table"),
+                    "database": db_name,
+                    "relevance": round(r.get("relevance", 0), 3),
+                    "summary": r.get("summary", ""),
+                })
+                if len(results["tables"]) >= per_source_limit:
+                    break
+        except Exception:
+            pass  # Continue even if table search fails
+
+        # 2. Search APIs via API tools if available
+        if self.api_tools:
+            try:
+                api_results = self.api_tools.search_operations(query, limit=per_source_limit)
+                for r in api_results:
+                    results["apis"].append({
+                        "type": "api_operation",
+                        "name": r.get("name"),
+                        "api": r.get("api_name", ""),
+                        "operation_type": r.get("type", ""),
+                        "protocol": r.get("protocol", ""),
+                        "relevance": round(r.get("relevance", 0), 3),
+                        "summary": r.get("summary", ""),
+                    })
+            except Exception:
+                pass  # Continue even if API search fails
+
+        # 3. Search documents via doc tools if available
+        if self.doc_tools:
+            try:
+                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit)
+                for r in doc_results:
+                    results["documents"].append({
+                        "type": "document",
+                        "name": r.get("document"),
+                        "section": r.get("section"),
+                        "excerpt": r.get("excerpt", "")[:300] + "..." if len(r.get("excerpt", "")) > 300 else r.get("excerpt", ""),
+                        "relevance": round(r.get("relevance", 0), 3),
+                    })
+            except Exception:
+                pass  # Continue even if doc search fails
+
+        # Add summary
+        results["summary"] = {
+            "tables_found": len(results["tables"]),
+            "apis_found": len(results["apis"]),
+            "documents_found": len(results["documents"]),
+            "total": len(results["tables"]) + len(results["apis"]) + len(results["documents"]),
+        }
+
+        return results
+
 
 # Tool schemas for LLM
 SCHEMA_TOOL_SCHEMAS = [
@@ -462,6 +556,25 @@ SCHEMA_TOOL_SCHEMAS = [
                 },
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "search_all",
+        "description": "Universal semantic search across ALL data sources: tables, APIs, and documents. Uses vector embeddings to find relevant resources. This is the PRIMARY discovery tool - use it FIRST to find what's relevant to your question before exploring specific resources.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language query (e.g., 'employee compensation', 'order history', 'performance review guidelines')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum total results to return",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
         },
     },
 ]
