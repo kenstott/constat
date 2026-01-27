@@ -11,8 +11,12 @@ server:
   permissions:
     $ref: ./permissions.yaml
 
-# Projects directory for reusable data source collections
-projects_path: demo/projects
+# Projects keyed by filename with $ref to external files
+projects:
+  sales-analytics:
+    $ref: ./projects/sales-analytics.yaml
+  hr-reporting:
+    $ref: ./projects/hr-reporting.yaml
 
 llm:
 #  provider: ollama

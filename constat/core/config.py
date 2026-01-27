@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def _resolve_refs(data: Any, base_dir: Path) -> Any:
@@ -55,7 +55,10 @@ def _resolve_refs(data: Any, base_dir: Path) -> Any:
 
 
 def _load_ref(ref_path: str, base_dir: Path) -> Any:
-    """Load content from a $ref path (file or glob pattern)."""
+    """Load content from a $ref path (file or glob pattern).
+
+    For glob patterns, injects '_source_file' into dict results to track origin.
+    """
     full_pattern = base_dir / ref_path
 
     # Check if it's a glob pattern
@@ -72,6 +75,9 @@ def _load_ref(ref_path: str, base_dir: Path) -> Any:
             data = yaml.safe_load(content)
             # Recursively resolve refs in included file
             data = _resolve_refs(data, Path(file_path).parent)
+            # Inject source filename for tracking (useful for projects)
+            if isinstance(data, dict):
+                data["_source_file"] = Path(file_path).name
             results.append(data)
         return results
     else:
@@ -766,8 +772,11 @@ class ProjectConfig(BaseModel):
           sales_glossary:
             path: ./docs/sales-terms.md
     """
+    model_config = {"extra": "ignore"}
+
     name: str
     description: str = ""
+    filename: str = ""  # Source filename, auto-populated from _source_file
 
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
@@ -791,7 +800,16 @@ class ProjectConfig(BaseModel):
         # Substitute environment variables
         substituted = _substitute_env_vars(raw_content)
         data = yaml.safe_load(substituted)
+        data["filename"] = path.name
 
+        return cls.model_validate(data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ProjectConfig":
+        """Create ProjectConfig from dict, handling _source_file."""
+        # Map _source_file to filename if present
+        if "_source_file" in data and not data.get("filename"):
+            data["filename"] = data["_source_file"]
         return cls.model_validate(data)
 
 
@@ -801,10 +819,9 @@ class Config(BaseModel):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
-    # Path to directory containing project YAML files
-    # Can be a shared network path for team collaboration
-    # Default: ~/.constat/projects/
-    projects_path: Optional[str] = None
+    # Projects keyed by filename
+    # YAML format: projects: { sales.yaml: { $ref: ./projects/sales.yaml } }
+    projects: dict[str, ProjectConfig] = Field(default_factory=dict)
 
     # Databases keyed by name for easy merging
     # YAML format: databases: {main: {uri: ...}, analytics: {uri: ...}}
@@ -830,43 +847,20 @@ class Config(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     email: Optional[EmailConfig] = None  # Email configuration for send_email
 
-    def get_projects_directory(self) -> Path:
-        """Get the projects directory path.
-
-        Returns:
-            Path to projects directory (creates if doesn't exist)
-        """
-        if self.projects_path:
-            path = Path(self.projects_path).expanduser()
-        else:
-            # Default: ~/.constat/projects/
-            path = Path.home() / ".constat" / "projects"
-
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
     def list_projects(self) -> list[dict]:
-        """List available projects from the projects directory.
+        """List available projects.
 
         Returns:
             List of project info dicts with 'filename', 'name', 'description'
         """
-        projects_dir = self.get_projects_directory()
-        projects = []
-
-        for yaml_file in sorted(projects_dir.glob("*.yaml")):
-            try:
-                project = ProjectConfig.from_yaml(yaml_file)
-                projects.append({
-                    "filename": yaml_file.name,
-                    "name": project.name,
-                    "description": project.description,
-                })
-            except Exception:
-                # Skip invalid project files
-                continue
-
-        return projects
+        return [
+            {
+                "filename": filename,
+                "name": project.name,
+                "description": project.description,
+            }
+            for filename, project in self.projects.items()
+        ]
 
     def load_project(self, filename: str) -> Optional["ProjectConfig"]:
         """Load a project by filename.
@@ -877,13 +871,7 @@ class Config(BaseModel):
         Returns:
             ProjectConfig or None if not found
         """
-        projects_dir = self.get_projects_directory()
-        project_path = projects_dir / filename
-
-        if not project_path.exists():
-            return None
-
-        return ProjectConfig.from_yaml(project_path)
+        return self.projects.get(filename)
 
     @classmethod
     def from_yaml(
