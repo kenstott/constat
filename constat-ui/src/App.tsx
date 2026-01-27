@@ -48,36 +48,34 @@ function SplashScreen() {
         <div className="absolute inset-0 w-24 h-24 rounded-full bg-blue-500/20 dark:bg-blue-400/20 animate-pulse" />
         {/* Logo container */}
         <div className="relative w-24 h-24 flex items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 shadow-xl">
-          {/* Stylized "C" logo with data nodes */}
+          {/* Stylized "V" logo with data nodes */}
           <svg
             viewBox="0 0 64 64"
             className="w-14 h-14 text-white"
             fill="none"
             stroke="currentColor"
-            strokeWidth="3"
+            strokeWidth="3.5"
             strokeLinecap="round"
             strokeLinejoin="round"
           >
-            {/* Main "C" shape */}
-            <path d="M44 18C40 12 33 8 26 8C14 8 8 18 8 32C8 46 14 56 26 56C33 56 40 52 44 46" />
-            {/* Data connection dots */}
-            <circle cx="48" cy="20" r="4" fill="currentColor" stroke="none" className="animate-pulse" />
-            <circle cx="52" cy="32" r="4" fill="currentColor" stroke="none" className="animate-pulse" style={{ animationDelay: '0.2s' }} />
-            <circle cx="48" cy="44" r="4" fill="currentColor" stroke="none" className="animate-pulse" style={{ animationDelay: '0.4s' }} />
-            {/* Connection lines */}
-            <path d="M44 18L48 20M44 32L52 32M44 46L48 44" strokeWidth="2" className="opacity-60" />
+            {/* Main "V" shape */}
+            <path d="M12 12L32 52L52 12" />
+            {/* Data connection dots at vertices */}
+            <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" className="animate-pulse" />
+            <circle cx="52" cy="12" r="4" fill="currentColor" stroke="none" className="animate-pulse" style={{ animationDelay: '0.2s' }} />
+            <circle cx="32" cy="52" r="5" fill="currentColor" stroke="none" className="animate-pulse" style={{ animationDelay: '0.4s' }} />
           </svg>
         </div>
       </div>
 
       {/* App name */}
       <h1 className="text-4xl font-bold text-gray-900 dark:text-white tracking-tight mb-2">
-        Constat
+        Vera
       </h1>
 
       {/* Tagline */}
       <p className="text-lg text-gray-500 dark:text-gray-400 mb-8">
-        AI-powered data analysis
+        Powered by Constat AI Reasoning Engine
       </p>
 
       {/* Loading indicator */}
