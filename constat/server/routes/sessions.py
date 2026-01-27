@@ -23,6 +23,7 @@ from constat.server.models import (
     SessionStatus,
 )
 from constat.server.session_manager import SessionManager, ManagedSession
+from constat.server.user_preferences import get_selected_projects, set_selected_projects
 from constat.storage.history import SessionHistory
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,129 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
     )
 
 
+def _load_projects_into_session(
+    managed: ManagedSession,
+    project_filenames: list[str],
+) -> tuple[list[str], list[str]]:
+    """Load projects into a session (helper for create_session and set_active_projects).
+
+    Args:
+        managed: The managed session
+        project_filenames: List of project filenames to load
+
+    Returns:
+        Tuple of (successfully_loaded, conflicts)
+    """
+    if not project_filenames:
+        return [], []
+
+    config = managed.session.config
+    conflicts = []
+
+    # Load all projects and check they exist
+    loaded_projects = []
+    for filename in project_filenames:
+        project = config.load_project(filename)
+        if not project:
+            logger.warning(f"Project not found when loading preferences: {filename}")
+            continue
+        loaded_projects.append((filename, project))
+
+    if not loaded_projects:
+        return [], []
+
+    # Check for conflicts: collect all names from config and projects
+    all_databases = {name: "config" for name in config.databases.keys()}
+    all_apis = {name: "config" for name in config.apis.keys()}
+    all_documents = {name: "config" for name in config.documents.keys()}
+
+    valid_projects = []
+    for filename, project in loaded_projects:
+        has_conflict = False
+        # Check database conflicts
+        for name in project.databases.keys():
+            if name in all_databases:
+                conflicts.append(f"Database '{name}' conflicts: defined in {all_databases[name]} and {filename}")
+                has_conflict = True
+            else:
+                all_databases[name] = filename
+
+        # Check API conflicts
+        for name in project.apis.keys():
+            if name in all_apis:
+                conflicts.append(f"API '{name}' conflicts: defined in {all_apis[name]} and {filename}")
+                has_conflict = True
+            else:
+                all_apis[name] = filename
+
+        # Check document conflicts
+        for name in project.documents.keys():
+            if name in all_documents:
+                conflicts.append(f"Document '{name}' conflicts: defined in {all_documents[name]} and {filename}")
+                has_conflict = True
+            else:
+                all_documents[name] = filename
+
+        if not has_conflict:
+            valid_projects.append((filename, project))
+
+    # Load valid project databases into the session
+    previously_loaded = getattr(managed, "_project_databases", set())
+    newly_loaded = set()
+
+    for filename, project in valid_projects:
+        for name, db_config in project.databases.items():
+            if name not in previously_loaded:
+                try:
+                    if managed.session.schema_manager:
+                        success = managed.session.schema_manager.add_database_dynamic(name, db_config)
+                        if success:
+                            newly_loaded.add(name)
+                            logger.info(f"Loaded project database: {name} from {filename}")
+                except Exception as e:
+                    logger.exception(f"Exception loading project database {name}: {e}")
+            else:
+                newly_loaded.add(name)
+
+        # Index project documents
+        for name, doc_config in project.documents.items():
+            try:
+                if doc_config.path:
+                    from pathlib import Path
+                    doc_path = Path(doc_config.path)
+                    if doc_path.exists():
+                        if not managed.session.doc_tools:
+                            from constat.discovery.doc_tools import DocumentDiscoveryTools
+                            schema_entities = set()
+                            if managed.session.schema_manager:
+                                schema_entities = set(managed.session.schema_manager.get_entity_names())
+                            managed.session.doc_tools = DocumentDiscoveryTools(
+                                config, schema_entities=schema_entities
+                            )
+
+                        success, msg = managed.session.doc_tools.add_ephemeral_document_from_file(
+                            str(doc_path),
+                            name=name,
+                            description=doc_config.description or "",
+                        )
+                        if success:
+                            logger.info(f"Indexed project document: {name} from {filename}")
+            except Exception as e:
+                logger.warning(f"Failed to index project document {name}: {e}")
+
+    # Register project APIs
+    for filename, project in valid_projects:
+        for api_name, api_config in project.apis.items():
+            managed.session.add_project_api(api_name, api_config)
+            logger.info(f"Registered project API: {api_name} from {filename}")
+
+    # Store state
+    managed._project_databases = newly_loaded
+    managed.active_projects = [fn for fn, _ in valid_projects]
+
+    return managed.active_projects, conflicts
+
+
 @router.post("", response_model=SessionResponse)
 async def create_session(
     user_id: CurrentUserId,
@@ -78,6 +202,8 @@ async def create_session(
     When auth is disabled, uses "default" user or the user_id from request body.
     The session can then be used for query execution via the query endpoints.
 
+    Automatically loads projects from user preferences if any are saved.
+
     Returns:
         Session details including the session ID
     """
@@ -85,6 +211,17 @@ async def create_session(
     effective_user_id = user_id if user_id != "default" else (body.user_id or "default")
     session_id = session_manager.create_session(user_id=effective_user_id)
     managed = session_manager.get_session(session_id)
+
+    # Load preferred projects from user preferences
+    preferred_projects = get_selected_projects(effective_user_id)
+    if preferred_projects:
+        logger.info(f"Loading {len(preferred_projects)} preferred projects for user {effective_user_id}")
+        loaded, conflicts = _load_projects_into_session(managed, preferred_projects)
+        if conflicts:
+            logger.warning(f"Project conflicts when loading preferences: {conflicts}")
+        if loaded:
+            logger.info(f"Loaded preferred projects: {loaded}")
+
     return _session_to_response(managed)
 
 
@@ -201,12 +338,14 @@ async def delete_session(
 async def set_active_projects(
     session_id: str,
     body: dict,
+    user_id: CurrentUserId,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
     """Set the active projects for a session.
 
     Projects define collections of databases, APIs, and documents.
     Setting projects merges those sources with the session's data sources.
+    Also saves the selection to user preferences for future sessions.
 
     Args:
         session_id: Session ID
@@ -225,46 +364,20 @@ async def set_active_projects(
     if not isinstance(project_filenames, list):
         project_filenames = [project_filenames] if project_filenames else []
 
+    # Verify all projects exist before loading
     config = managed.session.config
-
-    # Load all projects and check they exist
-    loaded_projects = []
     for filename in project_filenames:
         project = config.load_project(filename)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
-        loaded_projects.append((filename, project))
 
-    # Check for conflicts: collect all names from config and projects
-    conflicts = []
+    # Clear existing project state before loading new projects
+    managed.session.clear_project_apis()
+    managed._project_databases = set()
+    managed.active_projects = []
 
-    # Start with config items
-    all_databases = {name: "config" for name in config.databases.keys()}
-    all_apis = {name: "config" for name in config.apis.keys()}
-    all_documents = {name: "config" for name in config.documents.keys()}
-
-    # Check each project for conflicts
-    for filename, project in loaded_projects:
-        # Check database conflicts
-        for name in project.databases.keys():
-            if name in all_databases:
-                conflicts.append(f"Database '{name}' conflicts: defined in {all_databases[name]} and {filename}")
-            else:
-                all_databases[name] = filename
-
-        # Check API conflicts
-        for name in project.apis.keys():
-            if name in all_apis:
-                conflicts.append(f"API '{name}' conflicts: defined in {all_apis[name]} and {filename}")
-            else:
-                all_apis[name] = filename
-
-        # Check document conflicts
-        for name in project.documents.keys():
-            if name in all_documents:
-                conflicts.append(f"Document '{name}' conflicts: defined in {all_documents[name]} and {filename}")
-            else:
-                all_documents[name] = filename
+    # Load projects using helper
+    loaded, conflicts = _load_projects_into_session(managed, project_filenames)
 
     if conflicts:
         raise HTTPException(
@@ -275,79 +388,10 @@ async def set_active_projects(
             }
         )
 
-    # Track which project databases were previously loaded
-    previously_loaded = getattr(managed, "_project_databases", set())
-
-    # Load project databases into the session via schema_manager
-    newly_loaded = set()
-    logger.info(f"Loading {len(loaded_projects)} projects with databases")
-    for filename, project in loaded_projects:
-        logger.info(f"Project {filename} has {len(project.databases)} databases: {list(project.databases.keys())}")
-        for name, db_config in project.databases.items():
-            if name not in previously_loaded:
-                try:
-                    # Add to schema_manager for entity introspection
-                    if managed.session.schema_manager:
-                        logger.info(f"Adding database {name} to schema_manager (uri: {db_config.uri})")
-                        success = managed.session.schema_manager.add_database_dynamic(name, db_config)
-                        if success:
-                            newly_loaded.add(name)
-                            logger.info(f"Successfully loaded project database: {name} from {filename}")
-                            # Log metadata cache size
-                            cache_size = len(managed.session.schema_manager.metadata_cache)
-                            logger.info(f"Schema manager now has {cache_size} tables in metadata_cache")
-                        else:
-                            logger.warning(f"Failed to load project database {name} from {filename}")
-                    else:
-                        logger.warning(f"No schema_manager available for project database {name}")
-                except Exception as e:
-                    logger.exception(f"Exception loading project database {name}: {e}")
-            else:
-                newly_loaded.add(name)
-
-        # Index project documents
-        for name, doc_config in project.documents.items():
-            try:
-                if doc_config.path:
-                    from pathlib import Path
-                    doc_path = Path(doc_config.path)
-                    if doc_path.exists():
-                        # Initialize doc_tools if not already present
-                        if not managed.session.doc_tools:
-                            from constat.discovery.doc_tools import DocumentDiscoveryTools
-                            # Get existing entity names from schema_manager
-                            schema_entities = set()
-                            if managed.session.schema_manager:
-                                schema_entities = set(managed.session.schema_manager.get_entity_names())
-                            managed.session.doc_tools = DocumentDiscoveryTools(
-                                config, schema_entities=schema_entities
-                            )
-                            logger.info("Initialized doc_tools for project documents")
-
-                        success, msg = managed.session.doc_tools.add_ephemeral_document_from_file(
-                            str(doc_path),
-                            name=name,
-                            description=doc_config.description or "",
-                        )
-                        if success:
-                            logger.info(f"Indexed project document: {name} from {filename} - {msg}")
-                        else:
-                            logger.warning(f"Failed to index project document {name}: {msg}")
-                    else:
-                        logger.warning(f"Project document path does not exist: {doc_path}")
-            except Exception as e:
-                logger.warning(f"Failed to index project document {name}: {e}")
-
-    # Clear existing project APIs and register new ones
-    managed.session.clear_project_apis()
-    for filename, project in loaded_projects:
-        for api_name, api_config in project.apis.items():
-            managed.session.add_project_api(api_name, api_config)
-            logger.info(f"Registered project API: {api_name} from {filename}")
-
-    # Store which databases are from projects
-    managed._project_databases = newly_loaded
-    managed.active_projects = project_filenames
+    # Save to user preferences for future sessions
+    effective_user_id = user_id if user_id != "default" else managed.user_id
+    set_selected_projects(effective_user_id, project_filenames)
+    logger.info(f"Saved project preferences for user {effective_user_id}: {project_filenames}")
 
     return {
         "status": "ok",
