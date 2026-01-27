@@ -413,14 +413,35 @@ class VisualizationHelper:
                             description=description,
                             metadata={"file_path": str(filepath), "source_type": "xlsx", "extension": ext},
                         )
+                elif ext in ("docx", "doc"):
+                    # DOCX: Convert to HTML with mammoth
+                    html_content = self._convert_docx_to_html(content, title or name, file_uri, filepath.name)
+                    self.datastore.save_rich_artifact(
+                        name=name,
+                        artifact_type="html",
+                        content=html_content,
+                        step_number=self.step_number,
+                        title=title or name,
+                        description=description,
+                        metadata={"file_path": str(filepath), "source_type": "docx", "extension": ext},
+                    )
+                elif ext == "pdf":
+                    # PDF: Embed with object tag for native browser viewing
+                    html_content = self._convert_pdf_to_html(content, title or name, file_uri, filepath.name)
+                    self.datastore.save_rich_artifact(
+                        name=name,
+                        artifact_type="html",
+                        content=html_content,
+                        step_number=self.step_number,
+                        title=title or name,
+                        description=description,
+                        metadata={"file_path": str(filepath), "source_type": "pdf", "extension": ext},
+                    )
                 else:
-                    # Other Office docs: show download link
+                    # Other Office docs (PPTX, etc.): show download link
                     ext_labels = {
-                        "docx": "Word Document",
-                        "doc": "Word Document",
                         "pptx": "PowerPoint Presentation",
                         "ppt": "PowerPoint Presentation",
-                        "pdf": "PDF Document",
                         "odt": "OpenDocument Text",
                         "ods": "OpenDocument Spreadsheet",
                         "odp": "OpenDocument Presentation",
@@ -450,6 +471,133 @@ class VisualizationHelper:
 
         self._print_ref(f"File saved ({ext})", filepath, description=title or name)
         return filepath
+
+    def _convert_docx_to_html(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+        """Convert DOCX to HTML using mammoth library."""
+        from io import BytesIO
+        try:
+            import mammoth
+            result = mammoth.convert_to_html(BytesIO(content))
+            html_body = result.value
+            # Add title and download link
+            body_content = (
+                f'<h2>{title}</h2>'
+                f'<div class="docx-content">{html_body}</div>'
+                f'<p><a href="{file_uri}" download="{filename}">Download original document</a></p>'
+            )
+            if result.messages:
+                warnings = "<br>".join(str(m) for m in result.messages[:5])
+                body_content += f'<p><small>Conversion notes: {warnings}</small></p>'
+            return self._wrap_html_preview(body_content)
+        except ImportError:
+            # mammoth not installed, fall back to python-docx text extraction
+            return self._convert_docx_to_html_fallback(content, title, file_uri, filename)
+        except Exception as e:
+            return self._wrap_html_preview(
+                f'<h2>{title}</h2>'
+                f'<p>Word Document</p>'
+                f'<p><a href="{file_uri}" download="{filename}">Download {filename}</a></p>'
+                f'<p><small>Preview unavailable: {e}</small></p>'
+            )
+
+    def _convert_docx_to_html_fallback(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+        """Fallback DOCX to HTML using python-docx for text extraction."""
+        from io import BytesIO
+        try:
+            from docx import Document
+            doc = Document(BytesIO(content))
+            paragraphs = []
+            for para in doc.paragraphs[:100]:  # Limit preview
+                text = para.text.strip()
+                if text:
+                    # Simple styling based on paragraph style
+                    style = para.style.name.lower() if para.style else ""
+                    if "heading 1" in style:
+                        paragraphs.append(f"<h3>{text}</h3>")
+                    elif "heading" in style:
+                        paragraphs.append(f"<h4>{text}</h4>")
+                    else:
+                        paragraphs.append(f"<p>{text}</p>")
+            if len(doc.paragraphs) > 100:
+                paragraphs.append(f"<p><em>Showing 100 of {len(doc.paragraphs)} paragraphs</em></p>")
+            body_content = (
+                f'<h2>{title}</h2>'
+                f'<div class="docx-content">{"".join(paragraphs)}</div>'
+                f'<p><a href="{file_uri}" download="{filename}">Download original document</a></p>'
+            )
+            return self._wrap_html_preview(body_content)
+        except Exception as e:
+            return self._wrap_html_preview(
+                f'<h2>{title}</h2>'
+                f'<p>Word Document</p>'
+                f'<p><a href="{file_uri}" download="{filename}">Download {filename}</a></p>'
+                f'<p><small>Preview unavailable: {e}</small></p>'
+            )
+
+    def _convert_pdf_to_html(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+        """Convert PDF to HTML with embedded viewer using PDF.js."""
+        import base64
+        # Base64 encode PDF for embedding
+        pdf_b64 = base64.b64encode(content).decode("utf-8")
+        # Use PDF.js for reliable cross-browser rendering
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; margin: 0; background: #f5f5f5; }}
+@media (prefers-color-scheme: dark) {{ body {{ background: #1f2937; color: #e5e7eb; }} }}
+h2 {{ margin: 0 0 12px 0; font-size: 1.25rem; }}
+.pdf-container {{ background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+canvas {{ display: block; margin: 0 auto; max-width: 100%; }}
+.controls {{ padding: 8px 12px; background: #f0f0f0; display: flex; gap: 8px; align-items: center; font-size: 0.875rem; }}
+@media (prefers-color-scheme: dark) {{ .controls {{ background: #374151; }} }}
+button {{ padding: 4px 12px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }}
+@media (prefers-color-scheme: dark) {{ button {{ background: #4b5563; border-color: #6b7280; color: #e5e7eb; }} }}
+a {{ color: #3b82f6; }}
+</style>
+</head>
+<body>
+<h2>{title}</h2>
+<div class="pdf-container">
+  <div class="controls">
+    <button onclick="prevPage()">← Prev</button>
+    <span id="page-info">Page 1 of ?</span>
+    <button onclick="nextPage()">Next →</button>
+    <a href="{file_uri}" download="{filename}" style="margin-left: auto;">Download PDF</a>
+  </div>
+  <canvas id="pdf-canvas"></canvas>
+</div>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const pdfData = atob("{pdf_b64}");
+let pdfDoc = null, pageNum = 1, pageRendering = false;
+const canvas = document.getElementById('pdf-canvas'), ctx = canvas.getContext('2d');
+
+pdfjsLib.getDocument({{data: pdfData}}).promise.then(pdf => {{
+  pdfDoc = pdf;
+  document.getElementById('page-info').textContent = 'Page 1 of ' + pdf.numPages;
+  renderPage(1);
+}});
+
+function renderPage(num) {{
+  pageRendering = true;
+  pdfDoc.getPage(num).then(page => {{
+    const viewport = page.getViewport({{scale: 1.5}});
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+    page.render({{canvasContext: ctx, viewport: viewport}}).promise.then(() => {{
+      pageRendering = false;
+      document.getElementById('page-info').textContent = 'Page ' + num + ' of ' + pdfDoc.numPages;
+    }});
+  }});
+}}
+
+function prevPage() {{ if (pageNum > 1) {{ pageNum--; renderPage(pageNum); }} }}
+function nextPage() {{ if (pageNum < pdfDoc.numPages) {{ pageNum++; renderPage(pageNum); }} }}
+</script>
+</body>
+</html>"""
 
     def _wrap_html_preview(self, body_content: str) -> str:
         """Wrap content in a styled HTML document for artifact preview."""
