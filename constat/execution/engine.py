@@ -156,9 +156,26 @@ class QueryEngine:
         schema_manager: SchemaManager,
         llm: Optional[AnthropicProvider] = None,
         max_retries: int = 10,
+        allowed_databases: Optional[set[str]] = None,
+        allowed_apis: Optional[set[str]] = None,
+        allowed_documents: Optional[set[str]] = None,
     ):
+        """Initialize the code generation engine.
+
+        Args:
+            config: Configuration
+            schema_manager: Schema manager for database metadata
+            llm: LLM provider (defaults to Anthropic)
+            max_retries: Max retry attempts per step
+            allowed_databases: Set of allowed database names (None = no filtering)
+            allowed_apis: Set of allowed API names (None = no filtering)
+            allowed_documents: Set of allowed document names (None = no filtering)
+        """
         self.config = config
         self.schema_manager = schema_manager
+        self.allowed_databases = allowed_databases
+        self.allowed_apis = allowed_apis
+        self.allowed_documents = allowed_documents
         self.llm = llm or AnthropicProvider(
             api_key=config.llm.api_key,
             model=config.llm.model,
@@ -168,12 +185,33 @@ class QueryEngine:
             timeout_seconds=config.execution.timeout_seconds,
             allowed_imports=config.execution.allowed_imports or None,
         )
-        # Initialize document discovery tools
-        self.doc_tools = DocumentDiscoveryTools(config) if config.documents else None
+        # Initialize document discovery tools with permission filtering
+        self.doc_tools = DocumentDiscoveryTools(
+            config,
+            allowed_documents=allowed_documents,
+        ) if config.documents else None
 
         # Concept detector for conditional prompt injection
         self._concept_detector = ConceptDetector()
         self._concept_detector.initialize()
+
+    def _is_database_allowed(self, db_name: str) -> bool:
+        """Check if a database is allowed based on permissions."""
+        if self.allowed_databases is None:
+            return True
+        return db_name in self.allowed_databases
+
+    def _is_api_allowed(self, api_name: str) -> bool:
+        """Check if an API is allowed based on permissions."""
+        if self.allowed_apis is None:
+            return True
+        return api_name in self.allowed_apis
+
+    def _is_document_allowed(self, doc_name: str) -> bool:
+        """Check if a document is allowed based on permissions."""
+        if self.allowed_documents is None:
+            return True
+        return doc_name in self.allowed_documents
 
     def _build_system_prompt(self, query: str) -> str:
         """Build the full system prompt.
@@ -188,6 +226,8 @@ class QueryEngine:
         - API overview (from config): available GraphQL/REST APIs
         - Document overview (from config): reference documents
         - Domain context (user-owned): business context, terminology
+
+        All sections are filtered based on allowed_databases/apis/documents.
         """
         # Detect relevant concepts and inject specialized sections
         injected_sections = self._concept_detector.get_sections_for_prompt(
@@ -195,11 +235,14 @@ class QueryEngine:
             target="engine",
         )
 
-        # Build API overview if configured
+        # Build API overview if configured (filtered by permissions)
         api_overview = ""
         if self.config.apis:
             api_lines = ["\n## Available APIs"]
             for name, api_config in self.config.apis.items():
+                # Skip APIs not allowed by permissions
+                if not self._is_api_allowed(name):
+                    continue
                 api_type = api_config.type.upper()
                 desc = api_config.description or f"{api_type} endpoint"
                 url = api_config.url or ""
@@ -229,16 +272,21 @@ class QueryEngine:
 
             api_overview = "\n".join(api_lines)
 
-        # Build document overview if configured
+        # Build document overview if configured (filtered by permissions)
         doc_overview = ""
         if self.config.documents:
             doc_lines = ["\n## Reference Documents"]
             for name, doc_config in self.config.documents.items():
+                # Skip documents not allowed by permissions
+                if not self._is_document_allowed(name):
+                    continue
                 desc = doc_config.description or doc_config.type
                 doc_lines.append(f"- **{name}**: {desc}")
-            doc_overview = "\n".join(doc_lines)
+            # Only include header if we have allowed documents
+            if len(doc_lines) > 1:
+                doc_overview = "\n".join(doc_lines)
 
-        # Build SQL dialect hints based on database types
+        # Build SQL dialect hints based on database types (filtered by permissions)
         sql_hints = ""
         dialect_hints_map = {
             "sqlite": "SQLite: Use strftime('%Y-%m', date_col), date('now', '-12 months'). Do NOT use schema prefixes (use 'customers' not 'sales.customers').",
@@ -248,6 +296,9 @@ class QueryEngine:
         }
         detected_dialects = set()
         for db_name, db_config in self.config.databases.items():
+            # Skip databases not allowed by permissions
+            if not self._is_database_allowed(db_name):
+                continue
             if db_config.is_file_source():
                 continue  # Skip file sources
             config_type = db_config.type or "sqlite"
@@ -275,7 +326,7 @@ class QueryEngine:
         return SYSTEM_PROMPT_TEMPLATE.format(
             engine_prompt=ENGINE_SYSTEM_PROMPT,
             injected_sections=injected_sections,
-            schema_overview=self.schema_manager.get_brief_summary() + sql_hints,
+            schema_overview=self.schema_manager.get_brief_summary(self.allowed_databases) + sql_hints,
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",

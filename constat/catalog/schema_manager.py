@@ -1018,12 +1018,16 @@ class SchemaManager:
             self._generate_overview()
         return self._overview or ""
 
-    def get_brief_summary(self) -> str:
+    def get_brief_summary(self, allowed_databases: Optional[set[str]] = None) -> str:
         """Return a brief summary of databases without listing all tables.
 
         Use this instead of get_overview() when table count is potentially large.
         The LLM can use discovery tools (find_relevant_tables, get_table_schema)
         to explore specific tables as needed.
+
+        Args:
+            allowed_databases: Set of allowed database names. If None, all databases
+                are included. If empty set, no databases are included.
         """
         lines = ["Available databases:"]
 
@@ -1040,6 +1044,10 @@ class SchemaManager:
             by_db.setdefault(table_meta.database, []).append(table_meta)
 
         for db_name, tables in sorted(by_db.items()):
+            # Skip databases not allowed by permissions
+            if allowed_databases is not None and db_name not in allowed_databases:
+                continue
+
             total_rows = sum(t.row_count for t in tables)
 
             if db_name in db_descriptions:
