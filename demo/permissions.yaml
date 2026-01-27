@@ -1,0 +1,38 @@
+# User Permissions Configuration
+# Included by config.yaml via !include permissions.yaml
+#
+# Controls access to:
+#   - projects: Project configs user can activate
+#   - databases: SQL/file databases user can query
+#   - documents: Reference documents user can search
+#   - apis: External APIs user can call
+#
+# Admins (admin: true) have full access - arrays are ignored.
+
+users:
+  kennethstott@gmail.com:
+    admin: true
+    projects: []
+    databases: []
+    documents: []
+    apis: []
+
+  # Example non-admin user:
+  # analyst@company.com:
+  #   admin: false
+  #   projects:
+  #     - sales-analytics.yaml
+  #   databases:
+  #     - inventory
+  #     - web_metrics
+  #   documents: []
+  #   apis:
+  #     - countries
+
+# Default permissions for users not listed above
+default:
+  admin: false
+  projects: []
+  databases: []
+  documents: []
+  apis: []

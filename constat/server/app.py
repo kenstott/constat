@@ -244,23 +244,13 @@ def get_app() -> FastAPI:
 
             config = Config.from_yaml(config_path)
 
-            # Load server config with env var substitution
+            # Load server config using IncludeLoader for !include support
+            from constat.core.config import _make_include_loader, _substitute_env_vars
             with open(config_path) as f:
                 raw_content = f.read()
 
-            # Substitute env vars: ${VAR_NAME}
-            def substitute_env(content: str) -> str:
-                pattern = re.compile(r'\$\{([^}]+)\}')
-                def replacer(match):
-                    var_name = match.group(1)
-                    value = os.environ.get(var_name)
-                    if value is None:
-                        return match.group(0)  # Keep original if not found
-                    return value
-                return pattern.sub(replacer, content)
-
-            substituted = substitute_env(raw_content)
-            raw_data = yaml.safe_load(substituted)
+            substituted = _substitute_env_vars(raw_content)
+            raw_data = yaml.load(substituted, Loader=lambda s: _make_include_loader(s, config_dir))
             server_data = raw_data.get("server") if raw_data else None
             server_config = ServerConfig.from_yaml_data(server_data)
         except FileNotFoundError:

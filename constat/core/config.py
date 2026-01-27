@@ -9,14 +9,82 @@
 
 """Configuration loading with Pydantic validation and env var substitution."""
 
+import glob
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+class IncludeLoader(yaml.SafeLoader):
+    """Custom YAML loader that supports !include tags for file inclusion.
+
+    Usage in YAML:
+        # Include a single file
+        permissions: !include permissions.yaml
+
+        # Include with glob pattern (merges into a list)
+        projects: !include projects/*.yaml
+
+        # Include relative to config file location
+        databases:
+          inventory: !include databases/inventory.yaml
+    """
+
+    def __init__(self, stream, base_dir: Path = None):
+        super().__init__(stream)
+        self.base_dir = base_dir or Path(".")
+
+
+def _include_constructor(loader: IncludeLoader, node: yaml.Node) -> Any:
+    """Handle !include tag - load content from referenced file(s)."""
+    include_path = loader.construct_scalar(node)
+    full_pattern = loader.base_dir / include_path
+
+    # Check if it's a glob pattern
+    if "*" in include_path or "?" in include_path:
+        # Glob pattern - collect all matching files
+        matching_files = sorted(glob.glob(str(full_pattern)))
+        if not matching_files:
+            return []
+
+        results = []
+        for file_path in matching_files:
+            with open(file_path) as f:
+                content = f.read()
+            # Substitute env vars in included file
+            content = _substitute_env_vars(content)
+            # Create a new loader with the included file's directory as base
+            sub_loader = IncludeLoader(content, Path(file_path).parent)
+            data = yaml.load(content, Loader=lambda s: _make_include_loader(s, Path(file_path).parent))
+            results.append(data)
+        return results
+    else:
+        # Single file include
+        file_path = full_pattern
+        if not file_path.exists():
+            raise FileNotFoundError(f"Include file not found: {file_path}")
+
+        with open(file_path) as f:
+            content = f.read()
+        # Substitute env vars in included file
+        content = _substitute_env_vars(content)
+        # Parse with include support (recursive)
+        return yaml.load(content, Loader=lambda s: _make_include_loader(s, file_path.parent))
+
+
+def _make_include_loader(stream, base_dir: Path):
+    """Factory function to create IncludeLoader with specific base_dir."""
+    loader = IncludeLoader(stream, base_dir)
+    return loader
+
+
+# Register the !include constructor
+IncludeLoader.add_constructor("!include", _include_constructor)
 
 
 class DatabaseCredentials(BaseModel):
@@ -882,7 +950,8 @@ class Config(BaseModel):
 
         # Substitute environment variables: ${VAR_NAME}
         substituted = _substitute_env_vars(raw_content)
-        data = yaml.safe_load(substituted)
+        # Use IncludeLoader to support !include tags
+        data = yaml.load(substituted, Loader=lambda s: _make_include_loader(s, config_dir))
 
         # Load user config from file if provided
         user_data = None
@@ -892,7 +961,7 @@ class Config(BaseModel):
                 with open(user_path) as f:
                     user_raw = f.read()
                 user_substituted = _substitute_env_vars(user_raw)
-                user_data = yaml.safe_load(user_substituted)
+                user_data = yaml.load(user_substituted, Loader=lambda s: _make_include_loader(s, user_path.parent))
         elif user_config:
             user_data = user_config
 
