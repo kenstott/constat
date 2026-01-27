@@ -343,6 +343,9 @@ class VisualizationHelper:
 
         Use this for Excel files, images, PDFs, and other binary formats.
 
+        For XLSX files: generates an HTML table preview for viewing in the UI.
+        For other Office docs: saves as HTML with a download link.
+
         Args:
             name: Name for the file (used in filename and artifact)
             content: Binary content to save
@@ -353,7 +356,7 @@ class VisualizationHelper:
         Returns:
             Path to the saved file
         """
-        import base64
+        from io import BytesIO
 
         # Normalize extension
         ext = ext.lstrip(".")
@@ -361,22 +364,82 @@ class VisualizationHelper:
         # Save to file
         filepath = self._generate_filename(name, ext)
         filepath.write_bytes(content)
+        file_uri = filepath.resolve().as_uri()
 
         # Register as artifact if datastore available
         artifact_type = FILE_EXT_ARTIFACT_TYPES.get(ext, "document")
         if self.datastore:
             try:
-                # Base64 encode binary content for storage
-                content_b64 = base64.b64encode(content).decode("utf-8")
-                self.datastore.save_rich_artifact(
-                    name=name,
-                    artifact_type=artifact_type,
-                    content=content_b64,
-                    step_number=self.step_number,
-                    title=title or name,
-                    description=description,
-                    metadata={"file_path": str(filepath), "is_binary": True, "extension": ext},
-                )
+                if ext == "xlsx":
+                    # XLSX: Generate HTML table preview
+                    import pandas as pd
+                    try:
+                        # Read all sheets
+                        xlsx_data = pd.read_excel(BytesIO(content), sheet_name=None)
+                        html_parts = [f"<h2>{title or name}</h2>"]
+                        for sheet_name, df in xlsx_data.items():
+                            if len(xlsx_data) > 1:
+                                html_parts.append(f"<h3>Sheet: {sheet_name}</h3>")
+                            # Limit preview to first 100 rows
+                            preview_df = df.head(100)
+                            html_parts.append(preview_df.to_html(index=False, classes="data-table", border=0))
+                            if len(df) > 100:
+                                html_parts.append(f"<p><em>Showing 100 of {len(df)} rows</em></p>")
+                        html_parts.append(f'<p><a href="{file_uri}" download="{filepath.name}">Download full file ({ext.upper()})</a></p>')
+                        html_content = self._wrap_html_preview("\n".join(html_parts))
+                        self.datastore.save_rich_artifact(
+                            name=name,
+                            artifact_type="html",
+                            content=html_content,
+                            step_number=self.step_number,
+                            title=title or name,
+                            description=description,
+                            metadata={"file_path": str(filepath), "source_type": "xlsx", "extension": ext},
+                        )
+                    except Exception as e:
+                        # Fall back to download link if preview fails
+                        html_content = self._wrap_html_preview(
+                            f'<h2>{title or name}</h2>'
+                            f'<p>Excel spreadsheet</p>'
+                            f'<p><a href="{file_uri}" download="{filepath.name}">Download {filepath.name}</a></p>'
+                            f'<p><small>Preview unavailable: {e}</small></p>'
+                        )
+                        self.datastore.save_rich_artifact(
+                            name=name,
+                            artifact_type="html",
+                            content=html_content,
+                            step_number=self.step_number,
+                            title=title or name,
+                            description=description,
+                            metadata={"file_path": str(filepath), "source_type": "xlsx", "extension": ext},
+                        )
+                else:
+                    # Other Office docs: show download link
+                    ext_labels = {
+                        "docx": "Word Document",
+                        "doc": "Word Document",
+                        "pptx": "PowerPoint Presentation",
+                        "ppt": "PowerPoint Presentation",
+                        "pdf": "PDF Document",
+                        "odt": "OpenDocument Text",
+                        "ods": "OpenDocument Spreadsheet",
+                        "odp": "OpenDocument Presentation",
+                    }
+                    ext_label = ext_labels.get(ext, f"{ext.upper()} file")
+                    html_content = self._wrap_html_preview(
+                        f'<h2>{title or name}</h2>'
+                        f'<p>{ext_label}</p>'
+                        f'<p><a href="{file_uri}" download="{filepath.name}">Download {filepath.name}</a></p>'
+                    )
+                    self.datastore.save_rich_artifact(
+                        name=name,
+                        artifact_type="html",
+                        content=html_content,
+                        step_number=self.step_number,
+                        title=title or name,
+                        description=description,
+                        metadata={"file_path": str(filepath), "source_type": ext, "extension": ext},
+                    )
             except Exception as e:
                 # Don't fail if artifact save fails - file is already saved
                 if self.print_file_refs:
@@ -387,6 +450,39 @@ class VisualizationHelper:
 
         self._print_ref(f"File saved ({ext})", filepath, description=title or name)
         return filepath
+
+    def _wrap_html_preview(self, body_content: str) -> str:
+        """Wrap content in a styled HTML document for artifact preview."""
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; margin: 0; line-height: 1.6; color: #1f2937; background: #fff; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ color: #e5e7eb; background: #111827; }}
+  a {{ color: #60a5fa; }}
+  table {{ border-color: #374151; }}
+  th {{ background: #1f2937; }}
+}}
+h2 {{ margin-top: 0; font-size: 1.25rem; }}
+h3 {{ font-size: 1rem; margin-top: 1.5rem; }}
+table.data-table {{ border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.875rem; }}
+table.data-table th, table.data-table td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+table.data-table th {{ background: #f5f5f5; font-weight: 600; }}
+table.data-table tr:nth-child(even) {{ background: #fafafa; }}
+@media (prefers-color-scheme: dark) {{
+  table.data-table th, table.data-table td {{ border-color: #374151; }}
+  table.data-table th {{ background: #1f2937; }}
+  table.data-table tr:nth-child(even) {{ background: #1f2937; }}
+}}
+a {{ color: #3b82f6; text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+</style>
+</head>
+<body>
+{body_content}
+</body>
+</html>"""
 
     def save_html(
         self,
