@@ -1,6 +1,11 @@
 # Constat Demo Configuration
 # Run from project root: constat repl -c demo/config.yaml
 
+# Server configuration (for API server mode)
+server:
+  auth_disabled: ${AUTH_DISABLED}
+  firebase_project_id: ${FIREBASE_PROJECT_ID}
+
 # Projects directory for reusable data source collections
 projects_path: demo/projects
 
@@ -64,7 +69,7 @@ system_prompt: |
   - Performance ratings: 5=exceptional, 4=exceeds, 3=meets, 2=needs improvement, 1=unsatisfactory
 
   DATA RELATIONSHIPS:
-  - inventory.sku links to products by name pattern (e.g., SKU-001 = Widget Pro)
+  - inventory.sku links to products by name pattern (e.g., SKU-001 = Widget thT Pro)
   - employees.manager_id is self-referential for org hierarchy
   - orders.customer_id -> customers.customer_id
   - order_items.product_id -> products.product_id

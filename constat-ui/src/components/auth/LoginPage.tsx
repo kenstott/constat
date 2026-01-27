@@ -1,9 +1,9 @@
-// Login/Signup page with Google and Email/Password authentication
+// Login/Signup page with Google, Email/Password, and Passwordless authentication
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
 
-type AuthMode = 'login' | 'signup' | 'reset'
+type AuthMode = 'login' | 'signup' | 'reset' | 'emaillink'
 
 export function LoginPage() {
   const [mode, setMode] = useState<AuthMode>('login')
@@ -11,9 +11,39 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [emailLinkSent, setEmailLinkSent] = useState(false)
 
-  const { loginWithGoogle, loginWithEmail, signupWithEmail, sendPasswordReset, loading, error, clearError } =
-    useAuthStore()
+  const {
+    loginWithGoogle,
+    loginWithEmail,
+    signupWithEmail,
+    sendPasswordReset,
+    sendEmailSignInLink,
+    completeEmailLink,
+    isEmailLinkSignIn,
+    loading,
+    error,
+    clearError,
+  } = useAuthStore()
+
+  // Check if user is returning from an email link
+  useEffect(() => {
+    if (isEmailLinkSignIn()) {
+      // Get saved email or prompt user
+      const savedEmail = localStorage.getItem('emailForSignIn')
+      if (savedEmail) {
+        completeEmailLink(savedEmail).catch(() => {
+          // Error handled by store
+        })
+      } else {
+        // Need to ask for email
+        setMode('emaillink')
+        setSuccessMessage('Please enter your email to complete sign-in.')
+      }
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname)
+    }
+  }, [isEmailLinkSignIn, completeEmailLink])
 
   const handleGoogleLogin = async () => {
     clearError()
@@ -25,10 +55,40 @@ export function LoginPage() {
     }
   }
 
+  const handleEmailLinkRequest = async () => {
+    clearError()
+    setSuccessMessage(null)
+    try {
+      await sendEmailSignInLink(email)
+      setEmailLinkSent(true)
+      setSuccessMessage('Sign-in link sent! Check your email and click the link to sign in.')
+    } catch {
+      // Error handled by store
+    }
+  }
+
+  const handleEmailLinkComplete = async () => {
+    clearError()
+    try {
+      await completeEmailLink(email)
+    } catch {
+      // Error handled by store
+    }
+  }
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     clearError()
     setSuccessMessage(null)
+
+    if (mode === 'emaillink') {
+      if (isEmailLinkSignIn()) {
+        await handleEmailLinkComplete()
+      } else {
+        await handleEmailLinkRequest()
+      }
+      return
+    }
 
     if (mode === 'signup') {
       if (password !== confirmPassword) {
@@ -69,6 +129,7 @@ export function LoginPage() {
     setMode(newMode)
     clearError()
     setSuccessMessage(null)
+    setEmailLinkSent(false)
     setPassword('')
     setConfirmPassword('')
   }
@@ -83,6 +144,7 @@ export function LoginPage() {
             {mode === 'login' && 'Sign in to your account'}
             {mode === 'signup' && 'Create a new account'}
             {mode === 'reset' && 'Reset your password'}
+            {mode === 'emaillink' && 'Sign in with email link'}
           </p>
         </div>
 
@@ -103,7 +165,7 @@ export function LoginPage() {
           )}
 
           {/* Google Sign-In (only for login/signup) */}
-          {mode !== 'reset' && (
+          {(mode === 'login' || mode === 'signup') && (
             <>
               <button
                 onClick={handleGoogleLogin}
@@ -145,87 +207,116 @@ export function LoginPage() {
             </>
           )}
 
-          {/* Email/Password Form */}
-          <form onSubmit={handleEmailSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Email address
-              </label>
-              <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                placeholder="you@example.com"
-              />
+          {/* Email Link Sent State */}
+          {mode === 'emaillink' && emailLinkSent && (
+            <div className="text-center py-4">
+              <div className="text-4xl mb-4">📧</div>
+              <p className="text-gray-700 dark:text-gray-300 mb-4">
+                Check your inbox for the sign-in link.
+              </p>
+              <button
+                onClick={() => switchMode('login')}
+                className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
+              >
+                Back to sign in
+              </button>
             </div>
+          )}
 
-            {mode !== 'reset' && (
+          {/* Email Form */}
+          {!(mode === 'emaillink' && emailLinkSent) && (
+            <form onSubmit={handleEmailSubmit} className="space-y-4">
               <div>
-                <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Password
+                <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Email address
                 </label>
                 <input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   required
-                  minLength={6}
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                  placeholder="At least 6 characters"
+                  placeholder="you@example.com"
                 />
               </div>
-            )}
 
-            {mode === 'signup' && (
-              <div>
-                <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Confirm Password
-                </label>
-                <input
-                  id="confirmPassword"
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  required
-                  minLength={6}
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                  placeholder="Confirm your password"
-                />
-              </div>
-            )}
-
-            {mode === 'login' && (
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => switchMode('reset')}
-                  className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
-                >
-                  Forgot password?
-                </button>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : mode === 'login' ? (
-                'Sign in'
-              ) : mode === 'signup' ? (
-                'Create account'
-              ) : (
-                'Send reset email'
+              {(mode === 'login' || mode === 'signup') && (
+                <div>
+                  <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Password
+                  </label>
+                  <input
+                    id="password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    placeholder="At least 6 characters"
+                  />
+                </div>
               )}
-            </button>
-          </form>
+
+              {mode === 'signup' && (
+                <div>
+                  <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Confirm Password
+                  </label>
+                  <input
+                    id="confirmPassword"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    placeholder="Confirm your password"
+                  />
+                </div>
+              )}
+
+              {mode === 'login' && (
+                <div className="flex justify-between text-sm">
+                  <button
+                    type="button"
+                    onClick={() => switchMode('emaillink')}
+                    className="text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    Sign in with email link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => switchMode('reset')}
+                    className="text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : mode === 'login' ? (
+                  'Sign in'
+                ) : mode === 'signup' ? (
+                  'Create account'
+                ) : mode === 'reset' ? (
+                  'Send reset email'
+                ) : isEmailLinkSignIn() ? (
+                  'Complete sign in'
+                ) : (
+                  'Send sign-in link'
+                )}
+              </button>
+            </form>
+          )}
 
           {/* Mode Switch */}
           <div className="mt-6 text-center text-sm">
@@ -245,7 +336,7 @@ export function LoginPage() {
                 </button>
               </p>
             )}
-            {mode === 'reset' && (
+            {(mode === 'reset' || mode === 'emaillink') && (
               <p className="text-gray-600 dark:text-gray-400">
                 Remember your password?{' '}
                 <button onClick={() => switchMode('login')} className="text-primary-600 dark:text-primary-400 hover:underline font-medium">

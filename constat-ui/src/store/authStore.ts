@@ -7,11 +7,14 @@ import {
   signInWithEmail,
   signUpWithEmail,
   resetPassword,
+  sendEmailLink,
+  checkEmailLink,
+  completeEmailLinkSignIn,
   logOut,
   getIdToken,
   subscribeToAuthChanges,
   User,
-} from '@/lib/firebase'
+} from '@/config/firebase'
 
 interface AuthState {
   // State
@@ -30,6 +33,9 @@ interface AuthState {
   loginWithEmail: (email: string, password: string) => Promise<void>
   signupWithEmail: (email: string, password: string) => Promise<void>
   sendPasswordReset: (email: string) => Promise<void>
+  sendEmailSignInLink: (email: string) => Promise<void>
+  completeEmailLink: (email?: string) => Promise<void>
+  isEmailLinkSignIn: () => boolean
   logout: () => Promise<void>
   getToken: () => Promise<string | null>
   clearError: () => void
@@ -145,6 +151,47 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ error: cleanMessage || 'Failed to send reset email', loading: false })
       throw err
     }
+  },
+
+  sendEmailSignInLink: async (email: string) => {
+    if (isAuthDisabled) return
+
+    set({ loading: true, error: null })
+    try {
+      await sendEmailLink(email)
+      set({ loading: false })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to send sign-in link'
+      const cleanMessage = message
+        .replace('Firebase: ', '')
+        .replace(/\(auth\/[^)]+\)\.?/, '')
+        .trim()
+      set({ error: cleanMessage || 'Failed to send sign-in link', loading: false })
+      throw err
+    }
+  },
+
+  completeEmailLink: async (email?: string) => {
+    if (isAuthDisabled) return
+
+    set({ loading: true, error: null })
+    try {
+      await completeEmailLinkSignIn(email)
+      // Auth state will update via subscription
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to complete sign-in'
+      const cleanMessage = message
+        .replace('Firebase: ', '')
+        .replace(/\(auth\/[^)]+\)\.?/, '')
+        .trim()
+      set({ error: cleanMessage || 'Failed to complete sign-in', loading: false })
+      throw err
+    }
+  },
+
+  isEmailLinkSignIn: () => {
+    if (isAuthDisabled) return false
+    return checkEmailLink()
   },
 
   logout: async () => {

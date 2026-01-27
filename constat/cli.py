@@ -470,9 +470,20 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
     # Build server config
     server_config = ServerConfig(host=host, port=port)
 
-    # Configure logging if debug is enabled
+    # Configure logging
+    import logging
+
+    # Always add console handler for constat logs
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+
+    constat_logger = logging.getLogger('constat')
+    constat_logger.addHandler(console_handler)
+
     if debug:
-        import logging
+        # Debug mode: verbose logging to file and console
         log_file = Path('.constat/debug.log')
         log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file, mode='w')
@@ -480,8 +491,13 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         file_handler.setFormatter(logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
-        logging.getLogger('constat').addHandler(file_handler)
-        logging.getLogger('constat').setLevel(logging.DEBUG)
+        constat_logger.addHandler(file_handler)
+        constat_logger.setLevel(logging.DEBUG)
+        console_handler.setLevel(logging.DEBUG)
+    else:
+        # Normal mode: INFO level to console
+        constat_logger.setLevel(logging.INFO)
+        console_handler.setLevel(logging.INFO)
 
     log_level = "debug" if debug else "info"
 
@@ -498,12 +514,21 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         import os
         if config:
             os.environ["CONSTAT_CONFIG"] = config
+
+        # Watch config files for changes in addition to Python files
+        reload_includes = ["*.py"]
+        if config:
+            reload_includes.append(config)
+        # Watch .env files in common locations
+        reload_includes.extend([".env", "demo/.env", "*.yaml", "demo/*.yaml"])
+
         uvicorn.run(
             "constat.server.app:app",
             host=host,
             port=port,
             reload=True,
-            reload_dirs=["constat"],
+            reload_dirs=["constat", "."],
+            reload_includes=reload_includes,
             log_level=log_level,
         )
     else:

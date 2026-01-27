@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
+from constat.server.auth import CurrentUserId
 from constat.server.models import (
     ArtifactContentResponse,
     ArtifactInfo,
@@ -63,9 +64,17 @@ async def list_tables(
         starred_tables = set(managed.session.datastore.get_starred_tables())
         unstarred_tables = set(managed.session.datastore.get_state("_unstarred_tables") or [])
 
+        # Internal tables that should be hidden from the UI
+        internal_tables = {"execution_history", "_facts", "_metadata"}
+
         result_tables = []
         for t in tables:
             table_name = t["name"]
+
+            # Skip internal tables (underscore prefix or known internal names)
+            if table_name.startswith("_") or table_name in internal_tables:
+                continue
+
             # Unified starred logic (same as list_artifacts)
             is_published = t.get("is_published", False)
             is_final_step = t.get("is_final_step", False)
@@ -1155,6 +1164,7 @@ async def toggle_table_star(
 @router.get("/{session_id}/steps")
 async def list_step_codes(
     session_id: str,
+    user_id: CurrentUserId,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """List all step codes for a session.
@@ -1182,7 +1192,7 @@ async def list_step_codes(
     else:
         # Session not in memory - try reverse lookup from disk
         from constat.storage.history import SessionHistory
-        history = SessionHistory(user_id="default")  # TODO: get user_id properly
+        history = SessionHistory(user_id=user_id)
         history_session_id = history.find_session_by_server_id(session_id)
         logger.debug(f"[list_step_codes] Session not in memory. Reverse lookup found: {history_session_id}")
 
@@ -1208,6 +1218,7 @@ async def list_step_codes(
 @router.get("/{session_id}/download-code")
 async def download_code(
     session_id: str,
+    user_id: CurrentUserId,
     session_manager: SessionManager = Depends(get_session_manager),
 ):
     """Download all step codes as a standalone Python script.
@@ -1241,7 +1252,7 @@ async def download_code(
     else:
         # Session not in memory - try reverse lookup from disk
         from constat.storage.history import SessionHistory
-        history = SessionHistory(user_id="default")  # TODO: get user_id properly
+        history = SessionHistory(user_id=user_id)
         history_session_id = history.find_session_by_server_id(session_id)
         logger.debug(f"[download-code] Session not in memory. Reverse lookup found: {history_session_id}")
 

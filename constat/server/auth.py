@@ -55,8 +55,12 @@ async def get_current_user_id(
     """
     server_config = request.app.state.server_config
 
+    # Debug logging
+    logger.info(f"[AUTH] auth_disabled={server_config.auth_disabled}, has_credentials={credentials is not None}")
+
     # If auth is disabled, return default user
     if server_config.auth_disabled:
+        logger.info("[AUTH] Auth disabled, returning 'default'")
         return "default"
 
     # Auth is enabled - validate token
@@ -96,6 +100,7 @@ async def get_current_user_id(
                 detail="Invalid token: missing user ID",
             )
 
+        logger.info(f"[AUTH] Authenticated user: {user_id}")
         return user_id
 
     except ValueError as e:

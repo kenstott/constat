@@ -8,8 +8,6 @@ import {
   QuestionMarkCircleIcon,
   CircleStackIcon,
   LightBulbIcon,
-  ChartBarIcon,
-  TableCellsIcon,
   DocumentIcon,
   CheckBadgeIcon,
 } from '@heroicons/react/24/outline'
@@ -25,12 +23,6 @@ export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
 
   // Count datasources (databases + APIs + documents)
   const datasourceCount = databases.length + apis.length + documents.length
-
-  // Count visualizations (charts, diagrams, images, markdown)
-  const visualizationTypes = ['chart', 'diagram', 'image', 'html', 'vega', 'markdown', 'plotly', 'svg', 'png', 'jpeg']
-  const visualizationCount = artifacts.filter(a =>
-    visualizationTypes.some(t => a.artifact_type?.toLowerCase().includes(t))
-  ).length
 
   const isExecuting = status === 'planning' || status === 'executing'
 
@@ -88,21 +80,13 @@ export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
             <CircleStackIcon className="w-4 h-4" />
             <span>{datasourceCount}</span>
           </div>
-          <div className="flex items-center gap-1" title="Tables: Data tables created during analysis">
-            <TableCellsIcon className="w-4 h-4" />
-            <span>{tables.length}</span>
+          <div className="flex items-center gap-1" title="Results: Tables, charts, and other analysis outputs">
+            <DocumentIcon className="w-4 h-4" />
+            <span>{tables.length + artifacts.length}</span>
           </div>
           <div className="flex items-center gap-1" title="Facts: Discovered insights and computed values stored for reference">
             <LightBulbIcon className="w-4 h-4" />
             <span>{facts.length}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Visualizations: Charts, diagrams, and visual outputs">
-            <ChartBarIcon className="w-4 h-4" />
-            <span>{visualizationCount}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Artifacts: All generated outputs including tables, charts, and reports">
-            <DocumentIcon className="w-4 h-4" />
-            <span>{artifacts.length}</span>
           </div>
         </div>
       )}

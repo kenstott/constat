@@ -532,13 +532,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (result.code) {
           useArtifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code)
         }
-        // Fetch artifacts/facts/tables after each step completes
+        // Fetch artifacts/facts/tables/learnings after each step completes
         const { session } = get()
         if (session) {
           const artifactStore = useArtifactStore.getState()
           artifactStore.fetchArtifacts(session.session_id)
           artifactStore.fetchFacts(session.session_id)
           artifactStore.fetchTables(session.session_id)
+          artifactStore.fetchLearnings()
         }
         break
       }
@@ -670,13 +671,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           content: output,
           isFinalInsight: true,
         })
-        // Refresh artifact panel with final data
+        // Refresh artifact panel with final data (including learnings)
         const { session } = get()
         if (session) {
           const artifactStore = useArtifactStore.getState()
           artifactStore.fetchTables(session.session_id)
           artifactStore.fetchArtifacts(session.session_id)
           artifactStore.fetchFacts(session.session_id)
+          artifactStore.fetchLearnings()
         }
         // Process queued messages after a short delay to let UI update
         setTimeout(() => {

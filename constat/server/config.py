@@ -10,20 +10,24 @@
 """Server configuration for the Constat API server."""
 
 import os
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-def _get_bool_env(key: str, default: bool) -> bool:
-    """Get a boolean value from environment variable."""
+def _get_bool_env(key: str) -> bool | None:
+    """Get a boolean value from environment variable, or None if not set."""
     value = os.environ.get(key)
     if value is None:
-        return default
+        return None
     return value.lower() in ("true", "1", "yes")
 
 
 class ServerConfig(BaseModel):
     """Configuration for the Constat API server.
+
+    Can be configured via YAML file or environment variables.
+    Environment variables take precedence over YAML values.
 
     Example YAML:
         server:
@@ -34,6 +38,8 @@ class ServerConfig(BaseModel):
             - http://localhost:3000
           session_timeout_minutes: 60
           max_concurrent_sessions: 10
+          auth_disabled: false
+          firebase_project_id: my-firebase-project
     """
 
     host: str = Field(
@@ -61,10 +67,39 @@ class ServerConfig(BaseModel):
         description="Whether to require user approval for plans via WebSocket",
     )
     auth_disabled: bool = Field(
-        default_factory=lambda: _get_bool_env("AUTH_DISABLED", True),
-        description="Whether to disable authentication (uses 'default' user). Set AUTH_DISABLED=false to enable.",
+        default=True,
+        description="Whether to disable authentication (uses 'default' user)",
     )
-    firebase_project_id: str | None = Field(
-        default_factory=lambda: os.environ.get("FIREBASE_PROJECT_ID"),
-        description="Firebase project ID for JWT validation (required when auth enabled). Set FIREBASE_PROJECT_ID env var.",
+    firebase_project_id: Optional[str] = Field(
+        default=None,
+        description="Firebase project ID for JWT validation (required when auth enabled)",
     )
+
+    @model_validator(mode="after")
+    def apply_env_overrides(self) -> "ServerConfig":
+        """Apply environment variable overrides after model creation."""
+        # AUTH_DISABLED env var overrides YAML/default
+        auth_disabled_env = _get_bool_env("AUTH_DISABLED")
+        if auth_disabled_env is not None:
+            self.auth_disabled = auth_disabled_env
+
+        # FIREBASE_PROJECT_ID env var overrides YAML/default
+        firebase_env = os.environ.get("FIREBASE_PROJECT_ID")
+        if firebase_env is not None:
+            self.firebase_project_id = firebase_env
+
+        return self
+
+    @classmethod
+    def from_yaml_data(cls, data: dict[str, Any] | None) -> "ServerConfig":
+        """Create ServerConfig from parsed YAML data.
+
+        Args:
+            data: The 'server' section from the YAML config, or None
+
+        Returns:
+            ServerConfig with YAML values and env var overrides applied
+        """
+        if data is None:
+            return cls()
+        return cls.model_validate(data)

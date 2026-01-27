@@ -121,9 +121,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchLearnings: async () => {
     set({ loading: true, error: null })
     try {
+      console.log('[LEARNINGS] Fetching learnings...')
       const response = await sessionsApi.listLearnings()
+      console.log('[LEARNINGS] Received:', response.learnings.length, 'learnings,', response.rules?.length || 0, 'rules')
       set({ learnings: response.learnings, rules: response.rules || [], loading: false })
     } catch (error) {
+      console.error('[LEARNINGS] Error fetching learnings:', error)
       set({ error: String(error), loading: false })
     }
   },

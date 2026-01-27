@@ -51,7 +51,7 @@ export function AccordionSection({ id, title, count, icon, action, command, chil
             }`}
           />
         </button>
-        {action && <div className="pr-2">{action}</div>}
+        <div className="w-14 pr-2 flex justify-end">{action}</div>
       </div>
       {isExpanded && (
         <div className="px-4 py-3 bg-white dark:bg-gray-800">{children}</div>

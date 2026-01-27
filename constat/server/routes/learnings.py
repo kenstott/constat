@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from constat.core.config import Config
+from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
 from constat.server.models import (
     ConfigResponse,
@@ -53,10 +54,11 @@ _learnings: list[dict[str, Any]] = []
 
 @router.get("/learnings", response_model=LearningListResponse)
 async def list_learnings(
+    user_id: CurrentUserId,
     category: str | None = None,
     config: Config = Depends(get_config),
 ) -> LearningListResponse:
-    """Get all captured learnings.
+    """Get all captured learnings for the authenticated user.
 
     Args:
         category: Optional category filter
@@ -64,13 +66,16 @@ async def list_learnings(
     Returns:
         List of learnings
     """
+    logger.info(f"[LEARNINGS] Fetching learnings for user_id={user_id}")
     # Try to get from LearningStore if available
     try:
         from constat.storage.learnings import LearningStore
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
+        logger.info(f"[LEARNINGS] LearningStore file_path={store.file_path}, exists={store.file_path.exists()}")
         cat_enum = LearningCategory(category) if category else None
         learnings_data = store.list_raw_learnings(category=cat_enum, limit=100)
         rules_data = store.list_rules(category=cat_enum, limit=50)
+        logger.info(f"[LEARNINGS] Loaded {len(learnings_data)} learnings, {len(rules_data)} rules")
 
         return LearningListResponse(
             learnings=[
@@ -125,9 +130,10 @@ async def list_learnings(
 @router.post("/learnings", response_model=LearningInfo)
 async def add_learning(
     body: LearningCreateRequest,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> LearningInfo:
-    """Add a new learning.
+    """Add a new learning for the authenticated user.
 
     Args:
         body: Learning content and category
@@ -151,7 +157,7 @@ async def add_learning(
     # Try to persist to LearningStore
     try:
         from constat.storage.learnings import LearningStore
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
         store.add_learning(
             content=body.content,
             category=body.category,
@@ -177,9 +183,10 @@ async def add_learning(
 @router.delete("/learnings/{learning_id}")
 async def delete_learning(
     learning_id: str,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> dict:
-    """Delete a learning.
+    """Delete a learning for the authenticated user.
 
     Args:
         learning_id: Learning ID to delete
@@ -195,7 +202,7 @@ async def delete_learning(
     # Try to delete from LearningStore
     try:
         from constat.storage.learnings import LearningStore
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
         if store.delete_learning(learning_id):
             return {"status": "deleted", "id": learning_id}
     except Exception as e:
@@ -213,6 +220,7 @@ async def delete_learning(
 
 @router.post("/learnings/compact")
 async def compact_learnings(
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> dict:
     """Compact similar learnings into rules using LLM.
@@ -227,7 +235,7 @@ async def compact_learnings(
         from constat.learning.compactor import LearningCompactor
         from constat.providers import TaskRouter
 
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
         stats = store.get_stats()
         unpromoted = stats.get("unpromoted", 0)
 
@@ -436,6 +444,7 @@ async def update_project_content(
 @router.post("/rules", response_model=RuleInfo)
 async def add_rule(
     body: RuleCreateRequest,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> RuleInfo:
     """Add a new rule directly.
@@ -449,7 +458,7 @@ async def add_rule(
     try:
         from constat.storage.learnings import LearningStore
 
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
 
         # Map string category to enum
         try:
@@ -482,6 +491,7 @@ async def add_rule(
 async def update_rule(
     rule_id: str,
     body: RuleUpdateRequest,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> RuleInfo:
     """Update an existing rule.
@@ -499,7 +509,7 @@ async def update_rule(
     try:
         from constat.storage.learnings import LearningStore
 
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
 
         # Check if rule exists
         rules = store.list_rules()
@@ -540,6 +550,7 @@ async def update_rule(
 @router.delete("/rules/{rule_id}")
 async def delete_rule(
     rule_id: str,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> dict:
     """Delete a rule.
@@ -556,7 +567,7 @@ async def delete_rule(
     try:
         from constat.storage.learnings import LearningStore
 
-        store = LearningStore()
+        store = LearningStore(user_id=user_id)
         if store.delete_rule(rule_id):
             return {"status": "deleted", "id": rule_id}
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")

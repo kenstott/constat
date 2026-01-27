@@ -2497,9 +2497,9 @@ NOT_POSSIBLE: <reason>
 
         # Build execution globals with database connections and file paths
         exec_globals = {"pd": pd, "Fact": Fact, "FactSource": FactSource}
-        db_names = list(self.config.databases.keys()) if self.config else []
+        config_db_names = set(self.config.databases.keys()) if self.config else set()
 
-        for db_name in db_names:
+        for db_name in config_db_names:
             db_config = self.config.databases.get(db_name)
             if db_config:
                 if db_config.is_file_source():
@@ -2510,7 +2510,23 @@ NOT_POSSIBLE: <reason>
                     conn = self.schema_manager.get_connection(db_name)
                     exec_globals[f"db_{db_name}"] = conn
 
-        # Build data source hints for the prompt
+        # Also include dynamically added databases (from projects) not in config
+        # SQL connections
+        for db_name in self.schema_manager.connections.keys():
+            if db_name not in config_db_names:
+                exec_globals[f"db_{db_name}"] = self.schema_manager.connections[db_name]
+        # NoSQL connections
+        for db_name in self.schema_manager.nosql_connections.keys():
+            if db_name not in config_db_names:
+                exec_globals[f"db_{db_name}"] = self.schema_manager.nosql_connections[db_name]
+        # File connections
+        for db_name in self.schema_manager.file_connections.keys():
+            if db_name not in config_db_names:
+                conn = self.schema_manager.file_connections[db_name]
+                if hasattr(conn, 'path'):
+                    exec_globals[f"file_{db_name}"] = conn.path
+
+        # Build data source hints for the prompt (from config databases)
         source_hints = []
         for db_name, db_config in (self.config.databases.items() if self.config else []):
             if db_config.is_file_source():
@@ -2532,6 +2548,17 @@ NOT_POSSIBLE: <reason>
                     elif uri_lower.startswith("duckdb"):
                         dialect = "duckdb"
                 source_hints.append(f"- {db_name} ({dialect}): use pd.read_sql(query, db_{db_name})")
+
+        # Add hints for dynamically added databases
+        for db_name in self.schema_manager.connections.keys():
+            if db_name not in config_db_names:
+                source_hints.append(f"- {db_name} (sql): use pd.read_sql(query, db_{db_name})")
+        for db_name in self.schema_manager.nosql_connections.keys():
+            if db_name not in config_db_names:
+                source_hints.append(f"- {db_name} (nosql): use db_{db_name} connector methods")
+        for db_name in self.schema_manager.file_connections.keys():
+            if db_name not in config_db_names:
+                source_hints.append(f"- {db_name} (file): use pd.read_csv/json/parquet(file_{db_name})")
 
         source_hints_text = "\n".join(source_hints) if source_hints else "No data sources configured."
         logger.debug(f"DB: source_hints_text: {source_hints_text[:200]}...")

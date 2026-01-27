@@ -414,6 +414,9 @@ class Session:
         self.session_databases: dict[str, dict] = {}  # name -> {type, uri, description}
         self.session_files: dict[str, dict] = {}  # name -> {uri, auth, description}
 
+        # Project APIs (added when projects are activated)
+        self._project_apis: dict[str, Any] = {}  # name -> ApiConfig
+
         # Fact resolver for auditable mode
         self.fact_resolver = FactResolver(
             llm=self.llm,
@@ -924,6 +927,30 @@ class Session:
             for field in meta.fields:
                 entities.add(field.name)
         return entities
+
+    def add_project_api(self, name: str, api_config: Any) -> None:
+        """Register an API from an active project.
+
+        Args:
+            name: API name
+            api_config: API configuration (ApiConfig object)
+        """
+        self._project_apis[name] = api_config
+        logger.info(f"Registered project API: {name}")
+
+    def clear_project_apis(self) -> None:
+        """Clear all registered project APIs."""
+        self._project_apis.clear()
+
+    def get_all_apis(self) -> dict[str, Any]:
+        """Get all APIs (config + project).
+
+        Returns:
+            Dict of API name to config, combining config.apis and project APIs
+        """
+        all_apis = dict(self.config.apis) if self.config.apis else {}
+        all_apis.update(self._project_apis)
+        return all_apis
 
     def _load_preloaded_context(self) -> None:
         """Load preloaded metadata context from cache if available."""
@@ -1986,18 +2013,41 @@ Return ONLY Python code, no markdown."""
             "facts": self._get_facts_dict(),  # Resolved facts as dict (loaded from _facts table)
         }
 
-        # Provide database connections
+        # Provide database connections from config
+        config_db_names = set()
+        first_db = None
         for i, (db_name, db_config) in enumerate(self.config.databases.items()):
+            config_db_names.add(db_name)
             conn = self.schema_manager.get_connection(db_name)
             globals_dict[f"db_{db_name}"] = conn
             if i == 0:
                 globals_dict["db"] = conn
+                first_db = conn
 
-        # Provide API clients for GraphQL/REST APIs
-        if self.config.apis:
+        # Also include dynamically added databases (from projects) not in config
+        for db_name in self.schema_manager.connections.keys():
+            if db_name not in config_db_names:
+                conn = self.schema_manager.connections[db_name]
+                globals_dict[f"db_{db_name}"] = conn
+                if first_db is None:
+                    globals_dict["db"] = conn
+                    first_db = conn
+        for db_name in self.schema_manager.nosql_connections.keys():
+            if db_name not in config_db_names:
+                globals_dict[f"db_{db_name}"] = self.schema_manager.nosql_connections[db_name]
+        for db_name in self.schema_manager.file_connections.keys():
+            if db_name not in config_db_names:
+                conn = self.schema_manager.file_connections[db_name]
+                if hasattr(conn, 'path'):
+                    globals_dict[f"file_{db_name}"] = conn.path
+
+        # Provide API clients for GraphQL/REST APIs (config + project APIs)
+        all_apis = self.get_all_apis()
+        if all_apis:
             from constat.catalog.api_executor import APIExecutor
-            api_executor = APIExecutor(self.config)
-            for api_name, api_config in self.config.apis.items():
+            # Create executor with merged config (config APIs + project APIs)
+            api_executor = APIExecutor(self.config, project_apis=self._project_apis)
+            for api_name, api_config in all_apis.items():
                 if api_config.type == "graphql":
                     # Create a GraphQL query function
                     globals_dict[f"api_{api_name}"] = lambda query, variables=None, _name=api_name, _exec=api_executor: \

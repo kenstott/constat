@@ -2,8 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import {
-  ChartBarIcon,
-  TableCellsIcon,
   CodeBracketIcon,
   LightBulbIcon,
   TagIcon,
@@ -63,6 +61,18 @@ export function ArtifactPanel() {
   const [docSourceType, setDocSourceType] = useState<'uri' | 'files'>('uri')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
+  // Results filter - persisted in localStorage
+  const [showPublishedOnly, setShowPublishedOnly] = useState(() => {
+    const stored = localStorage.getItem('constat-results-filter')
+    return stored !== 'all' // Default to published only
+  })
+
+  // Persist filter preference
+  const toggleResultsFilter = () => {
+    const newValue = !showPublishedOnly
+    setShowPublishedOnly(newValue)
+    localStorage.setItem('constat-results-filter', newValue ? 'published' : 'all')
+  }
 
   // Fetch data when session changes
   useEffect(() => {
@@ -176,56 +186,64 @@ export function ArtifactPanel() {
     await useArtifactStore.getState().deleteLearning(learningId)
   }
 
-  // Visualizations: charts, images, HTML reports, markdown, etc.
-  const visualArtifacts = artifacts.filter((a) =>
-    ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
-  )
-  // Key artifacts: marked as important results to keep
-  const keyArtifacts = artifacts.filter((a) => a.is_key_result)
+  // Unified Results: combine tables and artifacts into a flat list
+  type ResultItem =
+    | { type: 'table'; data: typeof tables[0]; created_at: string; is_published: boolean }
+    | { type: 'artifact'; data: typeof artifacts[0]; created_at: string; is_published: boolean }
 
-  // Helper to check if name/title contains priority keywords
-  const hasPriorityKeyword = (name?: string, title?: string): boolean => {
-    const text = `${name || ''} ${title || ''}`.toLowerCase()
-    return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
-  }
+  // Types to exclude when showing all (non-result artifacts)
+  const excludedArtifactTypes = new Set(['code', 'error', 'output'])
 
-  // Helper to find best item from a list (prefers items with priority keywords)
-  const findBestItem = <T extends { name: string; title?: string }>(items: T[]): T | null => {
-    if (items.length === 0) return null
-    if (items.length === 1) return items[0]
-    // Multiple items: prefer one with priority keyword
-    const withKeyword = items.find(item => hasPriorityKeyword(item.name, item.title))
-    return withKeyword || items[0]
-  }
+  // Build unified results list (filter out code, error, output artifacts)
+  const allResults: ResultItem[] = [
+    ...tables.map((t) => ({
+      type: 'table' as const,
+      data: t,
+      created_at: '', // Tables don't have created_at
+      is_published: t.is_starred || false,
+    })),
+    ...artifacts
+      .filter((a) => !excludedArtifactTypes.has(a.artifact_type))
+      .map((a) => ({
+        type: 'artifact' as const,
+        data: a,
+        created_at: a.created_at || '',
+        is_published: a.is_starred || a.is_key_result || false,
+      })),
+  ]
 
-  // Determine the "best" artifact to auto-expand
-  // Priority: 1) visualizations in key artifacts, 2) tables in key artifacts
-  // Only auto-expand if the parent section is already expanded
-  const keyVisualizations = keyArtifacts.filter((a) =>
-    ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
-  )
-  const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
+  // Sort by step_number descending (most recent steps first), then by name
+  allResults.sort((a, b) => {
+    const stepDiff = (b.data.step_number || 0) - (a.data.step_number || 0)
+    if (stepDiff !== 0) return stepDiff
+    return a.data.name.localeCompare(b.data.name)
+  })
 
-  // Check which sections are expanded
-  const isArtifactsSectionExpanded = expandedArtifactSections.includes('artifacts')
-  const isTablesSectionExpanded = expandedArtifactSections.includes('tables')
+  // Filter based on toggle
+  const displayedResults = showPublishedOnly
+    ? allResults.filter((r) => r.is_published)
+    : allResults
 
-  let bestArtifactId: number | null = null
-  let bestTableName: string | null = null
+  const publishedCount = allResults.filter((r) => r.is_published).length
+  const totalCount = allResults.length
 
-  // Only auto-expand items if their parent section is expanded
-  if (isArtifactsSectionExpanded && keyVisualizations.length > 0) {
-    // Rule 1 & 2: Use visualization (prefer one with priority keyword if multiple)
-    const best = findBestItem(keyVisualizations)
-    bestArtifactId = best?.id ?? null
-  } else if (isArtifactsSectionExpanded && keyTables.length > 0) {
-    // Rule 3 & 4: Use table from key artifacts (prefer one with priority keyword if multiple)
-    const best = findBestItem(keyTables)
-    bestArtifactId = best?.id ?? null
-  } else if (isTablesSectionExpanded && tables.length > 0) {
-    // Fallback: No key artifacts, expand first table in Tables section (only if section expanded)
-    const best = findBestItem(tables)
-    bestTableName = best?.name ?? null
+  // Auto-expand: find best item to expand
+  const isResultsSectionExpanded = expandedArtifactSections.includes('results')
+  let bestResultId: string | null = null
+
+  if (isResultsSectionExpanded && displayedResults.length > 0) {
+    // Prefer published items with priority keywords
+    const hasPriorityKeyword = (name?: string, title?: string): boolean => {
+      const text = `${name || ''} ${title || ''}`.toLowerCase()
+      return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
+    }
+
+    const withKeyword = displayedResults.find((r) => {
+      const title = r.type === 'artifact' ? r.data.title : undefined
+      return hasPriorityKeyword(r.data.name, title)
+    })
+    const best = withKeyword || displayedResults[0]
+    bestResultId = best.type === 'table' ? `table-${best.data.name}` : `artifact-${best.data.id}`
   }
 
   if (!session) {
@@ -403,78 +421,60 @@ export function ArtifactPanel() {
       )}
 
       {/* ═══════════════ RESULTS ═══════════════ */}
-      {(keyArtifacts.length > 0 || visualArtifacts.length > 0 || tables.length > 0) && (
+      {totalCount > 0 && (
         <>
-          <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+          <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
             <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Results
             </span>
+            {/* Filter toggle */}
+            <button
+              onClick={toggleResultsFilter}
+              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                showPublishedOnly
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                  : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+              }`}
+              title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
+            >
+              {showPublishedOnly ? `${publishedCount} published` : `${totalCount} all`}
+            </button>
           </div>
 
-          {/* Key Artifacts */}
-          {keyArtifacts.length > 0 && (
-            <AccordionSection
-              id="artifacts"
-              title="Artifacts"
-              count={keyArtifacts.length}
-              icon={<StarIcon className="w-4 h-4" />}
-              command="/artifacts"
-              action={<div className="w-6 h-6" />}
-            >
+          <AccordionSection
+            id="results"
+            title="Results"
+            count={displayedResults.length}
+            icon={<StarIcon className="w-4 h-4" />}
+            command="/results"
+            action={<div className="w-6 h-6" />}
+          >
+            {displayedResults.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                {showPublishedOnly && totalCount > 0
+                  ? 'No published results yet. Click toggle to show all.'
+                  : 'No results yet'}
+              </p>
+            ) : (
               <div className="space-y-2">
-                {keyArtifacts.map((artifact) => (
-                  <ArtifactItemAccordion
-                    key={artifact.id}
-                    artifact={artifact}
-                    initiallyOpen={artifact.id === bestArtifactId}
-                  />
-                ))}
+                {displayedResults.map((result) =>
+                  result.type === 'table' ? (
+                    <TableAccordion
+                      key={`table-${result.data.name}`}
+                      table={result.data}
+                      initiallyOpen={bestResultId === `table-${result.data.name}`}
+                    />
+                  ) : (
+                    <ArtifactItemAccordion
+                      key={`artifact-${result.data.id}`}
+                      artifact={result.data}
+                      initiallyOpen={bestResultId === `artifact-${result.data.id}`}
+                    />
+                  )
+                )}
               </div>
-            </AccordionSection>
-          )}
-
-          {/* Visualizations */}
-          {visualArtifacts.length > 0 && (
-            <AccordionSection
-              id="visualizations"
-              title="Visualizations"
-              count={visualArtifacts.length}
-              icon={<ChartBarIcon className="w-4 h-4" />}
-              action={<div className="w-6 h-6" />}
-            >
-              <div className="space-y-2">
-                {visualArtifacts.map((artifact) => (
-                  <ArtifactItemAccordion
-                    key={artifact.id}
-                    artifact={artifact}
-                    initiallyOpen={artifact.id === bestArtifactId}
-                  />
-                ))}
-              </div>
-            </AccordionSection>
-          )}
-
-          {/* Tables */}
-          {tables.length > 0 && (
-            <AccordionSection
-              id="tables"
-              title="Tables"
-              count={tables.length}
-              icon={<TableCellsIcon className="w-4 h-4" />}
-              command="/tables"
-              action={<div className="w-6 h-6" />}
-            >
-              <div className="space-y-2">
-                {tables.map((table) => (
-                  <TableAccordion
-                    key={table.name}
-                    table={table}
-                    initiallyOpen={table.name === bestTableName}
-                  />
-                ))}
-              </div>
-            </AccordionSection>
-          )}
+            )}
+          </AccordionSection>
         </>
       )}
 

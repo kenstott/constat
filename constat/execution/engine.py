@@ -311,9 +311,11 @@ class QueryEngine:
         """Get globals dict for code execution."""
         globals_dict = {}
 
-        # Provide all database connections and file paths
+        # Provide all database connections and file paths from config
         first_sql_db = None
+        config_db_names = set()
         for db_name, db_config in self.config.databases.items():
+            config_db_names.add(db_name)
             if db_config.is_file_source():
                 # For file sources, provide the path as file_<name>
                 globals_dict[f"file_{db_name}"] = db_config.path
@@ -323,6 +325,26 @@ class QueryEngine:
                 globals_dict[f"db_{db_name}"] = conn
                 if first_sql_db is None:
                     first_sql_db = conn
+
+        # Also include dynamically added databases (from projects) not in config
+        # SQL connections
+        for db_name in self.schema_manager.connections.keys():
+            if db_name not in config_db_names:
+                conn = self.schema_manager.connections[db_name]
+                globals_dict[f"db_{db_name}"] = conn
+                if first_sql_db is None:
+                    first_sql_db = conn
+        # NoSQL connections
+        for db_name in self.schema_manager.nosql_connections.keys():
+            if db_name not in config_db_names:
+                globals_dict[f"db_{db_name}"] = self.schema_manager.nosql_connections[db_name]
+        # File connections
+        for db_name in self.schema_manager.file_connections.keys():
+            if db_name not in config_db_names:
+                conn = self.schema_manager.file_connections[db_name]
+                # For file connectors, provide the path
+                if hasattr(conn, 'path'):
+                    globals_dict[f"file_{db_name}"] = conn.path
 
         # Backwards compat: 'db' alias for first SQL database
         if first_sql_db is not None:

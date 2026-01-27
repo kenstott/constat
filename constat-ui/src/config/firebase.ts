@@ -10,6 +10,9 @@ import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
   sendPasswordResetEmail,
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
   signOut,
   onAuthStateChanged,
   User,
@@ -77,6 +80,53 @@ export async function resetPassword(email: string): Promise<void> {
     return
   }
   await sendPasswordResetEmail(auth, email)
+}
+
+// Passwordless email link sign-in
+export async function sendEmailLink(email: string): Promise<void> {
+  if (isAuthDisabled || !auth) {
+    console.warn('Auth is disabled or not configured')
+    return
+  }
+
+  const actionCodeSettings = {
+    // URL to redirect to after clicking the link
+    url: window.location.origin + '/auth/email-link',
+    handleCodeInApp: true,
+  }
+
+  await sendSignInLinkToEmail(auth, email, actionCodeSettings)
+  // Save the email locally so we can complete sign-in when user returns
+  localStorage.setItem('emailForSignIn', email)
+}
+
+export function checkEmailLink(): boolean {
+  if (isAuthDisabled || !auth) {
+    return false
+  }
+  return isSignInWithEmailLink(auth, window.location.href)
+}
+
+export async function completeEmailLinkSignIn(email?: string): Promise<User | null> {
+  if (isAuthDisabled || !auth) {
+    console.warn('Auth is disabled or not configured')
+    return null
+  }
+
+  if (!isSignInWithEmailLink(auth, window.location.href)) {
+    return null
+  }
+
+  // Get email from localStorage or parameter
+  const signInEmail = email || localStorage.getItem('emailForSignIn')
+  if (!signInEmail) {
+    throw new Error('Please provide your email to complete sign-in')
+  }
+
+  const result = await signInWithEmailLink(auth, signInEmail, window.location.href)
+  // Clear the saved email
+  localStorage.removeItem('emailForSignIn')
+  return result.user
 }
 
 export async function logOut(): Promise<void> {

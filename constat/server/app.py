@@ -13,6 +13,16 @@ import logging
 import warnings
 from contextlib import asynccontextmanager
 
+# Configure logging for server module
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+_constat_logger = logging.getLogger('constat')
+if not _constat_logger.handlers:
+    _constat_logger.addHandler(_console_handler)
+    _constat_logger.setLevel(logging.INFO)
+
 # Suppress multiprocessing resource_tracker warnings at shutdown
 warnings.filterwarnings("ignore", message="resource_tracker:")
 from typing import Any
@@ -115,6 +125,34 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         return {
             "status": "ok",
             "sessions": session_manager.get_stats(),
+            "auth": {
+                "auth_disabled": server_config.auth_disabled,
+                "firebase_project_id": server_config.firebase_project_id,
+            },
+        }
+
+    # Debug auth endpoint
+    from fastapi import Request as FastAPIRequest
+    @app.get("/debug/auth")
+    async def debug_auth(request: FastAPIRequest) -> dict[str, Any]:
+        """Debug endpoint to check auth configuration."""
+        from constat.server.auth import FIREBASE_AVAILABLE
+
+        # Get auth header if present
+        auth_header = request.headers.get("Authorization", "")
+        has_token = auth_header.startswith("Bearer ")
+
+        return {
+            "server_config": {
+                "auth_disabled": server_config.auth_disabled,
+                "firebase_project_id": server_config.firebase_project_id,
+            },
+            "request": {
+                "has_auth_header": bool(auth_header),
+                "has_bearer_token": has_token,
+                "token_preview": auth_header[:50] + "..." if len(auth_header) > 50 else auth_header,
+            },
+            "firebase_available": FIREBASE_AVAILABLE,
         }
 
     # Import and include routers
@@ -179,12 +217,49 @@ def get_app() -> FastAPI:
     if _app is None:
         # Load default config for development
         import os
+        import re
+        import yaml
+        from pathlib import Path
+        from dotenv import load_dotenv
+
         config_path = os.environ.get("CONSTAT_CONFIG", "config.yaml")
         try:
+            # Load .env file (same logic as Config.from_yaml)
+            config_dir = Path(config_path).parent.resolve()
+            search_dir = config_dir
+            while search_dir != search_dir.parent:
+                env_file = search_dir / ".env"
+                if env_file.exists():
+                    load_dotenv(env_file)
+                    break
+                search_dir = search_dir.parent
+            else:
+                load_dotenv()  # Fallback to current directory
+
             config = Config.from_yaml(config_path)
+
+            # Load server config with env var substitution
+            with open(config_path) as f:
+                raw_content = f.read()
+
+            # Substitute env vars: ${VAR_NAME}
+            def substitute_env(content: str) -> str:
+                pattern = re.compile(r'\$\{([^}]+)\}')
+                def replacer(match):
+                    var_name = match.group(1)
+                    value = os.environ.get(var_name)
+                    if value is None:
+                        return match.group(0)  # Keep original if not found
+                    return value
+                return pattern.sub(replacer, content)
+
+            substituted = substitute_env(raw_content)
+            raw_data = yaml.safe_load(substituted)
+            server_data = raw_data.get("server") if raw_data else None
+            server_config = ServerConfig.from_yaml_data(server_data)
         except FileNotFoundError:
             config = Config()
-        server_config = ServerConfig()
+            server_config = ServerConfig()
         _app = create_app(config, server_config)
     return _app
 
