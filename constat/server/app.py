@@ -244,13 +244,14 @@ def get_app() -> FastAPI:
 
             config = Config.from_yaml(config_path)
 
-            # Load server config using IncludeLoader for !include support
-            from constat.core.config import _make_include_loader, _substitute_env_vars
+            # Load server config with $ref resolution
+            from constat.core.config import _resolve_refs, _substitute_env_vars
             with open(config_path) as f:
                 raw_content = f.read()
 
             substituted = _substitute_env_vars(raw_content)
-            raw_data = yaml.load(substituted, Loader=lambda s: _make_include_loader(s, config_dir))
+            raw_data = yaml.safe_load(substituted)
+            raw_data = _resolve_refs(raw_data, config_dir)
             server_data = raw_data.get("server") if raw_data else None
             server_config = ServerConfig.from_yaml_data(server_data)
         except FileNotFoundError:

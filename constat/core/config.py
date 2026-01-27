@@ -20,34 +20,46 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
-class IncludeLoader(yaml.SafeLoader):
-    """Custom YAML loader that supports !include tags for file inclusion.
+def _resolve_refs(data: Any, base_dir: Path) -> Any:
+    """Resolve $ref references in parsed YAML data (JSON Schema style).
 
     Usage in YAML:
         # Include a single file
-        permissions: !include permissions.yaml
+        permissions:
+          $ref: ./permissions.yaml
 
-        # Include with glob pattern (merges into a list)
-        projects: !include projects/*.yaml
+        # Include with glob pattern (returns a list)
+        projects:
+          $ref: ./projects/*.yaml
 
-        # Include relative to config file location
-        databases:
-          inventory: !include databases/inventory.yaml
+    Args:
+        data: Parsed YAML data structure
+        base_dir: Base directory for resolving relative paths
+
+    Returns:
+        Data with all $ref references resolved
     """
+    if isinstance(data, dict):
+        # Check if this is a $ref object
+        if "$ref" in data and len(data) == 1:
+            ref_path = data["$ref"]
+            return _load_ref(ref_path, base_dir)
+        else:
+            # Recursively resolve refs in dict values
+            return {k: _resolve_refs(v, base_dir) for k, v in data.items()}
+    elif isinstance(data, list):
+        # Recursively resolve refs in list items
+        return [_resolve_refs(item, base_dir) for item in data]
+    else:
+        return data
 
-    def __init__(self, stream, base_dir: Path = None):
-        super().__init__(stream)
-        self.base_dir = base_dir or Path(".")
 
-
-def _include_constructor(loader: IncludeLoader, node: yaml.Node) -> Any:
-    """Handle !include tag - load content from referenced file(s)."""
-    include_path = loader.construct_scalar(node)
-    full_pattern = loader.base_dir / include_path
+def _load_ref(ref_path: str, base_dir: Path) -> Any:
+    """Load content from a $ref path (file or glob pattern)."""
+    full_pattern = base_dir / ref_path
 
     # Check if it's a glob pattern
-    if "*" in include_path or "?" in include_path:
-        # Glob pattern - collect all matching files
+    if "*" in ref_path or "?" in ref_path:
         matching_files = sorted(glob.glob(str(full_pattern)))
         if not matching_files:
             return []
@@ -56,35 +68,24 @@ def _include_constructor(loader: IncludeLoader, node: yaml.Node) -> Any:
         for file_path in matching_files:
             with open(file_path) as f:
                 content = f.read()
-            # Substitute env vars in included file
             content = _substitute_env_vars(content)
-            # Create a new loader with the included file's directory as base
-            sub_loader = IncludeLoader(content, Path(file_path).parent)
-            data = yaml.load(content, Loader=lambda s: _make_include_loader(s, Path(file_path).parent))
+            data = yaml.safe_load(content)
+            # Recursively resolve refs in included file
+            data = _resolve_refs(data, Path(file_path).parent)
             results.append(data)
         return results
     else:
-        # Single file include
+        # Single file
         file_path = full_pattern
         if not file_path.exists():
-            raise FileNotFoundError(f"Include file not found: {file_path}")
+            raise FileNotFoundError(f"Referenced file not found: {file_path}")
 
         with open(file_path) as f:
             content = f.read()
-        # Substitute env vars in included file
         content = _substitute_env_vars(content)
-        # Parse with include support (recursive)
-        return yaml.load(content, Loader=lambda s: _make_include_loader(s, file_path.parent))
-
-
-def _make_include_loader(stream, base_dir: Path):
-    """Factory function to create IncludeLoader with specific base_dir."""
-    loader = IncludeLoader(stream, base_dir)
-    return loader
-
-
-# Register the !include constructor
-IncludeLoader.add_constructor("!include", _include_constructor)
+        data = yaml.safe_load(content)
+        # Recursively resolve refs in included file
+        return _resolve_refs(data, file_path.parent)
 
 
 class DatabaseCredentials(BaseModel):
@@ -950,8 +951,9 @@ class Config(BaseModel):
 
         # Substitute environment variables: ${VAR_NAME}
         substituted = _substitute_env_vars(raw_content)
-        # Use IncludeLoader to support !include tags
-        data = yaml.load(substituted, Loader=lambda s: _make_include_loader(s, config_dir))
+        # Parse YAML and resolve $ref references
+        data = yaml.safe_load(substituted)
+        data = _resolve_refs(data, config_dir)
 
         # Load user config from file if provided
         user_data = None
@@ -961,7 +963,8 @@ class Config(BaseModel):
                 with open(user_path) as f:
                     user_raw = f.read()
                 user_substituted = _substitute_env_vars(user_raw)
-                user_data = yaml.load(user_substituted, Loader=lambda s: _make_include_loader(s, user_path.parent))
+                user_data = yaml.safe_load(user_substituted)
+                user_data = _resolve_refs(user_data, user_path.parent)
         elif user_config:
             user_data = user_config
 

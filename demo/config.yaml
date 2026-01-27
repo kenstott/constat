@@ -8,7 +8,8 @@ server:
   # runtime_dir: .  # Base directory for .constat/ data (default: current directory)
 
   # User permissions - include from separate file for easier management
-  permissions: !include permissions.yaml
+  permissions:
+    $ref: ./permissions.yaml
 
 # Projects directory for reusable data source collections
 projects_path: demo/projects
