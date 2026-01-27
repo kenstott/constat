@@ -132,13 +132,32 @@ class Planner:
         learning_store=None,
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
         api_schema_manager: Optional["APISchemaManager"] = None,
+        allowed_databases: Optional[set[str]] = None,
+        allowed_apis: Optional[set[str]] = None,
+        allowed_documents: Optional[set[str]] = None,
     ):
+        """Initialize the planner.
+
+        Args:
+            config: Configuration
+            schema_manager: Schema manager for database metadata
+            router_or_provider: LLM router or provider
+            learning_store: Learning store for injecting learned rules
+            doc_tools: Document discovery tools for enriching schema search
+            api_schema_manager: API schema manager for semantic search
+            allowed_databases: Set of allowed database names (None = no filtering)
+            allowed_apis: Set of allowed API names (None = no filtering)
+            allowed_documents: Set of allowed document names (None = no filtering)
+        """
         self.config = config
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools  # For enriching schema search with documents
         self.api_schema_manager = api_schema_manager  # For API semantic search
         self._user_facts: dict = {}  # name -> value mapping
         self._learning_store = learning_store  # For injecting learned rules
+        self.allowed_databases = allowed_databases
+        self.allowed_apis = allowed_apis
+        self.allowed_documents = allowed_documents
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -155,6 +174,24 @@ class Planner:
         # Concept detector for conditional prompt injection
         self._concept_detector = ConceptDetector()
         self._concept_detector.initialize()
+
+    def _is_database_allowed(self, db_name: str) -> bool:
+        """Check if a database is allowed based on permissions."""
+        if self.allowed_databases is None:
+            return True
+        return db_name in self.allowed_databases
+
+    def _is_api_allowed(self, api_name: str) -> bool:
+        """Check if an API is allowed based on permissions."""
+        if self.allowed_apis is None:
+            return True
+        return api_name in self.allowed_apis
+
+    def _is_document_allowed(self, doc_name: str) -> bool:
+        """Check if a document is allowed based on permissions."""
+        if self.allowed_documents is None:
+            return True
+        return doc_name in self.allowed_documents
 
     def set_user_facts(self, facts: dict) -> None:
         """Set user facts for inclusion in planning prompts.
@@ -184,27 +221,37 @@ class Planner:
             target="planner",
         )
 
-        # Build API overview if configured
+        # Build API overview if configured (filtered by permissions)
         api_overview = ""
         if self.config.apis:
             api_lines = ["\n## Available APIs"]
             for name, api_config in self.config.apis.items():
+                # Skip APIs not allowed by permissions
+                if not self._is_api_allowed(name):
+                    continue
                 api_type = api_config.type.upper()
                 desc = api_config.description or f"{api_type} endpoint"
                 url = api_config.url or ""
                 api_lines.append(f"- **{name}** ({api_type}): {desc}")
                 if url:
                     api_lines.append(f"  URL: {url}")
-            api_overview = "\n".join(api_lines)
+            # Only include header if we have allowed APIs
+            if len(api_lines) > 1:
+                api_overview = "\n".join(api_lines)
 
-        # Build document overview if configured
+        # Build document overview if configured (filtered by permissions)
         doc_overview = ""
         if self.config.documents:
             doc_lines = ["\n## Reference Documents"]
             for name, doc_config in self.config.documents.items():
+                # Skip documents not allowed by permissions
+                if not self._is_document_allowed(name):
+                    continue
                 desc = doc_config.description or doc_config.type
                 doc_lines.append(f"- **{name}**: {desc}")
-            doc_overview = "\n".join(doc_lines)
+            # Only include header if we have allowed documents
+            if len(doc_lines) > 1:
+                doc_overview = "\n".join(doc_lines)
 
         # Build user facts section - essential for using correct values like email addresses
         user_facts_text = ""
@@ -240,7 +287,7 @@ class Planner:
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             injected_sections=injected_sections,
-            schema_overview=self.schema_manager.get_brief_summary(),
+            schema_overview=self.schema_manager.get_brief_summary(self.allowed_databases),
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
@@ -332,67 +379,72 @@ class Planner:
             }
         ]
 
-        # Add API schema tools if APIs are configured
+        # Add API schema tools if APIs are configured (filtered by permissions)
         if self.config.apis:
-            api_names = list(self.config.apis.keys())
-            schema_tools.extend([
-                {
-                    "name": "get_api_schema_overview",
-                    "description": f"Get overview of an API's available queries/endpoints including names and descriptions. Available APIs: {api_names}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "api_name": {
-                                "type": "string",
-                                "description": "Name of the API to introspect",
-                                "enum": api_names
-                            }
-                        },
-                        "required": ["api_name"]
-                    }
-                },
-                {
-                    "name": "get_api_query_schema",
-                    "description": "Get detailed schema for a specific API query/endpoint, including arguments, filters, and return types.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "api_name": {
-                                "type": "string",
-                                "description": "Name of the API",
-                                "enum": api_names
+            # Filter API names by permissions
+            api_names = [
+                name for name in self.config.apis.keys()
+                if self._is_api_allowed(name)
+            ]
+            if api_names:
+                schema_tools.extend([
+                    {
+                        "name": "get_api_schema_overview",
+                        "description": f"Get overview of an API's available queries/endpoints including names and descriptions. Available APIs: {api_names}",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "api_name": {
+                                    "type": "string",
+                                    "description": "Name of the API to introspect",
+                                    "enum": api_names
+                                }
                             },
-                            "query_name": {
-                                "type": "string",
-                                "description": "Name of the query or endpoint (e.g., 'countries', 'GET /users')"
-                            }
-                        },
-                        "required": ["api_name", "query_name"]
-                    }
-                },
-            ])
+                            "required": ["api_name"]
+                        }
+                    },
+                    {
+                        "name": "get_api_query_schema",
+                        "description": "Get detailed schema for a specific API query/endpoint, including arguments, filters, and return types.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "api_name": {
+                                    "type": "string",
+                                    "description": "Name of the API",
+                                    "enum": api_names
+                                },
+                                "query_name": {
+                                    "type": "string",
+                                    "description": "Name of the query or endpoint (e.g., 'countries', 'GET /users')"
+                                }
+                            },
+                            "required": ["api_name", "query_name"]
+                        }
+                    },
+                ])
 
-            # Add semantic search for APIs if api_schema_manager is available
-            if self.api_schema_manager:
-                schema_tools.append({
-                    "name": "find_relevant_apis",
-                    "description": "Search for API endpoints relevant to a query using semantic similarity. Returns APIs that might have the data you need.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Natural language description of what API data is needed"
+                # Add semantic search for APIs if api_schema_manager is available
+                if self.api_schema_manager:
+                    schema_tools.append({
+                        "name": "find_relevant_apis",
+                        "description": "Search for API endpoints relevant to a query using semantic similarity. Returns APIs that might have the data you need.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Natural language description of what API data is needed"
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Maximum number of results (default 5)",
+                                    "default": 5
+                                }
                             },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results (default 5)",
-                                "default": 5
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                })
+                            "required": ["query"]
+                        }
+                    })
 
         system_prompt = self._build_system_prompt(problem)
 
