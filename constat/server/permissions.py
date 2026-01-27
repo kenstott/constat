@@ -5,41 +5,47 @@
 
 """User permissions management.
 
-Permissions are stored in .constat/permissions.yaml and define:
-- admin: boolean - allows managing projects from UI
-- projects: list of project filenames the user can access
+Permissions are defined in the config.yaml under the 'permissions' section:
 
-Example permissions.yaml:
 ```yaml
-users:
-  kennethstott@gmail.com:
-    admin: true
-    projects: []  # Empty means all projects (for admins)
+permissions:
+  users:
+    kennethstott@gmail.com:
+      admin: true
+      projects: []
+      databases: []
+      documents: []
+      apis: []
 
-  analyst@company.com:
+    analyst@company.com:
+      admin: false
+      projects:
+        - sales-analytics.yaml
+      databases:
+        - sales
+        - inventory
+      documents: []
+      apis: []
+
+  default:
     admin: false
-    projects:
-      - sales-analytics.yaml
-      - hr-reporting.yaml
-
-# Default permissions for users not explicitly listed
-default:
-  admin: false
-  projects: []  # Empty with admin=false means no project access
+    projects: []
+    databases: []
+    documents: []
+    apis: []
 ```
 """
 
 import logging
-from pathlib import Path
 from typing import Any, Optional
 
-import yaml
+from constat.server.config import ServerConfig, UserPermissions as ConfigUserPermissions
 
 logger = logging.getLogger(__name__)
 
 
 class UserPermissions:
-    """User permissions data."""
+    """User permissions data for API responses."""
 
     def __init__(
         self,
@@ -47,19 +53,41 @@ class UserPermissions:
         email: Optional[str] = None,
         admin: bool = False,
         projects: Optional[list[str]] = None,
+        databases: Optional[list[str]] = None,
+        documents: Optional[list[str]] = None,
+        apis: Optional[list[str]] = None,
     ):
         self.user_id = user_id
         self.email = email
         self.admin = admin
         self.projects = projects or []
+        self.databases = databases or []
+        self.documents = documents or []
+        self.apis = apis or []
 
     def can_access_project(self, project_filename: str) -> bool:
         """Check if user can access a specific project."""
-        # Admins can access all projects
         if self.admin:
             return True
-        # Check if project is in user's allowed list
         return project_filename in self.projects
+
+    def can_access_database(self, db_name: str) -> bool:
+        """Check if user can access a specific database."""
+        if self.admin:
+            return True
+        return db_name in self.databases
+
+    def can_access_document(self, doc_name: str) -> bool:
+        """Check if user can access a specific document."""
+        if self.admin:
+            return True
+        return doc_name in self.documents
+
+    def can_access_api(self, api_name: str) -> bool:
+        """Check if user can access a specific API."""
+        if self.admin:
+            return True
+        return api_name in self.apis
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API response."""
@@ -68,170 +96,66 @@ class UserPermissions:
             "email": self.email,
             "admin": self.admin,
             "projects": self.projects,
+            "databases": self.databases,
+            "documents": self.documents,
+            "apis": self.apis,
         }
 
-
-class PermissionsStore:
-    """Manages user permissions from YAML file."""
-
-    def __init__(self, base_dir: Optional[Path] = None):
-        """Initialize permissions store.
-
-        Args:
-            base_dir: Base directory for .constat. Defaults to current directory.
-        """
-        self.base_dir = Path(base_dir) if base_dir else Path(".constat")
-        self.file_path = self.base_dir / "permissions.yaml"
-        self._data: Optional[dict] = None
-
-    def _load(self) -> dict:
-        """Load permissions from YAML file."""
-        if self._data is not None:
-            return self._data
-
-        if not self.file_path.exists():
-            # Create default permissions file
-            self._data = self._create_default()
-            return self._data
-
-        try:
-            with open(self.file_path) as f:
-                self._data = yaml.safe_load(f) or {}
-        except Exception as e:
-            logger.error(f"Failed to load permissions: {e}")
-            self._data = {"users": {}, "default": {"admin": False, "projects": []}}
-
-        return self._data
-
-    def _create_default(self) -> dict:
-        """Create default permissions file."""
-        default_data = {
-            "users": {
-                "kennethstott@gmail.com": {
-                    "admin": True,
-                    "projects": [],  # Empty means all projects for admins
-                },
-            },
-            "default": {
-                "admin": False,
-                "projects": [],  # No project access by default
-            },
-        }
-
-        # Ensure directory exists
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write default file
-        try:
-            with open(self.file_path, "w") as f:
-                yaml.dump(default_data, f, default_flow_style=False, sort_keys=False)
-            logger.info(f"Created default permissions file: {self.file_path}")
-        except Exception as e:
-            logger.error(f"Failed to create permissions file: {e}")
-
-        return default_data
-
-    def _save(self) -> None:
-        """Save permissions to YAML file."""
-        if self._data is None:
-            return
-
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            with open(self.file_path, "w") as f:
-                yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
-        except Exception as e:
-            logger.error(f"Failed to save permissions: {e}")
-
-    def reload(self) -> None:
-        """Force reload from file."""
-        self._data = None
-        self._load()
-
-    def get_user_permissions(self, email: str, user_id: str = "") -> UserPermissions:
-        """Get permissions for a user by email.
-
-        Args:
-            email: User's email address
-            user_id: Firebase user ID (for reference)
-
-        Returns:
-            UserPermissions object
-        """
-        data = self._load()
-        users = data.get("users", {})
-        default = data.get("default", {"admin": False, "projects": []})
-
-        # Look up by email
-        user_data = users.get(email, default)
-
-        return UserPermissions(
+    @classmethod
+    def from_config(
+        cls,
+        config_perms: ConfigUserPermissions,
+        user_id: str = "",
+        email: Optional[str] = None,
+    ) -> "UserPermissions":
+        """Create from config UserPermissions model."""
+        return cls(
             user_id=user_id,
             email=email,
-            admin=user_data.get("admin", False),
-            projects=user_data.get("projects", []),
+            admin=config_perms.admin,
+            projects=config_perms.projects,
+            databases=config_perms.databases,
+            documents=config_perms.documents,
+            apis=config_perms.apis,
         )
 
-    def set_user_permissions(
-        self,
-        email: str,
-        admin: Optional[bool] = None,
-        projects: Optional[list[str]] = None,
-    ) -> UserPermissions:
-        """Set permissions for a user.
 
-        Args:
-            email: User's email address
-            admin: Whether user has admin rights
-            projects: List of project filenames user can access
+def get_user_permissions(
+    server_config: ServerConfig,
+    email: str,
+    user_id: str = "",
+) -> UserPermissions:
+    """Get permissions for a user from server config.
 
-        Returns:
-            Updated UserPermissions object
-        """
-        data = self._load()
+    Args:
+        server_config: Server configuration containing permissions
+        email: User's email address
+        user_id: Firebase user ID (for reference)
 
-        if "users" not in data:
-            data["users"] = {}
-
-        if email not in data["users"]:
-            data["users"][email] = {"admin": False, "projects": []}
-
-        if admin is not None:
-            data["users"][email]["admin"] = admin
-        if projects is not None:
-            data["users"][email]["projects"] = projects
-
-        self._save()
-
-        return self.get_user_permissions(email)
-
-    def list_users(self) -> list[dict[str, Any]]:
-        """List all users with explicit permissions.
-
-        Returns:
-            List of user permission dicts
-        """
-        data = self._load()
-        users = data.get("users", {})
-
-        return [
-            {
-                "email": email,
-                "admin": perms.get("admin", False),
-                "projects": perms.get("projects", []),
-            }
-            for email, perms in users.items()
-        ]
+    Returns:
+        UserPermissions object
+    """
+    config_perms = server_config.permissions.get_user_permissions(email)
+    return UserPermissions.from_config(config_perms, user_id=user_id, email=email)
 
 
-# Global instance for convenience
-_permissions_store: Optional[PermissionsStore] = None
+def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
+    """List all users with explicit permissions.
 
+    Args:
+        server_config: Server configuration containing permissions
 
-def get_permissions_store() -> PermissionsStore:
-    """Get or create the global permissions store."""
-    global _permissions_store
-    if _permissions_store is None:
-        _permissions_store = PermissionsStore()
-    return _permissions_store
+    Returns:
+        List of user permission dicts
+    """
+    result = []
+    for email, perms in server_config.permissions.users.items():
+        result.append({
+            "email": email,
+            "admin": perms.admin,
+            "projects": perms.projects,
+            "databases": perms.databases,
+            "documents": perms.documents,
+            "apis": perms.apis,
+        })
+    return result

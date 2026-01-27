@@ -10,6 +10,7 @@
 """Server configuration for the Constat API server."""
 
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -21,6 +22,48 @@ def _get_bool_env(key: str) -> bool | None:
     if value is None:
         return None
     return value.lower() in ("true", "1", "yes")
+
+
+class UserPermissions(BaseModel):
+    """Permissions for a single user."""
+
+    admin: bool = Field(
+        default=False,
+        description="Whether user has admin access (full access to everything)",
+    )
+    projects: list[str] = Field(
+        default_factory=list,
+        description="Project filenames user can access (empty = none, unless admin)",
+    )
+    databases: list[str] = Field(
+        default_factory=list,
+        description="Database names user can query (empty = none, unless admin)",
+    )
+    documents: list[str] = Field(
+        default_factory=list,
+        description="Document names user can search (empty = none, unless admin)",
+    )
+    apis: list[str] = Field(
+        default_factory=list,
+        description="API names user can call (empty = none, unless admin)",
+    )
+
+
+class PermissionsConfig(BaseModel):
+    """User permissions configuration."""
+
+    users: dict[str, UserPermissions] = Field(
+        default_factory=dict,
+        description="Per-user permissions keyed by email",
+    )
+    default: UserPermissions = Field(
+        default_factory=UserPermissions,
+        description="Default permissions for users not explicitly listed",
+    )
+
+    def get_user_permissions(self, email: str) -> UserPermissions:
+        """Get permissions for a user by email."""
+        return self.users.get(email, self.default)
 
 
 class ServerConfig(BaseModel):
@@ -73,6 +116,19 @@ class ServerConfig(BaseModel):
     firebase_project_id: Optional[str] = Field(
         default=None,
         description="Firebase project ID for JWT validation (required when auth enabled)",
+    )
+    runtime_dir: str = Field(
+        default=".",
+        description="Base directory for runtime data. Data is stored in {runtime_dir}/.constat/",
+    )
+
+    @property
+    def data_dir(self) -> Path:
+        """Get the full data directory path ({runtime_dir}/.constat)."""
+        return Path(self.runtime_dir) / ".constat"
+    permissions: PermissionsConfig = Field(
+        default_factory=PermissionsConfig,
+        description="User permissions configuration",
     )
 
     @model_validator(mode="after")

@@ -5,8 +5,37 @@
 server:
   auth_disabled: ${AUTH_DISABLED}
   firebase_project_id: ${FIREBASE_PROJECT_ID}
-  # User permissions are stored in .constat/permissions.yaml
-  # See .constat/permissions.yaml for admin/project access control
+  # runtime_dir: .  # Base directory for .constat/ data (default: current directory)
+
+  # User permissions - controls access to resources
+  permissions:
+    users:
+      kennethstott@gmail.com:
+        admin: true       # Full access to everything
+        projects: []      # (ignored for admins)
+        databases: []     # (ignored for admins)
+        documents: []     # (ignored for admins)
+        apis: []          # (ignored for admins)
+
+      # Example non-admin user:
+      # analyst@company.com:
+      #   admin: false
+      #   projects:
+      #     - sales-analytics.yaml
+      #   databases:
+      #     - inventory
+      #     - web_metrics
+      #   documents: []
+      #   apis:
+      #     - countries
+
+    # Default permissions for users not listed above
+    default:
+      admin: false
+      projects: []
+      databases: []
+      documents: []
+      apis: []
 
 # Projects directory for reusable data source collections
 projects_path: demo/projects
