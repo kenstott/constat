@@ -338,6 +338,13 @@ async def set_active_projects(
             except Exception as e:
                 logger.warning(f"Failed to index project document {name}: {e}")
 
+    # Clear existing project APIs and register new ones
+    managed.session.clear_project_apis()
+    for filename, project in loaded_projects:
+        for api_name, api_config in project.apis.items():
+            managed.session.add_project_api(api_name, api_config)
+            logger.info(f"Registered project API: {api_name} from {filename}")
+
     # Store which databases are from projects
     managed._project_databases = newly_loaded
     managed.active_projects = project_filenames
