@@ -180,7 +180,7 @@ export function MessageBubble({
             ref={contentRef}
             className={`text-sm ${styles.text} ${
               !isExpanded && needsExpansion
-                ? 'overflow-y-auto'
+                ? 'overflow-y-auto pr-[5px]'
                 : ''
             }`}
             style={{
