@@ -998,7 +998,7 @@ server:
 
 ### User Permissions
 
-Control access to resources per-user:
+Control access to resources per-user. Permissions determine what metadata the LLM sees during analysis—resources without permission are hidden from discovery.
 
 ```yaml
 # permissions.yaml
@@ -1013,14 +1013,14 @@ users:
   analyst@company.com:
     admin: false
     projects:
-      - sales-analytics.yaml    # Can activate these projects
+      - sales-analytics        # Can activate these projects (use project key, not filename)
     databases:
-      - inventory               # Can query these databases
+      - inventory              # Can query these databases (from core config)
       - web_metrics
     documents:
-      - business_rules          # Can access these documents
+      - business_rules         # Can access these documents (from core config)
     apis:
-      - countries               # Can call these APIs
+      - countries              # Can call these APIs (from core config)
 
 # Default permissions for unlisted users
 default:
@@ -1031,11 +1031,90 @@ default:
   apis: []
 ```
 
-**Permission Rules:**
-- `admin: true` grants full access to ALL resources (arrays are ignored)
-- Admins can also manage projects from the UI
-- Non-admins only access resources explicitly listed in their arrays
-- Unlisted users get `default` permissions
+#### Permission Rules
+
+**Admin Users (`admin: true`):**
+- Full access to ALL resources across all projects and core config
+- Can manage projects from the UI (create, edit, delete)
+- Permission arrays are ignored—admins see everything
+
+**Non-Admin Users:**
+- Only see resources explicitly listed in their permission arrays
+- Project access grants access to ALL resources within that project
+- Core config resources require explicit permission in the user's arrays
+
+**Unlisted Users:**
+- Get the `default` permissions (typically empty = no access)
+
+#### No Permissions = Full Access
+
+If no `permissions` section is configured in `server` settings, ALL resources are available to everyone. This is intentional for development/single-user scenarios.
+
+```yaml
+# config.yaml without permissions = everything available
+server:
+  auth_disabled: true
+  # No permissions configured → no filtering
+```
+
+#### Project Permissions and Resource Access
+
+When a user has access to a project, they automatically get access to all resources defined within that project:
+
+```yaml
+# Example: analyst has access to sales-analytics project
+# This grants them access to all databases, APIs, and documents in that project
+projects:
+  sales-analytics:
+    $ref: ./projects/sales-analytics.yaml
+```
+
+```yaml
+# projects/sales-analytics.yaml
+name: Sales Analytics
+databases:
+  sales:           # analyst can query this
+    uri: sqlite:///demo/data/sales.db
+apis:
+  salesforce:      # analyst can call this
+    type: rest
+    url: https://api.salesforce.com/...
+documents:
+  sales_glossary:  # analyst can search this
+    type: file
+    path: ./docs/sales-terms.md
+```
+
+The user's effective permissions are the **union** of:
+1. Explicit permissions in their user entry
+2. All resources from their accessible active projects
+
+#### How Permission Filtering Works
+
+Permissions are enforced at the **metadata level**, not runtime:
+
+1. **Discovery Tools**: `list_tables`, `list_apis`, `list_documents` only return allowed resources
+2. **Schema Manager**: Database summaries exclude databases the user cannot access
+3. **System Prompts**: API/document/database descriptions only include allowed resources
+4. **Semantic Search**: Only indexes and searches allowed documents
+
+The LLM never sees metadata for resources the user cannot access. Since the LLM doesn't know about restricted resources, it cannot generate code to query them.
+
+```
+User Query → Permission Check → Filtered Metadata → LLM → Generated Code
+                                     ↓
+                            Only sees allowed
+                            databases, APIs, docs
+```
+
+#### Permission Filtering by Resource Type
+
+| Resource | Filtered In | Effect |
+|----------|-------------|--------|
+| Databases | `list_tables`, `search_tables`, schema summary | LLM doesn't see table schemas |
+| APIs | `list_apis`, `list_api_operations`, system prompt | LLM doesn't see API endpoints |
+| Documents | `list_documents`, `search_documents` | LLM can't search restricted docs |
+| Projects | Project activation | User can't load restricted projects |
 
 ### Database Credentials
 
