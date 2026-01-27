@@ -192,7 +192,8 @@ export function ArtifactPanel() {
     | { type: 'artifact'; data: typeof artifacts[0]; created_at: string; is_published: boolean }
 
   // Types to exclude when showing all (non-result artifacts)
-  const excludedArtifactTypes = new Set(['code', 'error', 'output'])
+  // Note: 'table' is excluded because tables are already shown via the tables array
+  const excludedArtifactTypes = new Set(['code', 'error', 'output', 'table'])
 
   // Build unified results list (filter out code, error, output artifacts)
   const allResults: ResultItem[] = [
