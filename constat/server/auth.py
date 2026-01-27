@@ -101,6 +101,11 @@ async def get_current_user_id(
             )
 
         logger.info(f"[AUTH] Authenticated user: {user_id}")
+
+        # Store email in request state for other dependencies
+        email = decoded_token.get("email")
+        request.state.user_email = email
+
         return user_id
 
     except ValueError as e:
@@ -112,5 +117,21 @@ async def get_current_user_id(
         )
 
 
-# Type alias for dependency injection
+async def get_current_user_email(
+    request: Request,
+    _user_id: Annotated[str, Depends(get_current_user_id)],  # Ensures auth runs first
+) -> str | None:
+    """Get the current user's email from the validated token.
+
+    This depends on get_current_user_id running first to validate the token
+    and store the email in request state.
+
+    Returns:
+        The user's email address, or None if not available
+    """
+    return getattr(request.state, "user_email", None)
+
+
+# Type aliases for dependency injection
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
+CurrentUserEmail = Annotated[str | None, Depends(get_current_user_email)]

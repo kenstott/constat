@@ -15,6 +15,12 @@ import {
   subscribeToAuthChanges,
   User,
 } from '@/config/firebase'
+ import * as usersApi from '@/api/users'
+
+interface Permissions {
+  admin: boolean
+  projects: string[]
+}
 
 interface AuthState {
   // State
@@ -22,13 +28,16 @@ interface AuthState {
   loading: boolean
   error: string | null
   initialized: boolean
+  permissions: Permissions | null
 
   // Computed
   isAuthenticated: boolean
   userId: string
+  isAdmin: boolean
 
   // Actions
   initialize: () => void
+  fetchPermissions: () => Promise<void>
   loginWithGoogle: () => Promise<void>
   loginWithEmail: (email: string, password: string) => Promise<void>
   signupWithEmail: (email: string, password: string) => Promise<void>
@@ -46,6 +55,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   loading: true,
   error: null,
   initialized: false,
+  permissions: null,
 
   // If auth is disabled, always authenticated with "default" user
   get isAuthenticated() {
@@ -59,19 +69,57 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return get().user?.uid || 'default'
   },
 
+  // Check if user has admin permissions
+  get isAdmin() {
+    if (isAuthDisabled) return true  // Admin when auth disabled
+    return get().permissions?.admin || false
+  },
+
   initialize: () => {
     if (get().initialized) return
 
     if (isAuthDisabled) {
-      // Auth disabled - immediately ready with no user
-      set({ loading: false, initialized: true })
+      // Auth disabled - immediately ready with admin permissions
+      set({
+        loading: false,
+        initialized: true,
+        permissions: { admin: true, projects: [] },
+      })
       return
     }
 
     // Subscribe to Firebase auth state changes
-    subscribeToAuthChanges((user) => {
+    subscribeToAuthChanges(async (user) => {
       set({ user, loading: false, initialized: true })
+
+      // Fetch permissions when user signs in
+      if (user) {
+        try {
+          const perms = await usersApi.getMyPermissions()
+          set({ permissions: { admin: perms.admin, projects: perms.projects } })
+        } catch (err) {
+          console.error('Failed to fetch permissions:', err)
+          // Default to no permissions on error
+          set({ permissions: { admin: false, projects: [] } })
+        }
+      } else {
+        set({ permissions: null })
+      }
     })
+  },
+
+  fetchPermissions: async () => {
+    if (isAuthDisabled) {
+      set({ permissions: { admin: true, projects: [] } })
+      return
+    }
+
+    try {
+      const perms = await usersApi.getMyPermissions()
+      set({ permissions: { admin: perms.admin, projects: perms.projects } })
+    } catch (err) {
+      console.error('Failed to fetch permissions:', err)
+    }
   },
 
   loginWithGoogle: async () => {
