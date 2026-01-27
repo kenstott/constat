@@ -15,6 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from constat.server.auth import CurrentUserId
 from constat.server.models import (
     SessionCreate,
     SessionResponse,
@@ -67,39 +68,48 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
 
 @router.post("", response_model=SessionResponse)
 async def create_session(
+    user_id: CurrentUserId,
     body: SessionCreate,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> SessionResponse:
     """Create a new session.
 
-    Creates a new Constat session for the specified user.
+    Creates a new Constat session for the authenticated user.
+    When auth is disabled, uses "default" user or the user_id from request body.
     The session can then be used for query execution via the query endpoints.
 
     Returns:
         Session details including the session ID
     """
-    session_id = session_manager.create_session(user_id=body.user_id)
+    # Use authenticated user_id, but allow body.user_id as fallback when auth disabled
+    effective_user_id = user_id if user_id != "default" else (body.user_id or "default")
+    session_id = session_manager.create_session(user_id=effective_user_id)
     managed = session_manager.get_session(session_id)
     return _session_to_response(managed)
 
 
 @router.get("", response_model=SessionListResponse)
 async def list_sessions(
+    current_user_id: CurrentUserId,
     user_id: Optional[str] = None,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> SessionListResponse:
     """List all sessions (in-memory + historical from disk).
 
-    Optionally filter by user ID.
+    When authenticated, only shows sessions for the current user.
+    When auth is disabled, can optionally filter by user ID.
 
     Args:
-        user_id: Optional user ID filter
+        user_id: Optional user ID filter (only used when auth disabled)
 
     Returns:
         List of sessions, newest first
     """
+    # Use authenticated user_id, but allow query param when auth disabled
+    effective_user_id = current_user_id if current_user_id != "default" else (user_id or "default")
+
     # Get in-memory sessions
-    in_memory = session_manager.list_sessions(user_id=user_id)
+    in_memory = session_manager.list_sessions(user_id=effective_user_id)
     in_memory_ids = {s.session_id for s in in_memory}
 
     # Convert in-memory sessions to responses
@@ -107,7 +117,7 @@ async def list_sessions(
 
     # Get historical sessions from disk (not already in memory)
     try:
-        history = SessionHistory(user_id=user_id or "default")
+        history = SessionHistory(user_id=effective_user_id)
         historical = history.list_sessions(limit=50)
 
         for hist in historical:
@@ -120,7 +130,7 @@ async def list_sessions(
 
                 responses.append(SessionResponse(
                     session_id=hist.session_id,
-                    user_id=hist.user_id or user_id or "default",
+                    user_id=hist.user_id or effective_user_id,
                     status=SessionStatus.IDLE,  # Historical sessions are idle
                     created_at=created_at,
                     last_activity=created_at,  # Use created_at as last activity for historical

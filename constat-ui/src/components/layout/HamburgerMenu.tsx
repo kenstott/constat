@@ -8,16 +8,67 @@ import {
   ChatBubbleLeftRightIcon,
   PlusIcon,
   PencilIcon,
+  ArrowRightOnRectangleIcon,
+  UserCircleIcon,
 } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Session } from '@/types/api'
 import type { ProjectInfo } from '@/api/sessions'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
+}
+
+function AccountSection({ onClose }: { onClose: () => void }) {
+  const { user, logout } = useAuthStore()
+
+  const handleLogout = async () => {
+    await logout()
+    onClose()
+    // Clear session storage
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('constat-session-id')) {
+        localStorage.removeItem(key)
+      }
+    })
+  }
+
+  if (!user) return null
+
+  return (
+    <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
+      <div className="flex items-center gap-3 mb-3">
+        {user.photoURL ? (
+          <img
+            src={user.photoURL}
+            alt={user.displayName || 'User'}
+            className="w-8 h-8 rounded-full"
+          />
+        ) : (
+          <UserCircleIcon className="w-8 h-8 text-gray-400" />
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+            {user.displayName || 'User'}
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+            {user.email}
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={handleLogout}
+        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
+      >
+        <ArrowRightOnRectangleIcon className="w-5 h-5" />
+        Sign out
+      </button>
+    </div>
+  )
 }
 
 export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
@@ -397,7 +448,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                     )}
 
                     {/* Settings */}
-                    <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4">
+                    <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4 space-y-4">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <Cog6ToothIcon className="w-5 h-5 text-gray-500" />
@@ -415,6 +466,11 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                           <option value="system">System</option>
                         </select>
                       </div>
+
+                      {/* User account section (only when auth enabled) */}
+                      {!isAuthDisabled && (
+                        <AccountSection onClose={() => setMenuOpen(false)} />
+                      )}
                     </div>
                   </div>
                 </Dialog.Panel>

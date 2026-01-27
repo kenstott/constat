@@ -7,8 +7,10 @@ import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel'
 import { FullscreenArtifactModal } from '@/components/artifacts/FullscreenArtifactModal'
 import { ClarificationDialog } from '@/components/conversation/ClarificationDialog'
 import { PlanApprovalDialog } from '@/components/conversation/PlanApprovalDialog'
+import { LoginPage } from '@/components/auth/LoginPage'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 
 const SESSION_STORAGE_KEY = 'constat-session-id'
@@ -36,8 +38,25 @@ function ConnectingOverlay() {
   )
 }
 
-function App() {
+function AuthLoadingScreen() {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <div className="flex flex-col items-center gap-4">
+        <div className="relative">
+          <div className="w-12 h-12 border-4 border-gray-200 dark:border-gray-700 rounded-full" />
+          <div className="absolute top-0 left-0 w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+        <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
+          Loading...
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function MainApp() {
   const { session, wsConnected, createSession, messages } = useSessionStore()
+  const { userId } = useAuthStore()
   const queryInputRef = useRef<HTMLTextAreaElement>(null)
   const initializingRef = useRef(false)
 
@@ -102,8 +121,11 @@ function App() {
     }
     initializingRef.current = true
 
+    // Include userId in storage key for user-specific session restoration
+    const storageKey = isAuthDisabled ? SESSION_STORAGE_KEY : `${SESSION_STORAGE_KEY}-${userId}`
+
     // Try to restore from localStorage (persists across browser refreshes)
-    const savedSessionId = localStorage.getItem(SESSION_STORAGE_KEY)
+    const savedSessionId = localStorage.getItem(storageKey)
     if (savedSessionId) {
       // Try to reconnect to existing session
       sessionsApi.getSession(savedSessionId)
@@ -126,11 +148,11 @@ function App() {
         })
         .catch(() => {
           // Session no longer exists on server, create new one
-          localStorage.removeItem(SESSION_STORAGE_KEY)
-          createSession().then(() => {
+          localStorage.removeItem(storageKey)
+          createSession(userId).then(() => {
             const newSession = useSessionStore.getState().session
             if (newSession) {
-              localStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+              localStorage.setItem(storageKey, newSession.session_id)
             }
           })
         })
@@ -139,26 +161,27 @@ function App() {
         })
     } else {
       // No saved session, create new one
-      createSession().then(() => {
+      createSession(userId).then(() => {
         const newSession = useSessionStore.getState().session
         if (newSession) {
-          localStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+          localStorage.setItem(storageKey, newSession.session_id)
         }
       }).finally(() => {
         initializingRef.current = false
       })
     }
-  }, [session, createSession])
+  }, [session, createSession, userId])
 
   const handleNewQuery = async () => {
     // Clear artifact store and create a new session (equivalent to /reset)
     useArtifactStore.getState().clear()
-    localStorage.removeItem(SESSION_STORAGE_KEY)
+    const storageKey = isAuthDisabled ? SESSION_STORAGE_KEY : `${SESSION_STORAGE_KEY}-${userId}`
+    localStorage.removeItem(storageKey)
     lastSavedRef.current = '' // Reset saved state for new session
-    await createSession()
+    await createSession(userId)
     const newSession = useSessionStore.getState().session
     if (newSession) {
-      localStorage.setItem(SESSION_STORAGE_KEY, newSession.session_id)
+      localStorage.setItem(storageKey, newSession.session_id)
     }
     queryInputRef.current?.focus()
   }
@@ -186,6 +209,32 @@ function App() {
       <FullscreenArtifactModal />
     </>
   )
+}
+
+function App() {
+  const { initialize, loading, initialized } = useAuthStore()
+  const isAuthenticated = useAuthStore((state) => {
+    if (isAuthDisabled) return true
+    return state.user !== null
+  })
+
+  // Initialize auth on mount
+  useEffect(() => {
+    initialize()
+  }, [initialize])
+
+  // Show loading while auth is initializing
+  if (!initialized || loading) {
+    return <AuthLoadingScreen />
+  }
+
+  // Show login page if not authenticated (and auth is enabled)
+  if (!isAuthDisabled && !isAuthenticated) {
+    return <LoginPage />
+  }
+
+  // User is authenticated (or auth disabled), show main app
+  return <MainApp />
 }
 
 export default App

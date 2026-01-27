@@ -48,6 +48,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Firebase Authentication
+auth = ["google-auth>=2.0"]
+
 # Additional SQL Database backends
 mysql = ["pymysql>=1.0"]
 

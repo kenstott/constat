@@ -9,7 +9,17 @@
 
 """Server configuration for the Constat API server."""
 
+import os
+
 from pydantic import BaseModel, Field
+
+
+def _get_bool_env(key: str, default: bool) -> bool:
+    """Get a boolean value from environment variable."""
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes")
 
 
 class ServerConfig(BaseModel):
@@ -49,4 +59,12 @@ class ServerConfig(BaseModel):
     require_plan_approval: bool = Field(
         default=True,
         description="Whether to require user approval for plans via WebSocket",
+    )
+    auth_disabled: bool = Field(
+        default_factory=lambda: _get_bool_env("AUTH_DISABLED", True),
+        description="Whether to disable authentication (uses 'default' user). Set AUTH_DISABLED=false to enable.",
+    )
+    firebase_project_id: str | None = Field(
+        default_factory=lambda: os.environ.get("FIREBASE_PROJECT_ID"),
+        description="Firebase project ID for JWT validation (required when auth enabled). Set FIREBASE_PROJECT_ID env var.",
     )
