@@ -157,6 +157,13 @@ def _load_projects_into_session(
                 if doc_config.path:
                     from pathlib import Path
                     doc_path = Path(doc_config.path)
+
+                    # Resolve relative paths from project file location
+                    if not doc_path.is_absolute():
+                        project_dir = Path(project.source_path).parent if project.source_path else Path.cwd()
+                        doc_path = (project_dir / doc_config.path).resolve()
+                        logger.debug(f"Resolved document path: {doc_config.path} -> {doc_path}")
+
                     if doc_path.exists():
                         if not managed.session.doc_tools:
                             from constat.discovery.doc_tools import DocumentDiscoveryTools
@@ -174,6 +181,10 @@ def _load_projects_into_session(
                         )
                         if success:
                             logger.info(f"Indexed project document: {name} from {filename}")
+                        else:
+                            logger.warning(f"Failed to index document {name}: {msg}")
+                    else:
+                        logger.warning(f"Document file not found: {doc_path} (from {filename})")
             except Exception as e:
                 logger.warning(f"Failed to index project document {name}: {e}")
 
