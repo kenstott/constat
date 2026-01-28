@@ -25,6 +25,7 @@ from constat.discovery.concept_detector import ConceptDetector
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
     from constat.catalog.api_schema_manager import APISchemaManager
+    from constat.core.resources import SessionResources
 
 
 # System prompt for planning - base version
@@ -133,6 +134,7 @@ class Planner:
         learning_store=None,
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
         api_schema_manager: Optional["APISchemaManager"] = None,
+        resources: Optional["SessionResources"] = None,
         allowed_databases: Optional[set[str]] = None,
         allowed_apis: Optional[set[str]] = None,
         allowed_documents: Optional[set[str]] = None,
@@ -146,6 +148,7 @@ class Planner:
             learning_store: Learning store for injecting learned rules
             doc_tools: Document discovery tools for enriching schema search
             api_schema_manager: API schema manager for semantic search
+            resources: SessionResources - consolidated view of available resources
             allowed_databases: Set of allowed database names (None = no filtering)
             allowed_apis: Set of allowed API names (None = no filtering)
             allowed_documents: Set of allowed document names (None = no filtering)
@@ -154,6 +157,7 @@ class Planner:
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools  # For enriching schema search with documents
         self.api_schema_manager = api_schema_manager  # For API semantic search
+        self.resources = resources  # Consolidated resources (single source of truth)
         self._user_facts: dict = {}  # name -> value mapping
         self._learning_store = learning_store  # For injecting learned rules
         self.allowed_databases = allowed_databases
@@ -240,43 +244,18 @@ class Planner:
             if len(api_lines) > 1:
                 api_overview = "\n".join(api_lines)
 
-        # Build document overview from doc_tools (includes project documents)
+        # Build document overview from consolidated resources (single source of truth)
         doc_overview = ""
-        doc_lines = ["\n## Reference Documents"]
-        seen_docs = set()
-
-        # Include documents from doc_tools (project + session documents)
-        if self.doc_tools:
-            try:
-                doc_list = self.doc_tools.list_documents()
-                for doc in doc_list:
-                    name = doc.get("name", "")
-                    if not name or name in seen_docs:
-                        continue
-                    # Skip documents not allowed by permissions
-                    if not self._is_document_allowed(name):
-                        continue
-                    seen_docs.add(name)
-                    desc = doc.get("description", "") or doc.get("type", "document")
-                    doc_lines.append(f"- **{name}**: {desc}")
-            except Exception:
-                pass  # Continue if doc_tools fails
-
-        # Also include documents from config (for completeness)
-        if self.config.documents:
-            for name, doc_config in self.config.documents.items():
-                if name in seen_docs:
-                    continue
+        if self.resources and self.resources.has_documents():
+            doc_lines = ["\n## Reference Documents"]
+            for name, info in self.resources.documents.items():
                 # Skip documents not allowed by permissions
                 if not self._is_document_allowed(name):
                     continue
-                seen_docs.add(name)
-                desc = doc_config.description or doc_config.type
-                doc_lines.append(f"- **{name}**: {desc}")
-
-        # Only include header if we have allowed documents
-        if len(doc_lines) > 1:
-            doc_overview = "\n".join(doc_lines)
+                doc_lines.append(f"- **{name}**: {info.description or info.doc_type}")
+            # Only include header if we have allowed documents
+            if len(doc_lines) > 1:
+                doc_overview = "\n".join(doc_lines)
 
         # Build user facts section - essential for using correct values like email addresses
         user_facts_text = ""
@@ -477,25 +456,13 @@ class Planner:
                         }
                     })
 
-        # Add document discovery tools if doc_tools is available
-        if self.doc_tools:
-            # Get document names from doc_tools (includes project documents)
-            doc_names = []
-            try:
-                doc_list = self.doc_tools.list_documents()
-                doc_names = [
-                    doc.get("name", "")
-                    for doc in doc_list
-                    if doc.get("name") and self._is_document_allowed(doc.get("name", ""))
-                ]
-            except Exception:
-                pass
-
-            # Also include config documents not already listed
-            if self.config.documents:
-                for name in self.config.documents.keys():
-                    if name not in doc_names and self._is_document_allowed(name):
-                        doc_names.append(name)
+        # Add document discovery tools if documents are available (from resources)
+        if self.doc_tools and self.resources and self.resources.has_documents():
+            # Get document names from consolidated resources (single source of truth)
+            doc_names = [
+                name for name in self.resources.document_names
+                if self._is_document_allowed(name)
+            ]
 
             if doc_names:
                 schema_tools.extend([

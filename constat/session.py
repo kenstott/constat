@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 from constat.core.config import Config
 from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType, TaskType
+from constat.core.resources import SessionResources
 from constat.storage.datastore import DataStore
 from constat.storage.history import SessionHistory
 from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
@@ -417,6 +418,13 @@ class Session:
         # Project APIs (added when projects are activated)
         self._project_apis: dict[str, Any] = {}  # name -> ApiConfig
 
+        # Consolidated view of all available resources (single source of truth)
+        self.resources = SessionResources()
+        self._init_resources_from_config()
+
+        # Pass resources to planner (after resources are initialized)
+        self.planner.resources = self.resources
+
         # Fact resolver for auditable mode
         self.fact_resolver = FactResolver(
             llm=self.llm,
@@ -476,6 +484,103 @@ class Session:
 
         # Execution context for cancellation signaling to scheduler
         self._execution_context: ExecutionContext = ExecutionContext()
+
+    def _init_resources_from_config(self) -> None:
+        """Initialize resources from base config."""
+        # Add databases from config
+        for name, db_config in self.config.databases.items():
+            self.resources.add_database(
+                name=name,
+                description=db_config.description or "",
+                db_type=db_config.type or "sql",
+                source="config",
+            )
+
+        # Add APIs from config
+        if self.config.apis:
+            for name, api_config in self.config.apis.items():
+                self.resources.add_api(
+                    name=name,
+                    description=api_config.description or "",
+                    api_type=api_config.type or "graphql",
+                    source="config",
+                )
+
+        # Add documents from config
+        if self.config.documents:
+            for name, doc_config in self.config.documents.items():
+                self.resources.add_document(
+                    name=name,
+                    description=doc_config.description or "",
+                    doc_type=doc_config.type or "file",
+                    source="config",
+                )
+
+    def add_project_resources(
+        self,
+        project_filename: str,
+        databases: dict = None,
+        apis: dict = None,
+        documents: dict = None,
+    ) -> None:
+        """Add resources from a project.
+
+        Args:
+            project_filename: Project filename for source tracking
+            databases: Dict of database configs
+            apis: Dict of API configs
+            documents: Dict of document configs
+        """
+        source = f"project:{project_filename}"
+
+        if databases:
+            for name, db_config in databases.items():
+                self.resources.add_database(
+                    name=name,
+                    description=getattr(db_config, 'description', '') or "",
+                    db_type=getattr(db_config, 'type', 'sql') or "sql",
+                    source=source,
+                )
+
+        if apis:
+            for name, api_config in apis.items():
+                self.resources.add_api(
+                    name=name,
+                    description=getattr(api_config, 'description', '') or "",
+                    api_type=getattr(api_config, 'type', 'graphql') or "graphql",
+                    source=source,
+                )
+
+        if documents:
+            for name, doc_config in documents.items():
+                self.resources.add_document(
+                    name=name,
+                    description=getattr(doc_config, 'description', '') or "",
+                    doc_type=getattr(doc_config, 'type', 'file') or "file",
+                    source=source,
+                )
+
+    def remove_project_resources(self, project_filename: str) -> None:
+        """Remove all resources from a project.
+
+        Args:
+            project_filename: Project filename
+        """
+        source = f"project:{project_filename}"
+        self.resources.remove_by_source(source)
+
+    def sync_resources_to_history(self) -> None:
+        """Sync current resources to session history (session.json).
+
+        Call this after loading/unloading projects to keep history in sync.
+        """
+        if self.session_id and self.history:
+            self.history.update_resources(
+                session_id=self.session_id,
+                databases=self.resources.database_names,
+                apis=self.resources.api_names,
+                documents=self.resources.document_names,
+            )
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         """
@@ -5228,15 +5333,12 @@ Provide a brief, high-level summary of the key findings."""
                 speculative_plan = None
                 analysis = self._analyze_question(problem)
 
-        # Create session
-        db_names = list(self.config.databases.keys())
-        api_names = list(self.config.apis.keys()) if self.config.apis else []
-        doc_names = list(self.config.documents.keys()) if self.config.documents else []
+        # Create session using consolidated resources (single source of truth)
         self.session_id = self.history.create_session(
             config_dict=self.config.model_dump(),
-            databases=db_names,
-            apis=api_names,
-            documents=doc_names,
+            databases=self.resources.database_names,
+            apis=self.resources.api_names,
+            documents=self.resources.document_names,
             server_session_id=self.server_session_id,
         )
 

@@ -314,6 +314,33 @@ class SessionHistory:
         with open(session_file, "w") as f:
             json.dump(metadata, f, indent=2)
 
+    def update_resources(
+        self,
+        session_id: str,
+        databases: list[str],
+        apis: list[str],
+        documents: list[str],
+    ) -> None:
+        """Update session resources (called when projects are loaded/unloaded).
+
+        Args:
+            session_id: Session to update
+            databases: Updated list of database names
+            apis: Updated list of API names
+            documents: Updated list of document names
+        """
+        session_file = self._session_dir(session_id) / "session.json"
+
+        with open(session_file) as f:
+            metadata = json.load(f)
+
+        metadata["databases"] = databases
+        metadata["apis"] = apis
+        metadata["documents"] = documents
+
+        with open(session_file, "w") as f:
+            json.dump(metadata, f, indent=2)
+
     def list_sessions(self, limit: int = 20) -> list[SessionSummary]:
         """
         List recent sessions for this user with summary info.

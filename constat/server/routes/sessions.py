@@ -183,6 +183,19 @@ def _load_projects_into_session(
             managed.session.add_project_api(api_name, api_config)
             logger.info(f"Registered project API: {api_name} from {filename}")
 
+    # Register resources in consolidated SessionResources
+    for filename, project in valid_projects:
+        managed.session.add_project_resources(
+            project_filename=filename,
+            databases=project.databases,
+            apis=project.apis,
+            documents=project.documents,
+        )
+        logger.info(f"Registered project resources from {filename}")
+
+    # Sync resources to session history (session.json)
+    managed.session.sync_resources_to_history()
+
     # Store state
     managed._project_databases = newly_loaded
     managed.active_projects = [fn for fn, _ in valid_projects]
