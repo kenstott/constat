@@ -240,19 +240,43 @@ class Planner:
             if len(api_lines) > 1:
                 api_overview = "\n".join(api_lines)
 
-        # Build document overview if configured (filtered by permissions)
+        # Build document overview from doc_tools (includes project documents)
         doc_overview = ""
+        doc_lines = ["\n## Reference Documents"]
+        seen_docs = set()
+
+        # Include documents from doc_tools (project + session documents)
+        if self.doc_tools:
+            try:
+                doc_list = self.doc_tools.list_documents()
+                for doc in doc_list:
+                    name = doc.get("name", "")
+                    if not name or name in seen_docs:
+                        continue
+                    # Skip documents not allowed by permissions
+                    if not self._is_document_allowed(name):
+                        continue
+                    seen_docs.add(name)
+                    desc = doc.get("description", "") or doc.get("type", "document")
+                    doc_lines.append(f"- **{name}**: {desc}")
+            except Exception:
+                pass  # Continue if doc_tools fails
+
+        # Also include documents from config (for completeness)
         if self.config.documents:
-            doc_lines = ["\n## Reference Documents"]
             for name, doc_config in self.config.documents.items():
+                if name in seen_docs:
+                    continue
                 # Skip documents not allowed by permissions
                 if not self._is_document_allowed(name):
                     continue
+                seen_docs.add(name)
                 desc = doc_config.description or doc_config.type
                 doc_lines.append(f"- **{name}**: {desc}")
-            # Only include header if we have allowed documents
-            if len(doc_lines) > 1:
-                doc_overview = "\n".join(doc_lines)
+
+        # Only include header if we have allowed documents
+        if len(doc_lines) > 1:
+            doc_overview = "\n".join(doc_lines)
 
         # Build user facts section - essential for using correct values like email addresses
         user_facts_text = ""
@@ -453,13 +477,26 @@ class Planner:
                         }
                     })
 
-        # Add document discovery tools if documents are configured (filtered by permissions)
-        if self.doc_tools and self.config.documents:
-            # Filter document names by permissions
-            doc_names = [
-                name for name in self.config.documents.keys()
-                if self._is_document_allowed(name)
-            ]
+        # Add document discovery tools if doc_tools is available
+        if self.doc_tools:
+            # Get document names from doc_tools (includes project documents)
+            doc_names = []
+            try:
+                doc_list = self.doc_tools.list_documents()
+                doc_names = [
+                    doc.get("name", "")
+                    for doc in doc_list
+                    if doc.get("name") and self._is_document_allowed(doc.get("name", ""))
+                ]
+            except Exception:
+                pass
+
+            # Also include config documents not already listed
+            if self.config.documents:
+                for name in self.config.documents.keys():
+                    if name not in doc_names and self._is_document_allowed(name):
+                        doc_names.append(name)
+
             if doc_names:
                 schema_tools.extend([
                     {
