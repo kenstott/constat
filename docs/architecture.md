@@ -30,11 +30,11 @@ Each step generates Python code, executes it in a sandbox, and saves results to 
 
 ### Roles (Step-Level)
 
-Each step can optionally be assigned to a **role**. A role is a specialized persona (e.g., "data engineer", "compliance reviewer") that:
+Each step can optionally be assigned to a **role**. Roles are typically defined within **skills** (see Prompt Construction → Skills) and represent specialized personas that:
 
-1. **Maintains isolated context** - The role sees only what it needs, not the full session state
-2. **Executes with role-specific prompting** - Different expertise, tone, and focus
-3. **Publishes results back** - Output is merged into the shared session results
+1. **Maintain isolated context** - The role sees only what it needs, not the full session state
+2. **Execute with role-specific prompting** - Different expertise, tone, and focus
+3. **Publish results back** - Output is merged into the shared session results
 
 ```
 Plan:
@@ -333,17 +333,24 @@ The North America region showed the strongest absolute growth...
 
 ### Skills
 
-Skills are domain-specific knowledge packages (SKILL.md files) that get loaded into the prompt when relevant:
+Skills are domain-specific knowledge packages (SKILL.md files) that **enrich queries** with context the LLM needs to handle a domain correctly. A skill can include:
+
+- **Terminology**: Domain-specific definitions ("revenue" means gross_revenue)
+- **Best practices**: How to approach common tasks in this domain
+- **Role definitions**: Specialized personas for step assignment
+- **Data guidance**: Which tables/columns matter for this domain
 
 ```
 .constat/skills/
 ├── financial-analysis/
-│   └── SKILL.md        # Defines metrics, terminology, best practices
+│   └── SKILL.md        # Metrics, terminology, roles: [analyst, auditor]
 └── healthcare-compliance/
-    └── SKILL.md        # HIPAA rules, audit requirements
+    └── SKILL.md        # HIPAA rules, roles: [compliance-reviewer]
 ```
 
 Skills are discovered via `list_skills()` and loaded via `load_skill(name)`. The LLM can request skills during planning if it detects domain-specific terminology.
+
+**Skills → Roles relationship**: Roles are often defined within skills. A "financial-analysis" skill might define `analyst` and `auditor` roles, each with specific expertise and focus areas. When the planner assigns a step to a role, that role's context comes from the loaded skill.
 
 ### Learnings
 
