@@ -4,6 +4,11 @@ Constat is a multi-step AI reasoning engine for data analysis with verifiable, a
 
 ## Core Concepts
 
+**Mental model:**
+- **Planner** = Executive (orchestrates, delegates)
+- **Skill** = Process (defines how to accomplish a class of tasks)
+- **Role** = Class of person (specialist who executes steps)
+
 ### Sessions
 
 A **Session** is a stateful conversation that maintains context across queries. Each session has:
