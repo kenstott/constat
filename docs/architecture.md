@@ -448,6 +448,62 @@ WebSocket connection delivers live events:
 - `code`: Map of step → generated code
 - `charts`: Map of chart id → Plotly spec
 
+### Auditable Mode UX
+
+When the user clicks the **proof button** or uses `/prove`, the system switches to auditable mode with a distinct UX:
+
+**Flow:**
+1. Generate proof plan (propositions + inferences with dependencies)
+2. Show plan approval dialog (same pattern as exploratory)
+3. On approval, display DAG visualization of the proof execution
+
+**DAG Visualization:**
+
+Unlike exploratory mode's linear step list, auditable mode shows a **directed acyclic graph** because facts have dependencies:
+
+```
+        ┌─────────────┐
+        │ is_vip(C01) │ ← root proposition
+        └──────┬──────┘
+               │
+       ┌───────┴───────┐
+       ▼               ▼
+┌─────────────┐ ┌─────────────┐
+│ revenue(C01)│ │ tier(C01)   │
+└──────┬──────┘ └──────┬──────┘
+       │               │
+       ▼               ▼
+┌─────────────┐ ┌─────────────┐
+│ orders table│ │ customers   │
+└─────────────┘ └─────────────┘
+```
+
+**Node states:**
+- `○` pending - not started
+- `◐` planning - generating derivation logic
+- `●` executing - running query/inference
+- `✓` resolved - value determined with source
+- `✗` failed - couldn't resolve
+- `⊘` blocked - waiting on dependencies
+
+**Interactions:**
+- **Click node**: Expand to show details (source, SQL query, confidence, value)
+- **Animated edges**: Show data flow as facts resolve
+- **Critical path highlight**: Indicate which unresolved facts block completion
+- **Collapse/expand**: Handle large DAGs by collapsing subtrees
+
+**UI placement:** The DAG is integrated into the conversation (as a message bubble or floating panel - TBD). The final proof trace is saved as an **artifact** in the artifact panel.
+
+**DAG events** (WebSocket):
+| Event | UI Update |
+|-------|-----------|
+| `fact_start` | Node appears in pending state |
+| `fact_planning` | Node shows planning indicator |
+| `fact_executing` | Node shows executing indicator |
+| `fact_resolved` | Node shows checkmark + value |
+| `fact_failed` | Node shows error state |
+| `proof_complete` | DAG finalizes, proof artifact created |
+
 ## Data Source Integration
 
 All data sources present a unified interface to the LLM:
