@@ -14,20 +14,24 @@ import warnings
 from contextlib import asynccontextmanager
 
 # Configure logging for server module
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
+# Only add handler if not already configured, and prevent duplicate logs
 _constat_logger = logging.getLogger('constat')
-if not _constat_logger.handlers:
+if not any(isinstance(h, logging.StreamHandler) for h in _constat_logger.handlers):
+    _console_handler = logging.StreamHandler()
+    _console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
     _constat_logger.addHandler(_console_handler)
     _constat_logger.setLevel(logging.INFO)
+# Always prevent propagation to root logger to avoid duplicate messages
+_constat_logger.propagate = False
 
 # Suppress multiprocessing resource_tracker warnings at shutdown
 warnings.filterwarnings("ignore", message="resource_tracker:")
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -55,6 +59,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle."""
+        # Startup: Pre-load embedding model in background (don't make first user wait)
+        from constat.embedding_loader import EmbeddingModelLoader
+        EmbeddingModelLoader.get_instance().start_loading()
+        logger.info("Started background embedding model loading")
+
         # Startup: Start cleanup task
         await session_manager.start_cleanup_task()
         logger.info("Constat API server started")
@@ -90,6 +99,16 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     )
 
     # Exception handlers
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Handle request validation errors with detailed logging."""
+        logger.error(f"[VALIDATION ERROR] Path: {request.url.path}, Method: {request.method}")
+        logger.error(f"[VALIDATION ERROR] Details: {exc.errors()}")
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()},
+        )
+
     @app.exception_handler(KeyError)
     async def key_error_handler(request, exc: KeyError) -> JSONResponse:
         """Handle KeyError (session not found, etc.)."""
@@ -167,6 +186,18 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.roles import router as roles_router
     from constat.server.routes.skills import router as skills_router
 
+    # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
+    # Otherwise the wildcard routes will match paths like /roles, /skills, etc.
+    app.include_router(
+        roles_router,
+        prefix="/api/sessions",
+        tags=["roles"],
+    )
+    app.include_router(
+        skills_router,
+        prefix="/api",
+        tags=["skills"],
+    )
     app.include_router(
         sessions_router,
         prefix="/api/sessions",
@@ -206,16 +237,6 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         users_router,
         prefix="/api/users",
         tags=["users"],
-    )
-    app.include_router(
-        roles_router,
-        prefix="/api/sessions",
-        tags=["roles"],
-    )
-    app.include_router(
-        skills_router,
-        prefix="/api",
-        tags=["skills"],
     )
 
     return app
