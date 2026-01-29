@@ -92,10 +92,9 @@ Return a JSON object:
 }
 ```
 
-## Task Types
-- **sql_generation**: Database queries (SELECT, joins, aggregations)
-- **python_analysis**: DataFrame transformations and analysis
-- **summarization**: Synthesize or explain results
+## Task Types (for code generation routing)
+- **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
+- **python_analysis**: Steps that transform data, compute statistics, or generate output (including summaries)
 
 ## Complexity Levels
 - **low**: Simple single-table queries

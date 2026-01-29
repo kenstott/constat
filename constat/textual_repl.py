@@ -47,7 +47,7 @@ from constat.session import Session, SessionConfig, ClarificationRequest, Clarif
 from constat.commands import HELP_COMMANDS
 from constat.execution.mode import Mode, Phase, PlanApprovalRequest, PlanApprovalResponse, PlanApproval
 from constat.core.config import Config
-from constat.feedback import FeedbackDisplay, SessionFeedbackHandler, StatusLine, SPINNER_FRAMES
+from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler, StatusLine, SPINNER_FRAMES
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
@@ -1898,7 +1898,11 @@ class TextualFeedbackHandler:
                 panel_content = self._get_panel_content()
                 panel_content.update_step_executing(step_num, retry=True)
             else:
-                status_bar.update_status(status_message=f"Step {step_num}: Generating code...")
+                goal = data.get("goal", "")
+                if goal:
+                    status_bar.update_status(status_message=f"Step {step_num}: {goal}. Generating code...")
+                else:
+                    status_bar.update_status(status_message=f"Step {step_num}: Generating code...")
 
         elif event_type == "executing":
             step_num = event.step_number or 0

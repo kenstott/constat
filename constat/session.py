@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1940,22 +1941,22 @@ Return ONLY Python code, no markdown."""
             schema_overview = self._get_brief_schema_summary()
             schema_overview += "\n\nUse discovery tools to explore schemas: `find_relevant_tables(query)`, `get_table_schema(table)`"
 
-        # API overview
+        # API overview - use self.resources (single source of truth)
         api_overview = ""
-        if self.config.apis:
+        if self.resources.has_apis():
             api_lines = ["\n## Available APIs"]
-            for name, api_config in self.config.apis.items():
-                api_type = api_config.type.upper()
-                desc = api_config.description or f"{api_type} endpoint"
+            for name, api_info in self.resources.apis.items():
+                api_type = api_info.api_type.upper()
+                desc = api_info.description or f"{api_type} endpoint"
                 api_lines.append(f"- **{name}** ({api_type}): {desc}")
             api_overview = "\n".join(api_lines)
 
-        # Document overview
+        # Document overview - use self.resources (single source of truth)
         doc_overview = ""
-        if self.config.documents:
+        if self.resources.has_documents():
             doc_lines = ["\n## Reference Documents"]
-            for name, doc_config in self.config.documents.items():
-                desc = doc_config.description or doc_config.type
+            for name, doc_info in self.resources.documents.items():
+                desc = doc_info.description or doc_info.doc_type
                 doc_lines.append(f"- **{name}**: {desc}")
             doc_overview = "\n".join(doc_lines)
 
@@ -3026,20 +3027,18 @@ Do not include any explanation or extra text."""
                 f"- {name}: {fact.display_value}" for name, fact in cached_facts.items()
             )
 
-        # Build data source context for classification
+        # Build data source context from SessionResources (single source of truth)
+        # This includes all databases/APIs/documents from config + active projects
         data_sources = []
-        if self.config.databases:
-            for name, db in self.config.databases.items():
-                desc = db.description.split('\n')[0] if db.description else f"database '{name}'"
-                data_sources.append(f"DATABASE '{name}': {desc}")
-        if self.config.apis:
-            for name, api in self.config.apis.items():
-                desc = api.description.split('\n')[0] if api.description else f"{api.type} API"
-                data_sources.append(f"API '{name}': {desc}")
-        if self.config.documents:
-            for name, doc in self.config.documents.items():
-                desc = doc.description.split('\n')[0] if doc.description else "reference document"
-                data_sources.append(f"DOCUMENT '{name}': {desc}")
+        for name, desc in self.resources.get_database_descriptions():
+            desc_line = desc.split('\n')[0] if desc else f"database '{name}'"
+            data_sources.append(f"DATABASE '{name}': {desc_line}")
+        for name, desc in self.resources.get_api_descriptions():
+            desc_line = desc.split('\n')[0] if desc else f"API"
+            data_sources.append(f"API '{name}': {desc_line}")
+        for name, desc in self.resources.get_document_descriptions():
+            desc_line = desc.split('\n')[0] if desc else "reference document"
+            data_sources.append(f"DOCUMENT '{name}': {desc_line}")
 
         source_context = ""
         if data_sources:
