@@ -548,7 +548,22 @@ class DocumentDiscoveryTools:
                 self._vector_store.add_entities(other_entities_list, source=source_type)
 
         if all_links:
-            self._vector_store.link_chunk_entities(all_links)
+            # Deduplicate links by (chunk_id, entity_id)
+            unique_links = {}
+            for link in all_links:
+                key = (link.chunk_id, link.entity_id)
+                if key not in unique_links:
+                    unique_links[key] = link
+                else:
+                    existing = unique_links[key]
+                    unique_links[key] = ChunkEntity(
+                        chunk_id=link.chunk_id,
+                        entity_id=link.entity_id,
+                        mention_count=existing.mention_count + link.mention_count,
+                        confidence=max(existing.confidence, link.confidence),
+                        mention_text=existing.mention_text or link.mention_text,
+                    )
+            self._vector_store.link_chunk_entities(list(unique_links.values()))
 
     def set_openapi_entities(
         self,
@@ -787,11 +802,26 @@ class DocumentDiscoveryTools:
                     self._vector_store.add_entities(doc_entities_list, source="document")
 
         if all_links:
+            # Deduplicate links by (chunk_id, entity_id)
+            unique_links = {}
+            for link in all_links:
+                key = (link.chunk_id, link.entity_id)
+                if key not in unique_links:
+                    unique_links[key] = link
+                else:
+                    existing = unique_links[key]
+                    unique_links[key] = ChunkEntity(
+                        chunk_id=link.chunk_id,
+                        entity_id=link.entity_id,
+                        mention_count=existing.mention_count + link.mention_count,
+                        confidence=max(existing.confidence, link.confidence),
+                        mention_text=existing.mention_text or link.mention_text,
+                    )
             sig = inspect.signature(self._vector_store.link_chunk_entities)
             if 'ephemeral' in sig.parameters:
-                self._vector_store.link_chunk_entities(all_links, ephemeral=True)
+                self._vector_store.link_chunk_entities(list(unique_links.values()), ephemeral=True)
             else:
-                self._vector_store.link_chunk_entities(all_links)
+                self._vector_store.link_chunk_entities(list(unique_links.values()))
 
     def remove_document(self, name: str) -> bool:
         """Remove a document and its vectors from the index.
@@ -1929,9 +1959,25 @@ class DocumentDiscoveryTools:
             if doc_entities_list:
                 self._vector_store.add_entities(doc_entities_list, source="document")
 
-        # Store all chunk-entity links
+        # Store all chunk-entity links (deduplicated by chunk_id + entity_id)
         if all_links:
-            self._vector_store.link_chunk_entities(all_links)
+            # Deduplicate links - same entity in same chunk should only have one link
+            unique_links = {}
+            for link in all_links:
+                key = (link.chunk_id, link.entity_id)
+                if key not in unique_links:
+                    unique_links[key] = link
+                else:
+                    # Merge mention counts if duplicate
+                    existing = unique_links[key]
+                    unique_links[key] = ChunkEntity(
+                        chunk_id=link.chunk_id,
+                        entity_id=link.entity_id,
+                        mention_count=existing.mention_count + link.mention_count,
+                        confidence=max(existing.confidence, link.confidence),
+                        mention_text=existing.mention_text or link.mention_text,
+                    )
+            self._vector_store.link_chunk_entities(list(unique_links.values()))
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.
