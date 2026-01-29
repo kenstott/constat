@@ -484,8 +484,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       case 'step_generating': {
+        const goal = (event.data.goal as string) || ''
         const attempt = stepAttempt > 1 ? ` (attempt ${stepAttempt})` : ''
-        updateStepMessage(event.step_number, `Step ${event.step_number}: Planning${attempt}...`)
+        const goalPrefix = goal ? `${goal}. ` : ''
+        updateStepMessage(event.step_number, `Step ${event.step_number}: ${goalPrefix}Planning${attempt}...`)
         set({ executionPhase: 'generating' })
         break
       }
