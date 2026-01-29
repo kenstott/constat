@@ -57,7 +57,7 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
         <span className="text-xs font-medium text-gray-500 dark:text-gray-400 flex-shrink-0">
           {stepNumber}.
         </span>
-        <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">
+        <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">
           {step.goal || 'Processing...'}
         </span>
         {hasModification && (
