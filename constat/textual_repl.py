@@ -35,10 +35,12 @@ from rich.tree import Tree
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import ScrollableContainer, Vertical, Horizontal
-from textual.widgets import Static, Input, RichLog, Footer
+from textual.containers import ScrollableContainer, Vertical, Horizontal, VerticalScroll
+from textual.widgets import Static, Input, RichLog, Footer, OptionList
+from textual.widgets.option_list import Option
 from textual.reactive import reactive
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual import events, work
 from textual.worker import Worker, get_current_worker
 from textual.suggester import Suggester
@@ -426,6 +428,7 @@ class StatusBar(Static):
     elapsed_time: reactive[str] = reactive("")  # Timer display
     panel_ratio: reactive[str] = reactive("4:1")  # Panel ratio display
     settings_display: reactive[str] = reactive("raw:on insights:on")  # Settings display
+    role_display: reactive[str] = reactive("")  # Active role display
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -537,16 +540,20 @@ class StatusBar(Static):
         terminal_width = shutil.get_terminal_size().columns
         rule_line = "─" * terminal_width
 
-        # Settings display and panel controls
+        # Role display (clickable), settings display, and panel controls
+        role_str = f" [{self.role_display or 'no role'}]" if self.role_display or True else ""
         settings_str = f" [{self.settings_display}]"
         panel_controls = f" [◀ {self.panel_ratio} ▶]"
-        right_content = settings_str + panel_controls
+        right_content = role_str + settings_str + panel_controls
         right_len = len(right_content)
 
         # Calculate padding to right-align
         current_len = len(content.plain)
         padding_needed = max(0, terminal_width - current_len - right_len)
         content.append(" " * padding_needed)
+        # Role display - clickable
+        role_style = "cyan" if self.role_display else "dim"
+        content.append(role_str, style=role_style)
         content.append(settings_str, style="dim")
         content.append(panel_controls, style="dim cyan")
 
@@ -587,21 +594,33 @@ class StatusBar(Static):
         self.refresh()
 
     def on_click(self, event) -> None:
-        """Handle clicks on panel resize controls."""
-        # Check if click is in the panel controls region (right side)
+        """Handle clicks on status bar elements (role selector, panel controls)."""
         terminal_width = shutil.get_terminal_size().columns
-        controls_text = f" [◀ {self.panel_ratio} ▶]"
-        controls_start = terminal_width - len(controls_text)
 
-        # event.x is the click position
-        if event.x >= controls_start:
-            # Clicked in controls region
-            relative_x = event.x - controls_start
-            # [◀ 3:1 ▶] - ◀ is at position 1, ▶ is near the end
+        # Build right-side layout to calculate positions
+        role_str = f" [{self.role_display or 'no role'}]"
+        settings_str = f" [{self.settings_display}]"
+        panel_controls = f" [◀ {self.panel_ratio} ▶]"
+
+        # Calculate positions from right edge
+        panel_end = terminal_width
+        panel_start = panel_end - len(panel_controls)
+        settings_end = panel_start
+        settings_start = settings_end - len(settings_str)
+        role_end = settings_start
+        role_start = role_end - len(role_str)
+
+        # Check what was clicked (event.x is click position)
+        if event.x >= panel_start:
+            # Clicked in panel controls region
+            relative_x = event.x - panel_start
             if relative_x <= 3:  # Left arrow region
                 self.app.action_shrink_panel()
-            elif relative_x >= len(controls_text) - 3:  # Right arrow region
+            elif relative_x >= len(panel_controls) - 3:  # Right arrow region
                 self.app.action_expand_panel()
+        elif event.x >= role_start and event.x < role_end:
+            # Clicked on role display - open role selector
+            self.app.action_select_role()
 
 
 class CommandSuggester(Suggester):
@@ -1995,6 +2014,72 @@ class TextualFeedbackHandler:
             status_bar.update_status(status_message=None, phase=Phase.IDLE)
 
 
+class RoleSelectorScreen(ModalScreen[str | None]):
+    """Modal screen for selecting a role."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    RoleSelectorScreen {
+        align: center middle;
+    }
+
+    RoleSelectorScreen > Vertical {
+        width: 50;
+        height: auto;
+        max-height: 20;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+
+    RoleSelectorScreen > Vertical > Static {
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    RoleSelectorScreen OptionList {
+        height: auto;
+        max-height: 12;
+    }
+    """
+
+    def __init__(self, roles: list[str], current_role: str | None = None):
+        super().__init__()
+        self.roles = roles
+        self.current_role = current_role
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("Select Role", classes="title")
+            option_list = OptionList(id="role-list")
+            # Add "No role" option first
+            option_list.add_option(Option("(no role)", id="__none__"))
+            # Add available roles
+            for role in self.roles:
+                marker = "→ " if role == self.current_role else "  "
+                option_list.add_option(Option(f"{marker}{role}", id=role))
+            yield option_list
+
+    def on_mount(self) -> None:
+        """Focus the option list."""
+        self.query_one("#role-list", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Handle role selection."""
+        selected_id = str(event.option.id) if event.option.id else None
+        if selected_id == "__none__":
+            self.dismiss(None)
+        else:
+            self.dismiss(selected_id)
+
+    def action_cancel(self) -> None:
+        """Cancel without changing role."""
+        self.dismiss(self.current_role)  # Keep current role
+
+
 class ConstatREPLApp(App):
     """Textual-based REPL application with persistent status bar."""
 
@@ -2094,6 +2179,7 @@ class ConstatREPLApp(App):
         Binding("ctrl+right", "expand_panel", "Expand panel", show=False),
         Binding("ctrl+shift+o", "copy_output", "Copy output", show=False),
         Binding("ctrl+shift+p", "copy_panel", "Copy panel", show=False),
+        Binding("ctrl+shift+r", "select_role", "Select role", show=False),
     ]
 
     # Panel width ratios (output_log : side_panel)
@@ -2224,6 +2310,9 @@ class ConstatREPLApp(App):
 
             # Register approval callback
             self.session.set_approval_callback(self._handle_approval_sync)
+
+            # Update role display
+            self._update_role_display()
 
             log.write(Text("Session ready.", style="dim green"))
         else:
@@ -5051,6 +5140,48 @@ class ConstatREPLApp(App):
         if self._panel_ratio_index < len(self.PANEL_RATIOS) - 1:
             self._panel_ratio_index += 1
             self._update_panel_sizes()
+
+    def action_select_role(self) -> None:
+        """Open the role selector modal."""
+        if not self.session or not hasattr(self.session, "role_manager"):
+            return
+
+        role_manager = self.session.role_manager
+        roles = role_manager.list_roles()
+
+        if not roles:
+            # No roles defined - show message
+            log = self.query_one("#output-log", OutputLog)
+            log.write(Text(
+                f"No roles defined. Create roles in: {role_manager.roles_file_path}",
+                style="yellow"
+            ))
+            return
+
+        def handle_role_selection(selected: str | None) -> None:
+            """Handle the selected role from the modal."""
+            if self.session and hasattr(self.session, "role_manager"):
+                self.session.role_manager.set_active_role(selected)
+                self._update_role_display()
+                log = self.query_one("#output-log", OutputLog)
+                if selected:
+                    log.write(Text(f"Role set to: {selected}", style="cyan"))
+                else:
+                    log.write(Text("Role cleared.", style="dim"))
+
+        self.push_screen(
+            RoleSelectorScreen(roles, role_manager.active_role_name),
+            handle_role_selection
+        )
+
+    def _update_role_display(self) -> None:
+        """Update the status bar role display."""
+        status_bar = self.query_one("#status-bar", StatusBar)
+        if self.session and hasattr(self.session, "role_manager"):
+            role_name = self.session.role_manager.active_role_name
+            status_bar.role_display = role_name or ""
+        else:
+            status_bar.role_display = ""
 
     def action_copy_output(self) -> None:
         """Copy output log content to clipboard."""
