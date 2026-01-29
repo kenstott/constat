@@ -166,24 +166,22 @@ function MainApp() {
     // Try to restore from localStorage (persists across browser refreshes)
     const savedSessionId = localStorage.getItem(storageKey)
     if (savedSessionId) {
-      // Try to reconnect to existing session
-      sessionsApi.getSession(savedSessionId)
-        .then(async (restoredSession) => {
-          useSessionStore.getState().setSession(restoredSession)
-          // Restore conversation messages from server
-          try {
-            const { messages: serverMessages } = await sessionsApi.getMessages(savedSessionId)
-            if (serverMessages && serverMessages.length > 0) {
-              // Restore timestamps as Date objects
-              const restoredMessages = serverMessages.map(m => ({
-                ...m,
-                timestamp: new Date(m.timestamp),
-              }))
-              useSessionStore.setState({ messages: restoredMessages })
-            }
-          } catch (e) {
-            console.error('Failed to restore messages from server:', e)
+      // Try to reconnect to existing session - fetch session and messages in parallel
+      Promise.all([
+        sessionsApi.getSession(savedSessionId),
+        sessionsApi.getMessages(savedSessionId).catch(() => ({ messages: [] })),
+      ])
+        .then(([restoredSession, messagesResult]) => {
+          // Restore messages BEFORE connecting WebSocket (prevents welcome message overwrite)
+          if (messagesResult.messages && messagesResult.messages.length > 0) {
+            const restoredMessages = messagesResult.messages.map(m => ({
+              ...m,
+              timestamp: new Date(m.timestamp),
+            }))
+            useSessionStore.setState({ messages: restoredMessages, suggestions: [], plan: null })
           }
+          // Set session with preserveMessages to avoid clearing restored messages
+          useSessionStore.getState().setSession(restoredSession, { preserveMessages: true })
         })
         .catch(() => {
           // Session no longer exists on server, create new one

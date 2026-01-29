@@ -94,7 +94,7 @@ interface SessionState {
 
   // Actions
   createSession: (userId?: string) => Promise<void>
-  setSession: (session: Session | null) => void
+  setSession: (session: Session | null, options?: { preserveMessages?: boolean }) => void
   updateSession: (updates: Partial<Session>) => void
   submitQuery: (problem: string, isFollowup?: boolean) => Promise<void>
   cancelExecution: () => Promise<void>
@@ -151,10 +151,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     wsManager.onEvent((event) => get().handleWSEvent(event))
   },
 
-  setSession: (session) => {
+  setSession: (session, options?: { preserveMessages?: boolean }) => {
     if (session) {
-      // Clear messages for fresh session, welcome will come from server
-      set({ messages: [], suggestions: [], plan: null })
+      // Clear messages for fresh session (unless preserving for restoration)
+      if (!options?.preserveMessages) {
+        set({ messages: [], suggestions: [], plan: null })
+      }
       wsManager.connect(session.session_id)
       wsManager.onStatus((connected) => set({ wsConnected: connected }))
       wsManager.onEvent((event) => get().handleWSEvent(event))

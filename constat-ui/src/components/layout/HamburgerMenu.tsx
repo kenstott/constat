@@ -124,12 +124,28 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       return
     }
     try {
-      const session = await sessionsApi.getSession(sessionId)
+      // Fetch session and messages in parallel
+      const [session, messagesResult] = await Promise.all([
+        sessionsApi.getSession(sessionId),
+        sessionsApi.getMessages(sessionId).catch(() => ({ messages: [] })),
+      ])
 
-      // Clear current state and set new session
+      // Clear current state
       useArtifactStore.getState().clear()
-      useSessionStore.getState().clearMessages()
-      setSession(session)
+
+      // Restore messages BEFORE connecting WebSocket (prevents welcome message overwrite)
+      if (messagesResult.messages && messagesResult.messages.length > 0) {
+        const restoredMessages = messagesResult.messages.map(m => ({
+          ...m,
+          timestamp: new Date(m.timestamp),
+        }))
+        useSessionStore.setState({ messages: restoredMessages, suggestions: [], plan: null })
+      } else {
+        useSessionStore.getState().clearMessages()
+      }
+
+      // Set session with preserveMessages to avoid clearing restored messages
+      setSession(session, { preserveMessages: true })
 
       // Update localStorage with new session ID
       localStorage.setItem('constat-session-id', sessionId)
@@ -144,20 +160,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         artifactStore.fetchDataSources(sessionId),
         artifactStore.fetchStepCodes(sessionId),
       ])
-
-      // Restore conversation messages from server
-      try {
-        const { messages } = await sessionsApi.getMessages(sessionId)
-        if (messages && messages.length > 0) {
-          const restoredMessages = messages.map(m => ({
-            ...m,
-            timestamp: new Date(m.timestamp),
-          }))
-          useSessionStore.setState({ messages: restoredMessages })
-        }
-      } catch (e) {
-        console.error('Failed to restore messages:', e)
-      }
 
       setMenuOpen(false)
     } catch (error) {
