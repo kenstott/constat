@@ -155,10 +155,10 @@ export function MessageBubble({
             isUser ? 'rounded-tr-none' : 'rounded-tl-none'
           } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''}`}
         >
-          {/* Copy button - appears on hover */}
+          {/* Copy button - appears on hover, tucked into corner */}
           <button
             onClick={handleCopy}
-            className={`absolute top-2 right-2 p-1 rounded transition-all ${
+            className={`absolute top-[3px] right-[3px] p-1 rounded transition-all ${
               copied
                 ? 'text-green-500 dark:text-green-400'
                 : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
