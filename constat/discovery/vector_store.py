@@ -239,7 +239,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 content TEXT NOT NULL,
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
                 ephemeral BOOLEAN DEFAULT FALSE,
-                session_id VARCHAR
+                session_id VARCHAR,
+                project_id VARCHAR
             )
         """)
 
@@ -257,7 +258,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 config_hash VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 ephemeral BOOLEAN DEFAULT FALSE,
-                session_id VARCHAR
+                session_id VARCHAR,
+                project_id VARCHAR
             )
         """)
         # type: table, column, api_endpoint, api_field, api_schema, extracted
@@ -273,6 +275,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 mention_text VARCHAR,
                 ephemeral BOOLEAN DEFAULT FALSE,
                 session_id VARCHAR,
+                project_id VARCHAR,
                 PRIMARY KEY (chunk_id, entity_id)
             )
         """)
@@ -341,6 +344,18 @@ class DuckDBVectorStore(VectorStoreBackend):
                     )
             except Exception as e:
                 logger.debug(f"_migrate_schema: failed to add session_id to {table}: {e}")
+
+        # Add project_id column to tables if missing (for project-level filtering)
+        for table in ['embeddings', 'entities', 'chunk_entities']:
+            try:
+                col_names = get_column_names(table)
+                if col_names and 'project_id' not in col_names:
+                    logger.debug(f"_migrate_schema: adding project_id column to {table}")
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN project_id VARCHAR"
+                    )
+            except Exception as e:
+                logger.debug(f"_migrate_schema: failed to add project_id to {table}: {e}")
 
         # Add mention_text column to chunk_entities if missing
         try:
@@ -505,6 +520,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         embeddings: np.ndarray,
         ephemeral: bool = False,
         session_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Add chunks with embeddings to DuckDB.
 
@@ -512,13 +528,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             chunks: List of DocumentChunk objects
             embeddings: numpy array of embeddings
             ephemeral: If True, marks chunks as session-only (cleaned up on restart)
-            session_id: Optional session ID for multi-session isolation
+            session_id: Optional session ID for documents added during a session
+            project_id: Optional project ID for documents belonging to a project
         """
         if len(chunks) == 0:
             return
 
         doc_names = set(c.document_name for c in chunks)
-        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, ephemeral={ephemeral}, session_id={session_id}")
+        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, ephemeral={ephemeral}, session_id={session_id}, project_id={project_id}")
 
         # Prepare data for insertion
         records = []
@@ -534,14 +551,15 @@ class DuckDBVectorStore(VectorStoreBackend):
                 embedding,
                 ephemeral,
                 session_id,
+                project_id,
             ))
 
         # Use INSERT OR REPLACE to handle updates
         self._conn.executemany(
             """
             INSERT OR REPLACE INTO embeddings
-            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
@@ -681,6 +699,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         ephemeral: bool = False,
         source: str = "document",
         session_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Add multiple entities to the store.
 
@@ -689,7 +708,8 @@ class DuckDBVectorStore(VectorStoreBackend):
             embeddings: Optional embeddings array of shape (n_entities, embedding_dim)
             ephemeral: If True, marks entities as session-only (cleaned up on restart)
             source: Source category ('document', 'schema', 'api')
-            session_id: Optional session ID for multi-session isolation
+            session_id: Optional session ID for entities added during a session
+            project_id: Optional project ID for entities belonging to a project
         """
         if not entities:
             return
@@ -708,12 +728,13 @@ class DuckDBVectorStore(VectorStoreBackend):
                 entity.created_at,
                 ephemeral,
                 session_id,
+                project_id,
             ))
 
         self._conn.executemany(
             """
-            INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             records,
@@ -724,27 +745,29 @@ class DuckDBVectorStore(VectorStoreBackend):
         links: list[ChunkEntity],
         ephemeral: bool = False,
         session_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Create links between chunks and entities.
 
         Args:
             links: List of ChunkEntity objects defining the relationships
-            ephemeral: If True, marks links as session-only (cleaned up on restart)
-            session_id: Optional session ID for multi-session isolation
+            ephemeral: If True, marks links as session-only (legacy, use session_id instead)
+            session_id: Optional session ID for links added during a session
+            project_id: Optional project ID for links belonging to a project
         """
         if not links:
             return
 
         records = [
-            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, ephemeral, session_id)
+            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, ephemeral, session_id, project_id)
             for l in links
         ]
 
         self._conn.executemany(
             """
             INSERT INTO chunk_entities
-                (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             records,

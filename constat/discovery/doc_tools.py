@@ -672,18 +672,21 @@ class DocumentDiscoveryTools:
 
         return True
 
-    def add_ephemeral_document_from_file(
+    def add_document_from_file(
         self,
         file_path: str,
         name: str | None = None,
         description: str = "",
+        ephemeral: bool = True,
     ) -> tuple[bool, str]:
-        """Add a session-only document from a file path.
+        """Add a document from a file path.
 
         Args:
             file_path: Path to the document file
             name: Optional name (defaults to filename without extension)
             description: Optional description
+            ephemeral: If True, document will be cleaned up on restart (default).
+                       If False, document persists permanently.
 
         Returns:
             Tuple of (success, message)
@@ -729,17 +732,36 @@ class DocumentDiscoveryTools:
         if not content.strip():
             return False, "File is empty"
 
-        # Add as ephemeral document
-        success = self.add_ephemeral_document(
+        # Add document with specified ephemeral flag
+        success = self._add_document_internal(
             name=name,
             content=content,
             doc_format=doc_format,
-            description=description or f"Session document from {path.name}",
+            description=description or f"Document from {path.name}",
+            ephemeral=ephemeral,
         )
 
         if success:
             return True, f"Added document '{name}' ({len(content):,} chars)"
         return False, "Failed to index document"
+
+    def add_ephemeral_document_from_file(
+        self,
+        file_path: str,
+        name: str | None = None,
+        description: str = "",
+    ) -> tuple[bool, str]:
+        """Add a session-only document from a file path.
+
+        Args:
+            file_path: Path to the document file
+            name: Optional name (defaults to filename without extension)
+            description: Optional description
+
+        Returns:
+            Tuple of (success, message)
+        """
+        return self.add_document_from_file(file_path, name, description, ephemeral=True)
 
     def _extract_and_store_entities_ephemeral(
         self,

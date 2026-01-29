@@ -43,6 +43,54 @@ from constat.server.routes.queries import shutdown_executor_async
 logger = logging.getLogger(__name__)
 
 
+def _warmup_vector_store(config: Config) -> None:
+    """Pre-index all documents from config and projects at server startup.
+
+    This warms up the vector store so the first session creation doesn't
+    pay the cost of document indexing. Documents are indexed with ephemeral=False
+    so they persist across sessions.
+    """
+    from pathlib import Path
+    from constat.discovery.doc_tools import DocumentDiscoveryTools
+
+    # Create doc_tools to index config documents
+    # DocumentDiscoveryTools.__init__ indexes config.documents automatically
+    doc_tools = DocumentDiscoveryTools(config)
+    logger.info(f"  Config documents: {len(config.documents)} indexed")
+
+    # Index all project documents with ephemeral=False so they persist
+    for filename, project in config.projects.items():
+        if not project.documents:
+            continue
+
+        for doc_name, doc_config in project.documents.items():
+            try:
+                if doc_config.path:
+                    doc_path = Path(doc_config.path)
+
+                    # Resolve relative paths from config directory
+                    if not doc_path.is_absolute():
+                        config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
+                        doc_path = (config_dir / doc_config.path).resolve()
+
+                    if doc_path.exists():
+                        # Index with ephemeral=False (permanent)
+                        success, msg = doc_tools.add_document_from_file(
+                            str(doc_path),
+                            name=doc_name,
+                            description=doc_config.description or "",
+                            ephemeral=False,
+                        )
+                        if success:
+                            logger.info(f"  Project {filename}: indexed {doc_name}")
+                        else:
+                            logger.warning(f"  Project {filename}: failed to index {doc_name}: {msg}")
+                    else:
+                        logger.warning(f"  Project {filename}: file not found: {doc_path}")
+            except Exception as e:
+                logger.warning(f"  Project {filename}: error indexing {doc_name}: {e}")
+
+
 def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -59,10 +107,18 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle."""
-        # Startup: Pre-load embedding model in background (don't make first user wait)
+        # Startup: Pre-load embedding model (blocking - we need it for vectorization)
         from constat.embedding_loader import EmbeddingModelLoader
+        logger.info("Loading embedding model...")
         EmbeddingModelLoader.get_instance().start_loading()
-        logger.info("Started background embedding model loading")
+        EmbeddingModelLoader.get_instance().get_model()  # Wait for completion
+        logger.info("Embedding model loaded")
+
+        # Startup: Pre-index all documents from config and projects
+        # This warms up the vector store so first session doesn't pay the cost
+        logger.info("Pre-indexing documents from config and projects...")
+        _warmup_vector_store(config)
+        logger.info("Document pre-indexing complete")
 
         # Startup: Start cleanup task
         await session_manager.start_cleanup_task()
