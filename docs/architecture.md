@@ -492,7 +492,7 @@ Unlike exploratory mode's linear step list, auditable mode shows a **directed ac
 - **Critical path highlight**: Indicate which unresolved facts block completion
 - **Collapse/expand**: Handle large DAGs by collapsing subtrees
 
-**UI placement:** The DAG is integrated into the conversation (as a message bubble or floating panel - TBD). The final proof trace is saved as an **artifact** in the artifact panel.
+**UI placement:** The DAG appears in a **floating panel** over the conversation, allowing users to see both the proof progress and conversation context. The final proof trace is saved as an **artifact** in the artifact panel.
 
 **DAG events** (WebSocket):
 | Event | UI Update |
