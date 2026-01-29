@@ -28,9 +28,11 @@ Every query is decomposed into a **Plan** with one or more **Steps**:
 
 Each step generates Python code, executes it in a sandbox, and saves results to the DataStore for subsequent steps.
 
+The **planner acts like an executive** - it understands the goal, breaks it into steps, and delegates each step to the best-suited role. The planner doesn't do the detailed work itself; it orchestrates specialists.
+
 ### Roles (Step-Level)
 
-Each step can optionally be assigned to a **role**. Roles are typically defined within **skills** (see Prompt Construction → Skills) and represent specialized personas that:
+Each step can optionally be assigned to a **role**. Roles are defined within **skills** (see Prompt Construction → Skills) and represent team members the planner can delegate to:
 
 1. **Maintain isolated context** - The role sees only what it needs, not the full session state
 2. **Execute with role-specific prompting** - Different expertise, tone, and focus
