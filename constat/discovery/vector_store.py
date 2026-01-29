@@ -712,8 +712,9 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.executemany(
             """
-            INSERT OR IGNORE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id)
+            INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
             """,
             records,
         )
@@ -741,9 +742,10 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.executemany(
             """
-            INSERT OR IGNORE INTO chunk_entities
+            INSERT INTO chunk_entities
                 (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral, session_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
             """,
             records,
         )
