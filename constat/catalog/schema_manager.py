@@ -360,12 +360,14 @@ class SchemaManager:
 
     def _connect_file(self, db_name: str, db_config: DatabaseConfig) -> None:
         """Connect to a file-based data source."""
-        connector = FileConnector.from_config(db_name, db_config)
+        config_dir = self.config.config_dir if self.config else None
+        connector = FileConnector.from_config(db_name, db_config, config_dir=config_dir)
         self.file_connections[db_name] = connector
 
     def _connect_sql(self, db_name: str, db_config: DatabaseConfig) -> None:
         """Connect to a SQL database via SQLAlchemy."""
-        connection_uri = db_config.get_connection_uri()
+        config_dir = self.config.config_dir if self.config else None
+        connection_uri = db_config.get_connection_uri(config_dir)
         engine = create_engine(connection_uri)
         # Test connection
         with engine.connect() as conn:
@@ -1128,7 +1130,16 @@ class SchemaManager:
         for entity in search_results:
             full_name = entity["id"]
             relevance = entity["similarity"]
+            # Vector store normalizes IDs to lowercase, but metadata_cache uses original case
+            # Look up using case-insensitive match
             table_meta = self.metadata_cache.get(full_name)
+            if not table_meta:
+                # Try case-insensitive lookup
+                for key, meta in self.metadata_cache.items():
+                    if key.lower() == full_name.lower():
+                        table_meta = meta
+                        full_name = key  # Use original case
+                        break
             if not table_meta:
                 continue
 
@@ -1170,7 +1181,37 @@ class SchemaManager:
         """Return list of all table full names."""
         return list(self.metadata_cache.keys())
 
-    def get_entity_names(self, include_columns: bool = False) -> list[str]:
+    def get_description_text(self) -> list[tuple[str, str]]:
+        """Return all metadata text from schema for NER processing.
+
+        Includes table names, column names, and their descriptions.
+
+        Returns:
+            List of (source_name, text) tuples for NER extraction
+        """
+        from constat.discovery.models import normalize_entity_name
+
+        results = []
+
+        for table_meta in self.metadata_cache.values():
+            # Table name (normalized for NER)
+            table_name_normalized = normalize_entity_name(table_meta.name)
+            results.append((f"table:{table_meta.full_name}", table_name_normalized))
+
+            # Table description
+            if table_meta.comment:
+                results.append((f"table:{table_meta.full_name}:desc", table_meta.comment))
+
+            # Column names and descriptions
+            for col in table_meta.columns:
+                col_name_normalized = normalize_entity_name(col.name)
+                results.append((f"column:{table_meta.full_name}.{col.name}", col_name_normalized))
+                if col.comment:
+                    results.append((f"column:{table_meta.full_name}.{col.name}:desc", col.comment))
+
+        return results
+
+    def get_entity_names(self, include_columns: bool = False, normalize: bool = True) -> list[str]:
         """Return table names (and optionally column names) for entity extraction.
 
         By default, only returns table names since column names are often too
@@ -1178,20 +1219,29 @@ class SchemaManager:
 
         Args:
             include_columns: If True, also include column names (default False)
+            normalize: If True, normalize names for NER (e.g., "performance_reviews" -> "performance review")
 
         Returns:
             List of unique entity names
         """
+        from constat.discovery.models import normalize_entity_name
+
         entities = set()
 
         for table_meta in self.metadata_cache.values():
             # Add table name (without database prefix for matching)
-            entities.add(table_meta.name)
+            name = table_meta.name
+            if normalize:
+                name = normalize_entity_name(name)
+            entities.add(name)
 
             # Optionally add column names
             if include_columns:
                 for col in table_meta.columns:
-                    entities.add(col.name)
+                    col_name = col.name
+                    if normalize:
+                        col_name = normalize_entity_name(col_name)
+                    entities.add(col_name)
 
         return list(entities)
 

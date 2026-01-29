@@ -697,6 +697,32 @@ class APISchemaManager:
         key = f"{api_name}.{endpoint}"
         return self.metadata_cache.get(key)
 
+    def get_description_text(self) -> list[tuple[str, str]]:
+        """Return all metadata text from API schema for NER processing.
+
+        Includes endpoint names, field names, and their descriptions.
+
+        Returns:
+            List of (source_name, text) tuples for NER extraction
+        """
+        results = []
+
+        for key, meta in self.metadata_cache.items():
+            # Endpoint name
+            results.append((f"api:{key}", meta.endpoint_name))
+
+            # Endpoint description
+            if meta.description:
+                results.append((f"api:{key}:desc", meta.description))
+
+            # Field names and descriptions
+            for field in meta.fields:
+                results.append((f"api:{key}.{field.name}", field.name))
+                if field.description:
+                    results.append((f"api:{key}.{field.name}:desc", field.description))
+
+        return results
+
     def get_entity_names(self) -> list[str]:
         """Return all API endpoint and field names for entity extraction.
 

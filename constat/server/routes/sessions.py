@@ -15,7 +15,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from constat.server.auth import CurrentUserId
+from constat.server.auth import CurrentUserId, CurrentUserEmail
+from constat.server.permissions import get_user_permissions
 from constat.server.models import (
     SessionCreate,
     SessionResponse,
@@ -137,6 +138,7 @@ def _load_projects_into_session(
     previously_loaded = getattr(managed, "_project_databases", set())
     newly_loaded = set()
 
+    # Phase 1: Load all databases from all projects
     for filename, project in valid_projects:
         for name, db_config in project.databases.items():
             if name not in previously_loaded:
@@ -151,29 +153,21 @@ def _load_projects_into_session(
             else:
                 newly_loaded.add(name)
 
-        # Index project documents
+    # Phase 2: Index all documents from all projects
+    for filename, project in valid_projects:
         for name, doc_config in project.documents.items():
             try:
                 if doc_config.path:
                     from pathlib import Path
                     doc_path = Path(doc_config.path)
 
-                    # Resolve relative paths from project file location
+                    # Resolve relative paths from config directory
                     if not doc_path.is_absolute():
-                        project_dir = Path(project.source_path).parent if project.source_path else Path.cwd()
-                        doc_path = (project_dir / doc_config.path).resolve()
+                        config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
+                        doc_path = (config_dir / doc_config.path).resolve()
                         logger.debug(f"Resolved document path: {doc_config.path} -> {doc_path}")
 
                     if doc_path.exists():
-                        if not managed.session.doc_tools:
-                            from constat.discovery.doc_tools import DocumentDiscoveryTools
-                            schema_entities = set()
-                            if managed.session.schema_manager:
-                                schema_entities = set(managed.session.schema_manager.get_entity_names())
-                            managed.session.doc_tools = DocumentDiscoveryTools(
-                                config, schema_entities=schema_entities
-                            )
-
                         success, msg = managed.session.doc_tools.add_ephemeral_document_from_file(
                             str(doc_path),
                             name=name,
@@ -187,6 +181,20 @@ def _load_projects_into_session(
                         logger.warning(f"Document file not found: {doc_path} (from {filename})")
             except Exception as e:
                 logger.warning(f"Failed to index project document {name}: {e}")
+
+    # Phase 3: Update schema entities and process metadata through NER (once, with all entities)
+    if managed.session.schema_manager and newly_loaded:
+        schema_entities = set(managed.session.schema_manager.get_entity_names())
+        logger.info(f"Updating schema entities: {len(schema_entities)} entities (newly_loaded: {newly_loaded})")
+        logger.debug(f"Schema entities include: {list(schema_entities)[:20]}...")
+        managed.session.doc_tools.set_schema_entities(schema_entities)
+
+        # Process schema metadata (names + descriptions) through NER for cross-datasource linking
+        schema_metadata = managed.session.schema_manager.get_description_text()
+        if schema_metadata:
+            managed.session.doc_tools.process_metadata_through_ner(schema_metadata, source_type="schema")
+
+        logger.info(f"Updated doc_tools schema entities: {len(schema_entities)} entities")
 
     # Register project APIs
     for filename, project in valid_projects:
@@ -487,3 +495,157 @@ async def save_messages(
         history.save_messages(history_session_id, messages)
 
     return {"status": "saved", "count": len(messages)}
+
+
+@router.get("/{session_id}/prompt-context")
+async def get_prompt_context(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Get the prompt context for a session.
+
+    Returns all elements that contribute to the LLM prompt:
+    - System prompt (from config)
+    - Active role (if any)
+    - Active skills (if any)
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Dict with system_prompt, active_role, active_skills
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+    if not managed or managed.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = managed.session
+
+    # Get the full assembled system prompt (config + role + skills)
+    # This matches what's actually used during execution
+    system_prompt = session._get_system_prompt() if hasattr(session, '_get_system_prompt') else (session.config.system_prompt or "")
+    logger.info(f"[prompt-context] system_prompt length: {len(system_prompt)}, has _get_system_prompt: {hasattr(session, '_get_system_prompt')}")
+
+    # Get active role
+    active_role = None
+    role_prompt = ""
+    if hasattr(session, "role_manager"):
+        role_name = session.role_manager.active_role_name
+        if role_name:
+            role = session.role_manager.get_role(role_name)
+            active_role = {
+                "name": role_name,
+                "prompt": role.prompt if role else "",
+            }
+            role_prompt = role.prompt if role else ""
+
+    # Get active skills
+    active_skills = []
+    if hasattr(session, "skill_manager"):
+        for name in session.skill_manager.active_skills:
+            skill = session.skill_manager.get_skill(name)
+            if skill:
+                active_skills.append({
+                    "name": skill.name,
+                    "prompt": skill.prompt,
+                    "description": skill.description,
+                })
+
+    return {
+        "system_prompt": system_prompt,
+        "active_role": active_role,
+        "active_skills": active_skills,
+    }
+
+
+@router.put("/{session_id}/system-prompt")
+async def update_system_prompt(
+    session_id: str,
+    request: Request,
+    body: dict,
+    user_id: CurrentUserId,
+    email: str = Depends(CurrentUserEmail),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Update the system prompt (admin only).
+
+    Updates the in-memory config system prompt. Changes persist until server restart.
+
+    Args:
+        session_id: Session ID
+        body: Dict with system_prompt field
+
+    Returns:
+        Status and updated system_prompt
+
+    Raises:
+        403: Not an admin
+        404: Session not found
+    """
+    # Check admin permission
+    server_config = request.app.state.server_config
+    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    if not perms.admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    managed = session_manager.get_session(session_id)
+    if not managed or managed.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    new_prompt = body.get("system_prompt", "")
+
+    # Update the global config
+    config = request.app.state.config
+    config.system_prompt = new_prompt
+
+    # Update the session's config reference
+    managed.session.config.system_prompt = new_prompt
+
+    return {
+        "status": "updated",
+        "system_prompt": new_prompt,
+    }
+
+
+@router.post("/{session_id}/match-context")
+async def match_dynamic_context(
+    session_id: str,
+    body: dict,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Preview dynamic context matching for a query.
+
+    Returns which role and skills would be matched for the given query
+    without actually running the query.
+
+    Args:
+        session_id: Session ID
+        body: Dict with 'query' field
+
+    Returns:
+        Dict with:
+            - role: Optional dict with name, description, similarity
+            - skills: List of dicts with name, description, similarity
+            - role_source: "skill" or "query" indicating how role was selected
+    """
+    managed = session_manager.get_session(session_id)
+    if not managed or managed.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    query = body.get("query", "")
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    session = managed.session
+    context = session.get_dynamic_context(query)
+
+    return {
+        "role": context.get("role"),
+        "skills": context.get("skills"),
+        "role_source": context.get("role_source"),
+    }

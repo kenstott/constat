@@ -340,10 +340,12 @@ class Session:
         history: Optional[SessionHistory] = None,
         progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
         user_id: Optional[str] = None,
+        data_dir: Optional[Path] = None,
     ):
         self.config = config
         self.session_config = session_config or SessionConfig()
         self.user_id = user_id or "default"
+        self.data_dir = data_dir or Path(".constat")
 
         # Start loading embedding model in background immediately
         # This allows the model to load while other initialization happens
@@ -370,15 +372,21 @@ class Session:
         logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
 
         # Document discovery tools (for reference documents)
-        # Pass schema and API entities at initialization to avoid race conditions during index build
+        # Always create doc_tools - don't make first user pay lazy loading cost
         t0 = time.time()
-        if config.documents:
-            schema_entities = set(self.schema_manager.get_entity_names())
-            api_entities = self._get_api_entity_names()
-            all_entities = schema_entities | api_entities
-            self.doc_tools = DocumentDiscoveryTools(config, schema_entities=all_entities)
-        else:
-            self.doc_tools = None
+        schema_entities = set(self.schema_manager.get_entity_names())
+        api_entities = self._get_api_entity_names()
+        all_entities = schema_entities | api_entities
+        self.doc_tools = DocumentDiscoveryTools(config, schema_entities=all_entities)
+
+        # Process schema/API metadata through NER for cross-datasource entity linking
+        schema_metadata = self.schema_manager.get_description_text()
+        if schema_metadata:
+            self.doc_tools.process_metadata_through_ner(schema_metadata, source_type="schema")
+
+        api_metadata = self.api_schema_manager.get_description_text()
+        if api_metadata:
+            self.doc_tools.process_metadata_through_ner(api_metadata, source_type="api")
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
         # Task router for model routing with escalation
@@ -441,13 +449,26 @@ class Session:
         # Pass learning store to planner for injecting learned rules
         self.planner.set_learning_store(self.learning_store)
 
-        # Role manager for user-defined roles (optional ~/.constat/roles.yaml)
+        # Role manager for user-defined roles ({data_dir}/{user_id}/roles.yaml)
         from constat.core.roles import RoleManager
-        self.role_manager = RoleManager()
+        self.role_manager = RoleManager(user_id=self.user_id, base_dir=self.data_dir)
 
-        # Skill manager for user-defined skills (~/.constat/users/{user_id}/skills/)
+        # Role matcher for dynamic role selection based on query
+        from constat.core.role_matcher import RoleMatcher
+        self.role_matcher = RoleMatcher(self.role_manager)
+        # Initialize lazily on first use to avoid blocking startup
+
+        # Skill manager for user-defined skills ({data_dir}/{user_id}/skills/)
         from constat.core.skills import SkillManager
-        self.skill_manager = SkillManager(user_id=user_id)
+        self.skill_manager = SkillManager(user_id=user_id, base_dir=self.data_dir)
+
+        # Skill matcher for dynamic skill selection based on query
+        from constat.core.skill_matcher import SkillMatcher
+        self.skill_matcher = SkillMatcher(self.skill_manager)
+        # Initialize lazily on first use to avoid blocking startup
+
+        # Track current role for this query (None = shared context)
+        self._current_role_id: Optional[str] = None
 
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
@@ -639,6 +660,20 @@ class Session:
             self.planner.set_user_facts(facts_dict)
         except Exception as e:
             logger.debug(f"Failed to sync user facts to planner: {e}")
+
+    def _sync_available_roles_to_planner(self) -> None:
+        """Sync available roles to the planner for role-based step assignment."""
+        try:
+            role_names = self.role_manager.list_roles()  # Returns list[str]
+            # Convert to list of dicts with name and description
+            roles_list = []
+            for name in role_names:
+                role = self.role_manager.get_role(name)
+                if role:
+                    roles_list.append({"name": name, "description": role.description or ""})
+            self.planner.set_available_roles(roles_list)
+        except Exception as e:
+            logger.debug(f"Failed to sync roles to planner: {e}")
 
     def _is_unclear_input(self, text: str) -> bool:
         """Check if input appears to be unclear, garbage, or a copy-paste error.
@@ -1011,6 +1046,16 @@ class Session:
             api_entities = self._get_api_entity_names()
             all_entities = schema_entities | api_entities
             self.doc_tools.set_schema_entities(all_entities)
+
+            # Process schema metadata (names + descriptions) through NER
+            schema_metadata = self.schema_manager.get_description_text()
+            if schema_metadata:
+                self.doc_tools.process_metadata_through_ner(schema_metadata, source_type="schema")
+
+            # Process API metadata through NER
+            api_metadata = self.api_schema_manager.get_description_text()
+            if api_metadata:
+                self.doc_tools.process_metadata_through_ner(api_metadata, source_type="api")
 
         # Refresh document vector index (incremental by default)
         doc_stats = {}
@@ -2278,6 +2323,7 @@ Return ONLY Python code, no markdown."""
                     df=value,
                     step_number=step_number,
                     description=f"Auto-saved from step {step_number}",
+                    role_id=self._current_role_id,
                 )
 
             # Auto-save lists (as state, since they might be useful)
@@ -2303,6 +2349,10 @@ Return ONLY Python code, no markdown."""
         last_code = ""
         last_error = None
         pending_learning_context = None  # Track error for potential learning capture
+
+        # Set current role context for this step (facts created will inherit this role_id)
+        previous_role_id = self._current_role_id
+        self._current_role_id = step.role_id
 
         self._emit_event(StepEvent(
             event_type="step_start",
@@ -2390,9 +2440,9 @@ Return ONLY Python code, no markdown."""
 
             # Record artifacts in datastore
             if self.datastore:
-                self.datastore.add_artifact(step.number, attempt, "code", code)
+                self.datastore.add_artifact(step.number, attempt, "code", code, role_id=self._current_role_id)
                 if result.stdout:
-                    self.datastore.add_artifact(step.number, attempt, "output", result.stdout)
+                    self.datastore.add_artifact(step.number, attempt, "output", result.stdout, role_id=self._current_role_id)
 
             if result.success:
                 duration_ms = int((time.time() - start_time) * 1000)
@@ -2431,6 +2481,9 @@ Return ONLY Python code, no markdown."""
                         output=result.stdout,
                     )
 
+                # Restore previous role context
+                self._current_role_id = previous_role_id
+
                 return StepResult(
                     success=True,
                     stdout=result.stdout,
@@ -2450,7 +2503,7 @@ Return ONLY Python code, no markdown."""
 
             # Record error artifact
             if self.datastore:
-                self.datastore.add_artifact(step.number, attempt, "error", last_error)
+                self.datastore.add_artifact(step.number, attempt, "error", last_error, role_id=self._current_role_id)
 
             # Determine error type for better status messages
             error_lower = last_error.lower() if last_error else ""
@@ -2510,6 +2563,9 @@ Return ONLY Python code, no markdown."""
                 code=last_code,
                 error=last_error,
             )
+
+        # Restore previous role context
+        self._current_role_id = previous_role_id
 
         return StepResult(
             success=False,
@@ -4277,6 +4333,7 @@ Return ONLY the suggestions, one per line, no numbering or bullets."""
         enhanced_problem = f"{problem}\n\nPlan Adjustments:\n{feedback}"
 
         self._sync_user_facts_to_planner()
+        self._sync_available_roles_to_planner()
         return self.planner.plan(enhanced_problem)
 
     # =========================================================================
@@ -5246,10 +5303,19 @@ Provide a brief, high-level summary of the key findings."""
         def run_ambiguity():
             return self._detect_ambiguity(problem, is_auditable_mode=True)
 
+        def run_dynamic_context():
+            # Match skills and roles dynamically based on query
+            try:
+                return self.get_dynamic_context(problem)
+            except Exception as e:
+                logger.debug(f"[PARALLEL] Dynamic context matching failed: {e}")
+                return None
+
         def run_planning():
             # Speculative planning - may be discarded if intent doesn't need it
             try:
                 self._sync_user_facts_to_planner()
+                self._sync_available_roles_to_planner()
                 return self.planner.plan(problem)
             except Exception as e:
                 logger.debug(f"[PARALLEL] Speculative planning failed: {e}")
@@ -5259,6 +5325,7 @@ Provide a brief, high-level summary of the key findings."""
         tasks = {
             "intent": run_intent,
             "analysis": run_analysis,
+            "dynamic_context": run_dynamic_context,
         }
         if self.session_config.ask_clarifications and self._clarification_callback:
             tasks["ambiguity"] = run_ambiguity
@@ -5285,6 +5352,19 @@ Provide a brief, high-level summary of the key findings."""
         analysis = results.get("analysis")
         clarification_request = results.get("ambiguity")
         speculative_plan = results.get("planning")
+        dynamic_context = results.get("dynamic_context")
+
+        # Emit dynamic context event (role and skills matched for this query)
+        if dynamic_context:
+            self._emit_event(StepEvent(
+                event_type="dynamic_context",
+                step_number=0,
+                data={
+                    "role": dynamic_context.get("role"),
+                    "skills": dynamic_context.get("skills"),
+                    "role_source": dynamic_context.get("role_source"),
+                }
+            ))
 
         # Route based on primary intent (may discard speculative plan)
         route_to_planning = False
@@ -5445,8 +5525,9 @@ Provide a brief, high-level summary of the key findings."""
                     data={"message": "Analyzing data sources and creating plan..."}
                 ))
 
-                # Sync user facts to planner before generating plan
+                # Sync user facts and roles to planner before generating plan
                 self._sync_user_facts_to_planner()
+                self._sync_available_roles_to_planner()
 
                 # Generate plan
                 planner_response = self.planner.plan(current_problem)
@@ -5773,6 +5854,9 @@ Provide a brief, high-level summary of the key findings."""
                     table_names=tables_to_publish,
                 )
                 logger.debug(f"Auto-published final step tables: {tables_to_publish}")
+
+        # Note: Facts created during role-scoped steps are tagged with role_id
+        # for provenance but remain globally accessible. No promotion needed.
 
         # Emit raw results first (so user can see them immediately)
         self._emit_event(StepEvent(
@@ -6197,8 +6281,9 @@ Follow-up question: {question}
             data={"message": "Planning follow-up analysis..."}
         ))
 
-        # Sync user facts to planner before generating plan
+        # Sync user facts and roles to planner before generating plan
         self._sync_user_facts_to_planner()
+        self._sync_available_roles_to_planner()
 
         # Generate plan for follow-up
         planner_response = self.planner.plan(context_prompt)
@@ -6264,6 +6349,7 @@ User feedback: {approval.suggestion}
                 ))
 
                 self._sync_user_facts_to_planner()
+                self._sync_available_roles_to_planner()
                 planner_response = self.planner.plan(context_prompt_with_feedback)
                 follow_up_plan = planner_response.plan
 
@@ -8811,6 +8897,10 @@ Prove all of the above claims and provide a complete audit trail."""
         Returns:
             Dict with the created fact
         """
+        # Use current role context if not explicitly provided
+        if "role_id" not in params and self._current_role_id:
+            params["role_id"] = self._current_role_id
+
         fact = self.fact_resolver.add_user_fact(
             fact_name=fact_name,
             value=value,
@@ -8818,6 +8908,160 @@ Prove all of the above claims and provide a complete audit trail."""
             **params,
         )
         return fact.to_dict()
+
+    # =========================================================================
+    # Dynamic Role and Skill Selection
+    # =========================================================================
+
+    def match_role_for_query(self, query: str) -> Optional[str]:
+        """Match a query to the best-fitting role using semantic similarity.
+
+        Args:
+            query: User's natural language query
+
+        Returns:
+            Role name if matched, None if no match (use shared context)
+        """
+        from constat.core.role_matcher import RoleMatch
+
+        match = self.role_matcher.match(query)
+        if match:
+            self._current_role_id = match.role.name
+            logger.info(f"Matched role '{match.role.name}' for query (similarity: {match.similarity:.2f})")
+            return match.role.name
+
+        self._current_role_id = None
+        return None
+
+    def match_skills_for_query(self, query: str) -> list[str]:
+        """Match a query to relevant skills using semantic similarity.
+
+        Args:
+            query: User's natural language query
+
+        Returns:
+            List of matched skill names (may be empty)
+        """
+        matches = self.skill_matcher.match(query)
+        return [m.skill.name for m in matches]
+
+    def get_dynamic_context(self, query: str) -> dict:
+        """Get the dynamically selected role and skills for a query.
+
+        This is the main entry point for dynamic selection. It:
+        1. Matches the query to skills (multiple selection)
+        2. Checks if any skill specifies a role/agent context
+        3. If skill specifies role → use that role
+        4. Otherwise → matches the query to a role (single selection)
+        5. Returns the combined context for prompt building
+
+        Args:
+            query: User's natural language query
+
+        Returns:
+            Dict with:
+                - role: Optional[dict] with name, description, similarity
+                - skills: List of dicts with name, prompt, description
+                - role_prompt: Combined role prompt content
+                - skills_prompt: Combined skills prompt content
+                - role_source: "skill" if role came from skill, "query" if from query match
+        """
+        # Step 1: Match skills first
+        skill_matches = self.skill_matcher.match(query)
+        skills_info = []
+        skills_prompts = []
+        skill_specified_role = None
+
+        for match in skill_matches:
+            skills_info.append({
+                "name": match.skill.name,
+                "description": match.skill.description,
+                "similarity": match.similarity,
+            })
+            skills_prompts.append(f"## {match.skill.name}\n{match.skill.prompt}")
+
+            # Check if skill specifies a role/agent
+            # Uses the 'agent' field from SKILL.md frontmatter
+            if match.skill.agent and not skill_specified_role:
+                skill_specified_role = match.skill.agent
+                logger.info(f"Skill '{match.skill.name}' specifies agent/role: {skill_specified_role}")
+
+        if skill_matches:
+            skill_names = [m.skill.name for m in skill_matches]
+            similarities = [f"{m.skill.name}({m.similarity:.2f})" for m in skill_matches]
+            logger.info(f"[CONTEXT] Selected skills: {similarities}")
+        else:
+            logger.info("[CONTEXT] No skills matched for query")
+
+        # Step 2: Determine role
+        role_info = None
+        role_prompt = ""
+        role_source = None
+
+        if skill_specified_role:
+            # Skill specified a role - try to use it
+            role = self.role_manager.get_role(skill_specified_role)
+            if role:
+                self._current_role_id = role.name
+                role_info = {
+                    "name": role.name,
+                    "description": role.description,
+                    "similarity": 1.0,  # Explicit specification = full match
+                }
+                role_prompt = role.prompt
+                role_source = "skill"
+                logger.info(f"[CONTEXT] Selected role: {role.name} (specified by skill)")
+            else:
+                logger.warning(f"Skill specified role '{skill_specified_role}' not found, falling back to query match")
+
+        if not role_info:
+            # No skill-specified role, match based on query
+            role_match = self.role_matcher.match(query)
+            if role_match:
+                self._current_role_id = role_match.role.name
+                role_info = {
+                    "name": role_match.role.name,
+                    "description": role_match.role.description,
+                    "similarity": role_match.similarity,
+                }
+                role_prompt = role_match.role.prompt
+                role_source = "query"
+                logger.info(f"[CONTEXT] Selected role: {role_match.role.name} (similarity: {role_match.similarity:.2f})")
+            else:
+                self._current_role_id = None
+                logger.info("[CONTEXT] No role matched for query")
+
+        return {
+            "role": role_info,
+            "skills": skills_info,
+            "role_prompt": role_prompt,
+            "skills_prompt": "\n\n".join(skills_prompts),
+            "role_source": role_source,
+        }
+
+    @property
+    def current_role_id(self) -> Optional[str]:
+        """Get the current role ID for this query context."""
+        return self._current_role_id
+
+    def set_current_role(self, role_name: Optional[str]) -> bool:
+        """Manually set the current role (override dynamic selection).
+
+        Args:
+            role_name: Role name or None to clear
+
+        Returns:
+            True if successful, False if role not found
+        """
+        if role_name is None:
+            self._current_role_id = None
+            self.role_manager.set_active_role(None)
+            return True
+
+        if self.role_manager.set_active_role(role_name):
+            self._current_role_id = role_name
+            return True
+        return False
 
 
 def create_session(config_path: str) -> Session:

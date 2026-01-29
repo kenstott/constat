@@ -20,11 +20,14 @@ Extraction sources:
 """
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 import spacy
+
+logger = logging.getLogger(__name__)
 from spacy.language import Language
 
 from constat.discovery.models import (
@@ -108,28 +111,19 @@ class EntityExtractor:
     )
 
     # Common words that spaCy misclassifies as entities
+    # Keep this minimal - only filter true noise, not business terms
     NOISE_WORDS = {
-        # Tier/level names
-        'bronze', 'silver', 'gold', 'platinum', 'diamond', 'basic', 'premium',
-        'standard', 'enterprise', 'pro', 'plus', 'elite', 'vip',
-        # Generic terms
-        'level', 'tier', 'type', 'status', 'category', 'alert', 'escalate',
-        'priority', 'severity', 'criteria', 'eligible', 'guidelines',
-        'increase', 'decrease', 'max', 'min', 'total', 'average',
-        'stockout', 'reorder', 'backorder', 'inventory', 'quantity',
-        # Job titles/roles (fragments)
-        'manager', 'director', 'executive', 'vp', 'ceo', 'cto', 'cfo',
-        'admin', 'user', 'customer', 'employee', 'staff', 'team',
+        # Generic structural terms
+        'level', 'type', 'status', 'category',
         # Actions
         'create', 'update', 'delete', 'read', 'write', 'send', 'receive',
-        # Common columns/fields
+        # Common columns/fields that are too generic
         'name', 'email', 'phone', 'address', 'date', 'time', 'id',
         # Time periods
         'q1', 'q2', 'q3', 'q4', 'year', 'month', 'week', 'day', 'hour',
         'fy', 'ytd', 'mtd', 'qtd',
-        # Common document terms
+        # Document structure terms
         'page', 'section', 'table', 'figure', 'appendix', 'chapter',
-        'rating', 'salary', 'order', 'tiers',
     }
 
     def __init__(
@@ -209,6 +203,7 @@ class EntityExtractor:
             alternation = '|'.join(escaped_variations)
             pattern = re.compile(rf'\b({alternation})\b', re.IGNORECASE)
             patterns[term] = pattern  # Keep original term as key
+            logger.debug(f"Built pattern for '{term}': variations={variations}")
         return patterns
 
     def _generate_entity_id(self, name: str, entity_type: str) -> str:
@@ -314,6 +309,7 @@ class EntityExtractor:
             if matches:
                 actual_name = matches[0]
                 mention_count = len(matches)
+                logger.debug(f"Schema match: '{term}' -> '{actual_name}' ({mention_count}x) in chunk {chunk_id[:8]}")
 
                 # Determine if it's a table or column based on naming conventions
                 entity_type = EntityType.TABLE

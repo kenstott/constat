@@ -456,12 +456,17 @@ class DocumentDiscoveryTools:
 
         # Check if entities actually changed
         if set(new_entities) == set(self._schema_entities or []):
+            logger.debug(f"set_schema_entities: no change, skipping (have {len(new_entities)} entities)")
             return
 
+        logger.info(f"set_schema_entities: updating from {len(self._schema_entities or [])} to {len(new_entities)} entities")
+        logger.debug(f"set_schema_entities: new entities include: {list(new_entities)[:10]}...")
         self._schema_entities = new_entities
 
         # Re-extract entities from existing documents if we have indexed chunks
-        if self._vector_store.count() > 0 and hasattr(self._vector_store, 'add_entities'):
+        chunk_count = self._vector_store.count()
+        if chunk_count > 0 and hasattr(self._vector_store, 'add_entities'):
+            logger.info(f"set_schema_entities: re-extracting entities from {chunk_count} chunks")
             # Clear existing entity links (but keep entities from other sources)
             if hasattr(self._vector_store, 'clear_chunk_entity_links'):
                 self._vector_store.clear_chunk_entity_links()
@@ -470,6 +475,80 @@ class DocumentDiscoveryTools:
             chunks = self._vector_store.get_chunks()
             if chunks:
                 self._extract_and_store_entities(chunks, self._schema_entities)
+                logger.info(f"set_schema_entities: extraction complete")
+        else:
+            logger.debug(f"set_schema_entities: no chunks to re-extract ({chunk_count} chunks)")
+
+    def process_metadata_through_ner(
+        self,
+        metadata_texts: list[tuple[str, str]],
+        source_type: str = "schema",
+    ) -> None:
+        """Process schema/API metadata through NER for cross-datasource entity linking.
+
+        Creates pseudo-chunks from metadata text (names, descriptions) and runs
+        entity extraction to find entities that appear across datasources.
+
+        Args:
+            metadata_texts: List of (source_name, text) tuples
+            source_type: Source type for the chunks ("schema" or "api")
+        """
+        if not metadata_texts:
+            return
+
+        if not hasattr(self._vector_store, 'add_entities'):
+            return
+
+        logger.info(f"Processing {len(metadata_texts)} {source_type} metadata items through NER")
+
+        # Create pseudo-chunks from metadata
+        chunks = []
+        for source_name, text in metadata_texts:
+            if text and text.strip():
+                chunk = DocumentChunk(
+                    document_name=f"__{source_type}_metadata__",
+                    content=text,
+                    section=source_name,
+                    chunk_index=len(chunks),
+                )
+                chunks.append(chunk)
+
+        if not chunks:
+            return
+
+        # Run entity extraction on metadata chunks
+        config = ExtractionConfig(
+            extract_schema=bool(self._schema_entities),
+            extract_ner=True,
+            schema_entities=self._schema_entities or [],
+            openapi_operations=self._openapi_operations,
+            openapi_schemas=self._openapi_schemas,
+            graphql_types=self._graphql_types,
+            graphql_fields=self._graphql_fields,
+        )
+        extractor = EntityExtractor(config)
+
+        all_links: list[ChunkEntity] = []
+        for chunk in chunks:
+            extractions = extractor.extract(chunk)
+            for entity, link in extractions:
+                all_links.append(link)
+
+        entities = extractor.get_all_entities()
+        logger.debug(f"Metadata NER: {len(entities)} entities, {len(all_links)} links from {len(chunks)} metadata items")
+
+        if entities:
+            # Separate by source for proper categorization
+            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
+            other_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
+
+            if schema_entities_list:
+                self._vector_store.add_entities(schema_entities_list, source="schema")
+            if other_entities_list:
+                self._vector_store.add_entities(other_entities_list, source=source_type)
+
+        if all_links:
+            self._vector_store.link_chunk_entities(all_links)
 
     def set_openapi_entities(
         self,
@@ -691,10 +770,21 @@ class DocumentDiscoveryTools:
         if entities:
             import inspect
             sig = inspect.signature(self._vector_store.add_entities)
+
+            # Separate entities by their metadata source for proper vector store categorization
+            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
+            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
+
             if 'ephemeral' in sig.parameters:
-                self._vector_store.add_entities(entities, ephemeral=True)
+                if schema_entities_list:
+                    self._vector_store.add_entities(schema_entities_list, ephemeral=True, source="schema")
+                if doc_entities_list:
+                    self._vector_store.add_entities(doc_entities_list, ephemeral=True, source="document")
             else:
-                self._vector_store.add_entities(entities)
+                if schema_entities_list:
+                    self._vector_store.add_entities(schema_entities_list, source="schema")
+                if doc_entities_list:
+                    self._vector_store.add_entities(doc_entities_list, source="document")
 
         if all_links:
             sig = inspect.signature(self._vector_store.link_chunk_entities)
@@ -1824,8 +1914,20 @@ class DocumentDiscoveryTools:
 
         # Store all unique entities
         entities = extractor.get_all_entities()
+        logger.debug(f"Entity extraction: {len(entities)} unique entities, {len(all_links)} links from {len(chunks)} chunks")
+        if schema_entities:
+            # Log which schema entities were matched
+            matched_schema = [e.name for e in entities if e.metadata.get("source") == "database_schema"]
+            logger.debug(f"Entity extraction: matched schema entities: {matched_schema}")
         if entities:
-            self._vector_store.add_entities(entities)
+            # Separate entities by their metadata source for proper vector store categorization
+            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
+            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
+
+            if schema_entities_list:
+                self._vector_store.add_entities(schema_entities_list, source="schema")
+            if doc_entities_list:
+                self._vector_store.add_entities(doc_entities_list, source="document")
 
         # Store all chunk-entity links
         if all_links:
