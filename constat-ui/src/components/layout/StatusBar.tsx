@@ -1,5 +1,6 @@
 // Status Bar component
 
+import { useEffect, useState, useRef } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
 import { useUIStore } from '@/store/uiStore'
 import {
@@ -8,6 +9,8 @@ import {
   SignalSlashIcon,
   SunIcon,
   MoonIcon,
+  UserCircleIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline'
 
 const statusColors: Record<string, string> = {
@@ -21,12 +24,37 @@ const statusColors: Record<string, string> = {
 }
 
 export function StatusBar() {
-  const { session, status, wsConnected } = useSessionStore()
+  const { session, status, wsConnected, roles, currentRole, fetchRoles, setRole } = useSessionStore()
   const { theme, setTheme, toggleMenu } = useUIStore()
+  const [roleMenuOpen, setRoleMenuOpen] = useState(false)
+  const roleMenuRef = useRef<HTMLDivElement>(null)
+
+  // Fetch roles when session changes
+  useEffect(() => {
+    if (session) {
+      fetchRoles()
+    }
+  }, [session, fetchRoles])
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (roleMenuRef.current && !roleMenuRef.current.contains(event.target as Node)) {
+        setRoleMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   const toggleTheme = () => {
     const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light'
     setTheme(next)
+  }
+
+  const handleRoleSelect = (roleName: string | null) => {
+    setRole(roleName)
+    setRoleMenuOpen(false)
   }
 
   return (
@@ -66,6 +94,49 @@ export function StatusBar() {
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Role selector */}
+      {session && roles.length > 0 && (
+        <div className="relative" ref={roleMenuRef}>
+          <button
+            onClick={() => setRoleMenuOpen(!roleMenuOpen)}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-sm"
+          >
+            <UserCircleIcon className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+            <span className={currentRole ? 'text-primary-600 dark:text-primary-400' : 'text-gray-500 dark:text-gray-400'}>
+              {currentRole || 'No role'}
+            </span>
+            <ChevronDownIcon className="w-3 h-3 text-gray-400" />
+          </button>
+
+          {roleMenuOpen && (
+            <div className="absolute right-0 mt-1 w-48 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md shadow-lg z-50">
+              <div className="py-1">
+                <button
+                  onClick={() => handleRoleSelect(null)}
+                  className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                    !currentRole ? 'text-primary-600 dark:text-primary-400 font-medium' : 'text-gray-700 dark:text-gray-300'
+                  }`}
+                >
+                  No role
+                </button>
+                {roles.map((role) => (
+                  <button
+                    key={role.name}
+                    onClick={() => handleRoleSelect(role.name)}
+                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                      role.name === currentRole ? 'text-primary-600 dark:text-primary-400 font-medium' : 'text-gray-700 dark:text-gray-300'
+                    }`}
+                    title={role.prompt}
+                  >
+                    {role.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Connection status */}
       <div className="flex items-center gap-1.5">

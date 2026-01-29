@@ -164,6 +164,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.databases import router as databases_router
     from constat.server.routes.learnings import router as learnings_router
     from constat.server.routes.users import router as users_router
+    from constat.server.routes.roles import router as roles_router
 
     app.include_router(
         sessions_router,
@@ -204,6 +205,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         users_router,
         prefix="/api/users",
         tags=["users"],
+    )
+    app.include_router(
+        roles_router,
+        prefix="/api/sessions",
+        tags=["roles"],
     )
 
     return app

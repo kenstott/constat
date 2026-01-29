@@ -51,6 +51,12 @@ interface QueuedMessage {
   timestamp: Date
 }
 
+interface RoleInfo {
+  name: string
+  prompt: string
+  is_active: boolean
+}
+
 interface SessionState {
   // Current session
   session: Session | null
@@ -82,6 +88,10 @@ interface SessionState {
   // Queued messages (submitted while busy)
   queuedMessages: QueuedMessage[]
 
+  // Roles
+  roles: RoleInfo[]
+  currentRole: string | null
+
   // Actions
   createSession: (userId?: string) => Promise<void>
   setSession: (session: Session | null) => void
@@ -102,6 +112,8 @@ interface SessionState {
   handleWSEvent: (event: WSEvent) => void
   removeQueuedMessage: (id: string) => void
   clearQueue: () => void
+  fetchRoles: () => Promise<void>
+  setRole: (roleName: string | null) => Promise<void>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -121,6 +133,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   suggestions: [],
   queuedMessages: [],
   lastQueryStartStep: 0,
+  roles: [],
+  currentRole: null,
 
   createSession: async (userId = 'default') => {
     const session = await sessionsApi.createSession(userId)
@@ -813,6 +827,53 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'progress':
         // Progress events could update a progress bar if needed
         break
+    }
+  },
+
+  fetchRoles: async () => {
+    const { session } = get()
+    if (!session) return
+
+    try {
+      const response = await fetch(`/api/sessions/roles?session_id=${session.session_id}`, {
+        credentials: 'include',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        set({
+          roles: data.roles || [],
+          currentRole: data.current_role || null,
+        })
+      }
+    } catch (error) {
+      console.error('Failed to fetch roles:', error)
+    }
+  },
+
+  setRole: async (roleName: string | null) => {
+    const { session } = get()
+    if (!session) return
+
+    try {
+      const response = await fetch(`/api/sessions/roles/current?session_id=${session.session_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ role_name: roleName }),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        set({ currentRole: data.current_role })
+        // Update roles list to reflect active state
+        set((state) => ({
+          roles: state.roles.map((r) => ({
+            ...r,
+            is_active: r.name === data.current_role,
+          })),
+        }))
+      }
+    } catch (error) {
+      console.error('Failed to set role:', error)
     }
   },
 }))
