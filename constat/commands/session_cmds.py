@@ -56,6 +56,11 @@ def state_command(ctx: CommandContext) -> KeyValueResult:
         facts = session.fact_resolver.get_all_facts()
         pairs["Facts"] = len(facts)
 
+    # Active role
+    if hasattr(session, "role_manager"):
+        role_name = session.role_manager.active_role_name
+        pairs["Role"] = role_name or "None"
+
     return KeyValueResult(
         success=True,
         title="Session State",
@@ -332,3 +337,76 @@ def correct_command(ctx: CommandContext) -> CommandResult:
         )
     except Exception as e:
         return ErrorResult(error=f"Failed to record correction: {e}")
+
+
+def role_command(ctx: CommandContext) -> CommandResult:
+    """Set or show the current role."""
+    session = ctx.session
+
+    if not hasattr(session, "role_manager"):
+        return ErrorResult(error="Role manager not available.")
+
+    role_manager = session.role_manager
+    args = ctx.args.strip()
+
+    if not args:
+        # Show current role
+        if role_manager.active_role_name:
+            role = role_manager.active_role
+            return TextResult(
+                success=True,
+                content=f"**Current role:** {role_manager.active_role_name}\n\n> {role.prompt[:200]}{'...' if len(role.prompt) > 200 else ''}",
+            )
+        else:
+            return TextResult(
+                success=True,
+                content="No role active. Use `/role <name>` to set one, or `/roles` to list available roles.",
+            )
+
+    # Set role
+    if role_manager.set_active_role(args):
+        if args.lower() == "none":
+            return TextResult(success=True, content="Role cleared.")
+        role = role_manager.active_role
+        return TextResult(
+            success=True,
+            content=f"Role set to **{args}**\n\n> {role.prompt[:200]}{'...' if len(role.prompt) > 200 else ''}",
+        )
+    else:
+        available = ", ".join(role_manager.list_roles()) or "none"
+        return ErrorResult(
+            error=f"Role not found: {args}",
+            details=f"Available roles: {available}",
+        )
+
+
+def roles_command(ctx: CommandContext) -> CommandResult:
+    """List available roles."""
+    session = ctx.session
+
+    if not hasattr(session, "role_manager"):
+        return ErrorResult(error="Role manager not available.")
+
+    role_manager = session.role_manager
+
+    if not role_manager.has_roles:
+        return TextResult(
+            success=True,
+            content=f"No roles defined.\n\nCreate roles in: `{role_manager.roles_file_path}`\n\nExample:\n```yaml\ncfo:\n  prompt: |\n    Focus on financial impact and executive summaries.\n```",
+        )
+
+    items = []
+    for name in role_manager.list_roles():
+        role = role_manager.get_role(name)
+        is_active = name == role_manager.active_role_name
+        items.append({
+            "name": f"{'→ ' if is_active else ''}{name}",
+            "prompt": role.prompt[:60] + "..." if len(role.prompt) > 60 else role.prompt,
+        })
+
+    return ListResult(
+        success=True,
+        title="Available Roles",
+        items=items,
+        empty_message="No roles defined.",
+    )

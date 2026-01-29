@@ -35,6 +35,8 @@ from constat.commands.session_cmds import (
     rule_edit_command,
     rule_delete_command,
     correct_command,
+    role_command,
+    roles_command,
 )
 from constat.commands.sources import (
     databases_command,
@@ -74,6 +76,9 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/rule-edit",), rule_edit_command, "Edit an existing rule"),
     (("/rule-delete",), rule_delete_command, "Delete a rule"),
     (("/correct",), correct_command, "Record a correction"),
+    # Roles
+    (("/role",), role_command, "Set or show current role"),
+    (("/roles",), roles_command, "List available roles"),
 ]
 
 # Build lookup dict for fast access

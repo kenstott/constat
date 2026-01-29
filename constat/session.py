@@ -441,6 +441,10 @@ class Session:
         # Pass learning store to planner for injecting learned rules
         self.planner.set_learning_store(self.learning_store)
 
+        # Role manager for user-defined roles (optional ~/.constat/roles.yaml)
+        from constat.core.roles import RoleManager
+        self.role_manager = RoleManager()
+
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
 
@@ -722,7 +726,7 @@ class Session:
             injected_sections=injected_sections,
             schema_overview=ctx["schema_overview"],
             api_overview=ctx["api_overview"],
-            domain_context=self.config.system_prompt or "No additional context.",
+            domain_context=self._get_system_prompt() or "No additional context.",
             user_facts=ctx["user_facts"],
             learnings=learnings_text,
             datastore_tables=datastore_info,
@@ -1923,6 +1927,21 @@ Return ONLY Python code, no markdown."""
         if isinstance(obj, (list, tuple)):
             return [self._make_json_serializable(v) for v in obj]
         return obj
+
+    def _get_system_prompt(self) -> str:
+        """Get the system prompt with active role appended (if any).
+
+        Returns:
+            The config system prompt + active role prompt (if set)
+        """
+        base_prompt = self.config.system_prompt or ""
+        role_prompt = self.role_manager.get_role_prompt()
+
+        if base_prompt and role_prompt:
+            return f"{base_prompt}\n\n{role_prompt}"
+        elif role_prompt:
+            return role_prompt
+        return base_prompt
 
     def _build_source_context(self, include_user_facts: bool = True) -> dict:
         """Build context about available data sources (schema, APIs, documents, facts).
@@ -3873,7 +3892,7 @@ Unlike chat-based AI tools, I don't just generate text — I execute real querie
             return self._answer_personal_question()
 
         ctx = self._build_source_context(include_user_facts=False)
-        domain_context = self.config.system_prompt or ""
+        domain_context = self._get_system_prompt()
 
         # Get user role if known
         user_role = None
@@ -7634,9 +7653,10 @@ Answer questions using configured reference documents and your general knowledge
 Be accurate and cite your sources when referencing specific documents.
 If you don't have enough information, say so rather than guessing."""
 
-        # Add context about the configuration
-        if self.config.system_prompt:
-            system_prompt = f"{system_prompt}\n\n{self.config.system_prompt}"
+        # Add context about the configuration (including active role)
+        config_prompt = self._get_system_prompt()
+        if config_prompt:
+            system_prompt = f"{system_prompt}\n\n{config_prompt}"
 
         # Build user message with document context
         if doc_context:
