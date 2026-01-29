@@ -445,6 +445,10 @@ class Session:
         from constat.core.roles import RoleManager
         self.role_manager = RoleManager()
 
+        # Skill manager for user-defined skills (~/.constat/users/{user_id}/skills/)
+        from constat.core.skills import SkillManager
+        self.skill_manager = SkillManager(user_id=user_id)
+
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
 
@@ -1929,19 +1933,29 @@ Return ONLY Python code, no markdown."""
         return obj
 
     def _get_system_prompt(self) -> str:
-        """Get the system prompt with active role appended (if any).
+        """Get the system prompt with active role and skills appended.
 
         Returns:
-            The config system prompt + active role prompt (if set)
+            The config system prompt + active role prompt + active skills prompts
         """
-        base_prompt = self.config.system_prompt or ""
-        role_prompt = self.role_manager.get_role_prompt()
+        parts = []
 
-        if base_prompt and role_prompt:
-            return f"{base_prompt}\n\n{role_prompt}"
-        elif role_prompt:
-            return role_prompt
-        return base_prompt
+        # Base system prompt from config
+        base_prompt = self.config.system_prompt or ""
+        if base_prompt:
+            parts.append(base_prompt)
+
+        # Role prompt (if active)
+        role_prompt = self.role_manager.get_role_prompt()
+        if role_prompt:
+            parts.append(role_prompt)
+
+        # Skills prompts (if any active)
+        skills_prompt = self.skill_manager.get_skills_prompt()
+        if skills_prompt:
+            parts.append(f"# Active Skills\n\n{skills_prompt}")
+
+        return "\n\n".join(parts)
 
     def _build_source_context(self, include_user_facts: bool = True) -> dict:
         """Build context about available data sources (schema, APIs, documents, facts).
