@@ -196,13 +196,16 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         Args:
             db_path: Path to DuckDB database file. If None, uses
-                     ~/.constat/vectors.duckdb
+                     ~/.constat/vectors.duckdb or CONSTAT_VECTOR_STORE_PATH env var
         """
+        import os
         from constat.storage.duckdb_pool import ThreadLocalDuckDB
 
-        # Determine database path
+        # Determine database path (env var allows test isolation)
         if db_path:
             self._db_path = Path(db_path).expanduser()
+        elif os.environ.get("CONSTAT_VECTOR_STORE_PATH"):
+            self._db_path = Path(os.environ["CONSTAT_VECTOR_STORE_PATH"])
         else:
             self._db_path = Path.cwd() / ".constat" / "vectors.duckdb"
 
@@ -709,7 +712,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.executemany(
             """
-            INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id)
+            INSERT OR IGNORE INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
@@ -738,7 +741,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.executemany(
             """
-            INSERT OR REPLACE INTO chunk_entities
+            INSERT OR IGNORE INTO chunk_entities
                 (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral, session_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
