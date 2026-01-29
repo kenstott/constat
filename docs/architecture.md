@@ -28,6 +28,24 @@ Every query is decomposed into a **Plan** with one or more **Steps**:
 
 Each step generates Python code, executes it in a sandbox, and saves results to the DataStore for subsequent steps.
 
+### Roles (Step-Level)
+
+Each step can optionally be assigned to a **role**. A role is a specialized persona (e.g., "data engineer", "compliance reviewer") that:
+
+1. **Maintains isolated context** - The role sees only what it needs, not the full session state
+2. **Executes with role-specific prompting** - Different expertise, tone, and focus
+3. **Publishes results back** - Output is merged into the shared session results
+
+```
+Plan:
+  Step 1: [data-engineer] Extract and clean revenue data
+  Step 2: [data-engineer] Join with customer demographics
+  Step 3: [analyst] Identify trends and anomalies
+  Step 4: [compliance] Flag potential audit concerns
+```
+
+This enables **separation of concerns** within a single query - different steps can leverage different expertise while contributing to a unified result.
+
 ### Execution Modes
 
 | Mode | Purpose | Trigger |
@@ -240,9 +258,9 @@ Every LLM request builds a system prompt from these components:
 │  Base System Prompt                                 │
 │  "You are a data analysis assistant..."             │
 ├─────────────────────────────────────────────────────┤
-│  Role (optional)                                    │
-│  User-selected persona: "financial analyst",        │
-│  "compliance officer", etc. Shapes tone & focus.   │
+│  Session Role (optional)                            │
+│  User-selected persona for the session.             │
+│  (Step roles override this with isolated context)   │
 ├─────────────────────────────────────────────────────┤
 │  Skills (loaded on-demand)                          │
 │  Domain knowledge from SKILL.md files.              │
