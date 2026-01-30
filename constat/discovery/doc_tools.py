@@ -510,9 +510,18 @@ class DocumentDiscoveryTools:
         # Get chunks visible to this session (base + projects)
         # Base chunks have project_id='__base__' or NULL
         # Project chunks have project_id in project_ids
+        logger.info(f"extract_entities_for_session({session_id}): looking for chunks with project_ids={project_ids}")
         chunks = self._get_session_visible_chunks(project_ids)
         if not chunks:
-            logger.debug(f"extract_entities_for_session({session_id}): no visible chunks")
+            logger.warning(f"extract_entities_for_session({session_id}): no visible chunks found!")
+            # Debug: check what's in the database
+            if hasattr(self._vector_store, '_conn'):
+                try:
+                    count = self._vector_store._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+                    by_proj = self._vector_store._conn.execute("SELECT project_id, COUNT(*) FROM embeddings GROUP BY project_id").fetchall()
+                    logger.warning(f"extract_entities_for_session: total embeddings={count}, by_project={by_proj}")
+                except Exception as e:
+                    logger.warning(f"extract_entities_for_session: failed to check embeddings: {e}")
             return 0
 
         logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")

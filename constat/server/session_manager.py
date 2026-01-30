@@ -202,6 +202,9 @@ class SessionManager:
 
         # Run entity extraction
         try:
+            logger.info(f"Session {session_id}: running extract_entities_for_session with project_ids={project_ids}, {len(schema_entities)} schema entities")
+            if schema_entities:
+                logger.debug(f"Session {session_id}: sample schema_entities: {schema_entities[:10]}")
             link_count = session.doc_tools.extract_entities_for_session(
                 session_id=session_id,
                 project_ids=project_ids,
@@ -210,8 +213,10 @@ class SessionManager:
             )
             if link_count and link_count > 0:
                 logger.info(f"Session {session_id}: created {link_count} entity links")
+            else:
+                logger.warning(f"Session {session_id}: NO entity links created (link_count={link_count})")
         except Exception as e:
-            logger.warning(f"Session {session_id}: entity extraction failed: {e}")
+            logger.exception(f"Session {session_id}: entity extraction failed: {e}")
 
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.
