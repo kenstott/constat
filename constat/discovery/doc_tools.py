@@ -411,6 +411,10 @@ class DocumentDiscoveryTools:
         else:
             self._vector_store = self._create_vector_store()
 
+        # Active project IDs for automatic search filtering
+        # Set this when projects are loaded so searches automatically include project docs
+        self._active_project_ids: list[str] = []
+
         # Note: No cleanup needed - data is scoped by project_id/session_id
 
         # Index documents if vector store is empty (first-time setup)
@@ -1404,7 +1408,8 @@ class DocumentDiscoveryTools:
         Args:
             query: Natural language query
             limit: Maximum results to return
-            project_ids: List of project IDs to include (for session filtering)
+            project_ids: List of project IDs to include (for session filtering).
+                        If None, uses active_project_ids (set when projects are loaded).
             session_id: Session ID to include (for session filtering)
 
         Returns:
@@ -1413,6 +1418,9 @@ class DocumentDiscoveryTools:
         if self._model is None:
             logger.debug(f"[SEARCH] No embedding model")
             return []
+
+        # Use active_project_ids if no explicit project_ids passed
+        effective_project_ids = project_ids if project_ids is not None else self._active_project_ids
 
         # Use lock for thread-safe access - both embedding model AND DuckDB connection
         # are not thread-safe for concurrent operations
@@ -1424,7 +1432,7 @@ class DocumentDiscoveryTools:
             search_results = self._vector_store.search(
                 query_embedding,
                 limit=limit,
-                project_ids=project_ids,
+                project_ids=effective_project_ids,
                 session_id=session_id,
             )
 
@@ -1468,6 +1476,9 @@ class DocumentDiscoveryTools:
         if self._model is None:
             return []
 
+        # Use active_project_ids if no explicit project_ids passed
+        effective_project_ids = project_ids if project_ids is not None else self._active_project_ids
+
         # Use enriched search if available
         if hasattr(self._vector_store, 'search_enriched'):
             # Use lock for thread-safe access - both embedding model AND DuckDB connection
@@ -1476,7 +1487,7 @@ class DocumentDiscoveryTools:
                 enriched_results = self._vector_store.search_enriched(
                     query_embedding,
                     limit=limit,
-                    project_ids=project_ids,
+                    project_ids=effective_project_ids,
                     session_id=session_id,
                 )
 
@@ -1536,14 +1547,17 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, 'find_entity_by_name'):
             return []
 
-        entity = self._vector_store.find_entity_by_name(entity_name, project_ids, session_id)
+        # Use active_project_ids if no explicit project_ids passed
+        effective_project_ids = project_ids if project_ids is not None else self._active_project_ids
+
+        entity = self._vector_store.find_entity_by_name(entity_name, effective_project_ids, session_id)
         if not entity:
             return []
 
         chunks = self._vector_store.get_chunks_for_entity(
             entity.id,
             limit=limit,
-            project_ids=project_ids,
+            project_ids=effective_project_ids,
             session_id=session_id,
         )
 

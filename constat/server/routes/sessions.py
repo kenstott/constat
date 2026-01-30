@@ -196,6 +196,11 @@ def _load_projects_into_session(
     managed._project_databases = newly_loaded
     managed.active_projects = [fn for fn, _ in valid_projects]
 
+    # Update doc_tools with active project IDs for automatic search filtering
+    if managed.session.doc_tools:
+        managed.session.doc_tools._active_project_ids = managed.active_projects
+        logger.debug(f"Set doc_tools._active_project_ids: {managed.active_projects}")
+
     return managed.active_projects, conflicts
 
 
