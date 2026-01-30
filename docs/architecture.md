@@ -122,6 +122,41 @@ This is the **primary discovery mechanism**. The LLM calls `search_all` first, t
 - Unified `entities` table stores all source types (schema, api, document)
 - `array_cosine_similarity()` for fast similarity ranking
 
+**Entity Links:**
+
+During document ingestion, the system extracts entities and links them to chunks:
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Document   │     │    Chunk     │     │   Entity     │
+│   Chunk      │────▶│   Entity     │◀────│  (shared)    │
+│              │     │    Link      │     │              │
+└──────────────┘     └──────────────┘     └──────────────┘
+                     - mention_count
+                     - confidence
+```
+
+**Entity sources:**
+- **Schema**: Tables, columns from database metadata (high confidence)
+- **API**: Endpoints, schemas from OpenAPI/GraphQL (high confidence)
+- **NER**: Organizations, products, locations via spaCy (medium confidence)
+- **Business terms**: Domain glossary matches (medium confidence)
+
+**How entity links improve reasoning:**
+
+1. **Enriched search results**: When the LLM searches, results include linked entities:
+   ```
+   Chunk: "Revenue is calculated from the orders table..."
+   Entities: [orders (table), revenue (metric)]
+   ```
+   The LLM immediately knows which schema elements are relevant.
+
+2. **Cross-reference navigation**: `explore_entity("orders")` finds all chunks mentioning the orders table - across policies, procedures, and technical docs.
+
+3. **Concept bridging**: When a document mentions "customer lifetime value", entity links connect it to the `customers` table and `orders` table, even if the document doesn't explicitly name them.
+
+This creates a **knowledge graph** connecting documents ↔ schema ↔ APIs, allowing the LLM to navigate between conceptual explanations and concrete data structures.
+
 ### execution/
 
 The brain of the system.
