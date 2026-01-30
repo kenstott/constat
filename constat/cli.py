@@ -452,19 +452,25 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         constat serve -c config.yaml --reload  # For development
         constat serve -c config.yaml --debug   # Enable debug logging
     """
+    import sys
+    print("=== SERVE COMMAND STARTED ===", file=sys.stderr, flush=True)
     import uvicorn
 
     from constat.server.config import ServerConfig
 
     # Load config
+    print("=== LOADING CONFIG ===", file=sys.stderr, flush=True)
     if config:
         try:
             cfg = Config.from_yaml(config)
+            print(f"=== CONFIG LOADED: {config} ===", file=sys.stderr, flush=True)
         except Exception as e:
             console.print(f"[red]Config error:[/red] {e}")
+            print(f"=== CONFIG ERROR: {e} ===", file=sys.stderr, flush=True)
             sys.exit(1)
     else:
         cfg = Config()
+        print("=== DEFAULT CONFIG LOADED ===", file=sys.stderr, flush=True)
 
     # Build server config
     server_config = ServerConfig(host=host, port=port)

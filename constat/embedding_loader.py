@@ -75,7 +75,8 @@ class EmbeddingModelLoader:
     def _load_model(self) -> None:
         """Load the model (runs in background thread)."""
         try:
-            logger.info(f"Loading embedding model in background: {EMBEDDING_MODEL}")
+            logger.info(f"Starting to download/load embedding model: {EMBEDDING_MODEL}")
+            logger.info("This may take a few minutes on first run...")
 
             from sentence_transformers import SentenceTransformer
 
@@ -91,20 +92,21 @@ class EmbeddingModelLoader:
             last_error = None
             for i, kwargs in enumerate(strategies):
                 try:
-                    logger.debug(f"Trying loading strategy {i + 1}: {kwargs}")
+                    logger.info(f"Trying loading strategy {i + 1}/{len(strategies)}: {kwargs}")
                     self._model = SentenceTransformer(EMBEDDING_MODEL, **kwargs)
-                    logger.info(f"Embedding model loaded successfully (strategy {i + 1})")
+                    logger.info(f"Embedding model loaded successfully!")
                     return
                 except Exception as e:
                     last_error = e
-                    logger.debug(f"Strategy {i + 1} failed: {e}")
+                    logger.warning(f"Strategy {i + 1} failed: {e}")
                     continue
 
             # All strategies failed
             raise last_error
 
         except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
+            logger.error(f"FATAL: Failed to load embedding model after trying all strategies: {e}")
+            logger.exception("Full error:")
             self._load_error = e
         finally:
             self._loaded.set()

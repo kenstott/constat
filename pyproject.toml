@@ -19,6 +19,7 @@ dependencies = [
     "rich>=13.0",
     "textual>=0.47",  # TUI framework for persistent status bar
     "click>=8.0",
+    "prompt_toolkit>=3.0",  # Enhanced readline/REPL
     "gnureadline>=8.0; sys_platform == 'darwin'",  # Better readline on macOS
     # Visualization (works OOB)
     "plotly>=5.0",
@@ -42,6 +43,8 @@ dependencies = [
     "strawberry-graphql>=0.200",
     "fastapi>=0.100",
     "uvicorn>=0.23",
+    "python-multipart>=0.0.6",  # Required for FastAPI file uploads
+    "google-auth>=2.0",  # Firebase authentication
     # Graph visualization (requires system graphviz)
     "graphviz>=0.20",
     # NLP / Named Entity Recognition
@@ -49,9 +52,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Firebase Authentication
-auth = ["google-auth>=2.0"]
-
 # Additional SQL Database backends
 mysql = ["pymysql>=1.0"]
 

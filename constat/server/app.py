@@ -189,31 +189,41 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Manage application lifecycle."""
-        # Startup: Pre-load embedding model (blocking - we need it for vectorization)
-        from constat.embedding_loader import EmbeddingModelLoader
-        logger.info("Loading embedding model...")
-        EmbeddingModelLoader.get_instance().start_loading()
-        EmbeddingModelLoader.get_instance().get_model()  # Wait for completion
-        logger.info("Embedding model loaded")
+        try:
+            # Startup: Pre-load embedding model (blocking - we need it for vectorization)
+            from constat.embedding_loader import EmbeddingModelLoader
+            logger.info("Loading embedding model...")
+            EmbeddingModelLoader.get_instance().start_loading()
+            EmbeddingModelLoader.get_instance().get_model()  # Wait for completion
+            logger.info("Embedding model loaded")
 
-        # Startup: Pre-index all documents from config and projects
-        # This warms up the vector store so first session doesn't pay the cost
-        logger.info("Pre-indexing documents from config and projects...")
-        _warmup_vector_store(config)
-        logger.info("Document pre-indexing complete")
+            # Startup: Pre-index all documents from config and projects
+            # This warms up the vector store so first session doesn't pay the cost
+            logger.info("Pre-indexing documents from config and projects...")
+            _warmup_vector_store(config)
+            logger.info("Document pre-indexing complete")
 
-        # Startup: Start cleanup task
-        await session_manager.start_cleanup_task()
-        logger.info("Constat API server started")
+            # Startup: Start cleanup task
+            await session_manager.start_cleanup_task()
+            logger.info("Constat API server started")
+        except Exception as e:
+            logger.error(f"FATAL: Server startup failed: {e}")
+            logger.exception("Full traceback:")
+            raise
 
         yield
 
         # Shutdown: Stop cleanup task and cleanup sessions
-        await shutdown_executor_async()  # Stop thread pool to allow clean exit
-        await session_manager.stop_cleanup_task()
-        for managed in session_manager.list_sessions():
-            session_manager.delete_session(managed.session_id)
-        logger.info("Constat API server stopped")
+        try:
+            logger.info("Shutting down Constat API server...")
+            await shutdown_executor_async()  # Stop thread pool to allow clean exit
+            await session_manager.stop_cleanup_task()
+            for managed in session_manager.list_sessions():
+                session_manager.delete_session(managed.session_id)
+            logger.info("Constat API server stopped cleanly")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.exception("Shutdown error traceback:")
 
     app = FastAPI(
         title="Constat API",
