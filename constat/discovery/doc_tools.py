@@ -1399,18 +1399,17 @@ class DocumentDiscoveryTools:
         self,
         query: str,
         limit: int = 5,
-        project_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[dict]:
         """
         Search across all documents for relevant content using semantic search.
 
+        Uses this instance's active_project_ids (set when projects are loaded into the session).
+
         Args:
             query: Natural language query
             limit: Maximum results to return
-            project_ids: List of project IDs to include (for session filtering).
-                        If None, uses active_project_ids (set when projects are loaded).
-            session_id: Session ID to include (for session filtering)
+            session_id: Session ID to include (for session-specific documents)
 
         Returns:
             List of relevant document excerpts with relevance scores
@@ -1418,9 +1417,6 @@ class DocumentDiscoveryTools:
         if self._model is None:
             logger.debug(f"[SEARCH] No embedding model")
             return []
-
-        # Use active_project_ids if no explicit project_ids passed
-        effective_project_ids = project_ids if project_ids is not None else self._active_project_ids
 
         # Use lock for thread-safe access - both embedding model AND DuckDB connection
         # are not thread-safe for concurrent operations
@@ -1432,7 +1428,7 @@ class DocumentDiscoveryTools:
             search_results = self._vector_store.search(
                 query_embedding,
                 limit=limit,
-                project_ids=effective_project_ids,
+                project_ids=self._active_project_ids,
                 session_id=session_id,
             )
 
@@ -1456,7 +1452,6 @@ class DocumentDiscoveryTools:
         self,
         query: str,
         limit: int = 5,
-        project_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[dict]:
         """Search documents with entity enrichment.
@@ -1464,20 +1459,18 @@ class DocumentDiscoveryTools:
         Like search_documents, but includes entities mentioned in each chunk.
         Useful for understanding what concepts are discussed in relevant chunks.
 
+        Uses this instance's active_project_ids (set when projects are loaded into the session).
+
         Args:
             query: Natural language query
             limit: Maximum results to return
-            project_ids: List of project IDs to include (for session filtering)
-            session_id: Session ID to include (for session filtering)
+            session_id: Session ID to include (for session-specific documents)
 
         Returns:
             List of dicts with document, excerpt, relevance, section, and entities
         """
         if self._model is None:
             return []
-
-        # Use active_project_ids if no explicit project_ids passed
-        effective_project_ids = project_ids if project_ids is not None else self._active_project_ids
 
         # Use enriched search if available
         if hasattr(self._vector_store, 'search_enriched'):
@@ -1487,7 +1480,7 @@ class DocumentDiscoveryTools:
                 enriched_results = self._vector_store.search_enriched(
                     query_embedding,
                     limit=limit,
-                    project_ids=effective_project_ids,
+                    project_ids=self._active_project_ids,
                     session_id=session_id,
                 )
 
@@ -1506,19 +1499,20 @@ class DocumentDiscoveryTools:
             return results
 
         # Fall back to regular search
-        return self.search_documents(query, limit, project_ids, session_id)
+        return self.search_documents(query, limit, session_id)
 
     def explore_entity(
         self,
         entity_name: str,
         limit: int = 5,
-        project_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[dict]:
         """Find chunks mentioning the given entity.
 
         Use when the LLM notices a relevant entity and wants more context.
         Returns chunks ordered by relevance (mention count, recency).
+
+        Uses this instance's active_project_ids (set when projects are loaded into the session).
 
         This is designed to be exposed as an LLM tool:
         {
@@ -1537,8 +1531,7 @@ class DocumentDiscoveryTools:
         Args:
             entity_name: Name of the entity to explore
             limit: Maximum number of chunks to return
-            project_ids: List of project IDs to include (for session filtering)
-            session_id: Session ID to include (for session filtering)
+            session_id: Session ID to include (for session-specific documents)
 
         Returns:
             List of dicts with document, excerpt, section, mention_count, confidence
@@ -1547,17 +1540,14 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, 'find_entity_by_name'):
             return []
 
-        # Use active_project_ids if no explicit project_ids passed
-        effective_project_ids = project_ids if project_ids is not None else self._active_project_ids
-
-        entity = self._vector_store.find_entity_by_name(entity_name, effective_project_ids, session_id)
+        entity = self._vector_store.find_entity_by_name(entity_name, self._active_project_ids, session_id)
         if not entity:
             return []
 
         chunks = self._vector_store.get_chunks_for_entity(
             entity.id,
             limit=limit,
-            project_ids=effective_project_ids,
+            project_ids=self._active_project_ids,
             session_id=session_id,
         )
 
