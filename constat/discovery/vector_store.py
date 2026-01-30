@@ -421,26 +421,6 @@ class DuckDBVectorStore(VectorStoreBackend):
         except Exception as e:
             logger.debug(f"_migrate_schema: failed to drop old tables: {e}")
 
-    def clear_ephemeral(self) -> None:
-        """Remove ephemeral embeddings only.
-
-        Called at startup to clean up temporary document data.
-        Note: Entities and chunk_entities use project_id/session_id for scoping,
-        not ephemeral flag. Session data is preserved as part of session history.
-        """
-        # Count ephemeral embeddings before deletion
-        emb_count = self._conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE ephemeral = TRUE"
-        ).fetchone()[0]
-
-        logger.debug(f"clear_ephemeral: found {emb_count} ephemeral embeddings")
-
-        # Only delete ephemeral embeddings (documents marked ephemeral=True)
-        # Entities and links are scoped by project_id/session_id and not cleared here
-        self._conn.execute("DELETE FROM embeddings WHERE ephemeral = TRUE")
-
-        logger.debug(f"clear_ephemeral: deleted {emb_count} ephemeral embeddings")
-
     def clear_session_data(self, session_id: str) -> None:
         """Remove all data for a specific session.
 

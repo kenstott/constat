@@ -411,12 +411,7 @@ class DocumentDiscoveryTools:
         else:
             self._vector_store = self._create_vector_store()
 
-        # Clean up ephemeral data from previous sessions
-        if hasattr(self._vector_store, 'clear_ephemeral'):
-            logger.debug("DocumentDiscoveryTools.__init__: calling clear_ephemeral()")
-            self._vector_store.clear_ephemeral()
-        else:
-            logger.debug("DocumentDiscoveryTools.__init__: vector store has no clear_ephemeral method")
+        # Note: No cleanup needed - data is scoped by project_id/session_id
 
         # Index documents if vector store is empty (first-time setup)
         # Skip if caller will handle indexing (e.g., warmup with hash-based invalidation)

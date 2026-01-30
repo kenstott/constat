@@ -185,11 +185,14 @@ class SessionManager:
             session: Session with doc_tools and schema/api entity info
         """
         if not session.doc_tools:
+            logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
             return
 
         # Get session's entity catalog
         schema_entities = list(session.schema_manager.get_entity_names())
         api_entities = list(session._get_api_entity_names())
+        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema entities, {len(api_entities)} API entities")
+        logger.debug(f"Session {session_id}: schema_entities={schema_entities[:20]}")
 
         # Get active project IDs (empty on fresh session)
         project_ids = []
