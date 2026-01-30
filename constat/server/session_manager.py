@@ -21,10 +21,12 @@ from threading import Lock
 from typing import Optional
 
 from constat.core.config import Config
+from constat.api.impl import ConstatAPIImpl
 from constat.server.config import ServerConfig
 from constat.server.models import SessionStatus
 from constat.session import Session, SessionConfig
 from constat.storage.facts import FactStore
+from constat.storage.learnings import LearningStore
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ class ManagedSession:
 
     session_id: str
     session: Session
+    api: ConstatAPIImpl  # Clean API wrapper over session
     user_id: str
     created_at: datetime
     last_activity: datetime
@@ -133,26 +136,79 @@ class SessionManager:
                 config=self._config,
                 session_config=session_config,
                 user_id=user_id,
+                data_dir=self._server_config.data_dir,
             )
             # Set the server UUID for reverse lookup from history
             session.server_session_id = session_id
 
+            # Create stores for API
+            fact_store = FactStore(user_id=user_id)
+            learning_store = LearningStore(user_id=user_id)
+
             # Load persisted facts for this user
-            self._load_persistent_facts(session, user_id)
+            fact_store.load_into_session(session)
+
+            # Create API wrapper
+            api = ConstatAPIImpl(
+                session=session,
+                fact_store=fact_store,
+                learning_store=learning_store,
+            )
 
             now = datetime.now(timezone.utc)
             managed = ManagedSession(
                 session_id=session_id,
                 session=session,
+                api=api,
                 user_id=user_id,
                 created_at=now,
                 last_activity=now,
             )
 
             self._sessions[session_id] = managed
+
+            # Run NER for session's visible documents (base + loaded projects)
+            # This creates chunk-entity links scoped to this session
+            self._run_entity_extraction(session_id, session)
+
             logger.info(f"Created session {session_id} for user {user_id}")
 
             return session_id
+
+    def _run_entity_extraction(self, session_id: str, session: Session) -> None:
+        """Run NER for session's visible documents.
+
+        Creates chunk-entity links scoped to this session's entity catalog.
+
+        Args:
+            session_id: Server session ID for storing links
+            session: Session with doc_tools and schema/api entity info
+        """
+        if not session.doc_tools:
+            return
+
+        # Get session's entity catalog
+        schema_entities = list(session.schema_manager.get_entity_names())
+        api_entities = list(session._get_api_entity_names())
+
+        # Get active project IDs (empty on fresh session)
+        project_ids = []
+        if hasattr(self, '_sessions') and session_id in self._sessions:
+            managed = self._sessions[session_id]
+            project_ids = managed.active_projects or []
+
+        # Run entity extraction
+        try:
+            link_count = session.doc_tools.extract_entities_for_session(
+                session_id=session_id,
+                project_ids=project_ids,
+                schema_entities=schema_entities,
+                api_entities=api_entities,
+            )
+            if link_count and link_count > 0:
+                logger.debug(f"Session {session_id}: created {link_count} entity links")
+        except Exception as e:
+            logger.warning(f"Session {session_id}: entity extraction failed: {e}")
 
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.
@@ -331,17 +387,3 @@ class SessionManager:
                 "by_status": by_status,
             }
 
-    def _load_persistent_facts(self, session: Session, user_id: str) -> None:
-        """Load persistent facts into a session's fact resolver.
-
-        Args:
-            session: Session to load facts into
-            user_id: User ID for fact storage
-        """
-        try:
-            fact_store = FactStore(user_id=user_id)
-            loaded = fact_store.load_into_session(session)
-            if loaded > 0:
-                logger.debug(f"Loaded {loaded} persistent facts for user {user_id}")
-        except Exception as e:
-            logger.warning(f"Could not load persistent facts: {e}")

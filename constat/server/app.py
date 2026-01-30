@@ -43,48 +43,132 @@ from constat.server.routes.queries import shutdown_executor_async
 logger = logging.getLogger(__name__)
 
 
+def _compute_doc_config_hash(documents: dict) -> str:
+    """Compute a hash for a document configuration dict."""
+    import hashlib
+    import json
+
+    doc_data = {}
+    if documents:
+        for doc_name, doc_config in sorted(documents.items()):
+            doc_data[doc_name] = {
+                "path": doc_config.path or "",
+                "description": doc_config.description or "",
+                "format": doc_config.format or "",
+            }
+    config_json = json.dumps(doc_data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(config_json.encode()).hexdigest()[:16]
+
+
 def _warmup_vector_store(config: Config) -> None:
     """Pre-index all documents from config and projects at server startup.
 
-    This warms up the vector store so the first session creation doesn't
-    pay the cost of document indexing. Documents are indexed with ephemeral=False
-    so they persist across sessions.
+    Uses hash-based invalidation to only re-index when config changes.
     """
     from pathlib import Path
     from constat.discovery.doc_tools import DocumentDiscoveryTools
 
-    # Create doc_tools to index config documents
-    # DocumentDiscoveryTools.__init__ indexes config.documents automatically
-    doc_tools = DocumentDiscoveryTools(config)
-    logger.info(f"  Config documents: {len(config.documents)} indexed")
+    # Create doc_tools with skip_auto_index since we handle indexing here
+    doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True)
+    vector_store = doc_tools._vector_store
 
-    # Index all project documents with ephemeral=False so they persist
+    # Index base (config) documents with hash-based invalidation
+    if config.documents:
+        base_hash = _compute_doc_config_hash(config.documents)
+        logger.debug(f"  Base documents: current_hash={base_hash}")
+
+        if hasattr(vector_store, 'get_project_config_hash'):
+            # Use special project_id "__base__" for config documents
+            cached_hash = vector_store.get_project_config_hash("__base__")
+            logger.debug(f"  Base documents: cached_hash={cached_hash}")
+
+            if cached_hash == base_hash:
+                logger.info(f"  Base documents: {len(config.documents)} unchanged, skipping")
+            else:
+                if cached_hash:
+                    logger.info(f"  Base documents: config changed, re-indexing")
+                    vector_store.clear_project_embeddings("__base__")
+
+                # Index each config document
+                config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
+                for doc_name, doc_config in config.documents.items():
+                    try:
+                        if doc_config.path:
+                            doc_path = Path(doc_config.path)
+                            if not doc_path.is_absolute():
+                                doc_path = (config_dir / doc_config.path).resolve()
+
+                            if doc_path.exists():
+                                success, msg = doc_tools.add_document_from_file(
+                                    str(doc_path),
+                                    name=doc_name,
+                                    description=doc_config.description or "",
+                                    ephemeral=False,
+                                    project_id="__base__",
+                                    config_hash=base_hash,
+                                    skip_entity_extraction=True,  # NER done at session creation
+                                )
+                                if success:
+                                    logger.info(f"  Base: vectorized {doc_name}")
+                                else:
+                                    logger.warning(f"  Base: failed to vectorize {doc_name}: {msg}")
+                    except Exception as e:
+                        logger.warning(f"  Base: error indexing {doc_name}: {e}")
+
+                logger.info(f"  Base documents: {len(config.documents)} indexed")
+    else:
+        logger.info(f"  Base documents: 0 configured")
+
+    # Get vector store for hash checks
+    vector_store = doc_tools._vector_store
+
+    # Index project documents with hash-based invalidation
     for filename, project in config.projects.items():
         if not project.documents:
             continue
 
+        # Compute hash for this project's document config
+        current_hash = _compute_doc_config_hash(project.documents)
+        logger.debug(f"  Project {filename}: current_hash={current_hash}")
+
+        # Check if hash matches existing
+        if hasattr(vector_store, 'get_project_config_hash'):
+            cached_hash = vector_store.get_project_config_hash(filename)
+            logger.debug(f"  Project {filename}: cached_hash={cached_hash}")
+            if cached_hash == current_hash:
+                logger.info(f"  Project {filename}: documents unchanged, skipping")
+                continue
+
+            # Hash changed - clear old data
+            if cached_hash:
+                logger.info(f"  Project {filename}: config changed, re-indexing")
+                vector_store.clear_project_embeddings(filename)
+
+        # Index all documents for this project
         for doc_name, doc_config in project.documents.items():
             try:
                 if doc_config.path:
                     doc_path = Path(doc_config.path)
 
-                    # Resolve relative paths from config directory
+                    # Resolve relative paths from config directory (where data/, docs/ live)
                     if not doc_path.is_absolute():
                         config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
                         doc_path = (config_dir / doc_config.path).resolve()
 
                     if doc_path.exists():
-                        # Index with ephemeral=False (permanent)
                         success, msg = doc_tools.add_document_from_file(
                             str(doc_path),
                             name=doc_name,
                             description=doc_config.description or "",
                             ephemeral=False,
+                            project_id=filename,
+                            config_hash=current_hash,
+                            skip_entity_extraction=True,  # NER done at session creation
                         )
                         if success:
-                            logger.info(f"  Project {filename}: indexed {doc_name}")
+                            logger.info(f"  Project {filename}: vectorized {doc_name}")
                         else:
-                            logger.warning(f"  Project {filename}: failed to index {doc_name}: {msg}")
+                            logger.warning(f"  Project {filename}: failed to vectorize {doc_name}: {msg}")
                     else:
                         logger.warning(f"  Project {filename}: file not found: {doc_path}")
             except Exception as e:

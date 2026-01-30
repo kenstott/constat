@@ -113,7 +113,15 @@ class NumpyVectorStore(VectorStoreBackend):
         ).hexdigest()[:16]
         return f"{chunk.document_name}_{chunk.chunk_index}_{content_hash}"
 
-    def add_chunks(self, chunks: list[DocumentChunk], embeddings: np.ndarray) -> None:
+    def add_chunks(
+        self,
+        chunks: list[DocumentChunk],
+        embeddings: np.ndarray,
+        ephemeral: bool = False,
+        session_id: str | None = None,
+        project_id: str | None = None,
+        config_hash: str | None = None,
+    ) -> None:
         """Add chunks with embeddings to in-memory storage."""
         if len(chunks) == 0:
             return
@@ -130,9 +138,13 @@ class NumpyVectorStore(VectorStoreBackend):
             self._embeddings = np.vstack([self._embeddings, embeddings])
 
     def search(
-        self, query_embedding: np.ndarray, limit: int = 5
+        self,
+        query_embedding: np.ndarray,
+        limit: int = 5,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
-        """Search using brute-force cosine similarity."""
+        """Search using cosine similarity."""
         if self._embeddings is None or len(self._chunks) == 0:
             return []
 
@@ -240,7 +252,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
                 ephemeral BOOLEAN DEFAULT FALSE,
                 session_id VARCHAR,
-                project_id VARCHAR
+                project_id VARCHAR,
+                config_hash VARCHAR
             )
         """)
 
@@ -357,6 +370,17 @@ class DuckDBVectorStore(VectorStoreBackend):
             except Exception as e:
                 logger.debug(f"_migrate_schema: failed to add project_id to {table}: {e}")
 
+        # Add config_hash column to embeddings if missing (for cache invalidation)
+        try:
+            col_names = get_column_names('embeddings')
+            if col_names and 'config_hash' not in col_names:
+                logger.debug("_migrate_schema: adding config_hash column to embeddings")
+                self._conn.execute(
+                    "ALTER TABLE embeddings ADD COLUMN config_hash VARCHAR"
+                )
+        except Exception as e:
+            logger.debug(f"_migrate_schema: failed to add config_hash to embeddings: {e}")
+
         # Add mention_text column to chunk_entities if missing
         try:
             col_names = get_column_names('chunk_entities')
@@ -398,31 +422,24 @@ class DuckDBVectorStore(VectorStoreBackend):
             logger.debug(f"_migrate_schema: failed to drop old tables: {e}")
 
     def clear_ephemeral(self) -> None:
-        """Remove all ephemeral (session-added) data.
+        """Remove ephemeral embeddings only.
 
-        Called at startup to clean up temporary data from previous sessions.
+        Called at startup to clean up temporary document data.
+        Note: Entities and chunk_entities use project_id/session_id for scoping,
+        not ephemeral flag. Session data is preserved as part of session history.
         """
-        # Count ephemeral rows before deletion
+        # Count ephemeral embeddings before deletion
         emb_count = self._conn.execute(
             "SELECT COUNT(*) FROM embeddings WHERE ephemeral = TRUE"
         ).fetchone()[0]
-        ent_count = self._conn.execute(
-            "SELECT COUNT(*) FROM entities WHERE ephemeral = TRUE"
-        ).fetchone()[0]
-        link_count = self._conn.execute(
-            "SELECT COUNT(*) FROM chunk_entities WHERE ephemeral = TRUE"
-        ).fetchone()[0]
 
-        logger.debug(f"clear_ephemeral: found {emb_count} embeddings, {ent_count} entities, {link_count} links")
+        logger.debug(f"clear_ephemeral: found {emb_count} ephemeral embeddings")
 
-        # Delete ephemeral chunk-entity links first (foreign key consideration)
-        self._conn.execute("DELETE FROM chunk_entities WHERE ephemeral = TRUE")
-        # Delete ephemeral entities
-        self._conn.execute("DELETE FROM entities WHERE ephemeral = TRUE")
-        # Delete ephemeral chunks
+        # Only delete ephemeral embeddings (documents marked ephemeral=True)
+        # Entities and links are scoped by project_id/session_id and not cleared here
         self._conn.execute("DELETE FROM embeddings WHERE ephemeral = TRUE")
 
-        logger.debug(f"clear_ephemeral: deleted ephemeral data")
+        logger.debug(f"clear_ephemeral: deleted {emb_count} ephemeral embeddings")
 
     def clear_session_data(self, session_id: str) -> None:
         """Remove all data for a specific session.
@@ -507,6 +524,70 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"delete_document({document_name}, {session_id}): deleted {len(chunk_ids)} chunks")
         return len(chunk_ids)
 
+    def get_project_config_hash(self, project_id: str) -> str | None:
+        """Get the config hash for a project's embeddings.
+
+        Args:
+            project_id: Project ID to check
+
+        Returns:
+            Config hash string or None if no embeddings exist
+        """
+        # Debug: check what embeddings exist for this project
+        count = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE project_id = ?",
+            [project_id],
+        ).fetchone()[0]
+        logger.debug(f"get_project_config_hash({project_id}): found {count} embeddings")
+
+        result = self._conn.execute(
+            "SELECT config_hash FROM embeddings WHERE project_id = ? AND config_hash IS NOT NULL LIMIT 1",
+            [project_id],
+        ).fetchone()
+        hash_val = result[0] if result else None
+        logger.debug(f"get_project_config_hash({project_id}): hash={hash_val}")
+        return hash_val
+
+    def clear_project_embeddings(self, project_id: str) -> int:
+        """Clear all embeddings for a project.
+
+        Args:
+            project_id: Project ID to clear
+
+        Returns:
+            Number of embeddings deleted
+        """
+        # Get chunk IDs first for clearing related entities
+        chunk_ids = self._conn.execute(
+            "SELECT chunk_id FROM embeddings WHERE project_id = ?",
+            [project_id]
+        ).fetchall()
+        chunk_ids = [row[0] for row in chunk_ids]
+
+        if chunk_ids:
+            # Clear chunk-entity links
+            placeholders = ",".join(["?" for _ in chunk_ids])
+            self._conn.execute(
+                f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+                chunk_ids
+            )
+
+        # Clear embeddings
+        result = self._conn.execute(
+            "DELETE FROM embeddings WHERE project_id = ?",
+            [project_id]
+        )
+
+        # Clear project entities
+        self._conn.execute(
+            "DELETE FROM entities WHERE project_id = ?",
+            [project_id]
+        )
+
+        count = len(chunk_ids)
+        logger.debug(f"clear_project_embeddings({project_id}): deleted {count} embeddings")
+        return count
+
     def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
         """Generate a unique ID for a chunk."""
         content_hash = hashlib.sha256(
@@ -521,6 +602,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         ephemeral: bool = False,
         session_id: str | None = None,
         project_id: str | None = None,
+        config_hash: str | None = None,
     ) -> None:
         """Add chunks with embeddings to DuckDB.
 
@@ -530,6 +612,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             ephemeral: If True, marks chunks as session-only (cleaned up on restart)
             session_id: Optional session ID for documents added during a session
             project_id: Optional project ID for documents belonging to a project
+            config_hash: Optional config hash for cache invalidation
         """
         if len(chunks) == 0:
             return
@@ -552,24 +635,58 @@ class DuckDBVectorStore(VectorStoreBackend):
                 ephemeral,
                 session_id,
                 project_id,
+                config_hash,
             ))
 
         # Use INSERT OR REPLACE to handle updates
         self._conn.executemany(
             """
             INSERT OR REPLACE INTO embeddings
-            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral, session_id, project_id, config_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
 
     def search(
-        self, query_embedding: np.ndarray, limit: int = 5
+        self,
+        query_embedding: np.ndarray,
+        limit: int = 5,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
-        """Search using DuckDB's array_cosine_similarity."""
+        """Search using DuckDB's array_cosine_similarity.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of results
+            project_ids: List of project IDs to include (None means no project filter)
+            session_id: Session ID to include (None means no session filter)
+
+        Returns:
+            List of (chunk_id, similarity, DocumentChunk) tuples
+        """
         # Ensure query is 1D list
         query = query_embedding.flatten().tolist()
+
+        # Build filter for base + project + session
+        # base: project_id IS NULL AND session_id IS NULL
+        # project: project_id IN (loaded_projects)
+        # session: session_id = current_session_id
+        filter_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        params: list = [query]
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            filter_conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        if session_id:
+            filter_conditions.append("session_id = ?")
+            params.append(session_id)
+
+        where_clause = " OR ".join(filter_conditions)
+        params.append(limit)
 
         # Query with cosine similarity
         result = self._conn.execute(
@@ -582,10 +699,11 @@ class DuckDBVectorStore(VectorStoreBackend):
                 content,
                 array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
             FROM embeddings
+            WHERE ({where_clause})
             ORDER BY similarity DESC
             LIMIT ?
             """,
-            [query, limit],
+            params,
         ).fetchall()
 
         # Convert to output format
@@ -696,7 +814,6 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         entities: list[Entity],
         embeddings: Optional[np.ndarray] = None,
-        ephemeral: bool = False,
         source: str = "document",
         session_id: str | None = None,
         project_id: str | None = None,
@@ -706,7 +823,6 @@ class DuckDBVectorStore(VectorStoreBackend):
         Args:
             entities: List of Entity objects to add
             embeddings: Optional embeddings array of shape (n_entities, embedding_dim)
-            ephemeral: If True, marks entities as session-only (cleaned up on restart)
             source: Source category ('document', 'schema', 'api')
             session_id: Optional session ID for entities added during a session
             project_id: Optional project ID for entities belonging to a project
@@ -726,15 +842,14 @@ class DuckDBVectorStore(VectorStoreBackend):
                 emb_list,
                 metadata_json,
                 entity.created_at,
-                ephemeral,
                 session_id,
                 project_id,
             ))
 
         self._conn.executemany(
             """
-            INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, ephemeral, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             records,
@@ -743,7 +858,6 @@ class DuckDBVectorStore(VectorStoreBackend):
     def link_chunk_entities(
         self,
         links: list[ChunkEntity],
-        ephemeral: bool = False,
         session_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
@@ -751,7 +865,6 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         Args:
             links: List of ChunkEntity objects defining the relationships
-            ephemeral: If True, marks links as session-only (legacy, use session_id instead)
             session_id: Optional session ID for links added during a session
             project_id: Optional project ID for links belonging to a project
         """
@@ -759,38 +872,66 @@ class DuckDBVectorStore(VectorStoreBackend):
             return
 
         records = [
-            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, ephemeral, session_id, project_id)
+            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, session_id, project_id)
             for l in links
         ]
 
         self._conn.executemany(
             """
             INSERT INTO chunk_entities
-                (chunk_id, entity_id, mention_count, confidence, mention_text, ephemeral, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             records,
         )
 
-    def get_entities_for_chunk(self, chunk_id: str) -> list[Entity]:
+    def get_entities_for_chunk(
+        self,
+        chunk_id: str,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[Entity]:
         """Get all entities associated with a chunk.
 
         Args:
             chunk_id: The chunk identifier
+            project_ids: List of project IDs to include (filters entities)
+            session_id: Session ID (required - NER results are scoped to session)
 
         Returns:
             List of Entity objects linked to this chunk
         """
+        # NER results (chunk_entities) are scoped to session_id
+        # Entities can come from base + project + session
+        entity_filter = ["(e.project_id IS NULL AND e.session_id IS NULL)"]
+        params: list = [chunk_id]
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            entity_filter.append(f"e.project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        if session_id:
+            entity_filter.append("e.session_id = ?")
+            params.append(session_id)
+            # Filter chunk_entities by session_id (NER results are session-scoped)
+            link_filter = "ce.session_id = ?"
+            params.append(session_id)
+        else:
+            link_filter = "1=1"
+
+        entity_where = " OR ".join(entity_filter)
+
         result = self._conn.execute(
-            """
+            f"""
             SELECT e.id, e.name, e.type, e.metadata, e.created_at
             FROM entities e
             JOIN chunk_entities ce ON e.id = ce.entity_id
-            WHERE ce.chunk_id = ?
+            WHERE ce.chunk_id = ? AND ({entity_where}) AND ({link_filter})
             ORDER BY ce.mention_count DESC, ce.confidence DESC
             """,
-            [chunk_id],
+            params,
         ).fetchall()
 
         entities = []
@@ -811,34 +952,59 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         entity_id: str,
         limit: int = 10,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
     ) -> list[tuple[str, DocumentChunk, int, float]]:
         """Get chunks that mention an entity.
 
         Args:
             entity_id: The entity identifier
             limit: Maximum number of chunks to return
+            project_ids: List of project IDs to include (filters embeddings)
+            session_id: Session ID (required - NER results are scoped to session)
 
         Returns:
             List of (chunk_id, DocumentChunk, mention_count, confidence) tuples
             ordered by mention_count and confidence
         """
+        # Embeddings can come from base + project + session
+        emb_filter = ["(em.project_id IS NULL AND em.session_id IS NULL)"]
+        params: list = [entity_id]
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            emb_filter.append(f"em.project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        if session_id:
+            emb_filter.append("em.session_id = ?")
+            params.append(session_id)
+            # Filter chunk_entities by session_id (NER results are session-scoped)
+            link_filter = "ce.session_id = ?"
+            params.append(session_id)
+        else:
+            link_filter = "1=1"
+
+        emb_where = " OR ".join(emb_filter)
+        params.append(limit)
+
         result = self._conn.execute(
-            """
+            f"""
             SELECT
-                e.chunk_id,
+                ce.chunk_id,
                 em.document_name,
                 em.content,
                 em.section,
                 em.chunk_index,
-                e.mention_count,
-                e.confidence
-            FROM chunk_entities e
-            JOIN embeddings em ON e.chunk_id = em.chunk_id
-            WHERE e.entity_id = ?
-            ORDER BY e.mention_count DESC, e.confidence DESC
+                ce.mention_count,
+                ce.confidence
+            FROM chunk_entities ce
+            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            WHERE ce.entity_id = ? AND ({emb_where}) AND ({link_filter})
+            ORDER BY ce.mention_count DESC, ce.confidence DESC
             LIMIT ?
             """,
-            [entity_id, limit],
+            params,
         ).fetchall()
 
         chunks = []
@@ -854,23 +1020,45 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return chunks
 
-    def find_entity_by_name(self, name: str) -> Optional[Entity]:
+    def find_entity_by_name(
+        self,
+        name: str,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> Optional[Entity]:
         """Find an entity by its name (case-insensitive).
 
         Args:
             name: Entity name to search for
+            project_ids: List of project IDs to include (None means no project filter)
+            session_id: Session ID to include (None means no session filter)
 
         Returns:
             Entity if found, None otherwise
         """
+        # Build filter for base + project + session
+        filter_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        params: list = [name]
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            filter_conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        if session_id:
+            filter_conditions.append("session_id = ?")
+            params.append(session_id)
+
+        where_clause = " OR ".join(filter_conditions)
+
         result = self._conn.execute(
-            """
+            f"""
             SELECT id, name, type, metadata, created_at
             FROM entities
-            WHERE LOWER(name) = LOWER(?)
+            WHERE LOWER(name) = LOWER(?) AND ({where_clause})
             LIMIT 1
             """,
-            [name],
+            params,
         ).fetchone()
 
         if not result:
@@ -891,23 +1079,27 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         query_embedding: np.ndarray,
         limit: int = 5,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
     ) -> list[EnrichedChunk]:
         """Search for chunks and include associated entities.
 
         Args:
             query_embedding: Query embedding vector
             limit: Maximum number of results
+            project_ids: List of project IDs to include (None means no project filter)
+            session_id: Session ID to include (None means no session filter)
 
         Returns:
             List of EnrichedChunk objects with entities
         """
-        # First do the regular search
-        results = self.search(query_embedding, limit)
+        # First do the regular search with filtering
+        results = self.search(query_embedding, limit, project_ids, session_id)
 
-        # Enrich with entities
+        # Enrich with entities (using same filter)
         enriched = []
         for chunk_id, score, chunk in results:
-            entities = self.get_entities_for_chunk(chunk_id)
+            entities = self.get_entities_for_chunk(chunk_id, project_ids, session_id)
             enriched.append(EnrichedChunk(
                 chunk=chunk,
                 score=score,
@@ -1011,6 +1203,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         entity_type: Optional[str] = None,
         limit: int = 5,
         min_similarity: float = 0.0,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
     ) -> list[dict]:
         """Search for relevant catalog entities by embedding similarity.
 
@@ -1020,15 +1214,33 @@ class DuckDBVectorStore(VectorStoreBackend):
             entity_type: Filter by type ('table', 'column', 'api_endpoint', etc.) or None for all
             limit: Maximum number of results
             min_similarity: Minimum similarity threshold
+            project_ids: List of project IDs to include (None means no project filter)
+            session_id: Session ID to include (None means no session filter)
 
         Returns:
             List of dicts with id, name, type, source, parent_id, metadata, similarity
         """
         query = query_embedding.flatten().tolist()
 
+        # Build filter for base + project + session
+        scope_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        scope_params: list = []
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            scope_conditions.append(f"project_id IN ({placeholders})")
+            scope_params.extend(project_ids)
+
+        if session_id:
+            scope_conditions.append("session_id = ?")
+            scope_params.append(session_id)
+
+        scope_clause = " OR ".join(scope_conditions)
+
         # Build WHERE clause based on filters
-        conditions = ["embedding IS NOT NULL"]
-        params = [query]
+        conditions = ["embedding IS NOT NULL", f"({scope_clause})"]
+        params: list = [query]
+        params.extend(scope_params)
 
         if source:
             conditions.append("source = ?")
@@ -1113,19 +1325,38 @@ class DuckDBVectorStore(VectorStoreBackend):
         return result[0] if result else 0
 
     def get_entity_names_by_source(
-        self, source: Optional[str] = None, entity_type: Optional[str] = None
+        self,
+        source: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
     ) -> list[str]:
         """Get all entity names, optionally filtered by source and type.
 
         Args:
             source: Optional source filter ('schema', 'api', 'document')
             entity_type: Optional type filter ('table', 'column', 'api_endpoint', etc.)
+            project_ids: List of project IDs to include (None means no project filter)
+            session_id: Session ID to include (None means no session filter)
 
         Returns:
             List of entity names
         """
-        conditions = []
-        params = []
+        # Build filter for base + project + session
+        scope_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        params: list = []
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            scope_conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        if session_id:
+            scope_conditions.append("session_id = ?")
+            params.append(session_id)
+
+        scope_clause = " OR ".join(scope_conditions)
+        conditions = [f"({scope_clause})"]
 
         if source:
             conditions.append("source = ?")
@@ -1134,7 +1365,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             conditions.append("type = ?")
             params.append(entity_type)
 
-        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        where_clause = " WHERE " + " AND ".join(conditions)
 
         result = self._conn.execute(
             f"SELECT DISTINCT name FROM entities{where_clause}",
@@ -1143,23 +1374,45 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return [row[0] for row in result]
 
-    def get_entities_by_parent(self, parent_id: str) -> list[dict]:
+    def get_entities_by_parent(
+        self,
+        parent_id: str,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[dict]:
         """Get all child entities for a given parent.
 
         Args:
             parent_id: Parent entity ID
+            project_ids: List of project IDs to include (None means no project filter)
+            session_id: Session ID to include (None means no session filter)
 
         Returns:
             List of child entity dicts
         """
+        # Build filter for base + project + session
+        scope_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        params: list = [parent_id]
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            scope_conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        if session_id:
+            scope_conditions.append("session_id = ?")
+            params.append(session_id)
+
+        scope_clause = " OR ".join(scope_conditions)
+
         result = self._conn.execute(
-            """
+            f"""
             SELECT id, name, type, source, parent_id, metadata
             FROM entities
-            WHERE parent_id = ?
+            WHERE parent_id = ? AND ({scope_clause})
             ORDER BY name
             """,
-            [parent_id],
+            params,
         ).fetchall()
 
         return [

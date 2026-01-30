@@ -364,6 +364,7 @@ class DocumentDiscoveryTools:
         vector_store: Optional[VectorStoreBackend] = None,
         schema_entities: Optional[list[str]] = None,
         allowed_documents: Optional[set[str]] = None,
+        skip_auto_index: bool = False,
     ):
         """Initialize document discovery tools.
 
@@ -374,7 +375,9 @@ class DocumentDiscoveryTools:
             schema_entities: Schema entities for entity extraction
             allowed_documents: Set of allowed document names. If None, all documents
                 are visible. If empty set, no documents are visible.
+            skip_auto_index: If True, skip automatic indexing of config documents
         """
+        self._skip_auto_index = skip_auto_index
         self.config = config
         self.allowed_documents = allowed_documents
         self._loaded_documents: dict[str, LoadedDocument] = {}
@@ -416,8 +419,8 @@ class DocumentDiscoveryTools:
             logger.debug("DocumentDiscoveryTools.__init__: vector store has no clear_ephemeral method")
 
         # Index documents if vector store is empty (first-time setup)
-        # This MUST complete synchronously before __init__ returns
-        if self._vector_store.count() == 0 and self.config.documents:
+        # Skip if caller will handle indexing (e.g., warmup with hash-based invalidation)
+        if not self._skip_auto_index and self._vector_store.count() == 0 and self.config.documents:
             logger.info(f"[DOC_INIT] Vector store empty, indexing {len(self.config.documents)} documents...")
             for name in self.config.documents:
                 try:
@@ -478,6 +481,148 @@ class DocumentDiscoveryTools:
                 logger.info(f"set_schema_entities: extraction complete")
         else:
             logger.debug(f"set_schema_entities: no chunks to re-extract ({chunk_count} chunks)")
+
+    def extract_entities_for_session(
+        self,
+        session_id: str,
+        project_ids: list[str],
+        schema_entities: list[str],
+        api_entities: list[str] | None = None,
+    ) -> int:
+        """Run entity extraction for a session's visible documents.
+
+        Called at session creation to build chunk-entity links using the
+        session's entity catalog. Links are stored with session_id.
+
+        Args:
+            session_id: Session ID for storing links
+            project_ids: List of loaded project IDs
+            schema_entities: Schema entity names (tables, columns)
+            api_entities: API entity names (endpoints, schemas)
+
+        Returns:
+            Number of chunk-entity links created
+        """
+        if not hasattr(self._vector_store, 'add_entities'):
+            return 0
+
+        # Update internal entity lists for extraction
+        self._schema_entities = schema_entities or []
+        if api_entities:
+            self._openapi_operations = api_entities
+            self._openapi_schemas = api_entities
+
+        # Get chunks visible to this session (base + projects)
+        # Base chunks have project_id='__base__' or NULL
+        # Project chunks have project_id in project_ids
+        chunks = self._get_session_visible_chunks(project_ids)
+        if not chunks:
+            logger.debug(f"extract_entities_for_session({session_id}): no visible chunks")
+            return 0
+
+        logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")
+
+        # Create extractor with session's entity catalog
+        config = ExtractionConfig(
+            extract_schema=bool(self._schema_entities),
+            extract_ner=True,
+            schema_entities=self._schema_entities,
+            openapi_operations=self._openapi_operations,
+            openapi_schemas=self._openapi_schemas,
+            graphql_types=self._graphql_types,
+            graphql_fields=self._graphql_fields,
+        )
+        extractor = EntityExtractor(config)
+
+        all_links: list[ChunkEntity] = []
+        for chunk in chunks:
+            extractions = extractor.extract(chunk)
+            for entity, link in extractions:
+                all_links.append(link)
+
+        # Store entities (without session_id - they're global)
+        entities = extractor.get_all_entities()
+        if entities:
+            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
+            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
+
+            if schema_entities_list:
+                self._vector_store.add_entities(schema_entities_list, source="schema")
+            if doc_entities_list:
+                self._vector_store.add_entities(doc_entities_list, source="document")
+
+        # Store links WITH session_id
+        if all_links:
+            # Deduplicate links by (chunk_id, entity_id)
+            unique_links = {}
+            for link in all_links:
+                key = (link.chunk_id, link.entity_id)
+                if key not in unique_links:
+                    unique_links[key] = link
+                else:
+                    existing = unique_links[key]
+                    unique_links[key] = ChunkEntity(
+                        chunk_id=link.chunk_id,
+                        entity_id=link.entity_id,
+                        mention_count=existing.mention_count + link.mention_count,
+                        confidence=max(existing.confidence, link.confidence),
+                        mention_text=existing.mention_text or link.mention_text,
+                    )
+            self._vector_store.link_chunk_entities(
+                list(unique_links.values()),
+                session_id=session_id,
+            )
+            logger.info(f"extract_entities_for_session({session_id}): created {len(unique_links)} links")
+            return len(unique_links)
+
+        return 0
+
+    def _get_session_visible_chunks(self, project_ids: list[str]) -> list[DocumentChunk]:
+        """Get chunks visible to a session (base + loaded projects).
+
+        Args:
+            project_ids: List of loaded project IDs
+
+        Returns:
+            List of DocumentChunk objects
+        """
+        if not hasattr(self._vector_store, '_conn'):
+            return self._vector_store.get_chunks()
+
+        # Query chunks where project_id is NULL, '__base__', or in project_ids
+        conditions = ["project_id IS NULL", "project_id = '__base__'"]
+        params = []
+
+        if project_ids:
+            placeholders = ",".join(["?" for _ in project_ids])
+            conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        where_clause = " OR ".join(conditions)
+
+        result = self._vector_store._conn.execute(
+            f"""
+            SELECT chunk_id, document_name, content, section, chunk_index
+            FROM embeddings
+            WHERE {where_clause}
+            """,
+            params,
+        ).fetchall()
+
+        chunks = []
+        for row in result:
+            chunk_id, doc_name, content, section, chunk_idx = row
+            chunk = DocumentChunk(
+                document_name=doc_name,
+                content=content,
+                section=section,
+                chunk_index=chunk_idx,
+            )
+            # Store chunk_id for linking (hacky but needed for entity extraction)
+            chunk._chunk_id = chunk_id
+            chunks.append(chunk)
+
+        return chunks
 
     def process_metadata_through_ner(
         self,
@@ -593,22 +738,30 @@ class DocumentDiscoveryTools:
         self._graphql_types = types
         self._graphql_fields = fields
 
-    def add_ephemeral_document(
+    def _add_document_internal(
         self,
         name: str,
         content: str,
         doc_format: str = "text",
         description: str = "",
+        ephemeral: bool = True,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        config_hash: str | None = None,
+        skip_entity_extraction: bool = False,
     ) -> bool:
-        """Add a session-only document that will be cleaned up on restart.
-
-        Use this for documents added via /file during a session.
+        """Internal method to add a document with full control over flags.
 
         Args:
             name: Document name
             content: Document content
             doc_format: Format (text, markdown, etc.)
             description: Optional description
+            ephemeral: Legacy flag (use project_id/session_id instead)
+            project_id: Project this document belongs to (for project filtering)
+            session_id: Session this document was added in (for session filtering)
+            config_hash: Optional config hash for cache invalidation
+            skip_entity_extraction: If True, skip NER (done later at session creation)
 
         Returns:
             True if indexed successfully
@@ -618,7 +771,7 @@ class DocumentDiscoveryTools:
         # Remove existing document with same name to avoid duplicate key errors
         if name in self._loaded_documents:
             self.remove_document(name)
-        # Always try to delete from vector store in case chunks exist from previous session
+        # Always try to delete from vector store in case chunks exist
         if hasattr(self._vector_store, 'delete_by_document'):
             self._vector_store.delete_by_document(name)
 
@@ -657,20 +810,62 @@ class DocumentDiscoveryTools:
         texts = [chunk.content for chunk in chunks]
         embeddings = self._model.encode(texts, convert_to_numpy=True)
 
-        # Add to vector store with ephemeral=True
+        # Add to vector store with project_id/session_id for filtering
         if hasattr(self._vector_store, 'add_chunks'):
-            # Check if the method accepts ephemeral parameter
             import inspect
             sig = inspect.signature(self._vector_store.add_chunks)
+            kwargs = {}
             if 'ephemeral' in sig.parameters:
-                self._vector_store.add_chunks(chunks, embeddings, ephemeral=True)
-            else:
-                self._vector_store.add_chunks(chunks, embeddings)
+                kwargs['ephemeral'] = ephemeral
+            if 'project_id' in sig.parameters:
+                kwargs['project_id'] = project_id
+            if 'session_id' in sig.parameters:
+                kwargs['session_id'] = session_id
+            if 'config_hash' in sig.parameters:
+                kwargs['config_hash'] = config_hash
+            self._vector_store.add_chunks(chunks, embeddings, **kwargs)
 
-        # Extract entities with ephemeral=True
-        self._extract_and_store_entities_ephemeral(chunks)
+        # Extract entities with appropriate scope (unless skipped for later session-level extraction)
+        if not skip_entity_extraction:
+            if session_id:
+                # Session-added documents get session_id for session filtering
+                self._extract_and_store_entities_session(chunks, session_id)
+            elif project_id:
+                # Project documents get project_id for project filtering
+                self._extract_and_store_entities_project(chunks, project_id)
+            else:
+                # Base documents (no project_id, no session_id) - permanent
+                self._extract_and_store_entities(chunks, self._schema_entities)
 
         return True
+
+    def add_ephemeral_document(
+        self,
+        name: str,
+        content: str,
+        doc_format: str = "text",
+        description: str = "",
+    ) -> bool:
+        """Add a session-only document that will be cleaned up on restart.
+
+        Use this for documents added via /file during a session.
+
+        Args:
+            name: Document name
+            content: Document content
+            doc_format: Format (text, markdown, etc.)
+            description: Optional description
+
+        Returns:
+            True if indexed successfully
+        """
+        return self._add_document_internal(
+            name=name,
+            content=content,
+            doc_format=doc_format,
+            description=description,
+            ephemeral=True,
+        )
 
     def add_document_from_file(
         self,
@@ -678,6 +873,10 @@ class DocumentDiscoveryTools:
         name: str | None = None,
         description: str = "",
         ephemeral: bool = True,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        config_hash: str | None = None,
+        skip_entity_extraction: bool = False,
     ) -> tuple[bool, str]:
         """Add a document from a file path.
 
@@ -687,6 +886,10 @@ class DocumentDiscoveryTools:
             description: Optional description
             ephemeral: If True, document will be cleaned up on restart (default).
                        If False, document persists permanently.
+            project_id: Optional project ID for project-scoped documents
+            session_id: Optional session ID for session-scoped documents
+            config_hash: Optional config hash for cache invalidation
+            skip_entity_extraction: If True, skip NER (done later at session creation)
 
         Returns:
             Tuple of (success, message)
@@ -732,13 +935,17 @@ class DocumentDiscoveryTools:
         if not content.strip():
             return False, "File is empty"
 
-        # Add document with specified ephemeral flag
+        # Add document with specified scope
         success = self._add_document_internal(
             name=name,
             content=content,
             doc_format=doc_format,
             description=description or f"Document from {path.name}",
             ephemeral=ephemeral,
+            project_id=project_id,
+            session_id=session_id,
+            config_hash=config_hash,
+            skip_entity_extraction=skip_entity_extraction,
         )
 
         if success:
@@ -763,22 +970,24 @@ class DocumentDiscoveryTools:
         """
         return self.add_document_from_file(file_path, name, description, ephemeral=True)
 
-    def _extract_and_store_entities_ephemeral(
+    def _extract_and_store_entities_session(
         self,
         chunks: list[DocumentChunk],
+        session_id: str,
     ) -> None:
-        """Extract entities from chunks and store them as ephemeral.
+        """Extract entities from chunks and store them with session_id.
 
         Uses spaCy NER for named entity extraction plus pattern matching
         for database, OpenAPI, and GraphQL schemas.
 
         Args:
             chunks: Document chunks to extract entities from
+            session_id: Session ID for session-scoped entities
         """
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
-        logger.debug(f"Extracting entities from {len(chunks)} chunks")
+        logger.debug(f"Extracting entities from {len(chunks)} chunks for session {session_id}")
 
         # Create extractor with all known schema entities
         config = ExtractionConfig(
@@ -805,23 +1014,14 @@ class DocumentDiscoveryTools:
         entities = extractor.get_all_entities()
         logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
         if entities:
-            import inspect
-            sig = inspect.signature(self._vector_store.add_entities)
-
             # Separate entities by their metadata source for proper vector store categorization
             schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
             doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
 
-            if 'ephemeral' in sig.parameters:
-                if schema_entities_list:
-                    self._vector_store.add_entities(schema_entities_list, ephemeral=True, source="schema")
-                if doc_entities_list:
-                    self._vector_store.add_entities(doc_entities_list, ephemeral=True, source="document")
-            else:
-                if schema_entities_list:
-                    self._vector_store.add_entities(schema_entities_list, source="schema")
-                if doc_entities_list:
-                    self._vector_store.add_entities(doc_entities_list, source="document")
+            if schema_entities_list:
+                self._vector_store.add_entities(schema_entities_list, source="schema", session_id=session_id)
+            if doc_entities_list:
+                self._vector_store.add_entities(doc_entities_list, source="document", session_id=session_id)
 
         if all_links:
             # Deduplicate links by (chunk_id, entity_id)
@@ -839,11 +1039,78 @@ class DocumentDiscoveryTools:
                         confidence=max(existing.confidence, link.confidence),
                         mention_text=existing.mention_text or link.mention_text,
                     )
-            sig = inspect.signature(self._vector_store.link_chunk_entities)
-            if 'ephemeral' in sig.parameters:
-                self._vector_store.link_chunk_entities(list(unique_links.values()), ephemeral=True)
-            else:
-                self._vector_store.link_chunk_entities(list(unique_links.values()))
+            self._vector_store.link_chunk_entities(list(unique_links.values()), session_id=session_id)
+
+    def _extract_and_store_entities_project(
+        self,
+        chunks: list[DocumentChunk],
+        project_id: str,
+    ) -> None:
+        """Extract entities from chunks and store them with project_id.
+
+        Uses spaCy NER for named entity extraction plus pattern matching
+        for database, OpenAPI, and GraphQL schemas.
+
+        Args:
+            chunks: Document chunks to extract entities from
+            project_id: Project ID for project-scoped entities
+        """
+        if not hasattr(self._vector_store, 'add_entities'):
+            return
+
+        logger.debug(f"Extracting entities from {len(chunks)} chunks for project {project_id}")
+
+        # Create extractor with all known schema entities
+        config = ExtractionConfig(
+            extract_schema=bool(self._schema_entities),
+            extract_ner=True,
+            schema_entities=self._schema_entities or [],
+            openapi_operations=self._openapi_operations,
+            openapi_schemas=self._openapi_schemas,
+            graphql_types=self._graphql_types,
+            graphql_fields=self._graphql_fields,
+        )
+        extractor = EntityExtractor(config)
+
+        all_links: list[ChunkEntity] = []
+
+        # Extract entities from all chunks using spaCy NER
+        for chunk in chunks:
+            extractions = extractor.extract(chunk)
+            logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
+
+            for entity, link in extractions:
+                all_links.append(link)
+
+        entities = extractor.get_all_entities()
+        logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
+        if entities:
+            # Separate entities by their metadata source for proper vector store categorization
+            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
+            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
+
+            if schema_entities_list:
+                self._vector_store.add_entities(schema_entities_list, source="schema", project_id=project_id)
+            if doc_entities_list:
+                self._vector_store.add_entities(doc_entities_list, source="document", project_id=project_id)
+
+        if all_links:
+            # Deduplicate links by (chunk_id, entity_id)
+            unique_links = {}
+            for link in all_links:
+                key = (link.chunk_id, link.entity_id)
+                if key not in unique_links:
+                    unique_links[key] = link
+                else:
+                    existing = unique_links[key]
+                    unique_links[key] = ChunkEntity(
+                        chunk_id=link.chunk_id,
+                        entity_id=link.entity_id,
+                        mention_count=existing.mention_count + link.mention_count,
+                        confidence=max(existing.confidence, link.confidence),
+                        mention_text=existing.mention_text or link.mention_text,
+                    )
+            self._vector_store.link_chunk_entities(list(unique_links.values()), project_id=project_id)
 
     def remove_document(self, name: str) -> bool:
         """Remove a document and its vectors from the index.
@@ -1177,13 +1444,21 @@ class DocumentDiscoveryTools:
 
         return result
 
-    def search_documents(self, query: str, limit: int = 5) -> list[dict]:
+    def search_documents(
+        self,
+        query: str,
+        limit: int = 5,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[dict]:
         """
         Search across all documents for relevant content using semantic search.
 
         Args:
             query: Natural language query
             limit: Maximum results to return
+            project_ids: List of project IDs to include (for session filtering)
+            session_id: Session ID to include (for session filtering)
 
         Returns:
             List of relevant document excerpts with relevance scores
@@ -1198,8 +1473,13 @@ class DocumentDiscoveryTools:
             # Embed the query
             query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-            # Search using vector store (also protected by lock for consistency)
-            search_results = self._vector_store.search(query_embedding, limit=limit)
+            # Search using vector store with filtering (also protected by lock for consistency)
+            search_results = self._vector_store.search(
+                query_embedding,
+                limit=limit,
+                project_ids=project_ids,
+                session_id=session_id,
+            )
 
         logger.debug(f"[SEARCH] Found {len(search_results)} results for '{query}'")
 
@@ -1217,7 +1497,13 @@ class DocumentDiscoveryTools:
 
         return results
 
-    def search_documents_enriched(self, query: str, limit: int = 5) -> list[dict]:
+    def search_documents_enriched(
+        self,
+        query: str,
+        limit: int = 5,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[dict]:
         """Search documents with entity enrichment.
 
         Like search_documents, but includes entities mentioned in each chunk.
@@ -1226,6 +1512,8 @@ class DocumentDiscoveryTools:
         Args:
             query: Natural language query
             limit: Maximum results to return
+            project_ids: List of project IDs to include (for session filtering)
+            session_id: Session ID to include (for session filtering)
 
         Returns:
             List of dicts with document, excerpt, relevance, section, and entities
@@ -1238,7 +1526,12 @@ class DocumentDiscoveryTools:
             # Use lock for thread-safe access - both embedding model AND DuckDB connection
             with self._model_lock:
                 query_embedding = self._model.encode([query], convert_to_numpy=True)
-                enriched_results = self._vector_store.search_enriched(query_embedding, limit=limit)
+                enriched_results = self._vector_store.search_enriched(
+                    query_embedding,
+                    limit=limit,
+                    project_ids=project_ids,
+                    session_id=session_id,
+                )
 
             results = []
             for enriched in enriched_results:
@@ -1255,9 +1548,15 @@ class DocumentDiscoveryTools:
             return results
 
         # Fall back to regular search
-        return self.search_documents(query, limit)
+        return self.search_documents(query, limit, project_ids, session_id)
 
-    def explore_entity(self, entity_name: str, limit: int = 5) -> list[dict]:
+    def explore_entity(
+        self,
+        entity_name: str,
+        limit: int = 5,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[dict]:
         """Find chunks mentioning the given entity.
 
         Use when the LLM notices a relevant entity and wants more context.
@@ -1280,6 +1579,8 @@ class DocumentDiscoveryTools:
         Args:
             entity_name: Name of the entity to explore
             limit: Maximum number of chunks to return
+            project_ids: List of project IDs to include (for session filtering)
+            session_id: Session ID to include (for session filtering)
 
         Returns:
             List of dicts with document, excerpt, section, mention_count, confidence
@@ -1288,11 +1589,16 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, 'find_entity_by_name'):
             return []
 
-        entity = self._vector_store.find_entity_by_name(entity_name)
+        entity = self._vector_store.find_entity_by_name(entity_name, project_ids, session_id)
         if not entity:
             return []
 
-        chunks = self._vector_store.get_chunks_for_entity(entity.id, limit=limit)
+        chunks = self._vector_store.get_chunks_for_entity(
+            entity.id,
+            limit=limit,
+            project_ids=project_ids,
+            session_id=session_id,
+        )
 
         results = []
         for chunk_id, chunk, mention_count, confidence in chunks:
@@ -2124,6 +2430,25 @@ DOC_TOOL_SCHEMAS = [
                 },
             },
             "required": ["name", "section"],
+        },
+    },
+    {
+        "name": "explore_entity",
+        "description": "Find all document chunks that mention a specific entity (table, column, API endpoint, concept, or business term). Use this to gather additional context about an entity discovered in search results. This follows entity links to find related documentation across all sources.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_name": {
+                    "type": "string",
+                    "description": "Name of the entity to explore (e.g., 'customers', 'revenue', 'OrderAPI')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of chunks to return",
+                    "default": 5,
+                },
+            },
+            "required": ["entity_name"],
         },
     },
 ]

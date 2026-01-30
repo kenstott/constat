@@ -253,6 +253,8 @@ async def create_session(
             logger.warning(f"Project conflicts when loading preferences: {conflicts}")
         if loaded:
             logger.info(f"Loaded preferred projects: {loaded}")
+            # Run NER for newly loaded project documents
+            session_manager._run_entity_extraction(session_id, managed.session)
 
     return _session_to_response(managed)
 
@@ -419,6 +421,10 @@ async def set_active_projects(
                 "conflicts": conflicts,
             }
         )
+
+    # Run NER for project documents (creates chunk-entity links for this session)
+    if loaded:
+        session_manager._run_entity_extraction(session_id, managed.session)
 
     # Save to user preferences for future sessions
     effective_user_id = user_id if user_id != "default" else managed.user_id

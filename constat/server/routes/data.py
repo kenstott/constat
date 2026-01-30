@@ -424,6 +424,7 @@ async def list_facts(
                     reasoning=fact.reasoning,
                     confidence=getattr(fact, "confidence", None),
                     is_persisted=name in persisted_fact_names,
+                    role_id=getattr(fact, "role_id", None),
                 )
                 for name, fact in all_facts.items()
             ]
@@ -635,13 +636,34 @@ async def list_entities(
         if hasattr(managed.session, "doc_tools") and managed.session.doc_tools:
             vs = managed.session.doc_tools._vector_store
         if vs:
-            # Get all entities from the store
-            result = vs._conn.execute("""
+            # Build filter for base + project + session
+            # Base: project_id IS NULL AND session_id IS NULL
+            # Project: project_id IN (active_projects)
+            # Session: session_id = server_session_id
+            active_projects = getattr(managed, "active_projects", []) or []
+
+            filter_conditions = ["(e.project_id IS NULL AND e.session_id IS NULL)"]
+            params: list = []
+
+            if active_projects:
+                placeholders = ",".join(["?" for _ in active_projects])
+                filter_conditions.append(f"e.project_id IN ({placeholders})")
+                params.extend(active_projects)
+
+            filter_conditions.append("e.session_id = ?")
+            params.append(session_id)
+
+            where_clause = " OR ".join(filter_conditions)
+
+            # Get entities visible to this session
+            result = vs._conn.execute(f"""
                 SELECT e.id, e.name, e.type, e.source, e.metadata,
-                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
+                       (SELECT COUNT(*) FROM chunk_entities ce
+                        WHERE ce.entity_id = e.id AND ce.session_id = ?) as ref_count
                 FROM entities e
+                WHERE ({where_clause})
                 ORDER BY e.name
-            """).fetchall()
+            """, [session_id] + params).fetchall()
 
             for row in result:
                 ent_id, name, etype, source, metadata_json, ref_count = row
@@ -653,17 +675,17 @@ async def list_entities(
                     import json
                     metadata = json.loads(metadata_json)
 
-                # Get reference locations for this entity (including mention_text)
+                # Get reference locations for this entity (filter by session_id for NER results)
                 references = []
                 if ref_count > 0:
                     ref_result = vs._conn.execute("""
                         SELECT em.document_name, em.section, ce.mention_count, ce.mention_text
                         FROM chunk_entities ce
                         JOIN embeddings em ON ce.chunk_id = em.chunk_id
-                        WHERE ce.entity_id = ?
+                        WHERE ce.entity_id = ? AND ce.session_id = ?
                         ORDER BY ce.mention_count DESC
                         LIMIT 10
-                    """, [ent_id]).fetchall()
+                    """, [ent_id, session_id]).fetchall()
                     for ref_row in ref_result:
                         doc_name, section, mentions, mention_text = ref_row
                         references.append({

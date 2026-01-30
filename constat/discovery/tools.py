@@ -123,6 +123,7 @@ class DiscoveryTools:
                 "get_document": self.doc_tools.get_document,
                 "search_documents": self.doc_tools.search_documents,
                 "get_document_section": self.doc_tools.get_document_section,
+                "explore_entity": self.doc_tools.explore_entity,
             })
 
         # Fact tools (always available)
@@ -221,6 +222,7 @@ IMPORTANT: You do NOT have schema information loaded upfront. Use discovery tool
 - get_document(name) - Read a document
 - search_documents(query) - Search document content
 - get_document_section(name, section) - Get specific section
+- explore_entity(entity_name) - Find all chunks mentioning an entity (follow entity links)
 
 ### Fact Resolution
 - resolve_fact(question) - Resolve facts from all sources
