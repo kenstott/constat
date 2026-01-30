@@ -632,7 +632,7 @@ class ConstatAPIImpl:
 
         return SolveResult(
             success=success,
-            answer=result.get("final_answer") or result.get("summary") or result.get("answer"),
+            answer=result.get("final_answer") or result.get("summary") or result.get("answer") or result.get("output"),
             plan_goal=plan_goal,
             steps=steps,
             artifacts=artifacts,
@@ -653,7 +653,7 @@ class ConstatAPIImpl:
 
         return FollowUpResult(
             success=success,
-            answer=result.get("final_answer") or result.get("summary") or result.get("answer"),
+            answer=result.get("final_answer") or result.get("summary") or result.get("answer") or result.get("output"),
             steps=steps,
             artifacts=artifacts,
             tables_created=tables,
