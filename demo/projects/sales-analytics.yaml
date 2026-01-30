@@ -6,7 +6,7 @@ description: Sales and customer data for revenue analysis
 
 databases:
   sales:
-    uri: sqlite:///demo/data/sales.db
+    uri: sqlite:///data/sales.db
     description: |
       Sales data with customers, products, orders, and order items.
       Customer tiers: bronze/silver/gold/platinum with different discounts.
@@ -14,5 +14,5 @@ databases:
 documents:
   business_rules:
     type: file
-    path: demo/docs/business_rules.md
+    path: docs/business_rules.md
     description: Business policies for customer tiers and discounts

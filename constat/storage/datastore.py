@@ -185,7 +185,8 @@ class DataStore:
                     step_number INTEGER,
                     row_count INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    description TEXT
+                    description TEXT,
+                    role_id VARCHAR(255)
                 )
             """))
 
@@ -214,7 +215,8 @@ class DataStore:
                     title VARCHAR(255),
                     description TEXT,
                     metadata_json TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    role_id VARCHAR(255)
                 )
             """))
 
@@ -327,6 +329,7 @@ class DataStore:
         df: pd.DataFrame,
         step_number: int = 0,
         description: str = "",
+        role_id: Optional[str] = None,
     ) -> None:
         """
         Save a pandas DataFrame as a table.
@@ -336,6 +339,7 @@ class DataStore:
             df: DataFrame to save
             step_number: Which step created this table
             description: Human-readable description
+            role_id: Role that created this table (provenance)
         """
         # Cannot save DataFrame with no columns - would generate invalid SQL
         if len(df.columns) == 0:
@@ -356,6 +360,7 @@ class DataStore:
                 "step_number": step_number,
                 "row_count": len(df),
                 "description": description,
+                "role_id": role_id,
             }
         )
 
@@ -485,7 +490,7 @@ class DataStore:
         """
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT table_name, step_number, row_count, created_at, description
+                SELECT table_name, step_number, row_count, created_at, description, role_id
                 FROM _constat_table_registry
                 ORDER BY step_number, table_name
             """)).fetchall()
@@ -497,6 +502,7 @@ class DataStore:
                 "row_count": row[2],
                 "created_at": str(row[3]) if row[3] else None,
                 "description": row[4],
+                "role_id": row[5],
             }
             for row in rows
         ]
@@ -792,6 +798,7 @@ class DataStore:
         description: Optional[str] = None,
         content_type: Optional[str] = None,
         metadata: Optional[dict] = None,
+        role_id: Optional[str] = None,
     ) -> int:
         """
         Add an artifact (code, output, error, or rich content) to the catalog.
@@ -806,6 +813,7 @@ class DataStore:
             description: Description of the artifact
             content_type: MIME type override
             metadata: Additional metadata (JSON-serializable)
+            role_id: Role that created this artifact (provenance)
 
         Returns:
             Artifact ID
@@ -828,8 +836,8 @@ class DataStore:
             conn.execute(
                 text("""
                     INSERT INTO _constat_artifacts
-                    (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json)
-                    VALUES (:id, :name, :step_number, :attempt, :artifact_type, :content_type, :content, :title, :description, :metadata_json)
+                    (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json, role_id)
+                    VALUES (:id, :name, :step_number, :attempt, :artifact_type, :content_type, :content, :title, :description, :metadata_json, :role_id)
                 """),
                 {
                     "id": artifact_id,
@@ -842,6 +850,7 @@ class DataStore:
                     "title": title,
                     "description": description,
                     "metadata_json": metadata_json,
+                    "role_id": role_id,
                 }
             )
 
@@ -857,6 +866,7 @@ class DataStore:
         title: Optional[str] = None,
         description: Optional[str] = None,
         metadata: Optional[dict] = None,
+        role_id: Optional[str] = None,
     ) -> Artifact:
         """
         Save a rich artifact (chart, HTML, diagram, image, etc.).
@@ -872,6 +882,7 @@ class DataStore:
             title: Human-readable title for display
             description: Description of the artifact
             metadata: Additional metadata (e.g., chart config, dimensions)
+            role_id: Role that created this artifact (provenance)
 
         Returns:
             Artifact object with assigned ID
@@ -897,6 +908,7 @@ class DataStore:
             description=description,
             content_type=content_type if 'content_type' in dir() else ARTIFACT_MIME_TYPES.get(artifact_type) if isinstance(artifact_type, ArtifactType) else None,
             metadata=metadata,
+            role_id=role_id,
         )
 
         return Artifact(
@@ -1136,6 +1148,7 @@ class DataStore:
             description=row[8],
             metadata=metadata,
             created_at=str(row[10]) if row[10] else None,
+            role_id=row[11] if len(row) > 11 else None,
         )
 
     def get_artifacts(self, step_number: Optional[int] = None, artifact_type: Optional[str] = None) -> list[Artifact]:
@@ -1189,7 +1202,7 @@ class DataStore:
             with self.engine.connect() as conn:
                 rows = conn.execute(text("""
                     SELECT id, name, step_number, attempt, artifact_type, content_type,
-                           content, title, description, metadata_json, created_at
+                           content, title, description, metadata_json, created_at, role_id
                     FROM _constat_artifacts
                     ORDER BY step_number, attempt, id
                 """)).fetchall()
@@ -1199,7 +1212,7 @@ class DataStore:
             with self.engine.connect() as conn:
                 rows = conn.execute(text("""
                     SELECT id, name, step_number, attempt, artifact_type, content_type,
-                           LENGTH(content) as content_length, title, description, created_at
+                           LENGTH(content) as content_length, title, description, created_at, role_id
                     FROM _constat_artifacts
                     ORDER BY step_number, attempt, id
                 """)).fetchall()
@@ -1216,6 +1229,7 @@ class DataStore:
                     "title": row[7],
                     "description": row[8],
                     "created_at": str(row[9]) if row[9] else None,
+                    "role_id": row[10],
                 }
                 for row in rows
             ]

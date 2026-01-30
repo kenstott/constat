@@ -10,18 +10,14 @@ import {
   PencilIcon,
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
-  TrashIcon,
-  SparklesIcon,
 } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
-import * as skillsApi from '@/api/skills'
 import type { Session } from '@/types/api'
 import type { ProjectInfo } from '@/api/sessions'
-import type { SkillInfo } from '@/api/skills'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
@@ -90,25 +86,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   const [savingProject, setSavingProject] = useState(false)
   const [projectSaveError, setProjectSaveError] = useState<string | null>(null)
 
-  // Skills state
-  const [skills, setSkills] = useState<SkillInfo[]>([])
-  const [activeSkills, setActiveSkills] = useState<string[]>([])
-  const [loadingSkills, setLoadingSkills] = useState(false)
-
-  // Skill editor modal state
-  const [editingSkill, setEditingSkill] = useState<string | null>(null)
-  const [skillContent, setSkillContent] = useState('')
-  const [skillPath, setSkillPath] = useState('')
-  const [savingSkill, setSavingSkill] = useState(false)
-  const [skillSaveError, setSkillSaveError] = useState<string | null>(null)
-
-  // New skill modal state
-  const [creatingSkill, setCreatingSkill] = useState(false)
-  const [newSkillName, setNewSkillName] = useState('')
-  const [newSkillDescription, setNewSkillDescription] = useState('')
-  const [newSkillPrompt, setNewSkillPrompt] = useState('')
-  const [createSkillError, setCreateSkillError] = useState<string | null>(null)
-
   // Fetch sessions, projects, and skills when menu opens
   useEffect(() => {
     if (menuOpen) {
@@ -138,16 +115,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         })
         .catch(console.error)
         .finally(() => setLoadingProjects(false))
-
-      // Fetch skills
-      setLoadingSkills(true)
-      skillsApi.listSkills()
-        .then((response) => {
-          setSkills(response.skills)
-          setActiveSkills(response.active_skills)
-        })
-        .catch(console.error)
-        .finally(() => setLoadingSkills(false))
     }
   }, [menuOpen, currentSession?.session_id])
 
@@ -278,108 +245,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       }
     } finally {
       setSavingProject(false)
-    }
-  }
-
-  // Toggle skill active state
-  const handleToggleSkill = async (skillName: string) => {
-    const isActive = activeSkills.includes(skillName)
-    const newActiveSkills = isActive
-      ? activeSkills.filter(s => s !== skillName)
-      : [...activeSkills, skillName]
-
-    try {
-      await skillsApi.setActiveSkills(newActiveSkills)
-      setActiveSkills(newActiveSkills)
-      // Update skills list to reflect active state
-      setSkills(skills.map(s => ({
-        ...s,
-        is_active: newActiveSkills.includes(s.name),
-      })))
-    } catch (error) {
-      console.error('Failed to toggle skill:', error)
-    }
-  }
-
-  // Edit skill
-  const handleEditSkill = async (skillName: string) => {
-    try {
-      setSkillSaveError(null)
-      const result = await skillsApi.getSkillContent(skillName)
-      setSkillContent(result.content)
-      setSkillPath(result.path)
-      setEditingSkill(skillName)
-    } catch (error) {
-      console.error('Failed to load skill:', error)
-    }
-  }
-
-  // Save skill content
-  const handleSaveSkill = async () => {
-    if (!editingSkill) return
-
-    setSavingSkill(true)
-    setSkillSaveError(null)
-    try {
-      await skillsApi.updateSkillContent(editingSkill, skillContent)
-      // Refresh skills list
-      const response = await skillsApi.listSkills()
-      setSkills(response.skills)
-      setActiveSkills(response.active_skills)
-      setEditingSkill(null)
-    } catch (error: unknown) {
-      console.error('Failed to save skill:', error)
-      if (error && typeof error === 'object' && 'message' in error) {
-        setSkillSaveError((error as { message: string }).message)
-      } else {
-        setSkillSaveError('Failed to save skill')
-      }
-    } finally {
-      setSavingSkill(false)
-    }
-  }
-
-  // Delete skill
-  const handleDeleteSkill = async (skillName: string) => {
-    if (!confirm(`Delete skill "${skillName}"?`)) return
-
-    try {
-      await skillsApi.deleteSkill(skillName)
-      // Refresh skills list
-      const response = await skillsApi.listSkills()
-      setSkills(response.skills)
-      setActiveSkills(response.active_skills)
-    } catch (error) {
-      console.error('Failed to delete skill:', error)
-    }
-  }
-
-  // Create new skill
-  const handleCreateSkill = async () => {
-    if (!newSkillName.trim() || !newSkillPrompt.trim()) {
-      setCreateSkillError('Name and prompt are required')
-      return
-    }
-
-    setCreateSkillError(null)
-    try {
-      await skillsApi.createSkill(newSkillName.trim(), newSkillPrompt.trim(), newSkillDescription.trim())
-      // Refresh skills list
-      const response = await skillsApi.listSkills()
-      setSkills(response.skills)
-      setActiveSkills(response.active_skills)
-      // Reset form
-      setCreatingSkill(false)
-      setNewSkillName('')
-      setNewSkillDescription('')
-      setNewSkillPrompt('')
-    } catch (error: unknown) {
-      console.error('Failed to create skill:', error)
-      if (error && typeof error === 'object' && 'message' in error) {
-        setCreateSkillError((error as { message: string }).message)
-      } else {
-        setCreateSkillError('Failed to create skill')
-      }
     }
   }
 
@@ -584,88 +449,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                       </div>
                     )}
 
-                    {/* Skills section */}
-                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                          Skills
-                        </h3>
-                        <button
-                          onClick={() => setCreatingSkill(true)}
-                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                          title="New skill"
-                        >
-                          <PlusIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <div className="space-y-1">
-                        {loadingSkills ? (
-                          <p className="text-xs text-gray-400 py-2">Loading skills...</p>
-                        ) : skills.length === 0 ? (
-                          <p className="text-xs text-gray-400 py-2">No skills defined. Click + to create one.</p>
-                        ) : (
-                          skills.map((skill) => {
-                            const isActive = activeSkills.includes(skill.name)
-                            return (
-                              <div
-                                key={skill.name}
-                                className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${
-                                  isActive
-                                    ? 'bg-primary-100 dark:bg-primary-900/30'
-                                    : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isActive}
-                                  onChange={() => handleToggleSkill(skill.name)}
-                                  className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 dark:bg-gray-700"
-                                />
-                                <SparklesIcon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-primary-500' : 'text-gray-400'}`} />
-                                <button
-                                  onClick={() => handleToggleSkill(skill.name)}
-                                  className="flex-1 min-w-0 text-left"
-                                >
-                                  <p className={`text-sm font-medium truncate ${
-                                    isActive
-                                      ? 'text-primary-700 dark:text-primary-300'
-                                      : 'text-gray-900 dark:text-gray-100'
-                                  }`}>
-                                    {skill.name}
-                                  </p>
-                                  {skill.description && (
-                                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                      {skill.description}
-                                    </p>
-                                  )}
-                                </button>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleEditSkill(skill.name)
-                                  }}
-                                  className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600"
-                                  title="Edit skill"
-                                >
-                                  <PencilIcon className="w-4 h-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" />
-                                </button>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleDeleteSkill(skill.name)
-                                  }}
-                                  className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/20"
-                                  title="Delete skill"
-                                >
-                                  <TrashIcon className="w-4 h-4 text-gray-400 hover:text-red-600 dark:hover:text-red-400" />
-                                </button>
-                              </div>
-                            )
-                          })
-                        )}
-                      </div>
-                    </div>
-
                     {/* Settings */}
                     <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4 space-y-4">
                       <div className="flex items-center justify-between">
@@ -769,194 +552,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                       className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors"
                     >
                       {savingProject ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition.Root>
-
-      {/* Skill Editor Modal */}
-      <Transition.Root show={editingSkill !== null} as={Fragment}>
-        <Dialog as="div" className="relative z-[60]" onClose={() => setEditingSkill(null)}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" />
-          </Transition.Child>
-
-          <div className="fixed inset-0 z-10 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-3xl transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow-xl transition-all">
-                  <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                    <Dialog.Title className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      Edit Skill: {editingSkill}
-                    </Dialog.Title>
-                    <button
-                      onClick={() => setEditingSkill(null)}
-                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      <XMarkIcon className="w-5 h-5 text-gray-500" />
-                    </button>
-                  </div>
-
-                  <div className="p-4">
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                      {skillPath}
-                    </p>
-                    <textarea
-                      value={skillContent}
-                      onChange={(e) => setSkillContent(e.target.value)}
-                      className="w-full h-96 font-mono text-sm p-3 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      spellCheck={false}
-                    />
-                    {skillSaveError && (
-                      <p className="mt-2 text-sm text-red-600 dark:text-red-400">
-                        {skillSaveError}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-                    <button
-                      onClick={() => setEditingSkill(null)}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveSkill}
-                      disabled={savingSkill}
-                      className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors"
-                    >
-                      {savingSkill ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition.Root>
-
-      {/* Create Skill Modal */}
-      <Transition.Root show={creatingSkill} as={Fragment}>
-        <Dialog as="div" className="relative z-[60]" onClose={() => setCreatingSkill(false)}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" />
-          </Transition.Child>
-
-          <div className="fixed inset-0 z-10 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-lg transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow-xl transition-all">
-                  <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                    <Dialog.Title className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      Create New Skill
-                    </Dialog.Title>
-                    <button
-                      onClick={() => setCreatingSkill(false)}
-                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      <XMarkIcon className="w-5 h-5 text-gray-500" />
-                    </button>
-                  </div>
-
-                  <div className="p-4 space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Name
-                      </label>
-                      <input
-                        type="text"
-                        value={newSkillName}
-                        onChange={(e) => setNewSkillName(e.target.value)}
-                        placeholder="e.g., SQL Expert"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Description (optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={newSkillDescription}
-                        onChange={(e) => setNewSkillDescription(e.target.value)}
-                        placeholder="e.g., Expertise in writing SQL queries"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        Prompt
-                      </label>
-                      <textarea
-                        value={newSkillPrompt}
-                        onChange={(e) => setNewSkillPrompt(e.target.value)}
-                        placeholder="Enter the prompt that will be added to the system prompt when this skill is active..."
-                        rows={6}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      />
-                    </div>
-                    {createSkillError && (
-                      <p className="text-sm text-red-600 dark:text-red-400">
-                        {createSkillError}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-                    <button
-                      onClick={() => {
-                        setCreatingSkill(false)
-                        setNewSkillName('')
-                        setNewSkillDescription('')
-                        setNewSkillPrompt('')
-                        setCreateSkillError(null)
-                      }}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleCreateSkill}
-                      className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
-                    >
-                      Create
                     </button>
                   </div>
                 </Dialog.Panel>

@@ -134,6 +134,7 @@ export interface TableInfo {
   step_number: number
   columns: string[]
   is_starred?: boolean
+  role_id?: string | null  // Role provenance - which role created this table
 }
 
 export interface TableData {
@@ -158,6 +159,8 @@ export interface Artifact {
   created_at?: string
   is_key_result?: boolean
   is_starred?: boolean
+  metadata?: Record<string, unknown>
+  role_id?: string | null  // Role provenance - which role created this artifact
 }
 
 export interface ArtifactContent extends Artifact {
@@ -173,6 +176,7 @@ export interface Fact {
   reasoning?: string
   confidence?: number
   is_persisted: boolean
+  role_id?: string | null  // Role provenance - which role created this fact
 }
 
 // Entity Reference

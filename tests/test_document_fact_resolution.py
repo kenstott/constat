@@ -39,7 +39,7 @@ def business_rules_doc(demo_docs_path):
 
 
 @pytest.fixture
-def doc_tools(business_rules_doc):
+def doc_tools(business_rules_doc, clear_document_embeddings):
     """DocumentDiscoveryTools with business rules loaded."""
     config = Config(
         llm={"provider": "anthropic", "model": "test"},

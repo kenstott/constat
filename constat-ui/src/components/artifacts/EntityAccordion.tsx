@@ -1,12 +1,23 @@
 // Entity Accordion with alphabetical ordering and reference locations
 
 import { useMemo, useState } from 'react'
-import { ChevronRightIcon } from '@heroicons/react/24/outline'
+import { ChevronRightIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import type { Entity } from '@/types/api'
 
 interface EntityAccordionProps {
   entities: Entity[]
 }
+
+// All possible entity types
+const ENTITY_TYPES = [
+  { value: 'table', label: 'Tables', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
+  { value: 'column', label: 'Columns', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
+  { value: 'concept', label: 'Concepts', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
+  { value: 'business_term', label: 'Business Terms', color: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
+  { value: 'api_endpoint', label: 'API Endpoints', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  { value: 'api_field', label: 'API Fields', color: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400' },
+  { value: 'api_schema', label: 'API Schemas', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
+] as const
 
 interface EntityItemProps {
   entity: Entity
@@ -122,12 +133,44 @@ function EntityItem({ entity }: EntityItemProps) {
 }
 
 export function EntityAccordion({ entities }: EntityAccordionProps) {
-  // Sort entities alphabetically by name
+  const [searchText, setSearchText] = useState('')
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set())
+
+  // Get types that actually exist in the data
+  const availableTypes = useMemo(() => {
+    const types = new Set(entities.map(e => e.type))
+    return ENTITY_TYPES.filter(t => types.has(t.value))
+  }, [entities])
+
+  // Filter entities based on search and type filters
+  const filteredEntities = useMemo(() => {
+    return entities.filter(entity => {
+      // Type filter
+      if (selectedTypes.size > 0 && !selectedTypes.has(entity.type)) {
+        return false
+      }
+      // Text search
+      if (searchText) {
+        const search = searchText.toLowerCase()
+        const nameMatch = entity.name.toLowerCase().includes(search)
+        const originalMatch = (entity.original_name || entity.metadata?.original_name || '')
+          .toString().toLowerCase().includes(search)
+        const refMatch = entity.references?.some(ref =>
+          ref.document?.toLowerCase().includes(search) ||
+          ref.mention_text?.toLowerCase().includes(search)
+        )
+        return nameMatch || originalMatch || refMatch
+      }
+      return true
+    })
+  }, [entities, searchText, selectedTypes])
+
+  // Sort filtered entities alphabetically by name
   const sortedEntities = useMemo(() => {
-    return [...entities].sort((a, b) =>
+    return [...filteredEntities].sort((a, b) =>
       a.name.toLowerCase().localeCompare(b.name.toLowerCase())
     )
-  }, [entities])
+  }, [filteredEntities])
 
   // Group by first letter for large lists
   const groupedEntities = useMemo(() => {
@@ -145,6 +188,23 @@ export function EntityAccordion({ entities }: EntityAccordionProps) {
     return groups
   }, [sortedEntities])
 
+  const toggleType = (type: string) => {
+    const newTypes = new Set(selectedTypes)
+    if (newTypes.has(type)) {
+      newTypes.delete(type)
+    } else {
+      newTypes.add(type)
+    }
+    setSelectedTypes(newTypes)
+  }
+
+  const clearFilters = () => {
+    setSearchText('')
+    setSelectedTypes(new Set())
+  }
+
+  const hasFilters = searchText || selectedTypes.size > 0
+
   if (entities.length === 0) {
     return (
       <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -153,32 +213,98 @@ export function EntityAccordion({ entities }: EntityAccordionProps) {
     )
   }
 
-  // For small lists, just show flat list
-  if (!groupedEntities) {
-    return (
-      <div className="space-y-0">
-        {sortedEntities.map((entity) => (
-          <EntityItem key={entity.id} entity={entity} />
-        ))}
-      </div>
-    )
-  }
-
-  // For large lists, show grouped by letter
   return (
     <div className="space-y-2">
-      {Object.entries(groupedEntities).map(([letter, letterEntities]) => (
-        <div key={letter}>
-          <div className="text-xs font-semibold text-gray-400 dark:text-gray-500 px-1 py-1 sticky top-0 bg-white dark:bg-gray-900">
-            {letter}
-          </div>
-          <div className="space-y-0">
-            {letterEntities.map((entity) => (
-              <EntityItem key={entity.id} entity={entity} />
-            ))}
-          </div>
+      {/* Filter controls */}
+      <div className="space-y-2">
+        {/* Search input */}
+        <div className="relative">
+          <MagnifyingGlassIcon className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search entities..."
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 dark:border-gray-700 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+          />
+          {searchText && (
+            <button
+              onClick={() => setSearchText('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            >
+              <XMarkIcon className="w-4 h-4" />
+            </button>
+          )}
         </div>
-      ))}
+
+        {/* Type filter chips */}
+        {availableTypes.length > 1 && (
+          <div className="flex flex-wrap gap-1">
+            {availableTypes.map(typeInfo => {
+              const isSelected = selectedTypes.has(typeInfo.value)
+              const count = entities.filter(e => e.type === typeInfo.value).length
+              return (
+                <button
+                  key={typeInfo.value}
+                  onClick={() => toggleType(typeInfo.value)}
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full transition-all ${
+                    isSelected
+                      ? typeInfo.color + ' ring-1 ring-offset-1 ring-gray-400 dark:ring-gray-500'
+                      : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  }`}
+                >
+                  {typeInfo.label} ({count})
+                </button>
+              )
+            })}
+            {hasFilters && (
+              <button
+                onClick={clearFilters}
+                className="text-[10px] px-1.5 py-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Results count */}
+        {hasFilters && (
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            Showing {sortedEntities.length} of {entities.length} entities
+          </p>
+        )}
+      </div>
+
+      {/* Entity list */}
+      {sortedEntities.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No entities match your filters
+        </p>
+      ) : !groupedEntities ? (
+        // For small lists, just show flat list
+        <div className="space-y-0">
+          {sortedEntities.map((entity) => (
+            <EntityItem key={entity.id} entity={entity} />
+          ))}
+        </div>
+      ) : (
+        // For large lists, show grouped by letter
+        <div className="space-y-2">
+          {Object.entries(groupedEntities).map(([letter, letterEntities]) => (
+            <div key={letter}>
+              <div className="text-xs font-semibold text-gray-400 dark:text-gray-500 px-1 py-1 sticky top-0 bg-white dark:bg-gray-900">
+                {letter}
+              </div>
+              <div className="space-y-0">
+                {letterEntities.map((entity) => (
+                  <EntityItem key={entity.id} entity={entity} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -121,12 +121,20 @@ class FileConnector:
         self._metadata: Optional[FileMetadata] = None
 
     @classmethod
-    def from_config(cls, name: str, db_config) -> "FileConnector":
-        """Create a FileConnector from a DatabaseConfig."""
+    def from_config(cls, name: str, db_config, config_dir: str = None) -> "FileConnector":
+        """Create a FileConnector from a DatabaseConfig.
+
+        Args:
+            name: Name of the data source
+            db_config: DatabaseConfig with file settings
+            config_dir: Directory containing config.yaml for resolving relative paths
+        """
         file_type = FileType(db_config.type)
+        # Resolve path relative to config directory
+        path = db_config.get_resolved_path(config_dir) or db_config.path or ""
         return cls(
             name=name,
-            path=db_config.path or "",
+            path=path,
             file_type=file_type,
             description=db_config.description,
             sample_size=db_config.sample_size,

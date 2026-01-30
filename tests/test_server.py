@@ -36,6 +36,16 @@ from constat.server.session_manager import SessionManager, ManagedSession
 # ============================================================================
 
 
+@pytest.fixture(autouse=True)
+def clear_env_overrides(monkeypatch):
+    """Clear environment variables that would override ServerConfig defaults.
+
+    This ensures test fixtures control the config values, not .env files.
+    """
+    monkeypatch.delenv("AUTH_DISABLED", raising=False)
+    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
+
+
 @pytest.fixture
 def server_config():
     """Create a test server configuration."""
@@ -46,6 +56,7 @@ def server_config():
         session_timeout_minutes=60,
         max_concurrent_sessions=5,
         require_plan_approval=False,
+        auth_disabled=True,  # Disable auth for tests
     )
 
 
@@ -75,6 +86,17 @@ def create_mock_session():
         mock._event_handlers.append(handler)
     mock.on_event = on_event
 
+    return mock
+
+
+def create_mock_api():
+    """Create a mock ConstatAPIImpl object."""
+    mock = MagicMock()
+    mock.set_approval_callback = MagicMock()
+    mock.solve = MagicMock()
+    mock.follow_up = MagicMock()
+    mock.get_facts = MagicMock(return_value={})
+    mock.get_learnings = MagicMock(return_value=[])
     return mock
 
 
@@ -112,15 +134,20 @@ def session_manager_with_mock(minimal_config, server_config, mock_session_class)
 class TestServerConfig:
     """Tests for ServerConfig model."""
 
-    def test_default_values(self):
-        """Test default configuration values."""
+    def test_default_values(self, monkeypatch):
+        """Test default configuration values (isolated from env vars)."""
+        # Clear env vars that would override defaults
+        monkeypatch.delenv("AUTH_DISABLED", raising=False)
+        monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
+
         config = ServerConfig()
         assert config.host == "127.0.0.1"
         assert config.port == 8000
         assert "http://localhost:5173" in config.cors_origins
         assert config.session_timeout_minutes == 60
         assert config.max_concurrent_sessions == 10
-        assert config.require_plan_approval is False
+        assert config.require_plan_approval is True  # Actual default is True
+        assert config.auth_disabled is True  # Actual default is True
 
     def test_custom_values(self):
         """Test custom configuration values."""
@@ -266,10 +293,12 @@ class TestManagedSession:
     def test_touch_updates_last_activity(self):
         """Test that touch() updates last_activity."""
         mock_session = create_mock_session()
+        mock_api = create_mock_api()
         now = datetime.now(timezone.utc)
         managed = ManagedSession(
             session_id="test-id",
             session=mock_session,
+            api=mock_api,
             user_id="test",
             created_at=now - timedelta(hours=1),
             last_activity=now - timedelta(hours=1),
@@ -282,10 +311,12 @@ class TestManagedSession:
     def test_is_expired_false(self):
         """Test is_expired returns False when not expired."""
         mock_session = create_mock_session()
+        mock_api = create_mock_api()
         now = datetime.now(timezone.utc)
         managed = ManagedSession(
             session_id="test-id",
             session=mock_session,
+            api=mock_api,
             user_id="test",
             created_at=now,
             last_activity=now,
@@ -296,10 +327,12 @@ class TestManagedSession:
     def test_is_expired_true(self):
         """Test is_expired returns True when expired."""
         mock_session = create_mock_session()
+        mock_api = create_mock_api()
         now = datetime.now(timezone.utc)
         managed = ManagedSession(
             session_id="test-id",
             session=mock_session,
+            api=mock_api,
             user_id="test",
             created_at=now - timedelta(hours=2),
             last_activity=now - timedelta(hours=2),
@@ -357,10 +390,11 @@ class TestSessionEndpoints:
 
     def test_list_sessions(self, client_with_mock):
         """Test listing sessions via API."""
-        # Create some sessions
-        client_with_mock.post("/api/sessions", json={"user_id": "user1"})
-        client_with_mock.post("/api/sessions", json={"user_id": "user2"})
+        # Create sessions with default user (when auth disabled, no user_id = "default")
+        client_with_mock.post("/api/sessions", json={})
+        client_with_mock.post("/api/sessions", json={})
 
+        # List sessions for default user (no filter)
         response = client_with_mock.get("/api/sessions")
 
         assert response.status_code == 200
@@ -592,6 +626,11 @@ class TestWebSocket:
         session_id = create_response.json()["session_id"]
 
         with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
+            # First, consume the welcome event sent on connection
+            welcome = websocket.receive_json()
+            assert welcome["type"] == "event"
+            assert welcome["payload"]["event_type"] == "welcome"
+
             # Send cancel command
             websocket.send_json({"action": "cancel"})
 
@@ -607,6 +646,11 @@ class TestWebSocket:
         session_id = create_response.json()["session_id"]
 
         with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
+            # First, consume the welcome event sent on connection
+            welcome = websocket.receive_json()
+            assert welcome["type"] == "event"
+            assert welcome["payload"]["event_type"] == "welcome"
+
             # Send unknown command
             websocket.send_json({"action": "unknown_action"})
 

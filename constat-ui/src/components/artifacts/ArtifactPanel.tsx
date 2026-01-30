@@ -1,6 +1,10 @@
 // Artifact Panel container
 
 import { useEffect, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
   CodeBracketIcon,
   LightBulbIcon,
@@ -18,6 +22,10 @@ import {
   TrashIcon,
   CheckIcon,
   XMarkIcon,
+  Cog6ToothIcon,
+  UserCircleIcon,
+  SparklesIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
@@ -30,6 +38,48 @@ import { EntityAccordion } from './EntityAccordion'
 import * as sessionsApi from '@/api/sessions'
 
 type ModalType = 'database' | 'api' | 'document' | 'fact' | 'rule' | null
+
+// Helper to parse YAML front-matter from markdown content
+function parseFrontMatter(content: string): { frontMatter: Record<string, unknown> | null; body: string } {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
+  if (!match) {
+    return { frontMatter: null, body: content }
+  }
+
+  // Simple YAML parsing for common fields
+  const yamlStr = match[1]
+  const body = match[2]
+  const frontMatter: Record<string, unknown> = {}
+
+  let currentKey = ''
+  let inArray = false
+  let arrayValues: string[] = []
+
+  for (const line of yamlStr.split('\n')) {
+    if (line.startsWith('  - ') && inArray) {
+      arrayValues.push(line.slice(4).trim())
+    } else if (line.includes(':')) {
+      if (inArray && currentKey) {
+        frontMatter[currentKey] = arrayValues
+        arrayValues = []
+        inArray = false
+      }
+      const [key, ...valueParts] = line.split(':')
+      const value = valueParts.join(':').trim()
+      currentKey = key.trim()
+      if (value === '') {
+        inArray = true
+      } else {
+        frontMatter[currentKey] = value
+      }
+    }
+  }
+  if (inArray && currentKey) {
+    frontMatter[currentKey] = arrayValues
+  }
+
+  return { frontMatter, body }
+}
 
 export function ArtifactPanel() {
   const { session } = useSessionStore()
@@ -45,18 +95,45 @@ export function ArtifactPanel() {
     apis,
     documents,
     stepCodes,
+    promptContext,
+    allSkills,
+    allRoles,
     fetchArtifacts,
     fetchTables,
     fetchFacts,
     fetchEntities,
     fetchLearnings,
     fetchDataSources,
+    fetchPromptContext,
+    fetchAllSkills,
+    fetchAllRoles,
+    createSkill,
+    updateSkill,
+    deleteSkill,
+    userPermissions,
+    fetchPermissions,
+    updateSystemPrompt,
   } = useArtifactStore()
 
   const [showModal, setShowModal] = useState<ModalType>(null)
   const [modalInput, setModalInput] = useState({ name: '', value: '', uri: '', type: '', persist: false })
   const [compacting, setCompacting] = useState(false)
   const [editingRule, setEditingRule] = useState<{ id: string; summary: string } | null>(null)
+  // Skill editing state
+  const [editingSkill, setEditingSkill] = useState<{ name: string; content: string } | null>(null)
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set())
+  const [skillContents, setSkillContents] = useState<Record<string, string>>({})
+  const [creatingSkill, setCreatingSkill] = useState(false)
+  const [newSkill, setNewSkill] = useState({ name: '', prompt: '', description: '' })
+  // Role editing state
+  const [editingRole, setEditingRole] = useState<{ name: string; prompt: string; description: string } | null>(null)
+  const [expandedRoles, setExpandedRoles] = useState<Set<string>>(new Set())
+  const [roleContents, setRoleContents] = useState<Record<string, { prompt: string; description: string }>>({})
+  const [creatingRole, setCreatingRole] = useState(false)
+  const [newRole, setNewRole] = useState({ name: '', prompt: '', description: '' })
+  // System prompt editing state (admin only)
+  const [editingSystemPrompt, setEditingSystemPrompt] = useState(false)
+  const [systemPromptDraft, setSystemPromptDraft] = useState('')
   // Document modal state
   const [docSourceType, setDocSourceType] = useState<'uri' | 'files'>('uri')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
@@ -74,6 +151,11 @@ export function ArtifactPanel() {
     localStorage.setItem('constat-results-filter', newValue ? 'published' : 'all')
   }
 
+  // Fetch permissions on mount
+  useEffect(() => {
+    fetchPermissions()
+  }, [fetchPermissions])
+
   // Fetch data when session changes
   useEffect(() => {
     if (session) {
@@ -83,8 +165,11 @@ export function ArtifactPanel() {
       fetchEntities(session.session_id)
       fetchLearnings()
       fetchDataSources(session.session_id)
+      fetchPromptContext(session.session_id)
+      fetchAllSkills()
+      fetchAllRoles(session.session_id)
     }
-  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources])
+  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllRoles])
 
   // Handlers
   const handleForgetFact = async (factName: string) => {
@@ -184,6 +269,244 @@ export function ArtifactPanel() {
 
   const handleDeleteLearning = async (learningId: string) => {
     await useArtifactStore.getState().deleteLearning(learningId)
+  }
+
+  const handleCreateSkill = async () => {
+    if (!newSkill.name.trim() || !newSkill.prompt.trim()) return
+    try {
+      await createSkill(newSkill.name.trim(), newSkill.prompt.trim(), newSkill.description.trim())
+      setNewSkill({ name: '', prompt: '', description: '' })
+      setCreatingSkill(false)
+    } catch (err) {
+      console.error('Failed to create skill:', err)
+    }
+  }
+
+  const handleUpdateSkill = async () => {
+    if (!editingSkill) return
+    try {
+      await updateSkill(editingSkill.name, editingSkill.content)
+      setEditingSkill(null)
+    } catch (err) {
+      console.error('Failed to update skill:', err)
+    }
+  }
+
+  const handleDeleteSkill = async (skillName: string) => {
+    if (!confirm(`Delete skill "${skillName}"?`)) return
+    try {
+      await deleteSkill(skillName)
+    } catch (err) {
+      console.error('Failed to delete skill:', err)
+    }
+  }
+
+  const handleToggleRoleExpand = async (roleName: string) => {
+    if (!session) return
+
+    const newExpanded = new Set(expandedRoles)
+    if (newExpanded.has(roleName)) {
+      newExpanded.delete(roleName)
+      setExpandedRoles(newExpanded)
+      return
+    }
+
+    // Expand and load content if not already loaded
+    newExpanded.add(roleName)
+    setExpandedRoles(newExpanded)
+
+    if (roleContents[roleName]) return // Already loaded
+
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(
+        `/api/sessions/roles/${encodeURIComponent(roleName)}?session_id=${session.session_id}`,
+        { headers, credentials: 'include' }
+      )
+      if (response.ok) {
+        const data = await response.json()
+        setRoleContents(prev => ({ ...prev, [roleName]: { prompt: data.prompt, description: data.description } }))
+      }
+    } catch (err) {
+      console.error('Failed to fetch role content:', err)
+    }
+  }
+
+  const handleEditRole = async (roleName: string) => {
+    if (!session) return
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(
+        `/api/sessions/roles/${encodeURIComponent(roleName)}?session_id=${session.session_id}`,
+        { headers, credentials: 'include' }
+      )
+      if (response.ok) {
+        const data = await response.json()
+        setEditingRole({ name: data.name, prompt: data.prompt, description: data.description })
+      }
+    } catch (err) {
+      console.error('Failed to fetch role content:', err)
+    }
+  }
+
+  const handleCreateRole = async () => {
+    if (!session || !newRole.name.trim() || !newRole.prompt.trim()) return
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(
+        `/api/sessions/roles?session_id=${session.session_id}`,
+        {
+          method: 'POST',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify(newRole),
+        }
+      )
+      if (response.ok) {
+        setNewRole({ name: '', prompt: '', description: '' })
+        setCreatingRole(false)
+        fetchAllRoles(session.session_id)
+      }
+    } catch (err) {
+      console.error('Failed to create role:', err)
+    }
+  }
+
+  const handleUpdateRole = async () => {
+    if (!session || !editingRole) return
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(
+        `/api/sessions/roles/${encodeURIComponent(editingRole.name)}?session_id=${session.session_id}`,
+        {
+          method: 'PUT',
+          headers,
+          credentials: 'include',
+          body: JSON.stringify({ prompt: editingRole.prompt, description: editingRole.description }),
+        }
+      )
+      if (response.ok) {
+        setEditingRole(null)
+        fetchAllRoles(session.session_id)
+      }
+    } catch (err) {
+      console.error('Failed to update role:', err)
+    }
+  }
+
+  const handleDeleteRole = async (roleName: string) => {
+    if (!session || !confirm(`Delete role "${roleName}"?`)) return
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(
+        `/api/sessions/roles/${encodeURIComponent(roleName)}?session_id=${session.session_id}`,
+        {
+          method: 'DELETE',
+          headers,
+          credentials: 'include',
+        }
+      )
+      if (response.ok) {
+        fetchAllRoles(session.session_id)
+      }
+    } catch (err) {
+      console.error('Failed to delete role:', err)
+    }
+  }
+
+  const handleEditSkill = async (skillName: string) => {
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, {
+        headers,
+        credentials: 'include',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setEditingSkill({ name: skillName, content: data.content })
+      }
+    } catch (err) {
+      console.error('Failed to fetch skill content:', err)
+    }
+  }
+
+  const handleToggleSkillExpand = async (skillName: string) => {
+    const newExpanded = new Set(expandedSkills)
+    if (newExpanded.has(skillName)) {
+      newExpanded.delete(skillName)
+      setExpandedSkills(newExpanded)
+      return
+    }
+
+    // Expand and load content if not already loaded
+    newExpanded.add(skillName)
+    setExpandedSkills(newExpanded)
+
+    if (skillContents[skillName]) return // Already loaded
+
+    try {
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) headers['Authorization'] = `Bearer ${token}`
+      }
+      const response = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, {
+        headers,
+        credentials: 'include',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setSkillContents(prev => ({ ...prev, [skillName]: data.content }))
+      }
+    } catch (err) {
+      console.error('Failed to fetch skill content:', err)
+    }
+  }
+
+  const handleEditSystemPrompt = () => {
+    setSystemPromptDraft(promptContext?.systemPrompt || '')
+    setEditingSystemPrompt(true)
+  }
+
+  const handleSaveSystemPrompt = async () => {
+    if (!session) return
+    try {
+      await updateSystemPrompt(session.session_id, systemPromptDraft)
+      setEditingSystemPrompt(false)
+    } catch (err) {
+      console.error('Failed to update system prompt:', err)
+    }
   }
 
   // Unified Results: combine tables and artifacts into a flat list
@@ -716,162 +1039,489 @@ export function ArtifactPanel() {
       </AccordionSection>
 
       {/* ═══════════════ REASONING ═══════════════ */}
-      {/* Always show header since Facts always has an action */}
       <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
           Reasoning
         </span>
       </div>
 
-      {/* Code - only show when there's code */}
-      {stepCodes.length > 0 && (
+      {/* System Prompt - show when there's content or user is admin */}
+      {(promptContext?.systemPrompt || userPermissions.isAdmin) && (
         <AccordionSection
-          id="code"
-          title="Code"
-          count={stepCodes.length}
-          icon={<CodeBracketIcon className="w-4 h-4" />}
-          command="/code"
+          id="system-prompt"
+          title="System Prompt"
+          icon={<Cog6ToothIcon className="w-4 h-4" />}
+          command="/system"
           action={
-            <button
-              onClick={async () => {
-                if (!session) return
-                try {
-                  const response = await fetch(
-                    `/api/sessions/${session.session_id}/download-code`
-                  )
-                  if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({}))
-                    const message = errorData.detail || 'Failed to download code'
-                    alert(message)
-                    return
-                  }
-                  const blob = await response.blob()
-                  const url = URL.createObjectURL(blob)
-                  const a = document.createElement('a')
-                  a.href = url
-                  a.download = `session_${session.session_id.slice(0, 8)}_code.py`
-                  document.body.appendChild(a)
-                  a.click()
-                  document.body.removeChild(a)
-                  URL.revokeObjectURL(url)
-                } catch (err) {
-                  console.error('Download failed:', err)
-                  alert('Failed to download code. Please try again.')
-                }
-              }}
-              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-              title="Download as Python script"
-            >
-              <ArrowDownTrayIcon className="w-4 h-4" />
-            </button>
+            userPermissions.isAdmin ? (
+              <button
+                onClick={handleEditSystemPrompt}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Edit system prompt"
+              >
+                <PencilIcon className="w-4 h-4" />
+              </button>
+            ) : (
+              <div className="w-6 h-6" />
+            )
           }
         >
-          <div className="space-y-3">
-            {stepCodes.map((step) => (
-              <div key={step.step_number}>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                  Step {step.step_number}: {step.goal}
-                </p>
-                <CodeViewer
-                  code={step.code}
-                  language="python"
-                />
+          {editingSystemPrompt ? (
+            <div className="space-y-2">
+              <textarea
+                value={systemPromptDraft}
+                onChange={(e) => setSystemPromptDraft(e.target.value)}
+                className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none min-h-[150px]"
+                placeholder="Enter system prompt..."
+              />
+              <div className="flex gap-1">
+                <button
+                  onClick={handleSaveSystemPrompt}
+                  className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                  title="Save"
+                >
+                  <CheckIcon className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setEditingSystemPrompt(false)}
+                  className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                  title="Cancel"
+                >
+                  <XMarkIcon className="w-4 h-4" />
+                </button>
               </div>
-            ))}
-          </div>
+            </div>
+          ) : promptContext?.systemPrompt ? (
+            <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
+              {promptContext.systemPrompt}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500 dark:text-gray-400 italic">No system prompt configured</p>
+          )}
         </AccordionSection>
       )}
 
-      {/* Facts - always show (has add action) */}
+      {/* Roles - always show with create/edit/delete */}
       <AccordionSection
-        id="facts"
-        title="Facts"
-        count={facts.length}
-        icon={<LightBulbIcon className="w-4 h-4" />}
-        command="/facts"
+        id="roles"
+        title="Roles"
+        count={allRoles.length}
+        icon={<UserCircleIcon className="w-4 h-4" />}
+        command="/role"
         action={
           <button
-            onClick={() => openModal('fact')}
+            onClick={() => setCreatingRole(true)}
             className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Add fact"
+            title="Create role"
           >
             <PlusIcon className="w-4 h-4" />
           </button>
         }
       >
-        {facts.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No facts yet</p>
+        {/* Create role form */}
+        {creatingRole && (
+          <div className="mb-3 p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
+            <input
+              type="text"
+              placeholder="Role name"
+              value={newRole.name}
+              onChange={(e) => setNewRole({ ...newRole, name: e.target.value })}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+            />
+            <input
+              type="text"
+              placeholder="Description (optional)"
+              value={newRole.description}
+              onChange={(e) => setNewRole({ ...newRole, description: e.target.value })}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+            />
+            <textarea
+              placeholder="Role prompt..."
+              value={newRole.prompt}
+              onChange={(e) => setNewRole({ ...newRole, prompt: e.target.value })}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[80px] resize-none"
+            />
+            <div className="flex gap-1">
+              <button
+                onClick={handleCreateRole}
+                className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                title="Create"
+              >
+                <CheckIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  setCreatingRole(false)
+                  setNewRole({ name: '', prompt: '', description: '' })
+                }}
+                className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                title="Cancel"
+              >
+                <XMarkIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Edit role modal */}
+        {editingRole && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-[500px] max-h-[80vh] shadow-xl flex flex-col">
+              <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
+                Edit Role: {editingRole.name}
+              </h3>
+              <input
+                type="text"
+                placeholder="Description (optional)"
+                value={editingRole.description}
+                onChange={(e) => setEditingRole({ ...editingRole, description: e.target.value })}
+                className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              />
+              <textarea
+                value={editingRole.prompt}
+                onChange={(e) => setEditingRole({ ...editingRole, prompt: e.target.value })}
+                className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
+              />
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  onClick={() => setEditingRole(null)}
+                  className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUpdateRole}
+                  className="px-3 py-1.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {allRoles.length === 0 && !creatingRole ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No roles defined</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
-                    Name
-                  </th>
-                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
-                    Value
-                  </th>
-                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
-                    Source
-                  </th>
-                  <th className="w-8"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {facts.map((fact) => (
-                  <tr
-                    key={fact.name}
-                    className={`border-b border-gray-100 dark:border-gray-800 last:border-b-0 group ${
-                      fact.is_persisted ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''
-                    }`}
-                  >
-                    <td className="py-2 px-1 font-medium text-gray-700 dark:text-gray-300">
-                      <span className="flex items-center gap-1">
-                        {fact.name}
-                        {fact.is_persisted && (
-                          <span className="px-1 py-0.5 text-[10px] bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 rounded">
-                            saved
-                          </span>
-                        )}
+          <div className="-mx-4">
+            {allRoles.map((role) => {
+              const isExpanded = expandedRoles.has(role.name)
+              const content = roleContents[role.name]
+
+              return (
+                <div key={role.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+                  {/* Sub-accordion header */}
+                  <div className="flex items-center group">
+                    <button
+                      onClick={() => handleToggleRoleExpand(role.name)}
+                      className="flex-1 flex items-center gap-2 px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {role.name}
                       </span>
-                    </td>
-                    <td className="py-2 px-1 text-gray-600 dark:text-gray-400">
-                      {String(fact.value)}
-                    </td>
-                    <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
-                      {fact.source}
-                    </td>
-                    <td className="py-2 px-1">
+                      <ChevronDownIcon
+                        className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                    <div className="flex gap-1 pr-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
-                        onClick={() => handleForgetFact(fact.name)}
-                        className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="Forget fact"
+                        onClick={() => handleEditRole(role.name)}
+                        className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                        title="Edit role"
                       >
-                        <MinusIcon className="w-3 h-3" />
+                        <PencilIcon className="w-3 h-3" />
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <button
+                        onClick={() => handleDeleteRole(role.name)}
+                        className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
+                        title="Delete role"
+                      >
+                        <TrashIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expanded content */}
+                  {isExpanded && (
+                    <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800/50">
+                      {/* Loading state */}
+                      {!content && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Loading...</p>
+                      )}
+
+                      {/* Description */}
+                      {content?.description && (
+                        <p className="text-xs text-gray-600 dark:text-gray-400 italic mb-3">
+                          {content.description}
+                        </p>
+                      )}
+
+                      {/* Markdown-formatted prompt */}
+                      {content && (
+                        <div className="max-h-[400px] overflow-auto">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              p: ({ children }) => <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 last:mb-0">{children}</p>,
+                              h1: ({ children }) => <h1 className="text-base font-bold text-gray-900 dark:text-gray-100 mt-4 mb-2 first:mt-0">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 mt-3 mb-2">{children}</h2>,
+                              h3: ({ children }) => <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mt-2 mb-1">{children}</h3>,
+                              ul: ({ children }) => <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300 mb-2 ml-2">{children}</ul>,
+                              ol: ({ children }) => <ol className="list-decimal list-inside text-sm text-gray-700 dark:text-gray-300 mb-2 ml-2">{children}</ol>,
+                              li: ({ children }) => <li className="mb-1">{children}</li>,
+                              strong: ({ children }) => <strong className="font-semibold text-gray-900 dark:text-gray-100">{children}</strong>,
+                              code: ({ className, children }) => {
+                                const match = /language-(\w+)/.exec(className || '')
+                                const isInline = !match
+                                return isInline ? (
+                                  <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono">{children}</code>
+                                ) : (
+                                  <SyntaxHighlighter
+                                    style={oneDark as Record<string, React.CSSProperties>}
+                                    language={match[1]}
+                                    PreTag="div"
+                                    customStyle={{
+                                      margin: '0.5rem 0',
+                                      padding: '0.75rem',
+                                      borderRadius: '0.375rem',
+                                      fontSize: '0.75rem',
+                                    }}
+                                  >
+                                    {String(children).replace(/\n$/, '')}
+                                  </SyntaxHighlighter>
+                                )
+                              },
+                            }}
+                          >
+                            {content.prompt}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </AccordionSection>
 
-      {/* Entities - only show when there are entities */}
-      {entities.length > 0 && (
-        <AccordionSection
-          id="entities"
-          title="Entities"
-          count={entities.length}
-          icon={<TagIcon className="w-4 h-4" />}
-          command="/entities"
-          action={<div className="w-6 h-6" />}
-        >
-          <EntityAccordion entities={entities} />
-        </AccordionSection>
-      )}
+      {/* Skills - always show with create/edit/delete */}
+      <AccordionSection
+        id="skills"
+        title="Skills"
+        count={allSkills.length}
+        icon={<SparklesIcon className="w-4 h-4" />}
+        command="/skills"
+        action={
+          <button
+            onClick={() => setCreatingSkill(true)}
+            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+            title="Create skill"
+          >
+            <PlusIcon className="w-4 h-4" />
+          </button>
+        }
+      >
+        {/* Create skill form */}
+        {creatingSkill && (
+          <div className="mb-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+            <input
+              type="text"
+              placeholder="Skill name"
+              value={newSkill.name}
+              onChange={(e) => setNewSkill({ ...newSkill, name: e.target.value })}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 mb-2"
+            />
+            <input
+              type="text"
+              placeholder="Description (optional)"
+              value={newSkill.description}
+              onChange={(e) => setNewSkill({ ...newSkill, description: e.target.value })}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 mb-2"
+            />
+            <textarea
+              placeholder="Skill prompt..."
+              value={newSkill.prompt}
+              onChange={(e) => setNewSkill({ ...newSkill, prompt: e.target.value })}
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none mb-2"
+              rows={3}
+            />
+            <div className="flex gap-1">
+              <button
+                onClick={handleCreateSkill}
+                className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                title="Create"
+              >
+                <CheckIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  setCreatingSkill(false)
+                  setNewSkill({ name: '', prompt: '', description: '' })
+                }}
+                className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                title="Cancel"
+              >
+                <XMarkIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Edit skill modal */}
+        {editingSkill && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-[500px] max-h-[80vh] shadow-xl flex flex-col">
+              <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
+                Edit Skill: {editingSkill.name}
+              </h3>
+              <textarea
+                value={editingSkill.content}
+                onChange={(e) => setEditingSkill({ ...editingSkill, content: e.target.value })}
+                className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
+              />
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  onClick={() => setEditingSkill(null)}
+                  className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUpdateSkill}
+                  className="px-3 py-1.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {allSkills.length === 0 && !creatingSkill ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No skills defined</p>
+        ) : (
+          <div className="-mx-4">
+            {allSkills.map((skill) => {
+              const isExpanded = expandedSkills.has(skill.name)
+              const content = skillContents[skill.name]
+              const { frontMatter, body } = content ? parseFrontMatter(content) : { frontMatter: null, body: '' }
+              const allowedTools = frontMatter?.['allowed-tools'] as string[] | undefined
+
+              return (
+                <div key={skill.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+                  {/* Sub-accordion header */}
+                  <div className="flex items-center group">
+                    <button
+                      onClick={() => handleToggleSkillExpand(skill.name)}
+                      className="flex-1 flex items-center gap-2 px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {skill.name}
+                      </span>
+                      <ChevronDownIcon
+                        className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                    <div className="flex gap-1 pr-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => handleEditSkill(skill.name)}
+                        className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                        title="Edit skill"
+                      >
+                        <PencilIcon className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSkill(skill.name)}
+                        className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
+                        title="Delete skill"
+                      >
+                        <TrashIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expanded content */}
+                  {isExpanded && (
+                    <div className="px-4 py-3 bg-gray-50 dark:bg-gray-800/50">
+                      {/* Loading state */}
+                      {!content && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400">Loading...</p>
+                      )}
+
+                      {/* Front-matter metadata */}
+                      {content && frontMatter && (
+                        <div className="mb-3 text-xs space-y-1">
+                          {frontMatter.description && (
+                            <p className="text-gray-600 dark:text-gray-400 italic">
+                              {String(frontMatter.description)}
+                            </p>
+                          )}
+                          {allowedTools && allowedTools.length > 0 && (
+                            <div className="flex flex-wrap gap-1 items-center">
+                              <span className="text-gray-500 dark:text-gray-500">Tools:</span>
+                              {allowedTools.map((tool) => (
+                                <span
+                                  key={tool}
+                                  className="px-1.5 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-400"
+                                >
+                                  {tool}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Markdown body */}
+                      {content && (
+                        <div className="max-h-[400px] overflow-auto">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              p: ({ children }) => <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 last:mb-0">{children}</p>,
+                              h1: ({ children }) => <h1 className="text-base font-bold text-gray-900 dark:text-gray-100 mt-4 mb-2 first:mt-0">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100 mt-3 mb-2">{children}</h2>,
+                              h3: ({ children }) => <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mt-2 mb-1">{children}</h3>,
+                              ul: ({ children }) => <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300 mb-2 ml-2">{children}</ul>,
+                              ol: ({ children }) => <ol className="list-decimal list-inside text-sm text-gray-700 dark:text-gray-300 mb-2 ml-2">{children}</ol>,
+                              li: ({ children }) => <li className="mb-1">{children}</li>,
+                              strong: ({ children }) => <strong className="font-semibold text-gray-900 dark:text-gray-100">{children}</strong>,
+                              code: ({ className, children }) => {
+                                const match = /language-(\w+)/.exec(className || '')
+                                const isInline = !match
+                                return isInline ? (
+                                  <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono">{children}</code>
+                                ) : (
+                                  <SyntaxHighlighter
+                                    style={oneDark as Record<string, React.CSSProperties>}
+                                    language={match[1]}
+                                    PreTag="div"
+                                    customStyle={{
+                                      margin: '0.5rem 0',
+                                      padding: '0.75rem',
+                                      borderRadius: '0.375rem',
+                                      fontSize: '0.75rem',
+                                    }}
+                                  >
+                                    {String(children).replace(/\n$/, '')}
+                                  </SyntaxHighlighter>
+                                )
+                              },
+                            }}
+                          >
+                            {body}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}</AccordionSection>
 
       {/* Learnings - always show (has add action) */}
       <AccordionSection
@@ -1033,6 +1683,161 @@ export function ArtifactPanel() {
           </div>
         )}
       </AccordionSection>
+
+      {/* Code - only show when there's code */}
+      {stepCodes.length > 0 && (
+        <AccordionSection
+          id="code"
+          title="Code"
+          count={stepCodes.length}
+          icon={<CodeBracketIcon className="w-4 h-4" />}
+          command="/code"
+          action={
+            <button
+              onClick={async () => {
+                if (!session) return
+                try {
+                  const response = await fetch(
+                    `/api/sessions/${session.session_id}/download-code`
+                  )
+                  if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}))
+                    const message = errorData.detail || 'Failed to download code'
+                    alert(message)
+                    return
+                  }
+                  const blob = await response.blob()
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `session_${session.session_id.slice(0, 8)}_code.py`
+                  document.body.appendChild(a)
+                  a.click()
+                  document.body.removeChild(a)
+                  URL.revokeObjectURL(url)
+                } catch (err) {
+                  console.error('Download failed:', err)
+                  alert('Failed to download code. Please try again.')
+                }
+              }}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Download as Python script"
+            >
+              <ArrowDownTrayIcon className="w-4 h-4" />
+            </button>
+          }
+        >
+          <div className="space-y-3">
+            {stepCodes.map((step) => (
+              <div key={step.step_number}>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  Step {step.step_number}: {step.goal}
+                </p>
+                <CodeViewer
+                  code={step.code}
+                  language="python"
+                />
+              </div>
+            ))}
+          </div>
+        </AccordionSection>
+      )}
+
+      {/* Facts - always show (has add action) */}
+      <AccordionSection
+        id="facts"
+        title="Facts"
+        count={facts.length}
+        icon={<LightBulbIcon className="w-4 h-4" />}
+        command="/facts"
+        action={
+          <button
+            onClick={() => openModal('fact')}
+            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+            title="Add fact"
+          >
+            <PlusIcon className="w-4 h-4" />
+          </button>
+        }
+      >
+        {facts.length === 0 ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No facts yet</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
+                    Name
+                  </th>
+                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
+                    Value
+                  </th>
+                  <th className="text-left py-2 px-1 font-medium text-gray-600 dark:text-gray-400">
+                    Source
+                  </th>
+                  <th className="w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {facts.map((fact) => (
+                  <tr
+                    key={fact.name}
+                    className={`border-b border-gray-100 dark:border-gray-800 last:border-b-0 group ${
+                      fact.is_persisted ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''
+                    }`}
+                  >
+                    <td className="py-2 px-1 font-medium text-gray-700 dark:text-gray-300">
+                      <span className="flex items-center gap-1 flex-wrap">
+                        {fact.name}
+                        {fact.is_persisted && (
+                          <span className="px-1 py-0.5 text-[10px] bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 rounded">
+                            saved
+                          </span>
+                        )}
+                        {fact.role_id && (
+                          <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">
+                            {fact.role_id}
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="py-2 px-1 text-gray-600 dark:text-gray-400">
+                      {String(fact.value)}
+                    </td>
+                    <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
+                      {fact.source}
+                    </td>
+                    <td className="py-2 px-1">
+                      <button
+                        onClick={() => handleForgetFact(fact.name)}
+                        className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Forget fact"
+                      >
+                        <MinusIcon className="w-3 h-3" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </AccordionSection>
+
+      {/* Entities - only show when there are entities */}
+      {entities.length > 0 && (
+        <AccordionSection
+          id="entities"
+          title="Entities"
+          count={entities.length}
+          icon={<TagIcon className="w-4 h-4" />}
+          command="/entities"
+          action={<div className="w-6 h-6" />}
+        >
+          <EntityAccordion entities={entities} />
+        </AccordionSection>
+      )}
     </div>
   )
 }

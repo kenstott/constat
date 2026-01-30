@@ -188,7 +188,7 @@ export function MessageBubble({
             }}
           >
             {type === 'thinking' ? (
-              <span>{cleanedContent.replace(/\.+$/, '')}<AnimatedDots /></span>
+              <span>{cleanedContent.replace(/\.+$/, '') || 'Thinking'}<AnimatedDots /></span>
             ) : showAnimatedDots ? (
               <span>{displayContent}<AnimatedDots /></span>
             ) : (

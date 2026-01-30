@@ -275,6 +275,11 @@ class Fact:
     # Contains: code from plan, user prompt, SQL query, or other creation details
     context: Optional[str] = None
 
+    # Role provenance - which role created this fact (metadata, not access control)
+    # None = created in shared context, "financial-analyst" = created by that role
+    # All facts are globally accessible regardless of role_id
+    role_id: Optional[str] = None
+
     @property
     def is_resolved(self) -> bool:
         return self.source != FactSource.UNRESOLVED
@@ -418,6 +423,7 @@ class Fact:
             "reasoning": self.reasoning,
             "because": [f.name for f in self.because],
             "resolved_at": self.resolved_at.isoformat(),
+            "role_id": self.role_id,
         }
         # Add row count for table types
         if self.table_name and self.row_count:
@@ -478,6 +484,7 @@ class Fact:
             resolved_at=resolved_at,
             table_name=table_name,
             row_count=row_count,
+            role_id=data.get("role_id"),
         )
 
 
@@ -1484,6 +1491,80 @@ class FactResolver:
             Dictionary mapping fact names/keys to Fact objects
         """
         return dict(self._cache)
+
+    def get_facts_for_role(
+        self,
+        role_id: Optional[str] = None,
+        include_shared: bool = True,
+    ) -> dict[str, Fact]:
+        """
+        Get facts filtered by role scope.
+
+        Args:
+            role_id: Role to filter by. None = shared facts only.
+            include_shared: If True and role_id is set, also include shared facts.
+
+        Returns:
+            Dictionary mapping fact names to Fact objects
+        """
+        if role_id is None:
+            # Return only shared facts
+            return {k: v for k, v in self._cache.items() if v.role_id is None}
+
+        result = {}
+        for name, fact in self._cache.items():
+            if fact.role_id == role_id:
+                result[name] = fact
+            elif include_shared and fact.role_id is None:
+                result[name] = fact
+
+        return result
+
+    def get_shared_facts(self) -> dict[str, Fact]:
+        """Get only shared facts (role_id=None)."""
+        return {k: v for k, v in self._cache.items() if v.role_id is None}
+
+    def get_role_facts(self, role_id: str) -> dict[str, Fact]:
+        """Get only facts for a specific role (excludes shared)."""
+        return {k: v for k, v in self._cache.items() if v.role_id == role_id}
+
+    def promote_fact_to_shared(self, name: str) -> bool:
+        """
+        Promote a role-scoped fact to shared context.
+
+        Used when final results from a role should be available globally.
+
+        Args:
+            name: Fact name to promote
+
+        Returns:
+            True if promoted, False if not found
+        """
+        if name not in self._cache:
+            return False
+
+        fact = self._cache[name]
+        # Create a new fact with role_id=None (immutable dataclass workaround)
+        promoted = Fact(
+            name=fact.name,
+            value=fact.value,
+            confidence=fact.confidence,
+            source=fact.source,
+            because=fact.because,
+            description=fact.description,
+            source_name=fact.source_name,
+            query=fact.query,
+            api_endpoint=fact.api_endpoint,
+            rule_name=fact.rule_name,
+            reasoning=fact.reasoning,
+            resolved_at=fact.resolved_at,
+            table_name=fact.table_name,
+            row_count=fact.row_count,
+            context=fact.context,
+            role_id=None,  # Promoted to shared
+        )
+        self._cache[name] = promoted
+        return True
 
     # =========================================================================
     # Declarative Resolution (spec-based)
@@ -3215,6 +3296,7 @@ Original request:
         table_name: Optional[str] = None,
         row_count: Optional[int] = None,
         context: Optional[str] = None,
+        role_id: Optional[str] = None,
         **params,
     ) -> Fact:
         """
@@ -3237,6 +3319,7 @@ Original request:
             table_name: Table name in datastore if this is a table reference
             row_count: Number of rows if this is a table reference
             context: Detailed creation context (code, prompt, query that created this fact)
+            role_id: Role that created this fact (None = shared context)
             **params: Parameters for the fact
 
         Returns:
@@ -3257,6 +3340,7 @@ Original request:
             table_name=table_name,
             row_count=row_count,
             context=context,
+            role_id=role_id,
         )
 
         self._cache[cache_key] = fact

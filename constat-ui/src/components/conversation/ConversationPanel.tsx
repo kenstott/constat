@@ -56,16 +56,24 @@ export function ConversationPanel() {
     const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
     const keyArtifacts = currentQueryArtifacts.filter((a) => a.is_key_result)
 
-    // Visualizations in key artifacts
+    // Markdown documents (highest priority for final results)
+    const keyMarkdown = keyArtifacts.filter((a) =>
+      ['markdown', 'md'].includes(a.artifact_type?.toLowerCase())
+    )
+
+    // Other visualizations (charts, images, etc.)
     const keyVisualizations = keyArtifacts.filter((a) =>
-      ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'markdown', 'md', 'vega'].includes(a.artifact_type?.toLowerCase())
+      ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega'].includes(a.artifact_type?.toLowerCase())
     )
 
     // Tables in key artifacts
     const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
 
-    // Find best item from current query
-    if (keyVisualizations.length > 0) {
+    // Find best item from current query - prioritize markdown documents
+    if (keyMarkdown.length > 0) {
+      const best = keyMarkdown.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyMarkdown)
+      if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
+    } else if (keyVisualizations.length > 0) {
       const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyVisualizations)
       if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
     } else if (keyTables.length > 0) {

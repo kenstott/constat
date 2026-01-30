@@ -198,39 +198,34 @@ export function PlanApprovalDialog() {
   }
 
   const handleRevise = () => {
-    // Build feedback from step modifications, deletions, and additional instructions
-    const feedbackParts: string[] = []
+    // Build the full edited plan verbatim
+    const editedSteps: string[] = []
+    let stepCounter = 1
 
-    // Add deleted steps
-    if (deletedSteps.size > 0) {
-      const deletedStepsList = steps
-        .filter((step, index) => deletedSteps.has(step.number ?? index + 1))
-        .map((step, index) => `Step ${step.number ?? index + 1} (${step.goal})`)
-      feedbackParts.push(`DELETE these steps:\n${deletedStepsList.join('\n')}`)
-    }
-
-    // Add step-specific modifications
     steps.forEach((step) => {
       const stepNum = step.number ?? steps.indexOf(step) + 1
-      if (deletedSteps.has(stepNum)) return // Skip deleted steps
+      // Skip deleted steps
+      if (deletedSteps.has(stepNum)) return
+
+      // Use modification if provided, otherwise original goal
       const mod = stepModifications[stepNum]?.trim()
-      if (mod) {
-        feedbackParts.push(`Step ${stepNum} (${step.goal}): ${mod}`)
-      }
+      const stepText = mod || step.goal || ''
+      editedSteps.push(`${stepCounter}. ${stepText}`)
+      stepCounter++
     })
 
-    // Add general instructions
+    // Build full follow-up with problem + edited steps + any additional instructions
+    let followUp = `${problem}\n\nPlan:\n${editedSteps.join('\n')}`
+
     if (additionalInstructions.trim()) {
-      feedbackParts.push(`Additional: ${additionalInstructions.trim()}`)
+      followUp += `\n\n${additionalInstructions.trim()}`
     }
 
-    if (feedbackParts.length > 0) {
-      rejectPlan(feedbackParts.join('\n\n'))
-      setAdditionalInstructions('')
-      setStepModifications({})
-      setDeletedSteps(new Set())
-      setExpandedSteps(new Set())
-    }
+    rejectPlan(followUp)
+    setAdditionalInstructions('')
+    setStepModifications({})
+    setDeletedSteps(new Set())
+    setExpandedSteps(new Set())
   }
 
   const handleCancel = () => {

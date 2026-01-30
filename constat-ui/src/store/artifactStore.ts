@@ -3,12 +3,41 @@
 import { create } from 'zustand'
 import type { Artifact, ArtifactContent, TableInfo, Fact, Entity, SessionDatabase, ApiSourceInfo, DocumentSourceInfo, Learning, Rule } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
+import * as skillsApi from '@/api/skills'
 
 // Step code from execution (matches API response)
 interface StepCode {
   step_number: number
   goal: string
   code: string
+}
+
+// Prompt context types
+interface PromptContext {
+  systemPrompt: string
+  activeRole: { name: string; prompt: string } | null
+  activeSkills: Array<{ name: string; prompt: string; description: string }>
+}
+
+// Skill info (all skills, not just active)
+interface SkillInfo {
+  name: string
+  prompt: string
+  description: string
+  filename: string
+  is_active: boolean
+}
+
+// Role info (all roles, not just active)
+interface RoleInfo {
+  name: string
+  prompt: string
+  is_active: boolean
+}
+
+// User permissions
+interface UserPermissions {
+  isAdmin: boolean
 }
 
 interface ArtifactState {
@@ -23,6 +52,10 @@ interface ArtifactState {
   apis: ApiSourceInfo[]
   documents: DocumentSourceInfo[]
   stepCodes: StepCode[]
+  promptContext: PromptContext | null
+  allSkills: SkillInfo[]
+  allRoles: RoleInfo[]
+  userPermissions: UserPermissions
 
   // Selected items
   selectedArtifact: ArtifactContent | null
@@ -41,6 +74,16 @@ interface ArtifactState {
   fetchStepCodes: (sessionId: string) => Promise<void>
   fetchDatabases: (sessionId: string) => Promise<void>
   fetchDataSources: (sessionId: string) => Promise<void>
+  fetchPromptContext: (sessionId: string) => Promise<void>
+  fetchAllSkills: () => Promise<void>
+  createSkill: (name: string, prompt: string, description?: string) => Promise<void>
+  updateSkill: (name: string, content: string) => Promise<void>
+  deleteSkill: (name: string) => Promise<void>
+  toggleSkillActive: (name: string, sessionId: string) => Promise<void>
+  fetchAllRoles: (sessionId: string) => Promise<void>
+  setActiveRole: (roleName: string | null, sessionId: string) => Promise<void>
+  fetchPermissions: () => Promise<void>
+  updateSystemPrompt: (sessionId: string, systemPrompt: string) => Promise<void>
   selectArtifact: (sessionId: string, artifactId: number) => Promise<void>
   selectTable: (tableName: string | null) => void
   persistFact: (sessionId: string, factName: string) => Promise<void>
@@ -73,6 +116,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   databases: [],
   apis: [],
   documents: [],
+  promptContext: null,
+  allSkills: [],
+  allRoles: [],
+  userPermissions: { isAdmin: false },
   selectedArtifact: null,
   selectedTable: null,
   loading: false,
@@ -186,6 +233,170 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       })
     } catch (error) {
       set({ error: String(error), loading: false })
+    }
+  },
+
+  fetchPromptContext: async (sessionId) => {
+    try {
+      const response = await sessionsApi.getPromptContext(sessionId)
+      set({
+        promptContext: {
+          systemPrompt: response.system_prompt,
+          activeRole: response.active_role,
+          activeSkills: response.active_skills,
+        },
+      })
+    } catch (error) {
+      console.warn('Failed to fetch prompt context:', error)
+    }
+  },
+
+  fetchAllSkills: async () => {
+    try {
+      const response = await skillsApi.listSkills()
+      set({
+        allSkills: response.skills.map((s) => ({
+          name: s.name,
+          prompt: s.prompt,
+          description: s.description,
+          filename: s.filename,
+          is_active: s.is_active,
+        })),
+      })
+    } catch (error) {
+      console.warn('Failed to fetch skills:', error)
+    }
+  },
+
+  createSkill: async (name, prompt, description = '') => {
+    try {
+      await skillsApi.createSkill(name, prompt, description)
+      get().fetchAllSkills()
+    } catch (error) {
+      set({ error: String(error) })
+      throw error
+    }
+  },
+
+  updateSkill: async (name, content) => {
+    try {
+      await skillsApi.updateSkillContent(name, content)
+      get().fetchAllSkills()
+    } catch (error) {
+      set({ error: String(error) })
+      throw error
+    }
+  },
+
+  deleteSkill: async (name) => {
+    try {
+      await skillsApi.deleteSkill(name)
+      get().fetchAllSkills()
+    } catch (error) {
+      set({ error: String(error) })
+      throw error
+    }
+  },
+
+  toggleSkillActive: async (name, sessionId) => {
+    const { allSkills } = get()
+    const skill = allSkills.find((s) => s.name === name)
+    if (!skill) return
+
+    // Build new active list
+    const currentActive = allSkills.filter((s) => s.is_active).map((s) => s.name)
+    const newActive = skill.is_active
+      ? currentActive.filter((n) => n !== name)
+      : [...currentActive, name]
+
+    try {
+      await skillsApi.setActiveSkills(newActive)
+      get().fetchAllSkills()
+      get().fetchPromptContext(sessionId)
+    } catch (error) {
+      set({ error: String(error) })
+    }
+  },
+
+  fetchAllRoles: async (sessionId) => {
+    try {
+      // Import auth helpers
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+      }
+
+      const response = await fetch(`/api/sessions/roles?session_id=${sessionId}`, {
+        headers,
+        credentials: 'include',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        set({
+          allRoles: (data.roles || []).map((r: { name: string; prompt: string; is_active: boolean }) => ({
+            name: r.name,
+            prompt: r.prompt,
+            is_active: r.is_active,
+          })),
+        })
+      } else {
+        console.warn('Failed to fetch roles:', response.status, response.statusText)
+      }
+    } catch (error) {
+      console.warn('Failed to fetch roles:', error)
+    }
+  },
+
+  setActiveRole: async (roleName, sessionId) => {
+    try {
+      // Import auth helpers
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+      }
+
+      const response = await fetch(`/api/sessions/roles/current?session_id=${sessionId}`, {
+        method: 'PUT',
+        headers,
+        credentials: 'include',
+        body: JSON.stringify({ role_name: roleName }),
+      })
+      if (response.ok) {
+        get().fetchAllRoles(sessionId)
+        get().fetchPromptContext(sessionId)
+      }
+    } catch (error) {
+      set({ error: String(error) })
+    }
+  },
+
+  fetchPermissions: async () => {
+    try {
+      const perms = await sessionsApi.getMyPermissions()
+      set({ userPermissions: { isAdmin: perms.admin } })
+    } catch (error) {
+      // If auth is disabled or user not logged in, default to non-admin
+      console.warn('Failed to fetch permissions:', error)
+      set({ userPermissions: { isAdmin: false } })
+    }
+  },
+
+  updateSystemPrompt: async (sessionId, systemPrompt) => {
+    try {
+      await sessionsApi.updateSystemPrompt(sessionId, systemPrompt)
+      // Refresh prompt context to show updated value
+      get().fetchPromptContext(sessionId)
+    } catch (error) {
+      set({ error: String(error) })
+      throw error
     }
   },
 
@@ -384,6 +595,10 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       apis: [],
       documents: [],
       stepCodes: [],
+      promptContext: null,
+      allSkills: [],
+      allRoles: [],
+      userPermissions: { isAdmin: false },
       selectedArtifact: null,
       selectedTable: null,
       error: null,

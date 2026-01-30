@@ -29,8 +29,7 @@ from rich.status import Status
 
 from constat.core.config import Config, DatabaseCredentials
 from constat.session import Session, SessionConfig
-from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
-from constat.repl import InteractiveREPL
+from constat.repl import InteractiveREPL, FeedbackDisplay, SessionFeedbackHandler
 
 # Restore stderr after imports
 if sys.platform == "darwin":
@@ -473,14 +472,21 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
     # Configure logging
     import logging
 
-    # Always add console handler for constat logs
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    ))
-
     constat_logger = logging.getLogger('constat')
-    constat_logger.addHandler(console_handler)
+
+    # Only add console handler if not already configured (prevent duplicates)
+    if not any(isinstance(h, logging.StreamHandler) for h in constat_logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        constat_logger.addHandler(console_handler)
+    else:
+        # Use existing console handler
+        console_handler = next(h for h in constat_logger.handlers if isinstance(h, logging.StreamHandler))
+
+    # Prevent propagation to root logger to avoid duplicate messages
+    constat_logger.propagate = False
 
     if debug:
         # Debug mode: verbose logging to file and console

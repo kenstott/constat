@@ -39,7 +39,7 @@ email:
 databases:
   # SQL Databases (SQLite)
   inventory:
-    uri: sqlite:///demo/data/inventory.db
+    uri: sqlite:///data/inventory.db
     description: |
       Warehouse inventory with warehouses (location, capacity, manager), inventory
       (sku, quantity, reorder_level), and shipments (direction, carrier, date).
@@ -48,14 +48,14 @@ databases:
   # File-based data sources (CSV, JSON, Parquet, Arrow)
   web_metrics:
     type: csv
-    path: demo/data/website_metrics.csv
+    path: data/website_metrics.csv
     description: |
       Daily web analytics by page (90 days). Columns: date, page, visitors,
       page_views, bounce_rate, avg_session_duration
 
   events:
     type: json
-    path: demo/data/events.json
+    path: data/events.json
     description: |
       Clickstream events (500 records). Fields: event_id, timestamp, event_type
       (page_view/click/form_submit/purchase/signup/error), source, user_id, properties

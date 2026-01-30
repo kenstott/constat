@@ -174,7 +174,6 @@ class TestIntentQueue:
         session._intent_queue = []
         session._execution_context = ExecutionContext()
         session._conversation_state = ConversationState(
-            mode=Mode.EXPLORATORY,
             phase=Phase.IDLE,
         )
 
@@ -230,17 +229,17 @@ class TestIntentQueue:
 
     def test_control_intents_queue_in_order(self, mock_session):
         """Control intents should queue in order."""
-        intent1 = TurnIntent(primary=PrimaryIntent.CONTROL, sub=SubIntent.MODE_SWITCH)
-        intent2 = TurnIntent(primary=PrimaryIntent.CONTROL, sub=SubIntent.RESET)
+        intent1 = TurnIntent(primary=PrimaryIntent.CONTROL, sub=SubIntent.RESET)
+        intent2 = TurnIntent(primary=PrimaryIntent.CONTROL, sub=SubIntent.DETAIL)
 
-        mock_session.queue_intent(intent1, "switch to proof mode")
-        mock_session.queue_intent(intent2, "reset")
+        mock_session.queue_intent(intent1, "reset")
+        mock_session.queue_intent(intent2, "show details")
 
         assert mock_session.get_queued_intents_count() == 2
 
         queued = mock_session._intent_queue
-        assert queued[0][1] == "switch to proof mode"
-        assert queued[1][1] == "reset"
+        assert queued[0][1] == "reset"
+        assert queued[1][1] == "show details"
 
     def test_plan_continue_triggers_cancel(self, mock_session):
         """Plan continue should trigger cancellation and queue."""
@@ -272,7 +271,6 @@ class TestConversationStatePhaseTransitions:
     def test_cancel_transitions_to_idle(self):
         """Cancelling should transition from EXECUTING to IDLE."""
         state = ConversationState(
-            mode=Mode.EXPLORATORY,
             phase=Phase.EXECUTING,
         )
 
@@ -286,7 +284,6 @@ class TestConversationStatePhaseTransitions:
     def test_replan_transitions_to_planning(self):
         """Replan should transition from EXECUTING to PLANNING."""
         state = ConversationState(
-            mode=Mode.EXPLORATORY,
             phase=Phase.EXECUTING,
         )
 
@@ -298,7 +295,6 @@ class TestConversationStatePhaseTransitions:
     def test_is_executing_check(self):
         """Should correctly identify executing phase."""
         state = ConversationState(
-            mode=Mode.EXPLORATORY,
             phase=Phase.IDLE,
         )
 

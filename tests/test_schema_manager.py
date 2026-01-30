@@ -274,10 +274,47 @@ class TestSchemaManagerEdgeCases:
             schema_manager.get_connection("nonexistent_db")
 
 
+@pytest.fixture
+def fresh_vector_store(tmp_path):
+    """Provide a fresh vector store for tests that need complete initialization.
+
+    This overrides the session-scoped vector store with a function-scoped one,
+    ensuring each test gets a clean database without cached embeddings.
+    Also clears the schema cache to force re-introspection.
+    """
+    import os
+    from pathlib import Path
+
+    # Clear schema cache to force re-introspection
+    schema_cache_path = Path.cwd() / ".constat" / "schema_cache.json"
+    cache_existed = schema_cache_path.exists()
+    cache_backup = None
+    if cache_existed:
+        cache_backup = schema_cache_path.read_text()
+        schema_cache_path.unlink()
+
+    # Set fresh vector store path
+    vector_store_path = tmp_path / "vectors.duckdb"
+    old_value = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
+    os.environ["CONSTAT_VECTOR_STORE_PATH"] = str(vector_store_path)
+
+    yield vector_store_path
+
+    # Restore environment
+    if old_value is not None:
+        os.environ["CONSTAT_VECTOR_STORE_PATH"] = old_value
+    else:
+        os.environ.pop("CONSTAT_VECTOR_STORE_PATH", None)
+
+    # Restore schema cache
+    if cache_backup is not None:
+        schema_cache_path.write_text(cache_backup)
+
+
 class TestProgressCallback:
     """Test initialization progress callback."""
 
-    def test_progress_callback_called(self, config: Config):
+    def test_progress_callback_called(self, config: Config, fresh_vector_store):
         """Progress callback is called during initialization."""
         progress_events = []
 
@@ -302,7 +339,7 @@ class TestProgressCallback:
         indexing_events = [e for e in progress_events if e[0] == "indexing"]
         assert len(indexing_events) > 0
 
-    def test_progress_callback_stages_in_order(self, config: Config):
+    def test_progress_callback_stages_in_order(self, config: Config, fresh_vector_store):
         """Progress stages occur in correct order."""
         stages = []
 
@@ -317,7 +354,7 @@ class TestProgressCallback:
         assert stages.index("connecting") < stages.index("introspecting")
         assert stages.index("introspecting") < stages.index("indexing")
 
-    def test_progress_callback_current_increments(self, config: Config):
+    def test_progress_callback_current_increments(self, config: Config, fresh_vector_store):
         """Current value increments within each stage."""
         introspect_currents = []
 
@@ -333,7 +370,7 @@ class TestProgressCallback:
             for i in range(1, len(introspect_currents)):
                 assert introspect_currents[i] >= introspect_currents[i - 1]
 
-    def test_no_callback_works(self, config: Config):
+    def test_no_callback_works(self, config: Config, fresh_vector_store):
         """Initialize works without callback."""
         manager = SchemaManager(config)
         manager.initialize()  # Should not raise
@@ -342,7 +379,7 @@ class TestProgressCallback:
         tables = manager.list_tables()
         assert len(tables) > 0
 
-    def test_callback_receives_detail_info(self, config: Config):
+    def test_callback_receives_detail_info(self, config: Config, fresh_vector_store):
         """Callback receives meaningful detail strings."""
         details = []
 

@@ -217,6 +217,11 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
             <span className="text-xs text-gray-400 dark:text-gray-500">
               ({table.row_count} rows)
             </span>
+            {table.role_id && (
+              <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">
+                {table.role_id}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
             <button

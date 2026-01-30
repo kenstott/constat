@@ -132,6 +132,12 @@ class Step:
     Dependencies can be declared explicitly via `depends_on` (list of step numbers),
     or inferred from expected_inputs/expected_outputs overlap.
     Steps without dependencies can execute in parallel.
+
+    Role Provenance:
+    Each step can optionally be associated with a role via `role_id`.
+    When set, facts created during step execution are tagged with that role_id
+    for provenance tracking. All facts remain globally accessible - role_id
+    is metadata for attribution and UI grouping, not access control.
     """
     number: int
     goal: str  # Natural language description
@@ -146,6 +152,11 @@ class Step:
     # Complexity hint for model selection within a task type
     # low = simple query/transform, medium = moderate logic, high = complex operations
     complexity: str = "medium"
+
+    # Role context for this step (None = shared context)
+    # When set, facts created by this step are scoped to the role
+    # Detected from patterns like "as a [role]" or "acting as [role]"
+    role_id: Optional[str] = None
 
     # Populated during execution
     status: StepStatus = StepStatus.PENDING
@@ -384,6 +395,9 @@ class Artifact:
     # Timestamps
     created_at: Optional[str] = None
 
+    # Role provenance - which role created this artifact
+    role_id: Optional[str] = None
+
     @property
     def mime_type(self) -> str:
         """Get the MIME type for this artifact."""
@@ -410,4 +424,5 @@ class Artifact:
             "content_type": self.mime_type,
             "metadata": self.metadata,
             "created_at": self.created_at,
+            "role_id": self.role_id,
         }

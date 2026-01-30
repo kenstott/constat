@@ -128,10 +128,10 @@ class SessionHistory:
     def _generate_session_id(self) -> str:
         """Generate a unique session ID with full timestamp (sortable)."""
         now = datetime.now(timezone.utc)
-        # Format: YYYY-MM-DD_HHMMSS_mmm (milliseconds for uniqueness and sortability)
+        # Format: YYYY-MM-DD_HHMMSS_uuuuuu (microseconds for uniqueness and sortability)
         timestamp = now.strftime("%Y-%m-%d_%H%M%S")
-        milliseconds = f"{now.microsecond // 1000:03d}"
-        return f"{timestamp}_{milliseconds}"
+        microseconds = f"{now.microsecond:06d}"
+        return f"{timestamp}_{microseconds}"
 
     def _hash_config(self, config_dict: dict) -> str:
         """Generate hash of config for change detection."""

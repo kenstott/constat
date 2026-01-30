@@ -144,6 +144,7 @@ class RegistryAwareDataStore:
         description: str = "",
         is_final_step: bool = False,
         is_published: bool = False,
+        role_id: Optional[str] = None,
     ) -> None:
         """
         Save a DataFrame to Parquet with DuckDB view and registry.
@@ -155,6 +156,7 @@ class RegistryAwareDataStore:
             description: Human-readable description
             is_final_step: Whether this is created in the final execution step
             is_published: Whether explicitly published for artifacts panel
+            role_id: Role that created this table (provenance)
         """
         if df.empty or len(df.columns) == 0:
             return
@@ -191,6 +193,7 @@ class RegistryAwareDataStore:
             description=description or None,
             is_final_step=is_final_step,
             is_published=is_published or is_final_step,  # Final step tables are auto-published
+            role_id=role_id,
         )
 
     def drop_table(self, name: str) -> bool:
@@ -331,11 +334,12 @@ class RegistryAwareDataStore:
         description: Optional[str] = None,
         content_type: Optional[str] = None,
         metadata: Optional[dict] = None,
+        role_id: Optional[str] = None,
     ) -> int:
         """Add an artifact to the catalog."""
         return self._datastore.add_artifact(
             step_number, attempt, artifact_type, content,
-            name, title, description, content_type, metadata
+            name, title, description, content_type, metadata, role_id
         )
 
     def get_artifacts(self, step_number: Optional[int] = None, artifact_type: Optional[str] = None):

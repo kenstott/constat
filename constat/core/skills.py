@@ -5,9 +5,30 @@
 
 """User skills for customizing system prompts.
 
-Skills are reusable prompt snippets stored per user in ~/.constat/users/{user_id}/skills/.
-Each skill is a YAML file with a name and prompt content.
-Users can activate multiple skills at once.
+Skills follow the Agent Skills open standard (https://agentskills.io).
+Each skill is a directory containing a SKILL.md file with YAML frontmatter.
+
+Directory structure:
+    {base_dir}/{user_id}/skills/{skill-name}/
+    ├── SKILL.md (required)
+    ├── scripts/     # Optional executable code
+    ├── references/  # Optional documentation
+    └── assets/      # Optional templates, icons, etc.
+
+SKILL.md format:
+    ---
+    name: skill-name
+    description: What this skill does
+    allowed-tools: [Read, Grep]
+    disable-model-invocation: false
+    user-invocable: true
+    context: fork
+    agent: Explore
+    model: sonnet
+    argument-hint: [filename]
+    ---
+
+    Markdown instructions here...
 """
 
 from dataclasses import dataclass, field
@@ -16,32 +37,97 @@ from typing import Optional
 import yaml
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
-CONSTAT_DIR = Path.home() / ".constat"
+SKILL_FILENAME = "SKILL.md"
 
 
-def get_skills_dir(user_id: str) -> Path:
-    """Get the skills directory for a user."""
-    return CONSTAT_DIR / "users" / user_id / "skills"
+def get_skills_dir(user_id: str, base_dir: Optional[Path] = None) -> Path:
+    """Get the skills directory for a user.
+
+    Args:
+        user_id: User identifier
+        base_dir: Base .constat directory (defaults to ./.constat)
+    """
+    if base_dir is None:
+        base_dir = Path(".constat")
+    return base_dir / user_id / "skills"
+
+
+def parse_frontmatter(content: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter from markdown content.
+
+    Args:
+        content: Markdown content with optional YAML frontmatter
+
+    Returns:
+        Tuple of (frontmatter dict, body content)
+    """
+    # Check for frontmatter delimiter
+    if not content.startswith("---"):
+        return {}, content
+
+    # Find the closing delimiter
+    match = re.match(r'^---\s*\n(.*?)\n---\s*\n(.*)$', content, re.DOTALL)
+    if not match:
+        return {}, content
+
+    frontmatter_text = match.group(1)
+    body = match.group(2)
+
+    try:
+        frontmatter = yaml.safe_load(frontmatter_text) or {}
+    except yaml.YAMLError:
+        frontmatter = {}
+
+    return frontmatter, body.strip()
 
 
 @dataclass
 class Skill:
-    """A user-defined skill."""
+    """A user-defined skill following the Agent Skills standard.
+
+    See https://agentskills.io/specification for the full specification.
+    """
+    # Required fields
     name: str
-    prompt: str
+    prompt: str  # The markdown body (instructions)
+
+    # Recommended fields
     description: str = ""
-    filename: str = ""
+
+    # Optional metadata
+    filename: str = ""  # The directory name (skill-name)
+    allowed_tools: list[str] = field(default_factory=list)
+
+    # Invocation control
+    disable_model_invocation: bool = False  # If true, only user can invoke
+    user_invocable: bool = True  # If false, hidden from / menu
+
+    # Execution context
+    context: str = ""  # "fork" to run in subagent
+    agent: str = ""  # Subagent type when context=fork (e.g., "Explore", "Plan")
+    model: str = ""  # Model to use when skill is active
+
+    # UI hints
+    argument_hint: str = ""  # Hint for autocomplete (e.g., "[issue-number]")
 
 
 class SkillManager:
-    """Manages user skills loaded from ~/.constat/users/{user_id}/skills/."""
+    """Manages user skills loaded from {base_dir}/{user_id}/skills/."""
 
-    def __init__(self, user_id: str = "default"):
+    def __init__(self, user_id: str = "default", base_dir: Optional[Path] = None):
+        """Initialize the skill manager.
+
+        Args:
+            user_id: User identifier
+            base_dir: Base .constat directory. Defaults to ./.constat
+        """
         self._user_id = user_id
-        self._skills_dir = get_skills_dir(user_id)
+        self._base_dir = base_dir or Path(".constat")
+        self._skills_dir = get_skills_dir(user_id, self._base_dir)
         self._skills: dict[str, Skill] = {}
         self._active_skills: set[str] = set()
         self._ensure_skills_dir()
@@ -52,33 +138,66 @@ class SkillManager:
         self._skills_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_skills(self) -> None:
-        """Load skills from YAML files in the skills directory."""
+        """Load skills from SKILL.md files in skill directories."""
         self._skills.clear()
 
         if not self._skills_dir.exists():
             logger.debug(f"No skills directory at {self._skills_dir}")
             return
 
-        for filepath in self._skills_dir.glob("*.yaml"):
-            try:
-                with open(filepath, "r") as f:
-                    data = yaml.safe_load(f) or {}
+        # Look for directories containing SKILL.md
+        for skill_dir in self._skills_dir.iterdir():
+            if not skill_dir.is_dir():
+                continue
 
-                name = data.get("name", filepath.stem)
-                prompt = data.get("prompt", "").strip()
-                description = data.get("description", "").strip()
+            skill_file = skill_dir / SKILL_FILENAME
+            if not skill_file.exists():
+                continue
+
+            try:
+                with open(skill_file, "r") as f:
+                    content = f.read()
+
+                frontmatter, body = parse_frontmatter(content)
+
+                # Required/recommended fields
+                name = frontmatter.get("name", skill_dir.name)
+                description = frontmatter.get("description", "").strip()
+                prompt = body.strip()
+
+                # Tool restrictions
+                allowed_tools = frontmatter.get("allowed-tools", [])
+
+                # Invocation control
+                disable_model_invocation = frontmatter.get("disable-model-invocation", False)
+                user_invocable = frontmatter.get("user-invocable", True)
+
+                # Execution context
+                context = frontmatter.get("context", "")
+                agent = frontmatter.get("agent", "")
+                model = frontmatter.get("model", "")
+
+                # UI hints
+                argument_hint = frontmatter.get("argument-hint", "")
 
                 if prompt:
                     self._skills[name] = Skill(
                         name=name,
                         prompt=prompt,
                         description=description,
-                        filename=filepath.name,
+                        filename=skill_dir.name,
+                        allowed_tools=allowed_tools or [],
+                        disable_model_invocation=disable_model_invocation,
+                        user_invocable=user_invocable,
+                        context=context,
+                        agent=agent,
+                        model=model,
+                        argument_hint=argument_hint,
                     )
-                    logger.debug(f"Loaded skill: {name} from {filepath.name}")
+                    logger.debug(f"Loaded skill: {name} from {skill_dir.name}/SKILL.md")
 
             except Exception as e:
-                logger.warning(f"Failed to load skill from {filepath}: {e}")
+                logger.warning(f"Failed to load skill from {skill_file}: {e}")
 
         logger.info(f"Loaded {len(self._skills)} skills from {self._skills_dir}")
 
@@ -178,7 +297,7 @@ class SkillManager:
         """Create a new skill.
 
         Args:
-            name: Skill name (will be used as filename)
+            name: Skill name (will be used as directory name)
             prompt: The skill prompt content
             description: Optional description
 
@@ -188,28 +307,35 @@ class SkillManager:
         Raises:
             ValueError: If skill with this name already exists
         """
-        # Sanitize name for filename
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-        filename = f"{safe_name}.yaml"
-        filepath = self._skills_dir / filename
+        # Sanitize name for directory
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in name.lower())
+        skill_dir = self._skills_dir / safe_name
 
-        if filepath.exists():
+        if skill_dir.exists():
             raise ValueError(f"Skill '{name}' already exists")
 
-        skill_data = {
-            "name": name,
-            "prompt": prompt,
-            "description": description,
-        }
+        # Create directory and SKILL.md file
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / SKILL_FILENAME
 
-        with open(filepath, "w") as f:
-            yaml.dump(skill_data, f, default_flow_style=False, allow_unicode=True)
+        # Build markdown content with frontmatter
+        content = f"""---
+name: {name}
+description: {description}
+allowed-tools: []
+---
+
+{prompt}
+"""
+
+        with open(skill_file, "w") as f:
+            f.write(content)
 
         skill = Skill(
             name=name,
             prompt=prompt,
             description=description,
-            filename=filename,
+            filename=safe_name,
         )
         self._skills[name] = skill
         return skill
@@ -231,21 +357,23 @@ class SkillManager:
         if not skill:
             return False
 
-        filepath = self._skills_dir / skill.filename
+        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
 
-        # Load current data
-        with open(filepath, "r") as f:
-            data = yaml.safe_load(f) or {}
+        # Read current content
+        with open(skill_file, "r") as f:
+            content = f.read()
+
+        frontmatter, body = parse_frontmatter(content)
 
         # Update fields
         if prompt is not None:
-            data["prompt"] = prompt
+            body = prompt
             skill.prompt = prompt
         if description is not None:
-            data["description"] = description
+            frontmatter["description"] = description
             skill.description = description
         if new_name is not None and new_name != name:
-            data["name"] = new_name
+            frontmatter["name"] = new_name
             # Update in-memory
             del self._skills[name]
             skill.name = new_name
@@ -255,18 +383,22 @@ class SkillManager:
                 self._active_skills.discard(name)
                 self._active_skills.add(new_name)
 
+        # Build new content
+        frontmatter_yaml = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
+        new_content = f"---\n{frontmatter_yaml}---\n\n{body}\n"
+
         # Save back
-        with open(filepath, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        with open(skill_file, "w") as f:
+            f.write(new_content)
 
         return True
 
     def update_skill_content(self, name: str, content: str) -> bool:
-        """Update a skill from raw YAML content.
+        """Update a skill from raw markdown content.
 
         Args:
             name: Skill name
-            content: Raw YAML content
+            content: Raw markdown content with YAML frontmatter
 
         Returns:
             True if updated successfully, False if skill not found
@@ -275,22 +407,22 @@ class SkillManager:
         if not skill:
             return False
 
-        filepath = self._skills_dir / skill.filename
+        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
 
         # Parse the new content to validate and extract fields
-        try:
-            data = yaml.safe_load(content) or {}
-        except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML: {e}")
+        frontmatter, body = parse_frontmatter(content)
+        if not frontmatter and not body:
+            raise ValueError("Invalid skill format: missing frontmatter or content")
 
         # Write the content
-        with open(filepath, "w") as f:
+        with open(skill_file, "w") as f:
             f.write(content)
 
         # Update in-memory skill
-        new_name = data.get("name", name)
-        skill.prompt = data.get("prompt", "").strip()
-        skill.description = data.get("description", "").strip()
+        new_name = frontmatter.get("name", name)
+        skill.prompt = body.strip()
+        skill.description = frontmatter.get("description", "").strip()
+        skill.allowed_tools = frontmatter.get("allowed-tools", [])
 
         # Handle name change
         if new_name != name:
@@ -316,11 +448,17 @@ class SkillManager:
         if not skill:
             return False
 
-        filepath = self._skills_dir / skill.filename
+        skill_dir = self._skills_dir / skill.filename
         try:
-            filepath.unlink()
+            # Remove the SKILL.md file
+            skill_file = skill_dir / SKILL_FILENAME
+            if skill_file.exists():
+                skill_file.unlink()
+            # Remove the directory if empty
+            if skill_dir.exists() and not any(skill_dir.iterdir()):
+                skill_dir.rmdir()
         except OSError as e:
-            logger.warning(f"Failed to delete skill file {filepath}: {e}")
+            logger.warning(f"Failed to delete skill directory {skill_dir}: {e}")
             return False
 
         del self._skills[name]
@@ -328,7 +466,7 @@ class SkillManager:
         return True
 
     def get_skill_content(self, name: str) -> Optional[tuple[str, str]]:
-        """Get raw YAML content for a skill.
+        """Get raw markdown content for a skill.
 
         Args:
             name: Skill name
@@ -340,10 +478,10 @@ class SkillManager:
         if not skill:
             return None
 
-        filepath = self._skills_dir / skill.filename
+        skill_file = self._skills_dir / skill.filename / SKILL_FILENAME
         try:
-            with open(filepath, "r") as f:
+            with open(skill_file, "r") as f:
                 content = f.read()
-            return (content, str(filepath))
+            return (content, str(skill_file))
         except OSError:
             return None

@@ -76,8 +76,9 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 
 # Start UI dev server (output goes to terminal)
+# Use --strictPort to fail if port 5173 is in use rather than silently using another port
 echo "Starting UI dev server..."
-(cd constat-ui && npm run dev) &
+(cd constat-ui && npm run dev -- --port 5173 --strictPort) &
 UI_PID=$!
 echo "UI PID: $UI_PID"
 

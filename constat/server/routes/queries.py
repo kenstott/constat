@@ -38,6 +38,7 @@ from constat.session import (
     ClarificationRequest,
     ClarificationResponse,
 )
+from constat.api.types import SolveResult, FollowUpResult
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,34 @@ def _plan_to_response(plan) -> PlanResponse:
         failed_steps=plan.failed_steps,
         is_complete=plan.is_complete,
     )
+
+
+def _api_result_to_dict(result: SolveResult | FollowUpResult) -> dict[str, Any]:
+    """Convert API result dataclass to dict for existing handlers.
+
+    The server's existing code expects dict results from session.solve().
+    This bridges the API's clean types back to the expected format.
+    """
+    return {
+        "success": result.success,
+        "summary": result.answer,
+        "answer": result.answer,
+        "final_answer": result.answer,
+        "output": result.answer,
+        "error": result.error,
+        "raw_output": result.raw_output,
+        "suggestions": list(result.suggestions),
+        "tables_created": list(result.tables_created),
+        "artifacts": [
+            {"id": a.id, "name": a.name, "type": a.artifact_type, "step_number": a.step_number}
+            for a in result.artifacts
+        ],
+        "plan": {"goal": result.plan_goal} if hasattr(result, 'plan_goal') and result.plan_goal else None,
+        "step_results": [
+            {"description": s.description, "status": s.status, "code": s.code}
+            for s in result.steps
+        ],
+    }
 
 
 def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEventLoop):
@@ -286,6 +315,9 @@ def _create_event_handler(managed: ManagedSession):
 def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
     """Run a query synchronously (called from thread pool).
 
+    Uses the ConstatAPI for solve/follow_up operations, ensuring
+    consistent behavior with the REPL.
+
     Args:
         managed: The managed session
         problem: Query problem text
@@ -298,7 +330,7 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
         # Register approval callback if plan approval is required
         if managed.session.session_config.require_approval:
             approval_callback = _create_approval_callback(managed, loop)
-            managed.session.set_approval_callback(approval_callback)
+            managed.api.set_approval_callback(approval_callback)
             logger.debug(f"Registered approval callback for session {managed.session_id}")
 
         # Register clarification callback if clarifications are enabled
@@ -307,14 +339,16 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             managed.session.set_clarification_callback(clarification_callback)
             logger.debug(f"Registered clarification callback for session {managed.session_id}")
 
-        # Run the query - use follow_up if session already has context
+        # Run the query via API - use follow_up if session already has context
         if managed.session.session_id:
             logger.debug(f"Running follow-up query for session {managed.session_id}")
-            result = managed.session.follow_up(problem)
+            api_result = managed.api.follow_up(problem)
         else:
             logger.debug("Running new query (no existing session)")
-            result = managed.session.solve(problem)
-        return result
+            api_result = managed.api.solve(problem)
+
+        # Convert API result to dict for existing handlers
+        return _api_result_to_dict(api_result)
     except Exception as e:
         logger.error(f"Query execution error: {e}")
         return {

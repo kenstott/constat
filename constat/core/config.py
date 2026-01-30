@@ -224,11 +224,14 @@ class DatabaseConfig(BaseModel):
     # Supports local paths, s3://, https://, etc.
     path: Optional[str] = None
 
-    def get_connection_uri(self) -> str:
+    def get_connection_uri(self, config_dir: Optional[str] = None) -> str:
         """
         Get the connection URI with credentials applied.
 
         Only valid for SQL and MongoDB databases.
+
+        Args:
+            config_dir: Directory containing config.yaml for resolving relative paths
 
         Returns:
             Connection URI with credentials applied
@@ -240,14 +243,57 @@ class DatabaseConfig(BaseModel):
         if not self.uri:
             raise ValueError("URI not configured")
 
+        uri = self.uri
+
+        # Resolve relative paths in SQLite URIs
+        if uri.startswith("sqlite:///") and config_dir:
+            # sqlite:///path means path after the 3 slashes
+            db_path = uri[10:]  # Remove "sqlite:///"
+            if db_path and not db_path.startswith("/"):
+                # Relative path - resolve from config_dir
+                from pathlib import Path
+                resolved = (Path(config_dir) / db_path).resolve()
+                uri = f"sqlite:///{resolved}"
+
         # Use credentials if provided
         if self.username and self.password:
-            return self._inject_credentials(self.username, self.password)
+            return self._inject_credentials(self.username, self.password, uri)
 
-        # Return URI as-is (credentials embedded or no auth needed)
-        return self.uri
+        return uri
 
-    def _inject_credentials(self, username: str, password: str) -> str:
+    def get_resolved_path(self, config_dir: Optional[str] = None) -> Optional[str]:
+        """
+        Get the file path resolved relative to config directory.
+
+        For file-based data sources (csv, json, parquet, etc.).
+
+        Args:
+            config_dir: Directory containing config.yaml for resolving relative paths
+
+        Returns:
+            Resolved file path, or None if no path configured
+        """
+        if not self.path:
+            return None
+
+        # Remote paths (s3://, https://, etc.) - return as-is
+        if "://" in self.path:
+            return self.path
+
+        # Absolute paths - return as-is
+        from pathlib import Path
+        path = Path(self.path)
+        if path.is_absolute():
+            return str(path)
+
+        # Relative path - resolve from config_dir
+        if config_dir:
+            resolved = (Path(config_dir) / self.path).resolve()
+            return str(resolved)
+
+        return self.path
+
+    def _inject_credentials(self, username: str, password: str, uri: Optional[str] = None) -> str:
         """
         Inject credentials into the URI.
 
@@ -261,7 +307,8 @@ class DatabaseConfig(BaseModel):
         from urllib.parse import quote_plus
 
         # Parse the URI
-        parsed = urllib.parse.urlparse(self.uri)
+        target_uri = uri if uri is not None else self.uri
+        parsed = urllib.parse.urlparse(target_uri)
 
         # Build new netloc with credentials
         # Quote special characters in username/password
@@ -830,6 +877,9 @@ class Config(BaseModel):
     """Root configuration model."""
     model_config = {"extra": "ignore"}
 
+    # Directory containing config.yaml (for resolving relative paths)
+    config_dir: str = ""
+
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
     # Projects keyed by filename
@@ -990,6 +1040,9 @@ class Config(BaseModel):
         # Merge user config into engine config
         if user_data:
             data = cls._merge_configs(data, user_data)
+
+        # Store config directory for resolving relative paths
+        data["config_dir"] = str(config_dir)
 
         return cls.model_validate(data)
 

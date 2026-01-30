@@ -438,7 +438,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
 
   // Use source_type from metadata if available (for converted binary files like XLSX)
   // Otherwise fall back to artifact_type
-  const sourceType = artifact.metadata?.source_type
+  const sourceType = artifact.metadata?.source_type as string | undefined
   const extensionMap: Record<string, string> = {
     xlsx: 'excel',
     xls: 'excel',
@@ -473,6 +473,11 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
             <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
               ({typeLabel})
             </span>
+            {artifact.role_id && (
+              <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded flex-shrink-0">
+                {artifact.role_id}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             <button

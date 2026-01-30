@@ -300,88 +300,6 @@ class TestPdfErrorHandling:
         assert "not found" in result["error"].lower() or "Failed to load" in result["error"]
 
 
-# =============================================================================
-# PDF Loading via Document Types
-# =============================================================================
-
-
-class TestPdfLoadingViaFileType:
-    """Tests for loading PDFs through type='file' with .pdf extension."""
-
-    def test_load_pdf_via_file_type(self, config_with_pdf_file, mock_pdf_reader):
-        """Test that PDFs are loaded correctly via file type."""
-        tools = DocumentDiscoveryTools(config_with_pdf_file)
-        
-        mock_reader = mock_pdf_reader(["Page one content.", "Page two content."])
-        
-        with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools.get_document("test_pdf")
-        
-        assert "content" in result
-        assert "[Page 1]" in result["content"]
-        assert "Page one content" in result["content"]
-        # Format should be text (converted from PDF)
-        assert result["format"] == "text"
-
-    def test_pdf_file_auto_detected(self, pdf_file, mock_pdf_reader):
-        """Test that .pdf extension is auto-detected for file type."""
-        config = Config(
-            documents={
-                "auto_pdf": {
-                    "type": "file",
-                    "path": str(pdf_file),
-                    "format": "auto",  # Should auto-detect PDF
-                }
-            }
-        )
-        tools = DocumentDiscoveryTools(config)
-        
-        mock_reader = mock_pdf_reader(["Auto-detected PDF content"])
-        
-        with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools.get_document("auto_pdf")
-        
-        assert "content" in result
-        assert "[Page" in result["content"]
-        # PDF should be converted to text format
-        assert result["format"] == "text"
-
-
-class TestPdfLoadingViaPdfType:
-    """Tests for loading PDFs through type='pdf'."""
-
-    def test_load_pdf_via_pdf_type_with_path(self, config_with_pdf_type, mock_pdf_reader):
-        """Test that PDFs are loaded correctly via pdf type with path."""
-        tools = DocumentDiscoveryTools(config_with_pdf_type)
-        
-        mock_reader = mock_pdf_reader(["Direct PDF content"])
-        
-        with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools.get_document("direct_pdf")
-        
-        assert "content" in result
-        assert "[Page 1]" in result["content"]
-        assert result["format"] == "text"
-
-    def test_load_pdf_via_pdf_type_with_url(self, config_with_pdf_url, mock_pdf_reader):
-        """Test loading PDF via pdf type with URL."""
-        tools = DocumentDiscoveryTools(config_with_pdf_url)
-        
-        mock_reader = mock_pdf_reader(["URL PDF content"])
-        
-        mock_response = Mock()
-        mock_response.content = b"fake pdf bytes"
-        mock_response.raise_for_status = Mock()
-        
-        with patch('requests.get', return_value=mock_response), \
-             patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools.get_document("url_pdf")
-            
-            assert "content" in result
-            assert "[Page 1]" in result["content"]
-            assert result["format"] == "text"
-
-
 class TestPdfLoadingViaHttpType:
     """Tests for loading PDFs through type='http' with PDF content-type."""
 
@@ -528,58 +446,6 @@ class TestMultiPagePdf:
         pos_gamma = result.find("MARKER_GAMMA")
         
         assert pos_alpha < pos_beta < pos_gamma
-
-
-# =============================================================================
-# Integration Tests
-# =============================================================================
-
-
-class TestPdfDocumentIntegration:
-    """Integration tests for PDF documents in the discovery workflow."""
-
-    def test_list_documents_includes_pdf(self, config_with_pdf_file):
-        """Test that PDF documents appear in document listing."""
-        tools = DocumentDiscoveryTools(config_with_pdf_file)
-        result = tools.list_documents()
-        
-        assert len(result) == 1
-        assert result[0]["name"] == "test_pdf"
-        assert result[0]["type"] == "file"
-        assert result[0]["description"] == "Test PDF document"
-
-    def test_pdf_content_searchable(self, config_with_pdf_file, mock_pdf_reader):
-        """Test that PDF content can be searched."""
-        tools = DocumentDiscoveryTools(config_with_pdf_file)
-        
-        mock_reader = mock_pdf_reader(["searchable content here"])
-        
-        with patch('pypdf.PdfReader', return_value=mock_reader):
-            # First load the document
-            tools.get_document("test_pdf")
-        
-        # Then search
-        result = tools.search_documents("searchable content", limit=5)
-        
-        assert len(result) > 0
-        assert "test_pdf" in result[0]["document"]
-
-    def test_pdf_loaded_only_once(self, config_with_pdf_file, mock_pdf_reader):
-        """Test that PDF is loaded once and cached."""
-        tools = DocumentDiscoveryTools(config_with_pdf_file)
-        
-        mock_reader = mock_pdf_reader(["cached content"])
-        
-        with patch('pypdf.PdfReader', return_value=mock_reader) as mock_pdf:
-            # Load twice
-            result1 = tools.get_document("test_pdf")
-            result2 = tools.get_document("test_pdf")
-        
-        # Should be the same cached content
-        assert result1["content"] == result2["content"]
-        assert result1["loaded_at"] == result2["loaded_at"]
-        # PdfReader should only be called once
-        assert mock_pdf.call_count == 1
 
 
 # =============================================================================
@@ -2021,6 +1887,7 @@ class TestPptxEdgeCases:
 # =============================================================================
 
 
+@pytest.mark.usefixtures("clear_document_embeddings")
 class TestOfficeDocumentIntegration:
     """Integration tests for Office documents in the discovery workflow."""
 

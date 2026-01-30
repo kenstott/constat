@@ -425,3 +425,50 @@ export async function updateProjectContent(
 ): Promise<{ status: string; filename: string; path: string }> {
   return put(`/projects/${encodeURIComponent(filename)}/content`, { content })
 }
+
+// Prompt Context
+export interface ActiveRole {
+  name: string
+  prompt: string
+}
+
+export interface ActiveSkill {
+  name: string
+  prompt: string
+  description: string
+}
+
+export interface PromptContext {
+  system_prompt: string
+  active_role: ActiveRole | null
+  active_skills: ActiveSkill[]
+}
+
+export async function getPromptContext(sessionId: string): Promise<PromptContext> {
+  return get<PromptContext>(`/sessions/${sessionId}/prompt-context`)
+}
+
+export async function updateSystemPrompt(
+  sessionId: string,
+  systemPrompt: string
+): Promise<{ status: string; system_prompt: string }> {
+  return put<{ status: string; system_prompt: string }>(
+    `/sessions/${sessionId}/system-prompt`,
+    { system_prompt: systemPrompt }
+  )
+}
+
+// User permissions
+export interface UserPermissions {
+  user_id: string
+  email: string | null
+  admin: boolean
+  projects: string[]
+  databases: string[]
+  documents: string[]
+  apis: string[]
+}
+
+export async function getMyPermissions(): Promise<UserPermissions> {
+  return get<UserPermissions>('/users/me/permissions')
+}

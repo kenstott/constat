@@ -39,6 +39,7 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 3. Clear about what it produces (outputs)
 4. Clear about dependencies on other steps
 5. Classified by task type for optimal model routing
+6. Assigned to a role if the user specifies one (e.g., "as a financial analyst")
 
 ## Available Resources
 **Database tools:** get_table_schema(table), find_relevant_tables(query)
@@ -80,6 +81,20 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).
 
+## Role-Based Steps
+Users may specify a role context for steps using phrases like:
+- "as a financial analyst, calculate..."
+- "acting as the CFO, summarize..."
+- "from a data scientist perspective, analyze..."
+
+When you detect such patterns:
+1. Extract the role name (e.g., "financial-analyst", "cfo", "data-scientist")
+2. Set `role_id` on that step to the normalized role name (lowercase, hyphens for spaces)
+3. Steps with a role_id execute in that role's isolated context
+4. Steps without role_id use shared context
+
+If the entire query implies a single role, apply it to all steps. If different parts specify different roles, assign each step appropriately.
+
 ## Output Format
 Return a JSON object:
 ```json
@@ -87,10 +102,13 @@ Return a JSON object:
   "reasoning": "Brief explanation of your approach",
   "contains_sensitive_data": false,
   "steps": [
-    {"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium"}
+    {"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium", "role_id": null},
+    {"number": 2, "goal": "...", "inputs": ["df"], "outputs": ["summary"], "depends_on": [1], "task_type": "python_analysis", "complexity": "low", "role_id": "financial-analyst"}
   ]
 }
 ```
+
+Note: `role_id` is optional. Use `null` or omit it for steps that should use shared context.
 
 ## Task Types (for code generation routing)
 - **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
@@ -114,7 +132,8 @@ PLANNER_PROMPT_TEMPLATE = """{system_prompt}
 ## Domain Context
 {domain_context}
 {user_facts}
-{learnings}"""
+{learnings}
+{available_roles}"""
 
 
 class Planner:
@@ -162,6 +181,7 @@ class Planner:
         self.allowed_databases = allowed_databases
         self.allowed_apis = allowed_apis
         self.allowed_documents = allowed_documents
+        self._available_roles: list[dict] = []  # For role-based step assignment
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -212,6 +232,14 @@ class Planner:
             learning_store: LearningStore instance
         """
         self._learning_store = learning_store
+
+    def set_available_roles(self, roles: list[dict]) -> None:
+        """Set available roles for role-based step assignment.
+
+        Args:
+            roles: List of role dicts with 'name' and 'description' keys
+        """
+        self._available_roles = roles or []
 
     def _build_system_prompt(self, query: str) -> str:
         """Build the full system prompt for planning.
@@ -287,6 +315,17 @@ class Planner:
             except Exception:
                 pass  # Don't fail planning if learnings can't be loaded
 
+        # Build available roles section for role-based step assignment
+        roles_text = ""
+        if self._available_roles:
+            role_lines = ["\n## Available Roles (for role-based steps)"]
+            role_lines.append("Use these role IDs when assigning role_id to steps:")
+            for role in self._available_roles:
+                name = role.get("name", "")
+                desc = role.get("description", "")
+                role_lines.append(f"- **{name}**: {desc}")
+            roles_text = "\n".join(role_lines)
+
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             injected_sections=injected_sections,
@@ -296,6 +335,7 @@ class Planner:
             domain_context=self.config.system_prompt or "No additional domain context provided.",
             user_facts=user_facts_text,
             learnings=learnings_text,
+            available_roles=roles_text,
         )
 
     def _get_tool_handlers(self) -> dict:
@@ -554,6 +594,7 @@ class Planner:
                 step_type=StepType.PYTHON,  # Phase 1: Python only
                 task_type=task_type,
                 complexity=step_data.get("complexity", "medium"),
+                role_id=step_data.get("role_id"),  # Role context for this step
             ))
 
         plan = Plan(
@@ -692,6 +733,7 @@ Return the plan in JSON format."""
                 step_type=StepType.PYTHON,
                 task_type=task_type,
                 complexity=step_data.get("complexity", "medium"),
+                role_id=step_data.get("role_id"),  # Role context for this step
             ))
 
         # Mark completed steps

@@ -11,14 +11,70 @@
 
 import os
 import subprocess
+import tempfile
+import shutil
 import time
 import pytest
+from pathlib import Path
 from typing import Generator
 
 # Generate a unique session ID for this pytest run to allow parallel execution
 # Each pytest process gets its own containers and ports
 _SESSION_ID = os.getpid()
 _PORT_OFFSET = _SESSION_ID % 1000  # Use PID mod 1000 for port offset
+
+
+# =============================================================================
+# Vector Store Isolation
+# =============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_vector_store(tmp_path_factory) -> Generator[Path, None, None]:
+    """Create an isolated vector store for the test session.
+
+    This prevents tests from polluting each other's vector embeddings.
+    Each pytest session gets its own temporary vector store database.
+    """
+    # Create a temporary directory for the vector store
+    vector_store_dir = tmp_path_factory.mktemp("vector_store")
+    vector_store_path = vector_store_dir / "vectors.duckdb"
+
+    # Set environment variable so DuckDBVectorStore uses this path
+    old_value = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
+    os.environ["CONSTAT_VECTOR_STORE_PATH"] = str(vector_store_path)
+
+    yield vector_store_path
+
+    # Restore original environment
+    if old_value is not None:
+        os.environ["CONSTAT_VECTOR_STORE_PATH"] = old_value
+    else:
+        os.environ.pop("CONSTAT_VECTOR_STORE_PATH", None)
+
+
+@pytest.fixture
+def clear_document_embeddings():
+    """Clear document embeddings from the vector store before each test.
+
+    Use this fixture for tests that load documents and need a clean slate.
+    This prevents document content from one test polluting another.
+    """
+    def _clear():
+        try:
+            from constat.discovery.vector_store import DuckDBVectorStore
+            vs = DuckDBVectorStore()
+            # Clear document-sourced entities (preserves schema entities)
+            vs.clear_entities(source="document")
+            # Clear all document chunks from embeddings table
+            vs._conn.execute("DELETE FROM embeddings")
+            # Clear chunk_entities links
+            vs._conn.execute("DELETE FROM chunk_entities")
+        except Exception:
+            pass  # Vector store may not be initialized yet
+
+    _clear()
+    yield
+    _clear()
 
 
 def _get_unique_port(base_port: int) -> int:

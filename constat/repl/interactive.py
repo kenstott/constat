@@ -32,10 +32,12 @@ from pathlib import Path
 from constat.session import Session, SessionConfig
 from constat.execution.mode import Mode, Phase
 from constat.core.config import Config
-from constat.feedback import FeedbackDisplay, SessionFeedbackHandler
+from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
+from constat.api.impl import ConstatAPIImpl
+from constat.api.types import DisplayOverrides, CorrectionDetection
 
 
 # =============================================================================
@@ -157,48 +159,6 @@ def get_vera_adjectives() -> tuple[str, str]:
     return (random.choice(RELIABLE_ADJECTIVES), random.choice(HONEST_ADJECTIVES))
 
 
-# Display preference NL patterns
-# Format: (pattern, setting_name, value, persistent)
-DISPLAY_OVERRIDE_PATTERNS = [
-    # Persistent changes (detected by "always", "from now on", "stop", "never")
-    (r"\b(always|from now on)\s+(show|display|include)\s+raw\b", "raw", True, True),
-    (r"\b(stop|never|don't|do not)\s+(show|display|include)\s+raw\b", "raw", False, True),
-    (r"\b(always|from now on)\s+(be\s+)?verbose\b", "verbose", True, True),
-    (r"\b(stop|never|don't|do not)\s+(be\s+)?verbose\b", "verbose", False, True),
-    (r"\b(always|from now on)\s+(show|give|provide)\s+(insights?|synthesis)\b", "insights", True, True),
-    (r"\b(stop|never|don't|do not)\s+(show|give|provide)\s+(insights?|synthesis)\b", "insights", False, True),
-
-    # Single-turn overrides (apply only to this query)
-    (r"^(briefly|concisely|quick(ly)?)\b", "insights", False, False),
-    (r"\b(with(out)?\s+)?raw\s+(output|results)\b", "raw", True, False),
-    (r"\b(hide|no|skip|without)\s+raw\b", "raw", False, False),
-    (r"\b(verbose(ly)?|in\s+detail|detailed)\b", "verbose", True, False),
-    (r"\bjust\s+the\s+(answer|result)\b", "raw", False, False),
-]
-
-
-# NL Correction patterns - detect corrections in natural conversation
-# Format: (pattern, correction_type)
-CORRECTION_PATTERNS = [
-    # Explicit wrong
-    (r"\bthat'?s\s+(wrong|incorrect|not\s+right)\b", "explicit_wrong"),
-    (r"\byou\s+(got|have)\s+it\s+wrong\b", "you_wrong"),
-    (r"\bthat'?s\s+not\s+(how|what|correct)\b", "not_correct"),
-
-    # "Actually" corrections
-    (r"\bactually[,]?\s+(.+)\s+(means|is|should\s+be)\b", "actually_means"),
-    (r"\bno[,]?\s+(.+)\s+(means|is|should\s+be)\b", "no_means"),
-
-    # Domain terminology
-    (r"\b(when\s+I\s+say|by)\s+['\"]?(\w+)['\"]?[,]?\s*I\s+mean\b", "i_mean"),
-    (r"\bin\s+(our|this)\s+(context|company)[,]?\s+(\w+)\s+(means|refers)\b", "domain_term"),
-
-    # Assumptions
-    (r"\bdon'?t\s+assume\s+(.+)\b", "dont_assume"),
-    (r"\bnever\s+assume\s+(.+)\b", "never_assume"),
-]
-
-
 # Commands available in the REPL
 REPL_COMMANDS = [
     "/help", "/h", "/tables", "/show", "/query", "/code", "/state",
@@ -237,17 +197,14 @@ class InteractiveREPL:
         self.console = console or Console()
         self.display = FeedbackDisplay(console=self.console, verbose=verbose)
         self.progress_callback = progress_callback
-        self.session: Optional[Session] = None
         self.session_config = SessionConfig(verbose=verbose)
         self.user_id = user_id
         self.auto_resume = auto_resume
         self.last_problem = ""  # Track last problem for /save
         self.suggestions: list[str] = []  # Follow-up suggestions
-        self.fact_store = FactStore(user_id=user_id)  # Persistent facts
-        self.learning_store = LearningStore(user_id=user_id)  # Learnings/corrections
 
-        # Eagerly create session to trigger document indexing at startup
-        self.session = self._create_session()
+        # Create the API (single interface for all operations)
+        self.api: ConstatAPIImpl = self._create_api()
         # Note: auto-compact is called in run() after spinner stops
 
         # Style for prompt_toolkit status bar - dark background with light text
@@ -261,8 +218,8 @@ class InteractiveREPL:
         context = {"tables": [], "columns": [], "plans": []}
 
         # Get table names from datastore
-        if self.session and self.session.datastore:
-            tables = self.session.datastore.list_tables()
+        if self.api.session and self.api.session.datastore:
+            tables = self.api.session.datastore.list_tables()
             context["tables"] = [t["name"] for t in tables]
 
         # Get saved plan names
@@ -274,29 +231,11 @@ class InteractiveREPL:
 
         return context
 
-    def _detect_display_overrides(self, text: str) -> dict:
-        """Detect display preference overrides in natural language.
-
-        Returns dict with:
-            - overrides: dict of {setting: value} to apply
-            - persistent: dict of {setting: value} that are persistent changes
-            - single_turn: dict of {setting: value} for this query only
-        """
-        overrides = {"persistent": {}, "single_turn": {}}
-        text_lower = text.lower()
-
-        for pattern, setting, value, is_persistent in DISPLAY_OVERRIDE_PATTERNS:
-            if re.search(pattern, text_lower, re.IGNORECASE):
-                key = "persistent" if is_persistent else "single_turn"
-                overrides[key][setting] = value
-
-        return overrides
-
-    def _apply_display_overrides(self, overrides: dict) -> dict:
+    def _apply_display_overrides(self, overrides) -> dict:
         """Apply display overrides and return original values for restoration.
 
         Args:
-            overrides: Dict from _detect_display_overrides
+            overrides: DisplayOverrides from detect_display_overrides()
 
         Returns:
             Dict of original values to restore after query (for single_turn only)
@@ -304,7 +243,7 @@ class InteractiveREPL:
         original = {}
 
         # Apply persistent changes first (these stick)
-        for setting, value in overrides.get("persistent", {}).items():
+        for setting, value in overrides.persistent.items():
             if setting == "verbose":
                 self.verbose = value
                 self.display.verbose = value
@@ -317,9 +256,9 @@ class InteractiveREPL:
                 self.console.print(f"[dim]Insights: {'on' if value else 'off'} (persistent)[/dim]")
 
         # Apply single-turn overrides (save originals for restoration)
-        for setting, value in overrides.get("single_turn", {}).items():
+        for setting, value in overrides.single_turn.items():
             # Skip if persistent already set the same value
-            if setting in overrides.get("persistent", {}):
+            if setting in overrides.persistent:
                 continue
 
             if setting == "verbose":
@@ -361,35 +300,47 @@ class InteractiveREPL:
             self.console.print(f"  [cyan]{desc}[/cyan]{type_hint}")
             self.console.print(f"    {file_uri}")
 
-    def _create_session(self) -> Session:
-        """Create a new session with feedback handler and callbacks."""
+    def _create_api(self) -> ConstatAPIImpl:
+        """Create a new API instance with callbacks configured."""
+        # Create session
         session = Session(
             self.config,
             session_config=self.session_config,
             progress_callback=self.progress_callback,
             user_id=self.user_id,
         )
+
+        # Create stores
+        fact_store = FactStore(user_id=self.user_id)
+        learning_store = LearningStore(user_id=self.user_id)
+
+        # Load persistent facts
+        fact_store.load_into_session(session)
+
+        # Create API
+        api = ConstatAPIImpl(
+            session=session,
+            fact_store=fact_store,
+            learning_store=learning_store,
+        )
+
+        # Wire up feedback handler
         handler = SessionFeedbackHandler(self.display, self.session_config)
-        session.on_event(handler.handle_event)
+        api.on_event(lambda event_type, data: handler.handle_event(
+            type('Event', (), {'event_type': event_type, 'data': data})()
+        ))
 
         # Wire up approval callback
-        session.set_approval_callback(self.display.request_plan_approval)
+        api.set_approval_callback(self.display.request_plan_approval)
 
         # Wire up clarification callback
-        session.set_clarification_callback(self.display.request_clarification)
-
-        # Load persistent facts into the session
-        self._load_persistent_facts(session)
+        api.set_clarification_callback(self.display.request_clarification)
 
         # Initialize status line with default mode
         if self.session_config.default_mode:
             self.display.update_status_line(mode=self.session_config.default_mode)
 
-        return session
-
-    def _load_persistent_facts(self, session: Session) -> None:
-        """Load persistent facts into a session's fact resolver."""
-        self.fact_store.load_into_session(session)
+        return api
 
     def _get_bottom_toolbar(self):
         """Get the status bar text for the bottom toolbar as HTML.
@@ -463,9 +414,9 @@ class InteractiveREPL:
         words = list(REPL_COMMANDS)
 
         # Add table names if session has datastore
-        if self.session and self.session.datastore:
+        if self.api.session and self.api.session.datastore:
             try:
-                tables = self.session.datastore.list_tables()
+                tables = self.api.session.datastore.list_tables()
                 for t in tables:
                     words.append(t["name"])
             except Exception:
@@ -557,7 +508,7 @@ class InteractiveREPL:
 
     def _show_tables(self) -> None:
         """Show tables in current session with file:// URIs for Parquet files."""
-        if not self.session or not self.session.session_id:
+        if not self.api.session or not self.api.session.session_id:
             self.console.print("[yellow]No active session.[/yellow]")
             return
 
@@ -565,7 +516,7 @@ class InteractiveREPL:
         try:
             from constat.storage.registry import ConstatRegistry
             registry = ConstatRegistry()
-            tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
+            tables = registry.list_tables(user_id=self.user_id, session_id=self.api.session.session_id)
             registry.close()
 
             if not tables:
@@ -574,7 +525,8 @@ class InteractiveREPL:
 
             self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
             for t in tables:
-                self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]")
+                role_suffix = f" [blue]@{t.role_id}[/blue]" if getattr(t, "role_id", None) else ""
+                self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{role_suffix}")
                 # Show file:// URI for the Parquet file
                 file_path = Path(t.file_path)
                 if file_path.exists():
@@ -583,10 +535,10 @@ class InteractiveREPL:
 
         except Exception:
             # Fall back to datastore
-            if not self.session.datastore:
+            if not self.api.session.datastore:
                 self.console.print("[yellow]No active session.[/yellow]")
                 return
-            tables = self.session.datastore.list_tables()
+            tables = self.api.session.datastore.list_tables()
             if not tables:
                 self.console.print("[dim]No tables yet.[/dim]")
                 return
@@ -620,27 +572,27 @@ class InteractiveREPL:
         try:
             # Handle special _facts table
             if table_name == "_facts":
-                if not self.session:
+                if not self.api.session:
                     self.console.print("[yellow]No active session.[/yellow]")
                     return
-                df = self.session.fact_resolver.get_facts_as_dataframe()
+                df = self.api.session.fact_resolver.get_facts_as_dataframe()
                 if df.empty:
                     self.console.print("[dim]No facts to export.[/dim]")
                     return
             else:
                 # Get table from datastore
-                if not self.session or not self.session.datastore:
+                if not self.api.session or not self.api.session.datastore:
                     self.console.print("[yellow]No active session.[/yellow]")
                     return
 
-                tables = self.session.datastore.list_tables()
+                tables = self.api.session.datastore.list_tables()
                 table_names = [t['name'] for t in tables]
                 if table_name not in table_names:
                     self.console.print(f"[yellow]Table '{table_name}' not found.[/yellow]")
                     self.console.print(f"[dim]Available: {', '.join(table_names) or '(none)'}[/dim]")
                     return
 
-                df = self.session.datastore.query(f"SELECT * FROM {table_name}")
+                df = self.api.session.datastore.query(f"SELECT * FROM {table_name}")
 
             # Export to file
             output_path = Path(filename).resolve()
@@ -657,12 +609,12 @@ class InteractiveREPL:
 
     def _show_artifacts(self) -> None:
         """Show session artifacts: tables (Parquet) and saved files from registry."""
-        if not self.session or not self.session.session_id:
+        if not self.api.session or not self.api.session.session_id:
             self.console.print("[yellow]No active session.[/yellow]")
             return
 
         has_artifacts = False
-        session_id = self.session.session_id
+        session_id = self.api.session.session_id
 
         # Try to get registry (may not exist yet)
         try:
@@ -675,7 +627,8 @@ class InteractiveREPL:
                 has_artifacts = True
                 self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
                 for t in tables:
-                    self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]")
+                    role_suffix = f" [blue]@{t.role_id}[/blue]" if getattr(t, "role_id", None) else ""
+                    self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{role_suffix}")
                     if t.description:
                         self.console.print(f"    {t.description}")
                     # Show file:// URI for the Parquet file
@@ -694,7 +647,8 @@ class InteractiveREPL:
                     if file_path.exists():
                         file_uri = file_path.resolve().as_uri()
                         size_str = f"{a.size_bytes / 1024:.1f}KB" if a.size_bytes else ""
-                        self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]")
+                        role_suffix = f" [blue]@{a.role_id}[/blue]" if getattr(a, "role_id", None) else ""
+                        self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]{role_suffix}")
                         if a.description:
                             self.console.print(f"    {a.description}")
                         self.console.print(f"    {file_uri}")
@@ -706,13 +660,14 @@ class InteractiveREPL:
 
         except Exception:
             # Fall back to datastore if registry not available
-            if self.session.datastore:
-                tables = self.session.datastore.list_tables()
+            if self.api.session.datastore:
+                tables = self.api.session.datastore.list_tables()
                 if tables:
                     has_artifacts = True
                     self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
                     for t in tables:
-                        self.console.print(f"  [cyan]{t['name']}[/cyan] [dim]({t['row_count']} rows)[/dim]")
+                        role_suffix = f" [blue]@{t.get('role_id')}[/blue]" if t.get("role_id") else ""
+                        self.console.print(f"  [cyan]{t['name']}[/cyan] [dim]({t['row_count']} rows)[/dim]{role_suffix}")
 
         if not has_artifacts:
             self.console.print("[dim]No artifacts in this session.[/dim]")
@@ -759,8 +714,8 @@ class InteractiveREPL:
             bookmarks = BookmarkStore()
             bm = bookmarks.get_database(name)
             if bm:
-                if self.session:
-                    self.session.add_database(name, bm["type"], bm["uri"], bm["description"])
+                if self.api.session:
+                    self.api.session.add_database(name, bm["type"], bm["uri"], bm["description"])
                     self.console.print(f"[green]Added database to session:[/green] {name} ({bm['type']})")
                 else:
                     self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
@@ -771,8 +726,8 @@ class InteractiveREPL:
             # /database <name> <type> <uri> [--desc "..."] - Session-only
             name, db_type, uri = parts[0], parts[1], parts[2]
             description = self._extract_flag(arg, "--desc") or ""
-            if self.session:
-                self.session.add_database(name, db_type, uri, description)
+            if self.api.session:
+                self.api.session.add_database(name, db_type, uri, description)
                 self.console.print(f"[green]Added database to session:[/green] {name} ({db_type})")
             else:
                 self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
@@ -823,8 +778,8 @@ class InteractiveREPL:
             bookmarks = BookmarkStore()
             bm = bookmarks.get_file(name)
             if bm:
-                if self.session:
-                    self.session.add_file(name, bm["uri"], bm.get("auth", ""), bm["description"])
+                if self.api.session:
+                    self.api.session.add_file(name, bm["uri"], bm.get("auth", ""), bm["description"])
                     self.console.print(f"[green]Added file to session:[/green] {name}")
                 else:
                     self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
@@ -836,8 +791,8 @@ class InteractiveREPL:
             name, uri = parts[0], parts[1]
             auth = self._extract_flag(arg, "--auth") or ""
             description = self._extract_flag(arg, "--desc") or ""
-            if self.session:
-                self.session.add_file(name, uri, auth, description)
+            if self.api.session:
+                self.api.session.add_file(name, uri, auth, description)
                 self.console.print(f"[green]Added file to session:[/green] {name}")
             else:
                 self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
@@ -876,8 +831,8 @@ class InteractiveREPL:
         session_dbs = {}
 
         # Get from session if available
-        if self.session:
-            all_dbs = self.session.get_all_databases()
+        if self.api.session:
+            all_dbs = self.api.session.get_all_databases()
             for name, db in all_dbs.items():
                 if db["source"] == "config":
                     config_dbs[name] = db
@@ -939,8 +894,8 @@ class InteractiveREPL:
         session_files = {}
 
         # Get from session if available
-        if self.session:
-            all_files = self.session.get_all_files()
+        if self.api.session:
+            all_files = self.api.session.get_all_files()
             for name, f in all_files.items():
                 if f["source"] == "config":
                     config_files[name] = f
@@ -1025,7 +980,7 @@ class InteractiveREPL:
             self.console.print("[dim]Example: /correct 'active users' means users logged in within 30 days[/dim]")
             return
 
-        self.learning_store.save_learning(
+        self.api.learning_store.save_learning(
             category=LearningCategory.USER_CORRECTION,
             context={
                 "previous_question": self.last_problem,
@@ -1051,7 +1006,7 @@ class InteractiveREPL:
                 self.console.print("[dim]Valid: user_correction, api_error, codegen_error, nl_correction[/dim]")
 
         # Show rules first (compacted, high-value)
-        rules = self.learning_store.list_rules(category=category)
+        rules = self.api.learning_store.list_rules(category=category)
         if rules:
             self.console.print(f"\n[bold]Rules[/bold] ({len(rules)})")
             for r in rules[:10]:
@@ -1060,7 +1015,7 @@ class InteractiveREPL:
                 self.console.print(f"  [{conf:.0f}%] {r['summary'][:60]} [dim](applied {applied}x)[/dim]")
 
         # Show pending raw learnings
-        raw = self.learning_store.list_raw_learnings(category=category, limit=20)
+        raw = self.api.learning_store.list_raw_learnings(category=category, limit=20)
         pending = [l for l in raw if not l.get("promoted_to")]
         if pending:
             self.console.print(f"\n[bold]Pending Learnings[/bold] ({len(pending)})")
@@ -1070,7 +1025,7 @@ class InteractiveREPL:
                 self.console.print(f"  [dim]{lid}[/dim] [{cat}] {l['correction'][:50]}...")
 
         # Show stats
-        stats = self.learning_store.get_stats()
+        stats = self.api.learning_store.get_stats()
         if stats.get("total_raw", 0) > 0 or stats.get("total_rules", 0) > 0:
             self.console.print(
                 f"\n[dim]Total: {stats.get('unpromoted', 0)} pending, "
@@ -1084,11 +1039,11 @@ class InteractiveREPL:
         """Handle /compact-learnings - trigger compaction."""
         from constat.learning.compactor import LearningCompactor
 
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]Start a session first by asking a question.[/yellow]")
             return
 
-        stats = self.learning_store.get_stats()
+        stats = self.api.learning_store.get_stats()
         if stats.get("unpromoted", 0) < 2:
             self.console.print("[dim]Not enough learnings to compact (need at least 2).[/dim]")
             return
@@ -1096,8 +1051,8 @@ class InteractiveREPL:
         self.display.start_spinner("Analyzing learnings for patterns...")
         try:
             # Get LLM from session's router
-            llm = self.session.router._get_provider(self.session.router.models["planning"])
-            compactor = LearningCompactor(self.learning_store, llm)
+            llm = self.api.session.router._get_provider(self.api.session.router.models["planning"])
+            compactor = LearningCompactor(self.api.learning_store, llm)
             result = compactor.compact()
 
             self.display.stop_spinner()
@@ -1115,45 +1070,32 @@ class InteractiveREPL:
 
     def _maybe_auto_compact(self) -> None:
         """Check if auto-compaction should trigger and run it."""
-        from constat.learning.compactor import LearningCompactor
-
-        if not self.session:
-            return  # No session, can't get LLM
-
-        stats = self.learning_store.get_stats()
+        stats = self.api.learning_store.get_stats()
         unpromoted = stats.get("unpromoted", 0)
 
-        if unpromoted >= LearningCompactor.AUTO_COMPACT_THRESHOLD:
-            self.console.print(
-                f"[dim]Auto-compacting {unpromoted} learnings...[/dim]"
-            )
-            try:
-                # Get a model for compaction (use general task routing)
-                model_spec = self.session.router.routing_config.get_models_for_task("general")[0]
-                llm = self.session.router._get_provider(model_spec)
-                compactor = LearningCompactor(self.learning_store, llm)
-                result = compactor.compact()
+        # Use API method for auto-compaction
+        result = self.api.maybe_auto_compact()
 
-                if result.rules_created > 0:
-                    self.console.print(
-                        f"[green]Created {result.rules_created} rules from "
-                        f"{result.learnings_archived} learnings[/green]"
-                    )
-                else:
-                    self.console.print(
-                        f"[dim]No new rules created (reviewed {unpromoted} learnings)[/dim]"
-                    )
-            except Exception as e:
-                self.console.print(f"[dim]Auto-compact failed: {e}[/dim]")
+        if result is not None:
+            # Compaction was triggered
+            if result.rules_created > 0:
+                self.console.print(
+                    f"[green]Created {result.rules_created} rules from "
+                    f"{result.learnings_archived} learnings[/green]"
+                )
+            else:
+                self.console.print(
+                    f"[dim]No new rules created (reviewed {unpromoted} learnings)[/dim]"
+                )
 
     def _forget_learning(self, learning_id: str) -> None:
         """Handle /forget-learning <id> - delete a learning."""
         learning_id = learning_id.strip()
-        if self.learning_store.delete_learning(learning_id):
+        if self.api.learning_store.delete_learning(learning_id):
             self.console.print(f"[green]Deleted learning:[/green] {learning_id}")
         else:
             # Try deleting as a rule
-            if self.learning_store.delete_rule(learning_id):
+            if self.api.learning_store.delete_rule(learning_id):
                 self.console.print(f"[green]Deleted rule:[/green] {learning_id}")
             else:
                 self.console.print(f"[yellow]Not found:[/yellow] {learning_id}")
@@ -1161,13 +1103,13 @@ class InteractiveREPL:
 
     def _handle_audit(self) -> None:
         """Handle /audit command - re-derive last result with full audit trail."""
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]No active session. Ask a question first.[/yellow]")
             return
 
         self.display.start_spinner("Re-deriving with full audit trail...")
         try:
-            result = self.session.audit()
+            result = self.api.session.audit()
             self.display.stop_spinner()
 
             if result.get("success"):
@@ -1211,11 +1153,11 @@ class InteractiveREPL:
         2. Generates an auditable proof for each claim
         3. Reports any discrepancies with original answers
         """
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]No active session. Ask questions first, then use /prove to verify.[/yellow]")
             return
 
-        if not self.session.session_id:
+        if not self.api.session.session_id:
             self.console.print("[yellow]No conversation to prove. Ask questions first.[/yellow]")
             return
 
@@ -1223,7 +1165,7 @@ class InteractiveREPL:
         self.display.start_spinner("Analyzing conversation...")
 
         try:
-            result = self.session.prove_conversation()
+            result = self.api.session.prove_conversation()
 
             self.display.stop_spinner()
 
@@ -1270,36 +1212,31 @@ class InteractiveREPL:
             self.console.print("  /summarize orders   - Summarize 'orders' table")
             return
 
-        if not self.session:
-            self.console.print("[yellow]No active session. Ask a question first.[/yellow]")
-            return
-
         target = arg.strip().lower()
         self.display.start_spinner(f"Generating summary of {target}...")
 
         try:
-            # Get LLM provider
-            llm = self.session.router._get_provider(self.session.router.models["planning"])
-
             if target == "plan":
-                summary = self._summarize_plan(llm)
+                result = self.api.summarize_plan()
             elif target == "session":
-                summary = self._summarize_session(llm)
+                result = self.api.summarize_session()
             elif target == "facts":
-                summary = self._summarize_facts(llm)
+                result = self.api.summarize_facts()
             else:
                 # Assume it's a table name
-                summary = self._summarize_table(llm, arg.strip())
+                result = self.api.summarize_table(arg.strip())
 
             self.display.stop_spinner()
 
-            if summary:
+            if result.success and result.summary:
                 self.console.print()
                 self.console.print(Panel(
-                    summary,
+                    result.summary,
                     title=f"[bold]Summary: {target}[/bold]",
                     border_style="cyan",
                 ))
+            elif result.error:
+                self.console.print(f"[yellow]{result.error}[/yellow]")
             else:
                 self.console.print(f"[yellow]No data to summarize for '{target}'[/yellow]")
 
@@ -1307,185 +1244,18 @@ class InteractiveREPL:
             self.display.stop_spinner()
             self.console.print(f"[red]Error generating summary:[/red] {e}")
 
-    def _summarize_plan(self, llm) -> Optional[str]:
-        """Generate a summary of the current execution plan."""
-        if not self.session.plan:
-            return None
-
-        plan = self.session.plan
-        plan_text = f"Goal: {plan.goal}\n\nSteps:\n"
-        for i, step in enumerate(plan.steps, 1):
-            status = "completed" if i <= len(getattr(self.session, 'step_results', [])) else "pending"
-            plan_text += f"{i}. [{status}] {step.description}\n"
-            if step.code:
-                plan_text += f"   Code: {step.code[:100]}...\n" if len(step.code) > 100 else f"   Code: {step.code}\n"
-
-        prompt = f"""Summarize this execution plan concisely:
-
-{plan_text}
-
-Provide a 2-3 sentence summary covering:
-1. The overall goal
-2. Key steps and current progress
-3. Any notable approach or methodology"""
-
-        result = llm.generate(
-            system="You are a concise technical summarizer.",
-            user_message=prompt,
-            max_tokens=300,
-        )
-        return result
-
-    def _summarize_session(self, llm) -> Optional[str]:
-        """Generate a summary of the current session state."""
-        session_info = []
-
-        # Session ID and mode
-        session_info.append(f"Session ID: {self.session.session_id or 'Not started'}")
-        if hasattr(self.session, 'current_mode'):
-            session_info.append(f"Mode: {self.session.current_mode}")
-
-        # Plan status
-        if self.session.plan:
-            session_info.append(f"Plan: {self.session.plan.goal}")
-            session_info.append(f"Steps: {len(self.session.plan.steps)}")
-
-        # Tables in datastore
-        if self.session.datastore:
-            tables = self.session.datastore.list_tables()
-            if tables:
-                session_info.append(f"Tables: {', '.join(tables)}")
-
-        # Facts count
-        if self.session.fact_resolver:
-            facts = self.session.fact_resolver.get_all_facts()
-            if facts:
-                session_info.append(f"Facts cached: {len(facts)}")
-
-        # Execution history
-        if hasattr(self.session, 'execution_history') and self.session.execution_history:
-            session_info.append(f"Queries executed: {len(self.session.execution_history)}")
-
-        if not session_info:
-            return None
-
-        prompt = f"""Summarize this session state concisely:
-
-{chr(10).join(session_info)}
-
-Provide a 2-3 sentence summary of what this session has accomplished and its current state."""
-
-        result = llm.generate(
-            system="You are a concise technical summarizer.",
-            user_message=prompt,
-            max_tokens=300,
-        )
-        return result
-
-    def _summarize_facts(self, llm) -> Optional[str]:
-        """Generate a summary of all cached facts."""
-        if not self.session.fact_resolver:
-            return None
-
-        facts = self.session.fact_resolver.get_all_facts()
-        if not facts:
-            return None
-
-        facts_text = []
-        for name, fact in facts.items():
-            source = fact.source.value if hasattr(fact.source, 'value') else str(fact.source)
-            value_str = str(fact.value)[:100] if fact.value else "None"
-            facts_text.append(f"- {name}: {value_str} (source: {source})")
-
-        prompt = f"""Summarize these cached facts concisely:
-
-{chr(10).join(facts_text)}
-
-Provide a summary covering:
-1. How many facts are cached
-2. Types of facts (data sources, user-provided, computed)
-3. Key facts that drive the analysis"""
-
-        result = llm.generate(
-            system="You are a concise technical summarizer.",
-            user_message=prompt,
-            max_tokens=300,
-        )
-        return result
-
-    def _summarize_table(self, llm, table_name: str) -> Optional[str]:
-        """Generate a summary of a specific table's contents."""
-        if not self.session.datastore:
-            return None
-
-        tables = self.session.datastore.list_tables()
-        if table_name not in tables:
-            self.console.print(f"[yellow]Table '{table_name}' not found.[/yellow]")
-            self.console.print(f"[dim]Available tables: {', '.join(tables) if tables else 'None'}[/dim]")
-            return None
-
-        try:
-            # Get table info
-            df = self.session.datastore.load_dataframe(table_name)
-            row_count = len(df)
-            columns = list(df.columns)
-
-            # Get sample data
-            sample = df.head(5).to_string() if row_count > 0 else "Empty table"
-
-            # Get basic stats for numeric columns
-            stats = []
-            for col in df.select_dtypes(include=['number']).columns[:3]:
-                stats.append(f"{col}: min={df[col].min():.2f}, max={df[col].max():.2f}, mean={df[col].mean():.2f}")
-
-            prompt = f"""Summarize this table concisely:
-
-Table: {table_name}
-Rows: {row_count}
-Columns: {', '.join(columns)}
-
-Sample data:
-{sample}
-
-{"Numeric stats: " + "; ".join(stats) if stats else ""}
-
-Provide a 2-3 sentence summary covering:
-1. What kind of data this table contains
-2. Key columns and their purpose
-3. Notable patterns or ranges in the data"""
-
-            result = llm.generate(
-                system="You are a concise data analyst.",
-                user_message=prompt,
-                max_tokens=300,
-            )
-            return result
-
-        except Exception as e:
-            return f"Error reading table: {e}"
-
-    def _detect_nl_correction(self, text: str) -> Optional[dict]:
-        """Detect if user input contains a correction pattern.
+    def _save_nl_correction(self, correction, full_text: str) -> None:
+        """Save an NL-detected correction as a learning.
 
         Args:
-            text: User input text
-
-        Returns:
-            Dict with correction type and match, or None if no correction detected
+            correction: CorrectionDetection from detect_nl_correction()
+            full_text: The original user input text
         """
-        for pattern, correction_type in CORRECTION_PATTERNS:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                return {"type": correction_type, "match": match.group(0)}
-        return None
-
-    def _save_nl_correction(self, correction: dict, full_text: str) -> None:
-        """Save an NL-detected correction as a learning."""
-        self.learning_store.save_learning(
+        self.api.learning_store.save_learning(
             category=LearningCategory.NL_CORRECTION,
             context={
-                "match_type": correction["type"],
-                "matched_text": correction["match"],
+                "match_type": correction.correction_type,
+                "matched_text": correction.matched_text,
                 "full_text": full_text,
                 "previous_question": self.last_problem,
             },
@@ -1497,21 +1267,21 @@ Provide a 2-3 sentence summary covering:
 
     def _run_query(self, sql: str) -> None:
         """Run SQL query on datastore."""
-        if not self.session or not self.session.datastore:
+        if not self.api.session or not self.api.session.datastore:
             self.console.print("[yellow]No active session.[/yellow]")
             return
         try:
-            result = self.session.datastore.query(sql)
+            result = self.api.session.datastore.query(sql)
             self.console.print(result.to_string())
         except Exception as e:
             self.console.print(f"[red]Query error:[/red] {e}")
 
     def _show_state(self) -> None:
         """Show current session state."""
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]No active session.[/yellow]")
             return
-        state = self.session.get_state()
+        state = self.api.session.get_state()
         self.console.print(f"\n[bold]Session:[/bold] {state['session_id']}")
         if state['datastore_tables']:
             self.console.print("[bold]Tables:[/bold]")
@@ -1520,12 +1290,12 @@ Provide a 2-3 sentence summary covering:
 
     def _refresh_metadata(self) -> None:
         """Refresh database metadata, documents, and preload cache."""
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]No active session.[/yellow]")
             return
         self.display.start_spinner("Refreshing metadata and documents...")
         try:
-            stats = self.session.refresh_metadata()
+            stats = self.api.session.refresh_metadata()
             self.display.stop_spinner()
 
             # Build status message
@@ -1561,7 +1331,7 @@ Provide a 2-3 sentence summary covering:
         self.display.reset()
 
         # Create a fresh session
-        self.session = self._create_session()
+        self.api = self._create_api()
 
         # Clear REPL state
         self.last_problem = ""
@@ -1579,7 +1349,7 @@ Provide a 2-3 sentence summary covering:
             self.console.print("[yellow]No previous query to redo.[/yellow]")
             return
 
-        if not self.session or not self.session.session_id:
+        if not self.api.session or not self.api.session.session_id:
             self.console.print("[yellow]No active session. Use the original query.[/yellow]")
             return
 
@@ -1598,11 +1368,11 @@ Provide a 2-3 sentence summary covering:
 
     def _show_context(self) -> None:
         """Show context size and token usage statistics."""
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]No active session.[/yellow]")
             return
 
-        stats = self.session.get_context_stats()
+        stats = self.api.session.get_context_stats()
         if not stats:
             self.console.print("[yellow]No datastore available.[/yellow]")
             return
@@ -1633,12 +1403,12 @@ Provide a 2-3 sentence summary covering:
 
     def _compact_context(self) -> None:
         """Compact context to reduce token usage."""
-        if not self.session:
+        if not self.api.session:
             self.console.print("[yellow]No active session.[/yellow]")
             return
 
         # Show before stats
-        stats_before = self.session.get_context_stats()
+        stats_before = self.api.session.get_context_stats()
         if not stats_before:
             self.console.print("[yellow]No datastore available.[/yellow]")
             return
@@ -1648,7 +1418,7 @@ Provide a 2-3 sentence summary covering:
         # Perform compaction
         self.display.start_spinner("Compacting context...")
         try:
-            result = self.session.compact_context(
+            result = self.api.session.compact_context(
                 summarize_scratchpad=True,
                 sample_tables=True,
                 clear_old_state=False,  # Conservative by default
@@ -1669,12 +1439,12 @@ Provide a 2-3 sentence summary covering:
     def _show_facts(self) -> None:
         """Show both persistent and session facts."""
         # Get persistent facts
-        persistent_facts = self.fact_store.list_facts()
+        persistent_facts = self.api.fact_store.list_facts()
 
         # Get session facts
         session_facts = {}
-        if self.session:
-            session_facts = self.session.fact_resolver.get_all_facts()
+        if self.api.session:
+            session_facts = self.api.session.fact_resolver.get_all_facts()
 
         if not persistent_facts and not session_facts:
             self.console.print("[dim]No facts stored.[/dim]")
@@ -1686,12 +1456,14 @@ Provide a 2-3 sentence summary covering:
         table.add_column("Value", style="green")
         table.add_column("Description", style="dim")
         table.add_column("Source", style="dim")
+        table.add_column("Role", style="blue")
 
         # Show persistent facts first
         for name, fact_data in persistent_facts.items():
             value = fact_data.get("value", "")
             desc = fact_data.get("description", "")
-            table.add_row(name, str(value), desc, "[bold]persistent[/bold]")
+            role_id = fact_data.get("role_id") or ""
+            table.add_row(name, str(value), desc, "[bold]persistent[/bold]", role_id)
 
         # Show session facts (skip if same name exists in persistent)
         for name, fact in session_facts.items():
@@ -1699,6 +1471,7 @@ Provide a 2-3 sentence summary covering:
                 continue  # Skip - persistent version shown above
 
             desc = fact.description or ""
+            role_id = getattr(fact, "role_id", None) or ""
             # Build specific source info with source_name
             if fact.source_name:
                 source_info = f"{fact.source.value}:{fact.source_name}"
@@ -1716,16 +1489,16 @@ Provide a 2-3 sentence summary covering:
                 source_info = fact.reasoning[:40] + "..." if len(fact.reasoning) > 40 else fact.reasoning
             else:
                 source_info = f"session:{fact.source.value}"
-            table.add_row(name, fact.display_value, desc, source_info)
+            table.add_row(name, fact.display_value, desc, source_info, role_id)
 
         self.console.print(table)
 
         # Sync facts to datastore as "_facts" table for SQL queries
-        if self.session and self.session.datastore:
+        if self.api.session and self.api.session.datastore:
             try:
-                facts_df = self.session.fact_resolver.get_facts_as_dataframe()
+                facts_df = self.api.session.fact_resolver.get_facts_as_dataframe()
                 if not facts_df.empty:
-                    self.session.datastore.save_dataframe("_facts", facts_df)
+                    self.api.session.datastore.save_dataframe("_facts", facts_df)
                     self.console.print("[dim]Facts synced to _facts table (queryable via SQL)[/dim]")
             except Exception:
                 pass  # Silent fail - facts table is optional
@@ -1753,12 +1526,12 @@ Provide a 2-3 sentence summary covering:
         # Pattern: <fact_name> [as <new_name>]
         session_fact_match = re.match(r'^(\S+)(?:\s+as\s+(\S+))?$', fact_text.strip())
 
-        if session_fact_match and self.session:
+        if session_fact_match and self.api.session:
             fact_name = session_fact_match.group(1)
             new_name = session_fact_match.group(2)  # May be None
 
             # Try to find this fact in the session's resolver cache
-            session_facts = self.session.fact_resolver.get_all_facts()
+            session_facts = self.api.session.fact_resolver.get_all_facts()
 
             # Look for exact match or match with empty params (e.g., "fact_name()")
             matching_fact = None
@@ -1797,7 +1570,7 @@ Provide a 2-3 sentence summary covering:
                 # Build description from fact metadata
                 description = matching_fact.description or f"Persisted from session (originally: {matching_key})"
 
-                self.fact_store.save_fact(
+                self.api.fact_store.save_fact(
                     name=persist_name,
                     value=matching_fact.value,
                     description=description,
@@ -1815,8 +1588,8 @@ Provide a 2-3 sentence summary covering:
         self.display.start_spinner("Extracting fact...")
         try:
             extracted = []
-            if self.session:
-                extracted = self.session.fact_resolver.add_user_facts_from_text(fact_text)
+            if self.api.session:
+                extracted = self.api.session.fact_resolver.add_user_facts_from_text(fact_text)
             else:
                 # No session - do lightweight extraction
                 extracted = self._extract_fact_without_session(fact_text)
@@ -1826,7 +1599,7 @@ Provide a 2-3 sentence summary covering:
             if extracted:
                 for fact in extracted:
                     # Save to persistent store
-                    self.fact_store.save_fact(
+                    self.api.fact_store.save_fact(
                         name=fact.name if hasattr(fact, 'name') else fact['name'],
                         value=fact.value if hasattr(fact, 'value') else fact['value'],
                         description=fact.description if hasattr(fact, 'description') else fact.get('description', ''),
@@ -1838,7 +1611,7 @@ Provide a 2-3 sentence summary covering:
                     self.console.print("[dim]This fact will persist across sessions.[/dim]")
             else:
                 # Check if it looked like a fact name but wasn't found
-                if session_fact_match and self.session:
+                if session_fact_match and self.api.session:
                     fact_name = session_fact_match.group(1)
                     self.console.print(f"[yellow]No session fact named '{fact_name}' found.[/yellow]")
                     self.console.print("[dim]Use /facts to see available facts, or provide natural language.[/dim]")
@@ -1885,15 +1658,15 @@ Provide a 2-3 sentence summary covering:
         found = False
 
         # Check persistent facts first
-        if self.fact_store.delete_fact(fact_name):
+        if self.api.fact_store.delete_fact(fact_name):
             self.console.print(f"[green]Forgot persistent fact:[/green] {fact_name}")
             found = True
 
         # Also remove from session if exists
-        if self.session:
-            facts = self.session.fact_resolver.get_all_facts()
+        if self.api.session:
+            facts = self.api.session.fact_resolver.get_all_facts()
             if fact_name in facts:
-                self.session.fact_resolver._cache.pop(fact_name, None)
+                self.api.session.fact_resolver._cache.pop(fact_name, None)
                 if not found:
                     self.console.print(f"[green]Forgot session fact:[/green] {fact_name}")
                 found = True
@@ -1973,11 +1746,11 @@ Provide a 2-3 sentence summary covering:
 
     def _show_code(self, step_arg: str = "") -> None:
         """Show generated code for steps."""
-        if not self.session or not self.session.datastore:
+        if not self.api.session or not self.api.session.datastore:
             self.console.print("[yellow]No active session.[/yellow]")
             return
 
-        entries = self.session.datastore.get_scratchpad()
+        entries = self.api.session.datastore.get_scratchpad()
         if not entries:
             self.console.print("[dim]No steps executed yet.[/dim]")
             return
@@ -2016,14 +1789,14 @@ Provide a 2-3 sentence summary covering:
 
     def _save_plan(self, name: str, shared: bool = False) -> None:
         """Save current plan for replay."""
-        if not self.session or not self.session.datastore:
+        if not self.api.session or not self.api.session.datastore:
             self.console.print("[yellow]No active session.[/yellow]")
             return
         if not self.last_problem:
             self.console.print("[yellow]No problem executed yet.[/yellow]")
             return
         try:
-            self.session.save_plan(name, self.last_problem, user_id=self.user_id, shared=shared)
+            self.api.session.save_plan(name, self.last_problem, user_id=self.user_id, shared=shared)
             if shared:
                 self.console.print(f"[green]Plan saved as shared:[/green] {name}")
             else:
@@ -2068,10 +1841,10 @@ Provide a 2-3 sentence summary covering:
 
     def _show_history(self) -> None:
         """Show recent session history for current user."""
-        if not self.session:
-            self.session = self._create_session()
+        if not self.api.session:
+            self.api = self._create_api()
 
-        sessions = self.session.history.list_sessions(limit=10)
+        sessions = self.api.session.history.list_sessions(limit=10)
         if not sessions:
             self.console.print("[dim]No session history.[/dim]")
             return
@@ -2096,11 +1869,11 @@ Provide a 2-3 sentence summary covering:
 
     def _resume_session(self, session_id: str) -> None:
         """Resume a previous session."""
-        if not self.session:
-            self.session = self._create_session()
+        if not self.api.session:
+            self.api = self._create_api()
 
         # Find matching session (partial ID match)
-        sessions = self.session.history.list_sessions(limit=50)
+        sessions = self.api.session.history.list_sessions(limit=50)
         match = None
         for s in sessions:
             if s.session_id.startswith(session_id) or session_id in s.session_id:
@@ -2111,10 +1884,10 @@ Provide a 2-3 sentence summary covering:
             self.console.print(f"[red]Session not found: {session_id}[/red]")
             return
 
-        if self.session.resume(match):
+        if self.api.session.resume(match):
             self.console.print(f"[green]Resumed session:[/green] {match[:30]}...")
             # Show what's available
-            tables = self.session.datastore.list_tables() if self.session.datastore else []
+            tables = self.api.session.datastore.list_tables() if self.api.session.datastore else []
             if tables:
                 self.console.print(f"[dim]{len(tables)} tables available - use /tables to view[/dim]")
         else:
@@ -2123,22 +1896,22 @@ Provide a 2-3 sentence summary covering:
     def _handle_auto_resume(self) -> None:
         """Handle auto-resume from --continue flag."""
         # Create session if needed to access history
-        if not self.session:
-            self.session = self._create_session()
+        if not self.api.session:
+            self.api = self._create_api()
 
         # Get most recent session for this user
-        sessions = self.session.history.list_sessions(limit=1)
+        sessions = self.api.session.history.list_sessions(limit=1)
         if not sessions:
             self.console.print("[dim]No previous session to resume.[/dim]")
             return
 
         latest = sessions[0]
-        if self.session.resume(latest.session_id):
+        if self.api.session.resume(latest.session_id):
             self.console.print(f"[green]Resumed last session:[/green] {latest.session_id[:30]}...")
             if latest.summary:
                 self.console.print(f"[dim]{latest.summary}[/dim]")
             # Show what's available
-            tables = self.session.datastore.list_tables() if self.session.datastore else []
+            tables = self.api.session.datastore.list_tables() if self.api.session.datastore else []
             if tables:
                 self.console.print(f"[dim]{len(tables)} tables available - use /tables to view[/dim]")
             self.console.print()
@@ -2147,8 +1920,8 @@ Provide a 2-3 sentence summary covering:
 
     def _replay_plan(self, name: str) -> None:
         """Replay a saved plan."""
-        if not self.session:
-            self.session = self._create_session()
+        if not self.api.session:
+            self.api = self._create_api()
 
         try:
             # Load the plan to get the problem
@@ -2156,7 +1929,7 @@ Provide a 2-3 sentence summary covering:
             self.last_problem = plan_data["problem"]
             self.display.set_problem(f"[Replay: {name}] {self.last_problem}")
 
-            result = self.session.replay_saved(name, user_id=self.user_id)
+            result = self.api.session.replay_saved(name, user_id=self.user_id)
 
             if result.get("success"):
                 tables = result.get("datastore_tables", [])
@@ -2175,10 +1948,10 @@ Provide a 2-3 sentence summary covering:
 
     def _check_context_warning(self) -> None:
         """Check context size and warn if getting large."""
-        if not self.session:
+        if not self.api.session:
             return
 
-        stats = self.session.get_context_stats()
+        stats = self.api.session.get_context_stats()
         if not stats:
             return
 
@@ -2296,12 +2069,12 @@ Provide a 2-3 sentence summary covering:
         Returns:
             False (commands don't exit the REPL)
         """
-        if not self.session:
-            self.session = self._create_session()
+        if not self.api.session:
+            self.api = self._create_api()
 
         try:
             # Route through session which uses the command registry
-            result = self.session.solve(cmd_input)
+            result = self.api.session.solve(cmd_input)
 
             if result.get("success") is False:
                 self.console.print(f"[red]{result.get('output', 'Command failed')}[/red]")
@@ -2324,18 +2097,15 @@ Provide a 2-3 sentence summary covering:
             Optional command string if user entered a slash command during approval,
             None otherwise.
         """
-        if not self.session:
-            self.session = self._create_session()
-
         # Detect and apply display preference overrides from NL
-        overrides = self._detect_display_overrides(problem)
+        overrides = self.api.detect_display_overrides(problem)
         original_settings = self._apply_display_overrides(overrides)
 
         # Detect NL corrections and save as learnings
-        nl_correction = self._detect_nl_correction(problem)
-        if nl_correction:
+        nl_correction = self.api.detect_nl_correction(problem)
+        if nl_correction.detected:
             self._save_nl_correction(nl_correction, problem)
-            self.console.print(f"[dim]Noted: {nl_correction['type'].replace('_', ' ')}[/dim]")
+            self.console.print(f"[dim]Noted: {nl_correction.correction_type.replace('_', ' ')}[/dim]")
 
         # Clear any pending outputs from previous execution
         clear_pending_outputs()
@@ -2345,10 +2115,10 @@ Provide a 2-3 sentence summary covering:
         self.display.set_problem(problem)
 
         try:
-            if self.session.session_id:
-                result = self.session.follow_up(problem)
+            if self.api.session.session_id:
+                result = self.api.session.follow_up(problem)
             else:
-                result = self.session.solve(problem)
+                result = self.api.session.solve(problem)
 
             # Check if a slash command was entered during approval
             if result.get("command"):
@@ -2395,8 +2165,8 @@ Provide a 2-3 sentence summary covering:
         except KeyboardInterrupt:
             # Cancel execution via session's cancel_execution() method
             # This properly signals the execution context and emits events
-            if self.session:
-                self.session.cancel_execution()
+            if self.api.session:
+                self.api.session.cancel_execution()
             # Clean up display state on interrupt
             self.display.stop()
             self.display.stop_spinner()
@@ -2423,8 +2193,8 @@ Provide a 2-3 sentence summary covering:
         finally:
             # Disable status bar and restore terminal
             self.display.disable_status_bar()
-            if self.session and self.session.datastore:
-                self.session.datastore.close()
+            if self.api.session and self.api.session.datastore:
+                self.api.session.datastore.close()
 
     def _run_repl_body(self, initial_problem: Optional[str] = None) -> None:
         """Run the REPL body (banner + loop)."""

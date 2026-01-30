@@ -92,6 +92,12 @@ interface SessionState {
   roles: RoleInfo[]
   currentRole: string | null
 
+  // Dynamic context for current query (role/skills selected)
+  queryContext: {
+    role?: { name: string; similarity: number }
+    skills?: { name: string; similarity: number }[]
+  } | null
+
   // Actions
   createSession: (userId?: string) => Promise<void>
   setSession: (session: Session | null, options?: { preserveMessages?: boolean }) => void
@@ -135,6 +141,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   lastQueryStartStep: 0,
   roles: [],
   currentRole: null,
+  queryContext: null,
 
   createSession: async (userId = 'default') => {
     const session = await sessionsApi.createSession(userId)
@@ -238,7 +245,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return
 
     await queriesApi.cancelExecution(session.session_id)
-    set({ status: 'cancelled' })
+    // Reset both status and executionPhase so new queries can be submitted immediately
+    set({ status: 'cancelled', executionPhase: 'idle', currentStepNumber: 0, stepAttempt: 1 })
   },
 
   approvePlan: async (deletedSteps?: number[]) => {
@@ -283,19 +291,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   rejectPlan: async (feedback) => {
-    const { session, addMessage } = get()
+    const { session, addMessage, submitQuery } = get()
     if (!session) return
 
-    // Add feedback as a user message
-    if (feedback && feedback !== 'Cancelled by user') {
-      addMessage({ type: 'user', content: feedback })
-    } else {
-      addMessage({ type: 'system', content: 'Plan cancelled' })
-    }
+    // Clear the plan UI
+    set({ plan: null })
 
-    await queriesApi.approvePlan(session.session_id, false, feedback)
-    wsManager.reject(feedback)
-    set({ status: feedback === 'Cancelled by user' ? 'idle' : 'planning', plan: null })
+    if (feedback && feedback !== 'Cancelled by user') {
+      // Notify backend of rejection
+      await queriesApi.approvePlan(session.session_id, false, feedback)
+      wsManager.reject(feedback)
+      // Submit the revision as a follow-up query to get a new plan
+      submitQuery(feedback, true)
+    } else {
+      // Just cancelled - go back to idle
+      addMessage({ type: 'system', content: 'Plan cancelled' })
+      await queriesApi.approvePlan(session.session_id, false, feedback)
+      wsManager.reject(feedback)
+      set({ status: 'idle' })
+    }
   },
 
   answerClarification: (answers) => {
@@ -475,8 +489,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'planning_start':
         ensureLiveMessage('Planning...', 'planning')
-        set({ status: 'planning' })
+        set({ status: 'planning', queryContext: null })
         break
+
+      case 'dynamic_context': {
+        // Role and skills selected for this query
+        const role = event.data.role as { name: string; similarity: number } | undefined
+        const skills = event.data.skills as { name: string; similarity: number }[] | undefined
+        set({ queryContext: { role, skills } })
+
+        // Update thinking message to show context
+        const contextParts: string[] = []
+        if (role?.name) {
+          contextParts.push(`@${role.name}`)
+        }
+        if (skills && skills.length > 0) {
+          contextParts.push(...skills.map(s => s.name))
+        }
+
+        if (contextParts.length > 0) {
+          const { thinkingMessageId: tid, liveMessageId: lid, updateMessage: update } = get()
+          const msgId = lid || tid
+          if (msgId) {
+            update(msgId, { content: `Planning... (${contextParts.join(', ')})` })
+          }
+        }
+        break
+      }
 
       case 'plan_ready':
         // Clear live message, show plan approval dialog
@@ -681,7 +720,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         clearLiveMessage()
         // Extract suggestions for number shortcuts
         const completeSuggestions = (event.data.suggestions as string[]) || []
-        set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1, suggestions: completeSuggestions, executionPhase: 'idle' })
+        set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1, suggestions: completeSuggestions, executionPhase: 'idle', queryContext: null })
         // Add final insights bubble
         const output = (event.data.output as string) || 'Analysis complete'
         addMessage({
@@ -873,6 +912,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             is_active: r.name === data.current_role,
           })),
         }))
+        // Refresh prompt context in artifact store
+        useArtifactStore.getState().fetchPromptContext(session.session_id)
       }
     } catch (error) {
       console.error('Failed to set role:', error)

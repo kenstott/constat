@@ -38,6 +38,7 @@ class TableRecord:
     is_published: bool = False  # Explicitly marked as output for artifacts panel
     is_final_step: bool = False  # Created in final step of request
     title: Optional[str] = None  # Human-friendly display name
+    role_id: Optional[str] = None  # Role provenance - which role created this table
 
 
 @dataclass
@@ -55,6 +56,7 @@ class ArtifactRecord:
     is_published: bool = False  # Explicitly marked as output for artifacts panel
     is_final_step: bool = False  # Created in final step of request
     title: Optional[str] = None  # Human-friendly display name
+    role_id: Optional[str] = None  # Role provenance - which role created this artifact
 
 
 class ConstatRegistry:
@@ -80,6 +82,7 @@ class ConstatRegistry:
             is_published BOOLEAN DEFAULT FALSE,
             is_final_step BOOLEAN DEFAULT FALSE,
             title VARCHAR,
+            role_id VARCHAR,
             UNIQUE(user_id, session_id, name)
         )
     """
@@ -97,7 +100,8 @@ class ConstatRegistry:
             created_at VARCHAR NOT NULL,
             is_published BOOLEAN DEFAULT FALSE,
             is_final_step BOOLEAN DEFAULT FALSE,
-            title VARCHAR
+            title VARCHAR,
+            role_id VARCHAR
         )
     """
 
@@ -148,6 +152,8 @@ class ConstatRegistry:
                 conn.execute("ALTER TABLE constat_tables ADD COLUMN is_final_step BOOLEAN DEFAULT FALSE")
             if "title" not in cols:
                 conn.execute("ALTER TABLE constat_tables ADD COLUMN title VARCHAR")
+            if "role_id" not in cols:
+                conn.execute("ALTER TABLE constat_tables ADD COLUMN role_id VARCHAR")
             # Update existing NULL values to FALSE so filtering works correctly
             conn.execute("UPDATE constat_tables SET is_published = FALSE WHERE is_published IS NULL")
             conn.execute("UPDATE constat_tables SET is_final_step = FALSE WHERE is_final_step IS NULL")
@@ -163,6 +169,8 @@ class ConstatRegistry:
                 conn.execute("ALTER TABLE constat_artifacts ADD COLUMN is_final_step BOOLEAN DEFAULT FALSE")
             if "title" not in cols:
                 conn.execute("ALTER TABLE constat_artifacts ADD COLUMN title VARCHAR")
+            if "role_id" not in cols:
+                conn.execute("ALTER TABLE constat_artifacts ADD COLUMN role_id VARCHAR")
             # Update existing NULL values to FALSE so filtering works correctly
             conn.execute("UPDATE constat_artifacts SET is_published = FALSE WHERE is_published IS NULL")
             conn.execute("UPDATE constat_artifacts SET is_final_step = FALSE WHERE is_final_step IS NULL")
@@ -191,6 +199,7 @@ class ConstatRegistry:
         is_published: bool = False,
         is_final_step: bool = False,
         title: Optional[str] = None,
+        role_id: Optional[str] = None,
     ) -> str:
         """Register a table in the registry.
 
@@ -205,6 +214,7 @@ class ConstatRegistry:
             is_published: Whether explicitly published for artifacts panel
             is_final_step: Whether created in final step of request
             title: Human-friendly display name
+            role_id: Role that created this table (provenance)
 
         Returns:
             Table ID
@@ -227,10 +237,10 @@ class ConstatRegistry:
         conn.execute("""
             INSERT INTO constat_tables
             (id, user_id, session_id, name, file_path, description, row_count, columns, created_at,
-             is_published, is_final_step, title)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_published, is_final_step, title, role_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [table_id, user_id, session_id, name, file_path, description, row_count, columns_json, now,
-              is_published, is_final_step, title])
+              is_published, is_final_step, title, role_id])
 
         return table_id
 
@@ -392,6 +402,7 @@ class ConstatRegistry:
                 is_published=bool(get_col(row, columns, "is_published", False)),
                 is_final_step=bool(get_col(row, columns, "is_final_step", False)),
                 title=get_col(row, columns, "title"),
+                role_id=get_col(row, columns, "role_id"),
             )
             for row in rows
         ]
@@ -428,6 +439,7 @@ class ConstatRegistry:
             is_published=bool(get_col("is_published", False)),
             is_final_step=bool(get_col("is_final_step", False)),
             title=get_col("title"),
+            role_id=get_col("role_id"),
         )
 
     # --- Artifact Registration ---
@@ -444,6 +456,7 @@ class ConstatRegistry:
         is_published: bool = False,
         is_final_step: bool = False,
         title: Optional[str] = None,
+        role_id: Optional[str] = None,
     ) -> str:
         """Register an artifact in the registry.
 
@@ -458,6 +471,7 @@ class ConstatRegistry:
             is_published: Whether explicitly published for artifacts panel
             is_final_step: Whether created in final step of request
             title: Human-friendly display name
+            role_id: Role that created this artifact (provenance)
 
         Returns:
             Artifact ID
@@ -473,10 +487,10 @@ class ConstatRegistry:
         conn.execute("""
             INSERT INTO constat_artifacts
             (id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, created_at,
-             is_published, is_final_step, title)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_published, is_final_step, title, role_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [artifact_id, user_id, session_id, name, file_path, artifact_type, description, size_bytes, now,
-              is_published, is_final_step, title])
+              is_published, is_final_step, title, role_id])
 
         return artifact_id
 
@@ -550,6 +564,7 @@ class ConstatRegistry:
                 is_published=bool(get_col(row, "is_published", False)),
                 is_final_step=bool(get_col(row, "is_final_step", False)),
                 title=get_col(row, "title"),
+                role_id=get_col(row, "role_id"),
             )
             for row in rows
         ]
@@ -814,6 +829,7 @@ class ConstatRegistry:
                 is_published=bool(get_col(row, "is_published", False)),
                 is_final_step=bool(get_col(row, "is_final_step", False)),
                 title=get_col(row, "title"),
+                role_id=get_col(row, "role_id"),
             )
             for row in rows
         ]

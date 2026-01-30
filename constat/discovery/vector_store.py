@@ -276,6 +276,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         # source: schema, api, document
 
         # Create chunk_entities junction table (links document chunks to entities)
+        # PK includes session_id so same (chunk_id, entity_id) can have both
+        # NULL session_id links (global) and session-scoped links
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS chunk_entities (
                 chunk_id VARCHAR NOT NULL,
@@ -283,9 +285,9 @@ class DuckDBVectorStore(VectorStoreBackend):
                 mention_count INTEGER DEFAULT 1,
                 confidence FLOAT DEFAULT 1.0,
                 mention_text VARCHAR,
-                session_id VARCHAR,
+                session_id VARCHAR DEFAULT '__none__',
                 project_id VARCHAR,
-                PRIMARY KEY (chunk_id, entity_id)
+                PRIMARY KEY (chunk_id, entity_id, session_id)
             )
         """)
 
@@ -404,6 +406,36 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._conn.execute("DROP TABLE IF EXISTS api_embeddings")
         except Exception as e:
             logger.debug(f"_migrate_schema: failed to drop old tables: {e}")
+
+        # Migrate chunk_entities to new PK (includes session_id)
+        # Check if session_id has a default - if not, we need to recreate the table
+        try:
+            result = self._conn.execute("""
+                SELECT column_default
+                FROM information_schema.columns
+                WHERE table_name = 'chunk_entities' AND column_name = 'session_id'
+            """).fetchone()
+            needs_pk_migration = result is None or result[0] != "'__none__'"
+
+            if needs_pk_migration:
+                logger.info("_migrate_schema: migrating chunk_entities to new PK schema")
+                # Drop and recreate - data will be regenerated during session startup
+                self._conn.execute("DROP TABLE IF EXISTS chunk_entities")
+                self._conn.execute("""
+                    CREATE TABLE chunk_entities (
+                        chunk_id VARCHAR NOT NULL,
+                        entity_id VARCHAR NOT NULL,
+                        mention_count INTEGER DEFAULT 1,
+                        confidence FLOAT DEFAULT 1.0,
+                        mention_text VARCHAR,
+                        session_id VARCHAR DEFAULT '__none__',
+                        project_id VARCHAR,
+                        PRIMARY KEY (chunk_id, entity_id, session_id)
+                    )
+                """)
+                logger.info("_migrate_schema: chunk_entities table recreated with new PK")
+        except Exception as e:
+            logger.debug(f"_migrate_schema: chunk_entities PK migration check failed: {e}")
 
     def clear_session_data(self, session_id: str) -> None:
         """Remove all data for a specific session.
@@ -651,16 +683,19 @@ class DuckDBVectorStore(VectorStoreBackend):
         query = query_embedding.flatten().tolist()
 
         # Build filter for base + project + session
-        # base: project_id IS NULL AND session_id IS NULL
+        # base: project_id IS NULL or '__base__' (always included)
         # project: project_id IN (loaded_projects)
         # session: session_id = current_session_id
-        filter_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        filter_conditions = ["(project_id IS NULL)", "(project_id = '__base__')"]
         params: list = [query]
 
         if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            filter_conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+            # Filter out '__base__' since it's already included above
+            filtered_project_ids = [p for p in project_ids if p != '__base__']
+            if filtered_project_ids:
+                placeholders = ",".join(["?" for _ in filtered_project_ids])
+                filter_conditions.append(f"project_id IN ({placeholders})")
+                params.extend(filtered_project_ids)
 
         if session_id:
             filter_conditions.append("session_id = ?")
@@ -705,12 +740,20 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Clear all stored data."""
         self._conn.execute("DELETE FROM embeddings")
 
-    def clear_chunk_entity_links(self) -> None:
-        """Clear all chunk-entity links (but keep entities).
+    def clear_chunk_entity_links(self, session_id: str | None = None) -> None:
+        """Clear chunk-entity links (but keep entities).
 
-        Use this when re-extracting entities from documents.
+        Args:
+            session_id: If provided, only clear links for this session.
+                       If None, only clear global links (session_id = '__none__').
+                       Session-scoped links are always preserved when clearing global links.
         """
-        self._conn.execute("DELETE FROM chunk_entities")
+        if session_id:
+            # Clear links for a specific session
+            self._conn.execute("DELETE FROM chunk_entities WHERE session_id = ?", [session_id])
+        else:
+            # Only clear global links, preserve session-scoped links
+            self._conn.execute("DELETE FROM chunk_entities WHERE session_id = '__none__'")
 
     def count(self) -> int:
         """Return number of stored chunks."""
@@ -852,6 +895,9 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not links:
             return
 
+        # Use '__none__' instead of NULL for session_id (part of PK)
+        effective_session_id = session_id if session_id else '__none__'
+
         # Deduplicate links by (chunk_id, entity_id)
         seen = set()
         unique_records = []
@@ -860,10 +906,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             if key not in seen:
                 seen.add(key)
                 unique_records.append(
-                    (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, session_id, project_id)
+                    (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, effective_session_id, project_id)
                 )
 
+        # Log what we're inserting
+        logger.debug(f"link_chunk_entities: inserting {len(unique_records)} links with session_id={effective_session_id}")
+
         # Insert one at a time with try/except to handle any constraint errors
+        inserted = 0
         for record in unique_records:
             try:
                 self._conn.execute(
@@ -874,9 +924,12 @@ class DuckDBVectorStore(VectorStoreBackend):
                     """,
                     record,
                 )
-            except Exception:
-                # Skip duplicates silently
-                pass
+                inserted += 1
+            except Exception as e:
+                # Log constraint errors for debugging (likely duplicate)
+                logger.debug(f"link_chunk_entities: insert failed: {e}")
+
+        logger.debug(f"link_chunk_entities: inserted {inserted}/{len(unique_records)} links")
 
     def get_entities_for_chunk(
         self,

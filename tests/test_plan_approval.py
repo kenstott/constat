@@ -155,7 +155,7 @@ class TestFeedbackDisplayApproval:
 
     def test_show_replan_notice(self, mock_console):
         """Test displaying replan notice."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
         display.show_replan_notice(attempt=2, max_attempts=3)

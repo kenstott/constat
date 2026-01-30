@@ -58,10 +58,10 @@ def mock_console():
 @pytest.fixture
 def repl(mock_config, mock_console):
     """Create an InteractiveREPL with mocked dependencies."""
-    with patch('constat.repl.FeedbackDisplay'), \
-         patch('constat.repl.FactStore') as mock_fact_store_class, \
-         patch('constat.repl.Session') as mock_session_class, \
-         patch('constat.repl.LearningStore') as mock_learning_store_class:
+    with patch('constat.repl.interactive.FeedbackDisplay'), \
+         patch('constat.repl.interactive.FactStore') as mock_fact_store_class, \
+         patch('constat.repl.interactive.Session') as mock_session_class, \
+         patch('constat.repl.interactive.LearningStore') as mock_learning_store_class:
         # Mock FactStore to return empty facts by default
         mock_fact_store = Mock()
         mock_fact_store.list_facts.return_value = {}
@@ -83,8 +83,7 @@ def repl(mock_config, mock_console):
             verbose=False,
             console=mock_console,
         )
-        # Store mock for tests to use
-        repl.fact_store = mock_fact_store
+        # The mocks are already injected via the patched classes
     return repl
 
 
@@ -134,7 +133,7 @@ class TestTablesCommand:
 
     def test_tables_no_session(self, repl, mock_console):
         """Test /tables with no active session."""
-        repl.session = None
+        repl.api._session = None
 
         repl._show_tables()
 
@@ -145,8 +144,8 @@ class TestTablesCommand:
 
     def test_tables_no_datastore(self, repl, mock_console):
         """Test /tables with session but no datastore."""
-        repl.session = Mock()
-        repl.session.datastore = None
+        repl.api._session = Mock()
+        repl.api.session.datastore = None
 
         repl._show_tables()
 
@@ -155,9 +154,9 @@ class TestTablesCommand:
 
     def test_tables_empty(self, repl, mock_console):
         """Test /tables when no tables exist."""
-        repl.session = Mock()
-        repl.session.datastore = Mock()
-        repl.session.datastore.list_tables.return_value = []
+        repl.api._session = Mock()
+        repl.api.session.datastore = Mock()
+        repl.api.session.datastore.list_tables.return_value = []
 
         repl._show_tables()
 
@@ -167,9 +166,9 @@ class TestTablesCommand:
 
     def test_tables_with_data(self, repl):
         """Test /tables displays table list correctly."""
-        repl.session = Mock()
-        repl.session.datastore = Mock()
-        repl.session.datastore.list_tables.return_value = [
+        repl.api._session = Mock()
+        repl.api.session.datastore = Mock()
+        repl.api.session.datastore.list_tables.return_value = [
             {"name": "customers", "row_count": 100, "step_number": 1},
             {"name": "orders", "row_count": 50, "step_number": 2},
         ]
@@ -192,7 +191,7 @@ class TestQueryCommand:
 
     def test_query_no_session(self, repl, mock_console):
         """Test /query with no active session."""
-        repl.session = None
+        repl.api._session = None
 
         repl._run_query("SELECT * FROM users")
 
@@ -201,8 +200,8 @@ class TestQueryCommand:
 
     def test_query_no_datastore(self, repl, mock_console):
         """Test /query with session but no datastore."""
-        repl.session = Mock()
-        repl.session.datastore = None
+        repl.api._session = Mock()
+        repl.api.session.datastore = None
 
         repl._run_query("SELECT * FROM users")
 
@@ -214,22 +213,22 @@ class TestQueryCommand:
         mock_result = Mock()
         mock_result.to_string.return_value = "col1 | col2\n----\na    | b"
 
-        repl.session = Mock()
-        repl.session.datastore = Mock()
-        repl.session.datastore.query.return_value = mock_result
+        repl.api._session = Mock()
+        repl.api.session.datastore = Mock()
+        repl.api.session.datastore.query.return_value = mock_result
 
         repl._run_query("SELECT * FROM test")
 
         # Verify query was executed
-        repl.session.datastore.query.assert_called_once_with("SELECT * FROM test")
+        repl.api.session.datastore.query.assert_called_once_with("SELECT * FROM test")
         # Verify result was printed
         mock_console.print.assert_called_with("col1 | col2\n----\na    | b")
 
     def test_query_error(self, repl, mock_console):
         """Test /query handles SQL errors gracefully."""
-        repl.session = Mock()
-        repl.session.datastore = Mock()
-        repl.session.datastore.query.side_effect = Exception("Table not found")
+        repl.api._session = Mock()
+        repl.api.session.datastore = Mock()
+        repl.api.session.datastore.query.side_effect = Exception("Table not found")
 
         repl._run_query("SELECT * FROM nonexistent")
 
@@ -244,7 +243,7 @@ class TestStateCommand:
 
     def test_state_no_session(self, repl, mock_console):
         """Test /state with no active session."""
-        repl.session = None
+        repl.api._session = None
 
         repl._show_state()
 
@@ -253,8 +252,8 @@ class TestStateCommand:
 
     def test_state_displays_session_info(self, repl, mock_console):
         """Test /state shows session ID and tables."""
-        repl.session = Mock()
-        repl.session.get_state.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.get_state.return_value = {
             "session_id": "test-session-123",
             "datastore_tables": [
                 {"name": "users", "row_count": 10},
@@ -273,8 +272,8 @@ class TestStateCommand:
 
     def test_state_handles_empty_tables(self, repl, mock_console):
         """Test /state handles empty tables list."""
-        repl.session = Mock()
-        repl.session.get_state.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.get_state.return_value = {
             "session_id": "test",
             "datastore_tables": [],
         }
@@ -292,7 +291,7 @@ class TestFactsCommand:
 
     def test_facts_no_session(self, repl, mock_console):
         """Test /facts with no active session shows message about /remember."""
-        repl.session = None
+        repl.api._session = None
 
         repl._show_facts()
 
@@ -304,9 +303,9 @@ class TestFactsCommand:
         """Test /facts displays cached facts."""
         from constat.execution.fact_resolver import Fact, FactSource
 
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {
             "march_attendance": Fact(
                 name="march_attendance",
                 value=1000000,
@@ -318,13 +317,13 @@ class TestFactsCommand:
         repl._show_facts()
 
         # Verify get_all_facts was called
-        repl.session.fact_resolver.get_all_facts.assert_called_once()
+        repl.api.session.fact_resolver.get_all_facts.assert_called_once()
 
     def test_facts_empty(self, repl, mock_console):
         """Test /facts handles case when no facts cached."""
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {}
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {}
 
         repl._show_facts()
 
@@ -336,25 +335,22 @@ class TestFactsCommand:
 class TestHistoryCommand:
     """Tests for /history command."""
 
-    def test_history_creates_session_if_needed(self, repl, mock_console):
-        """Test /history creates a session if none exists."""
-        repl.session = None
+    def test_history_shows_sessions_from_api(self, repl, mock_console):
+        """Test /history displays session list from API session."""
+        repl.api._session = Mock()
+        repl.api._session.history = Mock()
+        repl.api._session.history.list_sessions.return_value = []
 
-        with patch.object(repl, '_create_session') as mock_create:
-            mock_session = Mock()
-            mock_session.history = Mock()
-            mock_session.history.list_sessions.return_value = []
-            mock_create.return_value = mock_session
+        repl._show_history()
 
-            repl._show_history()
-
-            mock_create.assert_called_once()
+        # Should call list_sessions on the API's session history
+        repl.api._session.history.list_sessions.assert_called_once()
 
     def test_history_empty(self, repl, mock_console):
         """Test /history when no previous sessions."""
-        repl.session = Mock()
-        repl.session.history = Mock()
-        repl.session.history.list_sessions.return_value = []
+        repl.api._session = Mock()
+        repl.api.session.history = Mock()
+        repl.api.session.history.list_sessions.return_value = []
 
         repl._show_history()
 
@@ -363,9 +359,9 @@ class TestHistoryCommand:
 
     def test_history_shows_sessions(self, repl, mock_console):
         """Test /history displays session list."""
-        repl.session = Mock()
-        repl.session.history = Mock()
-        repl.session.history.list_sessions.return_value = [
+        repl.api._session = Mock()
+        repl.api.session.history = Mock()
+        repl.api.session.history.list_sessions.return_value = [
             SessionSummary(
                 session_id="2024-01-15_143022_abc12345",
                 created_at="2024-01-15 14:30:22",
@@ -387,7 +383,7 @@ class TestHistoryCommand:
         repl._show_history()
 
         # Should call list_sessions with limit=10
-        repl.session.history.list_sessions.assert_called_once_with(limit=10)
+        repl.api.session.history.list_sessions.assert_called_once_with(limit=10)
 
         # Verify table was printed (console.print receives the Rich Table)
         assert mock_console.print.call_count >= 1
@@ -396,25 +392,22 @@ class TestHistoryCommand:
 class TestResumeCommand:
     """Tests for /resume command."""
 
-    def test_resume_creates_session_if_needed(self, repl, mock_console):
-        """Test /resume creates a session if none exists."""
-        repl.session = None
+    def test_resume_searches_history_via_api(self, repl, mock_console):
+        """Test /resume searches history via API session."""
+        repl.api._session = Mock()
+        repl.api._session.history = Mock()
+        repl.api._session.history.list_sessions.return_value = []
 
-        with patch.object(repl, '_create_session') as mock_create:
-            mock_session = Mock()
-            mock_session.history = Mock()
-            mock_session.history.list_sessions.return_value = []
-            mock_create.return_value = mock_session
+        repl._resume_session("abc123")
 
-            repl._resume_session("abc123")
-
-            mock_create.assert_called_once()
+        # Should search history via the API's session
+        repl.api._session.history.list_sessions.assert_called()
 
     def test_resume_session_not_found(self, repl, mock_console):
         """Test /resume with non-existent session ID."""
-        repl.session = Mock()
-        repl.session.history = Mock()
-        repl.session.history.list_sessions.return_value = []
+        repl.api._session = Mock()
+        repl.api.session.history = Mock()
+        repl.api.session.history.list_sessions.return_value = []
 
         repl._resume_session("nonexistent")
 
@@ -424,9 +417,9 @@ class TestResumeCommand:
 
     def test_resume_multiple_matches_takes_first(self, repl, mock_console):
         """Test /resume when session ID prefix matches multiple sessions takes first."""
-        repl.session = Mock()
-        repl.session.history = Mock()
-        repl.session.history.list_sessions.return_value = [
+        repl.api._session = Mock()
+        repl.api.session.history = Mock()
+        repl.api.session.history.list_sessions.return_value = [
             SessionSummary(
                 session_id="abc123_session1",
                 created_at="2024-01-15",
@@ -444,19 +437,19 @@ class TestResumeCommand:
                 total_duration_ms=100,
             ),
         ]
-        repl.session.resume.return_value = True
-        repl.session.datastore = None
+        repl.api.session.resume.return_value = True
+        repl.api.session.datastore = None
 
         repl._resume_session("abc123")
 
         # Should resume the first match
-        repl.session.resume.assert_called_once_with("abc123_session1")
+        repl.api.session.resume.assert_called_once_with("abc123_session1")
 
     def test_resume_success(self, repl, mock_console):
         """Test /resume successfully resumes a session."""
-        repl.session = Mock()
-        repl.session.history = Mock()
-        repl.session.history.list_sessions.return_value = [
+        repl.api._session = Mock()
+        repl.api.session.history = Mock()
+        repl.api.session.history.list_sessions.return_value = [
             SessionSummary(
                 session_id="abc123_unique",
                 created_at="2024-01-15",
@@ -466,15 +459,15 @@ class TestResumeCommand:
                 total_duration_ms=200,
             ),
         ]
-        repl.session.resume.return_value = True
-        repl.session.datastore = Mock()
-        repl.session.datastore.list_tables.return_value = [
+        repl.api.session.resume.return_value = True
+        repl.api.session.datastore = Mock()
+        repl.api.session.datastore.list_tables.return_value = [
             {"name": "test_table", "row_count": 10}
         ]
 
         repl._resume_session("abc123")
 
-        repl.session.resume.assert_called_once_with("abc123_unique")
+        repl.api.session.resume.assert_called_once_with("abc123_unique")
         calls = [str(call) for call in mock_console.print.call_args_list]
         calls_str = " ".join(calls)
         assert "Resumed session" in calls_str
@@ -482,9 +475,9 @@ class TestResumeCommand:
 
     def test_resume_failure(self, repl, mock_console):
         """Test /resume handles resume failure."""
-        repl.session = Mock()
-        repl.session.history = Mock()
-        repl.session.history.list_sessions.return_value = [
+        repl.api._session = Mock()
+        repl.api.session.history = Mock()
+        repl.api.session.history.list_sessions.return_value = [
             SessionSummary(
                 session_id="abc123_unique",
                 created_at="2024-01-15",
@@ -494,7 +487,7 @@ class TestResumeCommand:
                 total_duration_ms=100,
             ),
         ]
-        repl.session.resume.return_value = False
+        repl.api.session.resume.return_value = False
 
         repl._resume_session("abc123")
 
@@ -620,27 +613,23 @@ class TestCommandsWithoutArguments:
 class TestSolveIntegration:
     """Tests for the _solve method that handles queries."""
 
-    def test_solve_creates_session_if_needed(self, repl, mock_console):
-        """Test that _solve creates a session if none exists."""
-        repl.session = None
+    def test_solve_calls_session_solve(self, repl, mock_console):
+        """Test that _solve calls solve on the API session."""
+        mock_session = Mock()
+        mock_session.session_id = None
+        mock_session.solve.return_value = {"success": True, "results": []}
+        repl.api._session = mock_session
 
-        with patch.object(repl, '_create_session') as mock_create:
-            mock_session = Mock()
-            mock_session.session_id = None
-            mock_session.solve.return_value = {"success": True, "results": []}
-            mock_create.return_value = mock_session
+        repl._solve("Count the customers")
 
-            repl._solve("Count the customers")
-
-            mock_create.assert_called_once()
-            mock_session.solve.assert_called_once_with("Count the customers")
+        mock_session.solve.assert_called_once_with("Count the customers")
 
     def test_solve_uses_follow_up_for_existing_session(self, repl, mock_console):
         """Test that _solve uses follow_up for existing session."""
         mock_session = Mock()
         mock_session.session_id = "existing-session-123"
         mock_session.follow_up.return_value = {"success": True, "results": []}
-        repl.session = mock_session
+        repl.api._session = mock_session
 
         repl._solve("Now show the top 5")
 
@@ -651,7 +640,7 @@ class TestSolveIntegration:
         mock_session = Mock()
         mock_session.session_id = None
         mock_session.solve.side_effect = KeyboardInterrupt()
-        repl.session = mock_session
+        repl.api._session = mock_session
 
         repl._solve("Some problem")
 
@@ -665,7 +654,7 @@ class TestSolveIntegration:
         mock_session = Mock()
         mock_session.session_id = None
         mock_session.solve.side_effect = Exception("Something went wrong")
-        repl.session = mock_session
+        repl.api._session = mock_session
 
         repl._solve("Some problem")
 
@@ -692,33 +681,37 @@ class TestQuitCommands:
 class TestCreateSession:
     """Tests for session creation."""
 
-    def test_create_session_returns_session(self, repl, mock_config):
-        """Test _create_session creates and returns a Session."""
-        with patch('constat.repl.Session') as mock_session_class:
-            with patch('constat.repl.SessionFeedbackHandler'):
-                mock_session = Mock()
-                mock_session_class.return_value = mock_session
+    def test_create_api_returns_session(self, repl, mock_config):
+        """Test _create_api creates and returns a ConstatAPIImpl."""
+        with patch('constat.repl.interactive.Session') as mock_session_class:
+            with patch('constat.repl.interactive.SessionFeedbackHandler'):
+                with patch('constat.repl.interactive.FactStore'):
+                    with patch('constat.repl.interactive.LearningStore'):
+                        mock_session = Mock()
+                        mock_session_class.return_value = mock_session
 
-                result = repl._create_session()
+                        result = repl._create_api()
 
-                mock_session_class.assert_called_once()
-                assert result == mock_session
+                        mock_session_class.assert_called_once()
+                        # Result is ConstatAPIImpl, not Session
+                        assert hasattr(result, 'session')
+                        assert result.session == mock_session
 
-    def test_create_session_wires_feedback_handler(self, repl, mock_config):
-        """Test _create_session wires up feedback handler."""
-        with patch('constat.repl.Session') as mock_session_class:
-            with patch('constat.repl.SessionFeedbackHandler') as mock_handler_class:
-                mock_session = Mock()
-                mock_session_class.return_value = mock_session
-                mock_handler = Mock()
-                mock_handler_class.return_value = mock_handler
+    def test_create_api_wires_feedback_handler(self, repl, mock_config):
+        """Test _create_api wires up feedback handler."""
+        with patch('constat.repl.interactive.Session') as mock_session_class:
+            with patch('constat.repl.interactive.SessionFeedbackHandler') as mock_handler_class:
+                with patch('constat.repl.interactive.FactStore'):
+                    with patch('constat.repl.interactive.LearningStore'):
+                        mock_session = Mock()
+                        mock_session_class.return_value = mock_session
+                        mock_handler = Mock()
+                        mock_handler_class.return_value = mock_handler
 
-                repl._create_session()
+                        repl._create_api()
 
-                # Verify handler was created with display and session_config
-                mock_handler_class.assert_called_once_with(repl.display, repl.session_config)
-                # Verify on_event was called with handler.handle_event
-                mock_session.on_event.assert_called_once_with(mock_handler.handle_event)
+                        # Verify handler was created with display and session_config
+                        mock_handler_class.assert_called_once_with(repl.display, repl.session_config)
 
 
 class TestReplInitialization:
@@ -726,27 +719,29 @@ class TestReplInitialization:
 
     def test_repl_initializes_with_config(self, mock_config, mock_console):
         """Test REPL initializes correctly with config."""
-        with patch('constat.repl.FeedbackDisplay'):
-            with patch('constat.repl.Session') as mock_session_class:
+        with patch('constat.repl.interactive.FeedbackDisplay'):
+            with patch('constat.repl.interactive.Session') as mock_session_class:
                 mock_session = Mock()
                 mock_session_class.return_value = mock_session
-                repl = InteractiveREPL(
-                    config=mock_config,
-                    verbose=True,
-                    console=mock_console,
-                )
+                with patch('constat.repl.interactive.FactStore'):
+                    with patch('constat.repl.interactive.LearningStore'):
+                        repl = InteractiveREPL(
+                            config=mock_config,
+                            verbose=True,
+                            console=mock_console,
+                        )
 
         assert repl.config == mock_config
         assert repl.verbose is True
         assert repl.console == mock_console
-        assert repl.session == mock_session  # Session is now eagerly created
+        assert repl.api._session == mock_session  # API wraps session
 
     def test_repl_creates_default_console(self, mock_config):
         """Test REPL creates default console if none provided."""
-        with patch('constat.repl.FeedbackDisplay'):
-            with patch('constat.repl.Session') as mock_session_class:
+        with patch('constat.repl.interactive.FeedbackDisplay'):
+            with patch('constat.repl.interactive.Session') as mock_session_class:
                 mock_session_class.return_value = Mock()
-                with patch('constat.repl.Console') as mock_console_class:
+                with patch('constat.repl.interactive.Console') as mock_console_class:
                     mock_console_instance = Mock()
                     mock_console_class.return_value = mock_console_instance
 
@@ -798,31 +793,31 @@ class TestDatastoreCleanup:
         mock_session = Mock()
         mock_datastore = Mock()
         mock_session.datastore = mock_datastore
-        repl.session = mock_session
+        repl.api._session = mock_session
 
         # Simulate the cleanup logic from run()
-        if repl.session and repl.session.datastore:
-            repl.session.datastore.close()
+        if repl.api.session and repl.api.session.datastore:
+            repl.api.session.datastore.close()
 
         mock_datastore.close.assert_called_once()
 
     def test_cleanup_handles_no_session(self, repl):
         """Test cleanup handles case with no session."""
-        repl.session = None
+        repl.api._session = None
 
         # This should not raise
-        if repl.session and repl.session.datastore:
-            repl.session.datastore.close()
+        if repl.api.session and repl.api.session.datastore:
+            repl.api.session.datastore.close()
 
     def test_cleanup_handles_no_datastore(self, repl):
         """Test cleanup handles session with no datastore."""
         mock_session = Mock()
         mock_session.datastore = None
-        repl.session = mock_session
+        repl.api._session = mock_session
 
         # This should not raise
-        if repl.session and repl.session.datastore:
-            repl.session.datastore.close()
+        if repl.api.session and repl.api.session.datastore:
+            repl.api.session.datastore.close()
 
 
 class TestSuccessfulSolveOutput:
@@ -849,7 +844,7 @@ class TestSuccessfulSolveOutput:
             "results": [mock_result],
             "datastore_tables": [],
         }
-        repl.session = mock_session
+        repl.api._session = mock_session
         repl.display = Mock()
 
         repl._solve("Analyze the data")
@@ -874,7 +869,7 @@ class TestSuccessfulSolveOutput:
                 {"name": "results", "row_count": 10, "step_number": 1},
             ],
         }
-        repl.session = mock_session
+        repl.api._session = mock_session
         repl.display = Mock()
 
         repl._solve("Analyze the data")
@@ -895,7 +890,7 @@ class TestFailedSolveOutput:
             "plan": None,
             "error": "Database connection failed",
         }
-        repl.session = mock_session
+        repl.api._session = mock_session
         repl.display = Mock()
 
         repl._solve("Analyze the data")
@@ -916,9 +911,9 @@ class TestRememberCommand:
         from datetime import datetime
 
         # Setup session with a cached fact
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {
             "churn_rate()": Fact(
                 name="churn_rate",
                 value=0.032,
@@ -932,8 +927,8 @@ class TestRememberCommand:
         repl._remember_fact("churn_rate")
 
         # Verify fact was persisted
-        repl.fact_store.save_fact.assert_called_once()
-        call_args = repl.fact_store.save_fact.call_args
+        repl.api.fact_store.save_fact.assert_called_once()
+        call_args = repl.api.fact_store.save_fact.call_args
         assert call_args.kwargs["name"] == "churn_rate"
         assert call_args.kwargs["value"] == 0.032
         assert "database" in call_args.kwargs["context"].lower()
@@ -950,9 +945,9 @@ class TestRememberCommand:
         from datetime import datetime
 
         # Setup session with a cached fact
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {
             "enterprise_churn()": Fact(
                 name="enterprise_churn",
                 value=0.015,
@@ -964,8 +959,8 @@ class TestRememberCommand:
         repl._remember_fact("enterprise_churn as baseline_churn")
 
         # Verify fact was persisted with new name
-        repl.fact_store.save_fact.assert_called_once()
-        call_args = repl.fact_store.save_fact.call_args
+        repl.api.fact_store.save_fact.assert_called_once()
+        call_args = repl.api.fact_store.save_fact.call_args
         assert call_args.kwargs["name"] == "baseline_churn"
         assert call_args.kwargs["value"] == 0.015
 
@@ -979,10 +974,10 @@ class TestRememberCommand:
         from constat.execution.fact_resolver import Fact, FactSource
         from datetime import datetime
 
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
         # Cache key has params but fact.name is simple
-        repl.session.fact_resolver.get_all_facts.return_value = {
+        repl.api.session.fact_resolver.get_all_facts.return_value = {
             "customer_ltv(segment=enterprise)": Fact(
                 name="customer_ltv",
                 value=50000,
@@ -994,15 +989,15 @@ class TestRememberCommand:
         repl._remember_fact("customer_ltv")
 
         # Should find by name property
-        repl.fact_store.save_fact.assert_called_once()
-        assert repl.fact_store.save_fact.call_args.kwargs["value"] == 50000
+        repl.api.fact_store.save_fact.assert_called_once()
+        assert repl.api.fact_store.save_fact.call_args.kwargs["value"] == 50000
 
     def test_remember_fact_not_found_shows_error(self, repl, mock_console):
         """Test /remember with non-existent fact shows helpful error."""
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {}
-        repl.session.fact_resolver.add_user_facts_from_text.return_value = []
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {}
+        repl.api.session.fact_resolver.add_user_facts_from_text.return_value = []
         repl.display = Mock()
 
         repl._remember_fact("nonexistent_fact")
@@ -1016,9 +1011,9 @@ class TestRememberCommand:
         """Test /remember falls back to LLM extraction for natural language."""
         from constat.execution.fact_resolver import Fact, FactSource
 
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {}
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {}
 
         # Mock LLM extraction returning a fact
         mock_fact = Fact(
@@ -1027,27 +1022,27 @@ class TestRememberCommand:
             source=FactSource.USER_PROVIDED,
             description="User's role",
         )
-        repl.session.fact_resolver.add_user_facts_from_text.return_value = [mock_fact]
+        repl.api.session.fact_resolver.add_user_facts_from_text.return_value = [mock_fact]
         repl.display = Mock()
 
         repl._remember_fact("my role is CFO")
 
         # Should have called LLM extraction
-        repl.session.fact_resolver.add_user_facts_from_text.assert_called_once_with("my role is CFO")
+        repl.api.session.fact_resolver.add_user_facts_from_text.assert_called_once_with("my role is CFO")
 
         # Should have persisted the extracted fact
-        repl.fact_store.save_fact.assert_called_once()
-        assert repl.fact_store.save_fact.call_args.kwargs["name"] == "user_role"
-        assert repl.fact_store.save_fact.call_args.kwargs["value"] == "CFO"
+        repl.api.fact_store.save_fact.assert_called_once()
+        assert repl.api.fact_store.save_fact.call_args.kwargs["name"] == "user_role"
+        assert repl.api.fact_store.save_fact.call_args.kwargs["value"] == "CFO"
 
     def test_remember_preserves_provenance(self, repl, mock_console):
         """Test /remember preserves full provenance in context."""
         from constat.execution.fact_resolver import Fact, FactSource
         from datetime import datetime
 
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {
             "revenue()": Fact(
                 name="revenue",
                 value=1000000,
@@ -1062,7 +1057,7 @@ class TestRememberCommand:
         repl._remember_fact("revenue")
 
         # Verify context includes provenance
-        call_args = repl.fact_store.save_fact.call_args
+        call_args = repl.api.fact_store.save_fact.call_args
         context = call_args.kwargs["context"]
         assert "database" in context.lower()
         assert "sales_db" in context
@@ -1082,9 +1077,9 @@ class TestRememberCommand:
         from constat.execution.fact_resolver import Fact, FactSource
         from datetime import datetime
 
-        repl.session = Mock()
-        repl.session.fact_resolver = Mock()
-        repl.session.fact_resolver.get_all_facts.return_value = {
+        repl.api._session = Mock()
+        repl.api.session.fact_resolver = Mock()
+        repl.api.session.fact_resolver.get_all_facts.return_value = {
             "top_customers()": Fact(
                 name="top_customers",
                 value=None,  # Value stored in table
@@ -1098,7 +1093,7 @@ class TestRememberCommand:
         repl._remember_fact("top_customers")
 
         # Should still persist (value may be None for table facts)
-        repl.fact_store.save_fact.assert_called_once()
+        repl.api.fact_store.save_fact.assert_called_once()
         # display_value should mention the table
         calls = [str(call) for call in mock_console.print.call_args_list]
         calls_str = " ".join(calls)
@@ -1110,7 +1105,7 @@ class TestStatusLine:
 
     def test_status_line_initial_state(self):
         """Test StatusLine initial render."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
 
         status = StatusLine()
 
@@ -1120,7 +1115,7 @@ class TestStatusLine:
 
     def test_status_line_planning_phase(self):
         """Test StatusLine renders planning phase correctly."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
         from constat.execution.mode import Phase
 
         status = StatusLine()
@@ -1133,7 +1128,7 @@ class TestStatusLine:
 
     def test_status_line_executing_phase(self):
         """Test StatusLine renders executing phase correctly."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
         from constat.execution.mode import Phase
 
         status = StatusLine()
@@ -1149,7 +1144,7 @@ class TestStatusLine:
 
     def test_status_line_failed_phase(self):
         """Test StatusLine renders failed phase correctly."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
         from constat.execution.mode import Phase
 
         status = StatusLine()
@@ -1165,7 +1160,7 @@ class TestStatusLine:
 
     def test_status_line_awaiting_approval_phase(self):
         """Test StatusLine renders awaiting_approval phase correctly."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
         from constat.execution.mode import Phase
 
         status = StatusLine()
@@ -1180,7 +1175,7 @@ class TestStatusLine:
 
     def test_status_line_update_from_state(self):
         """Test StatusLine.update() from ConversationState."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
         from constat.execution.mode import Phase, ConversationState
 
         status = StatusLine()
@@ -1196,7 +1191,7 @@ class TestStatusLine:
 
     def test_status_line_queue_indicator(self):
         """Test StatusLine shows queue indicator during execution."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
         from constat.execution.mode import Phase
 
         status = StatusLine()
@@ -1208,7 +1203,7 @@ class TestStatusLine:
 
     def test_status_line_spinner_advance(self):
         """Test StatusLine.advance_spinner() cycles through frames."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
 
         status = StatusLine()
         initial_frame = status._spinner_frame
@@ -1218,7 +1213,7 @@ class TestStatusLine:
 
     def test_status_line_status_message(self):
         """Test StatusLine renders status message when set."""
-        from constat.feedback import StatusLine
+        from constat.repl.feedback import StatusLine
 
         status = StatusLine()
         status.set_status_message("Analyzing your question...")
@@ -1240,7 +1235,7 @@ class TestFailureRecovery:
 
     def test_failure_recovery_retry(self, mock_console):
         """Test failure recovery prompt returns 'retry' for retry input."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
 
@@ -1253,7 +1248,7 @@ class TestFailureRecovery:
 
     def test_failure_recovery_replan(self, mock_console):
         """Test failure recovery prompt returns 'replan' for replan input."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
 
@@ -1266,7 +1261,7 @@ class TestFailureRecovery:
 
     def test_failure_recovery_abandon(self, mock_console):
         """Test failure recovery prompt returns 'abandon' for abandon input."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
 
@@ -1279,7 +1274,7 @@ class TestFailureRecovery:
 
     def test_failure_recovery_numeric_shortcuts(self, mock_console):
         """Test failure recovery accepts numeric shortcuts."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
 
@@ -1297,7 +1292,7 @@ class TestFailureRecovery:
 
     def test_failure_recovery_keyboard_interrupt(self, mock_console):
         """Test failure recovery handles KeyboardInterrupt."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
 
@@ -1310,7 +1305,7 @@ class TestFailureRecovery:
 
     def test_failure_recovery_empty_input(self, mock_console):
         """Test failure recovery treats empty input as abandon."""
-        from constat.feedback import FeedbackDisplay
+        from constat.repl.feedback import FeedbackDisplay
 
         display = FeedbackDisplay(console=mock_console)
 
@@ -1331,7 +1326,7 @@ class TestCancelExecution:
         mock_session.session_id = None
         mock_session.solve.side_effect = KeyboardInterrupt()
         mock_session.cancel_execution = Mock()
-        repl.session = mock_session
+        repl.api._session = mock_session
 
         repl._solve("Some query")
 
@@ -1344,7 +1339,7 @@ class TestCancelExecution:
         mock_session.session_id = None
         mock_session.solve.side_effect = KeyboardInterrupt()
         mock_session.cancel_execution = Mock()
-        repl.session = mock_session
+        repl.api._session = mock_session
         repl.display = Mock()
 
         repl._solve("Some query")
