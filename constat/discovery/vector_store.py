@@ -863,15 +863,31 @@ class DuckDBVectorStore(VectorStoreBackend):
                     (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, session_id, project_id)
                 )
 
-        self._conn.executemany(
-            """
-            INSERT INTO chunk_entities
-                (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (chunk_id, entity_id) DO NOTHING
-            """,
-            unique_records,
-        )
+        # Check which links already exist to avoid constraint errors
+        # DuckDB's executemany + ON CONFLICT doesn't work reliably
+        if unique_records:
+            existing = set()
+            for record in unique_records:
+                chunk_id, entity_id = record[0], record[1]
+                count = self._conn.execute(
+                    "SELECT COUNT(*) FROM chunk_entities WHERE chunk_id = ? AND entity_id = ?",
+                    [chunk_id, entity_id]
+                ).fetchone()[0]
+                if count > 0:
+                    existing.add((chunk_id, entity_id))
+
+            # Filter to only new records
+            new_records = [r for r in unique_records if (r[0], r[1]) not in existing]
+
+            if new_records:
+                self._conn.executemany(
+                    """
+                    INSERT INTO chunk_entities
+                        (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    new_records,
+                )
 
     def get_entities_for_chunk(
         self,
