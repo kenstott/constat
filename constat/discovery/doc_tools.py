@@ -739,7 +739,6 @@ class DocumentDiscoveryTools:
         content: str,
         doc_format: str = "text",
         description: str = "",
-        ephemeral: bool = True,
         project_id: str | None = None,
         session_id: str | None = None,
         config_hash: str | None = None,
@@ -752,7 +751,6 @@ class DocumentDiscoveryTools:
             content: Document content
             doc_format: Format (text, markdown, etc.)
             description: Optional description
-            ephemeral: Legacy flag (use project_id/session_id instead)
             project_id: Project this document belongs to (for project filtering)
             session_id: Session this document was added in (for session filtering)
             config_hash: Optional config hash for cache invalidation
@@ -807,18 +805,13 @@ class DocumentDiscoveryTools:
 
         # Add to vector store with project_id/session_id for filtering
         if hasattr(self._vector_store, 'add_chunks'):
-            import inspect
-            sig = inspect.signature(self._vector_store.add_chunks)
-            kwargs = {}
-            if 'ephemeral' in sig.parameters:
-                kwargs['ephemeral'] = ephemeral
-            if 'project_id' in sig.parameters:
-                kwargs['project_id'] = project_id
-            if 'session_id' in sig.parameters:
-                kwargs['session_id'] = session_id
-            if 'config_hash' in sig.parameters:
-                kwargs['config_hash'] = config_hash
-            self._vector_store.add_chunks(chunks, embeddings, **kwargs)
+            self._vector_store.add_chunks(
+                chunks,
+                embeddings,
+                session_id=session_id,
+                project_id=project_id,
+                config_hash=config_hash,
+            )
 
         # Extract entities with appropriate scope (unless skipped for later session-level extraction)
         if not skip_entity_extraction:
@@ -834,40 +827,11 @@ class DocumentDiscoveryTools:
 
         return True
 
-    def add_ephemeral_document(
-        self,
-        name: str,
-        content: str,
-        doc_format: str = "text",
-        description: str = "",
-    ) -> bool:
-        """Add a session-only document that will be cleaned up on restart.
-
-        Use this for documents added via /file during a session.
-
-        Args:
-            name: Document name
-            content: Document content
-            doc_format: Format (text, markdown, etc.)
-            description: Optional description
-
-        Returns:
-            True if indexed successfully
-        """
-        return self._add_document_internal(
-            name=name,
-            content=content,
-            doc_format=doc_format,
-            description=description,
-            ephemeral=True,
-        )
-
     def add_document_from_file(
         self,
         file_path: str,
         name: str | None = None,
         description: str = "",
-        ephemeral: bool = True,
         project_id: str | None = None,
         session_id: str | None = None,
         config_hash: str | None = None,
@@ -879,8 +843,6 @@ class DocumentDiscoveryTools:
             file_path: Path to the document file
             name: Optional name (defaults to filename without extension)
             description: Optional description
-            ephemeral: If True, document will be cleaned up on restart (default).
-                       If False, document persists permanently.
             project_id: Optional project ID for project-scoped documents
             session_id: Optional session ID for session-scoped documents
             config_hash: Optional config hash for cache invalidation
@@ -936,7 +898,6 @@ class DocumentDiscoveryTools:
             content=content,
             doc_format=doc_format,
             description=description or f"Document from {path.name}",
-            ephemeral=ephemeral,
             project_id=project_id,
             session_id=session_id,
             config_hash=config_hash,
@@ -946,24 +907,6 @@ class DocumentDiscoveryTools:
         if success:
             return True, f"Added document '{name}' ({len(content):,} chars)"
         return False, "Failed to index document"
-
-    def add_ephemeral_document_from_file(
-        self,
-        file_path: str,
-        name: str | None = None,
-        description: str = "",
-    ) -> tuple[bool, str]:
-        """Add a session-only document from a file path.
-
-        Args:
-            file_path: Path to the document file
-            name: Optional name (defaults to filename without extension)
-            description: Optional description
-
-        Returns:
-            Tuple of (success, message)
-        """
-        return self.add_document_from_file(file_path, name, description, ephemeral=True)
 
     def _extract_and_store_entities_session(
         self,
@@ -1127,26 +1070,26 @@ class DocumentDiscoveryTools:
 
         return True
 
-    def get_ephemeral_documents(self) -> dict[str, dict]:
+    def get_session_documents(self) -> dict[str, dict]:
         """Get documents added during this session (not in config).
 
         Returns:
-            Dict of {name: {format, char_count, loaded_at}} for ephemeral docs
+            Dict of {name: {format, char_count, loaded_at}} for session docs
         """
         # Get names of documents from config (documents is a dict keyed by name)
         config_doc_names = set(self.config.documents.keys()) if self.config.documents else set()
 
         # Find documents that were added but not in config
-        ephemeral = {}
+        session_docs = {}
         for name, doc in self._loaded_documents.items():
             if name not in config_doc_names:
-                ephemeral[name] = {
+                session_docs[name] = {
                     "format": doc.format,
                     "char_count": len(doc.content),
                     "loaded_at": doc.loaded_at,
                 }
 
-        return ephemeral
+        return session_docs
 
     def refresh(self, force_full: bool = False) -> dict:
         """Refresh documents, using incremental update by default.

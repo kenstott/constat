@@ -8118,7 +8118,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
         The database will be available as `db_<name>` in code execution.
         The schema is introspected and table/column names are added as
-        ephemeral entities for entity extraction.
+        session entities for entity extraction.
 
         Args:
             name: Database name (used as db_<name> variable)
@@ -8135,7 +8135,7 @@ Prove all of the above claims and provide a complete audit trail."""
             "description": description,
         }
 
-        # Add schema entities to vector store as ephemeral
+        # Add schema entities to vector store for session
         if self.doc_tools and db_type in ("sql", "sqlite", "postgresql", "mysql"):
             try:
                 # Connect and introspect schema
@@ -8167,10 +8167,10 @@ Prove all of the above claims and provide a complete audit trail."""
                         except Exception:
                             pass
 
-                    # Create and store entities as ephemeral
+                    # Create and store entities for session
                     entities = create_schema_entities_from_catalog(table_names, column_names)
                     if entities and hasattr(self.doc_tools._vector_store, 'add_entities'):
-                        self.doc_tools._vector_store.add_entities(entities, ephemeral=True)
+                        self.doc_tools._vector_store.add_entities(entities)
 
                     # Also update schema entities for future document indexing
                     current_entities = self.doc_tools._schema_entities or []
@@ -8194,8 +8194,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
         The file will be available as `file_<name>` in code execution.
         For local files, this is a Path. For HTTP files, content is fetched on-demand.
-        Document files (md, txt, pdf, docx) are also indexed in the vector store
-        as ephemeral (cleaned up on restart).
+        Document files (md, txt, pdf, docx) are also indexed in the vector store.
 
         Args:
             name: File name (used as file_<name> variable)
@@ -8212,7 +8211,7 @@ Prove all of the above claims and provide a complete audit trail."""
             "description": description,
         }
 
-        # Index document files in the vector store as ephemeral
+        # Index document files in the vector store
         if self.doc_tools:
             doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx'}
             from pathlib import Path
@@ -8252,8 +8251,8 @@ Prove all of the above claims and provide a complete audit trail."""
                     format_map = {'.md': 'markdown', '.txt': 'text', '.html': 'html', '.htm': 'html'}
                     doc_format = format_map.get(path.suffix.lower(), 'text')
 
-                    # Add as ephemeral document
-                    self.doc_tools.add_ephemeral_document(
+                    # Add as session document
+                    self.doc_tools._add_document_internal(
                         name=f"session:{name}",
                         content=content,
                         doc_format=doc_format,

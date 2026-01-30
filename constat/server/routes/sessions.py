@@ -153,34 +153,11 @@ def _load_projects_into_session(
             else:
                 newly_loaded.add(name)
 
-    # Phase 2: Index all documents from all projects
+    # Phase 2: Documents are already indexed during server warmup with project_id
+    # No need to re-index here - just log what's available
     for filename, project in valid_projects:
-        for name, doc_config in project.documents.items():
-            try:
-                if doc_config.path:
-                    from pathlib import Path
-                    doc_path = Path(doc_config.path)
-
-                    # Resolve relative paths from config directory
-                    if not doc_path.is_absolute():
-                        config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
-                        doc_path = (config_dir / doc_config.path).resolve()
-                        logger.debug(f"Resolved document path: {doc_config.path} -> {doc_path}")
-
-                    if doc_path.exists():
-                        success, msg = managed.session.doc_tools.add_ephemeral_document_from_file(
-                            str(doc_path),
-                            name=name,
-                            description=doc_config.description or "",
-                        )
-                        if success:
-                            logger.info(f"Indexed project document: {name} from {filename}")
-                        else:
-                            logger.warning(f"Failed to index document {name}: {msg}")
-                    else:
-                        logger.warning(f"Document file not found: {doc_path} (from {filename})")
-            except Exception as e:
-                logger.warning(f"Failed to index project document {name}: {e}")
+        if project.documents:
+            logger.info(f"Project {filename}: {len(project.documents)} documents available (pre-indexed during warmup)")
 
     # Phase 3: Update schema entities and process metadata through NER (once, with all entities)
     if managed.session.schema_manager and newly_loaded:

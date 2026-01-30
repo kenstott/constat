@@ -103,7 +103,6 @@ def _warmup_vector_store(config: Config) -> None:
                                     str(doc_path),
                                     name=doc_name,
                                     description=doc_config.description or "",
-                                    ephemeral=False,
                                     project_id="__base__",
                                     config_hash=base_hash,
                                     skip_entity_extraction=True,  # NER done at session creation
@@ -160,7 +159,6 @@ def _warmup_vector_store(config: Config) -> None:
                             str(doc_path),
                             name=doc_name,
                             description=doc_config.description or "",
-                            ephemeral=False,
                             project_id=filename,
                             config_hash=current_hash,
                             skip_entity_extraction=True,  # NER done at session creation

@@ -3396,10 +3396,12 @@ class ConstatREPLApp(App):
 
             log.write(Text(f"Tables ({len(tables)})", style="bold"))
             for t in tables:
+                role_suffix = f" @{t.role_id}" if getattr(t, "role_id", None) else ""
                 log.write(Text.assemble(
                     ("  ", ""),
                     (t.name, "cyan"),
                     (f" ({t.row_count} rows)", "dim"),
+                    (role_suffix, "blue"),
                 ))
                 # Show clickable file link
                 file_path = Path(t.file_path)
@@ -3487,6 +3489,7 @@ class ConstatREPLApp(App):
                 source = getattr(fact, 'source', None)
                 source_name = getattr(fact, 'source_name', None)
                 api_endpoint = getattr(fact, 'api_endpoint', None)
+                role_id = getattr(fact, 'role_id', None)
 
                 # Format value
                 value_str = str(value)[:60] + "..." if len(str(value)) > 60 else str(value)
@@ -3505,7 +3508,10 @@ class ConstatREPLApp(App):
                 else:
                     source_str = ""
 
-                log.write(Text(f"  {status} {fact_id}: {value_str} {source_str}", style="dim"))
+                # Role provenance
+                role_str = f" @{role_id}" if role_id else ""
+
+                log.write(Text(f"  {status} {fact_id}: {value_str} {source_str}{role_str}", style="dim"))
         except Exception as e:
             log.write(Text(f"Error showing facts: {e}", style="red"))
             logger.debug(f"_show_facts error: {e}", exc_info=True)
@@ -3619,7 +3625,13 @@ class ConstatREPLApp(App):
                 file_path = Path(t.file_path)
                 if file_path.exists():
                     file_uri = file_path.resolve().as_uri()
-                    log.write(Text(f"  📊 {t.name} ({t.row_count} rows)", style="cyan"))
+                    role_suffix = f" @{t.role_id}" if getattr(t, "role_id", None) else ""
+                    log.write(Text.assemble(
+                        ("  📊 ", ""),
+                        (t.name, "cyan"),
+                        (f" ({t.row_count} rows)", "dim"),
+                        (role_suffix, "blue"),
+                    ))
                     link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
                     log.write(link_markup)
 
@@ -3635,7 +3647,12 @@ class ConstatREPLApp(App):
                         icon = "🖼️"
                     else:
                         icon = "📄"
-                    log.write(Text(f"  {icon} {artifact.name}", style="cyan"))
+                    role_suffix = f" @{artifact.role_id}" if getattr(artifact, "role_id", None) else ""
+                    log.write(Text.assemble(
+                        (f"  {icon} ", ""),
+                        (artifact.name, "cyan"),
+                        (role_suffix, "blue"),
+                    ))
                     link_markup = make_file_link_markup(file_uri, style="dim cyan underline", indent="     ")
                     log.write(link_markup)
 
@@ -3888,7 +3905,7 @@ class ConstatREPLApp(App):
             log.write(Text(f"Error: {e}", style="red"))
 
     async def _show_documents(self) -> None:
-        """Show configured and ephemeral documents."""
+        """Show configured and session documents."""
         log = self.query_one("#output-log", OutputLog)
 
         if not self.session:
@@ -3908,17 +3925,17 @@ class ConstatREPLApp(App):
                         first_line = doc.description.strip().split('\n')[0][:60]
                         log.write(Text(f"    {first_line}", style="dim italic"))
 
-            # Show ephemeral documents added this session
+            # Show session documents added this session
             if self.session.doc_tools:
-                ephemeral = self.session.doc_tools.get_ephemeral_documents()
-                if ephemeral:
-                    log.write(Text(f"Session Documents ({len(ephemeral)})", style="bold cyan"))
-                    for name, info in ephemeral.items():
+                session_docs = self.session.doc_tools.get_session_documents()
+                if session_docs:
+                    log.write(Text(f"Session Documents ({len(session_docs)})", style="bold cyan"))
+                    for name, info in session_docs.items():
                         fmt = info.get("format", "text")
                         chars = info.get("char_count", 0)
                         log.write(Text(f"  {name}: {fmt} ({chars:,} chars)", style="dim"))
 
-            if not docs and not (self.session.doc_tools and self.session.doc_tools.get_ephemeral_documents()):
+            if not docs and not (self.session.doc_tools and self.session.doc_tools.get_session_documents()):
                 log.write(Text("No documents configured or added.", style="dim"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
@@ -4820,7 +4837,7 @@ class ConstatREPLApp(App):
                     file_path = str(Path(path_or_uri).expanduser())
 
             # Call the doc_tools method
-            success, message = self.session.doc_tools.add_ephemeral_document_from_file(
+            success, message = self.session.doc_tools.add_document_from_file(
                 file_path=file_path,
                 name=doc_name,
                 description=description,
@@ -4863,11 +4880,11 @@ class ConstatREPLApp(App):
 
         log.write(Text(f"  Adding database: {name}...", style="dim"))
 
-        # TODO: Implement ephemeral database addition in session/catalog layer
+        # TODO: Implement session database addition in session/catalog layer
         # For now, show message that this feature is not yet implemented
         try:
-            if hasattr(self.session, 'add_ephemeral_database'):
-                success, message = self.session.add_ephemeral_database(uri=uri, name=name)
+            if hasattr(self.session, 'add_session_database'):
+                success, message = self.session.add_session_database(uri=uri, name=name)
                 if success:
                     log.write(Text(f"  {message}", style="green"))
                 else:
@@ -4906,10 +4923,10 @@ class ConstatREPLApp(App):
 
         log.write(Text(f"  Adding API: {name}...", style="dim"))
 
-        # TODO: Implement ephemeral API addition in session/catalog layer
+        # TODO: Implement session API addition in session/catalog layer
         try:
-            if hasattr(self.session, 'add_ephemeral_api'):
-                success, message = self.session.add_ephemeral_api(spec_url=spec_url, name=name)
+            if hasattr(self.session, 'add_session_api'):
+                success, message = self.session.add_session_api(spec_url=spec_url, name=name)
                 if success:
                     log.write(Text(f"  {message}", style="green"))
                 else:

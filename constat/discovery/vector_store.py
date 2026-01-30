@@ -117,7 +117,6 @@ class NumpyVectorStore(VectorStoreBackend):
         self,
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
-        ephemeral: bool = False,
         session_id: str | None = None,
         project_id: str | None = None,
         config_hash: str | None = None,
@@ -250,7 +249,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
-                ephemeral BOOLEAN DEFAULT FALSE,
                 session_id VARCHAR,
                 project_id VARCHAR,
                 config_hash VARCHAR
@@ -270,7 +268,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 metadata JSON,
                 config_hash VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ephemeral BOOLEAN DEFAULT FALSE,
                 session_id VARCHAR,
                 project_id VARCHAR
             )
@@ -286,7 +283,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 mention_count INTEGER DEFAULT 1,
                 confidence FLOAT DEFAULT 1.0,
                 mention_text VARCHAR,
-                ephemeral BOOLEAN DEFAULT FALSE,
                 session_id VARCHAR,
                 project_id VARCHAR,
                 PRIMARY KEY (chunk_id, entity_id)
@@ -333,18 +329,6 @@ class DuckDBVectorStore(VectorStoreBackend):
             except Exception as e:
                 logger.warning(f"Failed to get columns for {table_name}: {e}")
                 return set()
-
-        # Add ephemeral column to tables if missing
-        for table in ['embeddings', 'entities', 'chunk_entities']:
-            try:
-                col_names = get_column_names(table)
-                if col_names and 'ephemeral' not in col_names:
-                    logger.debug(f"_migrate_schema: adding ephemeral column to {table}")
-                    self._conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE"
-                    )
-            except Exception as e:
-                logger.debug(f"_migrate_schema: failed to add ephemeral to {table}: {e}")
 
         # Add session_id column to tables if missing (for multi-session isolation)
         for table in ['embeddings', 'entities', 'chunk_entities']:
@@ -579,7 +563,6 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
-        ephemeral: bool = False,  # Deprecated - kept for API compatibility only
         session_id: str | None = None,
         project_id: str | None = None,
         config_hash: str | None = None,
@@ -589,7 +572,6 @@ class DuckDBVectorStore(VectorStoreBackend):
         Args:
             chunks: List of DocumentChunk objects
             embeddings: numpy array of embeddings
-            ephemeral: DEPRECATED - ignored, kept for API compatibility
             session_id: Optional session ID for documents added during a session
             project_id: Optional project ID for documents belonging to a project
             config_hash: Optional config hash for cache invalidation
@@ -598,13 +580,33 @@ class DuckDBVectorStore(VectorStoreBackend):
             return
 
         doc_names = set(c.document_name for c in chunks)
-        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, session_id={session_id}, project_id={project_id}")
+        print(f"[ADD_CHUNKS] docs={doc_names}, session_id={session_id}, project_id={project_id}")
 
-        # Prepare data for insertion (ephemeral column excluded from logic)
+        # Check which documents already exist - skip re-indexing to preserve project_id
+        existing_docs = set()
+        for doc_name in doc_names:
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
+                [doc_name],
+            ).fetchone()[0]
+            print(f"[ADD_CHUNKS] {doc_name}: existing chunks = {count}")
+            if count > 0:
+                existing_docs.add(doc_name)
+                print(f"[ADD_CHUNKS] SKIPPING {doc_name}")
+
+        # Filter to only new documents
+        new_chunks = [c for c in chunks if c.document_name not in existing_docs]
+        if not new_chunks:
+            logger.debug(f"add_chunks: all documents already indexed, nothing to add")
+            return
+
+        # Prepare data for insertion
         records = []
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(new_chunks):
             chunk_id = self._generate_chunk_id(chunk)
-            embedding = embeddings[i].tolist()
+            # Find the corresponding embedding
+            original_idx = chunks.index(chunk)
+            embedding = embeddings[original_idx].tolist()
             records.append((
                 chunk_id,
                 chunk.document_name,
@@ -617,21 +619,12 @@ class DuckDBVectorStore(VectorStoreBackend):
                 config_hash,
             ))
 
-        # Use INSERT ... ON CONFLICT DO UPDATE for DuckDB upsert
+        # Simple INSERT for new documents only
         self._conn.executemany(
             """
             INSERT INTO embeddings
             (chunk_id, document_name, section, chunk_index, content, embedding, session_id, project_id, config_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (chunk_id) DO UPDATE SET
-                document_name = EXCLUDED.document_name,
-                section = EXCLUDED.section,
-                chunk_index = EXCLUDED.chunk_index,
-                content = EXCLUDED.content,
-                embedding = EXCLUDED.embedding,
-                session_id = COALESCE(EXCLUDED.session_id, embeddings.session_id),
-                project_id = COALESCE(EXCLUDED.project_id, embeddings.project_id),
-                config_hash = COALESCE(EXCLUDED.config_hash, embeddings.config_hash)
             """,
             records,
         )
