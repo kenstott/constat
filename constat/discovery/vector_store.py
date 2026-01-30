@@ -831,7 +831,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             """
             INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, session_id, project_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (id) DO NOTHING
             """,
             records,
         )
@@ -852,19 +852,25 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not links:
             return
 
-        records = [
-            (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, session_id, project_id)
-            for l in links
-        ]
+        # Deduplicate links by (chunk_id, entity_id)
+        seen = set()
+        unique_records = []
+        for l in links:
+            key = (l.chunk_id, l.entity_id)
+            if key not in seen:
+                seen.add(key)
+                unique_records.append(
+                    (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, session_id, project_id)
+                )
 
         self._conn.executemany(
             """
             INSERT INTO chunk_entities
                 (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (chunk_id, entity_id) DO NOTHING
             """,
-            records,
+            unique_records,
         )
 
     def get_entities_for_chunk(
