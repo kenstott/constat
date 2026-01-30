@@ -43,6 +43,7 @@ dependencies = [
     "strawberry-graphql>=0.200",
     "fastapi>=0.100",
     "uvicorn>=0.23",
+    "websockets>=10.0",  # Required for WebSocket support
     "python-multipart>=0.0.6",  # Required for FastAPI file uploads
     "google-auth>=2.0",  # Firebase authentication
     # Graph visualization (requires system graphviz)
