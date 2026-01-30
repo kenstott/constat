@@ -209,7 +209,7 @@ class SessionManager:
                 api_entities=api_entities,
             )
             if link_count and link_count > 0:
-                logger.debug(f"Session {session_id}: created {link_count} entity links")
+                logger.info(f"Session {session_id}: created {link_count} entity links")
         except Exception as e:
             logger.warning(f"Session {session_id}: entity extraction failed: {e}")
 

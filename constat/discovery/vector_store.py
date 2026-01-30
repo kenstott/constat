@@ -579,7 +579,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
-        ephemeral: bool = False,
+        ephemeral: bool = False,  # Deprecated - kept for API compatibility only
         session_id: str | None = None,
         project_id: str | None = None,
         config_hash: str | None = None,
@@ -589,7 +589,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         Args:
             chunks: List of DocumentChunk objects
             embeddings: numpy array of embeddings
-            ephemeral: If True, marks chunks as session-only (cleaned up on restart)
+            ephemeral: DEPRECATED - ignored, kept for API compatibility
             session_id: Optional session ID for documents added during a session
             project_id: Optional project ID for documents belonging to a project
             config_hash: Optional config hash for cache invalidation
@@ -598,9 +598,9 @@ class DuckDBVectorStore(VectorStoreBackend):
             return
 
         doc_names = set(c.document_name for c in chunks)
-        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, ephemeral={ephemeral}, session_id={session_id}, project_id={project_id}")
+        logger.debug(f"add_chunks: adding {len(chunks)} chunks for docs {doc_names}, session_id={session_id}, project_id={project_id}")
 
-        # Prepare data for insertion
+        # Prepare data for insertion (ephemeral column excluded from logic)
         records = []
         for i, chunk in enumerate(chunks):
             chunk_id = self._generate_chunk_id(chunk)
@@ -612,18 +612,26 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk.chunk_index,
                 chunk.content,
                 embedding,
-                ephemeral,
                 session_id,
                 project_id,
                 config_hash,
             ))
 
-        # Use INSERT OR REPLACE to handle updates
+        # Use INSERT ... ON CONFLICT DO UPDATE for DuckDB upsert
         self._conn.executemany(
             """
-            INSERT OR REPLACE INTO embeddings
-            (chunk_id, document_name, section, chunk_index, content, embedding, ephemeral, session_id, project_id, config_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO embeddings
+            (chunk_id, document_name, section, chunk_index, content, embedding, session_id, project_id, config_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (chunk_id) DO UPDATE SET
+                document_name = EXCLUDED.document_name,
+                section = EXCLUDED.section,
+                chunk_index = EXCLUDED.chunk_index,
+                content = EXCLUDED.content,
+                embedding = EXCLUDED.embedding,
+                session_id = COALESCE(EXCLUDED.session_id, embeddings.session_id),
+                project_id = COALESCE(EXCLUDED.project_id, embeddings.project_id),
+                config_hash = COALESCE(EXCLUDED.config_hash, embeddings.config_hash)
             """,
             records,
         )
