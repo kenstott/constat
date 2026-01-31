@@ -847,7 +847,11 @@ class SchemaManager:
             self._vector_store = DuckDBVectorStore()
 
         # Compute hash of config.databases
-        config_hash = self._compute_config_hash()
+        # Compute hash based on actual metadata_cache content, not just config
+        # This ensures dynamically added databases trigger a rebuild
+        cache_content = sorted(self.metadata_cache.keys())
+        import hashlib
+        config_hash = hashlib.md5(str(cache_content).encode()).hexdigest()[:12]
 
         # Check if cache is valid
         cached_hash = self._vector_store.get_catalog_config_hash('schema')
