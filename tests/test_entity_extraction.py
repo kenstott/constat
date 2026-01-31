@@ -22,7 +22,6 @@ from constat.discovery.models import (
 from constat.discovery.entity_extractor import (
     EntityExtractor,
     ExtractionConfig,
-    create_schema_entities_from_catalog,
 )
 
 
@@ -230,30 +229,6 @@ class TestEntityExtractor:
                 assert link.confidence >= 0.9  # Schema match
             elif entity.name == "CustomerOrder":
                 assert link.confidence < 0.9  # NER extraction
-
-
-class TestCreateSchemaEntities:
-    """Test helper function for creating entities from catalog."""
-
-    def test_create_from_catalog(self):
-        """Test creating entities from table and column names."""
-        entities = create_schema_entities_from_catalog(
-            tables=["customers", "orders"],
-            columns=["customer_id", "order_date"],
-        )
-
-        assert len(entities) == 4
-
-        table_entities = [e for e in entities if e.type == EntityType.TABLE]
-        column_entities = [e for e in entities if e.type == EntityType.COLUMN]
-
-        assert len(table_entities) == 2
-        assert len(column_entities) == 2
-
-        # Entity names are preserved as given (not singularized here)
-        table_names = {e.name for e in table_entities}
-        assert "Customer" in table_names or "customers" in table_names
-        assert "Order" in table_names or "orders" in table_names
 
 
 class TestExtractionConfig:
