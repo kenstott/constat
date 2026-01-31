@@ -293,7 +293,7 @@ class APISchemaManager:
 
             # Skip common wrapper types
             if type_name in ("Query", "Mutation", "Subscription"):
-                # But extract their fields as top-level endpoints
+                # But extract their fields as top-level query/mutation endpoints
                 for field_def in type_def.get("fields") or []:
                     endpoint_name = field_def.get("name", "")
                     fields = self._extract_return_type_fields(field_def, types)
@@ -301,7 +301,7 @@ class APISchemaManager:
                     meta = APIEndpointMetadata(
                         api_name=name,
                         endpoint_name=endpoint_name,
-                        api_type="graphql",
+                        api_type="graphql_query",  # Query/mutation field
                         description=field_def.get("description") or api_config.description,
                         fields=fields,
                     )
@@ -321,7 +321,7 @@ class APISchemaManager:
             meta = APIEndpointMetadata(
                 api_name=name,
                 endpoint_name=type_name,
-                api_type="graphql",
+                api_type="graphql_type",  # Type definition
                 description=type_def.get("description"),
                 fields=fields,
             )
@@ -628,7 +628,7 @@ class APISchemaManager:
             chunks.append(DocumentChunk(
                 document_name=f"api:{full_name}",
                 content=endpoint_content,
-                section="api_endpoint",
+                section=meta.api_type,  # e.g., "graphql_query", "graphql_type", "rest"
                 chunk_index=0,
             ))
 
