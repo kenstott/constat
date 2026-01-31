@@ -596,48 +596,94 @@ class APISchemaManager:
 
         This enables finding relationships between API elements and concepts
         mentioned in their descriptions.
+
+        Steps:
+        1. Collect all description chunks
+        2. Generate embeddings and store chunks in vector store
+        3. Extract entities and chunk links
+        4. Store entities and links for proper reference tracking
         """
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
         # Lazy imports to avoid circular dependency
-        from constat.discovery.models import DocumentChunk
+        from constat.discovery.models import DocumentChunk, ChunkEntity
         from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
 
-        # Configure extractor with NER only
+        # Collect all chunks first
+        chunks: list[DocumentChunk] = []
+        for full_name, meta in self.metadata_cache.items():
+            if meta.description:
+                chunks.append(DocumentChunk(
+                    document_name=f"api:{full_name}",
+                    content=meta.description,
+                    section="api_description",
+                    chunk_index=0,
+                ))
+
+            # Also collect field descriptions
+            for i, field_meta in enumerate(meta.fields):
+                if field_meta.description:
+                    chunks.append(DocumentChunk(
+                        document_name=f"api:{full_name}.{field_meta.name}",
+                        content=field_meta.description,
+                        section="field_description",
+                        chunk_index=i,
+                    ))
+
+        if not chunks:
+            logger.debug("No API descriptions to extract entities from")
+            return
+
+        # Step 1: Generate embeddings and store chunks
+        if self._model is not None:
+            try:
+                texts = [c.content for c in chunks]
+                embeddings = self._model.encode(texts, convert_to_numpy=True)
+                self._vector_store.add_chunks(chunks, embeddings)
+                logger.debug(f"Stored {len(chunks)} API description chunks")
+            except Exception as e:
+                logger.warning(f"Failed to store API description chunks: {e}")
+
+        # Step 2: Configure extractor with NER only
         config = ExtractionConfig(
             extract_schema=False,
             extract_ner=True,
         )
         extractor = EntityExtractor(config)
 
-        # Process each endpoint's description
-        for full_name, meta in self.metadata_cache.items():
-            if meta.description:
-                chunk = DocumentChunk(
-                    document_name=f"api:{full_name}",
-                    content=meta.description,
-                    section="api_description",
-                    chunk_index=0,
-                )
-                extractor.extract(chunk)
+        # Step 3: Extract entities and collect links
+        all_links: list[ChunkEntity] = []
+        for chunk in chunks:
+            extractions = extractor.extract(chunk)
+            for entity, link in extractions:
+                all_links.append(link)
 
-            # Also extract from field descriptions
-            for i, field_meta in enumerate(meta.fields):
-                if field_meta.description:
-                    chunk = DocumentChunk(
-                        document_name=f"api:{full_name}.{field_meta.name}",
-                        content=field_meta.description,
-                        section="field_description",
-                        chunk_index=i,
-                    )
-                    extractor.extract(chunk)
-
-        # Store extracted entities
+        # Step 4: Store entities
         entities = extractor.get_all_entities()
         if entities:
             logger.debug(f"Extracted {len(entities)} entities from API descriptions")
             self._vector_store.add_entities(entities, source="api")
+
+        # Step 5: Store chunk-entity links
+        if all_links:
+            # Deduplicate links by (chunk_id, entity_id)
+            unique_links: dict[tuple[str, str], ChunkEntity] = {}
+            for link in all_links:
+                key = (link.chunk_id, link.entity_id)
+                if key not in unique_links:
+                    unique_links[key] = link
+                else:
+                    existing = unique_links[key]
+                    unique_links[key] = ChunkEntity(
+                        chunk_id=link.chunk_id,
+                        entity_id=link.entity_id,
+                        mention_count=existing.mention_count + link.mention_count,
+                        confidence=max(existing.confidence, link.confidence),
+                        mention_text=existing.mention_text or link.mention_text,
+                    )
+            self._vector_store.link_chunk_entities(list(unique_links.values()))
+            logger.debug(f"Created {len(unique_links)} chunk-entity links for API descriptions")
 
     def find_relevant_apis(
         self,
