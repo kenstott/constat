@@ -555,11 +555,15 @@ async def list_entities(
     }
 
     # Type priority for picking primary type when merging (higher = preferred)
+    # Schema elements (table, column) have highest priority as they're the primary data model
+    # API elements come next, then general concepts/NER types
     TYPE_PRIORITY = {
         "table": 100,
-        "api": 90,
-        "graphql": 80,
-        "column": 60,
+        "column": 90,
+        "api": 80,
+        "api_endpoint": 75,
+        "api_schema": 70,
+        "graphql": 65,
         "concept": 40,
         "business_term": 30,
         "organization": 20,
@@ -674,10 +678,11 @@ async def list_entities(
                 print(f"[ENTITIES] Performance entity: id={row[0][:8]}, name={row[1]}, total_links={row[2]}, session_links={row[3]}")
 
             # Get entities visible to this session
+            # Include chunk_entities from both current session and '__none__' (global/init-time)
             result = vs._conn.execute(f"""
                 SELECT e.id, e.name, e.type, e.source, e.metadata,
                        (SELECT COUNT(*) FROM chunk_entities ce
-                        WHERE ce.entity_id = e.id AND ce.session_id = ?) as ref_count
+                        WHERE ce.entity_id = e.id AND (ce.session_id = ? OR ce.session_id = '__none__')) as ref_count
                 FROM entities e
                 WHERE ({where_clause})
                 ORDER BY e.name
@@ -693,14 +698,15 @@ async def list_entities(
                     import json
                     metadata = json.loads(metadata_json)
 
-                # Get reference locations for this entity (filter by session_id for NER results)
+                # Get reference locations for this entity
+                # Include links from both current session and '__none__' (global/init-time)
                 references = []
                 if ref_count > 0:
                     ref_result = vs._conn.execute("""
                         SELECT em.document_name, em.section, ce.mention_count, ce.mention_text
                         FROM chunk_entities ce
                         JOIN embeddings em ON ce.chunk_id = em.chunk_id
-                        WHERE ce.entity_id = ? AND ce.session_id = ?
+                        WHERE ce.entity_id = ? AND (ce.session_id = ? OR ce.session_id = '__none__')
                         ORDER BY ce.mention_count DESC
                         LIMIT 10
                     """, [ent_id, session_id]).fetchall()
