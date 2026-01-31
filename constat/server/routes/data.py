@@ -713,25 +713,69 @@ async def list_entities(
                             "mention_text": mention_text,
                         })
 
-                # For API entities without chunk refs, create synthetic reference from metadata
-                if not references and source == "api":
-                    api_name = metadata.get("api_name", "API")
-                    http_method = metadata.get("http_method", "")
-                    http_path = metadata.get("http_path", "")
-                    if http_method and http_path:
-                        references.append({
-                            "document": f"API: {api_name}",
-                            "section": f"{http_method} {http_path}",
-                            "mentions": 1,
-                            "mention_text": metadata.get("original_name", name),
-                        })
-                    else:
-                        references.append({
-                            "document": f"API: {api_name}",
-                            "section": "Schema Definition",
-                            "mentions": 1,
-                            "mention_text": name,
-                        })
+                # For entities without chunk refs, create synthetic reference from metadata
+                if not references:
+                    if source == "api":
+                        api_name = metadata.get("api_name", "API")
+                        http_method = metadata.get("http_method", "")
+                        http_path = metadata.get("http_path", "")
+                        if http_method and http_path:
+                            references.append({
+                                "document": f"API: {api_name}",
+                                "section": f"{http_method} {http_path}",
+                                "mentions": 1,
+                                "mention_text": metadata.get("original_name", name),
+                            })
+                        else:
+                            references.append({
+                                "document": f"API: {api_name}",
+                                "section": "Schema Definition",
+                                "mentions": 1,
+                                "mention_text": name,
+                            })
+                    elif source == "schema":
+                        # Schema entities - reference the database/table
+                        db_name = metadata.get("database", "Database")
+                        table_name = metadata.get("table", "")
+                        if etype == "table":
+                            references.append({
+                                "document": f"Database: {db_name}",
+                                "section": "Schema",
+                                "mentions": 1,
+                                "mention_text": name,
+                            })
+                        elif etype == "column" and table_name:
+                            references.append({
+                                "document": f"Table: {table_name}",
+                                "section": f"Database: {db_name}",
+                                "mentions": 1,
+                                "mention_text": name,
+                            })
+                        else:
+                            references.append({
+                                "document": f"Database: {db_name}",
+                                "section": "Schema",
+                                "mentions": 1,
+                                "mention_text": name,
+                            })
+                    elif source == "document":
+                        # Document/NER entities - reference the extraction source
+                        meta_source = metadata.get("source", "document")
+                        spacy_type = metadata.get("spacy_type", "")
+                        if meta_source == "spacy_ner" and spacy_type:
+                            references.append({
+                                "document": "Named Entity Recognition",
+                                "section": f"Type: {spacy_type}",
+                                "mentions": 1,
+                                "mention_text": name,
+                            })
+                        else:
+                            references.append({
+                                "document": "Document",
+                                "section": meta_source,
+                                "mentions": 1,
+                                "mention_text": name,
+                            })
 
                 add_entity(name, etype, source or "unknown", metadata, references)
     except Exception as e:
