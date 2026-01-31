@@ -8135,14 +8135,12 @@ Prove all of the above claims and provide a complete audit trail."""
             "description": description,
         }
 
-        # Add schema entities to vector store for session
+        # Update schema entities list for NER recognition in future document indexing
+        # Entities are created via NER extraction from description chunks, not from bare names
         if self.doc_tools and db_type in ("sql", "sqlite", "postgresql", "mysql"):
             try:
-                # Connect and introspect schema
                 import duckdb
-                from constat.discovery.entity_extractor import create_schema_entities_from_catalog
 
-                # Use DuckDB to connect and introspect
                 conn = duckdb.connect(":memory:")
                 if db_type == "sqlite" or uri.endswith(".db") or uri.endswith(".sqlite"):
                     conn.execute(f"ATTACH '{uri}' AS session_db (TYPE SQLITE)")
@@ -8150,13 +8148,11 @@ Prove all of the above claims and provide a complete audit trail."""
                         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'session_db'"
                     ).fetchall()
                 else:
-                    # For other SQL databases, try direct connection
                     conn.close()
                     tables = []
 
                 if tables:
                     table_names = [t[0] for t in tables]
-                    # Get column names
                     column_names = []
                     for table in table_names:
                         try:
@@ -8167,12 +8163,7 @@ Prove all of the above claims and provide a complete audit trail."""
                         except Exception:
                             pass
 
-                    # Create and store entities for session
-                    entities = create_schema_entities_from_catalog(table_names, column_names)
-                    if entities and hasattr(self.doc_tools._vector_store, 'add_entities'):
-                        self.doc_tools._vector_store.add_entities(entities, source="schema")
-
-                    # Also update schema entities for future document indexing
+                    # Update schema entities for NER to recognize in documents
                     current_entities = self.doc_tools._schema_entities or []
                     new_entities = list(set(current_entities + table_names + column_names))
                     self.doc_tools._schema_entities = new_entities

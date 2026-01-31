@@ -83,13 +83,57 @@ def singularize(word: str) -> str:
     return word
 
 
+def is_camel_case(name: str) -> bool:
+    """Detect if a name is in CamelCase or camelCase format.
+
+    CamelCase names are schema/code identifiers that should be split into words.
+    Examples: BillingAddress, firstName, OrderItems, getUserById, XMLParser
+
+    Args:
+        name: Name to check
+
+    Returns:
+        True if the name appears to be CamelCase
+    """
+    if not name or len(name) < 2:
+        return False
+
+    # Check for lowercase followed by uppercase (e.g., "firstName", "billingAddress")
+    for i in range(len(name) - 1):
+        if name[i].islower() and name[i + 1].isupper():
+            return True
+
+    # Check for uppercase sequence followed by uppercase+lowercase (e.g., "XMLParser")
+    # Pattern: 2+ uppercase letters followed by uppercase+lowercase
+    for i in range(len(name) - 2):
+        if name[i].isupper() and name[i + 1].isupper() and name[i + 2].islower():
+            return True
+
+    return False
+
+
+def split_camel_case(name: str) -> str:
+    """Split CamelCase into separate words.
+
+    Args:
+        name: CamelCase name (e.g., "BillingAddress", "firstName")
+
+    Returns:
+        Space-separated words (e.g., "Billing Address", "first Name")
+    """
+    # Insert space before uppercase letters that follow lowercase letters
+    result = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
+    # Also handle sequences like "XMLParser" -> "XML Parser"
+    result = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', result)
+    return result
+
+
 def is_proper_noun(name: str) -> bool:
     """Detect if a name appears to be a proper noun.
 
     Proper nouns (e.g., "Microsoft", "San Francisco") have intentional
     capitalization that should be preserved. Schema names (e.g.,
-    "order_items", "user-profiles") use underscores/hyphens and should
-    be normalized.
+    "order_items", "user-profiles", "BillingAddress") should be normalized.
 
     Args:
         name: Entity name to check
@@ -105,32 +149,42 @@ def is_proper_noun(name: str) -> bool:
     if name == name.lower():
         return False
 
+    # If it's CamelCase (e.g., "BillingAddress", "firstName"), it's a schema name
+    if is_camel_case(name):
+        return False
+
     # If it's all uppercase, treat as acronym (proper noun)
     if name == name.upper() and len(name) > 1:
         return True
 
-    # If it has mixed case with capitals (e.g., "Microsoft", "San Francisco")
-    # and no underscores, treat as proper noun
+    # Single capitalized word without CamelCase pattern (e.g., "Microsoft")
+    # is likely a proper noun
     return True
 
 
 def normalize_entity_name(name: str, to_singular: bool = True) -> str:
     """Normalize an entity name to a canonical form.
 
-    Converts underscores and hyphens to spaces, optionally singularizes.
+    Converts underscores, hyphens, and CamelCase to spaces, optionally singularizes.
     Preserves case for proper nouns, lowercases schema names.
 
     Args:
-        name: Raw entity name (e.g., "order_items", "user-profiles", "Microsoft")
+        name: Raw entity name (e.g., "order_items", "BillingAddress", "Microsoft")
         to_singular: If True, convert to singular form (default True)
 
     Returns:
-        Normalized name (e.g., "order item", "user profile", "Microsoft")
+        Normalized name (e.g., "order item", "billing address", "Microsoft")
     """
     proper_noun = is_proper_noun(name)
 
+    # Split CamelCase first (before other transformations)
+    if is_camel_case(name):
+        normalized = split_camel_case(name)
+    else:
+        normalized = name
+
     # Replace underscores and hyphens with spaces
-    normalized = re.sub(r'[_-]+', ' ', name)
+    normalized = re.sub(r'[_-]+', ' ', normalized)
     # Collapse multiple spaces
     normalized = re.sub(r'\s+', ' ', normalized).strip()
 

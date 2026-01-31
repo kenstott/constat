@@ -903,13 +903,13 @@ class SchemaManager:
         self._extract_entities_from_descriptions()
 
     def _extract_entities_from_descriptions(self) -> None:
-        """Extract entities from table and column descriptions using spaCy NER.
+        """Extract entities from table and column metadata using spaCy NER.
 
-        This enables finding relationships between schema elements and concepts
-        mentioned in their descriptions/comments.
+        Creates chunks for ALL tables and columns (not just those with descriptions)
+        so that entity extraction can find and link table/column names.
 
         Steps:
-        1. Collect all description chunks
+        1. Collect chunks for all tables/columns (with or without descriptions)
         2. Generate embeddings and store chunks in vector store
         3. Extract entities and chunk links
         4. Store entities and links for proper reference tracking
@@ -921,30 +921,45 @@ class SchemaManager:
         from constat.discovery.models import DocumentChunk, ChunkEntity
         from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
 
-        # Collect all chunks first
+        # Collect chunks for ALL tables and columns
         chunks: list[DocumentChunk] = []
         for full_name, table_meta in self.metadata_cache.items():
-            # Table comment
-            if table_meta.comment:
-                chunks.append(DocumentChunk(
-                    document_name=f"schema:{full_name}",
-                    content=table_meta.comment,
-                    section="table_description",
-                    chunk_index=0,
-                ))
+            db_name = table_meta.database
+            table_name = table_meta.name
+            col_names = [c.name for c in table_meta.columns]
 
-            # Column comments
+            # Table chunk - use description if available, otherwise structured text
+            if table_meta.comment:
+                table_content = f"{table_name} table: {table_meta.comment}"
+            else:
+                # Create structured text with table and column names
+                table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
+
+            chunks.append(DocumentChunk(
+                document_name=f"schema:{full_name}",
+                content=table_content,
+                section="table_description",
+                chunk_index=0,
+            ))
+
+            # Column chunks
             for i, col in enumerate(table_meta.columns):
                 if col.comment:
-                    chunks.append(DocumentChunk(
-                        document_name=f"schema:{full_name}.{col.name}",
-                        content=col.comment,
-                        section="column_description",
-                        chunk_index=i,
-                    ))
+                    col_content = f"{col.name} column in {table_name}: {col.comment}"
+                else:
+                    # Create structured text with column metadata
+                    col_type = col.type if col.type else "unknown type"
+                    col_content = f"{col.name} column ({col_type}) in {table_name} table"
+
+                chunks.append(DocumentChunk(
+                    document_name=f"schema:{full_name}.{col.name}",
+                    content=col_content,
+                    section="column_description",
+                    chunk_index=i,
+                ))
 
         if not chunks:
-            logger.debug("No schema descriptions to extract entities from")
+            logger.debug("No schema metadata to extract entities from")
             return
 
         # Step 1: Generate embeddings and store chunks

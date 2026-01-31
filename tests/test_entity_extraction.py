@@ -127,9 +127,9 @@ class TestEntityExtractor:
         results = extractor.extract(chunk)
 
         entity_names = {r[0].name for r in results}
-        # Should extract PascalCase identifiers as named entities
-        assert "CustomerOrder" in entity_names
-        assert "OrderProcessing" in entity_names
+        # Should extract PascalCase identifiers as named entities (now split into words)
+        assert "Customer Order" in entity_names
+        assert "Order Processing" in entity_names
         # PaymentGateway may not be extracted if spaCy NER doesn't recognize it
 
     def test_extract_business_terms(self):

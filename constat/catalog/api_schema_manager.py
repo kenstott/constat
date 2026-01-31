@@ -592,13 +592,13 @@ class APISchemaManager:
         logger.info(f"Built API vector index with {len(texts)} endpoints")
 
     def _extract_entities_from_descriptions(self) -> None:
-        """Extract entities from API endpoint descriptions using spaCy NER.
+        """Extract entities from API endpoint metadata using spaCy NER.
 
-        This enables finding relationships between API elements and concepts
-        mentioned in their descriptions.
+        Creates chunks for ALL endpoints and fields (not just those with descriptions)
+        so that entity extraction can find and link endpoint/field names.
 
         Steps:
-        1. Collect all description chunks
+        1. Collect chunks for ALL endpoints and fields
         2. Generate embeddings and store chunks in vector store
         3. Extract entities and chunk links
         4. Store entities and links for proper reference tracking
@@ -610,26 +610,42 @@ class APISchemaManager:
         from constat.discovery.models import DocumentChunk, ChunkEntity
         from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
 
-        # Collect all chunks first
+        # Collect chunks for ALL endpoints and fields
         chunks: list[DocumentChunk] = []
         for full_name, meta in self.metadata_cache.items():
-            if meta.description:
-                chunks.append(DocumentChunk(
-                    document_name=f"api:{full_name}",
-                    content=meta.description,
-                    section="api_description",
-                    chunk_index=0,
-                ))
+            field_names = [f.name for f in meta.fields]
 
-            # Also collect field descriptions
+            # Endpoint chunk - use description if available, otherwise structured text
+            if meta.description:
+                endpoint_content = f"{meta.endpoint_name} endpoint: {meta.description}"
+            else:
+                endpoint_content = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
+                if meta.http_method and meta.http_path:
+                    endpoint_content += f" ({meta.http_method} {meta.http_path})"
+                if field_names:
+                    endpoint_content += f" with fields: {', '.join(field_names)}"
+
+            chunks.append(DocumentChunk(
+                document_name=f"api:{full_name}",
+                content=endpoint_content,
+                section="api_endpoint",
+                chunk_index=0,
+            ))
+
+            # Field chunks - with or without descriptions
             for i, field_meta in enumerate(meta.fields):
                 if field_meta.description:
-                    chunks.append(DocumentChunk(
-                        document_name=f"api:{full_name}.{field_meta.name}",
-                        content=field_meta.description,
-                        section="field_description",
-                        chunk_index=i,
-                    ))
+                    field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
+                else:
+                    field_type = field_meta.type if field_meta.type else "unknown type"
+                    field_content = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint"
+
+                chunks.append(DocumentChunk(
+                    document_name=f"api:{full_name}.{field_meta.name}",
+                    content=field_content,
+                    section="field_description",
+                    chunk_index=i,
+                ))
 
         if not chunks:
             logger.debug("No API descriptions to extract entities from")
