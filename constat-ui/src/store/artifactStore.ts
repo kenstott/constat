@@ -80,6 +80,7 @@ interface ArtifactState {
   updateSkill: (name: string, content: string) => Promise<void>
   deleteSkill: (name: string) => Promise<void>
   toggleSkillActive: (name: string, sessionId: string) => Promise<void>
+  draftSkill: (sessionId: string, name: string, description: string) => Promise<{ content: string; description: string }>
   fetchAllRoles: (sessionId: string) => Promise<void>
   setActiveRole: (roleName: string | null, sessionId: string) => Promise<void>
   fetchPermissions: () => Promise<void>
@@ -315,6 +316,16 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       get().fetchPromptContext(sessionId)
     } catch (error) {
       set({ error: String(error) })
+    }
+  },
+
+  draftSkill: async (sessionId, name, description) => {
+    try {
+      const result = await skillsApi.draftSkill(sessionId, name, description)
+      return { content: result.content, description: result.description }
+    } catch (error) {
+      set({ error: String(error) })
+      throw error
     }
   },
 

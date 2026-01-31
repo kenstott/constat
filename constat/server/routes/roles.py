@@ -68,6 +68,19 @@ class RoleContentResponse(BaseModel):
     path: str
 
 
+class DraftRoleRequest(BaseModel):
+    """Request to draft a role using LLM."""
+    name: str
+    user_description: str  # Natural language description of the role
+
+
+class DraftRoleResponse(BaseModel):
+    """Response with LLM-drafted role content."""
+    name: str
+    prompt: str
+    description: str
+
+
 def get_session_manager(request: Request) -> SessionManager:
     """Dependency to get session manager from app state."""
     return request.app.state.session_manager
@@ -276,3 +289,40 @@ async def delete_role(
         raise HTTPException(status_code=404, detail=f"Role not found: {role_name}")
 
     return {"status": "deleted", "name": role_name}
+
+
+@router.post("/roles/draft", response_model=DraftRoleResponse)
+async def draft_role(
+    session_id: str,
+    request_body: DraftRoleRequest,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> DraftRoleResponse:
+    """Use LLM to draft a role based on user description."""
+    managed = session_manager.get_session(session_id)
+    if not managed or managed.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = managed.session
+    if not hasattr(session, "llm"):
+        raise HTTPException(status_code=500, detail="LLM not available")
+    if not hasattr(session, "role_manager"):
+        raise HTTPException(status_code=500, detail="Role manager not available")
+
+    try:
+        role = session.role_manager.draft_role(
+            name=request_body.name,
+            user_description=request_body.user_description,
+            llm=session.llm,
+        )
+        return DraftRoleResponse(
+            name=role.name,
+            prompt=role.prompt,
+            description=role.description,
+        )
+    except ValueError as e:
+        logger.error(f"Failed to draft role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to draft role: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to draft role: {str(e)}")

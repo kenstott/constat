@@ -30,18 +30,25 @@ export function ConversationPanel() {
     submitQuery(query, isFollowup)
   }
 
+  // Filter to only include items from the current query (step >= lastQueryStartStep)
+  const isFromCurrentQuery = useCallback((stepNumber?: number): boolean => {
+    if (lastQueryStartStep === 0) return true // No query started yet, include all
+    return (stepNumber ?? 0) >= lastQueryStartStep
+  }, [lastQueryStartStep])
+
+  // Check if there are any viewable results from the current query
+  const hasViewableResults = useCallback((): boolean => {
+    const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
+    const currentQueryTables = tables.filter((t) => isFromCurrentQuery(t.step_number))
+    return currentQueryArtifacts.length > 0 || currentQueryTables.length > 0
+  }, [artifacts, tables, isFromCurrentQuery])
+
   // Find and open the best artifact fullscreen (prioritize current query's artifacts)
   const handleViewResult = useCallback(() => {
     // Priority keywords for finding the best result
     const hasPriorityKeyword = (name?: string, title?: string): boolean => {
       const text = `${name || ''} ${title || ''}`.toLowerCase()
       return ['final', 'recommended', 'answer', 'result', 'conclusion'].some(kw => text.includes(kw))
-    }
-
-    // Filter to only include items from the current query (step >= lastQueryStartStep)
-    const isFromCurrentQuery = (stepNumber?: number): boolean => {
-      if (lastQueryStartStep === 0) return true // No query started yet, include all
-      return (stepNumber ?? 0) >= lastQueryStartStep
     }
 
     // Helper to get the most recent item (highest step_number)
@@ -91,7 +98,7 @@ export function ConversationPanel() {
         if (best) openFullscreenArtifact({ type: 'table', name: best.name })
       }
     }
-  }, [artifacts, tables, lastQueryStartStep, openFullscreenArtifact])
+  }, [artifacts, tables, isFromCurrentQuery, openFullscreenArtifact])
 
   // Copy entire conversation to clipboard
   const handleCopyAll = async () => {
@@ -175,7 +182,7 @@ export function ConversationPanel() {
                 isPending={message.isPending}
                 defaultExpanded={message.defaultExpanded}
                 isFinalInsight={message.isFinalInsight}
-                onViewResult={message.isFinalInsight ? handleViewResult : undefined}
+                onViewResult={message.isFinalInsight && hasViewableResults() ? handleViewResult : undefined}
               />
             ))}
             {/* Queued messages */}

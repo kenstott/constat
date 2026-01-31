@@ -485,3 +485,75 @@ allowed-tools: []
             return (content, str(skill_file))
         except OSError:
             return None
+
+    def draft_skill(self, name: str, user_description: str, llm) -> tuple[str, str]:
+        """Draft a skill using LLM based on user description.
+
+        Args:
+            name: Skill name
+            user_description: Natural language description of the desired skill
+            llm: LLM provider with generate() method
+
+        Returns:
+            Tuple of (content, description) - the SKILL.md content and extracted description
+
+        Raises:
+            ValueError: If LLM fails to generate valid content
+        """
+        system_prompt = """You are an expert at creating SKILL files for a data analysis assistant.
+
+Skills are REUSABLE, DOMAIN-SPECIFIC reference materials that can be used standalone or referenced by roles.
+Skills contain patterns, SQL queries, metric definitions, and domain knowledge.
+
+A skill file has two parts:
+
+1. **YAML frontmatter** (between ---):
+   - name: skill identifier (kebab-case)
+   - description: brief description of what domain/patterns this covers
+   - allowed-tools: list of tools (typically: list_tables, get_table_schema, run_sql)
+
+2. **Markdown body**: Domain-specific reference content including:
+   - Key metrics and their calculations (as tables)
+   - Common SQL query patterns (as code blocks)
+   - Domain terminology and relationships
+   - Best practices for this domain
+   - Related skills (e.g., "Related: customer-insights")
+
+Good skills are:
+- Narrowly focused on one domain (e.g., "sales-analysis", "customer-retention", "hr-compliance")
+- Full of concrete SQL patterns and metric formulas
+- Reusable across different roles (e.g., both "Executive" and "Data Analyst" roles can use "sales-analysis" skill)
+- Reference material that augments roles with deeper domain knowledge
+
+Output the complete SKILL.md content (frontmatter + markdown body). No explanation outside the skill content."""
+
+        user_prompt = f"""Create a skill named "{name}" based on this description:
+
+{user_description}
+
+Generate a complete SKILL.md file with YAML frontmatter and markdown body containing relevant SQL patterns, metrics, and domain knowledge."""
+
+        result = llm.generate(
+            system=system_prompt,
+            user_message=user_prompt,
+            max_tokens=4000,
+        )
+
+        content = result.strip()
+        # Remove markdown code block wrapper if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+
+        # Extract description from frontmatter
+        description = ""
+        if content.startswith("---"):
+            try:
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    frontmatter = yaml.safe_load(parts[1])
+                    description = frontmatter.get("description", "")
+            except Exception:
+                pass
+
+        return content, description

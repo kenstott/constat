@@ -254,3 +254,71 @@ class RoleManager:
 
         self.update_role(name, prompt, description)
         return self._roles[name]
+
+    def draft_role(self, name: str, user_description: str, llm) -> Role:
+        """Draft a role using LLM based on user description.
+
+        Args:
+            name: Role name
+            user_description: Natural language description of the desired role
+            llm: LLM provider with generate() method
+
+        Returns:
+            The drafted Role (not yet saved)
+
+        Raises:
+            ValueError: If LLM fails to generate valid content
+        """
+        import json
+
+        system_prompt = """You are an expert at creating PERSONA roles for a data analysis assistant.
+
+A role defines a PERSONA - combining communication style, priorities, perspective, and domain context relevant to that role.
+
+Roles have two components:
+1. **description**: A brief (1 sentence) description of the persona
+2. **prompt**: Instructions defining the persona's behavior, priorities, and domain context
+
+Good role prompts define:
+- Communication style (concise vs detailed, technical vs accessible, formal vs casual)
+- Perspective (what matters to this persona - speed, accuracy, risk, cost, compliance, etc.)
+- Output preferences (bullet points, executive summaries, detailed breakdowns)
+- Domain-specific guidance relevant to this role's perspective
+- What to emphasize or de-emphasize
+- Optionally, skills to reference for deeper domain knowledge
+
+Examples:
+- "Executive" role: Leads with recommendations, 2-3 bullet max, quantifies impact, skips details
+- "HR Analyst" role: Focus on workforce metrics, compliance awareness, PII sensitivity, pay equity
+- "Risk Officer" role: Highlights uncertainties, flags anomalies, conservative interpretations
+
+Output ONLY valid JSON with keys: "description" and "prompt". No explanation."""
+
+        user_prompt = f"""Create a role named "{name}" based on this description:
+
+{user_description}
+
+Return JSON with "description" (brief summary) and "prompt" (detailed instructions for the assistant)."""
+
+        result = llm.generate(
+            system=system_prompt,
+            user_message=user_prompt,
+            max_tokens=1000,
+        )
+
+        # Parse the JSON response
+        content = result.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse LLM response as JSON: {e}")
+
+        return Role(
+            name=name,
+            prompt=parsed.get("prompt", ""),
+            description=parsed.get("description", ""),
+        )

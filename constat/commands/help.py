@@ -61,6 +61,20 @@ HELP_COMMANDS: list[tuple[str, str, str]] = [
     ("/rule <text>", "Add a new rule directly", "Analysis"),
     ("/rule-edit <id> <text>", "Edit an existing rule", "Analysis"),
     ("/rule-delete <id>", "Delete a rule", "Analysis"),
+    # Roles & Skills
+    ("/role [name]", "Show or set current role", "Roles & Skills"),
+    ("/roles", "List available roles", "Roles & Skills"),
+    ("/role-create <name>", "Create a new role", "Roles & Skills"),
+    ("/role-edit <name> <prompt>", "Edit a role's prompt", "Roles & Skills"),
+    ("/role-delete <name>", "Delete a role", "Roles & Skills"),
+    ("/role-draft <name> <desc>", "Draft a role using AI", "Roles & Skills"),
+    ("/skill [name]", "Show active or activate a skill", "Roles & Skills"),
+    ("/skills", "List available skills", "Roles & Skills"),
+    ("/skill-create <name>", "Create a new skill", "Roles & Skills"),
+    ("/skill-edit <name> <content>", "Edit a skill's content", "Roles & Skills"),
+    ("/skill-delete <name>", "Delete a skill", "Roles & Skills"),
+    ("/skill-deactivate <name>", "Deactivate a skill", "Roles & Skills"),
+    ("/skill-draft <name> <desc>", "Draft a skill using AI", "Roles & Skills"),
     # Exit
     ("/quit, /q", "Exit the session", "Exit"),
 ]

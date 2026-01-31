@@ -70,3 +70,21 @@ export async function setActiveSkills(
 export async function getSkillsPrompt(): Promise<{ prompt: string; active_skills: string[] }> {
   return get<{ prompt: string; active_skills: string[] }>('/skills/prompt')
 }
+
+export interface DraftSkillResponse {
+  name: string
+  content: string
+  description: string
+}
+
+// Draft a skill using AI
+export async function draftSkill(
+  sessionId: string,
+  name: string,
+  userDescription: string
+): Promise<DraftSkillResponse> {
+  return post<DraftSkillResponse>(`/skills/draft?session_id=${encodeURIComponent(sessionId)}`, {
+    name,
+    user_description: userDescription,
+  })
+}

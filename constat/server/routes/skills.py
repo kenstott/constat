@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
+from constat.server.session_manager import SessionManager
 from constat.core.skills import SkillManager, Skill
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,19 @@ class SkillContentResponse(BaseModel):
     name: str
     content: str
     path: str
+
+
+class DraftSkillRequest(BaseModel):
+    """Request to draft a skill using LLM."""
+    name: str
+    user_description: str  # Natural language description of the skill
+
+
+class DraftSkillResponse(BaseModel):
+    """Response with LLM-drafted skill content."""
+    name: str
+    content: str  # Full SKILL.md content (YAML frontmatter + markdown body)
+    description: str
 
 
 # Cache skill managers per (user_id, base_dir)
@@ -177,6 +191,50 @@ async def get_skills_prompt(
     }
 
 
+def get_session_manager(request: Request) -> SessionManager:
+    """Dependency to get session manager from app state."""
+    return request.app.state.session_manager
+
+
+@router.post("/skills/draft", response_model=DraftSkillResponse)
+async def draft_skill(
+    request: Request,
+    session_id: str,
+    skill_request: DraftSkillRequest,
+    user_id: CurrentUserId,
+) -> DraftSkillResponse:
+    """Use LLM to draft a skill based on user description."""
+    session_manager = get_session_manager(request)
+    managed = session_manager.get_session(session_id)
+    if not managed or managed.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = managed.session
+    if not hasattr(session, "llm"):
+        raise HTTPException(status_code=500, detail="LLM not available")
+    if not hasattr(session, "skill_manager"):
+        raise HTTPException(status_code=500, detail="Skill manager not available")
+
+    try:
+        content, description = session.skill_manager.draft_skill(
+            name=skill_request.name,
+            user_description=skill_request.user_description,
+            llm=session.llm,
+        )
+        return DraftSkillResponse(
+            name=skill_request.name,
+            content=content,
+            description=description,
+        )
+    except ValueError as e:
+        logger.error(f"Failed to draft skill: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to draft skill: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to draft skill: {str(e)}")
+
+
+# Wildcard routes MUST come after specific path routes like /skills/draft
 @router.get("/skills/{skill_name}", response_model=SkillContentResponse)
 async def get_skill_content(
     request: Request,

@@ -36,11 +36,17 @@ import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import { EntityAccordion } from './EntityAccordion'
 import * as sessionsApi from '@/api/sessions'
+import * as rolesApi from '@/api/roles'
 
 type ModalType = 'database' | 'api' | 'document' | 'fact' | 'rule' | null
 
 // Helper to parse YAML front-matter from markdown content
 function parseFrontMatter(content: string): { frontMatter: Record<string, unknown> | null; body: string } {
+  // Handle edge cases
+  if (!content || typeof content !== 'string') {
+    return { frontMatter: null, body: content || '' }
+  }
+
   const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
   if (!match) {
     return { frontMatter: null, body: content }
@@ -48,34 +54,51 @@ function parseFrontMatter(content: string): { frontMatter: Record<string, unknow
 
   // Simple YAML parsing for common fields
   const yamlStr = match[1]
-  const body = match[2]
+  let body = match[2]
+
+  // Handle case where body starts with another frontmatter block (malformed file)
+  // Strip any additional frontmatter blocks from the body
+  while (body.startsWith('---\n')) {
+    const innerMatch = body.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/)
+    if (innerMatch) {
+      body = innerMatch[1]
+    } else {
+      break
+    }
+  }
+
   const frontMatter: Record<string, unknown> = {}
 
   let currentKey = ''
   let inArray = false
   let arrayValues: string[] = []
 
-  for (const line of yamlStr.split('\n')) {
-    if (line.startsWith('  - ') && inArray) {
-      arrayValues.push(line.slice(4).trim())
-    } else if (line.includes(':')) {
-      if (inArray && currentKey) {
-        frontMatter[currentKey] = arrayValues
-        arrayValues = []
-        inArray = false
-      }
-      const [key, ...valueParts] = line.split(':')
-      const value = valueParts.join(':').trim()
-      currentKey = key.trim()
-      if (value === '') {
-        inArray = true
-      } else {
-        frontMatter[currentKey] = value
+  try {
+    for (const line of yamlStr.split('\n')) {
+      if (line.startsWith('  - ') && inArray) {
+        arrayValues.push(line.slice(4).trim())
+      } else if (line.includes(':')) {
+        if (inArray && currentKey) {
+          frontMatter[currentKey] = arrayValues
+          arrayValues = []
+          inArray = false
+        }
+        const [key, ...valueParts] = line.split(':')
+        const value = valueParts.join(':').trim()
+        currentKey = key.trim()
+        if (value === '') {
+          inArray = true
+        } else {
+          frontMatter[currentKey] = value
+        }
       }
     }
-  }
-  if (inArray && currentKey) {
-    frontMatter[currentKey] = arrayValues
+    if (inArray && currentKey) {
+      frontMatter[currentKey] = arrayValues
+    }
+  } catch (e) {
+    console.error('Failed to parse frontmatter:', e)
+    return { frontMatter: null, body: content }
   }
 
   return { frontMatter, body }
@@ -83,7 +106,7 @@ function parseFrontMatter(content: string): { frontMatter: Record<string, unknow
 
 export function ArtifactPanel() {
   const { session } = useSessionStore()
-  const { expandedArtifactSections } = useUIStore()
+  const { expandedArtifactSections, expandArtifactSection } = useUIStore()
   const {
     artifacts,
     tables,
@@ -110,6 +133,7 @@ export function ArtifactPanel() {
     createSkill,
     updateSkill,
     deleteSkill,
+    draftSkill,
     userPermissions,
     fetchPermissions,
     updateSystemPrompt,
@@ -120,12 +144,26 @@ export function ArtifactPanel() {
   const [compacting, setCompacting] = useState(false)
   const [editingRule, setEditingRule] = useState<{ id: string; summary: string } | null>(null)
   // Skill editing state
-  const [editingSkill, setEditingSkill] = useState<{ name: string; content: string } | null>(null)
+  // Structured skill editor state
+  const [editingSkill, setEditingSkill] = useState<{
+    name: string
+    description: string
+    allowedTools: string[]
+    body: string
+  } | null>(null)
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set())
   const [skillContents, setSkillContents] = useState<Record<string, string>>({})
   const [creatingSkill, setCreatingSkill] = useState(false)
-  const [newSkill, setNewSkill] = useState({ name: '', prompt: '', description: '' })
+  const [newSkill, setNewSkill] = useState({
+    name: '',
+    description: '',
+    allowedTools: [] as string[],
+    body: '',
+  })
+  const [draftingSkill, setDraftingSkill] = useState(false)
+  const [newToolInput, setNewToolInput] = useState('')
   // Role editing state
+  const [draftingRole, setDraftingRole] = useState(false)
   const [editingRole, setEditingRole] = useState<{ name: string; prompt: string; description: string } | null>(null)
   const [expandedRoles, setExpandedRoles] = useState<Set<string>>(new Set())
   const [roleContents, setRoleContents] = useState<Record<string, { prompt: string; description: string }>>({})
@@ -271,21 +309,89 @@ export function ArtifactPanel() {
     await useArtifactStore.getState().deleteLearning(learningId)
   }
 
+  // Build SKILL.md content from structured fields
+  const buildSkillContent = (skill: { name: string; description: string; allowedTools: string[]; body: string }) => {
+    const toolsYaml = skill.allowedTools.length > 0
+      ? `allowed-tools:\n${skill.allowedTools.map(t => `  - ${t}`).join('\n')}`
+      : 'allowed-tools: []'
+    return `---
+name: ${skill.name}
+description: ${skill.description}
+${toolsYaml}
+---
+
+${skill.body}`
+  }
+
+  // Parse SKILL.md content into structured fields
+  const parseSkillContent = (content: string, skillName: string) => {
+    const { frontMatter, body } = parseFrontMatter(content)
+    return {
+      name: (frontMatter?.name as string) || skillName,
+      description: (frontMatter?.description as string) || '',
+      allowedTools: (frontMatter?.['allowed-tools'] as string[]) || [],
+      body: body.trim(),
+    }
+  }
+
   const handleCreateSkill = async () => {
-    if (!newSkill.name.trim() || !newSkill.prompt.trim()) return
+    if (!newSkill.name.trim() || !newSkill.body.trim()) return
     try {
-      await createSkill(newSkill.name.trim(), newSkill.prompt.trim(), newSkill.description.trim())
-      setNewSkill({ name: '', prompt: '', description: '' })
+      const content = buildSkillContent({
+        name: newSkill.name.trim(),
+        description: newSkill.description.trim(),
+        allowedTools: newSkill.allowedTools,
+        body: newSkill.body.trim(),
+      })
+      // Create with placeholder, then update with full content
+      await createSkill(newSkill.name.trim(), 'placeholder', newSkill.description.trim())
+      await updateSkill(newSkill.name.trim(), content)
+      setNewSkill({ name: '', description: '', allowedTools: [], body: '' })
+      setNewToolInput('')
       setCreatingSkill(false)
     } catch (err) {
       console.error('Failed to create skill:', err)
     }
   }
 
+  const handleDraftSkill = async () => {
+    if (!session || !newSkill.name.trim() || !newSkill.description.trim()) return
+    setDraftingSkill(true)
+    try {
+      const result = await draftSkill(session.session_id, newSkill.name.trim(), newSkill.description.trim())
+      // Parse the drafted content into structured fields
+      const parsed = parseSkillContent(result.content, newSkill.name.trim())
+      setNewSkill(prev => ({
+        ...prev,
+        description: parsed.description || prev.description,
+        allowedTools: parsed.allowedTools.length > 0 ? parsed.allowedTools : prev.allowedTools,
+        body: parsed.body,
+      }))
+    } catch (err) {
+      console.error('Failed to draft skill:', err)
+    } finally {
+      setDraftingSkill(false)
+    }
+  }
+
+  const handleDraftRole = async () => {
+    if (!session || !newRole.name.trim() || !newRole.description.trim()) return
+    setDraftingRole(true)
+    try {
+      const result = await rolesApi.draftRole(session.session_id, newRole.name.trim(), newRole.description.trim())
+      setNewRole(prev => ({ ...prev, prompt: result.prompt, description: result.description || prev.description }))
+    } catch (err) {
+      console.error('Failed to draft role:', err)
+    } finally {
+      setDraftingRole(false)
+    }
+  }
+
   const handleUpdateSkill = async () => {
     if (!editingSkill) return
     try {
-      await updateSkill(editingSkill.name, editingSkill.content)
+      const content = buildSkillContent(editingSkill)
+      await updateSkill(editingSkill.name, content)
       setEditingSkill(null)
     } catch (err) {
       console.error('Failed to update skill:', err)
@@ -453,7 +559,8 @@ export function ArtifactPanel() {
       })
       if (response.ok) {
         const data = await response.json()
-        setEditingSkill({ name: skillName, content: data.content })
+        const parsed = parseSkillContent(data.content, skillName)
+        setEditingSkill(parsed)
       }
     } catch (err) {
       console.error('Failed to fetch skill content:', err)
@@ -1110,7 +1217,10 @@ export function ArtifactPanel() {
         command="/role"
         action={
           <button
-            onClick={() => setCreatingRole(true)}
+            onClick={() => {
+              expandArtifactSection('roles')
+              setCreatingRole(true)
+            }}
             className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
             title="Create role"
           >
@@ -1130,21 +1240,32 @@ export function ArtifactPanel() {
             />
             <input
               type="text"
-              placeholder="Description (optional)"
+              placeholder="Description (for AI drafting or display)"
               value={newRole.description}
               onChange={(e) => setNewRole({ ...newRole, description: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             />
             <textarea
-              placeholder="Role prompt..."
+              placeholder="Role prompt (persona definition)..."
               value={newRole.prompt}
               onChange={(e) => setNewRole({ ...newRole, prompt: e.target.value })}
-              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[80px] resize-none"
+              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[100px] resize-none"
             />
-            <div className="flex gap-1">
+            <div className="flex gap-1 items-center">
+              <button
+                onClick={handleDraftRole}
+                disabled={draftingRole || !newRole.name.trim() || !newRole.description.trim()}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Draft with AI (requires name and description)"
+              >
+                <SparklesIcon className="w-3 h-3" />
+                {draftingRole ? 'Drafting...' : 'Draft with AI'}
+              </button>
+              <div className="flex-1" />
               <button
                 onClick={handleCreateRole}
-                className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                disabled={!newRole.name.trim() || !newRole.prompt.trim()}
+                className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Create"
               >
                 <CheckIcon className="w-4 h-4" />
@@ -1315,7 +1436,10 @@ export function ArtifactPanel() {
         command="/skills"
         action={
           <button
-            onClick={() => setCreatingSkill(true)}
+            onClick={() => {
+              expandArtifactSection('skills')
+              setCreatingSkill(true)
+            }}
             className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
             title="Create skill"
           >
@@ -1335,22 +1459,92 @@ export function ArtifactPanel() {
             />
             <input
               type="text"
-              placeholder="Description (optional)"
+              placeholder="Description (for AI drafting or display)"
               value={newSkill.description}
               onChange={(e) => setNewSkill({ ...newSkill, description: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 mb-2"
             />
+            {/* Allowed tools */}
+            <div className="mb-2">
+              <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Allowed Tools</label>
+              <div className="flex flex-wrap gap-1 mb-1">
+                {newSkill.allowedTools.map((tool, idx) => (
+                  <span
+                    key={idx}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs text-gray-700 dark:text-gray-300"
+                  >
+                    {tool}
+                    <button
+                      onClick={() => setNewSkill({
+                        ...newSkill,
+                        allowedTools: newSkill.allowedTools.filter((_, i) => i !== idx)
+                      })}
+                      className="text-gray-400 hover:text-red-500"
+                    >
+                      <XMarkIcon className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  placeholder="Add tool (e.g., run_sql)"
+                  value={newToolInput}
+                  onChange={(e) => setNewToolInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newToolInput.trim()) {
+                      e.preventDefault()
+                      if (!newSkill.allowedTools.includes(newToolInput.trim())) {
+                        setNewSkill({
+                          ...newSkill,
+                          allowedTools: [...newSkill.allowedTools, newToolInput.trim()]
+                        })
+                      }
+                      setNewToolInput('')
+                    }
+                  }}
+                  className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newToolInput.trim() && !newSkill.allowedTools.includes(newToolInput.trim())) {
+                      setNewSkill({
+                        ...newSkill,
+                        allowedTools: [...newSkill.allowedTools, newToolInput.trim()]
+                      })
+                      setNewToolInput('')
+                    }
+                  }}
+                  className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
             <textarea
-              placeholder="Skill prompt..."
-              value={newSkill.prompt}
-              onChange={(e) => setNewSkill({ ...newSkill, prompt: e.target.value })}
-              className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none mb-2"
-              rows={3}
+              placeholder="Skill body (markdown with SQL patterns, metrics, domain knowledge)..."
+              value={newSkill.body}
+              onChange={(e) => setNewSkill({ ...newSkill, body: e.target.value })}
+              className="w-full px-2 py-1 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none mb-2"
+              rows={8}
             />
-            <div className="flex gap-1">
+            <div className="flex gap-1 items-center">
+              <button
+                onClick={handleDraftSkill}
+                disabled={draftingSkill || !newSkill.name.trim() || !newSkill.description.trim()}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Draft with AI (requires name and description)"
+              >
+                <SparklesIcon className="w-3 h-3" />
+                {draftingSkill ? 'Drafting...' : 'Draft with AI'}
+              </button>
+              <div className="flex-1" />
               <button
                 onClick={handleCreateSkill}
-                className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                disabled={!newSkill.name.trim() || !newSkill.body.trim()}
+                className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Create"
               >
                 <CheckIcon className="w-4 h-4" />
@@ -1358,7 +1552,8 @@ export function ArtifactPanel() {
               <button
                 onClick={() => {
                   setCreatingSkill(false)
-                  setNewSkill({ name: '', prompt: '', description: '' })
+                  setNewSkill({ name: '', description: '', allowedTools: [], body: '' })
+                  setNewToolInput('')
                 }}
                 className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 title="Cancel"
@@ -1376,14 +1571,98 @@ export function ArtifactPanel() {
               <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
                 Edit Skill: {editingSkill.name}
               </h3>
-              <textarea
-                value={editingSkill.content}
-                onChange={(e) => setEditingSkill({ ...editingSkill, content: e.target.value })}
-                className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
-              />
+              <div className="space-y-3 flex-1 overflow-y-auto">
+                <div>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Name</label>
+                  <input
+                    type="text"
+                    value={editingSkill.name}
+                    onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
+                    className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Description</label>
+                  <input
+                    type="text"
+                    value={editingSkill.description}
+                    onChange={(e) => setEditingSkill({ ...editingSkill, description: e.target.value })}
+                    className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Allowed Tools</label>
+                  <div className="flex flex-wrap gap-1 mb-1">
+                    {editingSkill.allowedTools.map((tool, idx) => (
+                      <span
+                        key={idx}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs text-gray-700 dark:text-gray-300"
+                      >
+                        {tool}
+                        <button
+                          onClick={() => setEditingSkill({
+                            ...editingSkill,
+                            allowedTools: editingSkill.allowedTools.filter((_, i) => i !== idx)
+                          })}
+                          className="text-gray-400 hover:text-red-500"
+                        >
+                          <XMarkIcon className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      placeholder="Add tool (e.g., run_sql)"
+                      value={newToolInput}
+                      onChange={(e) => setNewToolInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && newToolInput.trim()) {
+                          e.preventDefault()
+                          if (!editingSkill.allowedTools.includes(newToolInput.trim())) {
+                            setEditingSkill({
+                              ...editingSkill,
+                              allowedTools: [...editingSkill.allowedTools, newToolInput.trim()]
+                            })
+                          }
+                          setNewToolInput('')
+                        }
+                      }}
+                      className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (newToolInput.trim() && !editingSkill.allowedTools.includes(newToolInput.trim())) {
+                          setEditingSkill({
+                            ...editingSkill,
+                            allowedTools: [...editingSkill.allowedTools, newToolInput.trim()]
+                          })
+                          setNewToolInput('')
+                        }
+                      }}
+                      className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Body (Markdown)</label>
+                  <textarea
+                    value={editingSkill.body}
+                    onChange={(e) => setEditingSkill({ ...editingSkill, body: e.target.value })}
+                    className="w-full min-h-[250px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
+                  />
+                </div>
+              </div>
               <div className="flex justify-end gap-2 mt-4">
                 <button
-                  onClick={() => setEditingSkill(null)}
+                  onClick={() => {
+                    setEditingSkill(null)
+                    setNewToolInput('')
+                  }}
                   className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
                 >
                   Cancel
@@ -1453,9 +1732,9 @@ export function ArtifactPanel() {
                       {/* Front-matter metadata */}
                       {content && frontMatter && (
                         <div className="mb-3 text-xs space-y-1">
-                          {frontMatter.description && (
+                          {typeof frontMatter.description === 'string' && frontMatter.description && (
                             <p className="text-gray-600 dark:text-gray-400 italic">
-                              {String(frontMatter.description)}
+                              {frontMatter.description}
                             </p>
                           )}
                           {allowedTools && allowedTools.length > 0 && (

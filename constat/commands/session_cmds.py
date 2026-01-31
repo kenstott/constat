@@ -392,7 +392,7 @@ def roles_command(ctx: CommandContext) -> CommandResult:
     if not role_manager.has_roles:
         return TextResult(
             success=True,
-            content=f"No roles defined.\n\nCreate roles in: `{role_manager.roles_file_path}`\n\nExample:\n```yaml\ncfo:\n  prompt: |\n    Focus on financial impact and executive summaries.\n```",
+            content=f"No roles defined.\n\nCreate roles with `/role-create <name>` or in: `{role_manager.roles_file_path}`",
         )
 
     items = []
@@ -401,7 +401,7 @@ def roles_command(ctx: CommandContext) -> CommandResult:
         is_active = name == role_manager.active_role_name
         items.append({
             "name": f"{'→ ' if is_active else ''}{name}",
-            "prompt": role.prompt[:60] + "..." if len(role.prompt) > 60 else role.prompt,
+            "description": role.description or role.prompt[:60] + "...",
         })
 
     return ListResult(
@@ -410,3 +410,364 @@ def roles_command(ctx: CommandContext) -> CommandResult:
         items=items,
         empty_message="No roles defined.",
     )
+
+
+def role_create_command(ctx: CommandContext) -> CommandResult:
+    """Create a new role."""
+    session = ctx.session
+
+    if not hasattr(session, "role_manager"):
+        return ErrorResult(error="Role manager not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(
+            error="Usage: /role-create <name> [description]",
+            details="Creates a role. You'll be prompted to enter the prompt content.",
+        )
+
+    # Parse name and optional description
+    parts = args.split(maxsplit=1)
+    name = parts[0]
+    description = parts[1] if len(parts) > 1 else ""
+
+    role_manager = session.role_manager
+
+    # Check if exists
+    if role_manager.get_role(name):
+        return ErrorResult(error=f"Role '{name}' already exists. Use /role-edit to modify it.")
+
+    # Create with placeholder prompt (user should edit)
+    try:
+        role_manager.create_role(
+            name=name,
+            prompt="[Enter your role prompt here - describe the persona, communication style, and priorities]",
+            description=description,
+        )
+        return TextResult(
+            success=True,
+            content=f"Role **{name}** created.\n\nEdit the prompt with: `/role-edit {name} <prompt>`\n\nOr use `/role-draft {name} <description>` to generate a prompt with AI.",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to create role: {e}")
+
+
+def role_edit_command(ctx: CommandContext) -> CommandResult:
+    """Edit an existing role."""
+    session = ctx.session
+
+    if not hasattr(session, "role_manager"):
+        return ErrorResult(error="Role manager not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(error="Usage: /role-edit <name> <prompt>")
+
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /role-edit <name> <prompt>")
+
+    name, prompt = parts[0], parts[1]
+    role_manager = session.role_manager
+
+    # Check if exists
+    if not role_manager.get_role(name):
+        return ErrorResult(error=f"Role '{name}' not found. Use /roles to list available roles.")
+
+    try:
+        role_manager.update_role(name=name, prompt=prompt)
+        return TextResult(
+            success=True,
+            content=f"Role **{name}** updated.\n\n> {prompt[:100]}{'...' if len(prompt) > 100 else ''}",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to update role: {e}")
+
+
+def role_delete_command(ctx: CommandContext) -> CommandResult:
+    """Delete a role."""
+    session = ctx.session
+
+    if not hasattr(session, "role_manager"):
+        return ErrorResult(error="Role manager not available.")
+
+    name = ctx.args.strip()
+    if not name:
+        return ErrorResult(error="Usage: /role-delete <name>")
+
+    role_manager = session.role_manager
+
+    if role_manager.delete_role(name):
+        return TextResult(success=True, content=f"Role **{name}** deleted.")
+    else:
+        return ErrorResult(error=f"Role '{name}' not found.")
+
+
+def role_draft_command(ctx: CommandContext) -> CommandResult:
+    """Draft a role using AI based on description."""
+    session = ctx.session
+
+    if not hasattr(session, "role_manager"):
+        return ErrorResult(error="Role manager not available.")
+    if not hasattr(session, "llm"):
+        return ErrorResult(error="LLM not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(
+            error="Usage: /role-draft <name> <description>",
+            details="Example: /role-draft cfo Focus on financial impact and executive summaries",
+        )
+
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /role-draft <name> <description>")
+
+    name, description = parts[0], parts[1]
+    role_manager = session.role_manager
+
+    # Check if exists
+    if role_manager.get_role(name):
+        return ErrorResult(error=f"Role '{name}' already exists. Delete it first with /role-delete.")
+
+    try:
+        role = role_manager.draft_role(name, description, session.llm)
+        # Save the drafted role
+        role_manager.create_role(name=role.name, prompt=role.prompt, description=role.description)
+        return TextResult(
+            success=True,
+            content=f"Role **{name}** drafted and saved.\n\n**Description:** {role.description}\n\n**Prompt:**\n> {role.prompt[:300]}{'...' if len(role.prompt) > 300 else ''}\n\nUse `/role {name}` to activate.",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to draft role: {e}")
+
+
+# ============================================================================
+# Skills Commands
+# ============================================================================
+
+
+def skill_command(ctx: CommandContext) -> CommandResult:
+    """Show or activate a skill."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    skill_manager = session.skill_manager
+    args = ctx.args.strip()
+
+    if not args:
+        # Show active skills
+        if skill_manager.active_skills:
+            items = []
+            for name in skill_manager.active_skills:
+                skill = skill_manager.get_skill(name)
+                if skill:
+                    items.append({
+                        "name": name,
+                        "description": skill.description or skill.prompt[:60] + "...",
+                    })
+            return ListResult(
+                success=True,
+                title="Active Skills",
+                items=items,
+            )
+        else:
+            return TextResult(
+                success=True,
+                content="No skills active. Use `/skill <name>` to activate, or `/skills` to list available.",
+            )
+
+    # Activate skill
+    if skill_manager.activate_skill(args):
+        skill = skill_manager.get_skill(args)
+        return TextResult(
+            success=True,
+            content=f"Skill **{args}** activated.\n\n> {skill.description or skill.prompt[:100]}{'...' if len(skill.prompt) > 100 else ''}",
+        )
+    else:
+        available = ", ".join(skill_manager.list_skills()) or "none"
+        return ErrorResult(
+            error=f"Skill not found: {args}",
+            details=f"Available skills: {available}",
+        )
+
+
+def skills_command(ctx: CommandContext) -> CommandResult:
+    """List available skills."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    skill_manager = session.skill_manager
+
+    if not skill_manager.has_skills:
+        return TextResult(
+            success=True,
+            content=f"No skills defined.\n\nCreate skills with `/skill-create <name>` or in: `{skill_manager.skills_dir}`",
+        )
+
+    items = []
+    for skill in skill_manager.get_all_skills():
+        is_active = skill.name in skill_manager.active_skills
+        items.append({
+            "name": f"{'→ ' if is_active else ''}{skill.name}",
+            "description": skill.description or skill.prompt[:60] + "...",
+        })
+
+    return ListResult(
+        success=True,
+        title="Available Skills",
+        items=items,
+        empty_message="No skills defined.",
+    )
+
+
+def skill_create_command(ctx: CommandContext) -> CommandResult:
+    """Create a new skill."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(
+            error="Usage: /skill-create <name> [description]",
+            details="Creates a skill. Use /skill-draft for AI-assisted creation.",
+        )
+
+    parts = args.split(maxsplit=1)
+    name = parts[0]
+    description = parts[1] if len(parts) > 1 else ""
+
+    skill_manager = session.skill_manager
+
+    # Check if exists
+    if skill_manager.get_skill(name):
+        return ErrorResult(error=f"Skill '{name}' already exists. Use /skill-edit to modify it.")
+
+    try:
+        skill_manager.create_skill(
+            name=name,
+            prompt="[Enter domain-specific patterns, SQL queries, and reference material here]",
+            description=description,
+        )
+        return TextResult(
+            success=True,
+            content=f"Skill **{name}** created.\n\nEdit with: `/skill-edit {name} <content>`\n\nOr use `/skill-draft {name} <description>` to generate with AI.",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to create skill: {e}")
+
+
+def skill_edit_command(ctx: CommandContext) -> CommandResult:
+    """Edit an existing skill."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(error="Usage: /skill-edit <name> <content>")
+
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /skill-edit <name> <content>")
+
+    name, content = parts[0], parts[1]
+    skill_manager = session.skill_manager
+
+    if not skill_manager.get_skill(name):
+        return ErrorResult(error=f"Skill '{name}' not found. Use /skills to list available skills.")
+
+    try:
+        skill_manager.update_skill(name=name, prompt=content)
+        return TextResult(
+            success=True,
+            content=f"Skill **{name}** updated.\n\n> {content[:100]}{'...' if len(content) > 100 else ''}",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to update skill: {e}")
+
+
+def skill_delete_command(ctx: CommandContext) -> CommandResult:
+    """Delete a skill."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    name = ctx.args.strip()
+    if not name:
+        return ErrorResult(error="Usage: /skill-delete <name>")
+
+    skill_manager = session.skill_manager
+
+    if skill_manager.delete_skill(name):
+        return TextResult(success=True, content=f"Skill **{name}** deleted.")
+    else:
+        return ErrorResult(error=f"Skill '{name}' not found.")
+
+
+def skill_deactivate_command(ctx: CommandContext) -> CommandResult:
+    """Deactivate a skill."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    name = ctx.args.strip()
+    if not name:
+        return ErrorResult(error="Usage: /skill-deactivate <name>")
+
+    skill_manager = session.skill_manager
+
+    if skill_manager.deactivate_skill(name):
+        return TextResult(success=True, content=f"Skill **{name}** deactivated.")
+    else:
+        return ErrorResult(error=f"Skill '{name}' was not active.")
+
+
+def skill_draft_command(ctx: CommandContext) -> CommandResult:
+    """Draft a skill using AI based on description."""
+    session = ctx.session
+
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+    if not hasattr(session, "llm"):
+        return ErrorResult(error="LLM not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(
+            error="Usage: /skill-draft <name> <description>",
+            details="Example: /skill-draft inventory-analysis SQL patterns for inventory metrics and stock analysis",
+        )
+
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        return ErrorResult(error="Usage: /skill-draft <name> <description>")
+
+    name, description = parts[0], parts[1]
+    skill_manager = session.skill_manager
+
+    # Check if exists
+    if skill_manager.get_skill(name):
+        return ErrorResult(error=f"Skill '{name}' already exists. Delete it first with /skill-delete.")
+
+    try:
+        content, skill_description = skill_manager.draft_skill(name, description, session.llm)
+        # Save the drafted skill by creating with the generated content
+        # Use update_skill_content on a newly created skill
+        skill_manager.create_skill(name=name, prompt="placeholder", description=skill_description)
+        skill_manager.update_skill_content(name, content)
+        return TextResult(
+            success=True,
+            content=f"Skill **{name}** drafted and saved.\n\n**Description:** {skill_description}\n\n**Preview:**\n```\n{content[:500]}{'...' if len(content) > 500 else ''}\n```\n\nUse `/skill {name}` to activate.",
+        )
+    except Exception as e:
+        return ErrorResult(error=f"Failed to draft skill: {e}")

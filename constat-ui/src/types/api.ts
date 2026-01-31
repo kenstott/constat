@@ -320,6 +320,7 @@ export type EventType =
   | 'plan_ready'
   | 'plan_approved'
   | 'plan_rejected'
+  | 'dynamic_context'
   | 'step_start'
   | 'step_generating'
   | 'step_executing'

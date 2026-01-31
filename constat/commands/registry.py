@@ -37,6 +37,17 @@ from constat.commands.session_cmds import (
     correct_command,
     role_command,
     roles_command,
+    role_create_command,
+    role_edit_command,
+    role_delete_command,
+    role_draft_command,
+    skill_command,
+    skills_command,
+    skill_create_command,
+    skill_edit_command,
+    skill_delete_command,
+    skill_deactivate_command,
+    skill_draft_command,
 )
 from constat.commands.sources import (
     databases_command,
@@ -79,6 +90,18 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     # Roles
     (("/role",), role_command, "Set or show current role"),
     (("/roles",), roles_command, "List available roles"),
+    (("/role-create",), role_create_command, "Create a new role"),
+    (("/role-edit",), role_edit_command, "Edit a role's prompt"),
+    (("/role-delete",), role_delete_command, "Delete a role"),
+    (("/role-draft",), role_draft_command, "Draft a role using AI"),
+    # Skills
+    (("/skill",), skill_command, "Show or activate a skill"),
+    (("/skills",), skills_command, "List available skills"),
+    (("/skill-create",), skill_create_command, "Create a new skill"),
+    (("/skill-edit",), skill_edit_command, "Edit a skill's content"),
+    (("/skill-delete",), skill_delete_command, "Delete a skill"),
+    (("/skill-deactivate",), skill_deactivate_command, "Deactivate a skill"),
+    (("/skill-draft",), skill_draft_command, "Draft a skill using AI"),
 ]
 
 # Build lookup dict for fast access
