@@ -6,7 +6,7 @@ description: Employee and performance data for HR analysis
 
 databases:
   hr:
-    uri: sqlite:///demo/data/hr.db
+    uri: sqlite:///data/hr.db
     description: |
       HR data with departments, employees, and performance reviews.
       Ratings: 1-5 scale (5=exceptional, 1=unsatisfactory).
