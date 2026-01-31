@@ -637,7 +637,7 @@ class APISchemaManager:
         entities = extractor.get_all_entities()
         if entities:
             logger.debug(f"Extracted {len(entities)} entities from API descriptions")
-            self._vector_store.add_entities(entities)
+            self._vector_store.add_entities(entities, source="api")
 
     def find_relevant_apis(
         self,

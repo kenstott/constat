@@ -949,7 +949,7 @@ class SchemaManager:
         entities = extractor.get_all_entities()
         if entities:
             logger.debug(f"Extracted {len(entities)} entities from schema descriptions")
-            self._vector_store.add_entities(entities)
+            self._vector_store.add_entities(entities, source="schema")
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.

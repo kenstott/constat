@@ -8170,7 +8170,7 @@ Prove all of the above claims and provide a complete audit trail."""
                     # Create and store entities for session
                     entities = create_schema_entities_from_catalog(table_names, column_names)
                     if entities and hasattr(self.doc_tools._vector_store, 'add_entities'):
-                        self.doc_tools._vector_store.add_entities(entities)
+                        self.doc_tools._vector_store.add_entities(entities, source="schema")
 
                     # Also update schema entities for future document indexing
                     current_entities = self.doc_tools._schema_entities or []
