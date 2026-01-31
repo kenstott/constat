@@ -713,75 +713,13 @@ async def list_entities(
                             "mention_text": mention_text,
                         })
 
-                # For entities without chunk refs, create synthetic reference from metadata
-                if not references:
-                    if source == "api":
-                        api_name = metadata.get("api_name", "API")
-                        http_method = metadata.get("http_method", "")
-                        http_path = metadata.get("http_path", "")
-                        if http_method and http_path:
-                            references.append({
-                                "document": f"API: {api_name}",
-                                "section": f"{http_method} {http_path}",
-                                "mentions": 1,
-                                "mention_text": metadata.get("original_name", name),
-                            })
-                        else:
-                            references.append({
-                                "document": f"API: {api_name}",
-                                "section": "Schema Definition",
-                                "mentions": 1,
-                                "mention_text": name,
-                            })
-                    elif source == "schema":
-                        # Schema entities - reference the database/table
-                        db_name = metadata.get("database", "Database")
-                        table_name = metadata.get("table", "")
-                        if etype == "table":
-                            references.append({
-                                "document": f"Database: {db_name}",
-                                "section": "Schema",
-                                "mentions": 1,
-                                "mention_text": name,
-                            })
-                        elif etype == "column" and table_name:
-                            references.append({
-                                "document": f"Table: {table_name}",
-                                "section": f"Database: {db_name}",
-                                "mentions": 1,
-                                "mention_text": name,
-                            })
-                        else:
-                            references.append({
-                                "document": f"Database: {db_name}",
-                                "section": "Schema",
-                                "mentions": 1,
-                                "mention_text": name,
-                            })
-                    elif source == "document":
-                        # Document/NER entities - reference the extraction source
-                        meta_source = metadata.get("source", "document")
-                        spacy_type = metadata.get("spacy_type", "")
-                        if meta_source == "spacy_ner" and spacy_type:
-                            references.append({
-                                "document": "Named Entity Recognition",
-                                "section": f"Type: {spacy_type}",
-                                "mentions": 1,
-                                "mention_text": name,
-                            })
-                        else:
-                            references.append({
-                                "document": "Document",
-                                "section": meta_source,
-                                "mentions": 1,
-                                "mention_text": name,
-                            })
-
+                # No synthetic references - entities should have real chunk links
+                # If no chunk links exist, the entity simply has no reference locations
                 add_entity(name, etype, source or "unknown", metadata, references)
     except Exception as e:
         logger.warning(f"Could not get entities from vector_store: {e}")
 
-    # 2. Get schema entities from schema_manager (in case vector store doesn't have them)
+    # 2. Get schema entities from schema_manager (only if not already in vector store with refs)
     try:
         if managed.session.schema_manager:
             metadata_cache = managed.session.schema_manager.metadata_cache
@@ -789,56 +727,68 @@ async def list_entities(
                 db_name = table_meta.database
                 table_name = table_meta.name
 
-                # Add table entity
+                # Add table entity (only if not already present with real references)
                 if not entity_type or entity_type == "table":
-                    add_entity(
-                        table_name, "table", "schema",
-                        {"database": db_name, "full_name": full_name},
-                        [{"document": f"Database: {db_name}", "section": "Schema", "mentions": 1}]
-                    )
+                    table_key = normalize_entity_name(table_name).lower()
+                    existing = entity_map.get(table_key)
+                    if not existing or not existing.get("references"):
+                        add_entity(
+                            table_name, "table", "schema",
+                            {"database": db_name, "full_name": full_name},
+                            [{"document": f"Database: {db_name}", "section": "Schema", "mentions": 1}]
+                        )
 
-                # Add column entities
+                # Add column entities (only if not already present with real references)
                 if not entity_type or entity_type == "column":
                     for col in table_meta.columns:
-                        add_entity(
-                            col.name, "column", "schema",
-                            {
-                                "table": table_name,
-                                "database": db_name,
-                                "dtype": col.type if col.type else None,
-                            },
-                            [{"document": f"Table: {table_name}", "section": f"Database: {db_name}", "mentions": 1}]
-                        )
+                        col_key = normalize_entity_name(col.name).lower()
+                        existing = entity_map.get(col_key)
+                        if not existing or not existing.get("references"):
+                            add_entity(
+                                col.name, "column", "schema",
+                                {
+                                    "table": table_name,
+                                    "database": db_name,
+                                    "dtype": col.type if col.type else None,
+                                },
+                                [{"document": f"Table: {table_name}", "section": f"Database: {db_name}", "mentions": 1}]
+                            )
     except Exception as e:
         logger.warning(f"Could not get entities from schema_manager: {e}")
 
-    # 3. Get API entities from config
+    # 3. Get API entities from config (only if not already present with real references)
     try:
         if managed.session.config and managed.session.config.apis:
             for api_name, api_config in managed.session.config.apis.items():
                 if not entity_type or entity_type in ("api", "api_endpoint"):
-                    add_entity(
-                        api_name, "api", "api",
-                        {"base_url": getattr(api_config, "base_url", None)},
-                        [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
-                    )
+                    api_key = normalize_entity_name(api_name).lower()
+                    existing = entity_map.get(api_key)
+                    if not existing or not existing.get("references"):
+                        add_entity(
+                            api_name, "api", "api",
+                            {"base_url": getattr(api_config, "base_url", None)},
+                            [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
+                        )
     except Exception as e:
         logger.warning(f"Could not get API entities: {e}")
 
-    # 4. Get document entities from config
+    # 4. Get document entities from config (only if not already present with real references)
     try:
         if managed.session.config and managed.session.config.documents:
             for doc_name in managed.session.config.documents.keys():
                 if not entity_type or entity_type == "concept":
-                    add_entity(
-                        doc_name, "concept", "document",
-                        {"source": "document_config"},
-                        [{"document": doc_name, "section": "Indexed Document", "mentions": 1}]
-                    )
+                    doc_key = normalize_entity_name(doc_name).lower()
+                    existing = entity_map.get(doc_key)
+                    if not existing or not existing.get("references"):
+                        add_entity(
+                            doc_name, "concept", "document",
+                            {"source": "document_config"},
+                            [{"document": doc_name, "section": "Indexed Document", "mentions": 1}]
+                        )
     except Exception as e:
         logger.warning(f"Could not get document entities: {e}")
 
-    # 5. Get entities from active projects (APIs and documents not in config)
+    # 5. Get entities from active projects (only if not already present with real references)
     try:
         active_projects = getattr(managed, "active_projects", [])
         if active_projects and managed.session.config:
@@ -848,20 +798,26 @@ async def list_entities(
                     # Add project API entities
                     if not entity_type or entity_type in ("api", "api_endpoint"):
                         for api_name, api_config in project.apis.items():
-                            add_entity(
-                                api_name, "api", "api",
-                                {"base_url": getattr(api_config, "base_url", None), "project": project_filename},
-                                [{"document": f"API: {api_name}", "section": f"Project: {project_filename}", "mentions": 1}]
-                            )
+                            api_key = normalize_entity_name(api_name).lower()
+                            existing = entity_map.get(api_key)
+                            if not existing or not existing.get("references"):
+                                add_entity(
+                                    api_name, "api", "api",
+                                    {"base_url": getattr(api_config, "base_url", None), "project": project_filename},
+                                    [{"document": f"API: {api_name}", "section": f"Project: {project_filename}", "mentions": 1}]
+                                )
 
                     # Add project document entities
                     if not entity_type or entity_type == "concept":
                         for doc_name in project.documents.keys():
-                            add_entity(
-                                doc_name, "concept", "document",
-                                {"source": "project", "project": project_filename},
-                                [{"document": doc_name, "section": f"Project: {project_filename}", "mentions": 1}]
-                            )
+                            doc_key = normalize_entity_name(doc_name).lower()
+                            existing = entity_map.get(doc_key)
+                            if not existing or not existing.get("references"):
+                                add_entity(
+                                    doc_name, "concept", "document",
+                                    {"source": "project", "project": project_filename},
+                                    [{"document": doc_name, "section": f"Project: {project_filename}", "mentions": 1}]
+                                )
     except Exception as e:
         logger.warning(f"Could not get entities from active projects: {e}")
 
