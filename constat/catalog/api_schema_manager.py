@@ -633,6 +633,14 @@ class APISchemaManager:
             ))
 
             # Field chunks - with or without descriptions
+            # Section depends on parent type (graphql_type vs graphql_query vs rest)
+            if meta.api_type == "graphql_type":
+                field_section = "type_field"
+            elif meta.api_type == "graphql_query":
+                field_section = "query_field"
+            else:
+                field_section = "rest_field"
+
             for i, field_meta in enumerate(meta.fields):
                 if field_meta.description:
                     field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
@@ -643,7 +651,7 @@ class APISchemaManager:
                 chunks.append(DocumentChunk(
                     document_name=f"api:{full_name}.{field_meta.name}",
                     content=field_content,
-                    section="field_description",
+                    section=field_section,
                     chunk_index=i,
                 ))
 
