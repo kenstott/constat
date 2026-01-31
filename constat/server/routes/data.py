@@ -700,14 +700,18 @@ async def list_entities(
 
                 # Get reference locations for this entity
                 # Include links from both current session and '__none__' (global/init-time)
+                # Deduplicate by (document_name, section) since same link may exist across sessions
                 references = []
                 if ref_count > 0:
                     ref_result = vs._conn.execute("""
-                        SELECT em.document_name, em.section, ce.mention_count, ce.mention_text
+                        SELECT em.document_name, em.section,
+                               MAX(ce.mention_count) as mention_count,
+                               MAX(ce.mention_text) as mention_text
                         FROM chunk_entities ce
                         JOIN embeddings em ON ce.chunk_id = em.chunk_id
                         WHERE ce.entity_id = ? AND (ce.session_id = ? OR ce.session_id = '__none__')
-                        ORDER BY ce.mention_count DESC
+                        GROUP BY em.document_name, em.section
+                        ORDER BY mention_count DESC
                         LIMIT 10
                     """, [ent_id, session_id]).fetchall()
                     for ref_row in ref_result:
