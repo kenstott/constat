@@ -907,23 +907,16 @@ class SchemaManager:
         self._extract_entities_from_descriptions()
 
     def _extract_entities_from_descriptions(self) -> None:
-        """Extract entities from table and column metadata using spaCy NER.
+        """Create chunks for table and column metadata.
 
         Creates chunks for ALL tables and columns (not just those with descriptions)
-        so that entity extraction can find and link table/column names.
+        so that session-time entity extraction can find and link table/column names.
 
-        Steps:
-        1. Collect chunks for all tables/columns (with or without descriptions)
-        2. Generate embeddings and store chunks in vector store
-        3. Extract entities and chunk links
-        4. Store entities and links for proper reference tracking
+        Entity extraction is done at session-time by extract_entities_for_session(),
+        not here. This keeps init-time fast and avoids duplicate extraction.
         """
-        if not hasattr(self._vector_store, 'add_entities'):
-            return
-
-        # Lazy imports to avoid circular dependency
-        from constat.discovery.models import DocumentChunk, ChunkEntity
-        from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
+        # Lazy import
+        from constat.discovery.models import DocumentChunk
 
         # Collect chunks for ALL tables and columns
         chunks: list[DocumentChunk] = []
@@ -936,7 +929,6 @@ class SchemaManager:
             if table_meta.comment:
                 table_content = f"{table_name} table: {table_meta.comment}"
             else:
-                # Create structured text with table and column names
                 table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
 
             chunks.append(DocumentChunk(
@@ -951,7 +943,6 @@ class SchemaManager:
                 if col.comment:
                     col_content = f"{col.name} column in {table_name}: {col.comment}"
                 else:
-                    # Create structured text with column metadata
                     col_type = col.type if col.type else "unknown type"
                     col_content = f"{col.name} column ({col_type}) in {table_name} table"
 
@@ -963,10 +954,10 @@ class SchemaManager:
                 ))
 
         if not chunks:
-            logger.debug("No schema metadata to extract entities from")
+            logger.debug("No schema metadata to create chunks from")
             return
 
-        # Step 1: Generate embeddings and store chunks
+        # Generate embeddings and store chunks (no entity extraction here)
         if self._model is not None:
             try:
                 texts = [c.content for c in chunks]
@@ -975,46 +966,6 @@ class SchemaManager:
                 logger.debug(f"Stored {len(chunks)} schema description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store schema description chunks: {e}")
-
-        # Step 2: Configure extractor with NER only
-        config = ExtractionConfig(
-            extract_schema=False,
-            extract_ner=True,
-        )
-        extractor = EntityExtractor(config)
-
-        # Step 3: Extract entities and collect links
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
-
-        # Step 4: Store entities
-        entities = extractor.get_all_entities()
-        if entities:
-            logger.debug(f"Extracted {len(entities)} entities from schema descriptions")
-            self._vector_store.add_entities(entities, source="schema")
-
-        # Step 5: Store chunk-entity links
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links: dict[tuple[str, str], ChunkEntity] = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
-            logger.debug(f"Created {len(unique_links)} chunk-entity links for schema descriptions")
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.

@@ -592,23 +592,16 @@ class APISchemaManager:
         logger.info(f"Built API vector index with {len(texts)} endpoints")
 
     def _extract_entities_from_descriptions(self) -> None:
-        """Extract entities from API endpoint metadata using spaCy NER.
+        """Create chunks for API endpoint metadata.
 
         Creates chunks for ALL endpoints and fields (not just those with descriptions)
-        so that entity extraction can find and link endpoint/field names.
+        so that session-time entity extraction can find and link endpoint/field names.
 
-        Steps:
-        1. Collect chunks for ALL endpoints and fields
-        2. Generate embeddings and store chunks in vector store
-        3. Extract entities and chunk links
-        4. Store entities and links for proper reference tracking
+        Entity extraction is done at session-time by extract_entities_for_session(),
+        not here. This keeps init-time fast and avoids duplicate extraction.
         """
-        if not hasattr(self._vector_store, 'add_entities'):
-            return
-
-        # Lazy imports to avoid circular dependency
-        from constat.discovery.models import DocumentChunk, ChunkEntity
-        from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
+        # Lazy import
+        from constat.discovery.models import DocumentChunk
 
         # Collect chunks for ALL endpoints and fields
         chunks: list[DocumentChunk] = []
@@ -632,8 +625,7 @@ class APISchemaManager:
                 chunk_index=0,
             ))
 
-            # Field chunks - with or without descriptions
-            # Section depends on parent type (graphql_type vs graphql_query vs rest)
+            # Field chunks - section depends on parent type
             if meta.api_type == "graphql_type":
                 field_section = "type_field"
             elif meta.api_type == "graphql_query":
@@ -656,10 +648,10 @@ class APISchemaManager:
                 ))
 
         if not chunks:
-            logger.debug("No API descriptions to extract entities from")
+            logger.debug("No API metadata to create chunks from")
             return
 
-        # Step 1: Generate embeddings and store chunks
+        # Generate embeddings and store chunks (no entity extraction here)
         if self._model is not None:
             try:
                 texts = [c.content for c in chunks]
@@ -668,46 +660,6 @@ class APISchemaManager:
                 logger.debug(f"Stored {len(chunks)} API description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store API description chunks: {e}")
-
-        # Step 2: Configure extractor with NER only
-        config = ExtractionConfig(
-            extract_schema=False,
-            extract_ner=True,
-        )
-        extractor = EntityExtractor(config)
-
-        # Step 3: Extract entities and collect links
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
-
-        # Step 4: Store entities
-        entities = extractor.get_all_entities()
-        if entities:
-            logger.debug(f"Extracted {len(entities)} entities from API descriptions")
-            self._vector_store.add_entities(entities, source="api")
-
-        # Step 5: Store chunk-entity links
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links: dict[tuple[str, str], ChunkEntity] = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
-            logger.debug(f"Created {len(unique_links)} chunk-entity links for API descriptions")
 
     def find_relevant_apis(
         self,
