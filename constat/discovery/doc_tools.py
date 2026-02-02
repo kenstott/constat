@@ -1387,21 +1387,29 @@ class DocumentDiscoveryTools:
                 return {"error": f"Failed to load file: {str(e)}"}
         else:
             # Standard document name - check permissions
+            print(f"[GET_DOC] Looking for document: {name}")
+            print(f"[GET_DOC] allowed_documents: {self.allowed_documents}")
             if not self._is_document_allowed(name):
+                print(f"[GET_DOC] Access denied: {name}")
                 return {"error": f"Access denied to document: {name}"}
 
             # Try base config documents
             doc_config = self.config.documents.get(name)
+            print(f"[GET_DOC] In base config: {doc_config is not None}")
 
             # Try project documents if not in base
             if not doc_config:
-                for project in self.config.projects.values():
+                print(f"[GET_DOC] Checking {len(self.config.projects)} projects")
+                for proj_name, project in self.config.projects.items():
+                    print(f"[GET_DOC] Project {proj_name}: docs={list(project.documents.keys()) if project.documents else []}")
                     if project.documents and name in project.documents:
                         doc_config = project.documents[name]
+                        print(f"[GET_DOC] Found in project {proj_name}")
                         break
 
             # Fallback: reconstruct from vector store chunks
             if not doc_config:
+                print(f"[GET_DOC] Not in config, trying vector store reconstruction")
                 return self._reconstruct_from_chunks(name)
 
             # Load from config
