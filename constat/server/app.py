@@ -172,6 +172,14 @@ def _warmup_vector_store(config: Config) -> None:
             except Exception as e:
                 logger.warning(f"  Project {filename}: error indexing {doc_name}: {e}")
 
+    # Force checkpoint to ensure all writes are visible to other connections
+    # DuckDB WAL mode can cause stale reads without this
+    try:
+        vector_store._conn.execute("CHECKPOINT")
+        logger.debug("  Vector store checkpoint completed")
+    except Exception as e:
+        logger.debug(f"  Vector store checkpoint failed (may be expected): {e}")
+
 
 def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     """Create and configure the FastAPI application.
