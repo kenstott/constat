@@ -1194,19 +1194,13 @@ class DuckDBVectorStore(VectorStoreBackend):
             return
 
         # Deduplicate entities by normalized ID (case-insensitive, keep last occurrence)
-        seen_ids: dict[str, int] = {}
+        # Use dict to ensure unique IDs - key is normalized_id, value is the record tuple
+        unique_records: dict[str, tuple] = {}
         for i, e in enumerate(entities):
-            # Normalize ID to lowercase for deduplication
             normalized_id = e["id"].lower()
-            seen_ids[normalized_id] = i
-
-        records = []
-        entity_ids = []
-        for normalized_id, i in sorted(seen_ids.items(), key=lambda x: x[1]):
-            e = entities[i]
             metadata_json = json.dumps(e.get("metadata", {})) if e.get("metadata") else None
-            records.append((
-                normalized_id,  # Use normalized (lowercase) ID
+            unique_records[normalized_id] = (
+                normalized_id,
                 e["name"],
                 e["type"],
                 source,
@@ -1214,8 +1208,10 @@ class DuckDBVectorStore(VectorStoreBackend):
                 embeddings[i].tolist() if embeddings is not None else None,
                 metadata_json,
                 config_hash,
-            ))
-            entity_ids.append(normalized_id)
+            )
+
+        entity_ids = list(unique_records.keys())
+        records = list(unique_records.values())
 
         # Delete existing entities with these IDs first to avoid conflict issues
         # DuckDB's executemany with ON CONFLICT doesn't handle batch duplicates well
