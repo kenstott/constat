@@ -1334,16 +1334,40 @@ class DocumentDiscoveryTools:
         Returns:
             Dict with document content and metadata
         """
+        # Check if already loaded
+        if name in self._loaded_documents:
+            doc = self._loaded_documents[name]
+            result = {
+                "name": doc.name,
+                "content": doc.content,
+                "format": doc.format,
+                "sections": doc.sections,
+                "loaded_at": doc.loaded_at,
+            }
+            if hasattr(doc.config, 'path') and doc.config.path:
+                result["path"] = doc.config.path
+            return result
+
         # Handle expanded names from glob/directory (format: "parent:filename")
         if ":" in name:
             parent_name, filename = name.split(":", 1)
             # Check permissions on parent name
             if not self._is_document_allowed(parent_name):
                 return {"error": f"Access denied to document: {parent_name}"}
-            if parent_name not in self.config.documents:
+
+            # Try base config documents first
+            doc_config = self.config.documents.get(parent_name)
+
+            # Try project documents if not in base
+            if not doc_config:
+                for project in self.config.projects.values():
+                    if project.documents and parent_name in project.documents:
+                        doc_config = project.documents[parent_name]
+                        break
+
+            if not doc_config:
                 return {"error": f"Document config not found: {parent_name}"}
 
-            doc_config = self.config.documents[parent_name]
             if doc_config.type != "file" or not doc_config.path:
                 return {"error": f"Document {parent_name} is not a file type"}
 
@@ -1356,26 +1380,35 @@ class DocumentDiscoveryTools:
 
             _, filepath = matching[0]
 
-            # Load this specific file if not cached
-            if name not in self._loaded_documents:
-                try:
-                    self._load_file_directly(name, filepath, doc_config)
-                except Exception as e:
-                    return {"error": f"Failed to load file: {str(e)}"}
+            # Load this specific file
+            try:
+                self._load_file_directly(name, filepath, doc_config)
+            except Exception as e:
+                return {"error": f"Failed to load file: {str(e)}"}
         else:
-            # Standard document name
-            # Check permissions
+            # Standard document name - check permissions
             if not self._is_document_allowed(name):
                 return {"error": f"Access denied to document: {name}"}
-            if name not in self.config.documents:
-                return {"error": f"Document not found: {name}"}
 
-            # Load if not cached
-            if name not in self._loaded_documents:
-                try:
-                    self._load_document(name)
-                except Exception as e:
-                    return {"error": f"Failed to load document: {str(e)}"}
+            # Try base config documents
+            doc_config = self.config.documents.get(name)
+
+            # Try project documents if not in base
+            if not doc_config:
+                for project in self.config.projects.values():
+                    if project.documents and name in project.documents:
+                        doc_config = project.documents[name]
+                        break
+
+            # Fallback: reconstruct from vector store chunks
+            if not doc_config:
+                return self._reconstruct_from_chunks(name)
+
+            # Load from config
+            try:
+                self._load_document(name)
+            except Exception as e:
+                return {"error": f"Failed to load document: {str(e)}"}
 
         doc = self._loaded_documents.get(name)
         if not doc:
@@ -1394,6 +1427,53 @@ class DocumentDiscoveryTools:
             result["path"] = doc.config.path
 
         return result
+
+    def _reconstruct_from_chunks(self, name: str) -> dict:
+        """Reconstruct document content from vector store chunks.
+
+        This is a fallback for documents that were indexed but aren't in config
+        (e.g., session-uploaded documents).
+
+        Args:
+            name: Document name to reconstruct
+
+        Returns:
+            Dict with document content or error
+        """
+        try:
+            # Query chunks for this document
+            chunks = self._vector_store._conn.execute(
+                """
+                SELECT content, section, chunk_index
+                FROM embeddings
+                WHERE document_name = ?
+                ORDER BY chunk_index
+                """,
+                [name],
+            ).fetchall()
+
+            if not chunks:
+                return {"error": f"Document not found: {name}"}
+
+            # Reconstruct content from chunks
+            sections = []
+            content_parts = []
+            for content, section, _ in chunks:
+                content_parts.append(content)
+                if section and section not in sections:
+                    sections.append(section)
+
+            return {
+                "name": name,
+                "content": "\n\n".join(content_parts),
+                "format": "text",  # Assume plain text for reconstructed docs
+                "sections": sections,
+                "loaded_at": None,
+                "reconstructed": True,
+            }
+        except Exception as e:
+            logger.warning(f"Failed to reconstruct document {name} from chunks: {e}")
+            return {"error": f"Document not found: {name}"}
 
     def search_documents(
         self,

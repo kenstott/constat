@@ -912,24 +912,15 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Log what we're inserting
         logger.debug(f"link_chunk_entities: inserting {len(unique_records)} links with session_id={effective_session_id}")
 
-        # Insert one at a time with try/except to handle any constraint errors
-        inserted = 0
-        for record in unique_records:
-            try:
-                self._conn.execute(
-                    """
-                    INSERT INTO chunk_entities
-                        (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    record,
-                )
-                inserted += 1
-            except Exception as e:
-                # Log constraint errors for debugging (likely duplicate)
-                logger.debug(f"link_chunk_entities: insert failed: {e}")
-
-        logger.debug(f"link_chunk_entities: inserted {inserted}/{len(unique_records)} links")
+        # Use INSERT OR IGNORE to skip duplicates efficiently
+        self._conn.executemany(
+            """
+            INSERT OR IGNORE INTO chunk_entities
+                (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            unique_records,
+        )
 
     def get_entities_for_chunk(
         self,

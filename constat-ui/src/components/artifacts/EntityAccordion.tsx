@@ -46,7 +46,6 @@ function EntityItem({ entity, onDocumentClick }: EntityItemProps) {
   }[entity.type] || 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
 
   const references = entity.references || []
-  const sources = entity.sources || []
 
   return (
     <div className="border-b border-gray-100 dark:border-gray-700 last:border-b-0">
@@ -80,17 +79,17 @@ function EntityItem({ entity, onDocumentClick }: EntityItemProps) {
               <span className="font-mono text-gray-500 dark:text-gray-400">{originalName}</span>
             </div>
           )}
-          {/* Sources */}
-          {sources.length > 0 && (
+          {/* Sources - show unique document names from references */}
+          {references.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-xs text-gray-400 dark:text-gray-500">Sources:</span>
-              {sources.map((src, idx) => (
+              {[...new Set(references.map(r => r.document).filter(Boolean))].map((doc, idx) => (
                 <button
                   key={idx}
-                  onClick={() => onDocumentClick?.(src)}
+                  onClick={() => onDocumentClick?.(doc)}
                   className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 hover:underline transition-colors cursor-pointer"
                 >
-                  {src}
+                  {doc}
                 </button>
               ))}
             </div>

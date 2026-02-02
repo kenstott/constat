@@ -2950,6 +2950,7 @@ Do not include any explanation or extra text."""
                 "goal": step.goal,
                 "inputs": step.expected_inputs,
                 "outputs": step.expected_outputs,
+                "role_id": step.role_id,
             }
             for step in planner_response.plan.steps
         ]
@@ -5614,7 +5615,7 @@ Provide a brief, high-level summary of the key findings."""
             step_number=0,
             data={
                 "steps": [
-                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on}
+                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
                     for s in self.plan.steps
                 ],
                 "reasoning": planner_response.reasoning,
@@ -6306,7 +6307,7 @@ Follow-up question: {question}
             step_number=0,
             data={
                 "steps": [
-                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on}
+                    {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
                     for s in follow_up_plan.steps
                 ],
                 "reasoning": planner_response.reasoning,
@@ -6363,7 +6364,7 @@ User feedback: {approval.suggestion}
                     step_number=0,
                     data={
                         "steps": [
-                            {"number": s.number, "goal": s.goal, "depends_on": s.depends_on}
+                            {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
                             for s in follow_up_plan.steps
                         ],
                         "reasoning": planner_response.reasoning,

@@ -61,6 +61,11 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
         <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">
           {step.goal || 'Processing...'}
         </span>
+        {step.role_id && (
+          <span className="text-xs px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 rounded">
+            {step.role_id}
+          </span>
+        )}
         {hasModification && (
           <span className="text-xs px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded">
             Modified

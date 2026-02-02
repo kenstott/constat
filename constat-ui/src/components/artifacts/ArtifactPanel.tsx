@@ -1155,9 +1155,12 @@ ${skill.body}`
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <button
+                      onClick={() => handleViewDocument(doc.name)}
+                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                    >
                       {doc.name}
-                    </span>
+                    </button>
                     {doc.source && doc.source !== 'config' && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                         doc.source === 'session'
