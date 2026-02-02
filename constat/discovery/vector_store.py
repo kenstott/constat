@@ -1201,6 +1201,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             seen_ids[normalized_id] = i
 
         records = []
+        entity_ids = []
         for normalized_id, i in sorted(seen_ids.items(), key=lambda x: x[1]):
             e = entities[i]
             metadata_json = json.dumps(e.get("metadata", {})) if e.get("metadata") else None
@@ -1214,20 +1215,22 @@ class DuckDBVectorStore(VectorStoreBackend):
                 metadata_json,
                 config_hash,
             ))
+            entity_ids.append(normalized_id)
+
+        # Delete existing entities with these IDs first to avoid conflict issues
+        # DuckDB's executemany with ON CONFLICT doesn't handle batch duplicates well
+        if entity_ids:
+            placeholders = ",".join(["?" for _ in entity_ids])
+            self._conn.execute(
+                f"DELETE FROM entities WHERE id IN ({placeholders})",
+                entity_ids,
+            )
 
         self._conn.executemany(
             """
             INSERT INTO entities
             (id, name, type, source, parent_id, embedding, metadata, config_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO UPDATE SET
-                name = EXCLUDED.name,
-                type = EXCLUDED.type,
-                source = EXCLUDED.source,
-                parent_id = EXCLUDED.parent_id,
-                embedding = EXCLUDED.embedding,
-                metadata = EXCLUDED.metadata,
-                config_hash = EXCLUDED.config_hash
             """,
             records,
         )
