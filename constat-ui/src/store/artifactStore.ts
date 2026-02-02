@@ -104,6 +104,7 @@ interface ArtifactState {
   deleteRule: (ruleId: string) => Promise<void>
   deleteLearning: (learningId: string) => Promise<void>
   clear: () => void
+  clearQueryResults: () => void  // Clear artifacts/tables/facts/stepCodes but keep data sources/entities/learnings
 }
 
 export const useArtifactStore = create<ArtifactState>((set, get) => ({
@@ -610,6 +611,18 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       allSkills: [],
       allRoles: [],
       userPermissions: { isAdmin: false },
+      selectedArtifact: null,
+      selectedTable: null,
+      error: null,
+    }),
+
+  // Clear only query-produced results, keep session context (data sources, entities, learnings)
+  clearQueryResults: () =>
+    set({
+      artifacts: [],
+      tables: [],
+      facts: [],
+      stepCodes: [],
       selectedArtifact: null,
       selectedTable: null,
       error: null,

@@ -57,6 +57,11 @@ class EventType(str, Enum):
     # Fact events
     FACTS_EXTRACTED = "facts_extracted"
     FACT_RESOLVED = "fact_resolved"
+    FACT_START = "fact_start"  # Resolution begins
+    FACT_PLANNING = "fact_planning"  # Tier 1/Tier 2 planning
+    FACT_EXECUTING = "fact_executing"  # Derivation/query executing
+    FACT_FAILED = "fact_failed"  # Resolution failed
+    PROOF_COMPLETE = "proof_complete"  # All facts resolved, DAG complete
 
     # Progress events
     PROGRESS = "progress"

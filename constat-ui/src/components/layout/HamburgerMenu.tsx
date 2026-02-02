@@ -168,7 +168,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   }
 
   const handleNewSession = async () => {
-    useArtifactStore.getState().clear()
+    // createSession now handles all cleanup internally
     await createSession()
     setMenuOpen(false)
     onNewSession?.()

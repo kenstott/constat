@@ -655,7 +655,6 @@ ${skill.body}`
     ? allResults.filter((r) => r.is_published)
     : allResults
 
-  const publishedCount = allResults.filter((r) => r.is_published).length
   const totalCount = allResults.length
 
   // Auto-expand: find best item to expand

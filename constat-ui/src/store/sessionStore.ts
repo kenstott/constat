@@ -144,13 +144,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   queryContext: null,
 
   createSession: async (userId = 'default') => {
-    const session = await sessionsApi.createSession(userId)
+    // Disconnect old WebSocket FIRST to prevent any events during transition
+    wsManager.disconnect()
 
     // Clear artifact store for fresh session
     useArtifactStore.getState().clear()
 
-    // Initialize empty - welcome message will come from server via WebSocket
-    set({ session, status: 'idle', messages: [], plan: null, suggestions: [] })
+    // Create new session on server
+    const session = await sessionsApi.createSession(userId)
+
+    // Initialize with empty messages - welcome message will come from server via WebSocket
+    set({
+      session,
+      status: 'idle',
+      messages: [],
+      plan: null,
+      suggestions: [],
+      queuedMessages: [],
+      clarification: null,
+      executionPhase: 'idle',
+      currentStepNumber: 0,
+      stepAttempt: 1,
+      stepMessageIds: {},
+      liveMessageId: null,
+      thinkingMessageId: null,
+      lastQueryStartStep: 0,
+      queryContext: null,
+    })
 
     // Connect WebSocket - server will send welcome message on connect
     wsManager.connect(session.session_id)
@@ -838,6 +858,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (factsData.fact) {
           useArtifactStore.getState().addFact(factsData.fact)
         }
+        break
+      }
+
+      // Proof/auditable mode events - forward to proof store
+      case 'fact_start':
+      case 'fact_planning':
+      case 'fact_executing':
+      case 'fact_failed':
+      case 'proof_complete': {
+        import('./proofStore').then(({ useProofStore }) => {
+          useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+        })
         break
       }
 

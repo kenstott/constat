@@ -8,9 +8,11 @@ import { FullscreenArtifactModal } from '@/components/artifacts/FullscreenArtifa
 import { ClarificationDialog } from '@/components/conversation/ClarificationDialog'
 import { PlanApprovalDialog } from '@/components/conversation/PlanApprovalDialog'
 import { LoginPage } from '@/components/auth/LoginPage'
+import { ProofDAGPanel } from '@/components/proof/ProofDAGPanel'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
+import { useProofStore } from '@/store/proofStore'
 import * as sessionsApi from '@/api/sessions'
 
 const SESSION_STORAGE_KEY = 'constat-session-id'
@@ -210,22 +212,49 @@ function MainApp() {
   }, [session, createSession, userId])
 
   const handleNewQuery = async () => {
-    // Clear artifact store and create a new session (equivalent to /reset)
-    useArtifactStore.getState().clear()
-    const storageKey = isAuthDisabled ? SESSION_STORAGE_KEY : `${SESSION_STORAGE_KEY}-${userId}`
-    localStorage.removeItem(storageKey)
-    lastSavedRef.current = '' // Reset saved state for new session
-    await createSession(userId)
-    const newSession = useSessionStore.getState().session
-    if (newSession) {
-      localStorage.setItem(storageKey, newSession.session_id)
+    // Clear conversation state but keep the same session (preserves DBs, projects, entities, learnings)
+    useProofStore.getState().clearFacts()
+
+    // Clear conversation-related state only
+    useSessionStore.setState({
+      messages: [],
+      suggestions: [],
+      plan: null,
+      queuedMessages: [],
+      clarification: null,
+      status: 'idle',
+      executionPhase: 'idle',
+      currentStepNumber: 0,
+      stepAttempt: 1,
+      stepMessageIds: {},
+      liveMessageId: null,
+      thinkingMessageId: null,
+      lastQueryStartStep: 0,
+      queryContext: null,
+    })
+
+    // Clear query-produced artifacts (tables, artifacts, facts, step codes) but NOT data sources/entities
+    const artifactStore = useArtifactStore.getState()
+    artifactStore.clearQueryResults()
+
+    // Reset saved messages state for this session
+    lastSavedRef.current = ''
+
+    // Clear persisted messages on server for this session
+    if (session) {
+      sessionsApi.saveMessages(session.session_id, []).catch(err =>
+        console.error('Failed to clear messages:', err)
+      )
     }
+
     queryInputRef.current?.focus()
   }
 
+  // Proof panel state
+  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, openPanel: openProofPanel, closePanel: closeProofPanel } = useProofStore()
+
   const handleShowProof = () => {
-    // TODO: Open proof tree dialog
-    console.log('Show proof tree')
+    openProofPanel()
   }
 
   // Show connecting overlay until session exists and WebSocket is connected
@@ -244,6 +273,11 @@ function MainApp() {
       <ClarificationDialog />
       <PlanApprovalDialog />
       <FullscreenArtifactModal />
+      <ProofDAGPanel
+        isOpen={isProofPanelOpen}
+        onClose={closeProofPanel}
+        facts={proofFacts}
+      />
     </>
   )
 }

@@ -837,6 +837,14 @@ class FactResolver:
         logger.info(f"[TIERED] Starting tiered resolution for: {cache_key}")
         logger.debug(f"resolve_tiered called for: {fact_name}, tier1_sources: {[s.value for s in self.strategy.tier1_sources]}")
 
+        # Emit fact_start event for DAG visualization
+        self._emit_event("fact_start", {
+            "fact_name": cache_key,
+            "fact_description": fact_description,
+            "parameters": params,
+            "status": "pending",
+        })
+
         # Quick cache check BEFORE parallel race (avoids unnecessary work)
         if cache_key in self._cache:
             cached = self._cache[cache_key]
@@ -851,12 +859,28 @@ class FactResolver:
         # ═══════════════════════════════════════════════════════════════════
         # TIER 1: Parallel Local Sources
         # ═══════════════════════════════════════════════════════════════════
+        self._emit_event("fact_planning", {
+            "fact_name": cache_key,
+            "planning_type": "tier1_parallel",
+            "sources": [s.value for s in self.strategy.tier1_sources],
+            "status": "planning",
+        })
+
         tier1_start = time.time()
         tier1_result = self._resolve_tier1_parallel(fact_name, params, cache_key)
         tier1_elapsed = time.time() - tier1_start
 
         if tier1_result and tier1_result.is_resolved:
             logger.info(f"[TIERED] Tier 1 resolved {cache_key} in {tier1_elapsed:.2f}s: {tier1_result.value}")
+            self._emit_event("fact_resolved", {
+                "fact_name": cache_key,
+                "value": tier1_result.value,
+                "source": tier1_result.source.value if tier1_result.source else "unknown",
+                "confidence": tier1_result.confidence,
+                "tier": 1,
+                "elapsed_ms": int(tier1_elapsed * 1000),
+                "status": "resolved",
+            })
             return tier1_result, None
 
         logger.info(f"[TIERED] Tier 1 failed for {cache_key} after {tier1_elapsed:.2f}s, proceeding to Tier 2")
@@ -864,11 +888,23 @@ class FactResolver:
         # ═══════════════════════════════════════════════════════════════════
         # TIER 2: LLM Assessment
         # ═══════════════════════════════════════════════════════════════════
+        self._emit_event("fact_planning", {
+            "fact_name": cache_key,
+            "planning_type": "tier2_assessment",
+            "reason": "tier1_failed",
+            "status": "planning",
+        })
+
         assessment = self._assess_tier2_strategy(fact_name, fact_description, params)
 
         if assessment is None:
             # LLM assessment failed - return unresolved
             logger.warning(f"[TIERED] Tier 2 assessment failed for {cache_key}")
+            self._emit_event("fact_failed", {
+                "fact_name": cache_key,
+                "reason": "tier2_assessment_failed",
+                "status": "failed",
+            })
             unresolved = Fact(
                 name=cache_key,
                 value=None,
@@ -894,16 +930,47 @@ class FactResolver:
             )
             self._cache[cache_key] = fact
             self.resolution_log.append(fact)
+            self._emit_event("fact_resolved", {
+                "fact_name": cache_key,
+                "value": assessment.value,
+                "source": "llm_knowledge",
+                "confidence": assessment.confidence,
+                "tier": 2,
+                "strategy": "known",
+                "status": "resolved",
+            })
             return fact, assessment
 
         elif assessment.strategy == Tier2Strategy.DERIVABLE:
             # Attempt derivation with the formula
+            self._emit_event("fact_executing", {
+                "fact_name": cache_key,
+                "execution_type": "derivation",
+                "formula": assessment.formula,
+                "status": "executing",
+            })
             derived_fact = self._execute_derivation(
                 fact_name, params, cache_key, assessment
             )
             if derived_fact and derived_fact.is_resolved:
+                self._emit_event("fact_resolved", {
+                    "fact_name": cache_key,
+                    "value": derived_fact.value,
+                    "source": derived_fact.source.value if derived_fact.source else "derived",
+                    "confidence": derived_fact.confidence,
+                    "tier": 2,
+                    "strategy": "derivable",
+                    "dependencies": [f.name for f in derived_fact.because] if derived_fact.because else [],
+                    "status": "resolved",
+                })
                 return derived_fact, assessment
             # Derivation failed - return assessment for caller to handle
+            self._emit_event("fact_failed", {
+                "fact_name": cache_key,
+                "reason": "derivation_failed",
+                "formula": assessment.formula,
+                "status": "failed",
+            })
             unresolved = Fact(
                 name=cache_key,
                 value=None,
