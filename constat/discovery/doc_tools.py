@@ -1453,6 +1453,12 @@ class DocumentDiscoveryTools:
             ).fetchall()
 
             if not chunks:
+                # Debug: list all available document names
+                all_docs = self._vector_store._conn.execute(
+                    "SELECT DISTINCT document_name FROM embeddings"
+                ).fetchall()
+                doc_names = [d[0] for d in all_docs]
+                logger.warning(f"Document '{name}' not found. Available: {doc_names[:10]}")
                 return {"error": f"Document not found: {name}"}
 
             # Reconstruct content from chunks
