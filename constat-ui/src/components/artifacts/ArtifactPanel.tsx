@@ -854,31 +854,25 @@ ${skill.body}`
       {/* ═══════════════ RESULTS ═══════════════ */}
       {totalCount > 0 && (
         <>
-          <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Results
-            </span>
-            {/* Filter toggle */}
-            <button
-              onClick={toggleResultsFilter}
-              className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-                showPublishedOnly
-                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
-                  : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
-              }`}
-              title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
-            >
-              {showPublishedOnly ? `${publishedCount} published` : `${totalCount} all`}
-            </button>
-          </div>
-
           <AccordionSection
             id="results"
             title="Results"
             count={displayedResults.length}
             icon={<StarIcon className="w-4 h-4" />}
             command="/results"
-            action={<div className="w-6 h-6" />}
+            action={
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleResultsFilter(); }}
+                className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                  showPublishedOnly
+                    ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                    : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                }`}
+                title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
+              >
+                {showPublishedOnly ? 'published' : 'all'}
+              </button>
+            }
           >
             {displayedResults.length === 0 ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">

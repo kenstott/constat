@@ -671,7 +671,7 @@ class SessionHistory:
         Save conversation messages for UI restoration.
 
         Args:
-            session_id: Session ID
+            session_id: Session ID (history session ID format)
             messages: List of message dictionaries
         """
         messages_file = self._session_dir(session_id) / "messages.json"
@@ -683,12 +683,55 @@ class SessionHistory:
         Load conversation messages for UI restoration.
 
         Args:
-            session_id: Session ID
+            session_id: Session ID (history session ID format)
 
         Returns:
             List of message dictionaries, or empty list if not found
         """
         messages_file = self._session_dir(session_id) / "messages.json"
+        if not messages_file.exists():
+            return []
+
+        try:
+            with open(messages_file) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
+
+    def _messages_dir_by_server_id(self, server_session_id: str) -> Path:
+        """Get the messages directory for a server session ID."""
+        return self.storage_dir / ".messages" / server_session_id
+
+    def save_messages_by_server_id(
+        self, server_session_id: str, messages: list[dict]
+    ) -> None:
+        """
+        Save conversation messages using server session ID.
+
+        This allows saving messages before a history session is created
+        (which happens on first query execution).
+
+        Args:
+            server_session_id: Server-side session UUID
+            messages: List of message dictionaries
+        """
+        messages_dir = self._messages_dir_by_server_id(server_session_id)
+        self._ensure_dir(messages_dir)
+        messages_file = messages_dir / "messages.json"
+        with open(messages_file, "w") as f:
+            json.dump(messages, f, indent=2)
+
+    def load_messages_by_server_id(self, server_session_id: str) -> list[dict]:
+        """
+        Load conversation messages using server session ID.
+
+        Args:
+            server_session_id: Server-side session UUID
+
+        Returns:
+            List of message dictionaries, or empty list if not found
+        """
+        messages_file = self._messages_dir_by_server_id(server_session_id) / "messages.json"
         if not messages_file.exists():
             return []
 

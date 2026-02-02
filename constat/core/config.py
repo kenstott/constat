@@ -179,6 +179,7 @@ class DatabaseConfig(BaseModel):
 
     # Common fields
     description: str = ""
+    read_only: bool = False  # If True, block write operations (INSERT, UPDATE, DELETE, etc.)
 
     # SQL databases (SQLAlchemy)
     uri: Optional[str] = None
@@ -254,6 +255,16 @@ class DatabaseConfig(BaseModel):
                 from pathlib import Path
                 resolved = (Path(config_dir) / db_path).resolve()
                 uri = f"sqlite:///{resolved}"
+
+        # Apply read-only mode for SQLite
+        if self.read_only and uri.startswith("sqlite:///"):
+            # SQLite read-only mode: file:path?mode=ro
+            # Convert sqlite:///path to sqlite:///file:path?mode=ro
+            db_path = uri[10:]  # Remove "sqlite:///"
+            if "?" in db_path:
+                uri = f"sqlite:///file:{db_path}&mode=ro"
+            else:
+                uri = f"sqlite:///file:{db_path}?mode=ro"
 
         # Use credentials if provided
         if self.username and self.password:

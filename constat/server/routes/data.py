@@ -350,9 +350,12 @@ async def get_artifact(
 ) -> ArtifactContentResponse:
     """Get artifact content by ID.
 
+    Handles both real artifacts and virtual table artifacts.
+    Virtual table IDs are computed as: -hash(table_name) % 1000000
+
     Args:
         session_id: Session ID
-        artifact_id: Artifact ID
+        artifact_id: Artifact ID (real artifact ID or virtual table ID)
 
     Returns:
         Artifact with content
@@ -366,19 +369,41 @@ async def get_artifact(
         raise HTTPException(status_code=404, detail="No datastore for this session")
 
     try:
+        # First try to get a real artifact
         artifact = managed.session.datastore.get_artifact_by_id(artifact_id)
 
-        if not artifact:
-            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+        if artifact:
+            return ArtifactContentResponse(
+                id=artifact.id,
+                name=artifact.name,
+                artifact_type=artifact.artifact_type.value,
+                content=artifact.content,
+                mime_type=artifact.mime_type,
+                is_binary=artifact.is_binary,
+            )
 
-        return ArtifactContentResponse(
-            id=artifact.id,
-            name=artifact.name,
-            artifact_type=artifact.artifact_type.value,
-            content=artifact.content,
-            mime_type=artifact.mime_type,
-            is_binary=artifact.is_binary,
-        )
+        # Not a real artifact - check if it's a virtual table ID
+        tables = managed.session.datastore.list_tables()
+        for t in tables:
+            table_name = t["name"]
+            virtual_id = -hash(table_name) % 1000000
+            if virtual_id == artifact_id:
+                # Found matching table - return as artifact content
+                import json
+                table_data = managed.session.datastore.get_table_data(table_name)
+                if table_data is not None:
+                    # Convert DataFrame to JSON for artifact content
+                    content = table_data.to_json(orient="records", date_format="iso")
+                    return ArtifactContentResponse(
+                        id=artifact_id,
+                        name=table_name,
+                        artifact_type="table",
+                        content=content,
+                        mime_type="application/json",
+                        is_binary=False,
+                    )
+
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
 
     except HTTPException:
         raise

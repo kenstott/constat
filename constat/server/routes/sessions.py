@@ -440,14 +440,10 @@ async def get_messages(
     """
     managed = session_manager.get_session(session_id)
 
-    # Get messages from session history
+    # Get messages from session history using server session ID
+    # (works even before first query creates a history session)
     history = SessionHistory(user_id=managed.user_id or "default")
-    history_session_id = managed.history_session_id
-
-    if history_session_id:
-        messages = history.load_messages(history_session_id)
-    else:
-        messages = []
+    messages = history.load_messages_by_server_id(session_id)
 
     return {"messages": messages}
 
@@ -475,12 +471,10 @@ async def save_messages(
     managed = session_manager.get_session(session_id)
     messages = body.get("messages", [])
 
-    # Save messages to session history
+    # Save messages to session history using server session ID
+    # (works even before first query creates a history session)
     history = SessionHistory(user_id=managed.user_id or "default")
-    history_session_id = managed.history_session_id
-
-    if history_session_id:
-        history.save_messages(history_session_id, messages)
+    history.save_messages_by_server_id(session_id, messages)
 
     return {"status": "saved", "count": len(messages)}
 

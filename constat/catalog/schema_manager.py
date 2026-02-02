@@ -170,6 +170,7 @@ class SchemaManager:
         self.nosql_connections: dict[str, NoSQLConnector] = {}  # NoSQL connections
         self.file_connections: dict[str, FileConnector] = {}  # File data sources
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
+        self._read_only_databases: set[str] = set()  # Databases with read_only=True
 
         # Vector store for embeddings (shared DuckDB)
         from constat.discovery.vector_store import DuckDBVectorStore
@@ -368,11 +369,20 @@ class SchemaManager:
         """Connect to a SQL database via SQLAlchemy."""
         config_dir = self.config.config_dir if self.config else None
         connection_uri = db_config.get_connection_uri(config_dir)
-        engine = create_engine(connection_uri)
+
+        # Handle read-only mode for DuckDB (SQLite handled in get_connection_uri)
+        connect_args = {}
+        if db_config.read_only and connection_uri.startswith("duckdb:"):
+            connect_args["read_only"] = True
+
+        engine = create_engine(connection_uri, connect_args=connect_args)
         # Test connection
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         self.connections[db_name] = engine
+        # Track read-only status
+        if db_config.read_only:
+            self._read_only_databases.add(db_name)
 
     def _connect_nosql(self, db_name: str, db_config: DatabaseConfig) -> None:
         """Connect to a NoSQL database using the appropriate connector."""
@@ -1318,6 +1328,10 @@ class SchemaManager:
     def is_file_source(self, database: str) -> bool:
         """Check if a database is a file-based data source."""
         return database in self.file_connections
+
+    def is_read_only(self, database: str) -> bool:
+        """Check if a database is configured as read-only."""
+        return database in self._read_only_databases
 
     def get_file_connection(self, database: str) -> FileConnector:
         """Get FileConnector for a file-based data source."""

@@ -653,56 +653,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
               const sectionsToExpand: string[] = []
 
-              // Visualization types for identifying key results
-              const visualizationTypes = ['chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown', 'md', 'table']
+              // Find all published artifacts (is_key_result = true)
+              const publishedArtifacts = artifacts.filter((a) => a.is_key_result)
+              // Prefer non-tables, but tables are OK as fallback
+              const nonTableArtifacts = publishedArtifacts.filter((a) => a.artifact_type !== 'table')
+              const tableArtifacts = publishedArtifacts.filter((a) => a.artifact_type === 'table')
 
-              // Find visualizations
-              const visualizations = artifacts.filter((a) =>
-                visualizationTypes.includes(a.artifact_type.toLowerCase())
-              )
-              console.log('[synthesizing] Visualizations found:', visualizations.length)
-              if (visualizations.length > 0) {
-                sectionsToExpand.push('visualizations')
-              }
-
-              // Find key artifacts (marked as key results)
-              const keyArtifacts = artifacts.filter((a) => a.is_key_result)
-              console.log('[synthesizing] Key artifacts found:', keyArtifacts.length)
-              if (keyArtifacts.length > 0) {
+              if (publishedArtifacts.length > 0) {
                 sectionsToExpand.push('artifacts')
               }
-
-              // Always expand tables if we have any
               if (tables.length > 0) {
                 sectionsToExpand.push('tables')
               }
 
               // Expand the sections
-              console.log('[synthesizing] Expanding sections:', sectionsToExpand)
               if (sectionsToExpand.length > 0) {
                 useUIStore.getState().expandArtifactSections(sectionsToExpand)
               }
 
-              // Select the best artifact to render it:
-              // Priority: 1) Latest visualization, 2) Latest key result artifact, 3) None
-              const bestVisualization = visualizations.length > 0
-                ? visualizations.reduce((best, curr) =>
-                    (curr.step_number > best.step_number) ? curr : best
-                  )
-                : null
-
-              const bestKeyResult = keyArtifacts.length > 0
-                ? keyArtifacts.reduce((best, curr) =>
-                    (curr.step_number > best.step_number) ? curr : best
-                  )
-                : null
-
-              // Select visualization first (more visual impact), otherwise key result
-              const bestArtifact = bestVisualization || bestKeyResult
-              console.log('[synthesizing] Best artifact to open:', bestArtifact ? `${bestArtifact.name} (id=${bestArtifact.id})` : 'none')
-              if (bestArtifact) {
-                console.log('[synthesizing] Calling selectArtifact for:', bestArtifact.id)
-                selectArtifact(session.session_id, bestArtifact.id)
+              // Select the latest published artifact (prefer non-tables, fallback to tables)
+              const candidates = nonTableArtifacts.length > 0 ? nonTableArtifacts : tableArtifacts
+              if (candidates.length > 0) {
+                const best = candidates.reduce((a, b) =>
+                  (b.step_number > a.step_number) ? b : a
+                )
+                console.log('[synthesizing] Best artifact:', best.name, best.id)
+                selectArtifact(session.session_id, best.id)
               }
             }).catch(err => {
               console.error('[synthesizing] Error importing uiStore:', err)
