@@ -747,13 +747,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
-      case 'query_error':
+      case 'query_error': {
         finalizeAllSteps()
         clearLiveMessage()
+        const errorMsg = (event.data.error as string) || 'Query failed'
+        // Check if this is a plan rejection (user revised the plan)
+        const isRejection = errorMsg.toLowerCase().includes('rejected')
         set({ status: 'error', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })
         addMessage({
-          type: 'error',
-          content: (event.data.error as string) || 'Query failed',
+          type: isRejection ? 'system' : 'error',
+          content: isRejection ? 'Plan revised' : errorMsg,
         })
         // Process queued messages after error too
         setTimeout(() => {
@@ -767,12 +770,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }
         }, 500)
         break
+      }
 
       case 'query_cancelled':
         finalizeAllSteps()
         clearLiveMessage()
         set({ status: 'cancelled', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })
-        addMessage({ type: 'system', content: 'Execution cancelled' })
+        addMessage({ type: 'system', content: 'Query cancelled' })
         // Process queued messages after cancellation too
         setTimeout(() => {
           const { queuedMessages, submitQuery: submit } = get()

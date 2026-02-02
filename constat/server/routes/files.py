@@ -647,3 +647,34 @@ async def upload_documents(
         "total_files": len(files),
         "results": results,
     }
+
+
+@router.get("/{session_id}/documents/{document_name}")
+async def get_document(
+    session_id: str,
+    document_name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Get the content of a document by name.
+
+    Args:
+        session_id: Session ID
+        document_name: Name of the document to retrieve
+
+    Returns:
+        Document content and metadata
+
+    Raises:
+        404: Session or document not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.doc_tools:
+        raise HTTPException(status_code=404, detail="Document tools not available")
+
+    result = managed.session.doc_tools.get_document(document_name)
+
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    return result

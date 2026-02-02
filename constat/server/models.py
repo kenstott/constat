@@ -281,6 +281,7 @@ class ArtifactInfo(BaseModel):
     created_at: Optional[str] = Field(default=None, description="Creation timestamp")
     is_key_result: bool = Field(default=False, description="Whether this is a key result")
     is_starred: bool = Field(default=False, description="Whether user has explicitly starred this")
+    metadata: Optional[dict] = Field(default=None, description="Artifact metadata")
 
 
 class ArtifactListResponse(BaseModel):

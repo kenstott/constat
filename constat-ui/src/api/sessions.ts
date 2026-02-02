@@ -238,6 +238,30 @@ export async function uploadDocuments(
   return response.json()
 }
 
+// Get document content
+export interface DocumentContent {
+  name: string
+  content: string
+  format?: string
+  sections?: string[]
+  path?: string
+  metadata?: Record<string, unknown>
+}
+
+export async function getDocument(
+  sessionId: string,
+  documentName: string
+): Promise<DocumentContent> {
+  const response = await fetch(`/api/sessions/${sessionId}/documents/${encodeURIComponent(documentName)}`)
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Document not found' }))
+    throw new Error(error.detail || 'Failed to fetch document')
+  }
+
+  return response.json()
+}
+
 // Data Sources (combined: databases, APIs, documents)
 export interface SessionApiSource {
   name: string

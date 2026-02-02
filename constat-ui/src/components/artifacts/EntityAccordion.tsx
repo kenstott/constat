@@ -6,6 +6,7 @@ import type { Entity } from '@/types/api'
 
 interface EntityAccordionProps {
   entities: Entity[]
+  onDocumentClick?: (documentName: string) => void
 }
 
 // All possible entity types
@@ -21,9 +22,10 @@ const ENTITY_TYPES = [
 
 interface EntityItemProps {
   entity: Entity
+  onDocumentClick?: (documentName: string) => void
 }
 
-function EntityItem({ entity }: EntityItemProps) {
+function EntityItem({ entity, onDocumentClick }: EntityItemProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   // Get original name for display (if different from normalized name)
@@ -83,12 +85,13 @@ function EntityItem({ entity }: EntityItemProps) {
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-xs text-gray-400 dark:text-gray-500">Sources:</span>
               {sources.map((src, idx) => (
-                <span
+                <button
                   key={idx}
-                  className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded"
+                  onClick={() => onDocumentClick?.(src)}
+                  className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 hover:underline transition-colors cursor-pointer"
                 >
                   {src}
-                </span>
+                </button>
               ))}
             </div>
           )}
@@ -132,7 +135,7 @@ function EntityItem({ entity }: EntityItemProps) {
   )
 }
 
-export function EntityAccordion({ entities }: EntityAccordionProps) {
+export function EntityAccordion({ entities, onDocumentClick }: EntityAccordionProps) {
   const [searchText, setSearchText] = useState('')
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set())
 
@@ -285,7 +288,7 @@ export function EntityAccordion({ entities }: EntityAccordionProps) {
         // For small lists, just show flat list
         <div className="space-y-0">
           {sortedEntities.map((entity) => (
-            <EntityItem key={entity.id} entity={entity} />
+            <EntityItem key={entity.id} entity={entity} onDocumentClick={onDocumentClick} />
           ))}
         </div>
       ) : (
@@ -298,7 +301,7 @@ export function EntityAccordion({ entities }: EntityAccordionProps) {
               </div>
               <div className="space-y-0">
                 {letterEntities.map((entity) => (
-                  <EntityItem key={entity.id} entity={entity} />
+                  <EntityItem key={entity.id} entity={entity} onDocumentClick={onDocumentClick} />
                 ))}
               </div>
             </div>

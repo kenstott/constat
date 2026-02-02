@@ -40,7 +40,8 @@ function StepItem({ step, index, isExpanded, onToggle, modification, onModificat
   const expectedInputs = step.expected_inputs || []
   const expectedOutputs = step.expected_outputs || []
   const dependsOn = step.depends_on || []
-  const hasModification = modification.trim().length > 0
+  // Only show as modified if text differs from original goal
+  const hasModification = modification.trim().length > 0 && modification.trim() !== (step.goal || '').trim()
 
   return (
     <div className={`border rounded-lg overflow-hidden ${hasModification ? 'border-amber-400 dark:border-amber-600' : 'border-gray-200 dark:border-gray-700'}`}>
@@ -152,8 +153,12 @@ export function PlanApprovalDialog() {
     return !deletedSteps.has(stepNum)
   })
 
-  // Check if any modifications exist
-  const hasModifications = Object.values(stepModifications).some((m) => m.trim().length > 0)
+  // Check if any modifications exist (comparing against original goals)
+  const hasModifications = Object.entries(stepModifications).some(([stepNumStr, mod]) => {
+    const stepNum = parseInt(stepNumStr)
+    const step = steps.find((s, i) => (s.number ?? i + 1) === stepNum)
+    return mod.trim().length > 0 && mod.trim() !== (step?.goal || '').trim()
+  })
   const hasDeletedSteps = deletedSteps.size > 0
   const hasAnyChanges = hasModifications || hasDeletedSteps || additionalInstructions.trim().length > 0
 
@@ -164,6 +169,13 @@ export function PlanApprovalDialog() {
         next.delete(stepNumber)
       } else {
         next.add(stepNumber)
+        // Initialize modification with original step goal when first expanding
+        if (stepModifications[stepNumber] === undefined) {
+          const step = steps.find((s, i) => (s.number ?? i + 1) === stepNumber)
+          if (step?.goal) {
+            setStepModifications((prev) => ({ ...prev, [stepNumber]: step.goal }))
+          }
+        }
       }
       return next
     })

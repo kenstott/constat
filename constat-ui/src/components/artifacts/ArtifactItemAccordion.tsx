@@ -440,17 +440,21 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
   // Otherwise fall back to artifact_type
   const sourceType = artifact.metadata?.source_type as string | undefined
   const extensionMap: Record<string, string> = {
-    xlsx: 'excel',
-    xls: 'excel',
-    docx: 'word',
-    doc: 'word',
-    pptx: 'powerpoint',
-    ppt: 'powerpoint',
-    pdf: 'pdf',
+    xlsx: 'Excel',
+    xls: 'Excel',
+    docx: 'Word',
+    doc: 'Word',
+    pptx: 'PowerPoint',
+    ppt: 'PowerPoint',
+    pdf: 'PDF',
   }
   const typeLabel = sourceType
     ? extensionMap[sourceType] || sourceType
     : artifact.artifact_type || 'artifact'
+  // For converted binary files, show "Preview" instead of the original title
+  const displayTitle = sourceType
+    ? 'Preview'
+    : artifact.title || artifact.name
 
   return (
     <>
@@ -468,7 +472,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
               <ChevronRightIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
             )}
             <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">
-              {artifact.title || artifact.name}
+              {displayTitle}
             </span>
             <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
               ({typeLabel})

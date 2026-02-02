@@ -267,6 +267,9 @@ async def list_artifacts(
         artifact_list = []
         for a in artifacts:
             is_starred, is_key_result = get_starred_and_key_result(a)
+            # Get full artifact to access metadata
+            artifact_obj = managed.session.datastore.get_artifact_by_id(a["id"])
+            artifact_metadata = artifact_obj.metadata if artifact_obj else None
             artifact_list.append(
                 ArtifactInfo(
                     id=a["id"],
@@ -279,6 +282,7 @@ async def list_artifacts(
                     created_at=a.get("created_at"),
                     is_key_result=is_key_result,
                     is_starred=is_starred,
+                    metadata=artifact_metadata,
                 )
             )
 

@@ -176,6 +176,9 @@ export function ArtifactPanel() {
   const [docSourceType, setDocSourceType] = useState<'uri' | 'files'>('uri')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
+  // Document viewer state
+  const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string } | null>(null)
+  const [loadingDocument, setLoadingDocument] = useState(false)
   // Results filter - persisted in localStorage
   const [showPublishedOnly, setShowPublishedOnly] = useState(() => {
     const stored = localStorage.getItem('constat-results-filter')
@@ -278,6 +281,24 @@ export function ArtifactPanel() {
     } catch (err) {
       console.error('Failed to delete document:', err)
       alert('Failed to delete document. Please try again.')
+    }
+  }
+
+  const handleViewDocument = async (documentName: string) => {
+    if (!session) return
+    setLoadingDocument(true)
+    try {
+      const doc = await sessionsApi.getDocument(session.session_id, documentName)
+      setViewingDocument({
+        name: doc.name || documentName,
+        content: doc.content || '',
+        format: doc.format
+      })
+    } catch (err) {
+      console.error('Failed to load document:', err)
+      alert('Failed to load document. Please try again.')
+    } finally {
+      setLoadingDocument(false)
     }
   }
 
@@ -845,6 +866,53 @@ ${skill.body}`
                 )}
                 {uploading ? 'Uploading...' : 'Add'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Viewer Modal */}
+      {(viewingDocument || loadingDocument) && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {loadingDocument ? 'Loading...' : viewingDocument?.name}
+                </h3>
+                {viewingDocument?.format && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
+                    {viewingDocument.format}
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => setViewingDocument(null)}
+                className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded transition-colors"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              {loadingDocument ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : viewingDocument?.content ? (
+                viewingDocument.format === 'markdown' ? (
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {viewingDocument.content}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono">
+                    {viewingDocument.content}
+                  </pre>
+                )
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No content available</p>
+              )}
             </div>
           </div>
         </div>
@@ -2107,7 +2175,7 @@ ${skill.body}`
           command="/entities"
           action={<div className="w-6 h-6" />}
         >
-          <EntityAccordion entities={entities} />
+          <EntityAccordion entities={entities} onDocumentClick={handleViewDocument} />
         </AccordionSection>
       )}
     </div>

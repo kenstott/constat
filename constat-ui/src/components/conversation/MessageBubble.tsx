@@ -57,10 +57,10 @@ const typeStyles: Record<MessageType, { bg: string; text: string; icon: typeof U
     iconColor: 'text-gray-500 dark:text-gray-400',
   },
   thinking: {
-    bg: 'bg-gray-50 dark:bg-gray-800',
-    text: 'text-gray-600 dark:text-gray-400',
+    bg: 'bg-purple-50 dark:bg-purple-900/30',
+    text: 'text-gray-700 dark:text-gray-300',
     icon: CpuChipIcon,
-    iconColor: 'text-gray-500 dark:text-gray-400',
+    iconColor: 'text-purple-500 dark:text-purple-400',
   },
   plan: {
     bg: 'bg-blue-50 dark:bg-blue-900/30',
@@ -158,7 +158,7 @@ export function MessageBubble({
           {/* Copy button - appears on hover, tucked into corner */}
           <button
             onClick={handleCopy}
-            className={`absolute top-[3px] right-[3px] p-1 rounded transition-all ${
+            className={`absolute top-[-2px] right-[-2px] p-1 rounded transition-all ${
               copied
                 ? 'text-green-500 dark:text-green-400'
                 : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
