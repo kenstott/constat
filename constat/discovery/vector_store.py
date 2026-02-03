@@ -1225,7 +1225,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.executemany(
             """
-            INSERT INTO entities
+            INSERT OR IGNORE INTO entities
             (id, name, type, source, parent_id, embedding, metadata, config_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
