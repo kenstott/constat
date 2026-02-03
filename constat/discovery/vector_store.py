@@ -1215,10 +1215,11 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         # Delete existing entities with these IDs first to avoid conflict issues
         # DuckDB's executemany with ON CONFLICT doesn't handle batch duplicates well
+        # Use LOWER() for case-insensitive matching since IDs are normalized to lowercase
         if entity_ids:
             placeholders = ",".join(["?" for _ in entity_ids])
             self._conn.execute(
-                f"DELETE FROM entities WHERE id IN ({placeholders})",
+                f"DELETE FROM entities WHERE LOWER(id) IN ({placeholders})",
                 entity_ids,
             )
 

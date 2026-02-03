@@ -1349,7 +1349,9 @@ class DocumentDiscoveryTools:
             return result
 
         # Handle expanded names from glob/directory (format: "parent:filename")
-        if ":" in name:
+        # But skip API-style document names (api:*, Database:*, Table:*, etc.)
+        api_prefixes = ("api:", "Database:", "Table:", "__")
+        if ":" in name and not any(name.startswith(p) for p in api_prefixes):
             parent_name, filename = name.split(":", 1)
             # Check permissions on parent name
             if not self._is_document_allowed(parent_name):
@@ -1386,30 +1388,28 @@ class DocumentDiscoveryTools:
             except Exception as e:
                 return {"error": f"Failed to load file: {str(e)}"}
         else:
+            # System-generated documents (API, Database, Table) skip permission checks
+            # and go straight to vector store reconstruction
+            system_prefixes = ("api:", "Database:", "Table:", "__")
+            if any(name.startswith(p) for p in system_prefixes):
+                return self._reconstruct_from_chunks(name)
+
             # Standard document name - check permissions
-            print(f"[GET_DOC] Looking for document: {name}")
-            print(f"[GET_DOC] allowed_documents: {self.allowed_documents}")
             if not self._is_document_allowed(name):
-                print(f"[GET_DOC] Access denied: {name}")
                 return {"error": f"Access denied to document: {name}"}
 
             # Try base config documents
             doc_config = self.config.documents.get(name)
-            print(f"[GET_DOC] In base config: {doc_config is not None}")
 
             # Try project documents if not in base
             if not doc_config:
-                print(f"[GET_DOC] Checking {len(self.config.projects)} projects")
                 for proj_name, project in self.config.projects.items():
-                    print(f"[GET_DOC] Project {proj_name}: docs={list(project.documents.keys()) if project.documents else []}")
                     if project.documents and name in project.documents:
                         doc_config = project.documents[name]
-                        print(f"[GET_DOC] Found in project {proj_name}")
                         break
 
             # Fallback: reconstruct from vector store chunks
             if not doc_config:
-                print(f"[GET_DOC] Not in config, trying vector store reconstruction")
                 return self._reconstruct_from_chunks(name)
 
             # Load from config
@@ -1440,7 +1440,7 @@ class DocumentDiscoveryTools:
         """Reconstruct document content from vector store chunks.
 
         This is a fallback for documents that were indexed but aren't in config
-        (e.g., session-uploaded documents).
+        (e.g., session-uploaded documents, API metadata).
 
         Args:
             name: Document name to reconstruct
@@ -1461,12 +1461,7 @@ class DocumentDiscoveryTools:
             ).fetchall()
 
             if not chunks:
-                # Debug: list all available document names
-                all_docs = self._vector_store._conn.execute(
-                    "SELECT DISTINCT document_name FROM embeddings"
-                ).fetchall()
-                doc_names = [d[0] for d in all_docs]
-                logger.warning(f"Document '{name}' not found. Available: {doc_names[:10]}")
+                logger.warning(f"Document '{name}' not found in embeddings table")
                 return {"error": f"Document not found: {name}"}
 
             # Reconstruct content from chunks
@@ -1717,10 +1712,18 @@ class DocumentDiscoveryTools:
         """Load a document from its configured source."""
         from datetime import datetime
 
-        if name not in self.config.documents:
-            raise ValueError(f"Document not configured: {name}")
+        # Check base config first
+        doc_config = self.config.documents.get(name)
 
-        doc_config = self.config.documents[name]
+        # Check project documents if not in base
+        if not doc_config:
+            for project in self.config.projects.values():
+                if project.documents and name in project.documents:
+                    doc_config = project.documents[name]
+                    break
+
+        if not doc_config:
+            raise ValueError(f"Document not configured: {name}")
         content = ""
         doc_format = doc_config.format
 
@@ -1732,27 +1735,27 @@ class DocumentDiscoveryTools:
         elif doc_config.type == "file":
             if doc_config.path:
                 path = Path(doc_config.path)
+                # Resolve relative paths from config directory
+                if not path.is_absolute() and self.config.config_dir:
+                    path = (Path(self.config.config_dir) / doc_config.path).resolve()
                 if path.exists():
                     suffix = path.suffix.lower()
+
+                    # Binary document formats - return file path for local app to open
+                    if suffix in (".pdf", ".docx", ".xlsx", ".pptx"):
+                        return {
+                            "name": name,
+                            "type": "file",
+                            "path": str(path),
+                            "format": suffix[1:],  # pdf, docx, xlsx, pptx
+                        }
 
                     # Check for structured data files - use schema metadata
                     schema = _infer_structured_schema(path, doc_config.description)
                     if schema:
                         content = schema.to_metadata_doc()
                         doc_format = schema.file_format
-                    # Handle binary document formats
-                    elif suffix == ".pdf":
-                        content = self._extract_pdf_text(path)
-                        doc_format = "text"
-                    elif suffix == ".docx":
-                        content = self._extract_docx_text(path)
-                        doc_format = "text"
-                    elif suffix == ".xlsx":
-                        content = self._extract_xlsx_text(path)
-                        doc_format = "text"
-                    elif suffix == ".pptx":
-                        content = self._extract_pptx_text(path)
-                        doc_format = "text"
+                    # Text-based files - return content for rendering
                     else:
                         content = path.read_text()
                         if doc_format == "auto":

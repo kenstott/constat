@@ -373,11 +373,15 @@ class Session:
 
         # Document discovery tools (for reference documents)
         # Always create doc_tools - don't make first user pay lazy loading cost
+        # IMPORTANT: Keep schema and API entities separate to avoid type confusion
+        # (passing API names as schema_entities causes them to be typed as TABLE)
         t0 = time.time()
         schema_entities = set(self.schema_manager.get_entity_names())
-        api_entities = self._get_api_entity_names()
-        all_entities = schema_entities | api_entities
-        self.doc_tools = DocumentDiscoveryTools(config, schema_entities=all_entities)
+        api_entities = list(self._get_api_entity_names())
+        self.doc_tools = DocumentDiscoveryTools(config, schema_entities=schema_entities)
+        # Set API entities separately for proper type assignment
+        if api_entities:
+            self.doc_tools.set_openapi_entities(api_entities, api_entities)
 
         # Process schema/API metadata through NER for cross-datasource entity linking
         schema_metadata = self.schema_manager.get_description_text()
@@ -1040,12 +1044,14 @@ class Session:
             api_count = len(self.api_schema_manager.metadata_cache)
 
         # Pass schema entities to doc_tools for entity extraction
-        # Include API endpoints as entities
+        # IMPORTANT: Keep schema and API entities separate to avoid type confusion
         if self.doc_tools:
             schema_entities = set(self.schema_manager.get_entity_names())
-            api_entities = self._get_api_entity_names()
-            all_entities = schema_entities | api_entities
-            self.doc_tools.set_schema_entities(all_entities)
+            api_entities = list(self._get_api_entity_names())
+            self.doc_tools.set_schema_entities(schema_entities)
+            # Set API entities separately for proper type assignment
+            if api_entities:
+                self.doc_tools.set_openapi_entities(api_entities, api_entities)
 
             # Process schema metadata (names + descriptions) through NER
             schema_metadata = self.schema_manager.get_description_text()

@@ -575,24 +575,28 @@ async def list_entities(
     # Use dict keyed by normalized_name only for deduplication (merge across types)
     from constat.discovery.models import normalize_entity_name, display_entity_name
 
-    # Consolidate similar types into simpler categories
+    # Consolidate similar types into simpler categories for display
     TYPE_CONSOLIDATION = {
-        "api_endpoint": "api",
-        "api_schema": "api",
+        "api_endpoint": "api_endpoint",
+        "api_schema": "api_schema",
+        "api_field": "api_field",
+        "rest_field": "api_field",  # REST fields -> api_field
+        "rest": "api_endpoint",     # REST endpoint -> api_endpoint
+        "rest/schema": "api_schema", # REST schema -> api_schema
         "graphql_type": "graphql",
         "graphql_field": "graphql",
     }
 
     # Type priority for picking primary type when merging (higher = preferred)
-    # Schema elements (table, column) have highest priority as they're the primary data model
-    # API elements come next, then general concepts/NER types
+    # API fields should NOT lose to table/column when they're clearly API-sourced
+    # Schema elements come after API-specific types to avoid misclassification
     TYPE_PRIORITY = {
-        "table": 100,
-        "column": 90,
-        "api": 80,
-        "api_endpoint": 75,
-        "api_schema": 70,
-        "graphql": 65,
+        "api_field": 95,      # API fields should win over generic table/column
+        "api_endpoint": 90,
+        "api_schema": 85,
+        "graphql": 80,
+        "table": 75,          # Schema types below API types
+        "column": 70,
         "concept": 40,
         "business_term": 30,
         "organization": 20,
@@ -614,6 +618,22 @@ async def list_entities(
         """
         # Consolidate type
         etype = TYPE_CONSOLIDATION.get(etype, etype)
+
+        # Detect and correct type based on reference sources
+        # If all references are from API sources but type is table/column, correct it
+        if etype in ("table", "column") and references:
+            api_refs = [r for r in references if r.get("document", "").startswith("api:")]
+            non_api_refs = [r for r in references if not r.get("document", "").startswith("api:")]
+            if api_refs and not non_api_refs:
+                # All references are API - infer type from section patterns
+                sections = [r.get("section", "") for r in api_refs]
+                if any("field" in s.lower() for s in sections):
+                    etype = "api_field"
+                elif any("schema" in s.lower() for s in sections):
+                    etype = "api_schema"
+                else:
+                    etype = "api_endpoint"
+
         normalized = normalize_entity_name(name)
         display = display_entity_name(name)
         key = normalized.lower()

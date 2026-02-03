@@ -649,17 +649,17 @@ async def upload_documents(
     }
 
 
-@router.get("/{session_id}/documents/{document_name}")
+@router.get("/{session_id}/document")
 async def get_document(
     session_id: str,
-    document_name: str,
+    name: str,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
     """Get the content of a document by name.
 
     Args:
         session_id: Session ID
-        document_name: Name of the document to retrieve
+        name: Document name (query parameter to handle names with slashes)
 
     Returns:
         Document content and metadata
@@ -672,9 +672,61 @@ async def get_document(
     if not managed.session.doc_tools:
         raise HTTPException(status_code=404, detail="Document tools not available")
 
-    result = managed.session.doc_tools.get_document(document_name)
+    result = managed.session.doc_tools.get_document(name)
 
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
 
     return result
+
+
+@router.get("/{session_id}/file")
+async def serve_file(
+    session_id: str,
+    path: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> FileResponse:
+    """Serve a document file for viewing/download.
+
+    Args:
+        session_id: Session ID (for authentication)
+        path: Absolute path to the file
+
+    Returns:
+        FileResponse for the requested file
+
+    Raises:
+        404: File not found
+        403: Access denied (path outside allowed directories)
+    """
+    # Verify session exists (for authentication)
+    managed = session_manager.get_session(session_id)
+
+    file_path = Path(path)
+
+    # Security: Only allow files within the config directory
+    config_dir = Path(managed.session.config.config_dir).resolve() if managed.session.config.config_dir else None
+    if config_dir:
+        try:
+            file_path.resolve().relative_to(config_dir)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied: file outside config directory")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Determine media type
+    suffix = file_path.suffix.lower()
+    media_types = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    media_type = media_types.get(suffix, "application/octet-stream")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type,
+        filename=file_path.name,
+    )

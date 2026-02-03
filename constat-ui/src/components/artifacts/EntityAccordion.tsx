@@ -6,7 +6,6 @@ import type { Entity } from '@/types/api'
 
 interface EntityAccordionProps {
   entities: Entity[]
-  onDocumentClick?: (documentName: string) => void
 }
 
 // All possible entity types
@@ -22,10 +21,9 @@ const ENTITY_TYPES = [
 
 interface EntityItemProps {
   entity: Entity
-  onDocumentClick?: (documentName: string) => void
 }
 
-function EntityItem({ entity, onDocumentClick }: EntityItemProps) {
+function EntityItem({ entity }: EntityItemProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   // Get original name for display (if different from normalized name)
@@ -79,21 +77,48 @@ function EntityItem({ entity, onDocumentClick }: EntityItemProps) {
               <span className="font-mono text-gray-500 dark:text-gray-400">{originalName}</span>
             </div>
           )}
-          {/* Sources - show unique document names from references */}
-          {references.length > 0 && (
-            <div className="flex items-center gap-1 flex-wrap">
-              <span className="text-xs text-gray-400 dark:text-gray-500">Sources:</span>
-              {[...new Set(references.map(r => r.document).filter(Boolean))].map((doc, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => onDocumentClick?.(doc)}
-                  className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 hover:underline transition-colors cursor-pointer"
-                >
-                  {doc}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Sources - show aggregated high-level source names */}
+          {references.length > 0 && (() => {
+            // Extract high-level source from detailed paths
+            // e.g., "api:catfacts.GET /breeds.coat" -> "catfacts (API)"
+            // e.g., "Table: shipments" with section "Database: inventory" -> "inventory (DB)"
+            // e.g., "Database: sales_data" -> "sales_data (DB)"
+            // e.g., "business_rules" -> "business_rules"
+            const getHighLevelSource = (ref: { document?: string; section?: string }): string => {
+              const doc = ref.document || ''
+              const section = ref.section || ''
+              if (doc.startsWith('api:')) {
+                const apiPart = doc.substring(4) // Remove "api:"
+                const apiName = apiPart.split('.')[0] // Get first segment
+                return `${apiName} (API)`
+              }
+              // Table: X with Database: Y in section -> Y (DB)
+              if (doc.startsWith('Table: ') && section.startsWith('Database: ')) {
+                return `${section.substring(10)} (DB)`
+              }
+              if (doc.startsWith('Database: ')) {
+                return `${doc.substring(10)} (DB)`
+              }
+              if (doc.startsWith('__') && doc.includes('_metadata__')) {
+                return 'Schema metadata'
+              }
+              return doc
+            }
+            const uniqueSources = [...new Set(references.map(r => getHighLevelSource(r)).filter(Boolean))]
+            return (
+              <div className="flex items-center gap-1 flex-wrap">
+                <span className="text-xs text-gray-400 dark:text-gray-500">Sources:</span>
+                {uniqueSources.map((src, idx) => (
+                  <span
+                    key={idx}
+                    className="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 rounded"
+                  >
+                    {src}
+                  </span>
+                ))}
+              </div>
+            )
+          })()}
           {/* References */}
           {references.length === 0 ? (
             <p className="text-xs text-gray-400 dark:text-gray-500">
@@ -134,7 +159,7 @@ function EntityItem({ entity, onDocumentClick }: EntityItemProps) {
   )
 }
 
-export function EntityAccordion({ entities, onDocumentClick }: EntityAccordionProps) {
+export function EntityAccordion({ entities }: EntityAccordionProps) {
   const [searchText, setSearchText] = useState('')
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set())
 
@@ -287,7 +312,7 @@ export function EntityAccordion({ entities, onDocumentClick }: EntityAccordionPr
         // For small lists, just show flat list
         <div className="space-y-0">
           {sortedEntities.map((entity) => (
-            <EntityItem key={entity.id} entity={entity} onDocumentClick={onDocumentClick} />
+            <EntityItem key={entity.id} entity={entity} />
           ))}
         </div>
       ) : (
@@ -300,7 +325,7 @@ export function EntityAccordion({ entities, onDocumentClick }: EntityAccordionPr
               </div>
               <div className="space-y-0">
                 {letterEntities.map((entity) => (
-                  <EntityItem key={entity.id} entity={entity} onDocumentClick={onDocumentClick} />
+                  <EntityItem key={entity.id} entity={entity} />
                 ))}
               </div>
             </div>

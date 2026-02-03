@@ -289,6 +289,16 @@ export function ArtifactPanel() {
     setLoadingDocument(true)
     try {
       const doc = await sessionsApi.getDocument(session.session_id, documentName)
+
+      // For file types (PDF, Office docs), open via file serving endpoint
+      if (doc.type === 'file' && doc.path) {
+        // Open file in new tab via file serving endpoint
+        const fileUrl = `/api/sessions/${session.session_id}/file?path=${encodeURIComponent(doc.path)}`
+        window.open(fileUrl, '_blank')
+        return
+      }
+
+      // For content types (markdown, text), show in modal
       setViewingDocument({
         name: doc.name || documentName,
         content: doc.content || '',
@@ -2178,7 +2188,7 @@ ${skill.body}`
           command="/entities"
           action={<div className="w-6 h-6" />}
         >
-          <EntityAccordion entities={entities} onDocumentClick={handleViewDocument} />
+          <EntityAccordion entities={entities} />
         </AccordionSection>
       )}
     </div>

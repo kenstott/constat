@@ -241,10 +241,11 @@ export async function uploadDocuments(
 // Get document content
 export interface DocumentContent {
   name: string
-  content: string
+  type?: 'file' | 'content'  // 'file' = open with system app, 'content' = render in modal
+  content?: string
   format?: string
   sections?: string[]
-  path?: string
+  path?: string  // For type='file', the local file path
   metadata?: Record<string, unknown>
 }
 
@@ -252,7 +253,7 @@ export async function getDocument(
   sessionId: string,
   documentName: string
 ): Promise<DocumentContent> {
-  const response = await fetch(`/api/sessions/${sessionId}/documents/${encodeURIComponent(documentName)}`)
+  const response = await fetch(`/api/sessions/${sessionId}/document?name=${encodeURIComponent(documentName)}`)
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Document not found' }))
