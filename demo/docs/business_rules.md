@@ -69,4 +69,3 @@ Revenue is recognized when:
 - Annual reviews: All employees in Q4
 - Mid-year check-ins: Optional but recommended
 - New hire reviews: 30, 60, 90 days after start
-in fac
