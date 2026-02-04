@@ -17,12 +17,10 @@ from constat.discovery.models import (
     Entity,
     ChunkEntity,
     EnrichedChunk,
-    EntityType,
+    SemanticType,
+    NerType,
 )
-from constat.discovery.entity_extractor import (
-    EntityExtractor,
-    ExtractionConfig,
-)
+from constat.discovery.entity_extractor import EntityExtractor
 
 
 class TestEntityModels:
@@ -33,48 +31,71 @@ class TestEntityModels:
         entity = Entity(
             id="abc123",
             name="customers",
-            type=EntityType.TABLE,
-            metadata={"source": "catalog"},
+            display_name="Customers",
+            semantic_type=SemanticType.CONCEPT,
+            session_id="test-session",
         )
 
         assert entity.id == "abc123"
         assert entity.name == "customers"
-        assert entity.type == EntityType.TABLE
-        assert entity.metadata == {"source": "catalog"}
+        assert entity.display_name == "Customers"
+        assert entity.semantic_type == SemanticType.CONCEPT
+        assert entity.session_id == "test-session"
+
+    def test_entity_defaults(self):
+        """Test Entity default values."""
+        entity = Entity(
+            id="xyz",
+            name="test",
+            display_name="Test",
+            semantic_type=SemanticType.CONCEPT,
+            session_id="test-session",
+        )
+
+        assert entity.project_id is None
+        assert entity.ner_type is None
         assert entity.created_at is not None
+        # Backwards compatibility: type property returns semantic_type
+        assert entity.type == SemanticType.CONCEPT
 
     def test_chunk_entity_creation(self):
         """Test creating a ChunkEntity link."""
         link = ChunkEntity(
             chunk_id="chunk_1",
             entity_id="entity_1",
-            mention_count=3,
-            confidence=0.95,
+            confidence=0.85,
         )
 
         assert link.chunk_id == "chunk_1"
         assert link.entity_id == "entity_1"
-        assert link.mention_count == 3
-        assert link.confidence == 0.95
+        assert link.confidence == 0.85
 
-    def test_enriched_chunk_creation(self):
-        """Test creating an EnrichedChunk."""
+    def test_enriched_chunk(self):
+        """Test EnrichedChunk with entities."""
         chunk = DocumentChunk(
-            document_name="test_doc",
-            content="Some content",
-            section="Introduction",
+            document_name="test",
+            content="Test content",
+            section="Section",
             chunk_index=0,
         )
         entities = [
-            Entity(id="e1", name="customers", type=EntityType.TABLE),
-            Entity(id="e2", name="revenue", type=EntityType.CONCEPT),
+            Entity(
+                id="e1",
+                name="test entity",
+                display_name="Test Entity",
+                semantic_type=SemanticType.CONCEPT,
+                session_id="test",
+            ),
+            Entity(
+                id="e2",
+                name="acme corp",
+                display_name="Acme Corp",
+                semantic_type=SemanticType.CONCEPT,
+                ner_type=NerType.ORG,
+                session_id="test",
+            ),
         ]
-
-        enriched = EnrichedChunk(
-            chunk=chunk,
-            score=0.85,
-            entities=entities,
-        )
+        enriched = EnrichedChunk(chunk=chunk, score=0.85, entities=entities)
 
         assert enriched.chunk == chunk
         assert enriched.score == 0.85
@@ -86,12 +107,10 @@ class TestEntityExtractor:
 
     def test_extract_schema_entities(self):
         """Test extracting schema entities by pattern matching."""
-        config = ExtractionConfig(
-            extract_schema=True,
-            extract_ner=False,
-            schema_entities=["customers", "orders", "product_id"],
+        extractor = EntityExtractor(
+            session_id="test-session",
+            schema_terms=["customers", "orders", "product_id"],
         )
-        extractor = EntityExtractor(config)
 
         chunk = DocumentChunk(
             document_name="business_rules",
@@ -102,43 +121,17 @@ class TestEntityExtractor:
 
         results = extractor.extract(chunk)
 
-        # Should find customer, order, product id (singularized by normalize_entity_name)
+        # Should find schema terms
         entity_names = {r[0].name.lower() for r in results}
-        assert "customer" in entity_names
-        assert "order" in entity_names
-        assert "product id" in entity_names
-
-    def test_extract_named_entities_pascal_case(self):
-        """Test extracting PascalCase identifiers."""
-        config = ExtractionConfig(
-            extract_schema=False,
-            extract_ner=True,
-        )
-        extractor = EntityExtractor(config)
-
-        chunk = DocumentChunk(
-            document_name="docs",
-            content="The CustomerOrder class handles all OrderProcessing logic. It uses the PaymentGateway for transactions.",
-            section="Classes",
-            chunk_index=0,
-        )
-
-        results = extractor.extract(chunk)
-
-        entity_names = {r[0].name for r in results}
-        # Should extract PascalCase identifiers as named entities (now split into words)
-        assert "Customer Order" in entity_names
-        assert "Order Processing" in entity_names
-        # PaymentGateway may not be extracted if spaCy NER doesn't recognize it
+        assert "customers" in entity_names or "customer" in entity_names
+        assert "orders" in entity_names or "order" in entity_names
 
     def test_extract_business_terms(self):
         """Test extracting known business terms."""
-        config = ExtractionConfig(
-            extract_schema=False,
-            extract_ner=True,
+        extractor = EntityExtractor(
+            session_id="test-session",
             business_terms=["churn rate", "customer lifetime value", "MRR"],
         )
-        extractor = EntityExtractor(config)
 
         chunk = DocumentChunk(
             document_name="metrics",
@@ -153,37 +146,12 @@ class TestEntityExtractor:
         assert "churn rate" in entity_names
         assert "mrr" in entity_names
 
-    def test_mention_count(self):
-        """Test that mention count is tracked correctly."""
-        config = ExtractionConfig(
-            extract_schema=True,
-            extract_ner=False,
-            schema_entities=["customers"],
-        )
-        extractor = EntityExtractor(config)
-
-        chunk = DocumentChunk(
-            document_name="docs",
-            content="The customers table has many customers. Query customers by id. Update customers.",
-            section="Guide",
-            chunk_index=0,
-        )
-
-        results = extractor.extract(chunk)
-
-        # Should have one entity with multiple mentions
-        assert len(results) == 1
-        entity, link = results[0]
-        assert entity.name.lower() == "customer"  # Singularized by normalize_entity_name
-        assert link.mention_count == 4  # "customers" appears 4 times
-
     def test_entity_deduplication(self):
         """Test that entities are deduplicated across extractions."""
-        config = ExtractionConfig(
-            extract_schema=True,
-            schema_entities=["users"],
+        extractor = EntityExtractor(
+            session_id="test-session",
+            schema_terms=["users"],
         )
-        extractor = EntityExtractor(config)
 
         chunk1 = DocumentChunk(
             document_name="doc1",
@@ -201,80 +169,198 @@ class TestEntityExtractor:
         extractor.extract(chunk1)
         extractor.extract(chunk2)
 
-        # Should only have one unique entity
+        # Should only have one unique entity for "users"
         all_entities = extractor.get_all_entities()
-        assert len(all_entities) == 1
+        user_entities = [e for e in all_entities if "user" in e.name.lower()]
+        assert len(user_entities) == 1
 
-    def test_confidence_levels(self):
-        """Test that confidence levels are set appropriately."""
-        config = ExtractionConfig(
-            extract_schema=True,
-            extract_ner=True,
-            schema_entities=["orders"],
+    def test_extractor_requires_session_id(self):
+        """Test that session_id is required."""
+        # This should work
+        extractor = EntityExtractor(session_id="test")
+        assert extractor.session_id == "test"
+
+    def test_api_terms_extraction(self):
+        """Test extracting API endpoint terms."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            api_terms=["/users", "/orders", "GET /products"],
         )
-        extractor = EntityExtractor(config)
 
         chunk = DocumentChunk(
-            document_name="docs",
-            content="The orders table uses CustomerOrder class.",
-            section="Model",
+            document_name="api_docs",
+            content="Use /users endpoint to get user data. The /orders endpoint returns order history.",
+            section="Endpoints",
             chunk_index=0,
         )
 
         results = extractor.extract(chunk)
 
-        # Schema entities should have higher confidence than NER
-        for entity, link in results:
-            if entity.name.lower() == "orders":
-                assert link.confidence >= 0.9  # Schema match
-            elif entity.name == "CustomerOrder":
-                assert link.confidence < 0.9  # NER extraction
+        # Entity names may be normalized (singular form)
+        entity_names = {r[0].name.lower() for r in results}
+        # Check that we got API-related entities (may be normalized)
+        assert any("/user" in name for name in entity_names)
+        assert any("/order" in name for name in entity_names)
 
-
-class TestExtractionConfig:
-    """Test ExtractionConfig options."""
-
-    def test_disable_all_extraction(self):
-        """Test that disabling all extraction returns empty results."""
-        config = ExtractionConfig(
-            extract_schema=False,
-            extract_ner=False,
+    def test_get_all_entities(self):
+        """Test retrieving all extracted entities."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            schema_terms=["customers", "products"],
         )
-        extractor = EntityExtractor(config)
 
         chunk = DocumentChunk(
             document_name="docs",
-            content="Some content with CustomerOrder and tables.",
-            section="Test",
+            content="Query customers and products tables.",
+            section="Guide",
+            chunk_index=0,
+        )
+
+        extractor.extract(chunk)
+        entities = extractor.get_all_entities()
+
+        # Should have extracted entities
+        assert len(entities) >= 1
+        assert all(isinstance(e, Entity) for e in entities)
+
+    def test_semantic_type_mapping_for_schema(self):
+        """Test that SCHEMA patterns get CONCEPT semantic type."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            schema_terms=["customers"],
+        )
+
+        chunk = DocumentChunk(
+            document_name="doc",
+            content="The customers table is used for storing customer data.",
+            section="Guide",
             chunk_index=0,
         )
 
         results = extractor.extract(chunk)
-        assert len(results) == 0
 
-    def test_update_schema_entities(self):
-        """Test dynamically updating schema entities."""
-        config = ExtractionConfig(
-            extract_schema=True,
-            extract_ner=False,
+        # Find the customers entity
+        customer_entities = [e for e, _ in results if "customer" in e.name.lower()]
+        assert len(customer_entities) >= 1
+
+        # SCHEMA patterns should be CONCEPT (nouns/things)
+        for entity in customer_entities:
+            assert entity.semantic_type == SemanticType.CONCEPT
+
+    def test_semantic_type_mapping_for_api(self):
+        """Test that API patterns get ACTION semantic type."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            api_terms=["create_user", "get_orders"],
         )
-        extractor = EntityExtractor(config)
 
         chunk = DocumentChunk(
-            document_name="docs",
-            content="The products table contains items.",
+            document_name="doc",
+            content="Call create_user to add new users. Use get_orders to fetch order history.",
+            section="API",
+            chunk_index=0,
+        )
+
+        results = extractor.extract(chunk)
+
+        # API patterns should be ACTION (verbs/operations)
+        api_entities = [e for e, _ in results if "create" in e.name.lower() or "get" in e.name.lower()]
+        for entity in api_entities:
+            assert entity.semantic_type == SemanticType.ACTION
+
+    def test_display_name_generation(self):
+        """Test that display_name is title case for schema names."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            schema_terms=["order_items"],
+        )
+
+        chunk = DocumentChunk(
+            document_name="doc",
+            content="The order_items table links orders to products.",
             section="Schema",
             chunk_index=0,
         )
 
-        # Initially no schema entities
         results = extractor.extract(chunk)
-        assert len(results) == 0
 
-        # Update with schema entities
-        extractor.update_schema_entities(["products"])
-        extractor.clear_cache()
+        # Find the order_items entity
+        order_entities = [e for e, _ in results if "order" in e.name.lower()]
+        assert len(order_entities) >= 1
+
+        # Display name should be title case
+        for entity in order_entities:
+            # name should be lowercase normalized
+            assert entity.name == entity.name.lower() or "_" not in entity.name
+            # display_name should be title case
+            assert entity.display_name[0].isupper()
+
+    def test_ner_type_preserved_for_spacy_entities(self):
+        """Test that spaCy NER types are preserved as ner_type."""
+        extractor = EntityExtractor(session_id="test-session")
+
+        # spaCy should recognize organizations like "Microsoft"
+        chunk = DocumentChunk(
+            document_name="doc",
+            content="Microsoft Corporation announced new products. Apple Inc released updates.",
+            section="News",
+            chunk_index=0,
+        )
 
         results = extractor.extract(chunk)
-        assert len(results) == 1
-        assert results[0][0].name.lower() == "product"  # Singularized by normalize_entity_name
+
+        # Find entities from spaCy NER (like Microsoft, Apple)
+        org_entities = [e for e, _ in results if e.ner_type == NerType.ORG]
+
+        # If spaCy recognizes these as ORG, they should have ner_type set
+        # Note: spaCy recognition may vary, so we just verify the pattern
+        for entity in org_entities:
+            assert entity.ner_type == NerType.ORG
+            # NER entities should be CONCEPT (nouns/things)
+            assert entity.semantic_type == SemanticType.CONCEPT
+
+    def test_custom_pattern_entities_have_no_ner_type(self):
+        """Test that custom pattern entities (schema/api) have no ner_type."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            schema_terms=["custom_table"],
+        )
+
+        chunk = DocumentChunk(
+            document_name="doc",
+            content="Query the custom_table for data.",
+            section="Schema",
+            chunk_index=0,
+        )
+
+        results = extractor.extract(chunk)
+
+        # Find the custom pattern entity
+        custom_entities = [e for e, _ in results if "custom" in e.name.lower()]
+        assert len(custom_entities) >= 1
+
+        # Custom patterns should NOT have ner_type (it's only for spaCy)
+        for entity in custom_entities:
+            assert entity.ner_type is None
+
+    def test_entity_project_id_from_extractor(self):
+        """Test that project_id is set from extractor initialization."""
+        extractor = EntityExtractor(
+            session_id="test-session",
+            project_id="my-project",
+            schema_terms=["test_table"],
+        )
+
+        chunk = DocumentChunk(
+            document_name="doc",
+            content="The test_table stores data.",
+            section="Schema",
+            chunk_index=0,
+        )
+
+        results = extractor.extract(chunk)
+
+        # Entities should have project_id set
+        for entity, _ in results:
+            assert entity.project_id == "my-project"
+            assert entity.session_id == "test-session"

@@ -12,9 +12,34 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional, Any
 
 from constat.core.config import DocumentConfig
+
+
+class ChunkType(str, Enum):
+    """Granular type for document chunks.
+
+    Identifies what kind of resource a chunk describes.
+    """
+    # Database schema
+    DB_TABLE = "db_table"
+    DB_COLUMN = "db_column"
+    DB_SCHEMA = "db_schema"
+
+    # REST API
+    API_ENDPOINT = "api_endpoint"
+    API_SCHEMA = "api_schema"
+
+    # GraphQL
+    GRAPHQL_QUERY = "graphql_query"
+    GRAPHQL_MUTATION = "graphql_mutation"
+    GRAPHQL_TYPE = "graphql_type"
+    GRAPHQL_FIELD = "graphql_field"
+
+    # Documents
+    DOCUMENT = "document"
 
 
 def singularize(word: str) -> str:
@@ -256,8 +281,27 @@ def extract_resource_from_path(path: str) -> str:
     return meaningful_segments[-1]
 
 
+class SemanticType:
+    """Semantic type constants - linguistic role of the entity."""
+    CONCEPT = "concept"      # Noun/thing: customer, order, user, product
+    ATTRIBUTE = "attribute"  # Modifier/property: active, pending, total, name
+    ACTION = "action"        # Verb/operation: create, get, delete, update
+    TERM = "term"            # Compound phrase: "customer lifetime value", "MRR"
+
+
+class NerType:
+    """NER type constants - spaCy entity classification."""
+    ORG = "ORG"          # Organizations
+    PERSON = "PERSON"    # People
+    PRODUCT = "PRODUCT"  # Products
+    GPE = "GPE"          # Geo-political entities
+    EVENT = "EVENT"      # Events
+    # None = not from spaCy (schema/API patterns)
+
+
+# Keep EntityType for backwards compatibility during migration
 class EntityType:
-    """Entity type constants."""
+    """Entity type constants. DEPRECATED: Use SemanticType and NerType instead."""
     # Database schema
     TABLE = "table"
     COLUMN = "column"
@@ -280,13 +324,30 @@ class EntityType:
 
 @dataclass
 class Entity:
-    """An extracted entity from documents or schema."""
+    """An NER-extracted entity from document chunks.
+
+    Attributes:
+        id: Primary key (hash of name, semantic_type, session_id)
+        name: Normalized name for NER matching (lowercase, singular)
+        display_name: Title case name for display ("Customer Order")
+        semantic_type: Linguistic role (CONCEPT, ATTRIBUTE, ACTION, TERM)
+        ner_type: spaCy NER type (ORG, PERSON, etc.) or None for schema/API patterns
+        session_id: Session that owns this entity (required)
+        project_id: Project this entity came from
+    """
     id: str
-    name: str
-    type: str  # EntityType constant
-    metadata: dict[str, Any] = field(default_factory=dict)
-    embedding: Optional[list[float]] = None
+    name: str  # Normalized: lowercase, singular
+    display_name: str  # Title case for display
+    semantic_type: str  # SemanticType value
+    session_id: str
+    ner_type: Optional[str] = None  # NerType value or None
+    project_id: Optional[str] = None
     created_at: Optional[datetime] = None
+
+    # Backwards compatibility: expose 'type' as alias for semantic_type
+    @property
+    def type(self) -> str:
+        return self.semantic_type
 
     def __post_init__(self):
         if self.created_at is None:
@@ -295,12 +356,10 @@ class Entity:
 
 @dataclass
 class ChunkEntity:
-    """Link between a chunk and an entity with exact mention text."""
+    """Link between a chunk and an NER-extracted entity."""
     chunk_id: str
     entity_id: str
-    mention_count: int = 1
-    confidence: float = 1.0
-    mention_text: Optional[str] = None  # Exact text as it appeared in source
+    confidence: float = 1.0  # NER confidence
 
 
 @dataclass
@@ -313,11 +372,22 @@ class EnrichedChunk:
 
 @dataclass
 class DocumentChunk:
-    """A chunk of a document for embedding and search."""
+    """A chunk of a document for embedding and search.
+
+    Attributes:
+        document_name: Name of the document this chunk belongs to
+        content: The text content of this chunk
+        section: Optional section header this chunk is under
+        chunk_index: Index of this chunk within the document
+        source: Resource type - 'schema', 'api', or 'document'
+        chunk_type: Granular type from ChunkType enum
+    """
     document_name: str
     content: str
     section: Optional[str] = None
     chunk_index: int = 0
+    source: str = "document"
+    chunk_type: ChunkType = ChunkType.DOCUMENT
 
 
 @dataclass

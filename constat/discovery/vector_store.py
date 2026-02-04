@@ -21,7 +21,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 import hashlib
-import json
 import logging
 
 import numpy as np
@@ -46,12 +45,18 @@ class VectorStoreBackend(ABC):
     EMBEDDING_DIM = 1024
 
     @abstractmethod
-    def add_chunks(self, chunks: list[DocumentChunk], embeddings: np.ndarray) -> None:
+    def add_chunks(
+        self,
+        chunks: list[DocumentChunk],
+        embeddings: np.ndarray,
+        source: str = "document",
+    ) -> None:
         """Add document chunks with their embeddings to the store.
 
         Args:
             chunks: List of DocumentChunk objects to store
             embeddings: numpy array of shape (n_chunks, embedding_dim)
+            source: Resource type - 'schema', 'api', or 'document'
         """
         pass
 
@@ -117,13 +122,17 @@ class NumpyVectorStore(VectorStoreBackend):
         self,
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
+        source: str = "document",
         session_id: str | None = None,
         project_id: str | None = None,
-        config_hash: str | None = None,
     ) -> None:
         """Add chunks with embeddings to in-memory storage."""
         if len(chunks) == 0:
             return
+
+        # Set source on chunks
+        for chunk in chunks:
+            chunk.source = source
 
         # Generate IDs and store chunks
         new_ids = [self._generate_chunk_id(c) for c in chunks]
@@ -241,58 +250,77 @@ class DuckDBVectorStore(VectorStoreBackend):
         # VSS extension is loaded via init_sql in ThreadLocalDuckDB
 
         # Create embeddings table with FLOAT array for vectors
+        # source: resource type ('schema', 'api', 'document')
+        # chunk_type: granular type ('db_table', 'db_column', 'api_endpoint', 'document', etc.)
+        # project_id: source identifier ('__base__' for config, project filename for projects)
         self._conn.execute(f"""
             CREATE TABLE IF NOT EXISTS embeddings (
                 chunk_id VARCHAR PRIMARY KEY,
                 document_name VARCHAR NOT NULL,
+                source VARCHAR NOT NULL DEFAULT 'document',
+                chunk_type VARCHAR NOT NULL DEFAULT 'document',
                 section VARCHAR,
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
                 session_id VARCHAR,
-                project_id VARCHAR,
-                config_hash VARCHAR
-            )
-        """)
-
-        # Create unified entities table - ALL known entities (schema, API, extracted)
-        # This is the single source of truth for entity catalog
-        self._conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS entities (
-                id VARCHAR PRIMARY KEY,
-                name VARCHAR NOT NULL,
-                type VARCHAR NOT NULL,
-                source VARCHAR NOT NULL,
-                parent_id VARCHAR,
-                embedding FLOAT[{self.EMBEDDING_DIM}],
-                metadata JSON,
-                config_hash VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                session_id VARCHAR,
                 project_id VARCHAR
             )
         """)
-        # type: table, column, api_endpoint, api_field, api_schema, extracted
-        # source: schema, api, document
 
-        # Create chunk_entities junction table (links document chunks to entities)
-        # PK includes session_id so same (chunk_id, entity_id) can have both
-        # NULL session_id links (global) and session-scoped links
+        # Create entities table for NER-extracted entities
+        # Entities are session-scoped (rebuilt when session starts or projects change)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                display_name VARCHAR NOT NULL,
+                semantic_type VARCHAR NOT NULL,
+                ner_type VARCHAR,
+                session_id VARCHAR NOT NULL,
+                project_id VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # semantic_type: CONCEPT, ATTRIBUTE, ACTION, TERM (linguistic role)
+        # ner_type: ORG, PERSON, PRODUCT, GPE, EVENT or NULL (spaCy NER type)
+
+        # Create chunk_entities junction table (links chunks to NER entities)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS chunk_entities (
                 chunk_id VARCHAR NOT NULL,
                 entity_id VARCHAR NOT NULL,
-                mention_count INTEGER DEFAULT 1,
                 confidence FLOAT DEFAULT 1.0,
-                mention_text VARCHAR,
-                session_id VARCHAR DEFAULT '__none__',
-                project_id VARCHAR,
-                PRIMARY KEY (chunk_id, entity_id, session_id)
+                PRIMARY KEY (chunk_id, entity_id)
             )
         """)
 
-        # Migration: add new columns to existing tables if missing
-        self._migrate_schema()
+        # Create source_hashes table for config hashes per source (one row per source)
+        # Used for cache invalidation - avoids storing hash on every chunk
+        # Three hash types: db (databases), api (APIs), doc (documents)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS source_hashes (
+                source_id VARCHAR PRIMARY KEY,
+                db_hash VARCHAR,
+                api_hash VARCHAR,
+                doc_hash VARCHAR,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create resource_hashes table for fine-grained cache invalidation
+        # Tracks individual resources (databases, APIs, documents) within a source
+        # Enables incremental updates: only rebuild chunks for changed resources
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS resource_hashes (
+                resource_id VARCHAR PRIMARY KEY,
+                resource_type VARCHAR NOT NULL,
+                resource_name VARCHAR NOT NULL,
+                source_id VARCHAR NOT NULL,
+                content_hash VARCHAR NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         # Create indexes for efficient lookups
         try:
@@ -300,13 +328,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity ON chunk_entities(entity_id)"
             )
             self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_entities_source ON entities(source)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_entities_parent ON entities(parent_id)"
+                "CREATE INDEX IF NOT EXISTS idx_entities_semantic_type ON entities(semantic_type)"
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_embeddings_session ON embeddings(session_id)"
@@ -316,126 +338,6 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
-
-    def _migrate_schema(self) -> None:
-        """Migrate existing tables to new schema if needed."""
-        # DuckDB uses information_schema, not PRAGMA (which is SQLite)
-        def get_column_names(table_name: str) -> set[str]:
-            """Get column names for a table using DuckDB's information_schema."""
-            try:
-                result = self._conn.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
-                    [table_name]
-                ).fetchall()
-                return {row[0] for row in result}
-            except Exception as e:
-                logger.warning(f"Failed to get columns for {table_name}: {e}")
-                return set()
-
-        # Add session_id column to tables if missing (for multi-session isolation)
-        for table in ['embeddings', 'entities', 'chunk_entities']:
-            try:
-                col_names = get_column_names(table)
-                if col_names and 'session_id' not in col_names:
-                    logger.debug(f"_migrate_schema: adding session_id column to {table}")
-                    self._conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN session_id VARCHAR"
-                    )
-            except Exception as e:
-                logger.debug(f"_migrate_schema: failed to add session_id to {table}: {e}")
-
-        # Add project_id column to tables if missing (for project-level filtering)
-        for table in ['embeddings', 'entities', 'chunk_entities']:
-            try:
-                col_names = get_column_names(table)
-                if col_names and 'project_id' not in col_names:
-                    logger.debug(f"_migrate_schema: adding project_id column to {table}")
-                    self._conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN project_id VARCHAR"
-                    )
-            except Exception as e:
-                logger.debug(f"_migrate_schema: failed to add project_id to {table}: {e}")
-
-        # Add config_hash column to embeddings if missing (for cache invalidation)
-        try:
-            col_names = get_column_names('embeddings')
-            if col_names and 'config_hash' not in col_names:
-                logger.debug("_migrate_schema: adding config_hash column to embeddings")
-                self._conn.execute(
-                    "ALTER TABLE embeddings ADD COLUMN config_hash VARCHAR"
-                )
-        except Exception as e:
-            logger.debug(f"_migrate_schema: failed to add config_hash to embeddings: {e}")
-
-        # Add mention_text column to chunk_entities if missing
-        try:
-            col_names = get_column_names('chunk_entities')
-            if col_names and 'mention_text' not in col_names:
-                logger.debug("_migrate_schema: adding mention_text column to chunk_entities")
-                self._conn.execute(
-                    "ALTER TABLE chunk_entities ADD COLUMN mention_text VARCHAR"
-                )
-        except Exception as e:
-            logger.debug(f"_migrate_schema: failed to add mention_text to chunk_entities: {e}")
-
-        # Add new columns to entities table for unified catalog
-        try:
-            col_names = get_column_names('entities')
-
-            if col_names and 'source' not in col_names:
-                logger.debug("_migrate_schema: adding source column to entities")
-                self._conn.execute(
-                    "ALTER TABLE entities ADD COLUMN source VARCHAR DEFAULT 'document'"
-                )
-            if col_names and 'parent_id' not in col_names:
-                logger.debug("_migrate_schema: adding parent_id column to entities")
-                self._conn.execute(
-                    "ALTER TABLE entities ADD COLUMN parent_id VARCHAR"
-                )
-            if col_names and 'config_hash' not in col_names:
-                logger.debug("_migrate_schema: adding config_hash column to entities")
-                self._conn.execute(
-                    "ALTER TABLE entities ADD COLUMN config_hash VARCHAR"
-                )
-        except Exception as e:
-            logger.warning(f"_migrate_schema: failed to add columns to entities: {e}")
-
-        # Drop old tables if they exist (migrating to unified entities)
-        try:
-            self._conn.execute("DROP TABLE IF EXISTS table_embeddings")
-            self._conn.execute("DROP TABLE IF EXISTS api_embeddings")
-        except Exception as e:
-            logger.debug(f"_migrate_schema: failed to drop old tables: {e}")
-
-        # Migrate chunk_entities to new PK (includes session_id)
-        # Check if session_id has a default - if not, we need to recreate the table
-        try:
-            result = self._conn.execute("""
-                SELECT column_default
-                FROM information_schema.columns
-                WHERE table_name = 'chunk_entities' AND column_name = 'session_id'
-            """).fetchone()
-            needs_pk_migration = result is None or result[0] != "'__none__'"
-
-            if needs_pk_migration:
-                logger.info("_migrate_schema: migrating chunk_entities to new PK schema")
-                # Drop and recreate - data will be regenerated during session startup
-                self._conn.execute("DROP TABLE IF EXISTS chunk_entities")
-                self._conn.execute("""
-                    CREATE TABLE chunk_entities (
-                        chunk_id VARCHAR NOT NULL,
-                        entity_id VARCHAR NOT NULL,
-                        mention_count INTEGER DEFAULT 1,
-                        confidence FLOAT DEFAULT 1.0,
-                        mention_text VARCHAR,
-                        session_id VARCHAR DEFAULT '__none__',
-                        project_id VARCHAR,
-                        PRIMARY KEY (chunk_id, entity_id, session_id)
-                    )
-                """)
-                logger.info("_migrate_schema: chunk_entities table recreated with new PK")
-        except Exception as e:
-            logger.debug(f"_migrate_schema: chunk_entities PK migration check failed: {e}")
 
     def clear_session_data(self, session_id: str) -> None:
         """Remove all data for a specific session.
@@ -520,29 +422,280 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"delete_document({document_name}, {session_id}): deleted {len(chunk_ids)} chunks")
         return len(chunk_ids)
 
-    def get_project_config_hash(self, project_id: str) -> str | None:
-        """Get the config hash for a project's embeddings.
+    def get_source_hash(self, source_id: str, hash_type: str) -> str | None:
+        """Get a config hash for a source.
 
         Args:
-            project_id: Project ID to check
+            source_id: Source ID (project filename or "__base__")
+            hash_type: One of 'db', 'api', 'doc'
 
         Returns:
-            Config hash string or None if no embeddings exist
+            Config hash string or None if not found
         """
-        # Debug: check what embeddings exist for this project
-        count = self._conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE project_id = ?",
-            [project_id],
-        ).fetchone()[0]
-        logger.debug(f"get_project_config_hash({project_id}): found {count} embeddings")
+        if hash_type not in ('db', 'api', 'doc'):
+            raise ValueError(f"Invalid hash_type: {hash_type}")
 
+        column = f"{hash_type}_hash"
         result = self._conn.execute(
-            "SELECT config_hash FROM embeddings WHERE project_id = ? AND config_hash IS NOT NULL LIMIT 1",
-            [project_id],
+            f"SELECT {column} FROM source_hashes WHERE source_id = ?",
+            [source_id],
         ).fetchone()
         hash_val = result[0] if result else None
-        logger.debug(f"get_project_config_hash({project_id}): hash={hash_val}")
+        logger.debug(f"get_source_hash({source_id}, {hash_type}): {hash_val}")
         return hash_val
+
+    def set_source_hash(self, source_id: str, hash_type: str, config_hash: str) -> None:
+        """Set a config hash for a source.
+
+        Args:
+            source_id: Source ID (project filename or "__base__")
+            hash_type: One of 'db', 'api', 'doc'
+            config_hash: Hash of the source configuration
+        """
+        if hash_type not in ('db', 'api', 'doc'):
+            raise ValueError(f"Invalid hash_type: {hash_type}")
+
+        column = f"{hash_type}_hash"
+        # Upsert: insert row if not exists, then update the specific column
+        self._conn.execute("""
+            INSERT INTO source_hashes (source_id) VALUES (?)
+            ON CONFLICT (source_id) DO NOTHING
+        """, [source_id])
+        self._conn.execute(f"""
+            UPDATE source_hashes SET {column} = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE source_id = ?
+        """, [config_hash, source_id])
+        logger.debug(f"set_source_hash({source_id}, {hash_type}): {config_hash}")
+
+    # Backwards compatibility aliases
+    def get_project_config_hash(self, project_id: str) -> str | None:
+        """Get the document config hash for a source (backwards compatibility)."""
+        return self.get_source_hash(project_id, 'doc')
+
+    def set_project_config_hash(self, project_id: str, config_hash: str) -> None:
+        """Set the document config hash for a source (backwards compatibility)."""
+        self.set_source_hash(project_id, 'doc', config_hash)
+
+    # =========================================================================
+    # Resource-Level Hashing (Fine-Grained Cache Invalidation)
+    # =========================================================================
+
+    def _make_resource_id(self, source_id: str, resource_type: str, resource_name: str) -> str:
+        """Create a unique resource ID.
+
+        Args:
+            source_id: Source ID ('__base__' or project filename)
+            resource_type: Type of resource ('database', 'api', 'document')
+            resource_name: Name of the resource
+
+        Returns:
+            Unique resource ID in format '{source_id}:{type}:{name}'
+        """
+        return f"{source_id}:{resource_type}:{resource_name}"
+
+    def get_resource_hash(
+        self,
+        source_id: str,
+        resource_type: str,
+        resource_name: str,
+    ) -> str | None:
+        """Get the content hash for a specific resource.
+
+        Args:
+            source_id: Source ID ('__base__' or project filename)
+            resource_type: Type of resource ('database', 'api', 'document')
+            resource_name: Name of the resource
+
+        Returns:
+            Content hash or None if not found
+        """
+        resource_id = self._make_resource_id(source_id, resource_type, resource_name)
+        result = self._conn.execute(
+            "SELECT content_hash FROM resource_hashes WHERE resource_id = ?",
+            [resource_id],
+        ).fetchone()
+        hash_val = result[0] if result else None
+        logger.debug(f"get_resource_hash({resource_id}): {hash_val}")
+        return hash_val
+
+    def set_resource_hash(
+        self,
+        source_id: str,
+        resource_type: str,
+        resource_name: str,
+        content_hash: str,
+    ) -> None:
+        """Set the content hash for a specific resource.
+
+        Args:
+            source_id: Source ID ('__base__' or project filename)
+            resource_type: Type of resource ('database', 'api', 'document')
+            resource_name: Name of the resource
+            content_hash: Hash of the resource's content
+        """
+        resource_id = self._make_resource_id(source_id, resource_type, resource_name)
+        # Use two statements for DuckDB compatibility (CURRENT_TIMESTAMP not allowed in ON CONFLICT)
+        self._conn.execute("""
+            INSERT INTO resource_hashes (resource_id, resource_type, resource_name, source_id, content_hash)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (resource_id) DO UPDATE SET
+                content_hash = excluded.content_hash
+        """, [resource_id, resource_type, resource_name, source_id, content_hash])
+        # Update timestamp separately
+        self._conn.execute("""
+            UPDATE resource_hashes SET updated_at = CURRENT_TIMESTAMP WHERE resource_id = ?
+        """, [resource_id])
+        logger.debug(f"set_resource_hash({resource_id}): {content_hash}")
+
+    def delete_resource_hash(
+        self,
+        source_id: str,
+        resource_type: str,
+        resource_name: str,
+    ) -> bool:
+        """Delete the hash for a specific resource.
+
+        Args:
+            source_id: Source ID ('__base__' or project filename)
+            resource_type: Type of resource ('database', 'api', 'document')
+            resource_name: Name of the resource
+
+        Returns:
+            True if a hash was deleted, False if not found
+        """
+        resource_id = self._make_resource_id(source_id, resource_type, resource_name)
+        result = self._conn.execute(
+            "DELETE FROM resource_hashes WHERE resource_id = ? RETURNING resource_id",
+            [resource_id],
+        ).fetchone()
+        deleted = result is not None
+        logger.debug(f"delete_resource_hash({resource_id}): deleted={deleted}")
+        return deleted
+
+    def get_resource_hashes_for_source(
+        self,
+        source_id: str,
+        resource_type: str | None = None,
+    ) -> dict[str, str]:
+        """Get all resource hashes for a source.
+
+        Args:
+            source_id: Source ID ('__base__' or project filename)
+            resource_type: Optional filter by resource type
+
+        Returns:
+            Dict mapping resource_name to content_hash
+        """
+        if resource_type:
+            result = self._conn.execute(
+                "SELECT resource_name, content_hash FROM resource_hashes WHERE source_id = ? AND resource_type = ?",
+                [source_id, resource_type],
+            ).fetchall()
+        else:
+            result = self._conn.execute(
+                "SELECT resource_name, content_hash FROM resource_hashes WHERE source_id = ?",
+                [source_id],
+            ).fetchall()
+        return {row[0]: row[1] for row in result}
+
+    def delete_resource_chunks(
+        self,
+        source_id: str,
+        resource_type: str,
+        resource_name: str,
+    ) -> int:
+        """Delete chunks for a specific resource.
+
+        Used for incremental updates when a single resource changes.
+
+        Args:
+            source_id: Source ID ('__base__' or project filename)
+            resource_type: Type of resource ('database', 'api', 'document')
+            resource_name: Name of the resource (used as document_name in embeddings)
+
+        Returns:
+            Number of chunks deleted
+        """
+        # Map resource type to source type in embeddings
+        source_map = {
+            'database': 'schema',
+            'api': 'api',
+            'document': 'document',
+        }
+        source_type = source_map.get(resource_type, resource_type)
+
+        # Get chunk IDs for this resource
+        if source_id == '__base__':
+            # Base config: project_id is NULL or '__base__'
+            chunk_ids = self._conn.execute(
+                """
+                SELECT chunk_id FROM embeddings
+                WHERE document_name = ? AND source = ?
+                AND (project_id IS NULL OR project_id = '__base__')
+                """,
+                [resource_name, source_type],
+            ).fetchall()
+        else:
+            # Project: match project_id
+            chunk_ids = self._conn.execute(
+                """
+                SELECT chunk_id FROM embeddings
+                WHERE document_name = ? AND source = ? AND project_id = ?
+                """,
+                [resource_name, source_type, source_id],
+            ).fetchall()
+
+        chunk_ids = [row[0] for row in chunk_ids]
+
+        if not chunk_ids:
+            logger.debug(f"delete_resource_chunks({source_id}, {resource_type}, {resource_name}): no chunks found")
+            return 0
+
+        # Delete chunk-entity links
+        placeholders = ",".join(["?" for _ in chunk_ids])
+        self._conn.execute(
+            f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+            chunk_ids,
+        )
+
+        # Delete chunks
+        if source_id == '__base__':
+            self._conn.execute(
+                """
+                DELETE FROM embeddings
+                WHERE document_name = ? AND source = ?
+                AND (project_id IS NULL OR project_id = '__base__')
+                """,
+                [resource_name, source_type],
+            )
+        else:
+            self._conn.execute(
+                """
+                DELETE FROM embeddings
+                WHERE document_name = ? AND source = ? AND project_id = ?
+                """,
+                [resource_name, source_type, source_id],
+            )
+
+        logger.info(f"delete_resource_chunks({source_id}, {resource_type}, {resource_name}): deleted {len(chunk_ids)} chunks")
+        return len(chunk_ids)
+
+    def clear_resource_hashes_for_source(self, source_id: str) -> int:
+        """Clear all resource hashes for a source.
+
+        Args:
+            source_id: Source ID to clear
+
+        Returns:
+            Number of hashes deleted
+        """
+        result = self._conn.execute(
+            "DELETE FROM resource_hashes WHERE source_id = ? RETURNING resource_id",
+            [source_id],
+        ).fetchall()
+        count = len(result)
+        logger.debug(f"clear_resource_hashes_for_source({source_id}): deleted {count} hashes")
+        return count
 
     def clear_project_embeddings(self, project_id: str) -> int:
         """Clear all embeddings for a project.
@@ -595,19 +748,21 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
+        source: str = "document",
         session_id: str | None = None,
         project_id: str | None = None,
-        config_hash: str | None = None,
     ) -> None:
         """Add chunks with embeddings to DuckDB.
 
         Args:
             chunks: List of DocumentChunk objects
             embeddings: numpy array of embeddings
+            source: Resource type - 'schema', 'api', or 'document'
             session_id: Optional session ID for documents added during a session
             project_id: Optional project ID for documents belonging to a project
-            config_hash: Optional config hash for cache invalidation
         """
+        if source not in ("schema", "api", "document"):
+            raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
         if len(chunks) == 0:
             return
 
@@ -639,24 +794,27 @@ class DuckDBVectorStore(VectorStoreBackend):
             # Find the corresponding embedding
             original_idx = chunks.index(chunk)
             embedding = embeddings[original_idx].tolist()
+            # Convert chunk_type enum to string value
+            chunk_type_str = chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type)
             records.append((
                 chunk_id,
                 chunk.document_name,
+                source,
+                chunk_type_str,
                 chunk.section,
                 chunk.chunk_index,
                 chunk.content,
                 embedding,
                 session_id,
                 project_id,
-                config_hash,
             ))
 
         # Simple INSERT for new documents only
         self._conn.executemany(
             """
             INSERT INTO embeddings
-            (chunk_id, document_name, section, chunk_index, content, embedding, session_id, project_id, config_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
         )
@@ -682,24 +840,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Ensure query is 1D list
         query = query_embedding.flatten().tolist()
 
-        # Build filter for base + project + session
-        # base: project_id IS NULL or '__base__' (always included)
-        # project: project_id IN (loaded_projects)
-        # session: session_id = current_session_id
+        # Build filter: base (NULL or '__base__') + active projects
         filter_conditions = ["(project_id IS NULL)", "(project_id = '__base__')"]
         params: list = [query]
 
         if project_ids:
-            # Filter out '__base__' since it's already included above
-            filtered_project_ids = [p for p in project_ids if p != '__base__']
-            if filtered_project_ids:
-                placeholders = ",".join(["?" for _ in filtered_project_ids])
-                filter_conditions.append(f"project_id IN ({placeholders})")
-                params.extend(filtered_project_ids)
-
-        if session_id:
-            filter_conditions.append("session_id = ?")
-            params.append(session_id)
+            placeholders = ",".join(["?" for _ in project_ids])
+            filter_conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
 
         where_clause = " OR ".join(filter_conditions)
         params.append(limit)
@@ -710,6 +858,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             SELECT
                 chunk_id,
                 document_name,
+                source,
                 section,
                 chunk_index,
                 content,
@@ -725,12 +874,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Convert to output format
         results = []
         for row in result:
-            chunk_id, doc_name, section, chunk_idx, content, similarity = row
+            chunk_id, doc_name, source, section, chunk_idx, content, similarity = row
             chunk = DocumentChunk(
                 document_name=doc_name,
                 content=content,
                 section=section,
                 chunk_index=chunk_idx,
+                source=source or "document",
             )
             results.append((chunk_id, float(similarity), chunk))
 
@@ -739,6 +889,24 @@ class DuckDBVectorStore(VectorStoreBackend):
     def clear(self) -> None:
         """Clear all stored data."""
         self._conn.execute("DELETE FROM embeddings")
+
+    def clear_chunks(self, source: str) -> None:
+        """Clear chunks by source type.
+
+        The vector store holds chunks from 3 resource types:
+        - "schema": Database table/column descriptions
+        - "api": API endpoint descriptions
+        - "document": User documents
+
+        Each resource manager (SchemaManager, APISchemaManager, DocumentDiscoveryTools)
+        is responsible for its own chunks and should only clear its own type.
+
+        Args:
+            source: Resource type to clear: "schema", "api", or "document"
+        """
+        if source not in ("schema", "api", "document"):
+            raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
+        self._conn.execute("DELETE FROM embeddings WHERE source = ?", [source])
 
     def clear_chunk_entity_links(self, session_id: str | None = None) -> None:
         """Clear chunk-entity links (but keep entities).
@@ -802,78 +970,37 @@ class DuckDBVectorStore(VectorStoreBackend):
     # Entity Methods
     # =========================================================================
 
-    def add_entity(
-        self,
-        entity: Entity,
-        embedding: Optional[np.ndarray] = None,
-        source: str = "document",
-    ) -> None:
-        """Add a single entity to the store.
-
-        Args:
-            entity: Entity object to add
-            embedding: Optional embedding for semantic entity search
-            source: Source category ('document', 'schema', 'api')
-        """
-        emb_list = embedding.tolist() if embedding is not None else None
-        metadata_json = json.dumps(entity.metadata) if entity.metadata else None
-
-        self._conn.execute(
-            """
-            INSERT OR REPLACE INTO entities (id, name, type, source, embedding, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                entity.id,
-                entity.name,
-                entity.type,
-                source,
-                emb_list,
-                metadata_json,
-                entity.created_at,
-            ],
-        )
-
     def add_entities(
         self,
         entities: list[Entity],
-        embeddings: Optional[np.ndarray] = None,
-        source: str = "document",
-        session_id: str | None = None,
-        project_id: str | None = None,
+        session_id: str,
     ) -> None:
-        """Add multiple entities to the store.
+        """Add NER-extracted entities to the store.
 
         Args:
             entities: List of Entity objects to add
-            embeddings: Optional embeddings array of shape (n_entities, embedding_dim)
-            source: Source category ('document', 'schema', 'api')
-            session_id: Optional session ID for entities added during a session
-            project_id: Optional project ID for entities belonging to a project
+            session_id: Session ID (required - entities are session-scoped)
         """
         if not entities:
             return
 
         records = []
-        for i, entity in enumerate(entities):
-            emb_list = embeddings[i].tolist() if embeddings is not None else None
-            metadata_json = json.dumps(entity.metadata) if entity.metadata else None
+        for entity in entities:
             records.append((
                 entity.id,
                 entity.name,
-                entity.type,
-                source,
-                emb_list,
-                metadata_json,
-                entity.created_at,
+                entity.display_name,
+                entity.semantic_type,
+                entity.ner_type,
                 session_id,
-                project_id,
+                entity.project_id,
+                entity.created_at,
             ))
 
         self._conn.executemany(
             """
-            INSERT INTO entities (id, name, type, source, embedding, metadata, created_at, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, project_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO NOTHING
             """,
             records,
@@ -882,42 +1009,30 @@ class DuckDBVectorStore(VectorStoreBackend):
     def link_chunk_entities(
         self,
         links: list[ChunkEntity],
-        session_id: str | None = None,
-        project_id: str | None = None,
     ) -> None:
-        """Create links between chunks and entities.
+        """Create links between chunks and NER entities.
 
         Args:
             links: List of ChunkEntity objects defining the relationships
-            session_id: Optional session ID for links added during a session
-            project_id: Optional project ID for links belonging to a project
         """
         if not links:
             return
 
-        # Use '__none__' instead of NULL for session_id (part of PK)
-        effective_session_id = session_id if session_id else '__none__'
-
         # Deduplicate links by (chunk_id, entity_id)
         seen = set()
         unique_records = []
-        for l in links:
-            key = (l.chunk_id, l.entity_id)
+        for link in links:
+            key = (link.chunk_id, link.entity_id)
             if key not in seen:
                 seen.add(key)
-                unique_records.append(
-                    (l.chunk_id, l.entity_id, l.mention_count, l.confidence, l.mention_text, effective_session_id, project_id)
-                )
+                unique_records.append((link.chunk_id, link.entity_id, link.confidence))
 
-        # Log what we're inserting
-        logger.debug(f"link_chunk_entities: inserting {len(unique_records)} links with session_id={effective_session_id}")
+        logger.debug(f"link_chunk_entities: inserting {len(unique_records)} links")
 
-        # Use INSERT OR IGNORE to skip duplicates efficiently
         self._conn.executemany(
             """
-            INSERT OR IGNORE INTO chunk_entities
-                (chunk_id, entity_id, mention_count, confidence, mention_text, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO chunk_entities (chunk_id, entity_id, confidence)
+            VALUES (?, ?, ?)
             """,
             unique_records,
         )
@@ -925,60 +1040,40 @@ class DuckDBVectorStore(VectorStoreBackend):
     def get_entities_for_chunk(
         self,
         chunk_id: str,
-        project_ids: list[str] | None = None,
-        session_id: str | None = None,
+        session_id: str,
     ) -> list[Entity]:
-        """Get all entities associated with a chunk.
+        """Get all NER entities associated with a chunk.
 
         Args:
             chunk_id: The chunk identifier
-            project_ids: List of project IDs to include (filters entities)
-            session_id: Session ID (required - NER results are scoped to session)
+            session_id: Session ID (required - entities are session-scoped)
 
         Returns:
             List of Entity objects linked to this chunk
         """
-        # NER results (chunk_entities) are scoped to session_id
-        # Entities can come from base + project + session
-        entity_filter = ["(e.project_id IS NULL AND e.session_id IS NULL)"]
-        params: list = [chunk_id]
-
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            entity_filter.append(f"e.project_id IN ({placeholders})")
-            params.extend(project_ids)
-
-        if session_id:
-            entity_filter.append("e.session_id = ?")
-            params.append(session_id)
-            # Filter chunk_entities by session_id (NER results are session-scoped)
-            link_filter = "ce.session_id = ?"
-            params.append(session_id)
-        else:
-            link_filter = "1=1"
-
-        entity_where = " OR ".join(entity_filter)
-
         result = self._conn.execute(
-            f"""
-            SELECT e.id, e.name, e.type, e.metadata, e.created_at
+            """
+            SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
+                   e.session_id, e.project_id, e.created_at
             FROM entities e
             JOIN chunk_entities ce ON e.id = ce.entity_id
-            WHERE ce.chunk_id = ? AND ({entity_where}) AND ({link_filter})
-            ORDER BY ce.mention_count DESC, ce.confidence DESC
+            WHERE ce.chunk_id = ? AND e.session_id = ?
+            ORDER BY ce.confidence DESC
             """,
-            params,
+            [chunk_id, session_id],
         ).fetchall()
 
         entities = []
         for row in result:
-            entity_id, name, etype, metadata_json, created_at = row
-            metadata = json.loads(metadata_json) if metadata_json else {}
+            entity_id, name, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = row
             entities.append(Entity(
                 id=entity_id,
                 name=name,
-                type=etype,
-                metadata=metadata,
+                display_name=display_name,
+                semantic_type=semantic_type,
+                ner_type=ner_type,
+                session_id=sess_id,
+                project_id=proj_id,
                 created_at=created_at,
             ))
 
@@ -989,37 +1084,26 @@ class DuckDBVectorStore(VectorStoreBackend):
         entity_id: str,
         limit: int = 10,
         project_ids: list[str] | None = None,
-        session_id: str | None = None,
-    ) -> list[tuple[str, DocumentChunk, int, float]]:
+    ) -> list[tuple[str, DocumentChunk, float]]:
         """Get chunks that mention an entity.
 
         Args:
             entity_id: The entity identifier
             limit: Maximum number of chunks to return
             project_ids: List of project IDs to include (filters embeddings)
-            session_id: Session ID (required - NER results are scoped to session)
 
         Returns:
-            List of (chunk_id, DocumentChunk, mention_count, confidence) tuples
-            ordered by mention_count and confidence
+            List of (chunk_id, DocumentChunk, confidence) tuples
+            ordered by confidence
         """
-        # Embeddings can come from base + project + session
-        emb_filter = ["(em.project_id IS NULL AND em.session_id IS NULL)"]
+        # Embeddings can come from base + projects
+        emb_filter = ["em.project_id IS NULL"]
         params: list = [entity_id]
 
         if project_ids:
             placeholders = ",".join(["?" for _ in project_ids])
             emb_filter.append(f"em.project_id IN ({placeholders})")
             params.extend(project_ids)
-
-        if session_id:
-            emb_filter.append("em.session_id = ?")
-            params.append(session_id)
-            # Filter chunk_entities by session_id (NER results are session-scoped)
-            link_filter = "ce.session_id = ?"
-            params.append(session_id)
-        else:
-            link_filter = "1=1"
 
         emb_where = " OR ".join(emb_filter)
         params.append(limit)
@@ -1032,12 +1116,12 @@ class DuckDBVectorStore(VectorStoreBackend):
                 em.content,
                 em.section,
                 em.chunk_index,
-                ce.mention_count,
+                em.source,
                 ce.confidence
             FROM chunk_entities ce
             JOIN embeddings em ON ce.chunk_id = em.chunk_id
-            WHERE ce.entity_id = ? AND ({emb_where}) AND ({link_filter})
-            ORDER BY ce.mention_count DESC, ce.confidence DESC
+            WHERE ce.entity_id = ? AND ({emb_where})
+            ORDER BY ce.confidence DESC
             LIMIT ?
             """,
             params,
@@ -1045,69 +1129,56 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         chunks = []
         for row in result:
-            chunk_id, doc_name, content, section, chunk_idx, mention_count, confidence = row
+            chunk_id, doc_name, content, section, chunk_idx, source, confidence = row
             chunk = DocumentChunk(
                 document_name=doc_name,
                 content=content,
                 section=section,
                 chunk_index=chunk_idx,
+                source=source,
             )
-            chunks.append((chunk_id, chunk, mention_count, confidence))
+            chunks.append((chunk_id, chunk, confidence))
 
         return chunks
 
     def find_entity_by_name(
         self,
         name: str,
-        project_ids: list[str] | None = None,
-        session_id: str | None = None,
+        session_id: str,
     ) -> Optional[Entity]:
         """Find an entity by its name (case-insensitive).
 
         Args:
             name: Entity name to search for
-            project_ids: List of project IDs to include (None means no project filter)
-            session_id: Session ID to include (None means no session filter)
+            session_id: Session ID (required - entities are session-scoped)
 
         Returns:
             Entity if found, None otherwise
         """
-        # Build filter for base + project + session
-        filter_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
-        params: list = [name]
-
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            filter_conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
-
-        if session_id:
-            filter_conditions.append("session_id = ?")
-            params.append(session_id)
-
-        where_clause = " OR ".join(filter_conditions)
-
         result = self._conn.execute(
-            f"""
-            SELECT id, name, type, metadata, created_at
+            """
+            SELECT id, name, display_name, semantic_type, ner_type,
+                   session_id, project_id, created_at
             FROM entities
-            WHERE LOWER(name) = LOWER(?) AND ({where_clause})
+            WHERE LOWER(name) = LOWER(?) AND session_id = ?
             LIMIT 1
             """,
-            params,
+            [name, session_id],
         ).fetchone()
 
         if not result:
             return None
 
-        entity_id, name, etype, metadata_json, created_at = result
-        metadata = json.loads(metadata_json) if metadata_json else {}
+        entity_id, ename, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = result
 
         return Entity(
             id=entity_id,
-            name=name,
-            type=etype,
-            metadata=metadata,
+            name=ename,
+            display_name=display_name,
+            semantic_type=semantic_type,
+            ner_type=ner_type,
+            session_id=sess_id,
+            project_id=proj_id,
             created_at=created_at,
         )
 
@@ -1124,7 +1195,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             query_embedding: Query embedding vector
             limit: Maximum number of results
             project_ids: List of project IDs to include (None means no project filter)
-            session_id: Session ID to include (None means no session filter)
+            session_id: Session ID to include entities (None means no entities)
 
         Returns:
             List of EnrichedChunk objects with entities
@@ -1132,10 +1203,12 @@ class DuckDBVectorStore(VectorStoreBackend):
         # First do the regular search with filtering
         results = self.search(query_embedding, limit, project_ids, session_id)
 
-        # Enrich with entities (using same filter)
+        # Enrich with entities if session_id provided
         enriched = []
         for chunk_id, score, chunk in results:
-            entities = self.get_entities_for_chunk(chunk_id, project_ids, session_id)
+            entities = []
+            if session_id:
+                entities = self.get_entities_for_chunk(chunk_id, session_id)
             enriched.append(EnrichedChunk(
                 chunk=chunk,
                 score=score,
@@ -1144,324 +1217,282 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return enriched
 
-    def clear_entities(self, source: Optional[str] = "document") -> None:
-        """Clear entities and chunk-entity links.
+    def clear_entities(self, source: Optional[str] = None) -> None:
+        """Clear all entities and chunk-entity links.
+
+        DEPRECATED: Use clear_session_entities(session_id) for session-scoped cleanup.
+        This method now clears ALL entities regardless of the source parameter.
 
         Args:
-            source: If specified, only clear entities with this source.
-                   Default is 'document' to preserve schema/api entities.
-                   Pass None to clear ALL entities.
+            source: Ignored (kept for backwards compatibility)
         """
-        if source:
-            # Only delete chunk_entities for document-sourced entities
-            self._conn.execute("""
-                DELETE FROM chunk_entities
-                WHERE entity_id IN (SELECT id FROM entities WHERE source = ?)
-            """, [source])
-            self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
-        else:
-            self._conn.execute("DELETE FROM chunk_entities")
-            self._conn.execute("DELETE FROM entities")
+        self._conn.execute("DELETE FROM chunk_entities")
+        self._conn.execute("DELETE FROM entities")
 
     def count_entities(self) -> int:
         """Return number of stored entities."""
         result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
         return result[0] if result else 0
 
-    # ========== Unified Catalog Entity Methods ==========
-
-    def add_catalog_entities(
-        self,
-        entities: list[dict],
-        embeddings: np.ndarray,
-        source: str,
-        config_hash: str,
-    ) -> None:
-        """Add catalog entities (schema tables/columns or API endpoints/fields) to the store.
+    def clear_session_entities(self, session_id: str) -> None:
+        """Clear all entities and chunk_entities for a session.
 
         Args:
-            entities: List of entity dicts with:
-                - id: unique identifier (e.g., "sales.customers" or "catfacts.GET /breeds")
-                - name: display name
-                - type: entity type (table, column, api_endpoint, api_field, api_schema)
-                - parent_id: optional parent entity id (e.g., table id for columns)
-                - metadata: additional entity-specific data (JSON-serializable dict)
-            embeddings: numpy array of shape (n_entities, embedding_dim)
-            source: source category ('schema' or 'api')
-            config_hash: Hash of config for cache invalidation
+            session_id: Session ID to clear
         """
-        if not entities:
-            return
+        self._conn.execute("DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id])
+        self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
 
-        # Deduplicate entities by normalized ID (case-insensitive, keep last occurrence)
-        # Use dict to ensure unique IDs - key is normalized_id, value is the record tuple
-        unique_records: dict[str, tuple] = {}
-        for i, e in enumerate(entities):
-            normalized_id = e["id"].lower()
-            metadata_json = json.dumps(e.get("metadata", {})) if e.get("metadata") else None
-            unique_records[normalized_id] = (
-                normalized_id,
-                e["name"],
-                e["type"],
-                source,
-                e.get("parent_id").lower() if e.get("parent_id") else None,
-                embeddings[i].tolist() if embeddings is not None else None,
-                metadata_json,
-                config_hash,
-            )
+    def clear_project_session_entities(self, session_id: str, project_id: str) -> int:
+        """Clear entities for a specific project in a session.
 
-        entity_ids = list(unique_records.keys())
-        records = list(unique_records.values())
+        Args:
+            session_id: Session ID
+            project_id: Project ID to clear entities for
 
-        # Delete existing entities with these IDs first to avoid conflict issues
-        # DuckDB's executemany with ON CONFLICT doesn't handle batch duplicates well
-        # Use LOWER() for case-insensitive matching since IDs are normalized to lowercase
-        if entity_ids:
-            placeholders = ",".join(["?" for _ in entity_ids])
-            self._conn.execute(
-                f"DELETE FROM entities WHERE LOWER(id) IN ({placeholders})",
-                entity_ids,
-            )
+        Returns:
+            Number of entities deleted
+        """
+        # Get entity IDs to delete
+        result = self._conn.execute(
+            "SELECT id FROM entities WHERE session_id = ? AND project_id = ?",
+            [session_id, project_id]
+        ).fetchall()
+        entity_ids = [row[0] for row in result]
 
-        self._conn.executemany(
-            """
-            INSERT OR IGNORE INTO entities
-            (id, name, type, source, parent_id, embedding, metadata, config_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            records,
+        if not entity_ids:
+            return 0
+
+        # Delete chunk-entity links for these entities
+        placeholders = ",".join(["?" for _ in entity_ids])
+        self._conn.execute(
+            f"DELETE FROM chunk_entities WHERE entity_id IN ({placeholders})",
+            entity_ids
         )
 
-    def search_catalog_entities(
-        self,
-        query_embedding: np.ndarray,
-        source: Optional[str] = None,
-        entity_type: Optional[str] = None,
-        limit: int = 5,
-        min_similarity: float = 0.0,
-        project_ids: list[str] | None = None,
-        session_id: str | None = None,
-    ) -> list[dict]:
-        """Search for relevant catalog entities by embedding similarity.
+        # Delete the entities
+        self._conn.execute(
+            "DELETE FROM entities WHERE session_id = ? AND project_id = ?",
+            [session_id, project_id]
+        )
+
+        logger.debug(f"clear_project_session_entities({session_id}, {project_id}): deleted {len(entity_ids)} entities")
+        return len(entity_ids)
+
+    def get_entity_names(self, session_id: str) -> list[str]:
+        """Get all entity names for a session.
 
         Args:
-            query_embedding: Query embedding vector
-            source: Filter by source ('schema', 'api', 'document') or None for all
-            entity_type: Filter by type ('table', 'column', 'api_endpoint', etc.) or None for all
-            limit: Maximum number of results
-            min_similarity: Minimum similarity threshold
-            project_ids: List of project IDs to include (None means no project filter)
-            session_id: Session ID to include (None means no session filter)
-
-        Returns:
-            List of dicts with id, name, type, source, parent_id, metadata, similarity
-        """
-        query = query_embedding.flatten().tolist()
-
-        # Build filter for base + project + session
-        scope_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
-        scope_params: list = []
-
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            scope_conditions.append(f"project_id IN ({placeholders})")
-            scope_params.extend(project_ids)
-
-        if session_id:
-            scope_conditions.append("session_id = ?")
-            scope_params.append(session_id)
-
-        scope_clause = " OR ".join(scope_conditions)
-
-        # Build WHERE clause based on filters
-        conditions = ["embedding IS NOT NULL", f"({scope_clause})"]
-        params: list = [query]
-        params.extend(scope_params)
-
-        if source:
-            conditions.append("source = ?")
-            params.append(source)
-        if entity_type:
-            conditions.append("type = ?")
-            params.append(entity_type)
-
-        where_clause = " AND ".join(conditions)
-        params.extend([query, min_similarity, limit])
-
-        result = self._conn.execute(
-            f"""
-            SELECT
-                id,
-                name,
-                type,
-                source,
-                parent_id,
-                metadata,
-                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
-            FROM entities
-            WHERE {where_clause}
-              AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
-            ORDER BY similarity DESC
-            LIMIT ?
-            """,
-            params,
-        ).fetchall()
-
-        return [
-            {
-                "id": row[0],
-                "name": row[1],
-                "type": row[2],
-                "source": row[3],
-                "parent_id": row[4],
-                "metadata": json.loads(row[5]) if row[5] else {},
-                "similarity": float(row[6]),
-            }
-            for row in result
-        ]
-
-    def get_catalog_config_hash(self, source: str) -> Optional[str]:
-        """Get the config hash for cached catalog entities by source.
-
-        Args:
-            source: Source category ('schema' or 'api')
-
-        Returns:
-            Config hash string or None if not found
-        """
-        result = self._conn.execute(
-            "SELECT config_hash FROM entities WHERE source = ? AND config_hash IS NOT NULL LIMIT 1",
-            [source],
-        ).fetchone()
-        return result[0] if result else None
-
-    def clear_catalog_entities(self, source: str) -> None:
-        """Clear all catalog entities for a specific source.
-
-        Args:
-            source: Source category ('schema' or 'api')
-        """
-        self._conn.execute("DELETE FROM entities WHERE source = ?", [source])
-
-    def count_catalog_entities(self, source: Optional[str] = None) -> int:
-        """Return number of stored catalog entities.
-
-        Args:
-            source: Optional source filter ('schema', 'api', 'document')
-
-        Returns:
-            Count of entities
-        """
-        if source:
-            result = self._conn.execute(
-                "SELECT COUNT(*) FROM entities WHERE source = ?", [source]
-            ).fetchone()
-        else:
-            result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
-        return result[0] if result else 0
-
-    def get_entity_names_by_source(
-        self,
-        source: Optional[str] = None,
-        entity_type: Optional[str] = None,
-        project_ids: list[str] | None = None,
-        session_id: str | None = None,
-    ) -> list[str]:
-        """Get all entity names, optionally filtered by source and type.
-
-        Args:
-            source: Optional source filter ('schema', 'api', 'document')
-            entity_type: Optional type filter ('table', 'column', 'api_endpoint', etc.)
-            project_ids: List of project IDs to include (None means no project filter)
-            session_id: Session ID to include (None means no session filter)
+            session_id: Session ID
 
         Returns:
             List of entity names
         """
-        # Build filter for base + project + session
-        scope_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
+        result = self._conn.execute(
+            "SELECT DISTINCT name FROM entities WHERE session_id = ?",
+            [session_id],
+        ).fetchall()
+        return [row[0] for row in result]
+
+    def extract_entities_for_session(
+        self,
+        session_id: str,
+        project_ids: list[str] | None = None,
+        schema_terms: list[str] | None = None,
+        api_terms: list[str] | None = None,
+        business_terms: list[str] | None = None,
+    ) -> int:
+        """Run NER entity extraction on all chunks for a session.
+
+        Args:
+            session_id: Session ID
+            project_ids: Project IDs to include (chunks from these + base)
+            schema_terms: Database table/column names for custom patterns
+            api_terms: API endpoint names for custom patterns
+            business_terms: Business glossary terms for custom patterns
+
+        Returns:
+            Number of entities extracted
+        """
+        from constat.discovery.entity_extractor import EntityExtractor
+
+        # Clear any existing entities for this session
+        self.clear_session_entities(session_id)
+
+        # Get all chunks for base + active projects
+        chunks = self.get_all_chunks(project_ids)
+        if not chunks:
+            logger.debug(f"No chunks found for session {session_id}")
+            return 0
+
+        logger.info(f"Extracting entities from {len(chunks)} chunks for session {session_id}")
+
+        # Create extractor with custom patterns
+        extractor = EntityExtractor(
+            session_id=session_id,
+            schema_terms=schema_terms,
+            api_terms=api_terms,
+            business_terms=business_terms,
+        )
+
+        # Extract entities from each chunk
+        all_links: list[ChunkEntity] = []
+        for chunk in chunks:
+            results = extractor.extract(chunk)
+            for entity, link in results:
+                all_links.append(link)
+
+        # Get all unique entities and add to store
+        entities = extractor.get_all_entities()
+        if entities:
+            self.add_entities(entities, session_id)
+            self.link_chunk_entities(all_links)
+            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks")
+
+        return len(entities)
+
+    def extract_entities_for_project(
+        self,
+        session_id: str,
+        project_id: str,
+        schema_terms: list[str] | None = None,
+        api_terms: list[str] | None = None,
+        business_terms: list[str] | None = None,
+    ) -> int:
+        """Extract entities for a specific project's chunks (incremental add).
+
+        Args:
+            session_id: Session ID
+            project_id: Project ID to extract entities for
+            schema_terms: Database table/column names for custom patterns
+            api_terms: API endpoint names for custom patterns
+            business_terms: Business glossary terms for custom patterns
+
+        Returns:
+            Number of entities extracted
+        """
+        from constat.discovery.entity_extractor import EntityExtractor
+
+        # Get chunks for this specific project
+        chunks = self.get_project_chunks(project_id)
+        if not chunks:
+            logger.debug(f"No chunks found for project {project_id}")
+            return 0
+
+        logger.info(f"Extracting entities from {len(chunks)} chunks for project {project_id} in session {session_id}")
+
+        # Create extractor with custom patterns
+        extractor = EntityExtractor(
+            session_id=session_id,
+            project_id=project_id,
+            schema_terms=schema_terms,
+            api_terms=api_terms,
+            business_terms=business_terms,
+        )
+
+        # Extract entities from each chunk
+        all_links: list[ChunkEntity] = []
+        for chunk in chunks:
+            results = extractor.extract(chunk)
+            for entity, link in results:
+                all_links.append(link)
+
+        # Get all unique entities and add to store
+        entities = extractor.get_all_entities()
+        if entities:
+            self.add_entities(entities, session_id)
+            self.link_chunk_entities(all_links)
+            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks for project {project_id}")
+
+        return len(entities)
+
+    def get_project_chunks(self, project_id: str) -> list[DocumentChunk]:
+        """Get all chunks for a specific project.
+
+        Args:
+            project_id: Project ID
+
+        Returns:
+            List of DocumentChunk objects
+        """
+        result = self._conn.execute(
+            """
+            SELECT document_name, content, section, chunk_index, source, chunk_type
+            FROM embeddings
+            WHERE project_id = ?
+            ORDER BY document_name, chunk_index
+            """,
+            [project_id],
+        ).fetchall()
+
+        from constat.discovery.models import ChunkType
+        chunks = []
+        for row in result:
+            doc_name, content, section, chunk_idx, source, chunk_type_str = row
+            try:
+                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+            except ValueError:
+                chunk_type = ChunkType.DOCUMENT
+            chunks.append(DocumentChunk(
+                document_name=doc_name,
+                content=content,
+                section=section,
+                chunk_index=chunk_idx,
+                source=source or "document",
+                chunk_type=chunk_type,
+            ))
+
+        return chunks
+
+    def get_all_chunks(self, project_ids: list[str] | None = None) -> list[DocumentChunk]:
+        """Get all chunks for base + specified projects.
+
+        Args:
+            project_ids: Project IDs to include
+
+        Returns:
+            List of DocumentChunk objects
+        """
+        # Build filter for base + projects
+        conditions = ["project_id IS NULL"]
         params: list = []
 
         if project_ids:
             placeholders = ",".join(["?" for _ in project_ids])
-            scope_conditions.append(f"project_id IN ({placeholders})")
+            conditions.append(f"project_id IN ({placeholders})")
             params.extend(project_ids)
 
-        if session_id:
-            scope_conditions.append("session_id = ?")
-            params.append(session_id)
-
-        scope_clause = " OR ".join(scope_conditions)
-        conditions = [f"({scope_clause})"]
-
-        if source:
-            conditions.append("source = ?")
-            params.append(source)
-        if entity_type:
-            conditions.append("type = ?")
-            params.append(entity_type)
-
-        where_clause = " WHERE " + " AND ".join(conditions)
-
-        result = self._conn.execute(
-            f"SELECT DISTINCT name FROM entities{where_clause}",
-            params,
-        ).fetchall()
-
-        return [row[0] for row in result]
-
-    def get_entities_by_parent(
-        self,
-        parent_id: str,
-        project_ids: list[str] | None = None,
-        session_id: str | None = None,
-    ) -> list[dict]:
-        """Get all child entities for a given parent.
-
-        Args:
-            parent_id: Parent entity ID
-            project_ids: List of project IDs to include (None means no project filter)
-            session_id: Session ID to include (None means no session filter)
-
-        Returns:
-            List of child entity dicts
-        """
-        # Build filter for base + project + session
-        scope_conditions = ["(project_id IS NULL AND session_id IS NULL)"]
-        params: list = [parent_id]
-
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            scope_conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
-
-        if session_id:
-            scope_conditions.append("session_id = ?")
-            params.append(session_id)
-
-        scope_clause = " OR ".join(scope_conditions)
+        where_clause = " OR ".join(conditions)
 
         result = self._conn.execute(
             f"""
-            SELECT id, name, type, source, parent_id, metadata
-            FROM entities
-            WHERE parent_id = ? AND ({scope_clause})
-            ORDER BY name
+            SELECT document_name, content, section, chunk_index, source, chunk_type
+            FROM embeddings
+            WHERE {where_clause}
+            ORDER BY document_name, chunk_index
             """,
             params,
         ).fetchall()
 
-        return [
-            {
-                "id": row[0],
-                "name": row[1],
-                "type": row[2],
-                "source": row[3],
-                "parent_id": row[4],
-                "metadata": json.loads(row[5]) if row[5] else {},
-            }
-            for row in result
-        ]
+        from constat.discovery.models import ChunkType
+        chunks = []
+        for row in result:
+            doc_name, content, section, chunk_idx, source, chunk_type_str = row
+            # Convert string to ChunkType enum
+            try:
+                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+            except ValueError:
+                chunk_type = ChunkType.DOCUMENT
+            chunks.append(DocumentChunk(
+                document_name=doc_name,
+                content=content,
+                section=section,
+                chunk_index=chunk_idx,
+                source=source or "document",
+                chunk_type=chunk_type,
+            ))
+
+        return chunks
 
     def close(self) -> None:
         """Close the database connection."""

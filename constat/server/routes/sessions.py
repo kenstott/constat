@@ -15,6 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from constat.core.api import EntityManager
 from constat.server.auth import CurrentUserId, CurrentUserEmail
 from constat.server.permissions import get_user_permissions
 from constat.server.models import (
@@ -210,23 +211,33 @@ async def create_session(
     body: SessionCreate,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> SessionResponse:
-    """Create a new session.
+    """Create or reconnect to a session.
 
-    Creates a new Constat session for the authenticated user.
+    If the client-provided session_id already exists on the server, reconnects
+    to that session. Otherwise, creates a new session with that ID.
+
     When auth is disabled, uses "default" user or the user_id from request body.
-    The session can then be used for query execution via the query endpoints.
-
-    Automatically loads projects from user preferences if any are saved.
+    Automatically loads projects from user preferences if creating a new session.
 
     Returns:
         Session details including the session ID
     """
     # Use authenticated user_id, but allow body.user_id as fallback when auth disabled
     effective_user_id = user_id if user_id != "default" else (body.user_id or "default")
-    session_id = session_manager.create_session(user_id=effective_user_id)
+    client_session_id = body.session_id
+
+    # Check if session already exists (reconnect case)
+    existing = session_manager.get_session_or_none(client_session_id)
+    if existing:
+        logger.info(f"Reconnecting to existing session {client_session_id}")
+        existing.touch()
+        return _session_to_response(existing)
+
+    # Create new session with client-provided session_id
+    session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
     managed = session_manager.get_session(session_id)
 
-    # Load preferred projects from user preferences
+    # Load preferred projects from user preferences (only for new sessions)
     preferred_projects = get_selected_projects(effective_user_id)
     if preferred_projects:
         logger.info(f"Loading {len(preferred_projects)} preferred projects for user {effective_user_id}")
@@ -363,6 +374,10 @@ async def set_active_projects(
     Setting projects merges those sources with the session's data sources.
     Also saves the selection to user preferences for future sessions.
 
+    Incrementally manages entities:
+    - Removed projects: Clear their entities from the session
+    - Added projects: Extract entities for their chunks
+
     Args:
         session_id: Session ID
         body: Dict with 'projects' list of filenames (or empty to clear)
@@ -387,6 +402,25 @@ async def set_active_projects(
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
 
+    # Determine which projects are being added vs removed
+    old_projects = set(managed.active_projects or [])
+    new_projects = set(project_filenames)
+
+    logger.info(f"Session {session_id}: projects changing - removed={old_projects - new_projects}, added={new_projects - old_projects}")
+
+    # Use EntityManager for incremental entity updates
+    vector_store = managed.session.doc_tools._vector_store if managed.session.doc_tools else None
+    if vector_store:
+        entity_manager = EntityManager(
+            vector_store=vector_store,
+            schema_terms_provider=lambda: managed.session.schema_manager.get_entity_names() if managed.session.schema_manager else [],
+            api_terms_provider=lambda: managed.session._get_api_entity_names() if hasattr(managed.session, '_get_api_entity_names') else [],
+        )
+        result = entity_manager.update_projects(session_id, old_projects, new_projects)
+        if result.error:
+            logger.warning(f"Entity update errors: {result.error}")
+        logger.info(f"Session {session_id}: entity update - added={result.entities_added}, removed={result.entities_removed}")
+
     # Clear existing project state before loading new projects
     managed.session.clear_project_apis()
     managed._project_databases = set()
@@ -403,10 +437,6 @@ async def set_active_projects(
                 "conflicts": conflicts,
             }
         )
-
-    # Run NER for project documents (creates chunk-entity links for this session)
-    if loaded:
-        session_manager._run_entity_extraction(session_id, managed.session)
 
     # Save to user preferences for future sessions
     effective_user_id = user_id if user_id != "default" else managed.user_id
@@ -477,6 +507,36 @@ async def save_messages(
     history.save_messages_by_server_id(session_id, messages)
 
     return {"status": "saved", "count": len(messages)}
+
+
+@router.post("/{session_id}/reset-context")
+async def reset_context(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Reset session planning context for a new query.
+
+    Clears session-level state while preserving user-level settings:
+    - Clears: session facts, conversation history, plan context
+    - Keeps: data sources, projects, learnings, permanent facts
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Status confirmation
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Reset the session's planning context
+    if managed.api:
+        managed.api.reset_context()
+
+    # Clear persisted messages
+    history = SessionHistory(user_id=managed.user_id or "default")
+    history.save_messages_by_server_id(session_id, [])
+
+    return {"status": "reset"}
 
 
 @router.get("/{session_id}/prompt-context")

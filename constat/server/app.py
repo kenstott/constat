@@ -43,11 +43,47 @@ from constat.server.routes.queries import shutdown_executor_async
 logger = logging.getLogger(__name__)
 
 
-def _compute_doc_config_hash(documents: dict) -> str:
-    """Compute a hash for a document configuration dict."""
+def _compute_config_hash(data: dict) -> str:
+    """Compute a hash for a configuration dict."""
     import hashlib
     import json
+    config_json = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(config_json.encode()).hexdigest()[:16]
 
+
+# =============================================================================
+# Source-Level Hashing (combined hash for all resources of a type)
+# =============================================================================
+
+def _compute_db_config_hash(databases: dict) -> str:
+    """Compute a combined hash for all database configurations."""
+    db_data = {}
+    if databases:
+        for db_name, db_config in sorted(databases.items()):
+            db_data[db_name] = {
+                "type": db_config.type or "",
+                "uri": db_config.uri or "",
+                "database": db_config.database or "",
+                "path": db_config.path or "",
+            }
+    return _compute_config_hash(db_data)
+
+
+def _compute_api_config_hash(apis: dict) -> str:
+    """Compute a combined hash for all API configurations."""
+    api_data = {}
+    if apis:
+        for api_name, api_config in sorted(apis.items()):
+            api_data[api_name] = {
+                "type": api_config.type or "",
+                "base_url": api_config.base_url or "",
+                "graphql_endpoint": api_config.graphql_endpoint or "",
+            }
+    return _compute_config_hash(api_data)
+
+
+def _compute_doc_config_hash(documents: dict) -> str:
+    """Compute a combined hash for all document configurations."""
     doc_data = {}
     if documents:
         for doc_name, doc_config in sorted(documents.items()):
@@ -56,102 +92,271 @@ def _compute_doc_config_hash(documents: dict) -> str:
                 "description": doc_config.description or "",
                 "format": doc_config.format or "",
             }
-    config_json = json.dumps(doc_data, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(config_json.encode()).hexdigest()[:16]
+    return _compute_config_hash(doc_data)
+
+
+# =============================================================================
+# Resource-Level Hashing (individual hash per resource for incremental updates)
+# =============================================================================
+
+def _compute_db_resource_hash(db_name: str, db_config) -> str:
+    """Compute a content hash for a single database resource.
+
+    Includes connection config. Schema introspection would be added here
+    for detecting table/column changes.
+    """
+    data = {
+        "name": db_name,
+        "type": db_config.type or "",
+        "uri": db_config.uri or "",
+        "database": db_config.database or "",
+        "path": db_config.path or "",
+    }
+    return _compute_config_hash(data)
+
+
+def _compute_api_resource_hash(api_name: str, api_config) -> str:
+    """Compute a content hash for a single API resource.
+
+    For spec-based APIs, could include spec file hash for change detection.
+    """
+    data = {
+        "name": api_name,
+        "type": api_config.type or "",
+        "base_url": api_config.base_url or "",
+        "graphql_endpoint": api_config.graphql_endpoint or "",
+        "spec_url": getattr(api_config, "spec_url", "") or "",
+    }
+    return _compute_config_hash(data)
+
+
+def _compute_doc_resource_hash(doc_name: str, doc_config, config_dir: str | None) -> str:
+    """Compute a content hash for a single document resource.
+
+    Includes file modification time for fast change detection.
+    """
+    import os
+    from pathlib import Path
+
+    data = {
+        "name": doc_name,
+        "path": doc_config.path or "",
+        "description": doc_config.description or "",
+        "format": doc_config.format or "",
+    }
+
+    # Add file mtime for change detection
+    if doc_config.path:
+        doc_path = Path(doc_config.path)
+        if not doc_path.is_absolute() and config_dir:
+            doc_path = (Path(config_dir) / doc_config.path).resolve()
+
+        if doc_path.exists():
+            try:
+                stat = os.stat(doc_path)
+                data["mtime"] = stat.st_mtime
+                data["size"] = stat.st_size
+            except OSError:
+                pass
+
+    return _compute_config_hash(data)
 
 
 def _warmup_vector_store(config: Config) -> None:
-    """Pre-index all documents from config and projects at server startup.
+    """Pre-index all resources (schemas, APIs, documents) at server startup.
 
-    Uses hash-based invalidation to only re-index when config changes.
+    Uses hash-based invalidation per source (base + projects) with three hash types:
+    - db_hash: database schema configuration
+    - api_hash: API configuration
+    - doc_hash: document configuration
     """
     from pathlib import Path
     from constat.discovery.doc_tools import DocumentDiscoveryTools
+    from constat.catalog.schema_manager import SchemaManager
+    from constat.catalog.api_schema_manager import APISchemaManager
 
-    # Create doc_tools with skip_auto_index since we handle indexing here
+    # Create doc_tools early to access vector_store for hash checks
     doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True)
     vector_store = doc_tools._vector_store
 
-    # Index base (config) documents with hash-based invalidation
-    if config.documents:
-        base_hash = _compute_doc_config_hash(config.documents)
-        logger.debug(f"  Base documents: current_hash={base_hash}")
+    # === BASE CONFIG ===
+    source_id = "__base__"
 
-        if hasattr(vector_store, 'get_project_config_hash'):
-            # Use special project_id "__base__" for config documents
-            cached_hash = vector_store.get_project_config_hash("__base__")
-            logger.debug(f"  Base documents: cached_hash={cached_hash}")
+    # Base databases
+    if config.databases:
+        db_hash = _compute_db_config_hash(config.databases)
+        cached_hash = vector_store.get_source_hash(source_id, 'db')
 
-            if cached_hash == base_hash:
-                logger.info(f"  Base documents: {len(config.documents)} unchanged, skipping")
+        if cached_hash == db_hash:
+            logger.info(f"  Base databases: {len(config.databases)} unchanged, skipping")
+        else:
+            logger.info(f"  Base databases: building chunks...")
+            schema_manager = SchemaManager(config)
+            schema_manager.build_chunks()
+            vector_store.set_source_hash(source_id, 'db', db_hash)
+            logger.info(f"  Base databases: {len(config.databases)} indexed")
+
+    # Base APIs
+    if config.apis:
+        api_hash = _compute_api_config_hash(config.apis)
+        cached_hash = vector_store.get_source_hash(source_id, 'api')
+
+        if cached_hash == api_hash:
+            logger.info(f"  Base APIs: {len(config.apis)} unchanged, skipping")
+        else:
+            logger.info(f"  Base APIs: building chunks...")
+            api_manager = APISchemaManager(config)
+            api_manager.build_chunks()
+            vector_store.set_source_hash(source_id, 'api', api_hash)
+            logger.info(f"  Base APIs: {len(config.apis)} indexed")
+
+    # === PROJECT CONFIGS ===
+    for project_name, project in config.projects.items():
+        source_id = project_name
+
+        # Project databases
+        if project.databases:
+            db_hash = _compute_db_config_hash(project.databases)
+            cached_hash = vector_store.get_source_hash(source_id, 'db')
+
+            if cached_hash == db_hash:
+                logger.info(f"  Project {project_name} databases: unchanged, skipping")
             else:
-                if cached_hash:
-                    logger.info(f"  Base documents: config changed, re-indexing")
-                    vector_store.clear_project_embeddings("__base__")
+                logger.info(f"  Project {project_name} databases: building chunks...")
+                project_config = Config(
+                    config_dir=config.config_dir,
+                    databases=project.databases,
+                )
+                project_schema_manager = SchemaManager(project_config)
+                project_schema_manager.build_chunks()
+                vector_store.set_source_hash(source_id, 'db', db_hash)
+                logger.info(f"  Project {project_name} databases: {len(project.databases)} indexed")
 
-                # Index each config document
-                config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
-                for doc_name, doc_config in config.documents.items():
-                    try:
-                        if doc_config.path:
-                            doc_path = Path(doc_config.path)
-                            if not doc_path.is_absolute():
-                                doc_path = (config_dir / doc_config.path).resolve()
+        # Project APIs
+        if project.apis:
+            api_hash = _compute_api_config_hash(project.apis)
+            cached_hash = vector_store.get_source_hash(source_id, 'api')
 
-                            if doc_path.exists():
-                                success, msg = doc_tools.add_document_from_file(
-                                    str(doc_path),
-                                    name=doc_name,
-                                    description=doc_config.description or "",
-                                    project_id="__base__",
-                                    config_hash=base_hash,
-                                    skip_entity_extraction=True,  # NER done at session creation
-                                )
-                                if success:
-                                    logger.info(f"  Base: vectorized {doc_name}")
-                                else:
-                                    logger.warning(f"  Base: failed to vectorize {doc_name}: {msg}")
-                    except Exception as e:
-                        logger.warning(f"  Base: error indexing {doc_name}: {e}")
+            if cached_hash == api_hash:
+                logger.info(f"  Project {project_name} APIs: unchanged, skipping")
+            else:
+                logger.info(f"  Project {project_name} APIs: building chunks...")
+                project_api_config = Config(
+                    config_dir=config.config_dir,
+                    apis=project.apis,
+                )
+                project_api_manager = APISchemaManager(project_api_config)
+                project_api_manager.build_chunks()
+                vector_store.set_source_hash(source_id, 'api', api_hash)
+                logger.info(f"  Project {project_name} APIs: {len(project.apis)} indexed")
 
-                logger.info(f"  Base documents: {len(config.documents)} indexed")
+    # === BASE DOCUMENTS (two-level hashing) ===
+    if config.documents:
+        doc_hash = _compute_doc_config_hash(config.documents)
+        cached_hash = vector_store.get_source_hash("__base__", 'doc')
+        config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
+
+        if cached_hash == doc_hash:
+            # Fast path: source-level hash unchanged, skip all documents
+            logger.info(f"  Base documents: {len(config.documents)} unchanged, skipping")
+        else:
+            # Slow path: source changed, check each document individually
+            logger.info(f"  Base documents: checking {len(config.documents)} documents...")
+            cached_resource_hashes = vector_store.get_resource_hashes_for_source("__base__", "document")
+            indexed_count = 0
+            skipped_count = 0
+
+            for doc_name, doc_config in config.documents.items():
+                try:
+                    # Compute resource-level hash
+                    resource_hash = _compute_doc_resource_hash(doc_name, doc_config, config.config_dir)
+                    cached_resource_hash = cached_resource_hashes.get(doc_name)
+
+                    if cached_resource_hash == resource_hash:
+                        # Document unchanged, skip
+                        skipped_count += 1
+                        continue
+
+                    # Document changed or new - delete old chunks and re-index
+                    if cached_resource_hash:
+                        vector_store.delete_resource_chunks("__base__", "document", doc_name)
+                        logger.debug(f"  Base: deleted old chunks for {doc_name}")
+
+                    if doc_config.path:
+                        doc_path = Path(doc_config.path)
+                        if not doc_path.is_absolute():
+                            doc_path = (config_dir / doc_config.path).resolve()
+
+                        if doc_path.exists():
+                            success, msg = doc_tools.add_document_from_file(
+                                str(doc_path),
+                                name=doc_name,
+                                description=doc_config.description or "",
+                                project_id="__base__",
+                                skip_entity_extraction=True,  # NER done at session creation
+                            )
+                            if success:
+                                vector_store.set_resource_hash("__base__", "document", doc_name, resource_hash)
+                                indexed_count += 1
+                                logger.info(f"  Base: vectorized {doc_name}")
+                            else:
+                                logger.warning(f"  Base: failed to vectorize {doc_name}: {msg}")
+                        else:
+                            logger.warning(f"  Base: file not found: {doc_path}")
+                except Exception as e:
+                    logger.warning(f"  Base: error indexing {doc_name}: {e}")
+
+            # Handle removed documents (in cache but not in config)
+            for old_doc_name in cached_resource_hashes.keys():
+                if old_doc_name not in config.documents:
+                    vector_store.delete_resource_chunks("__base__", "document", old_doc_name)
+                    vector_store.delete_resource_hash("__base__", "document", old_doc_name)
+                    logger.info(f"  Base: removed deleted document {old_doc_name}")
+
+            vector_store.set_source_hash("__base__", 'doc', doc_hash)
+            logger.info(f"  Base documents: {indexed_count} indexed, {skipped_count} unchanged")
     else:
         logger.info(f"  Base documents: 0 configured")
 
-    # Get vector store for hash checks
-    vector_store = doc_tools._vector_store
-
-    # Index project documents with hash-based invalidation
+    # === PROJECT DOCUMENTS (two-level hashing) ===
     for filename, project in config.projects.items():
         if not project.documents:
             continue
 
-        # Compute hash for this project's document config
-        current_hash = _compute_doc_config_hash(project.documents)
-        logger.debug(f"  Project {filename}: current_hash={current_hash}")
+        doc_hash = _compute_doc_config_hash(project.documents)
+        cached_hash = vector_store.get_source_hash(filename, 'doc')
 
-        # Check if hash matches existing
-        if hasattr(vector_store, 'get_project_config_hash'):
-            cached_hash = vector_store.get_project_config_hash(filename)
-            logger.debug(f"  Project {filename}: cached_hash={cached_hash}")
-            if cached_hash == current_hash:
-                logger.info(f"  Project {filename}: documents unchanged, skipping")
-                continue
+        if cached_hash == doc_hash:
+            # Fast path: source-level hash unchanged, skip all documents
+            logger.info(f"  Project {filename} documents: unchanged, skipping")
+            continue
 
-            # Hash changed - clear old data
-            if cached_hash:
-                logger.info(f"  Project {filename}: config changed, re-indexing")
-                vector_store.clear_project_embeddings(filename)
+        # Slow path: source changed, check each document individually
+        logger.info(f"  Project {filename} documents: checking {len(project.documents)} documents...")
+        cached_resource_hashes = vector_store.get_resource_hashes_for_source(filename, "document")
+        config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
+        indexed_count = 0
+        skipped_count = 0
 
-        # Index all documents for this project
         for doc_name, doc_config in project.documents.items():
             try:
+                # Compute resource-level hash
+                resource_hash = _compute_doc_resource_hash(doc_name, doc_config, config.config_dir)
+                cached_resource_hash = cached_resource_hashes.get(doc_name)
+
+                if cached_resource_hash == resource_hash:
+                    # Document unchanged, skip
+                    skipped_count += 1
+                    continue
+
+                # Document changed or new - delete old chunks and re-index
+                if cached_resource_hash:
+                    vector_store.delete_resource_chunks(filename, "document", doc_name)
+                    logger.debug(f"  Project {filename}: deleted old chunks for {doc_name}")
+
                 if doc_config.path:
                     doc_path = Path(doc_config.path)
-
-                    # Resolve relative paths from config directory (where data/, docs/ live)
                     if not doc_path.is_absolute():
-                        config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
                         doc_path = (config_dir / doc_config.path).resolve()
 
                     if doc_path.exists():
@@ -160,10 +365,11 @@ def _warmup_vector_store(config: Config) -> None:
                             name=doc_name,
                             description=doc_config.description or "",
                             project_id=filename,
-                            config_hash=current_hash,
                             skip_entity_extraction=True,  # NER done at session creation
                         )
                         if success:
+                            vector_store.set_resource_hash(filename, "document", doc_name, resource_hash)
+                            indexed_count += 1
                             logger.info(f"  Project {filename}: vectorized {doc_name}")
                         else:
                             logger.warning(f"  Project {filename}: failed to vectorize {doc_name}: {msg}")
@@ -172,13 +378,17 @@ def _warmup_vector_store(config: Config) -> None:
             except Exception as e:
                 logger.warning(f"  Project {filename}: error indexing {doc_name}: {e}")
 
-    # Force checkpoint to ensure all writes are visible to other connections
-    # DuckDB WAL mode can cause stale reads without this
-    try:
-        vector_store._conn.execute("CHECKPOINT")
-        logger.debug("  Vector store checkpoint completed")
-    except Exception as e:
-        logger.debug(f"  Vector store checkpoint failed (may be expected): {e}")
+        # Handle removed documents (in cache but not in config)
+        for old_doc_name in cached_resource_hashes.keys():
+            if old_doc_name not in project.documents:
+                vector_store.delete_resource_chunks(filename, "document", old_doc_name)
+                vector_store.delete_resource_hash(filename, "document", old_doc_name)
+                logger.info(f"  Project {filename}: removed deleted document {old_doc_name}")
+
+        vector_store.set_source_hash(filename, 'doc', doc_hash)
+        logger.info(f"  Project {filename} documents: {indexed_count} indexed, {skipped_count} unchanged")
+
+    logger.info("  Pre-indexing complete")
 
 
 def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
