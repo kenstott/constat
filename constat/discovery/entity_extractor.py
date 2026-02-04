@@ -114,16 +114,34 @@ class EntityExtractor:
         # Add schema patterns (case-insensitive token matching)
         for term in (schema_terms or []):
             if term and len(term) > 1:
-                # Normalize the term (converts underscores to spaces, singularizes)
+                # Normalize the term (converts underscores/camelCase to spaces)
                 normalized = normalize_entity_name(term, to_singular=False)
-                # Create token-based pattern for case-insensitive matching
+                singular = normalize_entity_name(term, to_singular=True)
+
+                # 1. Multi-token pattern for space-separated plural (matches "performance reviews")
                 token_pattern = make_token_pattern(normalized)
                 if token_pattern:
                     patterns.append({"label": "SCHEMA", "pattern": token_pattern})
-                # Also add single-token pattern for underscore terms (spaCy keeps these as one token)
+
+                # 2. Multi-token pattern for space-separated singular (matches "performance review")
+                if singular != normalized:
+                    singular_pattern = make_token_pattern(singular)
+                    if singular_pattern:
+                        patterns.append({"label": "SCHEMA", "pattern": singular_pattern})
+
+                # 3. Single-token pattern for underscore terms (matches "performance_reviews")
                 if '_' in term:
-                    # Single token pattern for "performance_reviews" as-is
                     patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": term.lower()}]})
+
+                # 4. Single-token pattern for camelCase/PascalCase (matches "performanceReview")
+                # spaCy keeps these as single tokens, lowercased without spaces
+                if ' ' in normalized:
+                    joined_lower = normalized.replace(' ', '').lower()
+                    patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": joined_lower}]})
+                    # Also singular joined form if different
+                    singular_joined = singular.replace(' ', '').lower()
+                    if singular_joined != joined_lower:
+                        patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": singular_joined}]})
 
         # Add API patterns (case-insensitive token matching)
         for term in (api_terms or []):
