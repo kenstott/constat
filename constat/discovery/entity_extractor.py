@@ -105,33 +105,39 @@ class EntityExtractor:
 
         patterns = []
 
-        # Add schema patterns (multiple case variants for matching)
+        def make_token_pattern(text: str) -> list[dict]:
+            """Create a token-based pattern for case-insensitive matching."""
+            # Split on whitespace and underscores
+            words = re.split(r'[\s_]+', text)
+            return [{"LOWER": w.lower()} for w in words if w]
+
+        # Add schema patterns (case-insensitive token matching)
         for term in (schema_terms or []):
             if term and len(term) > 1:
-                # Add original form
-                patterns.append({"label": "SCHEMA", "pattern": term})
-                # Add normalized (lowercase) form
+                # Normalize the term (converts underscores to spaces, singularizes)
                 normalized = normalize_entity_name(term, to_singular=False)
-                if normalized != term.lower():
-                    patterns.append({"label": "SCHEMA", "pattern": normalized})
-                # Add title case form for matching in prose
-                title_case = normalized.title()
-                if title_case != normalized and title_case != term:
-                    patterns.append({"label": "SCHEMA", "pattern": title_case})
-                # Add lowercase form
-                lowercase = normalized.lower()
-                if lowercase != normalized:
-                    patterns.append({"label": "SCHEMA", "pattern": lowercase})
+                # Create token-based pattern for case-insensitive matching
+                token_pattern = make_token_pattern(normalized)
+                if token_pattern:
+                    patterns.append({"label": "SCHEMA", "pattern": token_pattern})
+                # Also add single-token pattern for underscore terms (spaCy keeps these as one token)
+                if '_' in term:
+                    # Single token pattern for "performance_reviews" as-is
+                    patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": term.lower()}]})
 
-        # Add API patterns
+        # Add API patterns (case-insensitive token matching)
         for term in (api_terms or []):
             if term and len(term) > 1:
-                patterns.append({"label": "API", "pattern": term})
+                token_pattern = make_token_pattern(term)
+                if token_pattern:
+                    patterns.append({"label": "API", "pattern": token_pattern})
 
-        # Add business term patterns
+        # Add business term patterns (case-insensitive token matching)
         for term in (business_terms or []):
             if term and len(term) > 1:
-                patterns.append({"label": "TERM", "pattern": term})
+                token_pattern = make_token_pattern(term)
+                if token_pattern:
+                    patterns.append({"label": "TERM", "pattern": token_pattern})
 
         if patterns:
             ruler.add_patterns(patterns)
