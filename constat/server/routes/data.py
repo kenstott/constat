@@ -726,49 +726,43 @@ async def list_entities(
                 print(f"[ENTITIES] Performance entity: id={row[0][:8]}, name={row[1]}, total_links={row[2]}")
 
             # Get entities visible to this session
-            # Only include chunk_entities for the current session
             result = vs._conn.execute(f"""
-                SELECT e.id, e.name, e.type, e.source, e.metadata,
-                       (SELECT COUNT(*) FROM chunk_entities ce
-                        WHERE ce.entity_id = e.id AND ce.session_id = ?) as ref_count
+                SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
+                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
                 FROM entities e
                 WHERE ({where_clause})
                 ORDER BY e.name
-            """, [session_id] + params).fetchall()
+            """, params).fetchall()
 
             for row in result:
-                ent_id, name, etype, source, metadata_json, ref_count = row
-                if entity_type and etype != entity_type:
+                ent_id, name, display_name, semantic_type, ner_type, ref_count = row
+                if entity_type and semantic_type != entity_type:
                     continue
 
-                metadata = {}
-                if metadata_json:
-                    import json
-                    metadata = json.loads(metadata_json)
-
-                # Get reference locations for this entity (only current session)
+                # Get reference locations for this entity
                 references = []
                 if ref_count > 0:
                     ref_result = vs._conn.execute("""
-                        SELECT em.document_name, em.section, ce.mention_count, ce.mention_text
+                        SELECT em.document_name, em.section, ce.confidence
                         FROM chunk_entities ce
                         JOIN embeddings em ON ce.chunk_id = em.chunk_id
-                        WHERE ce.entity_id = ? AND ce.session_id = ?
-                        ORDER BY ce.mention_count DESC
+                        WHERE ce.entity_id = ?
+                        ORDER BY ce.confidence DESC
                         LIMIT 10
-                    """, [ent_id, session_id]).fetchall()
+                    """, [ent_id]).fetchall()
                     for ref_row in ref_result:
-                        doc_name, section, mentions, mention_text = ref_row
+                        doc_name, section, confidence = ref_row
                         references.append({
                             "document": doc_name,
                             "section": section,
-                            "mentions": mentions,
-                            "mention_text": mention_text,
+                            "confidence": confidence,
                         })
 
                 # No synthetic references - entities should have real chunk links
                 # If no chunk links exist, the entity simply has no reference locations
-                add_entity(name, etype, source or "unknown", metadata, references)
+                # Use semantic_type as the type, and derive source from ner_type
+                source = "ner" if ner_type else "schema"
+                add_entity(name, semantic_type or "concept", source, {"display_name": display_name, "ner_type": ner_type}, references)
     except Exception as e:
         logger.warning(f"Could not get entities from vector_store: {e}")
 
