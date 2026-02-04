@@ -332,14 +332,26 @@ class SchemaManager:
                 else:
                     logger.warning(f"  No engine created for {db_name}")
 
-            # Rebuild chunks to include new database
-            logger.info(f"  Rebuilding schema chunks...")
+            # Check if chunks already exist for this database (from server warmup)
             if self._vector_store is None:
                 from constat.discovery.vector_store import DuckDBVectorStore
                 self._vector_store = DuckDBVectorStore()
-            if self._model is None:
-                self._model = EmbeddingModelLoader.get_instance().get_model()
-            self._extract_entities_from_descriptions()
+
+            # Check if any chunks exist for this database
+            existing_count = self._vector_store._conn.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE document_name LIKE ?",
+                [f"schema:{db_name}.%"]
+            ).fetchone()[0]
+
+            if existing_count > 0:
+                logger.info(f"  Schema chunks for {db_name} already exist ({existing_count} chunks), skipping rebuild")
+            else:
+                # Add chunks for the new database only
+                logger.info(f"  Adding schema chunks for {db_name}...")
+                if self._model is None:
+                    self._model = EmbeddingModelLoader.get_instance().get_model()
+                self._add_chunks_for_database(db_name)
+
             logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
 
             logger.info(f"Dynamically added database: {db_name} ({source_type})")
@@ -941,6 +953,71 @@ class SchemaManager:
                 logger.debug(f"Stored {len(chunks)} schema description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store schema description chunks: {e}")
+
+    def _add_chunks_for_database(self, db_name: str) -> None:
+        """Add chunks for a specific database only.
+
+        Used when dynamically adding a database to avoid rebuilding all chunks.
+
+        Args:
+            db_name: Name of the database to add chunks for
+        """
+        from constat.discovery.models import DocumentChunk, ChunkType
+
+        chunks: list[DocumentChunk] = []
+        for full_name, table_meta in self.metadata_cache.items():
+            # Only process tables from the specified database
+            if table_meta.database != db_name:
+                continue
+
+            table_name = table_meta.name
+            col_names = [c.name for c in table_meta.columns]
+
+            # Table chunk
+            if table_meta.comment:
+                table_content = f"{table_name} table: {table_meta.comment}"
+            else:
+                table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
+
+            chunks.append(DocumentChunk(
+                document_name=f"schema:{full_name}",
+                content=table_content,
+                section="table_description",
+                chunk_index=0,
+                source="schema",
+                chunk_type=ChunkType.DB_TABLE,
+            ))
+
+            # Column chunks
+            for i, col in enumerate(table_meta.columns):
+                if col.comment:
+                    col_content = f"{col.name} column in {table_name}: {col.comment}"
+                else:
+                    col_type = col.type if col.type else "unknown type"
+                    col_content = f"{col.name} column ({col_type}) in {table_name} table"
+
+                chunks.append(DocumentChunk(
+                    document_name=f"schema:{full_name}.{col.name}",
+                    content=col_content,
+                    section="column_description",
+                    chunk_index=i,
+                    source="schema",
+                    chunk_type=ChunkType.DB_COLUMN,
+                ))
+
+        if not chunks:
+            logger.debug(f"No tables found for database {db_name}")
+            return
+
+        # Generate embeddings and store chunks
+        if self._model is not None:
+            try:
+                texts = [c.content for c in chunks]
+                embeddings = self._model.encode(texts, convert_to_numpy=True)
+                self._vector_store.add_chunks(chunks, embeddings, source="schema")
+                logger.debug(f"Stored {len(chunks)} schema chunks for database {db_name}")
+            except Exception as e:
+                logger.warning(f"Failed to store schema chunks for {db_name}: {e}")
 
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
