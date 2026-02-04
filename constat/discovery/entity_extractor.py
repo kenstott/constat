@@ -105,14 +105,23 @@ class EntityExtractor:
 
         patterns = []
 
-        # Add schema patterns
+        # Add schema patterns (multiple case variants for matching)
         for term in (schema_terms or []):
             if term and len(term) > 1:
-                # Add original and normalized forms
+                # Add original form
                 patterns.append({"label": "SCHEMA", "pattern": term})
+                # Add normalized (lowercase) form
                 normalized = normalize_entity_name(term, to_singular=False)
                 if normalized != term.lower():
                     patterns.append({"label": "SCHEMA", "pattern": normalized})
+                # Add title case form for matching in prose
+                title_case = normalized.title()
+                if title_case != normalized and title_case != term:
+                    patterns.append({"label": "SCHEMA", "pattern": title_case})
+                # Add lowercase form
+                lowercase = normalized.lower()
+                if lowercase != normalized:
+                    patterns.append({"label": "SCHEMA", "pattern": lowercase})
 
         # Add API patterns
         for term in (api_terms or []):
