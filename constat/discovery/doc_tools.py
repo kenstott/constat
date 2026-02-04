@@ -641,10 +641,7 @@ class DocumentDiscoveryTools:
                         confidence=max(existing.confidence, link.confidence),
                         mention_text=existing.mention_text or link.mention_text,
                     )
-            self._vector_store.link_chunk_entities(
-                list(unique_links.values()),
-                session_id=session_id,
-            )
+            self._vector_store.link_chunk_entities(list(unique_links.values()))
             logger.info(f"extract_entities_for_session({session_id}): created {len(unique_links)} links")
             return len(unique_links)
 
