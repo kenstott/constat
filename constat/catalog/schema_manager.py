@@ -332,26 +332,8 @@ class SchemaManager:
                 else:
                     logger.warning(f"  No engine created for {db_name}")
 
-            # Check if chunks already exist for this database (from server warmup)
-            if self._vector_store is None:
-                from constat.discovery.vector_store import DuckDBVectorStore
-                self._vector_store = DuckDBVectorStore()
-
-            # Check if any chunks exist for this database
-            existing_count = self._vector_store._conn.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE document_name LIKE ?",
-                [f"schema:{db_name}.%"]
-            ).fetchone()[0]
-
-            if existing_count > 0:
-                logger.info(f"  Schema chunks for {db_name} already exist ({existing_count} chunks), skipping rebuild")
-            else:
-                # Add chunks for the new database only
-                logger.info(f"  Adding schema chunks for {db_name}...")
-                if self._model is None:
-                    self._model = EmbeddingModelLoader.get_instance().get_model()
-                self._add_chunks_for_database(db_name)
-
+            # Note: Chunks are pre-built at server startup by _warmup_vector_store().
+            # This method only adds the connection and metadata for query execution.
             logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
 
             logger.info(f"Dynamically added database: {db_name} ({source_type})")
