@@ -38,7 +38,7 @@ from constat.discovery.vector_store import (
     VectorStoreBackend,
     create_vector_store,
 )
-from constat.discovery.entity_extractor import EntityExtractor, ExtractionConfig
+from constat.discovery.entity_extractor import EntityExtractor
 
 
 def _is_glob_pattern(path: str) -> bool:
@@ -417,23 +417,90 @@ class DocumentDiscoveryTools:
 
         # Note: No cleanup needed - data is scoped by project_id/session_id
 
-        # Index documents if vector store is empty (first-time setup)
+        # Index documents that aren't already indexed (incremental)
         # Skip if caller will handle indexing (e.g., warmup with hash-based invalidation)
-        if not self._skip_auto_index and self._vector_store.count() == 0 and self.config.documents:
-            logger.info(f"[DOC_INIT] Vector store empty, indexing {len(self.config.documents)} documents...")
-            for name in self.config.documents:
-                try:
-                    self._load_document(name)
-                except Exception as e:
-                    logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
-            self._build_index(self._schema_entities)
-            logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
+        print(f"[DOC_INIT] skip_auto_index={self._skip_auto_index}, documents={list(self.config.documents.keys()) if self.config.documents else []}")
+        if not self._skip_auto_index and self.config.documents:
+            unindexed_docs = self._get_unindexed_documents()
+            print(f"[DOC_INIT] unindexed_docs={unindexed_docs}")
+            if unindexed_docs:
+                logger.info(f"[DOC_INIT] Indexing {len(unindexed_docs)} documents...")
+                for name in unindexed_docs:
+                    try:
+                        self._load_document(name)
+                    except Exception as e:
+                        logger.warning(f"[DOC_INIT] Failed to load {name}: {e}")
+                # Incrementally add new documents (don't clear existing chunks)
+                self._index_loaded_documents(self._schema_entities)
+                logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
 
     def _is_document_allowed(self, doc_name: str) -> bool:
         """Check if a document is allowed based on permissions."""
         if self.allowed_documents is None:
             return True  # No filtering
         return doc_name in self.allowed_documents
+
+    def _get_unindexed_documents(self) -> list[str]:
+        """Get list of configured documents that are not yet indexed.
+
+        Returns:
+            List of document names that need indexing
+        """
+        if not self.config.documents:
+            return []
+
+        # Get document names that already have chunks in the vector store
+        try:
+            indexed_docs = set()
+            result = self._vector_store._conn.execute("""
+                SELECT DISTINCT document_name
+                FROM embeddings
+                WHERE source = 'document'
+            """).fetchall()
+            indexed_docs = {row[0] for row in result}
+        except Exception:
+            # If query fails, assume nothing is indexed
+            indexed_docs = set()
+
+        # Return documents in config that are not yet indexed
+        return [name for name in self.config.documents if name not in indexed_docs]
+
+    def _index_loaded_documents(self, schema_entities: Optional[list[str]] = None) -> None:
+        """Add document chunks to the vector store (incremental).
+
+        This is the core indexing method for the DOCUMENT resource type.
+        It adds chunks for all loaded documents without clearing existing data.
+
+        Vector store chunk naming:
+        - Documents: document_name = "<doc_name>" (e.g., "business_rules")
+        - Schema (from SchemaManager): document_name = "schema:<db>.<table>"
+        - APIs (from APISchemaManager): document_name = "api:<api_name>.<endpoint>"
+
+        Args:
+            schema_entities: Optional list of known schema entity names for entity extraction
+        """
+        print(f"[DOC_INDEX] _loaded_documents={list(self._loaded_documents.keys())}")
+        chunks = []
+        for name, doc in self._loaded_documents.items():
+            doc_chunks = self._chunk_document(name, doc.content)
+            print(f"[DOC_INDEX] {name}: {len(doc_chunks)} chunks")
+            chunks.extend(doc_chunks)
+
+        if not chunks:
+            print("[DOC_INDEX] No chunks to index!")
+            return
+
+        # Generate embeddings
+        texts = [chunk.content for chunk in chunks]
+        with self._model_lock:
+            embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+        # Add to vector store
+        print(f"[DOC_INDEX] Adding {len(chunks)} chunks with source='document'")
+        self._vector_store.add_chunks(chunks, embeddings, source="document")
+
+        # Extract and store entities
+        self._extract_and_store_entities(chunks, schema_entities)
 
     def _create_vector_store(self) -> VectorStoreBackend:
         """Create vector store based on config."""
@@ -530,17 +597,20 @@ class DocumentDiscoveryTools:
 
         logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")
 
+        # Combine API terms from all sources
+        api_terms = list(set(
+            (self._openapi_operations or []) +
+            (self._openapi_schemas or []) +
+            (self._graphql_types or []) +
+            (self._graphql_fields or [])
+        ))
+
         # Create extractor with session's entity catalog
-        config = ExtractionConfig(
-            extract_schema=bool(self._schema_entities),
-            extract_ner=True,
-            schema_entities=self._schema_entities,
-            openapi_operations=self._openapi_operations,
-            openapi_schemas=self._openapi_schemas,
-            graphql_types=self._graphql_types,
-            graphql_fields=self._graphql_fields,
+        extractor = EntityExtractor(
+            session_id=session_id,
+            schema_terms=self._schema_entities,
+            api_terms=api_terms if api_terms else None,
         )
-        extractor = EntityExtractor(config)
 
         all_links: list[ChunkEntity] = []
         for chunk in chunks:
@@ -548,16 +618,11 @@ class DocumentDiscoveryTools:
             for entity, link in extractions:
                 all_links.append(link)
 
-        # Store entities (without session_id - they're global)
+        # Store entities - Entity model now has semantic_type instead of metadata
         entities = extractor.get_all_entities()
         if entities:
-            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
-            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
-
-            if schema_entities_list:
-                self._vector_store.add_entities(schema_entities_list, source="schema")
-            if doc_entities_list:
-                self._vector_store.add_entities(doc_entities_list, source="document")
+            # Add all entities to vector store
+            self._vector_store.add_entities(entities, source="document")
 
         # Store links WITH session_id
         if all_links:
@@ -754,7 +819,6 @@ class DocumentDiscoveryTools:
         description: str = "",
         project_id: str | None = None,
         session_id: str | None = None,
-        config_hash: str | None = None,
         skip_entity_extraction: bool = False,
     ) -> bool:
         """Internal method to add a document with full control over flags.
@@ -766,7 +830,6 @@ class DocumentDiscoveryTools:
             description: Optional description
             project_id: Project this document belongs to (for project filtering)
             session_id: Session this document was added in (for session filtering)
-            config_hash: Optional config hash for cache invalidation
             skip_entity_extraction: If True, skip NER (done later at session creation)
 
         Returns:
@@ -821,9 +884,9 @@ class DocumentDiscoveryTools:
             self._vector_store.add_chunks(
                 chunks,
                 embeddings,
+                source="document",
                 session_id=session_id,
                 project_id=project_id,
-                config_hash=config_hash,
             )
 
         # Extract entities with appropriate scope (unless skipped for later session-level extraction)
@@ -847,7 +910,6 @@ class DocumentDiscoveryTools:
         description: str = "",
         project_id: str | None = None,
         session_id: str | None = None,
-        config_hash: str | None = None,
         skip_entity_extraction: bool = False,
     ) -> tuple[bool, str]:
         """Add a document from a file path.
@@ -858,7 +920,6 @@ class DocumentDiscoveryTools:
             description: Optional description
             project_id: Optional project ID for project-scoped documents
             session_id: Optional session ID for session-scoped documents
-            config_hash: Optional config hash for cache invalidation
             skip_entity_extraction: If True, skip NER (done later at session creation)
 
         Returns:
@@ -913,7 +974,6 @@ class DocumentDiscoveryTools:
             description=description or f"Document from {path.name}",
             project_id=project_id,
             session_id=session_id,
-            config_hash=config_hash,
             skip_entity_extraction=skip_entity_extraction,
         )
 
@@ -1108,16 +1168,30 @@ class DocumentDiscoveryTools:
         """Refresh documents, using incremental update by default.
 
         Args:
-            force_full: If True, force full rebuild (clear all caches)
+            force_full: If True, force full rebuild of DOCUMENT chunks only
+                       (preserves schema and API chunks from other managers)
 
         Returns:
             Dict with refresh statistics: {added, updated, removed, unchanged}
         """
         if force_full:
             self._loaded_documents.clear()
-            self._vector_store.clear()
+
+            # Clear only DOCUMENT chunks, preserve schema:* and api:* from other managers
+            try:
+                self._vector_store._conn.execute("""
+                    DELETE FROM embeddings
+                    WHERE document_name NOT LIKE 'schema:%'
+                      AND document_name NOT LIKE 'api:%'
+                """)
+            except Exception:
+                # Fallback for non-DuckDB backends - this will clear everything
+                logger.warning("refresh: falling back to full clear (non-DuckDB backend)")
+                self._vector_store.clear()
+
+            # Clear document-sourced entities only
             if hasattr(self._vector_store, 'clear_entities'):
-                self._vector_store.clear_entities()
+                self._vector_store.clear_entities(source='document')
 
             # Reload all documents and rebuild index
             stats = {"added": 0, "updated": 0, "removed": 0, "unchanged": 0, "mode": "full_rebuild"}
@@ -1128,7 +1202,7 @@ class DocumentDiscoveryTools:
                         stats["added"] += 1
                     except Exception as e:
                         logger.warning(f"Failed to load {name}: {e}")
-                self._build_index(self._schema_entities)
+                self._index_loaded_documents(self._schema_entities)
             return stats
 
         return self._refresh_incremental()
@@ -1414,7 +1488,10 @@ class DocumentDiscoveryTools:
 
             # Load from config
             try:
-                self._load_document(name)
+                result = self._load_document(name)
+                # Binary files (PDF, Office) return dict directly instead of storing
+                if isinstance(result, dict):
+                    return result
             except Exception as e:
                 return {"error": f"Failed to load document: {str(e)}"}
 
@@ -1708,8 +1785,13 @@ class DocumentDiscoveryTools:
         else:
             return {"error": f"Section '{section}' not found in document '{name}'"}
 
-    def _load_document(self, name: str) -> None:
-        """Load a document from its configured source."""
+    def _load_document(self, name: str) -> dict | None:
+        """Load a document from its configured source.
+
+        Returns:
+            None for text documents (stored in _loaded_documents)
+            dict for binary files (PDF, Office) to be returned directly
+        """
         from datetime import datetime
 
         # Check base config first
@@ -2246,42 +2328,40 @@ class DocumentDiscoveryTools:
         return "text"
 
     def _build_index(self, schema_entities: Optional[list[str]] = None) -> None:
-        """Build vector embeddings for document chunks.
+        """Full rebuild of DOCUMENT chunks in the vector store.
 
-        Note: Structured data files (CSV, JSON) are indexed via their
-        schema metadata, not raw data rows.
+        Resource Type: DOCUMENT
+        - Clears all document chunks (document_name NOT LIKE 'schema:%' AND NOT LIKE 'api:%')
+        - Re-indexes all loaded documents
+        - Preserves schema and API chunks from other managers
+
+        The vector store is shared across 3 resource types:
+        - DOCUMENT: managed by DocumentDiscoveryTools (this class)
+        - SCHEMA: managed by SchemaManager (document_name LIKE 'schema:%')
+        - API: managed by APISchemaManager (document_name LIKE 'api:%')
+
+        Each manager is responsible for its own resource type's cache lifecycle.
 
         Args:
-            schema_entities: Optional list of known schema entity names
-                            (tables, columns) for entity extraction
+            schema_entities: Optional list of known schema entity names for entity extraction
         """
-        # Clear existing index
-        self._vector_store.clear()
+        # Clear DOCUMENT chunks only (preserve schema:* and api:* from other managers)
+        try:
+            self._vector_store._conn.execute("""
+                DELETE FROM embeddings
+                WHERE document_name NOT LIKE 'schema:%'
+                  AND document_name NOT LIKE 'api:%'
+            """)
+        except Exception:
+            # Fallback for non-DuckDB backends
+            self._vector_store.clear()
 
-        # Clear entities if supported
+        # Clear document-sourced entities only
         if hasattr(self._vector_store, 'clear_entities'):
-            self._vector_store.clear_entities()
+            self._vector_store.clear_entities(source='document')
 
-        chunks = []
-        for name, doc in self._loaded_documents.items():
-            # Chunk the document (structured files have metadata content)
-            doc_chunks = self._chunk_document(name, doc.content)
-            chunks.extend(doc_chunks)
-
-        if not chunks:
-            return
-
-        # Generate embeddings (model is loaded eagerly in __init__)
-        # Use model lock for thread safety
-        texts = [chunk.content for chunk in chunks]
-        with self._model_lock:
-            embeddings = self._model.encode(texts, convert_to_numpy=True)
-
-        # Add to vector store
-        self._vector_store.add_chunks(chunks, embeddings)
-
-        # Extract and store entities
-        self._extract_and_store_entities(chunks, schema_entities)
+        # Index all loaded documents
+        self._index_loaded_documents(schema_entities)
 
     def _extract_and_store_entities(
         self,

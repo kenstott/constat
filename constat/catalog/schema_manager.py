@@ -183,17 +183,22 @@ class SchemaManager:
         # Progress callback (set during initialize)
         self._progress_callback: Optional[Callable[[str, int, int, str], None]] = None
 
-    def initialize(self, progress_callback: Optional[Callable[[str, int, int, str], None]] = None) -> None:
-        """Connect to databases, introspect schemas, build vector index.
+    def initialize(
+        self,
+        progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
+    ) -> None:
+        """Connect to databases and load schema metadata.
 
         Uses cached schema metadata when available to avoid expensive
         database introspection on every startup. Cache is invalidated
         when config.databases changes.
 
+        Note: Entity extraction is done separately via NER at session startup.
+
         Args:
             progress_callback: Optional callback for progress updates.
                 Called with (stage, current, total, detail) where:
-                - stage: 'connecting', 'introspecting', 'indexing', 'done'
+                - stage: 'connecting', 'introspecting', 'done'
                 - current: current item number (1-based)
                 - total: total items in this stage
                 - detail: description of current item
@@ -216,9 +221,35 @@ class SchemaManager:
             # Save to cache for next time
             self._save_schema_cache(config_hash)
 
-        self._build_vector_index()
         self._generate_overview()
         self._progress_callback = None
+
+    def build_chunks(self) -> None:
+        """Build chunks for search (called at server startup).
+
+        Creates chunks in the embeddings table for semantic search.
+        Does NOT create catalog entities - those are built per-session via initialize().
+        """
+        # Initialize vector store
+        if self._vector_store is None:
+            from constat.discovery.vector_store import DuckDBVectorStore
+            self._vector_store = DuckDBVectorStore()
+
+        # Initialize embedding model
+        self._model = EmbeddingModelLoader.get_instance().get_model()
+
+        # Compute config hash for cache validation
+        config_hash = self._compute_config_hash()
+
+        # Load schema from cache or introspect
+        if not self._load_schema_cache(config_hash):
+            self._connect_all()
+            self._introspect_all()
+            self._resolve_reverse_references()
+            self._save_schema_cache(config_hash)
+
+        # Build chunks
+        self._extract_entities_from_descriptions()
 
     def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig) -> bool:
         """Dynamically add and introspect a database after initialization.
@@ -301,9 +332,11 @@ class SchemaManager:
                 else:
                     logger.warning(f"  No engine created for {db_name}")
 
-            # Rebuild vector index to include new entities
-            logger.info(f"  Rebuilding vector index...")
-            self._build_vector_index()
+            # Rebuild chunks to include new database
+            logger.info(f"  Rebuilding schema chunks...")
+            if self._model is None:
+                self._model = EmbeddingModelLoader.get_instance().get_model()
+            self._extract_entities_from_descriptions()
             logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
 
             logger.info(f"Dynamically added database: {db_name} ({source_type})")
@@ -841,81 +874,6 @@ class SchemaManager:
             # Silently ignore cache save failures
             pass
 
-    def _build_vector_index(self) -> None:
-        """Build vector embeddings for all tables.
-
-        Uses caching based on schema hash - embeddings are only recomputed
-        when the schema structure changes (new tables, columns, or types).
-        Embeddings are stored in the shared vectors.duckdb.
-        """
-        if not self.metadata_cache:
-            return
-
-        # Initialize vector store if needed
-        if self._vector_store is None:
-            from constat.discovery.vector_store import DuckDBVectorStore
-            self._vector_store = DuckDBVectorStore()
-
-        # Compute hash of config.databases
-        # Compute hash based on actual metadata_cache content, not just config
-        # This ensures dynamically added databases trigger a rebuild
-        cache_content = sorted(self.metadata_cache.keys())
-        import hashlib
-        config_hash = hashlib.md5(str(cache_content).encode()).hexdigest()[:12]
-
-        # Check if cache is valid
-        cached_hash = self._vector_store.get_catalog_config_hash('schema')
-        if cached_hash == config_hash and self._vector_store.count_catalog_entities(source='schema') > 0:
-            # Cache hit - embeddings already in DuckDB
-            return
-
-        # Cache miss - need to compute embeddings
-        self._emit_progress("indexing", 1, 2, "loading embedding model")
-        self._model = EmbeddingModelLoader.get_instance().get_model()
-
-        # Generate entity records for unified catalog
-        # Each table becomes an entity, and each column becomes a child entity
-        entities = []
-        texts = []
-
-        for full_name in sorted(self.metadata_cache.keys()):
-            table_meta = self.metadata_cache[full_name]
-            embedding_text = table_meta.to_embedding_text()
-            texts.append(embedding_text)
-
-            # Table entity - use normalized name for display, keep original in metadata
-            from constat.discovery.models import normalize_entity_name
-            entities.append({
-                "id": full_name,
-                "name": normalize_entity_name(table_meta.name),
-                "type": "table",
-                "parent_id": None,
-                "metadata": {
-                    "database": table_meta.database,
-                    "database_type": table_meta.database_type,
-                    "row_count": table_meta.row_count,
-                    "comment": table_meta.comment,
-                    "original_name": table_meta.name,
-                    "columns": [c.name for c in table_meta.columns],
-                    "primary_keys": table_meta.primary_keys,
-                    "foreign_keys": [
-                        {"from": fk.from_column, "to_table": fk.to_table, "to_column": fk.to_column}
-                        for fk in table_meta.foreign_keys
-                    ],
-                },
-            })
-
-        # Generate embeddings for tables
-        self._emit_progress("indexing", 2, 2, f"vectorizing {len(texts)} tables")
-        embeddings = self._model.encode(texts, convert_to_numpy=True)
-
-        # Clear old and save to DuckDB
-        self._vector_store.clear_catalog_entities('schema')
-        self._vector_store.add_catalog_entities(entities, embeddings, 'schema', config_hash)
-
-        # Extract entities from table/column descriptions
-        self._extract_entities_from_descriptions()
-
     def _extract_entities_from_descriptions(self) -> None:
         """Create chunks for table and column metadata.
 
@@ -926,7 +884,7 @@ class SchemaManager:
         not here. This keeps init-time fast and avoids duplicate extraction.
         """
         # Lazy import
-        from constat.discovery.models import DocumentChunk
+        from constat.discovery.models import DocumentChunk, ChunkType
 
         # Collect chunks for ALL tables and columns
         chunks: list[DocumentChunk] = []
@@ -946,6 +904,8 @@ class SchemaManager:
                 content=table_content,
                 section="table_description",
                 chunk_index=0,
+                source="schema",
+                chunk_type=ChunkType.DB_TABLE,
             ))
 
             # Column chunks
@@ -961,6 +921,8 @@ class SchemaManager:
                     content=col_content,
                     section="column_description",
                     chunk_index=i,
+                    source="schema",
+                    chunk_type=ChunkType.DB_COLUMN,
                 ))
 
         if not chunks:
@@ -972,7 +934,7 @@ class SchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings)
+                self._vector_store.add_chunks(chunks, embeddings, source="schema")
                 logger.debug(f"Stored {len(chunks)} schema description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store schema description chunks: {e}")

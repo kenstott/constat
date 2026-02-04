@@ -331,6 +331,10 @@ class SessionHistory:
         """
         session_file = self._session_dir(session_id) / "session.json"
 
+        if not session_file.exists():
+            # Session file doesn't exist yet - nothing to update
+            return
+
         with open(session_file) as f:
             metadata = json.load(f)
 
