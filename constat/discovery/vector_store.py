@@ -353,12 +353,12 @@ class DuckDBVectorStore(VectorStoreBackend):
             "SELECT COUNT(*) FROM entities WHERE session_id = ?", [session_id]
         ).fetchone()[0]
         link_count = self._conn.execute(
-            "SELECT COUNT(*) FROM chunk_entities WHERE session_id = ?", [session_id]
+            "SELECT COUNT(*) FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id]
         ).fetchone()[0]
         logger.debug(f"clear_session_data({session_id}): found {emb_count} embeddings, {ent_count} entities, {link_count} links")
 
-        # Delete in order (links first)
-        self._conn.execute("DELETE FROM chunk_entities WHERE session_id = ?", [session_id])
+        # Delete in order (links first - via entity_id subquery since chunk_entities doesn't have session_id)
+        self._conn.execute("DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id])
         self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
         self._conn.execute("DELETE FROM embeddings WHERE session_id = ?", [session_id])
 

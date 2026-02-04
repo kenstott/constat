@@ -708,9 +708,9 @@ async def list_entities(
 
             where_clause = " OR ".join(filter_conditions)
 
-            # Debug: check chunk_entities for this session
+            # Debug: check chunk_entities for this session (via entity_id join)
             ce_count = vs._conn.execute(
-                "SELECT COUNT(*) FROM chunk_entities WHERE session_id = ?",
+                "SELECT COUNT(*) FROM chunk_entities ce JOIN entities e ON ce.entity_id = e.id WHERE e.session_id = ?",
                 [session_id],
             ).fetchone()[0]
             print(f"[ENTITIES] session_id={session_id[:8]}, chunk_entities for session: {ce_count}")
@@ -718,13 +718,12 @@ async def list_entities(
             # Debug: check for performance review entity specifically
             pr_check = vs._conn.execute("""
                 SELECT e.id, e.name,
-                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as total_links,
-                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id AND ce.session_id = ?) as session_links
+                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as total_links
                 FROM entities e
-                WHERE LOWER(e.name) LIKE '%performance%'
+                WHERE LOWER(e.name) LIKE '%performance%' AND e.session_id = ?
             """, [session_id]).fetchall()
             for row in pr_check:
-                print(f"[ENTITIES] Performance entity: id={row[0][:8]}, name={row[1]}, total_links={row[2]}, session_links={row[3]}")
+                print(f"[ENTITIES] Performance entity: id={row[0][:8]}, name={row[1]}, total_links={row[2]}")
 
             # Get entities visible to this session
             # Only include chunk_entities for the current session
