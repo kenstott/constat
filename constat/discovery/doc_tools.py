@@ -621,8 +621,8 @@ class DocumentDiscoveryTools:
         # Store entities - Entity model now has semantic_type instead of metadata
         entities = extractor.get_all_entities()
         if entities:
-            # Add all entities to vector store
-            self._vector_store.add_entities(entities, source="document")
+            # Add all entities to vector store (session_id is required)
+            self._vector_store.add_entities(entities, session_id=session_id)
 
         # Store links WITH session_id
         if all_links:

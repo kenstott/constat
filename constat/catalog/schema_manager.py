@@ -334,6 +334,9 @@ class SchemaManager:
 
             # Rebuild chunks to include new database
             logger.info(f"  Rebuilding schema chunks...")
+            if self._vector_store is None:
+                from constat.discovery.vector_store import DuckDBVectorStore
+                self._vector_store = DuckDBVectorStore()
             if self._model is None:
                 self._model = EmbeddingModelLoader.get_instance().get_model()
             self._extract_entities_from_descriptions()

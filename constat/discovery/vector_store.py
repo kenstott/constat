@@ -912,16 +912,20 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Clear chunk-entity links (but keep entities).
 
         Args:
-            session_id: If provided, only clear links for this session.
-                       If None, only clear global links (session_id = '__none__').
-                       Session-scoped links are always preserved when clearing global links.
+            session_id: If provided, only clear links for entities in this session.
+                       If None, clear all links.
         """
         if session_id:
-            # Clear links for a specific session
-            self._conn.execute("DELETE FROM chunk_entities WHERE session_id = ?", [session_id])
+            # Clear links for entities in a specific session (join via entities table)
+            self._conn.execute("""
+                DELETE FROM chunk_entities
+                WHERE entity_id IN (
+                    SELECT id FROM entities WHERE session_id = ?
+                )
+            """, [session_id])
         else:
-            # Only clear global links, preserve session-scoped links
-            self._conn.execute("DELETE FROM chunk_entities WHERE session_id = '__none__'")
+            # Clear all links
+            self._conn.execute("DELETE FROM chunk_entities")
 
     def count(self) -> int:
         """Return number of stored chunks."""
