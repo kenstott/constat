@@ -105,43 +105,53 @@ class EntityExtractor:
 
         patterns = []
 
-        def make_token_pattern(text: str) -> list[dict]:
-            """Create a token-based pattern for case-insensitive matching."""
-            # Split on whitespace and underscores
-            words = re.split(r'[\s_]+', text)
-            return [{"LOWER": w.lower()} for w in words if w]
+        def make_token_pattern(text: str, use_lemma: bool = True) -> list[dict]:
+            """Create a token pattern for matching.
 
-        # Add schema patterns (case-insensitive token matching)
+            Args:
+                text: Space-separated text to match
+                use_lemma: If True, use LEMMA (singular/plural). If False, use LOWER only.
+            """
+            words = re.split(r'[\s_]+', text)
+            if use_lemma:
+                # LEMMA handles singular/plural but preserves case, so we also need LOWER
+                # Using both: LEMMA for normalization, but match on lowercased lemma
+                return [{"LEMMA": {"IN": [w.lower(), w.lower().rstrip('s')]}} for w in words if w]
+            else:
+                return [{"LOWER": w.lower()} for w in words if w]
+
+        # Add schema patterns
         for term in (schema_terms or []):
             if term and len(term) > 1:
                 # Normalize the term (converts underscores/camelCase to spaces)
                 normalized = normalize_entity_name(term, to_singular=False)
                 singular = normalize_entity_name(term, to_singular=True)
 
-                # 1. Multi-token pattern for space-separated plural (matches "performance reviews")
-                token_pattern = make_token_pattern(normalized)
-                if token_pattern:
-                    patterns.append({"label": "SCHEMA", "pattern": token_pattern})
+                # 1. Multi-token pattern for singular (matches "performance review")
+                singular_pattern = [{"LOWER": w.lower()} for w in singular.split() if w]
+                if singular_pattern:
+                    patterns.append({"label": "SCHEMA", "pattern": singular_pattern})
 
-                # 2. Multi-token pattern for space-separated singular (matches "performance review")
-                if singular != normalized:
-                    singular_pattern = make_token_pattern(singular)
-                    if singular_pattern:
-                        patterns.append({"label": "SCHEMA", "pattern": singular_pattern})
+                # 2. Multi-token pattern for plural if different (matches "performance reviews")
+                if normalized != singular:
+                    plural_pattern = [{"LOWER": w.lower()} for w in normalized.split() if w]
+                    if plural_pattern:
+                        patterns.append({"label": "SCHEMA", "pattern": plural_pattern})
 
                 # 3. Single-token pattern for underscore terms (matches "performance_reviews")
                 if '_' in term:
                     patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": term.lower()}]})
 
-                # 4. Single-token pattern for camelCase/PascalCase (matches "performanceReview")
-                # spaCy keeps these as single tokens, lowercased without spaces
-                if ' ' in normalized:
-                    joined_lower = normalized.replace(' ', '').lower()
-                    patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": joined_lower}]})
-                    # Also singular joined form if different
+                # 4. Single-token patterns for camelCase/PascalCase joined forms
+                if ' ' in singular:
+                    # Singular joined (matches "performancereview")
                     singular_joined = singular.replace(' ', '').lower()
-                    if singular_joined != joined_lower:
-                        patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": singular_joined}]})
+                    patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": singular_joined}]})
+                    # Plural joined if different (matches "performancereviews")
+                    if normalized != singular:
+                        plural_joined = normalized.replace(' ', '').lower()
+                        if plural_joined != singular_joined:
+                            patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": plural_joined}]})
 
         # Add API patterns (case-insensitive token matching)
         for term in (api_terms or []):
@@ -201,8 +211,9 @@ class EntityExtractor:
         # Determine semantic type based on source
         semantic_type = self._label_to_semantic_type(spacy_label)
 
-        # Determine NER type (None for custom patterns)
-        ner_type = spacy_label if spacy_label in self.KEEP_SPACY_TYPES else None
+        # Store the label as ner_type for all entities (spaCy + custom patterns)
+        # This captures the entity source: ORG, PERSON, SCHEMA, API, TERM
+        ner_type = spacy_label
 
         entity = Entity(
             id=self._generate_entity_id(name),

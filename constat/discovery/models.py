@@ -290,13 +290,23 @@ class SemanticType:
 
 
 class NerType:
-    """NER type constants - spaCy entity classification."""
+    """NER type constants - entity source classifier.
+
+    Indicates where the entity was identified from:
+    - spaCy NER: ORG, PERSON, PRODUCT, GPE, EVENT, LAW
+    - Custom patterns: SCHEMA, API, TERM
+    """
+    # spaCy built-in NER
     ORG = "ORG"          # Organizations
     PERSON = "PERSON"    # People
     PRODUCT = "PRODUCT"  # Products
     GPE = "GPE"          # Geo-political entities
     EVENT = "EVENT"      # Events
-    # None = not from spaCy (schema/API patterns)
+    LAW = "LAW"          # Legal documents/references
+    # Custom EntityRuler patterns
+    SCHEMA = "SCHEMA"    # Database tables/columns
+    API = "API"          # API endpoints/schemas
+    TERM = "TERM"        # Business glossary terms
 
 
 # Keep EntityType for backwards compatibility during migration

@@ -682,6 +682,25 @@ class DataStore:
 
         return "\n\n".join(parts)
 
+    def clear_scratchpad(self) -> None:
+        """Clear all scratchpad entries (for New Query)."""
+        with self.engine.connect() as conn:
+            conn.execute(text("DELETE FROM _constat_scratchpad"))
+            conn.commit()
+
+    def clear_session_data(self) -> None:
+        """Clear all session data for a new query.
+
+        Clears: scratchpad, artifacts, plan_steps, state
+        Does NOT clear: table_registry (tables are dropped separately)
+        """
+        with self.engine.connect() as conn:
+            conn.execute(text("DELETE FROM _constat_scratchpad"))
+            conn.execute(text("DELETE FROM _constat_artifacts"))
+            conn.execute(text("DELETE FROM _constat_plan_steps"))
+            conn.execute(text("DELETE FROM _constat_state"))
+            conn.commit()
+
     def get_execution_history_table(self, include_all_attempts: bool = True) -> Optional["pd.DataFrame"]:
         """
         Get execution history as a queryable DataFrame.

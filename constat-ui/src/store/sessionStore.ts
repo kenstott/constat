@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import type { Session, SessionStatus, Plan, WSEvent, TableInfo, Artifact, Fact } from '@/types/api'
 import { wsManager } from '@/api/websocket'
 import * as sessionsApi from '@/api/sessions'
+import { getOrCreateSessionId, createNewSessionId } from '@/api/sessions'
 import * as queriesApi from '@/api/queries'
 import { useArtifactStore } from './artifactStore'
 
@@ -18,6 +19,8 @@ interface Message {
   isPending?: boolean // Step that hasn't started yet (shows pending animation)
   defaultExpanded?: boolean // Start expanded (don't collapse)
   isFinalInsight?: boolean // Final insight message with View Result button
+  role?: string // Role used for this step (e.g., "data_analyst")
+  skills?: string[] // Skills used for this step
 }
 
 // Execution phases for live status updates
@@ -99,7 +102,7 @@ interface SessionState {
   } | null
 
   // Actions
-  createSession: (userId?: string) => Promise<void>
+  createSession: (userId?: string, forceNew?: boolean) => Promise<void>
   setSession: (session: Session | null, options?: { preserveMessages?: boolean }) => void
   updateSession: (updates: Partial<Session>) => void
   submitQuery: (problem: string, isFollowup?: boolean) => Promise<void>
@@ -143,15 +146,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   currentRole: null,
   queryContext: null,
 
-  createSession: async (userId = 'default') => {
+  createSession: async (userId = 'default', forceNew = false) => {
     // Disconnect old WebSocket FIRST to prevent any events during transition
     wsManager.disconnect()
 
     // Clear artifact store for fresh session
     useArtifactStore.getState().clear()
 
-    // Create new session on server
-    const session = await sessionsApi.createSession(userId)
+    // Get or create session ID (forceNew = true for reset/new session)
+    const sessionId = forceNew ? createNewSessionId(userId) : getOrCreateSessionId(userId)
+
+    // Create session on server with client-provided session ID
+    const session = await sessionsApi.createSession(userId, sessionId)
 
     // Initialize with empty messages - welcome message will come from server via WebSocket
     set({
@@ -283,10 +289,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Create message bubbles for remaining steps (pending until step_start)
     const stepMessageIds: Record<number, string> = {}
+    const { queryContext } = get()
+    // Skills from query context apply to all steps
+    const skills = queryContext?.skills?.length ? queryContext.skills.map(s => s.name) : undefined
     const stepMessages: Message[] = steps.map((step) => {
       const id = crypto.randomUUID()
       const stepNum = step.number ?? allSteps.indexOf(step) + 1
       stepMessageIds[stepNum] = id
+      // Use step's role_id from plan (planner-assigned), fallback to query context role
+      const stepRole = step.role_id || queryContext?.role?.name
       return {
         id,
         type: 'step' as const,
@@ -295,6 +306,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         stepNumber: stepNum,
         isLive: false, // Not live until step starts
         isPending: true, // Pending animation until step starts
+        ...(stepRole ? { role: stepRole } : {}),
+        ...(skills ? { skills } : {}),
       }
     })
 
@@ -417,7 +430,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set((state) => ({
           messages: state.messages.map((m) =>
             m.id === messageId
-              ? { ...m, content, isLive: !isComplete, isPending: false }
+              // Preserve role/skills when updating content
+              ? { ...m, content, isLive: !isComplete, isPending: false, role: m.role, skills: m.skills }
               : m
           ),
         }))
@@ -509,7 +523,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'planning_start':
         ensureLiveMessage('Planning...', 'planning')
-        set({ status: 'planning', queryContext: null })
+        set({ status: 'planning' })  // Don't clear queryContext - it was set by dynamic_context
         break
 
       case 'dynamic_context': {
@@ -545,10 +559,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'step_start': {
         const goal = (event.data.goal as string) || 'Processing'
-        updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
         // Track the starting step of this query for View Result
         const { currentStepNumber: prevStep } = get()
         const isFirstStep = prevStep === 0
+
+        // Role/skills are shown as badges in the step header (not in content)
+        updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
         set({
           status: 'executing',
           currentStepNumber: event.step_number,
@@ -751,13 +767,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         finalizeAllSteps()
         clearLiveMessage()
         const errorMsg = (event.data.error as string) || 'Query failed'
-        // Check if this is a plan rejection (user revised the plan)
-        const isRejection = errorMsg.toLowerCase().includes('rejected')
+        // Check if this is a plan rejection (user revised/modified the plan)
+        const isRejection = errorMsg.toLowerCase().includes('rejected') ||
+                           errorMsg.toLowerCase().includes('was rejected')
+        // Check if this is a cancellation (user already saw "Plan cancelled" message)
+        const isCancellation = errorMsg.toLowerCase().includes('cancel') ||
+                              errorMsg.toLowerCase().includes('cancelled')
         set({ status: 'error', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })
-        addMessage({
-          type: isRejection ? 'system' : 'error',
-          content: isRejection ? 'Plan revised' : errorMsg,
-        })
+        // Don't show redundant error message for cancellations or rejections
+        // (rejections immediately start a new query, so no need to show error)
+        if (!isCancellation && !isRejection) {
+          addMessage({
+            type: 'error',
+            content: errorMsg,
+          })
+        }
         // Process queued messages after error too
         setTimeout(() => {
           const { queuedMessages, submitQuery: submit } = get()
@@ -850,8 +874,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
-      case 'facts_extracted':
-      case 'fact_resolved': {
+      case 'facts_extracted': {
         // Add facts to artifact store
         const factsData = event.data as { facts?: Fact[]; fact?: Fact }
         if (factsData.facts) {
@@ -869,6 +892,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'fact_start':
       case 'fact_planning':
       case 'fact_executing':
+      case 'fact_resolved':
       case 'fact_failed':
       case 'proof_complete': {
         import('./proofStore').then(({ useProofStore }) => {

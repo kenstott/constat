@@ -1261,37 +1261,32 @@ class SchemaManager:
 
         return results
 
-    def get_entity_names(self, include_columns: bool = False, normalize: bool = True) -> list[str]:
+    def get_entity_names(self, include_columns: bool = False) -> list[str]:
         """Return table names (and optionally column names) for entity extraction.
+
+        Returns raw names (e.g., "performance_reviews") so EntityExtractor can
+        generate all pattern variants (underscore, space-separated, singular, etc.).
 
         By default, only returns table names since column names are often too
         generic ("date", "name", "status") and cause false matches in documents.
 
         Args:
             include_columns: If True, also include column names (default False)
-            normalize: If True, normalize names for NER (e.g., "performance_reviews" -> "performance review")
 
         Returns:
-            List of unique entity names
+            List of unique entity names (raw, not normalized)
         """
-        from constat.discovery.models import normalize_entity_name
-
         entities = set()
 
         for table_meta in self.metadata_cache.values():
             # Add table name (without database prefix for matching)
-            name = table_meta.name
-            if normalize:
-                name = normalize_entity_name(name)
-            entities.add(name)
+            # Keep raw name so EntityExtractor can generate all pattern variants
+            entities.add(table_meta.name)
 
             # Optionally add column names
             if include_columns:
                 for col in table_meta.columns:
-                    col_name = col.name
-                    if normalize:
-                        col_name = normalize_entity_name(col_name)
-                    entities.add(col_name)
+                    entities.add(col.name)
 
         return list(entities)
 

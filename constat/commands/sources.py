@@ -240,7 +240,7 @@ def discover_command(ctx: CommandContext) -> TableResult:
         return TableResult(
             success=True,
             title="Discovery Results",
-            columns=["Score", "Source", "Name", "Entities", "Content"],
+            columns=["Score", "Type", "Name", "Classifiers", "Content"],
             rows=[],
             footer=f"No results found for '{query}'{scope_str}.",
         )
@@ -249,36 +249,34 @@ def discover_command(ctx: CommandContext) -> TableResult:
     rows = []
     for r in enriched_results:
         score = f"{r.score:.2f}"
-        source_type = r.chunk.source
 
-        # Format source type for display
-        source_display = {
-            "schema": "DATABASE",
-            "api": "API",
-            "document": "DOCUMENT",
-        }.get(source_type, "UNKNOWN")
+        # Use granular chunk_type (db_table, api_endpoint, graphql_field, etc.)
+        chunk_type = r.chunk.chunk_type.value if hasattr(r.chunk.chunk_type, 'value') else str(r.chunk.chunk_type)
 
         # Use document_name as the name
         name = r.chunk.document_name
 
-        # Get entity names (display names)
-        entity_names = [e.display_name or e.name for e in r.entities[:5]]  # Limit to 5
-        entities_str = ", ".join(entity_names) if entity_names else "-"
-        if len(r.entities) > 5:
-            entities_str += f" (+{len(r.entities) - 5})"
+        # Collect all unique classifiers (ner_type + semantic_type) from entities
+        classifiers = set()
+        for e in r.entities:
+            if e.ner_type:
+                classifiers.add(e.ner_type)
+            if e.semantic_type:
+                classifiers.add(e.semantic_type)
+        classifiers_str = ", ".join(sorted(classifiers)) if classifiers else "-"
 
         # Truncate content
-        content = r.chunk.content[:50].replace("\n", " ")
-        if len(r.chunk.content) > 50:
+        content = r.chunk.content[:40].replace("\n", " ")
+        if len(r.chunk.content) > 40:
             content += "..."
 
-        rows.append([score, source_display, name, entities_str, content])
+        rows.append([score, chunk_type, name, classifiers_str, content])
 
     scope_str = f" ({source_filter})" if source_filter else ""
     return TableResult(
         success=True,
         title=f"Discovery Results{scope_str}",
-        columns=["Score", "Source", "Name", "Entities", "Content"],
+        columns=["Score", "Type", "Name", "Classifiers", "Content"],
         rows=rows,
         footer=f"Found {len(rows)} matches for '{query}'",
     )

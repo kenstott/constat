@@ -256,13 +256,23 @@ class ConstatAPIImpl:
         )
 
     def reset_context(self) -> None:
-        """Reset session context, clearing plan and datastore."""
+        """Reset session context for a new query.
+
+        Clears: plan, scratchpad, datastore tables, artifacts, state, session facts
+        Keeps: data sources, projects, learnings
+        """
         self._session.plan = None
-        self._session.scratchpad.clear()
+        # Clear in-memory scratchpad sections
+        self._session.scratchpad._sections.clear()
         if self._session.datastore:
-            # Clear tables but keep datastore
+            # Clear user tables
             for table in self._session.datastore.list_tables():
                 self._session.datastore.drop_table(table['name'])
+            # Clear all persisted session data (scratchpad, artifacts, plan_steps, state)
+            self._session.datastore.clear_session_data()
+        # Clear session-level facts (cache + resolution log)
+        if self._session.fact_resolver:
+            self._session.fact_resolver.clear_session()
 
     # -------------------------------------------------------------------------
     # Callbacks
@@ -638,7 +648,7 @@ class ConstatAPIImpl:
             artifacts=artifacts,
             tables_created=tables,
             suggestions=suggestions,
-            error=result.get("error"),
+            error=result.get("error") or result.get("message"),  # Use message if no error (e.g., plan rejection)
             raw_output=result.get("raw_output"),
         )
 
@@ -658,7 +668,7 @@ class ConstatAPIImpl:
             artifacts=artifacts,
             tables_created=tables,
             suggestions=suggestions,
-            error=result.get("error"),
+            error=result.get("error") or result.get("message"),  # Use message if no error (e.g., plan rejection)
             raw_output=result.get("raw_output"),
         )
 

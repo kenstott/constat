@@ -859,6 +859,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk_id,
                 document_name,
                 source,
+                chunk_type,
                 section,
                 chunk_index,
                 content,
@@ -872,15 +873,22 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
 
         # Convert to output format
+        from constat.discovery.models import ChunkType
         results = []
         for row in result:
-            chunk_id, doc_name, source, section, chunk_idx, content, similarity = row
+            chunk_id, doc_name, source, chunk_type_str, section, chunk_idx, content, similarity = row
+            # Convert string to ChunkType enum
+            try:
+                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+            except ValueError:
+                chunk_type = ChunkType.DOCUMENT
             chunk = DocumentChunk(
                 document_name=doc_name,
                 content=content,
                 section=section,
                 chunk_index=chunk_idx,
                 source=source or "document",
+                chunk_type=chunk_type,
             )
             results.append((chunk_id, float(similarity), chunk))
 
