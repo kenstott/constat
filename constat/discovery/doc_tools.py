@@ -731,17 +731,21 @@ class DocumentDiscoveryTools:
         if not chunks:
             return
 
+        # Combine API terms
+        api_terms = list(set(
+            (self._openapi_operations or []) +
+            (self._openapi_schemas or []) +
+            (self._graphql_types or []) +
+            (self._graphql_fields or [])
+        ))
+
         # Run entity extraction on metadata chunks
-        config = ExtractionConfig(
-            extract_schema=bool(self._schema_entities),
-            extract_ner=True,
-            schema_entities=self._schema_entities or [],
-            openapi_operations=self._openapi_operations,
-            openapi_schemas=self._openapi_schemas,
-            graphql_types=self._graphql_types,
-            graphql_fields=self._graphql_fields,
+        # Use "__metadata__" as session_id for metadata processing
+        extractor = EntityExtractor(
+            session_id="__metadata__",
+            schema_terms=self._schema_entities,
+            api_terms=api_terms if api_terms else None,
         )
-        extractor = EntityExtractor(config)
 
         all_links: list[ChunkEntity] = []
         for chunk in chunks:
@@ -753,14 +757,8 @@ class DocumentDiscoveryTools:
         logger.debug(f"Metadata NER: {len(entities)} entities, {len(all_links)} links from {len(chunks)} metadata items")
 
         if entities:
-            # Separate by source for proper categorization
-            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
-            other_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
-
-            if schema_entities_list:
-                self._vector_store.add_entities(schema_entities_list, source="schema")
-            if other_entities_list:
-                self._vector_store.add_entities(other_entities_list, source=source_type)
+            # Add all entities to vector store
+            self._vector_store.add_entities(entities, session_id="__metadata__")
 
         if all_links:
             # Deduplicate links by (chunk_id, entity_id)
@@ -997,17 +995,20 @@ class DocumentDiscoveryTools:
 
         logger.debug(f"Extracting entities from {len(chunks)} chunks for session {session_id}")
 
+        # Combine API terms
+        api_terms = list(set(
+            (self._openapi_operations or []) +
+            (self._openapi_schemas or []) +
+            (self._graphql_types or []) +
+            (self._graphql_fields or [])
+        ))
+
         # Create extractor with all known schema entities
-        config = ExtractionConfig(
-            extract_schema=bool(self._schema_entities),
-            extract_ner=True,
-            schema_entities=self._schema_entities or [],
-            openapi_operations=self._openapi_operations,
-            openapi_schemas=self._openapi_schemas,
-            graphql_types=self._graphql_types,
-            graphql_fields=self._graphql_fields,
+        extractor = EntityExtractor(
+            session_id=session_id,
+            schema_terms=self._schema_entities,
+            api_terms=api_terms if api_terms else None,
         )
-        extractor = EntityExtractor(config)
 
         all_links: list[ChunkEntity] = []
 
@@ -1022,14 +1023,7 @@ class DocumentDiscoveryTools:
         entities = extractor.get_all_entities()
         logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
         if entities:
-            # Separate entities by their metadata source for proper vector store categorization
-            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
-            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
-
-            if schema_entities_list:
-                self._vector_store.add_entities(schema_entities_list, source="schema", session_id=session_id)
-            if doc_entities_list:
-                self._vector_store.add_entities(doc_entities_list, source="document", session_id=session_id)
+            self._vector_store.add_entities(entities, session_id=session_id)
 
         if all_links:
             # Deduplicate links by (chunk_id, entity_id)
@@ -1047,7 +1041,7 @@ class DocumentDiscoveryTools:
                         confidence=max(existing.confidence, link.confidence),
                         mention_text=existing.mention_text or link.mention_text,
                     )
-            self._vector_store.link_chunk_entities(list(unique_links.values()), session_id=session_id)
+            self._vector_store.link_chunk_entities(list(unique_links.values()))
 
     def _extract_and_store_entities_project(
         self,
@@ -1068,17 +1062,22 @@ class DocumentDiscoveryTools:
 
         logger.debug(f"Extracting entities from {len(chunks)} chunks for project {project_id}")
 
+        # Combine API terms
+        api_terms = list(set(
+            (self._openapi_operations or []) +
+            (self._openapi_schemas or []) +
+            (self._graphql_types or []) +
+            (self._graphql_fields or [])
+        ))
+
         # Create extractor with all known schema entities
-        config = ExtractionConfig(
-            extract_schema=bool(self._schema_entities),
-            extract_ner=True,
-            schema_entities=self._schema_entities or [],
-            openapi_operations=self._openapi_operations,
-            openapi_schemas=self._openapi_schemas,
-            graphql_types=self._graphql_types,
-            graphql_fields=self._graphql_fields,
+        # Use project_id as session_id for project-scoped extraction
+        extractor = EntityExtractor(
+            session_id=project_id,
+            project_id=project_id,
+            schema_terms=self._schema_entities,
+            api_terms=api_terms if api_terms else None,
         )
-        extractor = EntityExtractor(config)
 
         all_links: list[ChunkEntity] = []
 
@@ -1093,14 +1092,7 @@ class DocumentDiscoveryTools:
         entities = extractor.get_all_entities()
         logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
         if entities:
-            # Separate entities by their metadata source for proper vector store categorization
-            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
-            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
-
-            if schema_entities_list:
-                self._vector_store.add_entities(schema_entities_list, source="schema", project_id=project_id)
-            if doc_entities_list:
-                self._vector_store.add_entities(doc_entities_list, source="document", project_id=project_id)
+            self._vector_store.add_entities(entities, session_id=project_id)
 
         if all_links:
             # Deduplicate links by (chunk_id, entity_id)
@@ -1118,7 +1110,7 @@ class DocumentDiscoveryTools:
                         confidence=max(existing.confidence, link.confidence),
                         mention_text=existing.mention_text or link.mention_text,
                     )
-            self._vector_store.link_chunk_entities(list(unique_links.values()), project_id=project_id)
+            self._vector_store.link_chunk_entities(list(unique_links.values()))
 
     def remove_document(self, name: str) -> bool:
         """Remove a document and its vectors from the index.
@@ -2375,17 +2367,21 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
+        # Combine API terms
+        api_terms = list(set(
+            (self._openapi_operations or []) +
+            (self._openapi_schemas or []) +
+            (self._graphql_types or []) +
+            (self._graphql_fields or [])
+        ))
+
         # Create extractor with schema entities and spaCy NER
-        config = ExtractionConfig(
-            extract_schema=bool(schema_entities),
-            extract_ner=True,
-            schema_entities=schema_entities or [],
-            openapi_operations=self._openapi_operations,
-            openapi_schemas=self._openapi_schemas,
-            graphql_types=self._graphql_types,
-            graphql_fields=self._graphql_fields,
+        # Use "__document__" as session_id for general document extraction
+        extractor = EntityExtractor(
+            session_id="__document__",
+            schema_terms=schema_entities,
+            api_terms=api_terms if api_terms else None,
         )
-        extractor = EntityExtractor(config)
 
         # Extract entities from each chunk
         all_links: list[ChunkEntity] = []
@@ -2398,19 +2394,8 @@ class DocumentDiscoveryTools:
         # Store all unique entities
         entities = extractor.get_all_entities()
         logger.debug(f"Entity extraction: {len(entities)} unique entities, {len(all_links)} links from {len(chunks)} chunks")
-        if schema_entities:
-            # Log which schema entities were matched
-            matched_schema = [e.name for e in entities if e.metadata.get("source") == "database_schema"]
-            logger.debug(f"Entity extraction: matched schema entities: {matched_schema}")
         if entities:
-            # Separate entities by their metadata source for proper vector store categorization
-            schema_entities_list = [e for e in entities if e.metadata.get("source") == "database_schema"]
-            doc_entities_list = [e for e in entities if e.metadata.get("source") != "database_schema"]
-
-            if schema_entities_list:
-                self._vector_store.add_entities(schema_entities_list, source="schema")
-            if doc_entities_list:
-                self._vector_store.add_entities(doc_entities_list, source="document")
+            self._vector_store.add_entities(entities, session_id="__document__")
 
         # Store all chunk-entity links (deduplicated by chunk_id + entity_id)
         if all_links:
