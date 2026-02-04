@@ -144,3 +144,141 @@ def files_command(ctx: CommandContext) -> ListResult:
         title="Data Files",
         items=items,
     )
+
+
+def discover_command(ctx: CommandContext) -> TableResult:
+    """Unified semantic search across all data sources (databases, APIs, documents).
+
+    Usage:
+        /discover <query>           - Search all sources
+        /discover database <query>  - Search database tables/columns only
+        /discover api <query>       - Search API endpoints only
+        /discover document <query>  - Search documents only
+    """
+    import numpy as np
+    from constat.embedding_loader import EmbeddingModelLoader
+
+    args = ctx.args.strip()
+    if not args:
+        return TableResult(
+            success=True,
+            title="Usage",
+            columns=["Command", "Description"],
+            rows=[
+                ["/discover <query>", "Search all sources"],
+                ["/discover database <query>", "Search database tables/columns"],
+                ["/discover api <query>", "Search API endpoints"],
+                ["/discover document <query>", "Search documents"],
+            ],
+            footer="Example: /discover performance review",
+        )
+
+    # Parse scope filter
+    parts = args.split()
+    source_filter = None
+    scope_map = {
+        "database": "schema", "db": "schema", "databases": "schema",
+        "table": "schema", "tables": "schema",
+        "api": "api", "apis": "api",
+        "document": "document", "documents": "document", "doc": "document", "docs": "document",
+    }
+
+    if parts and parts[0].lower() in scope_map:
+        source_filter = scope_map[parts[0].lower()]
+        query = " ".join(parts[1:])
+    else:
+        query = args
+
+    if not query:
+        return ErrorResult(error="Please provide a search query.")
+
+    # Get vector store
+    vector_store = None
+    session = ctx.session
+    if hasattr(session, 'schema_manager') and session.schema_manager:
+        vector_store = getattr(session.schema_manager, '_vector_store', None)
+    if not vector_store and hasattr(session, 'doc_tools') and session.doc_tools:
+        vector_store = getattr(session.doc_tools, '_vector_store', None)
+
+    if not vector_store:
+        return ErrorResult(error="No vector store available.")
+
+    # Embed query and search
+    model = EmbeddingModelLoader.get_instance().get_model()
+    query_embedding = model.encode(query, convert_to_numpy=True)
+    if isinstance(query_embedding, list):
+        query_embedding = np.array(query_embedding)
+
+    # Get active project IDs for filtering
+    project_ids = None
+    if hasattr(session, 'doc_tools') and session.doc_tools:
+        project_ids = getattr(session.doc_tools, '_active_project_ids', None)
+
+    # Get session_id for entity lookup
+    session_id = getattr(ctx, 'session_id', None) or getattr(session, 'session_id', None)
+
+    # Search chunks - base + active projects, with entities
+    enriched_results = vector_store.search_enriched(
+        query_embedding=query_embedding,
+        limit=15,
+        project_ids=project_ids,
+        session_id=session_id,
+    )
+
+    # Filter by source type
+    if source_filter:
+        enriched_results = [
+            r for r in enriched_results
+            if r.chunk.source == source_filter
+        ]
+
+    # Filter by minimum score
+    enriched_results = [r for r in enriched_results if r.score >= 0.3]
+
+    if not enriched_results:
+        scope_str = f" in {source_filter}" if source_filter else ""
+        return TableResult(
+            success=True,
+            title="Discovery Results",
+            columns=["Score", "Source", "Name", "Entities", "Content"],
+            rows=[],
+            footer=f"No results found for '{query}'{scope_str}.",
+        )
+
+    # Build result rows
+    rows = []
+    for r in enriched_results:
+        score = f"{r.score:.2f}"
+        source_type = r.chunk.source
+
+        # Format source type for display
+        source_display = {
+            "schema": "DATABASE",
+            "api": "API",
+            "document": "DOCUMENT",
+        }.get(source_type, "UNKNOWN")
+
+        # Use document_name as the name
+        name = r.chunk.document_name
+
+        # Get entity names (display names)
+        entity_names = [e.display_name or e.name for e in r.entities[:5]]  # Limit to 5
+        entities_str = ", ".join(entity_names) if entity_names else "-"
+        if len(r.entities) > 5:
+            entities_str += f" (+{len(r.entities) - 5})"
+
+        # Truncate content
+        content = r.chunk.content[:50].replace("\n", " ")
+        if len(r.chunk.content) > 50:
+            content += "..."
+
+        rows.append([score, source_display, name, entities_str, content])
+
+    scope_str = f" ({source_filter})" if source_filter else ""
+    return TableResult(
+        success=True,
+        title=f"Discovery Results{scope_str}",
+        columns=["Score", "Source", "Name", "Entities", "Content"],
+        rows=rows,
+        footer=f"Found {len(rows)} matches for '{query}'",
+    )
