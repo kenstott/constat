@@ -76,8 +76,9 @@ def _compute_api_config_hash(apis: dict) -> str:
         for api_name, api_config in sorted(apis.items()):
             api_data[api_name] = {
                 "type": api_config.type or "",
-                "base_url": api_config.base_url or "",
-                "graphql_endpoint": api_config.graphql_endpoint or "",
+                "url": api_config.url or "",
+                "spec_url": api_config.spec_url or "",
+                "spec_path": api_config.spec_path or "",
             }
     return _compute_config_hash(api_data)
 
@@ -123,9 +124,9 @@ def _compute_api_resource_hash(api_name: str, api_config) -> str:
     data = {
         "name": api_name,
         "type": api_config.type or "",
-        "base_url": api_config.base_url or "",
-        "graphql_endpoint": api_config.graphql_endpoint or "",
-        "spec_url": getattr(api_config, "spec_url", "") or "",
+        "url": api_config.url or "",
+        "spec_url": api_config.spec_url or "",
+        "spec_path": api_config.spec_path or "",
     }
     return _compute_config_hash(data)
 
