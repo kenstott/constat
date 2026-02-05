@@ -594,6 +594,7 @@ async def list_entities(
         "api_field": 95,      # API fields should win over generic table/column
         "api_endpoint": 90,
         "api_schema": 85,
+        "api": 82,            # Generic API type
         "graphql": 80,
         "table": 75,          # Schema types below API types
         "column": 70,

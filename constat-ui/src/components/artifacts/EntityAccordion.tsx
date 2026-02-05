@@ -15,6 +15,7 @@ const ENTITY_TYPES = [
   { value: 'concept', label: 'Concepts', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
   { value: 'action', label: 'Actions', color: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400' },
   { value: 'business_term', label: 'Business Terms', color: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
+  { value: 'api', label: 'APIs', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
   { value: 'api_endpoint', label: 'API Endpoints', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
   { value: 'api_field', label: 'API Fields', color: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400' },
   { value: 'api_schema', label: 'API Schemas', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
@@ -41,6 +42,7 @@ function EntityItem({ entity }: EntityItemProps) {
     concept: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
     action: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
     business_term: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+    api: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
     api_endpoint: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
     api_field: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
     api_schema: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
@@ -94,6 +96,12 @@ function EntityItem({ entity }: EntityItemProps) {
                 const apiPart = doc.substring(4) // Remove "api:"
                 const apiName = apiPart.split('.')[0] // Get first segment
                 return `${apiName} (API)`
+              }
+              // schema:db.table or schema:db.table.column -> db (DB)
+              if (doc.startsWith('schema:')) {
+                const schemaPart = doc.substring(7) // Remove "schema:"
+                const dbName = schemaPart.split('.')[0] // Get database name
+                return `${dbName} (DB)`
               }
               // Table: X with Database: Y in section -> Y (DB)
               if (doc.startsWith('Table: ') && section.startsWith('Database: ')) {
