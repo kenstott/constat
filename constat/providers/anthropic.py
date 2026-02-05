@@ -67,6 +67,13 @@ class AnthropicProvider(BaseLLMProvider):
 
             response = self.client.messages.create(**kwargs)
 
+            # Check for truncation due to max_tokens limit
+            if response.stop_reason == "max_tokens":
+                logger.warning(
+                    f"[ANTHROPIC] Response truncated at max_tokens={max_tokens}. "
+                    f"Consider increasing limit or simplifying request."
+                )
+
             # Check if we need to handle tool calls
             if response.stop_reason == "tool_use":
                 # Extract tool uses and text from response

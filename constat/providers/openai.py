@@ -92,6 +92,13 @@ class OpenAIProvider(BaseLLMProvider):
             choice = response.choices[0]
             message = choice.message
 
+            # Check for truncation due to max_tokens limit
+            if choice.finish_reason == "length":
+                logger.warning(
+                    f"[OPENAI] Response truncated at max_tokens={max_tokens}. "
+                    f"Consider increasing limit or simplifying request."
+                )
+
             # Check if we need to handle tool calls
             if choice.finish_reason == "tool_calls" and message.tool_calls:
                 # Add assistant message with tool calls
