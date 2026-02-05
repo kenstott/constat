@@ -701,6 +701,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               // Prefer non-tables, but tables are OK as fallback
               const nonTableArtifacts = publishedArtifacts.filter((a) => a.artifact_type !== 'table')
               const tableArtifacts = publishedArtifacts.filter((a) => a.artifact_type === 'table')
+              console.log('[synthesizing] Published:', publishedArtifacts.length, 'NonTable:', nonTableArtifacts.length, 'Table:', tableArtifacts.length)
+              console.log('[synthesizing] NonTable artifacts:', nonTableArtifacts.map(a => `${a.name} (${a.artifact_type})`))
 
               if (publishedArtifacts.length > 0) {
                 sectionsToExpand.push('artifacts')
