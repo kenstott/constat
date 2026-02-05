@@ -2089,7 +2089,8 @@ ${skill.body}`
                 if (!session) return
                 try {
                   const response = await fetch(
-                    `/api/sessions/${session.session_id}/download-code`
+                    `/api/sessions/${session.session_id}/download-code`,
+                    { credentials: 'include' }
                   )
                   if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}))
