@@ -215,8 +215,8 @@ export function PlanApprovalDialog() {
   }
 
   const handleRevise = () => {
-    // Build the full edited plan verbatim
-    const editedSteps: string[] = []
+    // Build structured edited steps array for backend
+    const editedStepsArray: Array<{ number: number; goal: string }> = []
     let stepCounter = 1
 
     steps.forEach((step) => {
@@ -227,18 +227,15 @@ export function PlanApprovalDialog() {
       // Use modification if provided, otherwise original goal
       const mod = stepModifications[stepNum]?.trim()
       const stepText = mod || step.goal || ''
-      editedSteps.push(`${stepCounter}. ${stepText}`)
+      editedStepsArray.push({ number: stepCounter, goal: stepText })
       stepCounter++
     })
 
-    // Build full follow-up with problem + edited steps + any additional instructions
-    let followUp = `${problem}\n\nPlan:\n${editedSteps.join('\n')}`
+    // Only pass additional instructions as feedback (empty string if none)
+    // The edited steps are passed as a separate structured parameter
+    const feedback = additionalInstructions.trim() || 'Edited plan'
 
-    if (additionalInstructions.trim()) {
-      followUp += `\n\n${additionalInstructions.trim()}`
-    }
-
-    rejectPlan(followUp)
+    rejectPlan(feedback, editedStepsArray)
     setAdditionalInstructions('')
     setStepModifications({})
     setDeletedSteps(new Set())
