@@ -91,6 +91,42 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     return () => window.removeEventListener('keydown', handleEscape)
   }, [isFullscreen])
 
+  // Listen for download requests from iframe (for converted binary files like xlsx, docx)
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      if (event.data?.type === 'constat-download' && event.data?.artifactId === artifact.id) {
+        if (!session) return
+        try {
+          const response = await fetch(
+            `/api/sessions/${session.session_id}/artifacts/${artifact.id}/download`,
+            { credentials: 'include' }
+          )
+          if (!response.ok) throw new Error('Failed to download')
+          const blob = await response.blob()
+          const disposition = response.headers.get('Content-Disposition')
+          let filename = artifact.name
+          if (disposition) {
+            const match = disposition.match(/filename="([^"]+)"/)
+            if (match) filename = match[1]
+          }
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = filename
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+        } catch (err) {
+          console.error('Download failed:', err)
+          alert('Failed to download. Please try again.')
+        }
+      }
+    }
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [session, artifact.id, artifact.name])
+
   const toggleOpen = () => {
     setIsOpen(!isOpen)
   }
@@ -122,6 +158,34 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
       } else {
+        // Check if this is a converted binary file (xlsx, docx, pdf, etc.)
+        const sourceType = artifact.metadata?.source_type as string | undefined
+        if (sourceType) {
+          // Use the download endpoint to get the original file
+          const response = await fetch(
+            `/api/sessions/${session.session_id}/artifacts/${artifact.id}/download`,
+            { credentials: 'include' }
+          )
+          if (!response.ok) throw new Error('Failed to download')
+          const blob = await response.blob()
+          // Get filename from Content-Disposition header or construct from artifact name
+          const disposition = response.headers.get('Content-Disposition')
+          let filename = `${artifact.name}.${sourceType}`
+          if (disposition) {
+            const match = disposition.match(/filename="([^"]+)"/)
+            if (match) filename = match[1]
+          }
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = filename
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+          return
+        }
+
         // For other artifacts, fetch content and download
         const artifactContent = content || await sessionsApi.getArtifact(session.session_id, artifact.id)
 
@@ -299,9 +363,25 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
 
     // HTML content
     if (content.mime_type === 'text/html' || content.artifact_type === 'html') {
+      // Inject script to handle .constat-download clicks via postMessage
+      const downloadHandlerScript = `
+        <script>
+          document.addEventListener('click', function(e) {
+            const link = e.target.closest('.constat-download');
+            if (link) {
+              e.preventDefault();
+              window.parent.postMessage({
+                type: 'constat-download',
+                artifactId: ${artifact.id}
+              }, '*');
+            }
+          });
+        </script>
+      `
+      const contentWithHandler = content.content + downloadHandlerScript
       return (
         <iframe
-          srcDoc={content.content}
+          srcDoc={contentWithHandler}
           className="w-full border-0"
           style={{ height: maxHeight || '300px' }}
           title={content.name}

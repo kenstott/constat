@@ -394,7 +394,7 @@ class VisualizationHelper:
                             html_parts.append(preview_df.to_html(index=False, classes="data-table", border=0))
                             if len(df) > 100:
                                 html_parts.append(f"<p><em>Showing 100 of {len(df)} rows</em></p>")
-                        html_parts.append(f'<p><a href="{file_uri}" download="{filepath.name}">Download full file ({ext.upper()})</a></p>')
+                        html_parts.append(f'<p><a href="#" class="constat-download" data-filename="{filepath.name}">Download full file ({ext.upper()})</a></p>')
                         html_content = self._wrap_html_preview("\n".join(html_parts))
                         self.datastore.save_rich_artifact(
                             name=name,
@@ -410,7 +410,7 @@ class VisualizationHelper:
                         html_content = self._wrap_html_preview(
                             f'<h2>{title or name}</h2>'
                             f'<p>Excel spreadsheet</p>'
-                            f'<p><a href="{file_uri}" download="{filepath.name}">Download {filepath.name}</a></p>'
+                            f'<p><a href="#" class="constat-download" data-filename="{filepath.name}">Download {filepath.name}</a></p>'
                             f'<p><small>Preview unavailable: {e}</small></p>'
                         )
                         self.datastore.save_rich_artifact(
@@ -459,7 +459,7 @@ class VisualizationHelper:
                     html_content = self._wrap_html_preview(
                         f'<h2>{title or name}</h2>'
                         f'<p>{ext_label}</p>'
-                        f'<p><a href="{file_uri}" download="{filepath.name}">Download {filepath.name}</a></p>'
+                        f'<p><a href="#" class="constat-download" data-filename="{filepath.name}">Download {filepath.name}</a></p>'
                     )
                     self.datastore.save_rich_artifact(
                         name=name,
@@ -492,7 +492,7 @@ class VisualizationHelper:
             body_content = (
                 f'<h2>{title}</h2>'
                 f'<div class="docx-content">{html_body}</div>'
-                f'<p><a href="{file_uri}" download="{filename}">Download original document</a></p>'
+                f'<p><a href="#" class="constat-download" data-filename="{filename}">Download original document</a></p>'
             )
             if result.messages:
                 warnings = "<br>".join(str(m) for m in result.messages[:5])
@@ -505,7 +505,7 @@ class VisualizationHelper:
             return self._wrap_html_preview(
                 f'<h2>{title}</h2>'
                 f'<p>Word Document</p>'
-                f'<p><a href="{file_uri}" download="{filename}">Download {filename}</a></p>'
+                f'<p><a href="#" class="constat-download" data-filename="{filename}">Download {filename}</a></p>'
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
@@ -532,14 +532,14 @@ class VisualizationHelper:
             body_content = (
                 f'<h2>{title}</h2>'
                 f'<div class="docx-content">{"".join(paragraphs)}</div>'
-                f'<p><a href="{file_uri}" download="{filename}">Download original document</a></p>'
+                f'<p><a href="#" class="constat-download" data-filename="{filename}">Download original document</a></p>'
             )
             return self._wrap_html_preview(body_content)
         except Exception as e:
             return self._wrap_html_preview(
                 f'<h2>{title}</h2>'
                 f'<p>Word Document</p>'
-                f'<p><a href="{file_uri}" download="{filename}">Download {filename}</a></p>'
+                f'<p><a href="#" class="constat-download" data-filename="{filename}">Download {filename}</a></p>'
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
@@ -573,7 +573,7 @@ a {{ color: #3b82f6; }}
     <button onclick="prevPage()">← Prev</button>
     <span id="page-info">Page 1 of ?</span>
     <button onclick="nextPage()">Next →</button>
-    <a href="{file_uri}" download="{filename}" style="margin-left: auto;">Download PDF</a>
+    <a href="#" class="constat-download" data-filename="{filename}" style="margin-left: auto;">Download PDF</a>
   </div>
   <canvas id="pdf-canvas"></canvas>
 </div>

@@ -419,6 +419,101 @@ async def get_artifact(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{session_id}/artifacts/{artifact_id}/download")
+async def download_artifact_file(
+    session_id: str,
+    artifact_id: int,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> Response:
+    """Download the original file for an artifact.
+
+    For artifacts that are HTML previews of binary files (xlsx, docx, pdf),
+    this returns the original file. For other artifacts, returns the content.
+
+    Args:
+        session_id: Session ID
+        artifact_id: Artifact ID
+
+    Returns:
+        File response with appropriate content type
+
+    Raises:
+        404: Session or artifact not found
+    """
+    from pathlib import Path
+
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore for this session")
+
+    try:
+        artifact = managed.session.datastore.get_artifact_by_id(artifact_id)
+
+        if not artifact:
+            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+
+        # Check if this artifact has a source file (converted binary like xlsx, docx)
+        file_path = artifact.metadata.get("file_path") if artifact.metadata else None
+        source_type = artifact.metadata.get("source_type") if artifact.metadata else None
+
+        if file_path and source_type:
+            # Return the original binary file
+            path = Path(file_path)
+            if not path.exists():
+                raise HTTPException(status_code=404, detail=f"Original file not found: {path.name}")
+
+            content = path.read_bytes()
+
+            # Determine MIME type
+            mime_types = {
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xls": "application/vnd.ms-excel",
+                "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "doc": "application/msword",
+                "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "ppt": "application/vnd.ms-powerpoint",
+                "pdf": "application/pdf",
+            }
+            mime_type = mime_types.get(source_type, "application/octet-stream")
+
+            return Response(
+                content=content,
+                media_type=mime_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{path.name}"',
+                },
+            )
+
+        # No source file - return the artifact content directly
+        content = artifact.content.encode() if isinstance(artifact.content, str) else artifact.content
+
+        # Determine extension from artifact type
+        ext_map = {
+            "markdown": "md",
+            "md": "md",
+            "html": "html",
+            "json": "json",
+            "text": "txt",
+        }
+        ext = ext_map.get(artifact.artifact_type.value if hasattr(artifact.artifact_type, 'value') else artifact.artifact_type, "txt")
+        filename = f"{artifact.name}.{ext}"
+
+        return Response(
+            content=content,
+            media_type=artifact.mime_type or "text/plain",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading artifact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{session_id}/facts", response_model=FactListResponse)
 async def list_facts(
     session_id: str,
