@@ -256,7 +256,7 @@ async def list_artifacts(
             elif artifact_type in visualization_types:
                 # Visualizations are starred by default
                 is_starred = True
-                logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred=True (visualization)")
+                logger.debug(f"[artifact_key_result] id={a['id']} {a['name']} type={artifact_type}: is_starred=True (visualization)")
             else:
                 is_starred = False
                 logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred=False (default)")

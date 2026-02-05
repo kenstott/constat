@@ -719,14 +719,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               // Within each category, prefer highest step_number
               const candidates = nonTableArtifacts.length > 0 ? nonTableArtifacts : tableArtifacts
               if (candidates.length > 0) {
-                // Prefer markdown over other types
+                // Sort candidates: markdown first, then by step_number descending
                 const markdownTypes = ['markdown', 'md']
-                const markdownArtifacts = candidates.filter((a) => markdownTypes.includes(a.artifact_type?.toLowerCase() || ''))
-                const finalCandidates = markdownArtifacts.length > 0 ? markdownArtifacts : candidates
+                const sortedCandidates = [...candidates].sort((a, b) => {
+                  const aIsMarkdown = markdownTypes.includes(a.artifact_type?.toLowerCase() || '')
+                  const bIsMarkdown = markdownTypes.includes(b.artifact_type?.toLowerCase() || '')
+                  // Markdown comes first
+                  if (aIsMarkdown && !bIsMarkdown) return -1
+                  if (!aIsMarkdown && bIsMarkdown) return 1
+                  // Then by step_number descending
+                  return b.step_number - a.step_number
+                })
 
-                const best = finalCandidates.reduce((a, b) =>
-                  (b.step_number > a.step_number) ? b : a
-                )
+                const best = sortedCandidates[0]
                 console.log('[synthesizing] Best artifact:', best.name, best.id, 'type:', best.artifact_type)
                 selectArtifact(session.session_id, best.id)
               }
