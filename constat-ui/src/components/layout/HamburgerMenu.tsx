@@ -25,6 +25,7 @@ interface HamburgerMenuProps {
 
 function AccountSection({ onClose }: { onClose: () => void }) {
   const { user, logout } = useAuthStore()
+  const [imageError, setImageError] = useState(false)
 
   const handleLogout = async () => {
     await logout()
@@ -42,11 +43,12 @@ function AccountSection({ onClose }: { onClose: () => void }) {
   return (
     <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
       <div className="flex items-center gap-3 mb-3">
-        {user.photoURL ? (
+        {user.photoURL && !imageError ? (
           <img
             src={user.photoURL}
             alt={user.displayName || 'User'}
             className="w-8 h-8 rounded-full"
+            onError={() => setImageError(true)}
           />
         ) : (
           <UserCircleIcon className="w-8 h-8 text-gray-400" />
