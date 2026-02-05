@@ -13,6 +13,7 @@ const ENTITY_TYPES = [
   { value: 'table', label: 'Tables', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
   { value: 'column', label: 'Columns', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
   { value: 'concept', label: 'Concepts', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
+  { value: 'action', label: 'Actions', color: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400' },
   { value: 'business_term', label: 'Business Terms', color: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
   { value: 'api_endpoint', label: 'API Endpoints', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
   { value: 'api_field', label: 'API Fields', color: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400' },
@@ -25,6 +26,7 @@ interface EntityItemProps {
 
 function EntityItem({ entity }: EntityItemProps) {
   const [isOpen, setIsOpen] = useState(false)
+  const [showRefs, setShowRefs] = useState(false)
 
   // Get original name for display (if different from normalized name)
   const originalName: string | undefined =
@@ -37,6 +39,7 @@ function EntityItem({ entity }: EntityItemProps) {
     table: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
     column: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
     concept: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+    action: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
     business_term: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
     api_endpoint: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
     api_field: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
@@ -119,18 +122,26 @@ function EntityItem({ entity }: EntityItemProps) {
               </div>
             )
           })()}
-          {/* References */}
+          {/* References - collapsible */}
           {references.length === 0 ? (
             <p className="text-xs text-gray-400 dark:text-gray-500">
               No reference locations available
             </p>
           ) : (
             <div className="space-y-1">
-              <span className="text-xs text-gray-400 dark:text-gray-500">Referenced in:</span>
-              {references.map((ref, idx) => (
+              <button
+                onClick={() => setShowRefs(!showRefs)}
+                className="flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <ChevronRightIcon
+                  className={`w-3 h-3 transition-transform ${showRefs ? 'rotate-90' : ''}`}
+                />
+                <span>Referenced in ({references.length})</span>
+              </button>
+              {showRefs && references.map((ref, idx) => (
                 <div
                   key={idx}
-                  className="text-xs text-gray-500 dark:text-gray-400 pl-2"
+                  className="text-xs text-gray-500 dark:text-gray-400 pl-4"
                 >
                   <div className="flex items-center gap-2">
                     {ref.mention_text && (

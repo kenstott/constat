@@ -119,6 +119,20 @@ Note: `role_id` is optional. Use `null` or omit it for steps that should use sha
 - **medium**: Multi-table joins, moderate aggregations
 - **high**: Complex joins, window functions
 
+## User Revisions and Edited Plans
+If the input contains a "Requested plan structure", the user has edited the plan and you MUST follow that structure exactly:
+- Use the exact steps provided (same goals, same order)
+- Do NOT add or remove steps - the user has already decided what steps they want
+- Do NOT do additional schema discovery that might suggest different approaches
+- Fill in the technical details (inputs, outputs, task_type) for the provided goals
+- The "User notes" section contains additional context or clarifications
+
+If the input contains "User Revision" without a plan structure:
+- The user is correcting a previous plan with text feedback
+- User revisions take precedence over schema discovery results
+- If user says to remove/exclude something, do NOT include it
+- Treat the revision as the authoritative requirement
+
 Return ONLY the JSON object, no additional text.
 """
 
@@ -325,6 +339,9 @@ class Planner:
                 desc = role.get("description", "")
                 role_lines.append(f"- **{name}**: {desc}")
             roles_text = "\n".join(role_lines)
+            logger.info(f"[PLANNER] Including {len(self._available_roles)} roles in prompt")
+        else:
+            logger.debug("[PLANNER] No roles available for prompt")
 
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
@@ -632,6 +649,9 @@ class Planner:
         """
         Revise a plan based on user feedback.
 
+        Creates a fresh plan that incorporates the feedback, rather than
+        appending to the original plan which can confuse the LLM.
+
         Args:
             original_plan: The original plan being revised
             feedback: User's correction or additional context
@@ -640,25 +660,24 @@ class Planner:
         Returns:
             PlannerResponse with the revised plan
         """
-        # Build context showing completed steps
-        completed_context = "\n".join([
-            f"Step {num}: {original_plan.get_step(num).goal} (COMPLETED)"
-            for num in completed_steps
-        ])
+        # Build context about completed work (what data is available, not old plan structure)
+        completed_outputs = []
+        for num in completed_steps:
+            step = original_plan.get_step(num)
+            if step and step.result and step.expected_outputs:
+                for output in step.expected_outputs:
+                    completed_outputs.append(output)
 
-        prompt = f"""The user wants to revise the current plan.
+        available_data = ""
+        if completed_outputs:
+            available_data = f"\n\nAvailable data from prior steps: {', '.join(completed_outputs)}"
 
-Original problem: {original_plan.problem}
+        # Present as a fresh planning request with the feedback incorporated
+        prompt = f"""Create a plan to answer this question:
 
-Completed steps:
-{completed_context if completed_context else "(none)"}
+{original_plan.problem}
 
-User feedback: {feedback}
-
-Create a revised plan that:
-1. Keeps completed steps as-is (reference their outputs)
-2. Addresses the user's feedback
-3. Produces a complete solution
+User clarification: {feedback}{available_data}
 
 Return the plan in JSON format."""
 

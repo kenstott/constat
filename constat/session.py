@@ -67,20 +67,24 @@ from constat.commands import HELP_COMMANDS, get_help_markdown
 
 
 # Meta-questions that don't require data queries
+# IMPORTANT: Be specific to avoid matching action requests like "create recommendations"
 META_QUESTION_PATTERNS = [
     "what questions",
     "what can you",
-    "help me",
+    "help me with",  # More specific - "help me" alone is too broad
     "capabilities",
     "what do you know",
     "describe yourself",
     "what data",
     "what databases",
     "what tables",
-    # Asking for recommendations/suggestions (not asking to run them)
-    "recommend",
-    "suggested",
-    "suggestions",
+    # Asking FOR recommendations/suggestions (not creating them)
+    # Note: "create recommendations", "generate recommendations" should NOT match
+    "any recommendations",
+    "recommend me",
+    "do you recommend",
+    "what do you suggest",
+    "any suggestions",
     "what should i",
     "what could i",
     "any analyses",
@@ -196,9 +200,10 @@ Share data between steps ONLY via `store`:
 
 ## Corrections and Updates
 When correcting or updating previous results:
-- **OVERWRITE the original table** with the same name - don't create "corrected_*" versions
-- Use `store.save_dataframe('original_name', corrected_df, step_number=N)` to replace
-- The user wants the canonical result fixed, not a separate corrected copy
+- **OVERWRITE the original table** with the exact same name - NEVER create "corrected_*", "updated_*", or "*_v2" versions
+- Use `store.save_dataframe('original_name', corrected_df, step_number=N)` to replace the existing table
+- The user wants the canonical result fixed in place, not a separate copy with a different name
+- If fixing "summary_df", save as "summary_df" not "corrected_summary_df" or "summary_df_v2"
 
 ## Common Pitfalls
 - Check `if 'col' in df.columns` before accessing columns
@@ -336,12 +341,15 @@ class Session:
     def __init__(
         self,
         config: Config,
+        session_id: str,
         session_config: Optional[SessionConfig] = None,
         history: Optional[SessionHistory] = None,
         progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
         user_id: Optional[str] = None,
         data_dir: Optional[Path] = None,
     ):
+        self.session_id = session_id  # Always provided by client
+
         self.config = config
         self.session_config = session_config or SessionConfig()
         self.user_id = user_id or "default"
@@ -372,26 +380,14 @@ class Session:
         logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
 
         # Document discovery tools (for reference documents)
-        # Always create doc_tools - don't make first user pay lazy loading cost
-        # IMPORTANT: Keep schema and API entities separate to avoid type confusion
-        # (passing API names as schema_entities causes them to be typed as TABLE)
         t0 = time.time()
-        schema_entities = set(self.schema_manager.get_entity_names())
-        api_entities = list(self._get_api_entity_names())
-        self.doc_tools = DocumentDiscoveryTools(config, schema_entities=schema_entities)
-        # Set API entities separately for proper type assignment
-        if api_entities:
-            self.doc_tools.set_openapi_entities(api_entities, api_entities)
-
-        # Process schema/API metadata through NER for cross-datasource entity linking
-        schema_metadata = self.schema_manager.get_description_text()
-        if schema_metadata:
-            self.doc_tools.process_metadata_through_ner(schema_metadata, source_type="schema")
-
-        api_metadata = self.api_schema_manager.get_description_text()
-        if api_metadata:
-            self.doc_tools.process_metadata_through_ner(api_metadata, source_type="api")
+        self.doc_tools = DocumentDiscoveryTools(config)
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
+
+        # Extract NER entities from all chunks (base + active projects)
+        self._entities_extracted = False
+        project_ids = list(config.projects.keys()) if config.projects else None
+        self.extract_entities(project_ids)
 
         # Task router for model routing with escalation
         self.router = TaskRouter(config.llm)
@@ -415,7 +411,7 @@ class Session:
         self.history = history or SessionHistory(user_id=self.user_id)
 
         # Session state
-        self.session_id: Optional[str] = None
+        # Note: self.session_id is set at the top of __init__ (required parameter)
         self.server_session_id: Optional[str] = None  # Server UUID for reverse lookup
         self.plan: Optional[Plan] = None
         self.scratchpad = Scratchpad()
@@ -464,7 +460,7 @@ class Session:
 
         # Skill manager for user-defined skills ({data_dir}/{user_id}/skills/)
         from constat.core.skills import SkillManager
-        self.skill_manager = SkillManager(user_id=user_id, base_dir=self.data_dir)
+        self.skill_manager = SkillManager(user_id=self.user_id, base_dir=self.data_dir)
 
         # Skill matcher for dynamic skill selection based on query
         from constat.core.skill_matcher import SkillMatcher
@@ -675,9 +671,10 @@ class Session:
                 role = self.role_manager.get_role(name)
                 if role:
                     roles_list.append({"name": name, "description": role.description or ""})
+            logger.info(f"[ROLES] Syncing {len(roles_list)} roles to planner: {[r['name'] for r in roles_list]}")
             self.planner.set_available_roles(roles_list)
         except Exception as e:
-            logger.debug(f"Failed to sync roles to planner: {e}")
+            logger.warning(f"Failed to sync roles to planner: {e}")
 
     def _is_unclear_input(self, text: str) -> bool:
         """Check if input appears to be unclear, garbage, or a copy-paste error.
@@ -1092,6 +1089,59 @@ class Session:
             for field in meta.fields:
                 entities.add(field.name)
         return entities
+
+    def extract_entities(self, project_ids: list[str] | None = None) -> int:
+        """Extract NER entities from all chunks for this session.
+
+        Should be called after session_id is set. Extracts entities from
+        base + specified project chunks.
+
+        Args:
+            project_ids: Project IDs to include (in addition to base)
+
+        Returns:
+            Number of entities extracted
+        """
+        if not self.session_id:
+            logger.warning("extract_entities called without session_id")
+            return 0
+
+        if self._entities_extracted:
+            logger.debug("Entities already extracted for this session")
+            return 0
+
+        t0 = time.time()
+        schema_terms = list(self.schema_manager.get_entity_names())
+        api_terms = list(self._get_api_entity_names())
+
+        entity_count = self.doc_tools._vector_store.extract_entities_for_session(
+            session_id=self.session_id,
+            project_ids=project_ids,
+            schema_terms=schema_terms,
+            api_terms=api_terms,
+        )
+
+        self._entities_extracted = True
+        logger.debug(f"Entity extraction took {time.time() - t0:.2f}s ({entity_count} entities)")
+        return entity_count
+
+    def rebuild_entities(self, project_ids: list[str] | None = None) -> int:
+        """Rebuild entity catalog (e.g., when projects change).
+
+        Clears existing entities for this session and re-extracts.
+
+        Args:
+            project_ids: Project IDs to include (in addition to base)
+
+        Returns:
+            Number of entities extracted
+        """
+        if not self.session_id:
+            logger.warning("rebuild_entities called without session_id")
+            return 0
+
+        self._entities_extracted = False
+        return self.extract_entities(project_ids)
 
     def add_project_api(self, name: str, api_config: Any) -> None:
         """Register an API from an active project.
@@ -2968,6 +3018,69 @@ Do not include any explanation or extra text."""
         )
 
         return self._approval_callback(request)
+
+    def _build_plan_from_edited_steps(
+        self,
+        problem: str,
+        edited_steps: list[dict],
+    ) -> Plan:
+        """
+        Build a Plan directly from user-edited steps, skipping the planner.
+
+        Used when user edits the plan steps but provides no additional feedback,
+        meaning they want exactly what they specified without re-interpretation.
+
+        Args:
+            problem: The original problem
+            edited_steps: List of {"number": int, "goal": str} from user edits
+
+        Returns:
+            Plan object ready for execution
+        """
+        from datetime import datetime
+
+        # Get original plan steps for metadata preservation
+        original_steps_by_goal = {}
+        if self.plan:
+            for step in self.plan.steps:
+                # Key by normalized goal for fuzzy matching
+                normalized = step.goal.lower().strip()
+                original_steps_by_goal[normalized] = step
+
+        # Build new steps with sequential numbering
+        new_steps = []
+        for i, edited in enumerate(edited_steps, start=1):
+            goal = edited.get("goal", "")
+            original_number = edited.get("number", i)
+
+            # Try to find original step for metadata (by goal similarity)
+            normalized_goal = goal.lower().strip()
+            original = original_steps_by_goal.get(normalized_goal)
+
+            # Also try to find by original step number
+            if not original and self.plan:
+                original = self.plan.get_step(original_number)
+
+            # Create step with preserved metadata where available
+            step = Step(
+                number=i,  # Renumber sequentially
+                goal=goal,
+                expected_inputs=original.expected_inputs if original else [],
+                expected_outputs=original.expected_outputs if original else [],
+                depends_on=[i - 1] if i > 1 else [],  # Sequential dependencies for safety
+                step_type=original.step_type if original else StepType.PYTHON,
+                task_type=original.task_type if original else TaskType.PYTHON_ANALYSIS,
+                complexity=original.complexity if original else "medium",
+                role_id=original.role_id if original else None,
+                skill_ids=original.skill_ids if original else None,
+            )
+            new_steps.append(step)
+
+        return Plan(
+            problem=problem,
+            steps=new_steps,
+            created_at=datetime.now().isoformat(),
+        )
 
     def _classify_question(self, problem: str) -> str:
         """
@@ -5362,15 +5475,18 @@ Provide a brief, high-level summary of the key findings."""
         dynamic_context = results.get("dynamic_context")
 
         # Emit dynamic context event (role and skills matched for this query)
+        logger.info(f"[DYNAMIC_CONTEXT] dynamic_context={dynamic_context}")
         if dynamic_context:
+            event_data = {
+                "role": dynamic_context.get("role"),
+                "skills": dynamic_context.get("skills"),
+                "role_source": dynamic_context.get("role_source"),
+            }
+            logger.info(f"[DYNAMIC_CONTEXT] Emitting event with data: role={event_data.get('role')}, skills={event_data.get('skills')}")
             self._emit_event(StepEvent(
                 event_type="dynamic_context",
                 step_number=0,
-                data={
-                    "role": dynamic_context.get("role"),
-                    "skills": dynamic_context.get("skills"),
-                    "role_source": dynamic_context.get("role_source"),
-                }
+                data=event_data,
             ))
 
         # Route based on primary intent (may discard speculative plan)
@@ -5488,6 +5604,9 @@ Provide a brief, high-level summary of the key findings."""
         self.datastore.set_session_meta("problem", problem)
         self.datastore.set_session_meta("status", "planning")
 
+        # Log the initial query
+        self.history.log_user_input(self.session_id, problem, "query")
+
         # Check for unclear/garbage input before processing
         if self._is_unclear_input(problem):
             return {
@@ -5510,6 +5629,7 @@ Provide a brief, high-level summary of the key findings."""
 
         # Generate plan with approval loop
         current_problem = problem
+        display_problem = problem  # What to show in UI (just feedback on replan)
         replan_attempt = 0
 
         while replan_attempt <= self.session_config.max_replan_attempts:
@@ -5549,7 +5669,8 @@ Provide a brief, high-level summary of the key findings."""
 
             # Request approval if required
             if self.session_config.require_approval:
-                approval = self._request_approval(problem, planner_response)
+                # Use display_problem for UI (just feedback on replan, full problem initially)
+                approval = self._request_approval(display_problem, planner_response)
 
                 if approval.decision == PlanApproval.REJECT:
                     # User rejected the plan
@@ -5572,7 +5693,38 @@ Provide a brief, high-level summary of the key findings."""
                     }
 
                 elif approval.decision == PlanApproval.SUGGEST:
-                    # User wants changes - replan with feedback
+                    # User wants changes - check if we can skip replanning
+                    suggestion_text = (approval.suggestion or "").strip()
+                    has_edited_steps = bool(approval.edited_steps)
+                    has_meaningful_feedback = bool(suggestion_text) and suggestion_text not in ("", "Edited plan")
+
+                    # If user edited steps but provided no additional feedback, use edited plan directly
+                    if has_edited_steps and not has_meaningful_feedback:
+                        logger.info("[REPLAN] User edited steps with no feedback - using edited plan directly")
+
+                        # Log the revision (the edited plan itself)
+                        edited_summary = "; ".join(f"{s['number']}. {s['goal'][:50]}" for s in approval.edited_steps)
+                        self.history.log_user_input(self.session_id, f"[Edited plan] {edited_summary}", "revision")
+
+                        # Build Plan directly from edited steps
+                        self.plan = self._build_plan_from_edited_steps(problem, approval.edited_steps)
+
+                        # Create a synthetic planner_response for the plan_ready event
+                        planner_response = PlannerResponse(
+                            plan=self.plan,
+                            reasoning="User-edited plan (approved without replanning)",
+                        )
+
+                        # Emit event for UI consistency
+                        self._emit_event(StepEvent(
+                            event_type="planning_complete",
+                            step_number=0,
+                            data={"steps": len(self.plan.steps), "edited": True}
+                        ))
+
+                        break  # Skip replanning, proceed to execution
+
+                    # User has meaningful feedback - replan with feedback
                     replan_attempt += 1
                     if replan_attempt > self.session_config.max_replan_attempts:
                         self.datastore.set_session_meta("status", "max_replans_exceeded")
@@ -5583,18 +5735,37 @@ Provide a brief, high-level summary of the key findings."""
                             "error": f"Maximum replan attempts ({self.session_config.max_replan_attempts}) exceeded.",
                         }
 
+                    # Log the revision
+                    self.history.log_user_input(self.session_id, suggestion_text, "revision")
+
                     # Emit replan event
                     self._emit_event(StepEvent(
                         event_type="replanning",
                         step_number=0,
                         data={
                             "attempt": replan_attempt,
-                            "feedback": approval.suggestion,
+                            "feedback": suggestion_text,
                         }
                     ))
 
-                    # Replan with feedback
-                    current_problem = f"{problem}\n\nUser feedback: {approval.suggestion}"
+                    # Build replan prompt with original query + edited plan structure
+                    # The edited plan is what the user approved/modified
+                    if has_edited_steps:
+                        edited_plan_text = "\n".join(
+                            f"{step['number']}. {step['goal']}"
+                            for step in approval.edited_steps
+                        )
+                        current_problem = f"""{problem}
+
+**Requested plan structure (follow this exactly):**
+{edited_plan_text}
+
+**User notes:** {suggestion_text}"""
+                    else:
+                        # No edited steps provided - use original problem + feedback
+                        current_problem = f"{problem}\n\n**User Revision (takes precedence):** {suggestion_text}"
+
+                    display_problem = suggestion_text
                     continue  # Go back to planning
 
                 # APPROVE - proceed with execution
@@ -6208,6 +6379,9 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # Fast path: Handle slash commands directly via command registry
         if question.strip().startswith("/"):
             return self._handle_slash_command(question.strip())
+
+        # Log the follow-up query
+        self.history.log_user_input(self.session_id, question, "followup")
 
         # Fast path: check if this is a simple "show me X" request for existing data
         # This avoids expensive LLM classification for simple data lookups
@@ -9061,7 +9235,12 @@ Prove all of the above claims and provide a complete audit trail."""
         return False
 
 
-def create_session(config_path: str) -> Session:
-    """Create a session from a config file path."""
+def create_session(config_path: str, session_id: str) -> Session:
+    """Create a session from a config file path.
+
+    Args:
+        config_path: Path to config YAML file
+        session_id: Client-provided session ID (required)
+    """
     config = Config.from_yaml(config_path)
-    return Session(config)
+    return Session(config, session_id=session_id)

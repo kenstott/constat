@@ -597,6 +597,7 @@ async def list_entities(
         "graphql": 80,
         "table": 75,          # Schema types below API types
         "column": 70,
+        "action": 50,         # Actions (verbs extracted from documents)
         "concept": 40,
         "business_term": 30,
         "organization": 20,
@@ -607,7 +608,66 @@ async def list_entities(
 
     entity_map: dict[str, dict[str, Any]] = {}
 
-    def add_entity(name: str, etype: str, source: str, metadata: dict, references: list[dict] | None = None):
+    # Cache for related entities queries (entity_id -> list of related)
+    related_entities_cache: dict[str, list[dict]] = {}
+
+    def get_related_entities(vs, entity_id: str, session_id: str, limit: int = 5) -> list[dict]:
+        """Find entities that co-occur in the same chunks as the given entity.
+
+        Returns list of {"name": str, "type": str, "co_occurrences": int}
+        """
+        if entity_id in related_entities_cache:
+            return related_entities_cache[entity_id]
+
+        try:
+            # Find chunks where this entity appears, then find other entities in those chunks
+            result = vs._conn.execute("""
+                SELECT e2.name, e2.semantic_type, COUNT(*) as co_occurrences
+                FROM chunk_entities ce1
+                JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+                JOIN entities e2 ON ce2.entity_id = e2.id
+                WHERE ce1.entity_id = ?
+                  AND ce2.entity_id != ce1.entity_id
+                  AND (e2.session_id = ? OR e2.session_id IS NULL)
+                GROUP BY e2.id, e2.name, e2.semantic_type
+                ORDER BY co_occurrences DESC
+                LIMIT ?
+            """, [entity_id, session_id, limit]).fetchall()
+
+            related = [
+                {"name": row[0], "type": row[1] or "concept", "co_occurrences": row[2]}
+                for row in result
+            ]
+            related_entities_cache[entity_id] = related
+            return related
+        except Exception as e:
+            logger.debug(f"Could not get related entities for {entity_id}: {e}")
+            return []
+
+    def consolidate_source(source: str) -> str:
+        """Consolidate column-level schema sources to table level.
+
+        schema:hr.performance_reviews.employee_id -> schema:hr.performance_reviews
+        schema:hr.performance_reviews -> schema:hr.performance_reviews (unchanged)
+        business_rules -> business_rules (unchanged)
+        """
+        if source.startswith("schema:"):
+            parts = source.split(".")
+            # schema:db.table.column -> keep schema:db.table
+            # schema:db.table -> keep as is
+            if len(parts) >= 3:
+                # Has column part, consolidate to table
+                return ".".join(parts[:2])
+        return source
+
+    def add_entity(
+        name: str,
+        etype: str,
+        source: str,
+        metadata: dict,
+        references: list[dict] | None = None,
+        related_entities: list[dict] | None = None,
+    ):
         """Add or merge an entity into the map.
 
         Normalizes entity names for deduplication and display:
@@ -644,15 +704,19 @@ async def list_entities(
             original_name = name
             metadata = {**metadata, "original_name": original_name}
 
+        # Consolidate source (e.g., schema:db.table.column -> schema:db.table)
+        consolidated_source = consolidate_source(source)
+
         if key not in entity_map:
             entity_map[key] = {
                 "id": str(hash(f"{display}")),
                 "name": display,
                 "type": etype,
                 "types": [etype],
-                "sources": [source],
+                "sources": [consolidated_source],
                 "metadata": metadata,
                 "references": references or [],
+                "related_entities": related_entities or [],
                 "mention_count": len(references) if references else 0,
                 "original_name": original_name,
             }
@@ -664,9 +728,9 @@ async def list_entities(
                 # Update primary type if new type has higher priority
                 if TYPE_PRIORITY.get(etype, 0) > TYPE_PRIORITY.get(existing["type"], 0):
                     existing["type"] = etype
-            # Merge: add source if new
-            if source not in existing["sources"]:
-                existing["sources"].append(source)
+            # Merge: add consolidated source if new
+            if consolidated_source not in existing["sources"]:
+                existing["sources"].append(consolidated_source)
             # Merge references with deduplication (by document + section)
             if references:
                 existing_refs = {(r["document"], r["section"]) for r in existing["references"]}
@@ -676,6 +740,9 @@ async def list_entities(
                         existing["references"].append(ref)
                         existing_refs.add(ref_key)
                 existing["mention_count"] = len(existing["references"])
+            # Merge related_entities (prefer the one with more entries)
+            if related_entities and len(related_entities) > len(existing.get("related_entities", [])):
+                existing["related_entities"] = related_entities
             # Merge metadata
             existing["metadata"].update(metadata)
             # Update original_name if not already set
@@ -739,6 +806,10 @@ async def list_entities(
                 if entity_type and semantic_type != entity_type:
                     continue
 
+                # Skip orphaned entities (no chunk links = can't trace origin)
+                if ref_count == 0:
+                    continue
+
                 # Get reference locations for this entity
                 references = []
                 if ref_count > 0:
@@ -762,7 +833,15 @@ async def list_entities(
                 # If no chunk links exist, the entity simply has no reference locations
                 # Use semantic_type as the type, and derive source from ner_type
                 source = "ner" if ner_type else "schema"
-                add_entity(name, semantic_type or "concept", source, {"display_name": display_name, "ner_type": ner_type}, references)
+
+                # Get related entities (entities that co-occur in same chunks)
+                related = get_related_entities(vs, ent_id, session_id) if ref_count > 0 else []
+
+                add_entity(
+                    name, semantic_type or "concept", source,
+                    {"display_name": display_name, "ner_type": ner_type},
+                    references, related
+                )
     except Exception as e:
         logger.warning(f"Could not get entities from vector_store: {e}")
 
@@ -774,68 +853,57 @@ async def list_entities(
                 db_name = table_meta.database
                 table_name = table_meta.name
 
-                # Add table entity (only if not already present with real references)
+                # Add table entity - always add to ensure proper type merging
+                # (table type has higher priority than concept/business_term)
                 if not entity_type or entity_type == "table":
-                    table_key = normalize_entity_name(table_name).lower()
-                    existing = entity_map.get(table_key)
-                    if not existing or not existing.get("references"):
-                        add_entity(
-                            table_name, "table", "schema",
-                            {"database": db_name, "full_name": full_name},
-                            [{"document": f"Database: {db_name}", "section": "Schema", "mentions": 1}]
-                        )
+                    add_entity(
+                        table_name, "table", "schema",
+                        {"database": db_name, "full_name": full_name},
+                        [{"document": f"Database: {db_name}", "section": "Schema", "mentions": 1}]
+                    )
 
-                # Add column entities (only if not already present with real references)
+                # Add column entities - always add to ensure proper type merging
                 if not entity_type or entity_type == "column":
                     for col in table_meta.columns:
-                        col_key = normalize_entity_name(col.name).lower()
-                        existing = entity_map.get(col_key)
-                        if not existing or not existing.get("references"):
-                            add_entity(
-                                col.name, "column", "schema",
-                                {
-                                    "table": table_name,
-                                    "database": db_name,
-                                    "dtype": col.type if col.type else None,
-                                },
-                                [{"document": f"Table: {table_name}", "section": f"Database: {db_name}", "mentions": 1}]
-                            )
+                        add_entity(
+                            col.name, "column", "schema",
+                            {
+                                "table": table_name,
+                                "database": db_name,
+                                "dtype": col.type if col.type else None,
+                            },
+                            [{"document": f"Table: {table_name}", "section": f"Database: {db_name}", "mentions": 1}]
+                        )
     except Exception as e:
         logger.warning(f"Could not get entities from schema_manager: {e}")
 
-    # 3. Get API entities from config (only if not already present with real references)
+    # 3. Get API entities from config - always add to ensure proper type merging
     try:
         if managed.session.config and managed.session.config.apis:
             for api_name, api_config in managed.session.config.apis.items():
                 if not entity_type or entity_type in ("api", "api_endpoint"):
-                    api_key = normalize_entity_name(api_name).lower()
-                    existing = entity_map.get(api_key)
-                    if not existing or not existing.get("references"):
-                        add_entity(
-                            api_name, "api", "api",
-                            {"base_url": getattr(api_config, "base_url", None)},
-                            [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
-                        )
+                    add_entity(
+                        api_name, "api", "api",
+                        {"base_url": getattr(api_config, "base_url", None)},
+                        [{"document": f"API: {api_name}", "section": "Configuration", "mentions": 1}]
+                    )
     except Exception as e:
         logger.warning(f"Could not get API entities: {e}")
 
-    # 4. Get document entities from config (only if not already present with real references)
+    # 4. Get document entities from config - always add to ensure proper type merging
     try:
         if managed.session.config and managed.session.config.documents:
             for doc_name in managed.session.config.documents.keys():
                 if not entity_type or entity_type == "concept":
-                    doc_key = normalize_entity_name(doc_name).lower()
-                    existing = entity_map.get(doc_key)
-                    if not existing or not existing.get("references"):
-                        add_entity(
-                            doc_name, "concept", "document",
-                            {"source": "document_config"},
-                            [{"document": doc_name, "section": "Indexed Document", "mentions": 1}]
-                        )
+                    add_entity(
+                        doc_name, "concept", "document",
+                        {"source": "document_config"},
+                        [{"document": doc_name, "section": "Indexed Document", "mentions": 1}]
+                    )
     except Exception as e:
         logger.warning(f"Could not get document entities: {e}")
 
-    # 5. Get entities from active projects (only if not already present with real references)
+    # 5. Get entities from active projects - always add to ensure proper type merging
     try:
         active_projects = getattr(managed, "active_projects", [])
         if active_projects and managed.session.config:
@@ -845,26 +913,20 @@ async def list_entities(
                     # Add project API entities
                     if not entity_type or entity_type in ("api", "api_endpoint"):
                         for api_name, api_config in project.apis.items():
-                            api_key = normalize_entity_name(api_name).lower()
-                            existing = entity_map.get(api_key)
-                            if not existing or not existing.get("references"):
-                                add_entity(
-                                    api_name, "api", "api",
-                                    {"base_url": getattr(api_config, "base_url", None), "project": project_filename},
-                                    [{"document": f"API: {api_name}", "section": f"Project: {project_filename}", "mentions": 1}]
-                                )
+                            add_entity(
+                                api_name, "api", "api",
+                                {"base_url": getattr(api_config, "base_url", None), "project": project_filename},
+                                [{"document": f"API: {api_name}", "section": f"Project: {project_filename}", "mentions": 1}]
+                            )
 
                     # Add project document entities
                     if not entity_type or entity_type == "concept":
                         for doc_name in project.documents.keys():
-                            doc_key = normalize_entity_name(doc_name).lower()
-                            existing = entity_map.get(doc_key)
-                            if not existing or not existing.get("references"):
-                                add_entity(
-                                    doc_name, "concept", "document",
-                                    {"source": "project", "project": project_filename},
-                                    [{"document": doc_name, "section": f"Project: {project_filename}", "mentions": 1}]
-                                )
+                            add_entity(
+                                doc_name, "concept", "document",
+                                {"source": "project", "project": project_filename},
+                                [{"document": doc_name, "section": f"Project: {project_filename}", "mentions": 1}]
+                            )
     except Exception as e:
         logger.warning(f"Could not get entities from active projects: {e}")
 
