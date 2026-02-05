@@ -714,13 +714,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 useUIStore.getState().expandArtifactSections(sectionsToExpand)
               }
 
-              // Select the latest published artifact (prefer non-tables, fallback to tables)
+              // Select the best published artifact
+              // Priority: 1) markdown documents, 2) non-tables, 3) tables
+              // Within each category, prefer highest step_number
               const candidates = nonTableArtifacts.length > 0 ? nonTableArtifacts : tableArtifacts
               if (candidates.length > 0) {
-                const best = candidates.reduce((a, b) =>
+                // Prefer markdown over other types
+                const markdownTypes = ['markdown', 'md']
+                const markdownArtifacts = candidates.filter((a) => markdownTypes.includes(a.artifact_type?.toLowerCase() || ''))
+                const finalCandidates = markdownArtifacts.length > 0 ? markdownArtifacts : candidates
+
+                const best = finalCandidates.reduce((a, b) =>
                   (b.step_number > a.step_number) ? b : a
                 )
-                console.log('[synthesizing] Best artifact:', best.name, best.id)
+                console.log('[synthesizing] Best artifact:', best.name, best.id, 'type:', best.artifact_type)
                 selectArtifact(session.session_id, best.id)
               }
             }).catch(err => {
