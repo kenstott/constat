@@ -700,6 +700,86 @@ class ConstatRegistry:
         """, [user_id, session_id, name]).fetchone()
         return row is not None
 
+    def unpublish_superseded_tables(
+        self,
+        user_id: str,
+        session_id: str,
+        new_table_names: list[str],
+    ) -> list[str]:
+        """Unpublish tables that are superseded by new "corrected" versions.
+
+        Detects patterns like "corrected_X", "updated_X", "X_corrected", "X_v2"
+        and unpublishes the original "X" table.
+
+        Args:
+            user_id: User ID
+            session_id: Session ID
+            new_table_names: Names of newly created/published tables
+
+        Returns:
+            List of table names that were unpublished
+        """
+        import re
+
+        conn = self._get_connection()
+        unpublished = []
+
+        # Patterns that indicate a table supersedes another
+        # e.g., "corrected_summary" supersedes "summary"
+        prefix_patterns = [
+            r'^corrected_(.+)$',
+            r'^updated_(.+)$',
+            r'^fixed_(.+)$',
+            r'^revised_(.+)$',
+            r'^new_(.+)$',
+        ]
+        # e.g., "summary_corrected" supersedes "summary"
+        suffix_patterns = [
+            r'^(.+)_corrected$',
+            r'^(.+)_updated$',
+            r'^(.+)_fixed$',
+            r'^(.+)_revised$',
+            r'^(.+)_v\d+$',  # e.g., summary_v2
+        ]
+
+        for new_name in new_table_names:
+            base_name = None
+
+            # Check prefix patterns
+            for pattern in prefix_patterns:
+                match = re.match(pattern, new_name, re.IGNORECASE)
+                if match:
+                    base_name = match.group(1)
+                    break
+
+            # Check suffix patterns if no prefix match
+            if not base_name:
+                for pattern in suffix_patterns:
+                    match = re.match(pattern, new_name, re.IGNORECASE)
+                    if match:
+                        base_name = match.group(1)
+                        break
+
+            if base_name and base_name != new_name:
+                # Unpublish the base table if it exists and is published
+                result = conn.execute("""
+                    UPDATE constat_tables
+                    SET is_published = FALSE
+                    WHERE user_id = ? AND session_id = ? AND name = ?
+                      AND is_published = TRUE
+                """, [user_id, session_id, base_name])
+
+                # Check if we actually unpublished something
+                exists = conn.execute("""
+                    SELECT 1 FROM constat_tables
+                    WHERE user_id = ? AND session_id = ? AND name = ?
+                """, [user_id, session_id, base_name]).fetchone()
+
+                if exists:
+                    unpublished.append(base_name)
+
+        return unpublished
+
     def mark_final_step(
         self,
         user_id: str,
@@ -708,6 +788,9 @@ class ConstatRegistry:
         artifact_names: list[str] = None,
     ) -> int:
         """Mark tables/artifacts as created in final step (auto-publishes them).
+
+        Also automatically unpublishes any superseded tables (e.g., if "corrected_X"
+        is being published, "X" will be unpublished).
 
         Args:
             user_id: User ID
@@ -722,6 +805,13 @@ class ConstatRegistry:
         count = 0
 
         if table_names:
+            # First, unpublish any superseded tables
+            unpublished = self.unpublish_superseded_tables(user_id, session_id, table_names)
+            if unpublished:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Auto-unpublished superseded tables: {unpublished}")
+
             for name in table_names:
                 conn.execute("""
                     UPDATE constat_tables

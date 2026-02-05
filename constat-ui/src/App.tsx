@@ -1,6 +1,6 @@
 // Main App component
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { ConversationPanel } from '@/components/conversation/ConversationPanel'
 import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel'
@@ -15,10 +15,22 @@ import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
 import * as sessionsApi from '@/api/sessions'
 
-const SESSION_STORAGE_KEY = 'constat-session-id'
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
 
-function ConnectingOverlay() {
+// Initialization phases for granular status display
+type InitPhase =
+  | 'creating_session'
+  | 'connecting_websocket'
+  | 'ready'
+
+const INIT_PHASE_MESSAGES: Record<InitPhase, { title: string; detail: string }> = {
+  creating_session: { title: 'Connecting to Constat', detail: 'Starting session...' },
+  connecting_websocket: { title: 'Connecting', detail: 'Establishing real-time connection...' },
+  ready: { title: 'Ready', detail: '' },
+}
+
+function ConnectingOverlay({ phase }: { phase: InitPhase }) {
+  const { title, detail } = INIT_PHASE_MESSAGES[phase]
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
       <div className="flex flex-col items-center gap-4">
@@ -30,10 +42,10 @@ function ConnectingOverlay() {
         {/* Text */}
         <div className="text-center">
           <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
-            Connecting to Constat
+            {title}
           </p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Initializing session...
+            {detail}
           </p>
         </div>
       </div>
@@ -100,10 +112,37 @@ function MainApp() {
   const { userId } = useAuthStore()
   const queryInputRef = useRef<HTMLTextAreaElement>(null)
   const initializingRef = useRef(false)
+  const [initPhase, setInitPhase] = useState<InitPhase>('creating_session')
 
   // Debounce timer ref for message persistence
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedRef = useRef<string>('')
+  const pendingMessagesRef = useRef<{ sessionId: string; messages: object[] } | null>(null)
+
+  // Helper to save messages immediately (used by debounce and beforeunload)
+  const saveMessagesNow = useCallback(() => {
+    const pending = pendingMessagesRef.current
+    if (!pending) return
+
+    // Use sendBeacon for reliability during page unload
+    const blob = new Blob([JSON.stringify({ messages: pending.messages })], { type: 'application/json' })
+    navigator.sendBeacon(`/api/sessions/${pending.sessionId}/messages`, blob)
+    pendingMessagesRef.current = null
+  }, [])
+
+  // Save messages immediately on page unload (refresh, close, navigate away)
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Cancel debounced save and save immediately
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+      }
+      saveMessagesNow()
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [saveMessagesNow])
 
   // Persist messages to server whenever they change (debounced)
   useEffect(() => {
@@ -114,17 +153,21 @@ function MainApp() {
     if (stableMessages.length === 0) return
 
     // Serialize for comparison
-    const serialized = JSON.stringify(stableMessages.map(m => ({
+    const messagesToSave = stableMessages.map(m => ({
       id: m.id,
       type: m.type,
       content: m.content,
       timestamp: m.timestamp.toISOString(),
       stepNumber: m.stepNumber,
       isFinalInsight: m.isFinalInsight,
-    })))
+    }))
+    const serialized = JSON.stringify(messagesToSave)
 
     // Skip if nothing changed
     if (serialized === lastSavedRef.current) return
+
+    // Store pending messages for beforeunload handler
+    pendingMessagesRef.current = { sessionId: session.session_id, messages: messagesToSave }
 
     // Debounce saves to avoid hammering the server
     if (saveTimerRef.current) {
@@ -132,17 +175,10 @@ function MainApp() {
     }
 
     saveTimerRef.current = setTimeout(() => {
-      const messagesToSave = stableMessages.map(m => ({
-        id: m.id,
-        type: m.type,
-        content: m.content,
-        timestamp: m.timestamp.toISOString(),
-        stepNumber: m.stepNumber,
-        isFinalInsight: m.isFinalInsight,
-      }))
       sessionsApi.saveMessages(session.session_id, messagesToSave)
         .then(() => {
           lastSavedRef.current = serialized
+          pendingMessagesRef.current = null
         })
         .catch(err => console.error('Failed to save messages:', err))
     }, 1000) // Save after 1 second of inactivity
@@ -155,60 +191,26 @@ function MainApp() {
   }, [session, messages])
 
   // Create or restore session on mount
+  // Session ID is managed by sessions.ts (localStorage) and server handles reconnection
   useEffect(() => {
     // Guard against double initialization (React Strict Mode, race conditions)
     if (session || initializingRef.current) {
       return
     }
     initializingRef.current = true
+    setInitPhase('creating_session')
 
-    // Include userId in storage key for user-specific session restoration
-    const storageKey = isAuthDisabled ? SESSION_STORAGE_KEY : `${SESSION_STORAGE_KEY}-${userId}`
-
-    // Try to restore from localStorage (persists across browser refreshes)
-    const savedSessionId = localStorage.getItem(storageKey)
-    if (savedSessionId) {
-      // Try to reconnect to existing session - fetch session and messages in parallel
-      Promise.all([
-        sessionsApi.getSession(savedSessionId),
-        sessionsApi.getMessages(savedSessionId).catch(() => ({ messages: [] })),
-      ])
-        .then(([restoredSession, messagesResult]) => {
-          // Restore messages BEFORE connecting WebSocket (prevents welcome message overwrite)
-          if (messagesResult.messages && messagesResult.messages.length > 0) {
-            const restoredMessages = messagesResult.messages.map(m => ({
-              ...m,
-              timestamp: new Date(m.timestamp),
-            }))
-            useSessionStore.setState({ messages: restoredMessages, suggestions: [], plan: null })
-          }
-          // Set session with preserveMessages to avoid clearing restored messages
-          useSessionStore.getState().setSession(restoredSession, { preserveMessages: true })
-        })
-        .catch(() => {
-          // Session no longer exists on server, create new one
-          localStorage.removeItem(storageKey)
-          createSession(userId).then(() => {
-            const newSession = useSessionStore.getState().session
-            if (newSession) {
-              localStorage.setItem(storageKey, newSession.session_id)
-            }
-          })
-        })
-        .finally(() => {
-          initializingRef.current = false
-        })
-    } else {
-      // No saved session, create new one
-      createSession(userId).then(() => {
-        const newSession = useSessionStore.getState().session
-        if (newSession) {
-          localStorage.setItem(storageKey, newSession.session_id)
-        }
-      }).finally(() => {
+    // createSession handles:
+    // 1. Getting/creating session ID from localStorage (per user)
+    // 2. Sending to server (which reconnects if exists, or creates new)
+    // 3. Connecting WebSocket
+    createSession(userId)
+      .then(() => {
+        setInitPhase('connecting_websocket')
+      })
+      .finally(() => {
         initializingRef.current = false
       })
-    }
   }, [session, createSession, userId])
 
   const handleNewQuery = async () => {
@@ -240,10 +242,11 @@ function MainApp() {
     // Reset saved messages state for this session
     lastSavedRef.current = ''
 
-    // Clear persisted messages on server for this session
+    // Reset backend session context (clears plan, scratchpad, datastore tables, session facts)
+    // Also clears persisted messages
     if (session) {
-      sessionsApi.saveMessages(session.session_id, []).catch(err =>
-        console.error('Failed to clear messages:', err)
+      sessionsApi.resetContext(session.session_id).catch(err =>
+        console.error('Failed to reset session context:', err)
       )
     }
 
@@ -259,7 +262,7 @@ function MainApp() {
 
   // Show connecting overlay until session exists and WebSocket is connected
   if (!session || !wsConnected) {
-    return <ConnectingOverlay />
+    return <ConnectingOverlay phase={initPhase} />
   }
 
   return (

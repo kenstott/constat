@@ -3531,14 +3531,29 @@ class ConstatREPLApp(App):
             log.write(Text(f"  Facts: {status_bar.facts_count}", style="dim"))
 
     async def _reset_session(self) -> None:
-        """Clear session state."""
+        """Reset session and create a new session ID."""
         log = self.query_one("#output-log", OutputLog)
         status_bar = self.query_one("#status-bar", StatusBar)
         side_panel = self.query_one("#side-panel", SidePanel)
         panel_content = self.query_one("#proof-tree-panel", ProofTreePanel)
 
+        # Create new session with new ID
+        from constat.storage.session_store import SessionStore
+        session_store = SessionStore(user_id=self.user_id)
+        new_session_id = session_store.create_new()
+
         if self.session:
-            self.session.reset_context()
+            # Create new session with same config but new ID
+            old_config = self.session._config
+            self.session = Session(
+                old_config,
+                session_id=new_session_id,
+                session_config=self.session._session_config,
+                user_id=self.user_id,
+            )
+            # Re-register feedback handler
+            if self._feedback_handler:
+                self.session.on_event(self._feedback_handler.handle_event)
 
         # Reset plan steps
         self._plan_steps = []
@@ -3558,7 +3573,7 @@ class ConstatREPLApp(App):
             tables_count=0,
             facts_count=0,
         )
-        log.write(Text("Session reset.", style="green"))
+        log.write(Text(f"New session: {new_session_id[:8]}...", style="green"))
 
     async def _redo(self, instruction: str = "") -> None:
         """Retry last query, optionally with modifications."""
@@ -3941,14 +3956,19 @@ class ConstatREPLApp(App):
             log.write(Text(f"Error: {e}", style="red"))
 
     async def _discover(self, args: str) -> None:
-        """Semantic search across data sources (databases, APIs, documents).
+        """Unified semantic search across ALL data sources (databases, APIs, documents).
+
+        Searches chunks by semantic similarity and returns results from all sources.
+        Source type is determined by document_name prefix:
+        - schema:* = database tables/columns
+        - api:* = API endpoints
+        - other = documents
 
         Usage:
             /discover <query>                    - Search all sources
-            /discover database <query>           - Search database tables/columns
-            /discover api <query>                - Search API endpoints
-            /discover document <query>           - Search documents
-            /discover database <schema> <query>  - Search within specific schema
+            /discover database <query>           - Search database tables/columns only
+            /discover api <query>                - Search API endpoints only
+            /discover document <query>           - Search documents only
         """
         log = self.query_one("#output-log", OutputLog)
         status_bar = self.query_one(StatusBar)
@@ -3959,10 +3979,9 @@ class ConstatREPLApp(App):
             log.write(Text("  query: semantic search terms", style="dim"))
             return
 
-        # Parse arguments: [scope] [sub-scope] <query>
+        # Parse arguments: [scope] <query>
         parts = args.strip().split()
         source_filter = None
-        parent_filter = None
         query_parts = parts
 
         # Check for scope prefix
@@ -3970,6 +3989,8 @@ class ConstatREPLApp(App):
             "database": "schema",
             "db": "schema",
             "databases": "schema",
+            "table": "schema",
+            "tables": "schema",
             "api": "api",
             "apis": "api",
             "document": "document",
@@ -3982,16 +4003,6 @@ class ConstatREPLApp(App):
             source_filter = scope_map[parts[0].lower()]
             query_parts = parts[1:]
 
-            # For database scope, check for schema sub-filter
-            if source_filter == "schema" and len(query_parts) >= 2:
-                # Check if next part looks like a schema name (not a search term)
-                potential_schema = query_parts[0].lower()
-                if self.session and hasattr(self.session, 'config'):
-                    schema_names = [db.name.lower() for db in self.session.config.databases]
-                    if potential_schema in schema_names:
-                        parent_filter = query_parts[0]
-                        query_parts = query_parts[1:]
-
         if not query_parts:
             log.write(Text("Please provide a search query.", style="yellow"))
             return
@@ -4001,77 +4012,87 @@ class ConstatREPLApp(App):
 
         try:
             # Get vector store from session
-            if not self.session or not hasattr(self.session, 'catalog'):
-                log.write(Text("No catalog available for search.", style="yellow"))
-                return
-
-            # Get embedding model
-            from constat.embedding_loader import EmbeddingModelLoader
-            model = EmbeddingModelLoader.get_instance().get_model()
-            query_embedding = model.encode(query, normalize_embeddings=True)
-
-            # Get the vector store from schema manager
             vector_store = None
-            if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
-                vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+            if self.session:
+                if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
+                    vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+                if not vector_store and hasattr(self.session, 'doc_tools') and self.session.doc_tools:
+                    vector_store = getattr(self.session.doc_tools, '_vector_store', None)
 
             if not vector_store:
-                # Try to get from catalog
-                if hasattr(self.session.catalog, '_vector_store'):
-                    vector_store = self.session.catalog._vector_store
-
-            if not vector_store:
-                log.write(Text("No vector store available. Run /update to build index.", style="yellow"))
+                log.write(Text("No vector store available.", style="yellow"))
                 return
 
-            # Search catalog entities
-            results = vector_store.search_catalog_entities(
+            # Get embedding model and encode query
+            from constat.embedding_loader import EmbeddingModelLoader
+            import numpy as np
+            model = EmbeddingModelLoader.get_instance().get_model()
+            query_embedding = model.encode(query, convert_to_numpy=True)
+            if isinstance(query_embedding, list):
+                query_embedding = np.array(query_embedding)
+
+            # Search chunks using search_enriched (unified search across all sources)
+            enriched_results = vector_store.search_enriched(
                 query_embedding=query_embedding,
-                source=source_filter,
-                limit=15,
-                min_similarity=0.3,
+                limit=20,
             )
 
-            # Filter by parent if specified
-            if parent_filter:
-                results = [r for r in results if r.get("parent_id", "").startswith(parent_filter)]
+            # Filter by source type if specified
+            def get_source_type(doc_name: str) -> str:
+                if doc_name.startswith("schema:"):
+                    return "schema"
+                elif doc_name.startswith("api:"):
+                    return "api"
+                return "document"
 
-            if not results:
+            if source_filter:
+                enriched_results = [
+                    r for r in enriched_results
+                    if get_source_type(r.chunk.document_name) == source_filter
+                ]
+
+            # Filter by minimum score
+            enriched_results = [r for r in enriched_results if r.score >= 0.3]
+
+            if not enriched_results:
                 scope_str = f" in {source_filter}" if source_filter else ""
                 log.write(Text(f"No results found for '{query}'{scope_str}.", style="dim"))
                 return
 
             # Display results
             scope_str = f" ({source_filter})" if source_filter else ""
-            log.write(Text(f"Found {len(results)} matches{scope_str}:", style="bold"))
+            log.write(Text(f"Found {len(enriched_results)} matches{scope_str}:", style="bold"))
 
             from rich.table import Table
             table = Table(show_header=True, box=None, padding=(0, 1))
             table.add_column("Score", style="dim", width=5)
-            table.add_column("Type", style="cyan", width=12)
-            table.add_column("Name", style="bold")
-            table.add_column("Details", style="dim")
+            table.add_column("Source", style="cyan", width=10)
+            table.add_column("Name", style="bold", width=30)
+            table.add_column("Content", style="dim")
 
-            for r in results:
-                score = f"{r['similarity']:.2f}"
-                etype = r.get("type", "unknown")
-                name = r.get("name", "")
-                parent = r.get("parent_id", "")
-                metadata = r.get("metadata", {})
+            for r in enriched_results:
+                score = f"{r.score:.2f}"
+                doc_name = r.chunk.document_name
+                source_type = get_source_type(doc_name)
 
-                # Build details string
-                details = []
-                if parent:
-                    details.append(f"in {parent}")
-                if etype == "column" and metadata.get("dtype"):
-                    details.append(metadata["dtype"])
-                if etype == "api_endpoint" and metadata.get("method"):
-                    details.append(metadata["method"])
-                if metadata.get("description"):
-                    desc = metadata["description"][:40]
-                    details.append(desc)
+                # Format source type for display
+                if source_type == "schema":
+                    source_display = "DATABASE"
+                    # Extract table name from schema:db.table or schema:db.table.column
+                    name = doc_name.replace("schema:", "")
+                elif source_type == "api":
+                    source_display = "API"
+                    name = doc_name.replace("api:", "")
+                else:
+                    source_display = "DOCUMENT"
+                    name = doc_name
 
-                table.add_row(score, etype, name, " | ".join(details) if details else "")
+                # Truncate content for preview
+                content_preview = r.chunk.content[:60].replace("\n", " ")
+                if len(r.chunk.content) > 60:
+                    content_preview += "..."
+
+                table.add_row(score, source_display, name, content_preview)
 
             log.write(table)
             status_bar.update_status(status_message="Search complete")
@@ -5315,8 +5336,13 @@ def run_textual_repl(
             ask_clarifications=True,  # Enable clarifications
             skip_clarification=False,
         )
+        # Load or create session ID (persisted per user for continuity)
+        from constat.storage.session_store import SessionStore
+        session_store = SessionStore(user_id=user_id)
+        session_id = session_store.get_or_create()
         session = Session(
             config,
+            session_id=session_id,
             session_config=session_config,
             user_id=user_id,
         )

@@ -27,6 +27,7 @@ from constat.storage.learnings import LearningStore
 def create_api(
     config: Union[str, Path, Config],
     *,
+    session_id: str,
     user_id: str = "default",
     verbose: bool = False,
     require_approval: bool = True,
@@ -42,6 +43,7 @@ def create_api(
 
     Args:
         config: Path to config YAML file, or Config instance
+        session_id: Client-provided session identifier
         user_id: User identifier for user-scoped storage
         verbose: Enable verbose output
         require_approval: Require approval before plan execution
@@ -56,7 +58,7 @@ def create_api(
         ```python
         from constat.api import create_api
 
-        api = create_api("config.yaml", user_id="test")
+        api = create_api("config.yaml", session_id="abc123", user_id="test")
         result = api.solve("What tables are available?")
         print(result.answer)
         ```
@@ -77,6 +79,7 @@ def create_api(
     # Create session
     session = Session(
         config=config,
+        session_id=session_id,
         session_config=session_config,
         user_id=user_id,
     )

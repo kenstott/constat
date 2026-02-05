@@ -103,6 +103,7 @@ export interface Step {
   expected_outputs: string[]
   depends_on: number[]
   role_id?: string | null
+  skill_ids?: string[] | null
   code?: string
   result?: StepResult
 }
@@ -318,6 +319,7 @@ export type EventType =
   | 'session_created'
   | 'session_closed'
   | 'planning_start'
+  | 'replanning'
   | 'plan_ready'
   | 'plan_approved'
   | 'plan_rejected'

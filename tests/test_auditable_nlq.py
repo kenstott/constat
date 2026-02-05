@@ -22,6 +22,7 @@ Requires:
 import os
 import pytest
 import tempfile
+import uuid
 from pathlib import Path
 
 # Skip all tests if API key not set
@@ -157,8 +158,9 @@ Important:
         session_config = SessionConfig(
             require_approval=False,
         )
+        session_id = str(uuid.uuid4())
 
-        session = Session(config, session_config=session_config, history=history)
+        session = Session(config, session_id=session_id, session_config=session_config, history=history)
         yield session
 
 

@@ -451,9 +451,9 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
   const typeLabel = sourceType
     ? extensionMap[sourceType] || sourceType
     : artifact.artifact_type || 'artifact'
-  // For converted binary files, show "Preview" instead of the original title
+  // For converted binary files, show "Title Preview" instead of just "Preview"
   const displayTitle = sourceType
-    ? 'Preview'
+    ? `${artifact.title || artifact.name} Preview`
     : artifact.title || artifact.name
 
   return (

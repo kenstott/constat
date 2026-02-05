@@ -23,6 +23,7 @@ import json
 import os
 import pytest
 import tempfile
+import uuid
 from pathlib import Path
 
 # Skip all tests if API key not set
@@ -113,8 +114,9 @@ Use pandas to load and analyze the files (file_<name> variables contain paths).
 
         history = SessionHistory(storage_dir=Path(tmpdir) / "sessions")
         session_config = SessionConfig(max_retries_per_step=3)
+        session_id = str(uuid.uuid4())
 
-        session = Session(config, session_config=session_config, history=history)
+        session = Session(config, session_id=session_id, session_config=session_config, history=history)
         yield session
 
 

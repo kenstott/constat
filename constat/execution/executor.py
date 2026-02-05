@@ -159,6 +159,12 @@ class PythonExecutor:
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
 
+        # Prevent exit()/quit() from killing the server
+        def _blocked_exit(*args, **kwargs):
+            raise RuntimeError("exit() is not allowed in generated code")
+        exec_globals["exit"] = _blocked_exit
+        exec_globals["quit"] = _blocked_exit
+
         # Execute
         try:
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
@@ -169,6 +175,18 @@ class PythonExecutor:
                 stdout=stdout_capture.getvalue(),
                 stderr=stderr_capture.getvalue(),
                 namespace=exec_globals,  # Return namespace for auto-saving
+            )
+
+        except SystemExit as e:
+            # LLM generated code that calls exit() - treat as error, don't crash server
+            return ExecutionResult(
+                success=False,
+                stdout=stdout_capture.getvalue(),
+                stderr=stderr_capture.getvalue(),
+                runtime_error=ExecutionRuntimeError(
+                    error="Code called exit() which is not allowed",
+                    traceback="SystemExit intercepted - exit() calls are blocked in generated code",
+                ),
             )
 
         except Exception as e:

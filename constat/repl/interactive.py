@@ -300,11 +300,24 @@ class InteractiveREPL:
             self.console.print(f"  [cyan]{desc}[/cyan]{type_hint}")
             self.console.print(f"    {file_uri}")
 
-    def _create_api(self) -> ConstatAPIImpl:
-        """Create a new API instance with callbacks configured."""
+    def _create_api(self, new_session: bool = False) -> ConstatAPIImpl:
+        """Create a new API instance with callbacks configured.
+
+        Args:
+            new_session: If True, always create a new session ID.
+                        If False, reuse stored session ID if available.
+        """
+        from constat.storage.session_store import SessionStore
+        session_store = SessionStore(user_id=self.user_id)
+        if new_session:
+            session_id = session_store.create_new()
+        else:
+            session_id = session_store.get_or_create()
+
         # Create session
         session = Session(
             self.config,
+            session_id=session_id,
             session_config=self.session_config,
             progress_callback=self.progress_callback,
             user_id=self.user_id,
@@ -1326,18 +1339,19 @@ class InteractiveREPL:
             self.console.print(f"[red]Error refreshing metadata:[/red] {e}")
 
     def _reset_session(self) -> None:
-        """Reset session state and start fresh."""
+        """Reset session state and start a new session."""
         # Reset display state
         self.display.reset()
 
-        # Create a fresh session
-        self.api = self._create_api()
+        # Create a fresh session with new session ID
+        self.api = self._create_api(new_session=True)
 
         # Clear REPL state
         self.last_problem = ""
         self.suggestions = []
 
-        self.console.print("[green]Session reset. State cleared.[/green]")
+        session_id = self.api.session.session_id
+        self.console.print(f"[green]New session: {session_id[:8]}...[/green]")
 
     def _handle_redo(self, arg: str) -> None:
         """Handle /redo command - retry last query with optional modifications.

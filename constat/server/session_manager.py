@@ -100,10 +100,11 @@ class SessionManager:
         self._lock = Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
 
-    def create_session(self, user_id: str = "default") -> str:
+    def create_session(self, session_id: str, user_id: str = "default") -> str:
         """Create a new Session instance.
 
         Args:
+            session_id: Session ID provided by client
             user_id: User ID for session ownership
 
         Returns:
@@ -118,8 +119,6 @@ class SessionManager:
                 raise RuntimeError(
                     f"Maximum concurrent sessions ({self._server_config.max_concurrent_sessions}) reached"
                 )
-
-            session_id = str(uuid.uuid4())
             logger.debug(f"Creating session {session_id} for user {user_id}")
 
             # Create Session config with server-appropriate settings
@@ -134,12 +133,11 @@ class SessionManager:
             # Create the underlying Session
             session = Session(
                 config=self._config,
+                session_id=session_id,
                 session_config=session_config,
                 user_id=user_id,
                 data_dir=self._server_config.data_dir,
             )
-            # Set the server UUID for reverse lookup from history
-            session.server_session_id = session_id
 
             # Create stores for API
             fact_store = FactStore(user_id=user_id)

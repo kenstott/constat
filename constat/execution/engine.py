@@ -120,6 +120,12 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 2. Use appropriate access pattern for database type (see Data Loading above)
 3. Print a clear, formatted answer at the end
 
+## Error Prevention
+- DataFrame: verify columns before access → `if 'col' in df.columns`
+- SQL: confirm table/column names from schema before query
+- Strings: complete all quotes, escape special chars
+- Syntax: match all brackets/parens before execution
+
 ## Output Guidelines
 - Print brief summaries and key metrics (e.g., "Found 150 employees, Average: $85,000")
 - **NEVER print raw DataFrames** - produces unreadable output

@@ -18,9 +18,47 @@ import type {
   Rule,
 } from '@/types/api'
 
+// Session ID persistence (matches key used in App.tsx)
+const SESSION_ID_BASE_KEY = 'constat-session-id'
+
+function getSessionKey(userId?: string): string {
+  // Per-user keys when auth is enabled, base key when disabled
+  return userId && userId !== 'default'
+    ? `${SESSION_ID_BASE_KEY}-${userId}`
+    : SESSION_ID_BASE_KEY
+}
+
+export function getStoredSessionId(userId?: string): string | null {
+  return localStorage.getItem(getSessionKey(userId))
+}
+
+export function storeSessionId(sessionId: string, userId?: string): void {
+  localStorage.setItem(getSessionKey(userId), sessionId)
+}
+
+export function clearStoredSessionId(userId?: string): void {
+  localStorage.removeItem(getSessionKey(userId))
+}
+
+export function createNewSessionId(userId?: string): string {
+  const sessionId = crypto.randomUUID()
+  storeSessionId(sessionId, userId)
+  return sessionId
+}
+
+export function getOrCreateSessionId(userId?: string): string {
+  const existing = getStoredSessionId(userId)
+  if (existing) {
+    return existing
+  }
+  return createNewSessionId(userId)
+}
+
 // Session CRUD
-export async function createSession(userId = 'default'): Promise<Session> {
-  return post<Session>('/sessions', { user_id: userId })
+export async function createSession(userId = 'default', sessionId?: string): Promise<Session> {
+  // Use provided session_id or get/create from localStorage
+  const effectiveSessionId = sessionId ?? getOrCreateSessionId()
+  return post<Session>('/sessions', { user_id: userId, session_id: effectiveSessionId })
 }
 
 export async function listSessions(userId?: string): Promise<SessionListResponse> {
@@ -496,4 +534,9 @@ export interface UserPermissions {
 
 export async function getMyPermissions(): Promise<UserPermissions> {
   return get<UserPermissions>('/users/me/permissions')
+}
+
+// Reset context for new query (clears session state, keeps user settings)
+export async function resetContext(sessionId: string): Promise<{ status: string }> {
+  return post<{ status: string }>(`/sessions/${sessionId}/reset-context`, {})
 }

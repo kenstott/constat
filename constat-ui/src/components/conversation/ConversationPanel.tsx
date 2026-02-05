@@ -183,6 +183,8 @@ export function ConversationPanel() {
                 defaultExpanded={message.defaultExpanded}
                 isFinalInsight={message.isFinalInsight}
                 onViewResult={message.isFinalInsight && hasViewableResults() ? handleViewResult : undefined}
+                role={message.role}
+                skills={message.skills}
               />
             ))}
             {/* Queued messages */}

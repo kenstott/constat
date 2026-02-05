@@ -41,6 +41,8 @@ interface MessageBubbleProps {
   isFinalInsight?: boolean
   onViewResult?: () => void
   children?: ReactNode
+  role?: string // Role used for this step (e.g., "data_analyst")
+  skills?: string[] // Skills used for this step
 }
 
 const typeStyles: Record<MessageType, { bg: string; text: string; icon: typeof UserIcon; iconColor: string }> = {
@@ -102,6 +104,8 @@ export function MessageBubble({
   isFinalInsight,
   onViewResult,
   children,
+  role,
+  skills,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
   const Icon = styles.icon
@@ -172,8 +176,23 @@ export function MessageBubble({
             )}
           </button>
           {stepNumber !== undefined && (
-            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-              Step {stepNumber}
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                Step {stepNumber}
+              </span>
+              {role && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
+                  @{role}
+                </span>
+              )}
+              {skills && skills.length > 0 && skills.map((skill) => (
+                <span
+                  key={skill}
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+                >
+                  {skill}
+                </span>
+              ))}
             </div>
           )}
           <div

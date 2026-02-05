@@ -19,6 +19,7 @@ Tests the full flow: MongoDB data source -> NL query -> LLM planning -> code exe
 import os
 import pytest
 import tempfile
+import uuid
 from pathlib import Path
 
 # Skip all tests if API key not set
@@ -168,8 +169,9 @@ df = pd.DataFrame(docs)
 
         history = SessionHistory(storage_dir=Path(tmpdir) / "sessions")
         session_config = SessionConfig(max_retries_per_step=3)
+        session_id = str(uuid.uuid4())
 
-        session = Session(config, session_config=session_config, history=history)
+        session = Session(config, session_id=session_id, session_config=session_config, history=history)
         yield session
 
 

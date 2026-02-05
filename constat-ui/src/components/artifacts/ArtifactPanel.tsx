@@ -18,6 +18,7 @@ import {
   AcademicCapIcon,
   ArrowPathIcon,
   ArrowDownTrayIcon,
+  ArrowUpTrayIcon,
   PencilIcon,
   TrashIcon,
   CheckIcon,
@@ -26,6 +27,7 @@ import {
   UserCircleIcon,
   SparklesIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
@@ -184,6 +186,13 @@ export function ArtifactPanel() {
     const stored = localStorage.getItem('constat-results-filter')
     return stored !== 'all' // Default to published only
   })
+  // Collapsible section states - persisted in localStorage
+  const [sourcesCollapsed, setSourcesCollapsed] = useState(() => {
+    return localStorage.getItem('constat-sources-collapsed') === 'true'
+  })
+  const [reasoningCollapsed, setReasoningCollapsed] = useState(() => {
+    return localStorage.getItem('constat-reasoning-collapsed') === 'true'
+  })
 
   // Persist filter preference
   const toggleResultsFilter = () => {
@@ -216,6 +225,12 @@ export function ArtifactPanel() {
   const handleForgetFact = async (factName: string) => {
     if (!session) return
     await sessionsApi.forgetFact(session.session_id, factName)
+    fetchFacts(session.session_id)
+  }
+
+  const handlePersistFact = async (factName: string) => {
+    if (!session) return
+    await sessionsApi.persistFact(session.session_id, factName)
     fetchFacts(session.session_id)
   }
 
@@ -981,13 +996,23 @@ ${skill.body}`
       )}
 
       {/* ═══════════════ SOURCES ═══════════════ */}
-      <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+      <button
+        onClick={() => {
+          const newVal = !sourcesCollapsed
+          setSourcesCollapsed(newVal)
+          localStorage.setItem('constat-sources-collapsed', String(newVal))
+        }}
+        className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
+      >
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
           Sources
         </span>
-      </div>
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />
+      </button>
 
       {/* Databases */}
+      {!sourcesCollapsed && (
+      <>
       <AccordionSection
         id="databases"
         title="Databases"
@@ -1218,13 +1243,26 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      </>
+      )}
 
       {/* ═══════════════ REASONING ═══════════════ */}
-      <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+      <button
+        onClick={() => {
+          const newVal = !reasoningCollapsed
+          setReasoningCollapsed(newVal)
+          localStorage.setItem('constat-reasoning-collapsed', String(newVal))
+        }}
+        className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
+      >
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
           Reasoning
         </span>
-      </div>
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${reasoningCollapsed ? '' : 'rotate-90'}`} />
+      </button>
+
+      {!reasoningCollapsed && (
+      <>
 
       {/* System Prompt - show when there's content or user is admin */}
       {(promptContext?.systemPrompt || userPermissions.isAdmin) && (
@@ -2161,7 +2199,16 @@ ${skill.body}`
                     <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
                       {fact.source}
                     </td>
-                    <td className="py-2 px-1">
+                    <td className="py-2 px-1 flex items-center gap-1">
+                      {!fact.is_persisted && (
+                        <button
+                          onClick={() => handlePersistFact(fact.name)}
+                          className="p-1 text-gray-300 dark:text-gray-600 hover:text-amber-500 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Save permanently"
+                        >
+                          <ArrowUpTrayIcon className="w-3 h-3" />
+                        </button>
+                      )}
                       <button
                         onClick={() => handleForgetFact(fact.name)}
                         className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -2190,6 +2237,8 @@ ${skill.body}`
         >
           <EntityAccordion entities={entities} />
         </AccordionSection>
+      )}
+      </>
       )}
     </div>
   )

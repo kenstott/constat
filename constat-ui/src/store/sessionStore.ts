@@ -108,7 +108,7 @@ interface SessionState {
   submitQuery: (problem: string, isFollowup?: boolean) => Promise<void>
   cancelExecution: () => Promise<void>
   approvePlan: (deletedSteps?: number[]) => Promise<void>
-  rejectPlan: (feedback: string) => Promise<void>
+  rejectPlan: (feedback: string, editedSteps?: Array<{ number: number; goal: string }>) => Promise<void>
   answerClarification: (answers: Record<number, string>) => void
   skipClarification: () => void
   setClarificationStep: (step: number) => void
@@ -289,15 +289,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Create message bubbles for remaining steps (pending until step_start)
     const stepMessageIds: Record<number, string> = {}
-    const { queryContext } = get()
-    // Skills from query context apply to all steps
-    const skills = queryContext?.skills?.length ? queryContext.skills.map(s => s.name) : undefined
     const stepMessages: Message[] = steps.map((step) => {
       const id = crypto.randomUUID()
       const stepNum = step.number ?? allSteps.indexOf(step) + 1
       stepMessageIds[stepNum] = id
-      // Use step's role_id from plan (planner-assigned), fallback to query context role
-      const stepRole = step.role_id || queryContext?.role?.name
+      // Use step's role_id and skill_ids from plan (planner-assigned)
+      const stepRole = step.role_id
+      const stepSkills = step.skill_ids?.length ? step.skill_ids : undefined
       return {
         id,
         type: 'step' as const,
@@ -307,7 +305,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         isLive: false, // Not live until step starts
         isPending: true, // Pending animation until step starts
         ...(stepRole ? { role: stepRole } : {}),
-        ...(skills ? { skills } : {}),
+        ...(stepSkills ? { skills: stepSkills } : {}),
       }
     })
 
@@ -323,19 +321,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }))
   },
 
-  rejectPlan: async (feedback) => {
-    const { session, addMessage, submitQuery } = get()
+  rejectPlan: async (feedback, editedSteps) => {
+    const { session, addMessage } = get()
     if (!session) return
 
     // Clear the plan UI
     set({ plan: null })
 
     if (feedback && feedback !== 'Cancelled by user') {
-      // Notify backend of rejection
-      await queriesApi.approvePlan(session.session_id, false, feedback)
-      wsManager.reject(feedback)
-      // Submit the revision as a follow-up query to get a new plan
-      submitQuery(feedback, true)
+      // Add feedback as user message in conversation
+      addMessage({ type: 'user', content: feedback })
+
+      // Notify backend of rejection with feedback and edited plan via REST
+      // Backend will trigger replanning with original query + edited plan structure
+      await queriesApi.approvePlan(session.session_id, false, feedback, undefined, editedSteps)
+      // Set status to planning - backend will send new plan_ready event
+      set({ status: 'planning', executionPhase: 'planning' })
     } else {
       // Just cancelled - go back to idle
       addMessage({ type: 'system', content: 'Plan cancelled' })
@@ -524,6 +525,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'planning_start':
         ensureLiveMessage('Planning...', 'planning')
         set({ status: 'planning' })  // Don't clear queryContext - it was set by dynamic_context
+        break
+
+      case 'replanning':
+        // Plan revision in progress - show feedback acknowledgment
+        ensureLiveMessage('Revising plan...', 'planning')
+        set({ status: 'planning', executionPhase: 'planning' })
         break
 
       case 'dynamic_context': {

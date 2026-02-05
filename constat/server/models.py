@@ -42,6 +42,7 @@ class EventType(str, Enum):
 
     # Planning events
     PLANNING_START = "planning_start"
+    REPLANNING = "replanning"
     PLAN_READY = "plan_ready"
     PLAN_APPROVED = "plan_approved"
     PLAN_REJECTED = "plan_rejected"
@@ -65,6 +66,7 @@ class EventType(str, Enum):
 
     # Progress events
     PROGRESS = "progress"
+    DYNAMIC_CONTEXT = "dynamic_context"
 
     # Clarification events
     CLARIFICATION_NEEDED = "clarification_needed"
@@ -92,6 +94,9 @@ class EventType(str, Enum):
 class SessionCreate(BaseModel):
     """Request to create a new session."""
 
+    session_id: str = Field(
+        description="Client-provided session ID (required)",
+    )
     user_id: str = Field(
         default="default",
         description="User ID for session ownership",
@@ -211,6 +216,13 @@ class PlanResponse(BaseModel):
     is_complete: bool = Field(description="Whether plan is fully executed")
 
 
+class EditedStep(BaseModel):
+    """A step from the edited plan."""
+
+    number: int = Field(description="Step number")
+    goal: str = Field(description="Step goal/description")
+
+
 class ApprovalRequest(BaseModel):
     """Request to approve or reject a plan."""
 
@@ -222,6 +234,10 @@ class ApprovalRequest(BaseModel):
     deleted_steps: Optional[list[int]] = Field(
         default=None,
         description="Step numbers to skip/delete from execution",
+    )
+    edited_steps: Optional[list[EditedStep]] = Field(
+        default=None,
+        description="The edited plan steps (for replanning)",
     )
 
 

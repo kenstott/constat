@@ -107,7 +107,9 @@ class APISchemaManager:
         self._progress_callback: Optional[Callable] = None
 
     def initialize(self, progress_callback: Optional[Callable] = None) -> None:
-        """Initialize the API schema manager.
+        """Initialize the API schema manager and load metadata.
+
+        Note: Entity extraction is done separately via NER at session startup.
 
         Args:
             progress_callback: Optional callback for progress updates
@@ -118,6 +120,31 @@ class APISchemaManager:
             logger.debug("No APIs configured, skipping API schema initialization")
             return
 
+        config_hash = self._compute_config_hash()
+
+        # Try to load metadata from cache
+        if self._load_metadata_cache(config_hash):
+            logger.debug("Loaded API schema from cache")
+            self._progress_callback = None
+            return
+
+        # Introspect APIs
+        self._introspect_apis()
+
+        # Save metadata cache
+        self._save_metadata_cache(config_hash)
+
+        self._progress_callback = None
+
+    def build_chunks(self) -> None:
+        """Build chunks for search (called at server startup).
+
+        Creates chunks in the embeddings table for semantic search.
+        Does NOT create catalog entities - those are built per-session via initialize().
+        """
+        if not self.config.apis:
+            return
+
         # Initialize vector store
         if self._vector_store is None:
             from constat.discovery.vector_store import DuckDBVectorStore
@@ -125,24 +152,14 @@ class APISchemaManager:
 
         config_hash = self._compute_config_hash()
 
-        # Try to load metadata from cache
-        if self._load_metadata_cache(config_hash):
-            # Check if embeddings are also cached
-            cached_hash = self._vector_store.get_catalog_config_hash('api')
-            if cached_hash == config_hash and self._vector_store.count_catalog_entities(source='api') > 0:
-                logger.debug("Loaded API schema and embeddings from cache")
-                return
+        # Load metadata from cache or introspect
+        if not self._load_metadata_cache(config_hash):
+            self._introspect_apis()
+            self._save_metadata_cache(config_hash)
 
-        # Introspect APIs
-        self._introspect_apis()
-
-        # Build vector index in DuckDB
-        self._build_vector_index(config_hash)
-
-        # Save metadata cache
-        self._save_metadata_cache(config_hash)
-
-        self._progress_callback = None
+        # Just build chunks, not entities
+        self._model = EmbeddingModelLoader.get_instance().get_model()
+        self._extract_entities_from_descriptions()
 
     def _compute_config_hash(self) -> str:
         """Compute hash of API config for cache invalidation."""
@@ -536,61 +553,6 @@ class APISchemaManager:
         )
         self.metadata_cache[meta.full_name] = meta
 
-    def _build_vector_index(self, config_hash: str) -> None:
-        """Build vector embeddings for API endpoints.
-
-        Stores embeddings in the shared vectors.duckdb as unified entities.
-        """
-        if not self.metadata_cache:
-            return
-
-        # Get shared model
-        self._model = EmbeddingModelLoader.get_instance().get_model()
-
-        # Generate entity records for unified catalog
-        entities = []
-        texts = []
-
-        for full_name in sorted(self.metadata_cache.keys()):
-            meta = self.metadata_cache[full_name]
-            embedding_text = meta.to_embedding_text()
-            texts.append(embedding_text)
-
-            # Determine entity type based on api_type
-            if meta.api_type == "rest/schema":
-                entity_type = "api_schema"
-            else:
-                entity_type = "api_endpoint"
-
-            entities.append({
-                "id": full_name,
-                "name": meta.display_name,
-                "type": entity_type,
-                "parent_id": None,  # API endpoints don't have parents for now
-                "metadata": {
-                    "api_name": meta.api_name,
-                    "api_type": meta.api_type,
-                    "description": meta.description,
-                    "fields": [f.name for f in meta.fields],
-                    "original_name": meta.endpoint_name,
-                    "http_method": meta.http_method,
-                    "http_path": meta.http_path,
-                    "operation_id": meta.operation_id,
-                },
-            })
-
-        # Generate embeddings
-        embeddings = self._model.encode(texts, convert_to_numpy=True)
-
-        # Clear old and save to DuckDB
-        self._vector_store.clear_catalog_entities('api')
-        self._vector_store.add_catalog_entities(entities, embeddings, 'api', config_hash)
-
-        # Extract entities from API descriptions
-        self._extract_entities_from_descriptions()
-
-        logger.info(f"Built API vector index with {len(texts)} endpoints")
-
     def _extract_entities_from_descriptions(self) -> None:
         """Create chunks for API endpoint metadata.
 
@@ -601,12 +563,29 @@ class APISchemaManager:
         not here. This keeps init-time fast and avoids duplicate extraction.
         """
         # Lazy import
-        from constat.discovery.models import DocumentChunk
+        from constat.discovery.models import DocumentChunk, ChunkType
 
         # Collect chunks for ALL endpoints and fields
         chunks: list[DocumentChunk] = []
         for full_name, meta in self.metadata_cache.items():
             field_names = [f.name for f in meta.fields]
+
+            # Determine chunk_type based on api_type
+            if meta.api_type == "graphql_query":
+                endpoint_chunk_type = ChunkType.GRAPHQL_QUERY
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "graphql_mutation":
+                endpoint_chunk_type = ChunkType.GRAPHQL_MUTATION
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "graphql_type":
+                endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "rest/schema":
+                endpoint_chunk_type = ChunkType.API_SCHEMA
+                field_chunk_type = ChunkType.API_SCHEMA
+            else:
+                endpoint_chunk_type = ChunkType.API_ENDPOINT
+                field_chunk_type = ChunkType.API_ENDPOINT
 
             # Endpoint chunk - use description if available, otherwise structured text
             if meta.description:
@@ -621,18 +600,13 @@ class APISchemaManager:
             chunks.append(DocumentChunk(
                 document_name=f"api:{full_name}",
                 content=endpoint_content,
-                section=meta.api_type,  # e.g., "graphql_query", "graphql_type", "rest"
+                section=meta.api_type,
                 chunk_index=0,
+                source="api",
+                chunk_type=endpoint_chunk_type,
             ))
 
-            # Field chunks - section depends on parent type
-            if meta.api_type == "graphql_type":
-                field_section = "type_field"
-            elif meta.api_type == "graphql_query":
-                field_section = "query_field"
-            else:
-                field_section = "rest_field"
-
+            # Field chunks
             for i, field_meta in enumerate(meta.fields):
                 if field_meta.description:
                     field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
@@ -643,8 +617,10 @@ class APISchemaManager:
                 chunks.append(DocumentChunk(
                     document_name=f"api:{full_name}.{field_meta.name}",
                     content=field_content,
-                    section=field_section,
+                    section=meta.api_type,
                     chunk_index=i,
+                    source="api",
+                    chunk_type=field_chunk_type,
                 ))
 
         if not chunks:
@@ -656,7 +632,7 @@ class APISchemaManager:
             try:
                 texts = [c.content for c in chunks]
                 embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings)
+                self._vector_store.add_chunks(chunks, embeddings, source="api")
                 logger.debug(f"Stored {len(chunks)} API description chunks")
             except Exception as e:
                 logger.warning(f"Failed to store API description chunks: {e}")

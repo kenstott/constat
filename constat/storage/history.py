@@ -201,6 +201,40 @@ class SessionHistory:
 
         return session_id
 
+    def log_user_input(
+        self,
+        session_id: str,
+        text: str,
+        input_type: str = "query",
+    ) -> None:
+        """
+        Log a user input to queries.jsonl.
+
+        This creates a simple history of all user inputs: queries, revisions,
+        and follow-ups. Each entry is timestamped and typed.
+
+        Args:
+            session_id: Session to record to
+            text: The user's input text
+            input_type: Type of input - "query", "revision", or "followup"
+        """
+        session_dir = self._session_dir(session_id)
+        queries_file = session_dir / "queries.jsonl"
+
+        if not queries_file.exists():
+            return  # Session not properly initialized
+
+        # Create input record
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": input_type,
+            "text": text,
+        }
+
+        # Append to queries file
+        with open(queries_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
     def record_query(
         self,
         session_id: str,

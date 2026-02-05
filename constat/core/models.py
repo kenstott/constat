@@ -158,6 +158,10 @@ class Step:
     # Detected from patterns like "as a [role]" or "acting as [role]"
     role_id: Optional[str] = None
 
+    # Skills to apply for this step (None = use query-level skills)
+    # Skills provide domain-specific instructions for code generation
+    skill_ids: Optional[list[str]] = None
+
     # Populated during execution
     status: StepStatus = StepStatus.PENDING
     code: Optional[str] = None

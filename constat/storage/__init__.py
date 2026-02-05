@@ -11,8 +11,10 @@
 
 from .datastore import DataStore
 from .history import SessionHistory
+from .session_store import SessionStore
 
 __all__ = [
     "DataStore",
     "SessionHistory",
+    "SessionStore",
 ]

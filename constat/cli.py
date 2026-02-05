@@ -114,9 +114,13 @@ def solve(problem: str, config: str, verbose: bool, output: Optional[str]):
     session_config = SessionConfig(verbose=verbose)
 
     # Initialize session with progress feedback
+    # Solve command always uses a new session (standalone operation)
+    from constat.storage.session_store import SessionStore
+    session_store = SessionStore(user_id="default")
+    session_id = session_store.create_new()
     with console.status("[bold]Initializing...", spinner="dots") as status:
         progress_cb = create_progress_callback(status)
-        session = Session(cfg, session_config=session_config, progress_callback=progress_cb)
+        session = Session(cfg, session_id=session_id, session_config=session_config, progress_callback=progress_cb)
     console.print("[green]Ready[/green]")
 
     # Wire up feedback

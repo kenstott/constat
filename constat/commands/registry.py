@@ -54,6 +54,7 @@ from constat.commands.sources import (
     apis_command,
     documents_command,
     files_command,
+    discover_command,
 )
 
 
@@ -81,6 +82,7 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/apis",), apis_command, "List APIs"),
     (("/documents", "/docs"), documents_command, "List documents"),
     (("/files",), files_command, "List data files"),
+    (("/discover",), discover_command, "Semantic search across all data sources"),
     # Learnings & Rules
     (("/learnings",), learnings_command, "Show learnings and rules"),
     (("/rule",), rule_command, "Add a new rule"),

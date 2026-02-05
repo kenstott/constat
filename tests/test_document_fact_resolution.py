@@ -345,6 +345,271 @@ class TestPerformanceReviewIntegration:
         # - Analysis compares them
 
 
+class TestProductionDiscoveryPath:
+    """Tests that verify the production code path yields correct discovery results.
+
+    The production path involves:
+    1. SchemaManager creates table chunks via _extract_entities_from_descriptions()
+    2. DocumentDiscoveryTools creates document chunks
+    3. Both use the same vectors.duckdb
+    4. search_enriched() should find both
+    """
+
+    @pytest.fixture
+    def production_config(self, demo_docs_path):
+        """Config mimicking production setup with both documents and databases."""
+        hr_db_path = Path(__file__).parent.parent / "demo" / "data" / "hr.db"
+        if not hr_db_path.exists():
+            pytest.skip("Demo HR database not found - run demo/setup_demo.py first")
+
+        return Config(
+            llm={"provider": "anthropic", "model": "test"},
+            databases={
+                "hr": {"uri": f"sqlite:///{hr_db_path}"}
+            },
+            documents={
+                "business_rules": DocumentConfig(
+                    type="file",
+                    path=str(demo_docs_path / "business_rules.md"),
+                    description="Business policies for customer tiers, inventory reorder, and performance reviews",
+                )
+            },
+        )
+
+    def test_schema_manager_creates_table_chunks(self, production_config, clear_document_embeddings):
+        """SchemaManager._extract_entities_from_descriptions() should create table chunks."""
+        from constat.catalog.schema_manager import SchemaManager
+
+        schema_manager = SchemaManager(production_config)
+        schema_manager.initialize()
+
+        # Check that chunks were created for tables
+        vs = schema_manager._vector_store
+        chunks = vs._conn.execute("""
+            SELECT document_name, content
+            FROM embeddings
+            WHERE document_name LIKE 'schema:%'
+        """).fetchall()
+
+        print(f"\nSchema chunks created: {len(chunks)}")
+        for doc_name, content in chunks[:5]:
+            print(f"  {doc_name}: {content[:60]}...")
+
+        # Should have chunks for performance_reviews table
+        perf_review_chunks = [c for c in chunks if "performance_reviews" in c[0]]
+        assert len(perf_review_chunks) > 0, \
+            f"Expected schema chunk for performance_reviews table. Got: {[c[0] for c in chunks]}"
+
+    def test_production_search_finds_both_document_and_table(self, production_config):
+        """Production setup should find both document and table for 'performance review'.
+
+        This test mimics what happens when a user queries about "performance review":
+        1. SchemaManager creates chunks for tables (including performance_reviews)
+        2. DocumentDiscoveryTools creates chunks for documents (including business_rules)
+        3. search_enriched() should find both via semantic similarity
+
+        In production, Session creates both SchemaManager and DocumentDiscoveryTools.
+        They share the same vectors.duckdb file but may use separate connections.
+        This test verifies they can see each other's data.
+
+        Note: This test does NOT use clear_document_embeddings fixture because
+        we need to test the coexistence of schema and document chunks.
+        """
+        import tempfile
+        import os
+        from constat.catalog.schema_manager import SchemaManager
+        from constat.discovery.unified_discovery import UnifiedDiscovery
+
+        # Use a temporary vector store path for isolation
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_vs_path = Path(tmpdir) / "vectors.duckdb"
+            old_vs_path = os.environ.get("CONSTAT_VECTOR_STORE_PATH")
+            os.environ["CONSTAT_VECTOR_STORE_PATH"] = str(test_vs_path)
+
+            try:
+                # Initialize schema manager (creates table chunks)
+                schema_manager = SchemaManager(production_config)
+                schema_manager.initialize()
+
+                # Get the vector store from schema manager
+                schema_vs = schema_manager._vector_store
+
+                # Initialize doc tools - uses same vector store file
+                doc_tools = DocumentDiscoveryTools(production_config)
+                doc_vs = doc_tools._vector_store
+
+                # Check what the vector store sees (both should see everything)
+                all_chunks = doc_vs._conn.execute("""
+                    SELECT document_name FROM embeddings ORDER BY document_name
+                """).fetchall()
+
+                print(f"\nVector store sees {len(all_chunks)} chunks:")
+                for (doc_name,) in all_chunks[:5]:
+                    print(f"  {doc_name}")
+                if len(all_chunks) > 5:
+                    print(f"  ... and {len(all_chunks) - 5} more")
+
+                # Use unified discovery
+                def embed_fn(text):
+                    return doc_tools._model.encode([text], convert_to_numpy=True)[0]
+
+                unified = UnifiedDiscovery(
+                    vector_store=doc_vs,
+                    embed_fn=embed_fn,
+                )
+
+                # Search for performance review
+                results = unified.discover("performance review", limit=10, min_score=0.3)
+
+                print(f"\nDiscover results for 'performance review':")
+                doc_names = []
+                for i, r in enumerate(results):
+                    doc_names.append(r.chunk.document_name)
+                    source_type = "TABLE" if r.chunk.document_name.startswith("schema:") else "DOC"
+                    print(f"  {i+1}. [{source_type}] {r.chunk.document_name}, Score: {r.score:.3f}")
+
+                # CRITICAL: Should find BOTH
+                has_document = any(d == "business_rules" for d in doc_names)
+                has_table = any(d.startswith("schema:") and "performance_reviews" in d for d in doc_names)
+
+                assert has_document, f"Expected to find business_rules document. Got: {doc_names}"
+                assert has_table, f"Expected to find performance_reviews table. Got: {doc_names}"
+
+            finally:
+                # Restore original environment
+                if old_vs_path is not None:
+                    os.environ["CONSTAT_VECTOR_STORE_PATH"] = old_vs_path
+                else:
+                    os.environ.pop("CONSTAT_VECTOR_STORE_PATH", None)
+
+
+class TestUnifiedDiscovery:
+    """Tests for unified discovery returning enriched chunks."""
+
+    def test_discover_finds_both_document_and_table(self, doc_tools):
+        """discover() should find both document chunks AND table chunks for 'performance review'.
+
+        This is the critical test: when searching for "performance review", results should include:
+        1. Document chunk from business_rules.md (Performance Review Guidelines)
+        2. Table chunk from schema:hr.performance_reviews
+
+        Both sources should be discoverable via the same semantic search.
+        """
+        from constat.discovery.unified_discovery import UnifiedDiscovery
+        from constat.discovery.models import DocumentChunk
+        from pathlib import Path
+
+        # Check if HR database exists
+        hr_db_path = Path(__file__).parent.parent / "demo" / "data" / "hr.db"
+        if not hr_db_path.exists():
+            pytest.skip("Demo HR database not found - run demo/setup_demo.py first")
+
+        # Add a schema chunk for the performance_reviews table
+        # This simulates what SchemaManager._extract_entities_from_descriptions() does
+        schema_chunk = DocumentChunk(
+            document_name="schema:hr.performance_reviews",
+            content="performance_reviews table in hr database with columns: review_id, employee_id, rating, review_date, reviewer_id, comments",
+            section="table_description",
+            chunk_index=0,
+        )
+        schema_embedding = doc_tools._model.encode([schema_chunk.content], convert_to_numpy=True)
+        doc_tools._vector_store.add_chunks([schema_chunk], schema_embedding, source="schema")
+
+        # Create embed function
+        def embed_fn(text):
+            return doc_tools._model.encode([text], convert_to_numpy=True)[0]
+
+        unified = UnifiedDiscovery(
+            vector_store=doc_tools._vector_store,
+            embed_fn=embed_fn,
+        )
+
+        # Search for performance review
+        results = unified.discover("performance review", limit=10, min_score=0.3)
+
+        # Print all results
+        print(f"\nFound {len(results)} results for 'performance review':")
+        doc_names = []
+        for i, r in enumerate(results):
+            doc_names.append(r.chunk.document_name)
+            source_type = "TABLE" if r.chunk.document_name.startswith("schema:") else "DOC"
+            print(f"  {i+1}. [{source_type}] {r.chunk.document_name}, Score: {r.score:.3f}")
+            print(f"      Content: {r.chunk.content[:80]}...")
+
+        # CRITICAL: Should find BOTH document AND table
+        has_document = any(d == "business_rules" for d in doc_names)
+        has_table = any(d.startswith("schema:") and "performance_reviews" in d for d in doc_names)
+
+        assert has_document, f"Expected to find business_rules document. Got: {doc_names}"
+        assert has_table, f"Expected to find performance_reviews table. Got: {doc_names}"
+
+    def test_discover_performance_review_returns_enriched_chunks(self, doc_tools):
+        """discover() should return enriched chunks with entities for 'performance review'.
+
+        Verifies the correct discovery flow:
+        1. Search chunks by semantic similarity
+        2. Return EnrichedChunk objects (chunk + score + related entities)
+        3. Chunks indicate source type via document_name field
+
+        Note: The chunk's section field reflects the LAST header encountered in
+        the chunk, not necessarily the most relevant section for the query.
+        Content verification is what matters, not section labels.
+        """
+        from constat.discovery.unified_discovery import UnifiedDiscovery
+
+        # Create embed function from doc_tools
+        def embed_fn(text):
+            return doc_tools._model.encode([text], convert_to_numpy=True)[0]
+
+        unified = UnifiedDiscovery(
+            vector_store=doc_tools._vector_store,
+            embed_fn=embed_fn,
+        )
+
+        # Search for performance review
+        results = unified.discover("performance review", limit=5, min_score=0.3)
+
+        # Should find results
+        assert len(results) > 0, "Expected to find results for 'performance review'"
+
+        # Results should be EnrichedChunk objects
+        from constat.discovery.models import EnrichedChunk
+        assert all(isinstance(r, EnrichedChunk) for r in results)
+
+        # First result should have chunk with document info
+        first = results[0]
+        assert first.chunk.document_name == "business_rules"
+        assert first.score > 0.3
+
+        # Print all results for debugging
+        print(f"\nFound {len(results)} results:")
+        for i, r in enumerate(results):
+            print(f"  {i+1}. Section: {r.chunk.section}, Score: {r.score:.3f}")
+            has_perf = "Performance Review" in r.chunk.content or "Exceptional" in r.chunk.content
+            print(f"      Has Performance Review content: {has_perf}")
+            print(f"      Entities: {[e.name for e in r.entities]}")
+
+        # CRITICAL: The top result should contain actual Performance Review content
+        # The Performance Review Guidelines section contains:
+        # - "## Performance Review Guidelines" header
+        # - Rating scale (1-5, Exceptional, Exceeds Expectations, etc.)
+        # - Typical raise percentages (8-12%, 5-8%, etc.)
+        # - Annual reviews info
+        first_content = first.chunk.content
+
+        # The first result should contain the Performance Review Guidelines
+        has_performance_review_content = any([
+            "Performance Review Guidelines" in first_content,
+            "Exceptional" in first_content and "8-12" in first_content,
+            "Meets Expectations" in first_content,
+            "Annual reviews" in first_content,
+        ])
+
+        assert has_performance_review_content, \
+            f"Expected first result to contain Performance Review content. Got:\n{first_content[:300]}..."
+
+
+
 class TestEdgeCases:
     """Edge cases and error handling for document fact resolution."""
 

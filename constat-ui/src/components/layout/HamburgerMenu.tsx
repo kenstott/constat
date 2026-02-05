@@ -168,8 +168,8 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   }
 
   const handleNewSession = async () => {
-    // createSession now handles all cleanup internally
-    await createSession()
+    // createSession with forceNew=true generates a new session ID
+    await createSession(undefined, true)
     setMenuOpen(false)
     onNewSession?.()
   }

@@ -667,12 +667,15 @@ async def get_document(
     Raises:
         404: Session or document not found
     """
+    print(f"[GET_DOC] name={name!r}")
     managed = session_manager.get_session(session_id)
 
     if not managed.session.doc_tools:
+        print("[GET_DOC] doc_tools not available")
         raise HTTPException(status_code=404, detail="Document tools not available")
 
     result = managed.session.doc_tools.get_document(name)
+    print(f"[GET_DOC] result keys={list(result.keys())}, error={result.get('error')}")
 
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
@@ -703,16 +706,22 @@ async def serve_file(
     managed = session_manager.get_session(session_id)
 
     file_path = Path(path)
+    print(f"[SERVE_FILE] Requested path: {path}")
+    print(f"[SERVE_FILE] file_path exists: {file_path.exists()}")
 
     # Security: Only allow files within the config directory
     config_dir = Path(managed.session.config.config_dir).resolve() if managed.session.config.config_dir else None
+    print(f"[SERVE_FILE] config_dir: {config_dir}")
     if config_dir:
         try:
-            file_path.resolve().relative_to(config_dir)
-        except ValueError:
+            rel = file_path.resolve().relative_to(config_dir)
+            print(f"[SERVE_FILE] Relative path: {rel}")
+        except ValueError as e:
+            print(f"[SERVE_FILE] Access denied: {e}")
             raise HTTPException(status_code=403, detail="Access denied: file outside config directory")
 
     if not file_path.exists():
+        print(f"[SERVE_FILE] File not found: {file_path}")
         raise HTTPException(status_code=404, detail="File not found")
 
     # Determine media type

@@ -207,9 +207,17 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
             deleted_steps = response.get("deleted_steps")
             return PlanApprovalResponse.approve(deleted_steps=deleted_steps)
         else:
-            managed.status = SessionStatus.IDLE
-            feedback = response.get("feedback", "Rejected by user")
-            return PlanApprovalResponse.reject(feedback)
+            feedback = response.get("feedback", "")
+            edited_steps = response.get("edited_steps")
+            # If user provided feedback, return SUGGEST to trigger replanning
+            # within the solve() loop (preserves original problem context)
+            if feedback and feedback != "Rejected by user" and feedback != "Cancelled by user":
+                managed.status = SessionStatus.PLANNING
+                return PlanApprovalResponse.suggest(feedback, edited_steps=edited_steps)
+            else:
+                # No feedback = pure rejection, end the flow
+                managed.status = SessionStatus.IDLE
+                return PlanApprovalResponse.reject(feedback or "Rejected by user")
 
     return approval_callback
 
@@ -276,6 +284,10 @@ def _create_event_handler(managed: ManagedSession):
     def handle_event(event: StepEvent) -> None:
         """Handle session events by queuing them."""
         try:
+            # Log dynamic_context events for debugging
+            if event.event_type == "dynamic_context":
+                logger.info(f"[EVENT_HANDLER] Received dynamic_context event: {event.data}")
+
             # Map session event types to API event types
             event_type_map = {
                 "step_start": EventType.STEP_START,
@@ -286,9 +298,18 @@ def _create_event_handler(managed: ManagedSession):
                 "step_failed": EventType.STEP_FAILED,
                 "facts_extracted": EventType.FACTS_EXTRACTED,
                 "progress": EventType.PROGRESS,
+                "dynamic_context": EventType.DYNAMIC_CONTEXT,
                 "planning_start": EventType.PLANNING_START,
+                "replanning": EventType.REPLANNING,
                 "synthesizing": EventType.SYNTHESIZING,
                 "generating_insights": EventType.GENERATING_INSIGHTS,
+                # Fact resolution events (for proof DAG)
+                "fact_start": EventType.FACT_START,
+                "fact_planning": EventType.FACT_PLANNING,
+                "fact_executing": EventType.FACT_EXECUTING,
+                "fact_resolved": EventType.FACT_RESOLVED,
+                "fact_failed": EventType.FACT_FAILED,
+                "proof_complete": EventType.PROOF_COMPLETE,
             }
 
             api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)
@@ -312,7 +333,7 @@ def _create_event_handler(managed: ManagedSession):
     return handle_event
 
 
-def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEventLoop, is_followup: bool = False) -> dict[str, Any]:
     """Run a query synchronously (called from thread pool).
 
     Uses the ConstatAPI for solve/follow_up operations, ensuring
@@ -322,6 +343,7 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
         managed: The managed session
         problem: Query problem text
         loop: Event loop for async bridge
+        is_followup: Whether this is a follow-up to a previous query
 
     Returns:
         Query result dict
@@ -339,12 +361,12 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             managed.session.set_clarification_callback(clarification_callback)
             logger.debug(f"Registered clarification callback for session {managed.session_id}")
 
-        # Run the query via API - use follow_up if session already has context
-        if managed.session.session_id:
+        # Run the query via API - use follow_up if explicitly marked as such
+        if is_followup:
             logger.debug(f"Running follow-up query for session {managed.session_id}")
             api_result = managed.api.follow_up(problem)
         else:
-            logger.debug("Running new query (no existing session)")
+            logger.debug(f"Running new query for session {managed.session_id}")
             api_result = managed.api.solve(problem)
 
         # Convert API result to dict for existing handlers
@@ -361,6 +383,7 @@ async def _execute_query_async(
     managed: ManagedSession,
     problem: str,
     execution_id: str,
+    is_followup: bool = False,
 ) -> None:
     """Execute query in background and update session state.
 
@@ -368,12 +391,16 @@ async def _execute_query_async(
         managed: The managed session
         problem: Query problem text
         execution_id: Execution tracking ID
+        is_followup: Whether this is a follow-up to a previous query
     """
     loop = asyncio.get_event_loop()
 
     try:
         # Run the synchronous solve() in thread pool
-        result = await loop.run_in_executor(_executor, _run_query, managed, problem, loop)
+        result = await loop.run_in_executor(
+            _executor,
+            lambda: _run_query(managed, problem, loop, is_followup)
+        )
 
         # Queue completion event
         if result.get("success"):
@@ -479,7 +506,7 @@ async def submit_query(
 
     # Start background execution using asyncio.create_task for better shutdown control
     task = asyncio.create_task(
-        _execute_query_async(managed, body.problem, execution_id)
+        _execute_query_async(managed, body.problem, execution_id, body.is_followup)
     )
     _active_tasks.add(task)
     task.add_done_callback(_active_tasks.discard)
@@ -586,6 +613,7 @@ async def approve_plan(
         "approved": body.approved,
         "feedback": body.feedback,
         "deleted_steps": body.deleted_steps,
+        "edited_steps": [{"number": s.number, "goal": s.goal} for s in body.edited_steps] if body.edited_steps else None,
     }
 
     if managed.approval_event:

@@ -503,6 +503,11 @@ For query: detail, provenance, summary, lookup
 For plan_new: compare, predict
 For control: mode_switch, reset, redo_cmd, help, status, exit, cancel, replan
 
+IMPORTANT DISTINCTIONS:
+- "don't use X", "exclude X", "without X" when X is a document/table/source = plan_new (user is setting constraints on their analysis)
+- "cancel", "stop", "abort", "nevermind" with NO analysis request = control/cancel (user wants to stop current operation)
+- If user mentions ANY data analysis task (calculate, analyze, show, find), it's plan_new even with exclusion constraints
+
 Respond with EXACTLY this format (no extra text):
 PRIMARY: query | plan_new | plan_continue | control
 SUB: <sub-intent> | none

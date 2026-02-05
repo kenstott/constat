@@ -3435,6 +3435,15 @@ Original request:
 
 User input: {user_text}
 
+CRITICAL: Only extract facts from DECLARATIVE STATEMENTS where the user is ASSERTING or PROVIDING information.
+DO NOT extract facts from:
+- Questions asking "where does X come from?" or "what is the source of X?"
+- Questions asking for verification or clarification
+- Hypothetical statements like "if the threshold were X"
+- Numbers mentioned as part of a question being asked
+
+The user must be STATING a fact, not ASKING ABOUT a fact.
+
 For each fact, provide:
 - FACT_NAME: A short identifier (e.g., "user_role", "revenue_threshold", "target_region")
 - VALUE: The value (string, number, etc.)
@@ -3442,12 +3451,20 @@ For each fact, provide:
 
 Extract these types of facts:
 1. User context/persona (e.g., "my role as CFO" -> user_role: CFO)
-2. Numeric values (e.g., "threshold of $50,000" -> revenue_threshold: 50000)
+2. Numeric values asserted by user (e.g., "the threshold should be $50,000" -> revenue_threshold: 50000)
 3. Preferences/constraints (e.g., "for the US region" -> target_region: US)
-4. Time periods (e.g., "last quarter" -> time_period: last_quarter)
+4. Time periods (e.g., "use last quarter's data" -> time_period: last_quarter)
 
-If the input contains multiple facts, list them all.
-If the input contains no extractable facts, respond with "NO_FACTS".
+Examples of what NOT to extract (these are questions, not facts):
+- "Where does the 15% raise limit come from?" -> NO_FACTS (asking about source)
+- "Why is the threshold $50,000?" -> NO_FACTS (asking for explanation)
+- "Is 15% the correct maximum?" -> NO_FACTS (asking for verification)
+
+Examples of what TO extract:
+- "The maximum raise should be 15%" -> raise_max: 0.15
+- "I'm the CFO of the company" -> user_role: CFO
+
+If the input is a question or contains no declarative facts, respond with "NO_FACTS".
 
 Example format:
 ---
@@ -3550,6 +3567,15 @@ REASONING: User is focused on US region analysis
     def clear_unresolved(self) -> None:
         """Remove unresolved facts from log, allowing re-resolution."""
         self.resolution_log = [f for f in self.resolution_log if f.source != FactSource.UNRESOLVED]
+
+    def clear_session(self) -> None:
+        """Clear all session-level facts (cache and resolution log).
+
+        Call this when starting a new query to reset session state.
+        Does NOT affect persistent facts in FactStore.
+        """
+        self._cache.clear()
+        self.resolution_log.clear()
 
     def export_cache(self) -> list[dict]:
         """Export all cached facts for persistence (for redo operations)."""
