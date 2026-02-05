@@ -131,6 +131,13 @@ NOTE: Do NOT call these functions in your generated code. Use schema info provid
 - **NEVER print raw DataFrames** - produces unreadable output
 - For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
 
+## Table Naming Rules
+- **RESERVED WORDS**: Do NOT use "final", "recommendation", "summary", "report", "result", "output" in names for INTERMEDIATE tables
+- These words are reserved for the LAST step's output only
+- Intermediate tables should use descriptive names like: `employee_reviews`, `salary_data`, `performance_scores`
+- Example BAD: `final_calculations` (step 1), `summary_data` (step 2)
+- Example GOOD: `performance_data` (step 1), `raise_calculations` (step 2), `final_recommendations` (step 3 - LAST step only)
+
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers."""
 

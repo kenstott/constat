@@ -2364,8 +2364,20 @@ Return ONLY Python code, no markdown."""
         skip_vars = {"store", "db", "pd", "np", "llm_ask", "send_email", "facts", "viz", "publish", "__builtins__"}
         skip_prefixes = ("db_", "_")
 
-        # Already-saved tables (don't duplicate)
-        existing_tables = {t["name"] for t in self.datastore.list_tables()}
+        # Already-saved tables (don't duplicate by name OR by data content)
+        existing_tables = self.datastore.list_tables()
+        existing_names = {t["name"] for t in existing_tables}
+
+        # Get row counts of existing tables to detect duplicates by size
+        # (cheap heuristic - if same rows, likely same data)
+        existing_row_counts = {}
+        for t in existing_tables:
+            try:
+                df = self.datastore.get_dataframe(t["name"])
+                if df is not None:
+                    existing_row_counts[len(df)] = t["name"]
+            except Exception:
+                pass
 
         for var_name, value in namespace.items():
             # Skip internal variables
@@ -2373,7 +2385,13 @@ Return ONLY Python code, no markdown."""
                 continue
 
             # Auto-save DataFrames
-            if isinstance(value, pd.DataFrame) and var_name not in existing_tables:
+            if isinstance(value, pd.DataFrame) and var_name not in existing_names:
+                # Skip if this data was already saved under a different name
+                # (cheap heuristic: same row count = likely duplicate)
+                if len(value) in existing_row_counts:
+                    logger.debug(f"Skip auto-save of {var_name}: likely duplicate of {existing_row_counts[len(value)]}")
+                    continue
+
                 self.datastore.save_dataframe(
                     name=var_name,
                     df=value,
@@ -6025,13 +6043,26 @@ Provide a brief, high-level summary of the key findings."""
             # Limit to max 8 published tables to avoid clutter
             tables_to_publish = important_tables[:8] if important_tables else []
 
-            if tables_to_publish:
+            # Also find markdown artifacts from final step (highest priority for View Result)
+            final_artifacts = []
+            if self.datastore:
+                all_artifacts = self.datastore.list_artifacts()
+                last_step_num = len(self.plan.steps) if self.plan else 0
+                # Get markdown artifacts from last 2 steps
+                final_artifacts = [
+                    a["name"] for a in all_artifacts
+                    if a.get("step_number", 0) >= last_step_num - 1
+                    and a.get("type") in ("markdown", "md", "html")
+                ]
+
+            if tables_to_publish or final_artifacts:
                 self.registry.mark_final_step(
                     user_id=self.user_id,
                     session_id=self.session_id,
-                    table_names=tables_to_publish,
+                    table_names=tables_to_publish if tables_to_publish else None,
+                    artifact_names=final_artifacts if final_artifacts else None,
                 )
-                logger.debug(f"Auto-published final step tables: {tables_to_publish}")
+                logger.debug(f"Auto-published final step: tables={tables_to_publish}, artifacts={final_artifacts}")
 
         # Note: Facts created during role-scoped steps are tagged with role_id
         # for provenance but remain globally accessible. No promotion needed.
