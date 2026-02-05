@@ -85,18 +85,19 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).
 
 ## Role-Based Steps
-Users may specify a role context for steps using phrases like:
-- "as a financial analyst, calculate..."
-- "acting as the CFO, summarize..."
-- "from a data scientist perspective, analyze..."
+**IMPORTANT: Assign roles proactively to steps based on the step's content and purpose.**
 
-When you detect such patterns:
-1. Extract the role name (e.g., "financial-analyst", "cfo", "data-scientist")
-2. Set `role_id` on that step to the normalized role name (lowercase, hyphens for spaces)
-3. Steps with a role_id execute in that role's isolated context
-4. Steps without role_id use shared context
+When available roles are listed below, assign the most appropriate role_id to EACH step based on:
+- The type of analysis being performed (financial analysis → financial-analyst)
+- The data domain being queried (SQL queries → sql-expert)
+- The expertise required (research tasks → researcher)
 
-If the entire query implies a single role, apply it to all steps. If different parts specify different roles, assign each step appropriately.
+Users may also explicitly specify roles using phrases like "as a financial analyst" - honor these explicitly.
+
+Guidelines:
+1. Set `role_id` on each step to the most appropriate available role
+2. If no role fits well, use `null` for that step
+3. Prefer specific roles over generic ones when multiple could apply
 
 ## Output Format
 Return a JSON object:
@@ -335,12 +336,13 @@ class Planner:
         # Build available roles section for role-based step assignment
         roles_text = ""
         if self._available_roles:
-            role_lines = ["\n## Available Roles (for role-based steps)"]
-            role_lines.append("Use these role IDs when assigning role_id to steps:")
+            role_lines = ["\n## Available Roles - ASSIGN TO EACH STEP"]
+            role_lines.append("**You MUST assign one of these role_id values to each step based on what the step does:**")
             for role in self._available_roles:
                 name = role.get("name", "")
                 desc = role.get("description", "")
                 role_lines.append(f"- **{name}**: {desc}")
+            role_lines.append("\nChoose the most appropriate role for each step. Use `null` only if no role applies.")
             roles_text = "\n".join(role_lines)
             logger.info(f"[PLANNER] Including {len(self._available_roles)} roles in prompt")
         else:
