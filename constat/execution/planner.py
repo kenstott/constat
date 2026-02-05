@@ -10,11 +10,14 @@
 """Multi-step planner for problem decomposition."""
 
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Optional, Union, TYPE_CHECKING
 
 from constat.core.config import Config
+
+logger = logging.getLogger(__name__)
 from constat.core.models import Plan, PlannerResponse, Step, StepType, TaskType
 from constat.providers import TaskRouter
 from constat.providers.base import BaseLLMProvider
