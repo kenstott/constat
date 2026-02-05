@@ -2088,9 +2088,19 @@ ${skill.body}`
               onClick={async () => {
                 if (!session) return
                 try {
+                  // Build headers with auth token
+                  const headers: Record<string, string> = {}
+                  const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+                  if (!isAuthDisabled) {
+                    const token = await useAuthStore.getState().getToken()
+                    if (token) {
+                      headers['Authorization'] = `Bearer ${token}`
+                    }
+                  }
+
                   const response = await fetch(
                     `/api/sessions/${session.session_id}/download-code`,
-                    { credentials: 'include' }
+                    { headers, credentials: 'include' }
                   )
                   if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}))
