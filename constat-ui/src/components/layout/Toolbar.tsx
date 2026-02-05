@@ -15,9 +15,10 @@ import {
 interface ToolbarProps {
   onNewQuery?: () => void
   onShowProof?: () => void
+  onShowHelp?: () => void
 }
 
-export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
+export function Toolbar({ onNewQuery, onShowProof, onShowHelp }: ToolbarProps) {
   const { session, status, cancelExecution } = useSessionStore()
   const { databases, apis, documents, facts, artifacts, tables, stepCodes } = useArtifactStore()
 
@@ -92,7 +93,7 @@ export function Toolbar({ onNewQuery, onShowProof }: ToolbarProps) {
       )}
 
       {/* Help */}
-      <button className="btn-ghost text-xs">
+      <button onClick={onShowHelp} className="btn-ghost text-xs">
         <QuestionMarkCircleIcon className="w-4 h-4 mr-1" />
         Help
       </button>

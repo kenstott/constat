@@ -9,6 +9,7 @@ import { ClarificationDialog } from '@/components/conversation/ClarificationDial
 import { PlanApprovalDialog } from '@/components/conversation/PlanApprovalDialog'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { ProofDAGPanel } from '@/components/proof/ProofDAGPanel'
+import { HelpModal } from '@/components/help/HelpModal'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
@@ -254,11 +255,20 @@ function MainApp() {
   }
 
   // Proof panel state
-  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, openPanel: openProofPanel, closePanel: closeProofPanel } = useProofStore()
+  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, openPanel: openProofPanel, closePanel: closeProofPanel, clearFacts } = useProofStore()
+  const { submitQuery } = useSessionStore()
 
   const handleShowProof = () => {
+    // Clear previous proof state and open panel
+    clearFacts()
     openProofPanel()
+    // Submit /prove command to trigger proof execution
+    submitQuery('/prove', true)
   }
+
+  // Help modal state
+  const [isHelpOpen, setIsHelpOpen] = useState(false)
+  const handleShowHelp = () => setIsHelpOpen(true)
 
   // Show connecting overlay until session exists and WebSocket is connected
   if (!session || !wsConnected) {
@@ -272,6 +282,7 @@ function MainApp() {
         artifactPanel={<ArtifactPanel />}
         onNewQuery={handleNewQuery}
         onShowProof={handleShowProof}
+        onShowHelp={handleShowHelp}
       />
       <ClarificationDialog />
       <PlanApprovalDialog />
@@ -280,6 +291,10 @@ function MainApp() {
         isOpen={isProofPanelOpen}
         onClose={closeProofPanel}
         facts={proofFacts}
+      />
+      <HelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
       />
     </>
   )

@@ -4954,8 +4954,24 @@ Provide a brief, high-level summary of the key findings."""
                             lines.append(f"```{item.get('language', 'python')}")
                             lines.append(item["code"])
                             lines.append("```\n")
+                        # Artifact-style item (has name, type, step)
+                        elif "name" in item and "type" in item:
+                            name = item.get("name", "")
+                            atype = item.get("type", "")
+                            step = item.get("step", "-")
+                            title = item.get("title", "")
+                            # Format: - **name** (type) - title if available
+                            if title:
+                                lines.append(f"- **{name}** ({atype}, step {step}) - {title}")
+                            else:
+                                lines.append(f"- **{name}** ({atype}, step {step})")
+                        # Generic dict - format key: value pairs
                         else:
-                            lines.append(f"- {item}")
+                            name = item.get("name", item.get("id", "Item"))
+                            lines.append(f"- **{name}**")
+                            for key, value in item.items():
+                                if key not in ("name", "id") and value is not None:
+                                    lines.append(f"  - {key}: {value}")
                     else:
                         lines.append(f"- {item}")
             elif result.empty_message:

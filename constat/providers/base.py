@@ -90,13 +90,14 @@ class BaseLLMProvider(ABC):
         user_message: str,
         tools: Optional[list[dict]] = None,
         tool_handlers: Optional[dict[str, Callable]] = None,
-        max_tokens: int = 8192,
+        max_tokens: int = 16384,
         model: Optional[str] = None,
     ) -> str:
         """
         Generate code, extracting from markdown code blocks if present.
 
         Returns just the code string, stripped of markdown fencing.
+        Uses high token limit (16k) since there's no cost penalty for unused headroom.
         """
         response = self.generate(
             system=system,
@@ -108,7 +109,7 @@ class BaseLLMProvider(ABC):
         )
         code, was_truncated = self._extract_code_with_truncation_check(response)
         if was_truncated:
-            logger.warning(f"[TRUNCATION] Code generation response appears truncated (max_tokens={max_tokens})")
+            logger.warning(f"[TRUNCATION] Code response appears truncated (max_tokens={max_tokens})")
         return code
 
     def _extract_code(self, text: str) -> str:

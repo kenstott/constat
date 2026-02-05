@@ -180,15 +180,27 @@ def artifacts_command(ctx: CommandContext) -> CommandResult:
 
         items = []
         for a in artifacts:
-            # Filter intermediate artifacts unless 'all' specified
-            is_key = a.get("is_key_result", True)
+            name = a.get("name", "")
+            atype = a.get("type", "")
+
+            # Determine if this is a key result (vs intermediate artifact)
+            # Intermediate artifacts have auto-generated names like "artifact_N_type"
+            is_intermediate = (
+                name.startswith("artifact_") and
+                "_" in name[9:] and
+                atype in ("code", "output", "error")
+            )
+
+            # Key results have meaningful names or titles
+            is_key = not is_intermediate or a.get("title")
+
             if not show_all and not is_key:
                 continue
 
             items.append({
                 "id": a.get("id"),
-                "name": a.get("name"),
-                "type": a.get("type"),
+                "name": name,
+                "type": atype,
                 "step": a.get("step_number", "-"),
                 "title": a.get("title"),
                 "description": a.get("description"),

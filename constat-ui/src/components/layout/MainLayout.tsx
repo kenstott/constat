@@ -10,6 +10,7 @@ interface MainLayoutProps {
   artifactPanel: ReactNode
   onNewQuery?: () => void
   onShowProof?: () => void
+  onShowHelp?: () => void
 }
 
 const MIN_PANEL_WIDTH = 200
@@ -38,6 +39,7 @@ export function MainLayout({
   artifactPanel,
   onNewQuery,
   onShowProof,
+  onShowHelp,
 }: MainLayoutProps) {
   const [panelWidth, setPanelWidth] = useState(getSavedPanelWidth)
   const [isResizing, setIsResizing] = useState(false)
@@ -118,7 +120,7 @@ export function MainLayout({
       </div>
 
       {/* Toolbar */}
-      <Toolbar onNewQuery={onNewQuery} onShowProof={onShowProof} />
+      <Toolbar onNewQuery={onNewQuery} onShowProof={onShowProof} onShowHelp={onShowHelp} />
     </div>
   )
 }
