@@ -342,7 +342,10 @@ async def list_artifacts(
                         )
                     )
 
+        # Log key result artifacts for debugging
+        key_results = [a for a in artifact_list if a.is_key_result]
         logger.debug(f"[list_artifacts] Returning {len(artifact_list)} artifacts (including {len([a for a in artifact_list if a.artifact_type == 'table'])} tables)")
+        logger.debug(f"[list_artifacts] Key results: {[(a.id, a.name, a.artifact_type, a.is_key_result) for a in key_results]}")
         return ArtifactListResponse(artifacts=artifact_list)
     except Exception as e:
         logger.error(f"Error listing artifacts: {e}")
