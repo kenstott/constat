@@ -771,3 +771,41 @@ def skill_draft_command(ctx: CommandContext) -> CommandResult:
         )
     except Exception as e:
         return ErrorResult(error=f"Failed to draft skill: {e}")
+
+
+def prove_command(ctx: CommandContext) -> CommandResult:
+    """Run proof verification on the current conversation.
+
+    Re-runs the session's claims through the auditable solver to generate
+    a verifiable proof chain with full provenance.
+    """
+    session = ctx.session
+
+    # Check if we have something to prove
+    if not session.datastore:
+        return ErrorResult(error="No active session to prove")
+
+    original_problem = session.datastore.get_session_meta("problem")
+    if not original_problem:
+        return TextResult(
+            success=True,
+            content="No conversation to prove. Submit a query first, then use /prove to verify it.",
+        )
+
+    # Run the proof (events will be emitted to UI)
+    result = session.prove_conversation()
+
+    if result.get("error"):
+        return ErrorResult(error=result["error"])
+
+    if result.get("no_claims"):
+        return TextResult(
+            success=True,
+            content="No claims to prove in the current conversation.",
+        )
+
+    # The actual proof facts are streamed via events
+    return TextResult(
+        success=True,
+        content="Proof verification complete. See the Proof panel for the full audit trail.",
+    )

@@ -249,14 +249,17 @@ async def list_artifacts(
             if "is_starred" in metadata:
                 # User has explicitly set starred status - use that
                 is_starred = metadata["is_starred"]
+                logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred={is_starred} (from metadata)")
             elif artifact_type in code_types:
                 # Code is NEVER starred by default
                 is_starred = False
             elif artifact_type in visualization_types:
                 # Visualizations are starred by default
                 is_starred = True
+                logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred=True (visualization)")
             else:
                 is_starred = False
+                logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred=False (default)")
 
             # is_key_result matches is_starred (unified behavior)
             is_key_result = is_starred

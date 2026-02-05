@@ -48,6 +48,7 @@ from constat.commands.session_cmds import (
     skill_delete_command,
     skill_deactivate_command,
     skill_draft_command,
+    prove_command,
 )
 from constat.commands.sources import (
     databases_command,
@@ -104,6 +105,8 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/skill-delete",), skill_delete_command, "Delete a skill"),
     (("/skill-deactivate",), skill_deactivate_command, "Deactivate a skill"),
     (("/skill-draft",), skill_draft_command, "Draft a skill using AI"),
+    # Proof/verification
+    (("/prove",), prove_command, "Verify conversation with auditable proof"),
 ]
 
 # Build lookup dict for fast access

@@ -9,11 +9,14 @@
 
 """Anthropic Claude provider with tool support."""
 
+import logging
 from typing import Callable, Optional
 
 import anthropic
 
 from .base import BaseLLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(BaseLLMProvider):

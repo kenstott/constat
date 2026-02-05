@@ -10,9 +10,12 @@
 """OpenAI GPT provider with tool support."""
 
 import json
+import logging
 from typing import Callable, Optional
 
 from .base import BaseLLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(BaseLLMProvider):
