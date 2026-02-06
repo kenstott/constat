@@ -6480,6 +6480,17 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # This single call determines intent, facts, AND execution mode
         analysis = self._analyze_question(question, previous_problem=previous_problem)
 
+        # Check for ambiguity and request clarification if needed
+        if self.session_config.ask_clarifications and self._clarification_callback:
+            clarification_request = self._detect_ambiguity(question)
+            if clarification_request:
+                enhanced_question = self._request_clarification(clarification_request)
+                if enhanced_question:
+                    question = enhanced_question
+                    # Re-analyze with clarified question
+                    logger.debug("[follow_up] Question clarified, re-analyzing...")
+                    analysis = self._analyze_question(question, previous_problem=previous_problem)
+
         # All follow-ups use exploratory mode (planning + execution)
         # Use /prove command to generate auditable proofs when needed
         # Check for unresolved facts and try to extract facts from user message

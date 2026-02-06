@@ -44,7 +44,7 @@ export type ArtifactType =
   | 'react'
   | 'javascript'
 
-export type FactSource = 'cache' | 'database' | 'document' | 'api' | 'llm' | 'derived' | 'user'
+export type FactSource = 'cache' | 'database' | 'document' | 'api' | 'llm' | 'derived' | 'user' | 'config'
 
 export type EntityType =
   | 'table'

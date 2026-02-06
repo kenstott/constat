@@ -996,27 +996,37 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not entities:
             return
 
+        # Deduplicate entities by ID
+        seen_ids = set()
         records = []
         for entity in entities:
-            records.append((
-                entity.id,
-                entity.name,
-                entity.display_name,
-                entity.semantic_type,
-                entity.ner_type,
-                session_id,
-                entity.project_id,
-                entity.created_at,
-            ))
+            if entity.id not in seen_ids:
+                seen_ids.add(entity.id)
+                records.append((
+                    entity.id,
+                    entity.name,
+                    entity.display_name,
+                    entity.semantic_type,
+                    entity.ner_type,
+                    session_id,
+                    entity.project_id,
+                    entity.created_at,
+                ))
 
-        self._conn.executemany(
-            """
-            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, project_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            records,
-        )
+        # Insert entities one at a time, skipping duplicates
+        conn = self._conn
+        for record in records:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, project_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    record,
+                )
+            except Exception:
+                # Entity already exists, skip
+                pass
 
     def link_chunk_entities(
         self,
@@ -1041,14 +1051,20 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         logger.debug(f"link_chunk_entities: inserting {len(unique_records)} links")
 
-        self._conn.executemany(
-            """
-            INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
-            VALUES (?, ?, ?)
-            ON CONFLICT (chunk_id, entity_id) DO NOTHING
-            """,
-            unique_records,
-        )
+        # Insert links one at a time, skipping duplicates
+        conn = self._conn
+        for record in unique_records:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
+                    VALUES (?, ?, ?)
+                    """,
+                    record,
+                )
+            except Exception:
+                # Link already exists, skip
+                pass
 
     def get_entities_for_chunk(
         self,
