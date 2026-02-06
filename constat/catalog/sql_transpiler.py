@@ -381,6 +381,27 @@ def read_sql_transpiled(
         return pd.read_sql(sql, con, **kwargs)
 
 
+def create_sql_helper(con: Union[TranspilingConnection, "Engine"]):
+    """Create a sql() helper function for a database connection.
+
+    Returns a function that can be called with SQL queries and returns DataFrames.
+    Automatically transpiles SQL from PostgreSQL to the target dialect.
+
+    Usage:
+        sql = create_sql_helper(db_inventory)
+        df = sql("SELECT DATE_TRUNC('month', created_at) FROM orders")
+
+    Args:
+        con: TranspilingConnection or SQLAlchemy Engine
+
+    Returns:
+        A function sql(query) -> pd.DataFrame
+    """
+    def sql(query: str, **kwargs) -> pd.DataFrame:
+        return read_sql_transpiled(query, con, **kwargs)
+    return sql
+
+
 # Convenience function for testing
 def test_transpilation():
     """Test transpilation with example queries."""

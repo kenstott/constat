@@ -178,8 +178,11 @@ Your code has access to:
 - `viz`: visualization helper for saving maps and charts to files
 
 ## Database Access Patterns
-**SQL databases** (SQLite, PostgreSQL, DuckDB):
+**SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):
 - Use `pd.read_sql(query, db_<name>)` - NEVER use db.execute()
+- Or use `sql_<name>(query)` helper - returns DataFrame, auto-transpiles PostgreSQL syntax
+- `sql(query)` is alias for first database
+- Write queries in PostgreSQL style - they'll be transpiled to the target dialect
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
 - MongoDB: `list(db_<name>['collection'].find(query))` returns list of dicts
@@ -2255,24 +2258,47 @@ Return ONLY Python code, no markdown."""
         }
 
         # Provide database connections from config
+        # SQL databases get both raw engine (db_<name>) and transpiling helper (sql_<name>)
+        from constat.catalog.sql_transpiler import TranspilingConnection, create_sql_helper
+
         config_db_names = set()
         first_db = None
         for i, (db_name, db_config) in enumerate(self.config.databases.items()):
             config_db_names.add(db_name)
             conn = self.schema_manager.get_connection(db_name)
-            globals_dict[f"db_{db_name}"] = conn
-            if i == 0:
-                globals_dict["db"] = conn
-                first_db = conn
+
+            # For SQL databases wrapped in TranspilingConnection:
+            # - db_<name> = raw engine (for pd.read_sql compatibility)
+            # - sql_<name> = helper function with auto-transpilation
+            if isinstance(conn, TranspilingConnection):
+                globals_dict[f"db_{db_name}"] = conn.engine
+                globals_dict[f"sql_{db_name}"] = create_sql_helper(conn)
+                if i == 0:
+                    globals_dict["db"] = conn.engine
+                    globals_dict["sql"] = create_sql_helper(conn)
+                    first_db = conn.engine
+            else:
+                globals_dict[f"db_{db_name}"] = conn
+                if i == 0:
+                    globals_dict["db"] = conn
+                    first_db = conn
 
         # Also include dynamically added databases (from projects) not in config
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
                 conn = self.schema_manager.connections[db_name]
-                globals_dict[f"db_{db_name}"] = conn
-                if first_db is None:
-                    globals_dict["db"] = conn
-                    first_db = conn
+                if isinstance(conn, TranspilingConnection):
+                    globals_dict[f"db_{db_name}"] = conn.engine
+                    globals_dict[f"sql_{db_name}"] = create_sql_helper(conn)
+                    if first_db is None:
+                        globals_dict["db"] = conn.engine
+                        globals_dict["sql"] = create_sql_helper(conn)
+                        first_db = conn.engine
+                else:
+                    globals_dict[f"db_{db_name}"] = conn
+                    if first_db is None:
+                        globals_dict["db"] = conn
+                        first_db = conn
         for db_name in self.schema_manager.nosql_connections.keys():
             if db_name not in config_db_names:
                 globals_dict[f"db_{db_name}"] = self.schema_manager.nosql_connections[db_name]
