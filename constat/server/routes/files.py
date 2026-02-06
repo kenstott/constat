@@ -34,25 +34,41 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Base directory for uploaded files
-UPLOAD_BASE_DIR = Path.home() / ".constat" / "sessions"
-
 
 def get_session_manager(request: Request) -> SessionManager:
     """Dependency to get session manager from app state."""
     return request.app.state.session_manager
 
 
-def _get_upload_dir(session_id: str) -> Path:
-    """Get the upload directory for a session."""
-    upload_dir = UPLOAD_BASE_DIR / session_id / "uploads"
+def _get_upload_dir_for_session(managed: ManagedSession) -> Path:
+    """Get the upload directory for a managed session.
+
+    Uses the session's history storage directory to keep uploads
+    with the rest of the session data. Returns an absolute path.
+    """
+    from constat.storage.history import SessionHistory
+
+    # Get the history session ID (the one used for disk storage)
+    history_session_id = managed.history_session_id
+    if not history_session_id:
+        # Fallback to server session ID if no history session
+        history_session_id = managed.session_id
+
+    # Get user ID from session
+    user_id = managed.user_id
+
+    # Build path: .constat/{user_id}/sessions/{history_session_id}/uploads
+    history = SessionHistory(user_id=user_id)
+    upload_dir = (history.storage_dir / history_session_id / "uploads").resolve()
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
 
 
-def _get_uploaded_files(session_id: str) -> list[dict[str, Any]]:
+
+
+def _get_uploaded_files_for_session(managed: ManagedSession) -> list[dict[str, Any]]:
     """Get list of uploaded files for a session from the metadata file."""
-    upload_dir = _get_upload_dir(session_id)
+    upload_dir = _get_upload_dir_for_session(managed)
     meta_file = upload_dir / "_metadata.json"
 
     if not meta_file.exists():
@@ -63,9 +79,9 @@ def _get_uploaded_files(session_id: str) -> list[dict[str, Any]]:
         return json.load(f)
 
 
-def _save_uploaded_files(session_id: str, files: list[dict[str, Any]]) -> None:
+def _save_uploaded_files_for_session(managed: ManagedSession, files: list[dict[str, Any]]) -> None:
     """Save uploaded files metadata."""
-    upload_dir = _get_upload_dir(session_id)
+    upload_dir = _get_upload_dir_for_session(managed)
     meta_file = upload_dir / "_metadata.json"
 
     import json
@@ -100,7 +116,7 @@ async def upload_file_multipart(
 
     # Generate file ID and path
     file_id = f"f_{uuid.uuid4().hex[:12]}"
-    upload_dir = _get_upload_dir(session_id)
+    upload_dir = _get_upload_dir_for_session(managed)
 
     # Sanitize filename
     safe_filename = os.path.basename(file.filename or "upload")
@@ -124,9 +140,9 @@ async def upload_file_multipart(
     }
 
     # Update metadata
-    files = _get_uploaded_files(session_id)
+    files = _get_uploaded_files_for_session(managed)
     files.append(file_info)
-    _save_uploaded_files(session_id, files)
+    _save_uploaded_files_for_session(managed, files)
 
     return UploadedFileInfo(
         id=file_id,
@@ -178,7 +194,7 @@ async def upload_file_data_uri(
 
     # Generate file ID and path
     file_id = f"f_{uuid.uuid4().hex[:12]}"
-    upload_dir = _get_upload_dir(session_id)
+    upload_dir = _get_upload_dir_for_session(managed)
 
     # Sanitize filename
     safe_filename = os.path.basename(body.filename)
@@ -201,9 +217,9 @@ async def upload_file_data_uri(
     }
 
     # Update metadata
-    files = _get_uploaded_files(session_id)
+    files = _get_uploaded_files_for_session(managed)
     files.append(file_info)
-    _save_uploaded_files(session_id, files)
+    _save_uploaded_files_for_session(managed, files)
 
     return UploadedFileInfo(
         id=file_id,
@@ -232,7 +248,7 @@ async def list_uploaded_files(
         404: Session not found
     """
     managed = session_manager.get_session(session_id)
-    files = _get_uploaded_files(session_id)
+    files = _get_uploaded_files_for_session(managed)
 
     return UploadedFileListResponse(
         files=[
@@ -268,7 +284,7 @@ async def download_file(
         404: Session or file not found
     """
     managed = session_manager.get_session(session_id)
-    files = _get_uploaded_files(session_id)
+    files = _get_uploaded_files_for_session(managed)
 
     # Find the file
     file_info = next((f for f in files if f["id"] == file_id), None)
@@ -305,7 +321,7 @@ async def delete_file(
         404: Session or file not found
     """
     managed = session_manager.get_session(session_id)
-    files = _get_uploaded_files(session_id)
+    files = _get_uploaded_files_for_session(managed)
 
     # Find and remove the file
     file_info = next((f for f in files if f["id"] == file_id), None)
@@ -319,7 +335,10 @@ async def delete_file(
 
     # Update metadata
     files = [f for f in files if f["id"] != file_id]
-    _save_uploaded_files(session_id, files)
+    _save_uploaded_files_for_session(managed, files)
+
+    # Refresh entities to remove any references to the deleted file
+    session_manager.refresh_entities(session_id)
 
     return {
         "status": "deleted",
@@ -387,6 +406,12 @@ async def add_file_reference(
         "description": body.description,
         "added_at": now.isoformat(),
     })
+
+    # Refresh entities to include the new file reference
+    session_manager.refresh_entities(session_id)
+
+    # Persist resources for session restoration
+    managed.save_resources()
 
     return FileRefInfo(
         name=body.name,
@@ -472,6 +497,12 @@ async def delete_file_reference(
         doc_name = f"session:{name}"
         chunks_deleted = vector_store.delete_document(doc_name, session_id)
 
+    # Refresh entities to remove references to the deleted file
+    session_manager.refresh_entities(session_id)
+
+    # Persist resources for session restoration
+    managed.save_resources()
+
     return {
         "status": "deleted",
         "name": name,
@@ -520,7 +551,7 @@ async def upload_documents(
     # Data file extensions (added as databases) - xlsx excluded due to multi-sheet complexity
     data_extensions = {'.csv', '.tsv', '.parquet', '.json'}
 
-    upload_dir = _get_upload_dir(session_id)
+    upload_dir = _get_upload_dir_for_session(managed)
     results = []
 
     for file in files:
@@ -589,13 +620,47 @@ async def upload_documents(
                         })
                         continue
 
+                # Determine file type from extension (csv, tsv, parquet, json)
+                file_type = suffix.lstrip('.')  # e.g., '.csv' -> 'csv'
+                if file_type == 'tsv':
+                    file_type = 'csv'  # TSV is handled the same as CSV
+
                 # Add as a queryable database
                 managed.session.add_database(
                     name=name,
                     uri=str(file_path),
-                    db_type="duckdb",  # DuckDB can read csv, tsv, parquet, json
+                    db_type=file_type,
                     description=f"Uploaded data file: {file.filename}",
                 )
+
+                # Add to schema_manager for entity extraction (tables/columns)
+                table_count = 1
+                if managed.session.schema_manager:
+                    from constat.core.config import DatabaseConfig
+                    db_config = DatabaseConfig(
+                        type=file_type,
+                        uri=str(file_path),
+                        description=f"Uploaded data file: {file.filename}",
+                    )
+                    managed.session.schema_manager.add_database_dynamic(name, db_config)
+                    # File sources are single-table, count entries in metadata_cache for this db
+                    table_count = sum(1 for k in managed.session.schema_manager.metadata_cache if k.startswith(f"{name}."))
+
+                # Track in managed session's dynamic databases for list_databases endpoint
+                from constat.server.routes.databases import _get_dynamic_dbs
+                dynamic_dbs = _get_dynamic_dbs(managed)
+                dynamic_dbs.append({
+                    "name": name,
+                    "type": file_type,
+                    "dialect": "duckdb",  # DuckDB is used to query file-based sources
+                    "description": f"Uploaded data file: {file.filename}",
+                    "uri": str(file_path),
+                    "connected": True,
+                    "table_count": table_count,
+                    "added_at": now.isoformat(),
+                    "is_dynamic": True,
+                    "file_id": None,
+                })
 
                 results.append({
                     "filename": file.filename,
@@ -639,11 +704,21 @@ async def upload_documents(
     if not results:
         raise HTTPException(status_code=400, detail="No files provided")
 
+    # If any databases or documents were added, refresh entities for the session
+    database_count = sum(1 for r in results if r.get("status") == "database")
     indexed_count = sum(1 for r in results if r.get("status") == "indexed")
+
+    if database_count > 0 or indexed_count > 0:
+        session_manager.refresh_entities(session_id)
+
+    # Persist resources for session restoration
+    if database_count > 0 or indexed_count > 0:
+        managed.save_resources()
 
     return {
         "status": "success",
         "indexed_count": indexed_count,
+        "database_count": database_count,
         "total_files": len(files),
         "results": results,
     }

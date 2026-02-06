@@ -11,6 +11,7 @@ interface MainLayoutProps {
   onNewQuery?: () => void
   onShowProof?: () => void
   onShowHelp?: () => void
+  isCreatingNewSession?: boolean
 }
 
 const MIN_PANEL_WIDTH = 200
@@ -40,6 +41,7 @@ export function MainLayout({
   onNewQuery,
   onShowProof,
   onShowHelp,
+  isCreatingNewSession,
 }: MainLayoutProps) {
   const [panelWidth, setPanelWidth] = useState(getSavedPanelWidth)
   const [isResizing, setIsResizing] = useState(false)
@@ -120,7 +122,7 @@ export function MainLayout({
       </div>
 
       {/* Toolbar */}
-      <Toolbar onNewQuery={onNewQuery} onShowProof={onShowProof} onShowHelp={onShowHelp} />
+      <Toolbar onNewQuery={onNewQuery} onShowProof={onShowProof} onShowHelp={onShowHelp} isCreatingNewSession={isCreatingNewSession} />
     </div>
   )
 }

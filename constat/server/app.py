@@ -479,6 +479,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     @app.exception_handler(KeyError)
     async def key_error_handler(request, exc: KeyError) -> JSONResponse:
         """Handle KeyError (session not found, etc.)."""
+        import traceback
+        logger.error(f"KeyError in {request.method} {request.url.path}: {exc}")
+        logger.error(traceback.format_exc())
         return JSONResponse(
             status_code=404,
             content={"error": "not_found", "message": str(exc)},

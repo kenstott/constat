@@ -545,20 +545,37 @@ async def list_facts(
         fact_store = FactStore(user_id=managed.user_id)
         persisted_fact_names = set(fact_store.list_facts().keys())
 
-        return FactListResponse(
-            facts=[
-                FactInfo(
-                    name=name,
-                    value=fact.value,
-                    source=fact.source.value if hasattr(fact.source, "value") else str(fact.source),
-                    reasoning=fact.reasoning,
-                    confidence=getattr(fact, "confidence", None),
-                    is_persisted=name in persisted_fact_names,
-                    role_id=getattr(fact, "role_id", None),
-                )
-                for name, fact in all_facts.items()
-            ]
-        )
+        facts_list = []
+
+        # Add config facts first (core facts)
+        config_facts = managed.session.config.facts or {}
+        for name, value in config_facts.items():
+            facts_list.append(FactInfo(
+                name=name,
+                value=value,
+                source="config",
+                reasoning=None,
+                confidence=1.0,
+                is_persisted=False,  # Config facts are always available, not user-persisted
+                role_id=None,
+            ))
+
+        # Add session facts
+        for name, fact in all_facts.items():
+            # Skip if already added from config (config takes precedence for display)
+            if name in config_facts:
+                continue
+            facts_list.append(FactInfo(
+                name=name,
+                value=fact.value,
+                source=fact.source.value if hasattr(fact.source, "value") else str(fact.source),
+                reasoning=fact.reasoning,
+                confidence=getattr(fact, "confidence", None),
+                is_persisted=name in persisted_fact_names,
+                role_id=getattr(fact, "role_id", None),
+            ))
+
+        return FactListResponse(facts=facts_list)
     except Exception as e:
         logger.error(f"Error listing facts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1033,7 +1050,8 @@ async def list_entities(
         logger.warning(f"Could not get entities from active projects: {e}")
 
     entities = list(entity_map.values())
-    logger.debug(f"[list_entities] Returning {len(entities)} deduplicated entities")
+
+    logger.debug(f"list_entities: returning {len(entities)} entities for session {session_id[:8]}")
     return {"entities": entities}
 
 

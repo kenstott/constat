@@ -1,4 +1,5 @@
 // Session state store
+console.log('[sessionStore] MODULE LOADED - v2025-02-05-debug')
 
 import { create } from 'zustand'
 import type { Session, SessionStatus, Plan, WSEvent, TableInfo, Artifact, Fact } from '@/types/api'
@@ -159,11 +160,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Create session on server with client-provided session ID
     const session = await sessionsApi.createSession(userId, sessionId)
 
-    // Initialize with empty messages - welcome message will come from server via WebSocket
+    // Try to restore messages if reconnecting to existing session
+    let restoredMessages: Message[] = []
+    if (!forceNew) {
+      try {
+        const { messages: storedMessages } = await sessionsApi.getMessages(sessionId)
+        if (storedMessages && storedMessages.length > 0) {
+          restoredMessages = storedMessages.map(m => ({
+            id: m.id,
+            type: m.type as Message['type'],
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+            stepNumber: m.stepNumber,
+            isFinalInsight: m.isFinalInsight,
+          }))
+          console.log('[createSession] Restored', restoredMessages.length, 'messages')
+        }
+      } catch (err) {
+        console.warn('[createSession] Could not restore messages:', err)
+      }
+    }
+
+    // Initialize with restored messages (or empty for new session)
     set({
       session,
       status: 'idle',
-      messages: [],
+      messages: restoredMessages,
       plan: null,
       suggestions: [],
       queuedMessages: [],
@@ -720,12 +742,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               // Priority: 1) markdown documents, 2) non-tables, 3) tables
               // Within each category, prefer highest step_number
               const candidates = nonTableArtifacts.length > 0 ? nonTableArtifacts : tableArtifacts
+              console.log('[synthesizing v2025-02-05] Candidates before sort:', candidates.map(c => `${c.id}:${c.name}(${c.artifact_type})`))
               if (candidates.length > 0) {
                 // Sort candidates: markdown first, then by step_number descending
                 const markdownTypes = ['markdown', 'md']
                 const sortedCandidates = [...candidates].sort((a, b) => {
-                  const aIsMarkdown = markdownTypes.includes(a.artifact_type?.toLowerCase() || '')
-                  const bIsMarkdown = markdownTypes.includes(b.artifact_type?.toLowerCase() || '')
+                  const aType = a.artifact_type?.toLowerCase() || ''
+                  const bType = b.artifact_type?.toLowerCase() || ''
+                  const aIsMarkdown = markdownTypes.includes(aType)
+                  const bIsMarkdown = markdownTypes.includes(bType)
+                  console.log(`[sort] Comparing ${a.id}:${aType}(md=${aIsMarkdown}) vs ${b.id}:${bType}(md=${bIsMarkdown})`)
                   // Markdown comes first
                   if (aIsMarkdown && !bIsMarkdown) return -1
                   if (!aIsMarkdown && bIsMarkdown) return 1
@@ -733,8 +759,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   return b.step_number - a.step_number
                 })
 
+                console.log('[synthesizing v2025-02-05] Candidates after sort:', sortedCandidates.map(c => `${c.id}:${c.name}(${c.artifact_type})`))
                 const best = sortedCandidates[0]
-                console.log('[synthesizing] Best artifact:', best.name, best.id, 'type:', best.artifact_type)
+                console.log('[synthesizing v2025-02-05] Best artifact:', best.name, best.id, 'type:', best.artifact_type)
                 selectArtifact(session.session_id, best.id)
               }
             }).catch(err => {
@@ -933,7 +960,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return
 
     try {
+      // Import auth helpers to include Bearer token
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = {}
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+      }
+
       const response = await fetch(`/api/sessions/roles?session_id=${session.session_id}`, {
+        headers,
         credentials: 'include',
       })
       if (response.ok) {
@@ -953,9 +991,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!session) return
 
     try {
+      // Import auth helpers to include Bearer token
+      const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (!isAuthDisabled) {
+        const token = await useAuthStore.getState().getToken()
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`
+        }
+      }
+
       const response = await fetch(`/api/sessions/roles/current?session_id=${session.session_id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         credentials: 'include',
         body: JSON.stringify({ role_name: roleName }),
       })

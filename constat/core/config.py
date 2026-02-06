@@ -939,6 +939,10 @@ class Config(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     email: Optional[EmailConfig] = None  # Email configuration for send_email
 
+    # Core facts that are always available in every session
+    # YAML format: facts: {company_name: "Acme Corp", fiscal_year_start: "April 1"}
+    facts: dict[str, Any] = Field(default_factory=dict)
+
     def list_projects(self) -> list[dict]:
         """List available projects.
 

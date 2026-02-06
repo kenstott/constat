@@ -57,6 +57,7 @@ class SessionSummary:
     apis: Optional[list[str]] = None  # API names used
     documents: Optional[list[str]] = None  # Document names used
     files: Optional[list[str]] = None  # Session-added file names
+    server_session_id: Optional[str] = None  # Server-side session ID for deduplication
 
     def __post_init__(self):
         """Initialize optional lists."""
@@ -79,6 +80,8 @@ class SessionDetail:
     total_queries: int
     total_duration_ms: int
     queries: list[QueryRecord]
+    summary: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class SessionHistory:
@@ -410,9 +413,10 @@ class SessionHistory:
                 with open(session_file) as f:
                     metadata = json.load(f)
 
+                # Use directory name as fallback for session_id (for backwards compat)
                 sessions.append(SessionSummary(
-                    session_id=metadata["session_id"],
-                    created_at=metadata["created_at"],
+                    session_id=metadata.get("session_id", session_dir.name),
+                    created_at=metadata.get("created_at", ""),
                     databases=metadata.get("databases", []),
                     status=metadata.get("status", "unknown"),
                     total_queries=metadata.get("total_queries", 0),
@@ -422,11 +426,12 @@ class SessionHistory:
                     apis=metadata.get("apis", []),
                     documents=metadata.get("documents", []),
                     files=metadata.get("files", []),
+                    server_session_id=metadata.get("server_session_id"),
                 ))
 
                 if len(sessions) >= limit:
                     break
-            except (json.JSONDecodeError, KeyError):
+            except json.JSONDecodeError:
                 continue
 
         return sessions
@@ -454,30 +459,37 @@ class SessionHistory:
         queries = []
         if queries_file.exists():
             with open(queries_file) as f:
-                for line in f:
+                for i, line in enumerate(f):
                     line = line.strip()
                     if line:
-                        q = json.loads(line)
-                        queries.append(QueryRecord(
-                            query_id=q["query_id"],
-                            timestamp=q["timestamp"],
-                            question=q["question"],
-                            success=q["success"],
-                            attempts=q["attempts"],
-                            duration_ms=q["duration_ms"],
-                            answer=q.get("answer"),
-                            error=q.get("error"),
-                        ))
+                        try:
+                            q = json.loads(line)
+                            queries.append(QueryRecord(
+                                query_id=q.get("query_id", i),
+                                timestamp=q.get("timestamp", ""),
+                                question=q.get("question", ""),
+                                success=q.get("success", False),
+                                attempts=q.get("attempts", 0),
+                                duration_ms=q.get("duration_ms", 0),
+                                answer=q.get("answer"),
+                                error=q.get("error"),
+                            ))
+                        except (json.JSONDecodeError, KeyError) as e:
+                            # Skip corrupt query records
+                            continue
 
+        # Use session_id from arg if not in metadata (for backwards compat)
         return SessionDetail(
-            session_id=metadata["session_id"],
-            created_at=metadata["created_at"],
+            session_id=metadata.get("session_id", session_id),
+            created_at=metadata.get("created_at", ""),
             config_hash=metadata.get("config_hash", ""),
             databases=metadata.get("databases", []),
             status=metadata.get("status", "unknown"),
             total_queries=metadata.get("total_queries", 0),
             total_duration_ms=metadata.get("total_duration_ms", 0),
             queries=queries,
+            summary=metadata.get("summary"),
+            user_id=metadata.get("user_id"),
         )
 
     def get_artifacts(self, session_id: str, query_id: int) -> list[Artifact]:
@@ -736,48 +748,30 @@ class SessionHistory:
         except (json.JSONDecodeError, IOError):
             return []
 
-    def _messages_dir_by_server_id(self, server_session_id: str) -> Path:
-        """Get the messages directory for a server session ID."""
-        return self.storage_dir / ".messages" / server_session_id
-
     def save_messages_by_server_id(
         self, server_session_id: str, messages: list[dict]
     ) -> None:
-        """
-        Save conversation messages using server session ID.
+        """Save conversation messages using server session ID."""
+        history_session_id = self.find_session_by_server_id(server_session_id)
+        if not history_session_id:
+            raise ValueError(f"No session found for server_id={server_session_id}")
 
-        This allows saving messages before a history session is created
-        (which happens on first query execution).
-
-        Args:
-            server_session_id: Server-side session UUID
-            messages: List of message dictionaries
-        """
-        messages_dir = self._messages_dir_by_server_id(server_session_id)
-        self._ensure_dir(messages_dir)
-        messages_file = messages_dir / "messages.json"
-        with open(messages_file, "w") as f:
+        messages_path = self._session_dir(history_session_id) / "messages.json"
+        with open(messages_path, "w") as f:
             json.dump(messages, f, indent=2)
 
     def load_messages_by_server_id(self, server_session_id: str) -> list[dict]:
-        """
-        Load conversation messages using server session ID.
-
-        Args:
-            server_session_id: Server-side session UUID
-
-        Returns:
-            List of message dictionaries, or empty list if not found
-        """
-        messages_file = self._messages_dir_by_server_id(server_session_id) / "messages.json"
-        if not messages_file.exists():
+        """Load conversation messages using server session ID."""
+        history_session_id = self.find_session_by_server_id(server_session_id)
+        if not history_session_id:
             return []
 
-        try:
-            with open(messages_file) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        messages_path = self._session_dir(history_session_id) / "messages.json"
+        if not messages_path.exists():
             return []
+
+        with open(messages_path) as f:
+            return json.load(f)
 
     def delete_session(self, session_id: str) -> bool:
         """

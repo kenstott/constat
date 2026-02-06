@@ -193,7 +193,7 @@ export function ClarificationDialog() {
 
             {/* Radio options */}
             <RadioGroup
-              value={isOther ? '__other__' : currentAnswer || undefined}
+              value={isOther ? '__other__' : (currentAnswer || '')}
               onChange={handleOptionSelect}
               className="space-y-2"
             >

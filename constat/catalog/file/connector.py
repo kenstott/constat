@@ -131,7 +131,11 @@ class FileConnector:
         """
         file_type = FileType(db_config.type)
         # Resolve path relative to config directory
-        path = db_config.get_resolved_path(config_dir) or db_config.path or ""
+        # Check both 'path' (standard for file sources) and 'uri' (used by dynamic adds)
+        path = db_config.get_resolved_path(config_dir) or db_config.path or db_config.uri or ""
+        # Strip file:// prefix if present
+        if path.startswith("file://"):
+            path = path[7:]
         return cls(
             name=name,
             path=path,
@@ -160,11 +164,18 @@ class FileConnector:
     def _infer_csv_schema(self) -> FileMetadata:
         """Infer schema from a CSV file."""
         import pandas as pd
+        import logging
+        logger = logging.getLogger(__name__)
+
+        from pathlib import Path as P
+        logger.info(f"_infer_csv_schema: path={self.path}, exists={P(self.path).exists()}")
 
         # Read sample for schema inference
         try:
             df = pd.read_csv(self.path, nrows=self.sample_size)
+            logger.info(f"_infer_csv_schema: read {len(df)} rows, columns={list(df.columns)}")
         except Exception as e:
+            logger.error(f"_infer_csv_schema: FAILED to read CSV: {e}")
             return FileMetadata(
                 name=self.name,
                 path=self.path,

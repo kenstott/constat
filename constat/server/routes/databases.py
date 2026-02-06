@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from constat.server.models import (
+    ApiAddRequest,
     DatabaseAddRequest,
     DatabaseTestResponse,
     SessionApiInfo,
@@ -41,6 +42,13 @@ def _get_dynamic_dbs(managed: ManagedSession) -> list[dict[str, Any]]:
     if not hasattr(managed, "_dynamic_dbs"):
         managed._dynamic_dbs = []
     return managed._dynamic_dbs
+
+
+def _get_dynamic_apis(managed: ManagedSession) -> list[dict[str, Any]]:
+    """Get dynamically added APIs from session."""
+    if not hasattr(managed, "_dynamic_apis"):
+        managed._dynamic_apis = []
+    return managed._dynamic_apis
 
 
 @router.post("/{session_id}/databases", response_model=SessionDatabaseInfo)
@@ -71,8 +79,8 @@ async def add_database(
     uri = body.uri
     if body.file_id:
         # Look up file URI from uploaded files
-        from constat.server.routes.files import _get_uploaded_files
-        files = _get_uploaded_files(session_id)
+        from constat.server.routes.files import _get_uploaded_files_for_session
+        files = _get_uploaded_files_for_session(managed)
         file_info = next((f for f in files if f["id"] == body.file_id), None)
         if not file_info:
             raise HTTPException(status_code=400, detail=f"File not found: {body.file_id}")
@@ -123,20 +131,40 @@ async def add_database(
     table_count = 0
     dialect = None
 
+    # Detect actual file type from extension for file-based sources
+    # This ensures schema_manager recognizes it as a file source
+    effective_type = body.type
+    file_extensions = {'.csv': 'csv', '.tsv': 'csv', '.parquet': 'parquet', '.json': 'json', '.jsonl': 'jsonl'}
+    for ext, ftype in file_extensions.items():
+        if file_path.lower().endswith(ext):
+            effective_type = ftype
+            break
+
     try:
         if hasattr(managed.session, "add_database"):
             managed.session.add_database(
                 name=body.name,
                 uri=uri,
-                db_type=body.type,
+                db_type=effective_type,
                 description=body.description,
             )
             connected = True
 
-            # Get table count
+            # Add to schema_manager for entity extraction
             if managed.session.schema_manager:
-                tables = managed.session.schema_manager.get_tables_for_db(body.name)
-                table_count = len(tables)
+                from constat.core.config import DatabaseConfig
+                # Use 'path' for file-based sources, 'uri' for SQL databases
+                is_file_source = effective_type in ('csv', 'json', 'jsonl', 'parquet', 'arrow', 'feather')
+                db_config = DatabaseConfig(
+                    type=effective_type,
+                    path=uri if is_file_source else None,
+                    uri=uri if not is_file_source else None,
+                    description=body.description,
+                )
+                managed.session.schema_manager.add_database_dynamic(body.name, db_config)
+
+                # Count tables for this db in metadata_cache
+                table_count = sum(1 for k in managed.session.schema_manager.metadata_cache if k.startswith(f"{body.name}."))
 
         # Detect dialect from URI
         if "postgresql" in uri or "postgres" in uri:
@@ -170,6 +198,13 @@ async def add_database(
         "file_id": body.file_id,
     }
     dynamic_dbs.append(db_info)
+
+    # Refresh entities to include the new database tables/columns
+    if connected:
+        session_manager.refresh_entities(session_id)
+
+    # Persist resources for session restoration
+    managed.save_resources()
 
     return SessionDatabaseInfo(
         name=body.name,
@@ -348,6 +383,22 @@ async def list_data_sources(
                 ))
                 seen_apis.add(name)
 
+    # Dynamic APIs (session-added)
+    dynamic_apis = _get_dynamic_apis(managed)
+    for api in dynamic_apis:
+        if api["name"] in seen_apis:
+            continue  # Skip duplicates
+        apis.append(SessionApiInfo(
+            name=api["name"],
+            type=api.get("type"),
+            description=api.get("description"),
+            base_url=api.get("base_url"),
+            connected=api.get("connected", True),
+            from_config=False,
+            source="session",
+            is_dynamic=True,
+        ))
+
     # Collect Documents
     documents: list[SessionDocumentInfo] = []
     seen_docs: set[str] = set()
@@ -439,24 +490,62 @@ async def remove_database(
             detail="Cannot remove config-defined database"
         )
 
-    # Remove from dynamic databases
+    # Find the database to get its file path before removing
     dynamic_dbs = _get_dynamic_dbs(managed)
-    original_len = len(dynamic_dbs)
-    managed._dynamic_dbs = [db for db in dynamic_dbs if db["name"] != db_name]
+    db_to_remove = next((db for db in dynamic_dbs if db["name"] == db_name), None)
 
-    if len(managed._dynamic_dbs) == original_len:
+    if not db_to_remove:
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
 
-    # Try to remove from session's schema manager
-    try:
-        if hasattr(managed.session, "remove_database"):
-            managed.session.remove_database(db_name)
-    except Exception as e:
-        logger.warning(f"Error removing database from session: {e}")
+    # Get file path for deletion (if it's a file-based database)
+    file_path = None
+    uri = db_to_remove.get("uri", "")
+    if uri and not uri.startswith(("postgresql", "mysql", "sqlite", "mssql", "mongodb")):
+        # It's a file path - strip file:// prefix if present
+        file_path = uri[7:] if uri.startswith("file://") else uri
+
+    # Remove from dynamic databases list
+    logger.info(f"remove_database({db_name}): removing from _dynamic_dbs (had {len(dynamic_dbs)} entries)")
+    managed._dynamic_dbs = [db for db in dynamic_dbs if db["name"] != db_name]
+
+    # Remove from session_databases
+    if db_name in managed.session.session_databases:
+        del managed.session.session_databases[db_name]
+        logger.info(f"remove_database({db_name}): removed from session_databases")
+
+    # Remove from schema_manager (metadata, connections, and chunks)
+    if managed.session.schema_manager:
+        result = managed.session.schema_manager.remove_database_dynamic(db_name)
+        logger.info(f"remove_database({db_name}): schema_manager.remove_database_dynamic returned {result}")
+    else:
+        logger.warning(f"remove_database({db_name}): no schema_manager!")
+
+    # Delete the file from disk if it exists
+    file_deleted = False
+    if file_path:
+        from pathlib import Path
+        fp = Path(file_path)
+        if fp.exists():
+            try:
+                fp.unlink()
+                file_deleted = True
+                logger.info(f"Deleted file: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete file {file_path}: {e}")
+
+    # Refresh entities to remove references to the deleted database
+    logger.info(f"remove_database({db_name}): calling refresh_entities")
+    session_manager.refresh_entities(session_id)
+    logger.info(f"remove_database({db_name}): refresh_entities complete")
+
+    # Persist resources for session restoration
+    managed.save_resources()
+    logger.info(f"remove_database({db_name}): deletion complete")
 
     return {
         "status": "deleted",
         "name": db_name,
+        "file_deleted": file_deleted,
     }
 
 
@@ -507,3 +596,144 @@ async def test_database_connection(
         table_count=table_count,
         error=error,
     )
+
+
+# =============================================================================
+# API Routes
+# =============================================================================
+
+
+@router.post("/{session_id}/apis", response_model=SessionApiInfo)
+async def add_api(
+    session_id: str,
+    body: ApiAddRequest,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> SessionApiInfo:
+    """Add an API connection to the session.
+
+    Args:
+        session_id: Session ID
+        body: API add request
+
+    Returns:
+        Information about the added API
+
+    Raises:
+        400: API already exists
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Check for duplicate name
+    dynamic_apis = _get_dynamic_apis(managed)
+    if any(api["name"] == body.name for api in dynamic_apis):
+        raise HTTPException(
+            status_code=400,
+            detail=f"API already exists: {body.name}"
+        )
+
+    # Check config APIs
+    if body.name in managed.session.config.apis:
+        raise HTTPException(
+            status_code=400,
+            detail=f"API already exists in config: {body.name}"
+        )
+
+    # Track in managed session
+    now = datetime.now(timezone.utc)
+    api_info = {
+        "name": body.name,
+        "type": body.type,
+        "base_url": body.base_url,
+        "description": body.description,
+        "auth_type": body.auth_type,
+        "auth_header": body.auth_header,
+        "connected": True,  # Assume connected, will be validated on use
+        "added_at": now.isoformat(),
+        "is_dynamic": True,
+    }
+    dynamic_apis.append(api_info)
+
+    # Add to session resources
+    managed.session.resources.add_api(
+        name=body.name,
+        description=body.description or "",
+        api_type=body.type,
+        source="session",
+    )
+
+    # Refresh entities to include the new API
+    session_manager.refresh_entities(session_id)
+
+    # Persist resources for session restoration
+    managed.save_resources()
+
+    logger.info(f"Added dynamic API: {body.name} to session {session_id}")
+
+    return SessionApiInfo(
+        name=body.name,
+        type=body.type,
+        description=body.description,
+        base_url=body.base_url,
+        connected=True,
+        from_config=False,
+        source="session",
+        is_dynamic=True,
+    )
+
+
+@router.delete("/{session_id}/apis/{api_name}")
+async def remove_api(
+    session_id: str,
+    api_name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Remove a dynamically added API from the session.
+
+    Args:
+        session_id: Session ID
+        api_name: API name to remove
+
+    Returns:
+        Status message
+
+    Raises:
+        400: Cannot remove config-defined API
+        404: Session or API not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Check if it's a config API
+    if api_name in managed.session.config.apis:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove config-defined API"
+        )
+
+    # Find the API in dynamic APIs
+    dynamic_apis = _get_dynamic_apis(managed)
+    api_to_remove = next((api for api in dynamic_apis if api["name"] == api_name), None)
+
+    if not api_to_remove:
+        raise HTTPException(status_code=404, detail=f"API not found: {api_name}")
+
+    # Remove from dynamic APIs list
+    logger.info(f"remove_api({api_name}): removing from _dynamic_apis")
+    managed._dynamic_apis = [api for api in dynamic_apis if api["name"] != api_name]
+
+    # Remove from session resources
+    managed.session.resources.remove_api(api_name)
+
+    # Refresh entities to remove references to the deleted API
+    logger.info(f"remove_api({api_name}): calling refresh_entities")
+    session_manager.refresh_entities(session_id)
+    logger.info(f"remove_api({api_name}): refresh_entities complete")
+
+    # Persist resources for session restoration
+    managed.save_resources()
+    logger.info(f"remove_api({api_name}): deletion complete")
+
+    return {
+        "status": "deleted",
+        "name": api_name,
+    }

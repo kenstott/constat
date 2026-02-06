@@ -370,6 +370,28 @@ export async function testDatabase(
   )
 }
 
+// APIs
+export async function addApi(
+  sessionId: string,
+  data: {
+    name: string
+    type?: string
+    base_url: string
+    description?: string
+    auth_type?: string
+    auth_header?: string
+  }
+): Promise<SessionApiSource> {
+  return post<SessionApiSource>(`/sessions/${sessionId}/apis`, data)
+}
+
+export async function removeApi(
+  sessionId: string,
+  name: string
+): Promise<{ status: string }> {
+  return del<{ status: string }>(`/sessions/${sessionId}/apis/${name}`)
+}
+
 // Config (global, not per-session)
 export async function getConfig(): Promise<Config> {
   return get<Config>(`/config`)

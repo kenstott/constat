@@ -175,7 +175,7 @@ export function ArtifactPanel() {
   const [editingSystemPrompt, setEditingSystemPrompt] = useState(false)
   const [systemPromptDraft, setSystemPromptDraft] = useState('')
   // Document modal state
-  const [docSourceType, setDocSourceType] = useState<'uri' | 'files'>('uri')
+  const [docSourceType, setDocSourceType] = useState<'uri' | 'files'>('files')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
   // Document viewer state
@@ -254,6 +254,33 @@ export function ArtifactPanel() {
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
 
+  const handleAddApi = async () => {
+    if (!session || !modalInput.name || !modalInput.uri) return
+    await sessionsApi.addApi(session.session_id, {
+      name: modalInput.name,
+      base_url: modalInput.uri,
+      type: modalInput.type || 'rest',
+    })
+    fetchDataSources(session.session_id)
+    fetchEntities(session.session_id)  // Refresh entities after adding API
+    setShowModal(null)
+    setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
+  }
+
+  const handleDeleteApi = async (apiName: string) => {
+    if (!session) return
+    if (!confirm(`Remove API "${apiName}" from this session?`)) return
+
+    try {
+      await sessionsApi.removeApi(session.session_id, apiName)
+      fetchDataSources(session.session_id)
+      fetchEntities(session.session_id)  // Refresh entities after deletion
+    } catch (err) {
+      console.error('Failed to remove API:', err)
+      alert('Failed to remove API. Please try again.')
+    }
+  }
+
   const handleAddDocument = async () => {
     if (!session) return
 
@@ -267,7 +294,7 @@ export function ArtifactPanel() {
         fetchEntities(session.session_id)  // Refresh entities after indexing
         setShowModal(null)
         setSelectedFiles([])
-        setDocSourceType('uri')
+        setDocSourceType('files')
       } finally {
         setUploading(false)
       }
@@ -329,7 +356,7 @@ export function ArtifactPanel() {
 
   const openModal = (type: ModalType) => {
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
-    setDocSourceType('uri')
+    setDocSourceType('files')
     setSelectedFiles([])
     setShowModal(type)
   }
@@ -411,7 +438,7 @@ ${skill.body}`
         ...prev,
         description: parsed.description || prev.description,
         allowedTools: parsed.allowedTools.length > 0 ? parsed.allowedTools : prev.allowedTools,
-        body: parsed.body,
+        body: parsed.body || prev.body,
       }))
     } catch (err) {
       console.error('Failed to draft skill:', err)
@@ -425,7 +452,7 @@ ${skill.body}`
     setDraftingRole(true)
     try {
       const result = await rolesApi.draftRole(session.session_id, newRole.name.trim(), newRole.description.trim())
-      setNewRole(prev => ({ ...prev, prompt: result.prompt, description: result.description || prev.description }))
+      setNewRole(prev => ({ ...prev, prompt: result.prompt || '', description: result.description || prev.description }))
     } catch (err) {
       console.error('Failed to draft role:', err)
     } finally {
@@ -504,7 +531,7 @@ ${skill.body}`
       )
       if (response.ok) {
         const data = await response.json()
-        setEditingRole({ name: data.name, prompt: data.prompt, description: data.description })
+        setEditingRole({ name: data.name, prompt: data.prompt || '', description: data.description || '' })
       }
     } catch (err) {
       console.error('Failed to fetch role content:', err)
@@ -745,7 +772,7 @@ ${skill.body}`
               {showModal === 'rule' ? (
                 <textarea
                   placeholder="Enter the rule text..."
-                  value={modalInput.value}
+                  value={modalInput.value || ''}
                   onChange={(e) => setModalInput({ ...modalInput, value: e.target.value })}
                   className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
                   rows={3}
@@ -759,7 +786,7 @@ ${skill.body}`
                         type="radio"
                         name="docSourceType"
                         checked={docSourceType === 'uri'}
-                        onChange={() => setDocSourceType('uri')}
+                        onChange={() => setDocSourceType('files')}
                         className="text-primary-600"
                       />
                       From URI
@@ -781,14 +808,14 @@ ${skill.body}`
                       <input
                         type="text"
                         placeholder="Name"
-                        value={modalInput.name}
+                        value={modalInput.name || ''}
                         onChange={(e) => setModalInput({ ...modalInput, name: e.target.value })}
                         className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                       />
                       <input
                         type="text"
                         placeholder="URI (file:// or http://)"
-                        value={modalInput.uri}
+                        value={modalInput.uri || ''}
                         onChange={(e) => setModalInput({ ...modalInput, uri: e.target.value })}
                         className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                       />
@@ -820,7 +847,7 @@ ${skill.body}`
                   <input
                     type="text"
                     placeholder="Name"
-                    value={modalInput.name}
+                    value={modalInput.name || ''}
                     onChange={(e) => setModalInput({ ...modalInput, name: e.target.value })}
                     className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                   />
@@ -829,7 +856,7 @@ ${skill.body}`
                       <input
                         type="text"
                         placeholder="Value"
-                        value={modalInput.value}
+                        value={modalInput.value || ''}
                         onChange={(e) => setModalInput({ ...modalInput, value: e.target.value })}
                         className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                       />
@@ -847,7 +874,7 @@ ${skill.body}`
                     <input
                       type="text"
                       placeholder="URI / Path"
-                      value={modalInput.uri}
+                      value={modalInput.uri || ''}
                       onChange={(e) => setModalInput({ ...modalInput, uri: e.target.value })}
                       className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                     />
@@ -856,7 +883,7 @@ ${skill.body}`
               )}
               {showModal === 'database' && (
                 <select
-                  value={modalInput.type}
+                  value={modalInput.type || ''}
                   onChange={(e) => setModalInput({ ...modalInput, type: e.target.value })}
                   className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                 >
@@ -865,6 +892,18 @@ ${skill.body}`
                   <option value="sqlite">SQLite</option>
                   <option value="postgresql">PostgreSQL</option>
                   <option value="mysql">MySQL</option>
+                </select>
+              )}
+              {showModal === 'api' && (
+                <select
+                  value={modalInput.type || ''}
+                  onChange={(e) => setModalInput({ ...modalInput, type: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  <option value="">Type (optional)</option>
+                  <option value="rest">REST</option>
+                  <option value="graphql">GraphQL</option>
+                  <option value="openapi">OpenAPI</option>
                 </select>
               )}
             </div>
@@ -881,7 +920,7 @@ ${skill.body}`
                   else if (showModal === 'database') handleAddDatabase()
                   else if (showModal === 'document') handleAddDocument()
                   else if (showModal === 'rule') handleAddRule()
-                  else setShowModal(null) // API - not implemented yet
+                  else if (showModal === 'api') handleAddApi()
                 }}
                 disabled={uploading || (showModal === 'document' && docSourceType === 'files' && selectedFiles.length === 0)}
                 className="px-3 py-1.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
@@ -1065,7 +1104,8 @@ ${skill.body}`
                           if (!confirm(`Remove database "${db.name}" from this session?`)) return
                           try {
                             await sessionsApi.removeDatabase(session.session_id, db.name)
-                            fetchDataSources(session.session_id)
+                            await fetchDataSources(session.session_id)
+                            await fetchEntities(session.session_id)
                           } catch (err) {
                             console.error('Failed to remove database:', err)
                             alert('Failed to remove database. Please try again.')
@@ -1119,7 +1159,7 @@ ${skill.body}`
             {apis.map((api) => (
               <div
                 key={api.name}
-                className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md"
+                className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md group"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1136,15 +1176,27 @@ ${skill.body}`
                       </span>
                     )}
                   </div>
-                  <span
-                    className={`text-xs px-1.5 py-0.5 rounded ${
-                      api.connected
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
-                    }`}
-                  >
-                    {api.connected ? 'Available' : 'Pending'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-xs px-1.5 py-0.5 rounded ${
+                        api.connected
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                      }`}
+                    >
+                      {api.connected ? 'Available' : 'Pending'}
+                    </span>
+                    {/* Only show delete for session-added APIs */}
+                    {api.source === 'session' && (
+                      <button
+                        onClick={() => handleDeleteApi(api.name)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
+                        title="Remove API"
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {api.type && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -1288,7 +1340,7 @@ ${skill.body}`
           {editingSystemPrompt ? (
             <div className="space-y-2">
               <textarea
-                value={systemPromptDraft}
+                value={systemPromptDraft || ''}
                 onChange={(e) => setSystemPromptDraft(e.target.value)}
                 className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none min-h-[150px]"
                 placeholder="Enter system prompt..."
@@ -1346,20 +1398,20 @@ ${skill.body}`
             <input
               type="text"
               placeholder="Role name"
-              value={newRole.name}
+              value={newRole.name || ''}
               onChange={(e) => setNewRole({ ...newRole, name: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             />
             <input
               type="text"
               placeholder="Description (for AI drafting or display)"
-              value={newRole.description}
+              value={newRole.description || ''}
               onChange={(e) => setNewRole({ ...newRole, description: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             />
             <textarea
               placeholder="Role prompt (persona definition)..."
-              value={newRole.prompt}
+              value={newRole.prompt || ''}
               onChange={(e) => setNewRole({ ...newRole, prompt: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[100px] resize-none"
             />
@@ -1406,12 +1458,12 @@ ${skill.body}`
               <input
                 type="text"
                 placeholder="Description (optional)"
-                value={editingRole.description}
+                value={editingRole.description || ''}
                 onChange={(e) => setEditingRole({ ...editingRole, description: e.target.value })}
                 className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
               />
               <textarea
-                value={editingRole.prompt}
+                value={editingRole.prompt || ''}
                 onChange={(e) => setEditingRole({ ...editingRole, prompt: e.target.value })}
                 className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
               />
@@ -1565,14 +1617,14 @@ ${skill.body}`
             <input
               type="text"
               placeholder="Skill name"
-              value={newSkill.name}
+              value={newSkill.name || ''}
               onChange={(e) => setNewSkill({ ...newSkill, name: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 mb-2"
             />
             <input
               type="text"
               placeholder="Description (for AI drafting or display)"
-              value={newSkill.description}
+              value={newSkill.description || ''}
               onChange={(e) => setNewSkill({ ...newSkill, description: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 mb-2"
             />
@@ -1602,7 +1654,7 @@ ${skill.body}`
                 <input
                   type="text"
                   placeholder="Add tool (e.g., run_sql)"
-                  value={newToolInput}
+                  value={newToolInput || ''}
                   onChange={(e) => setNewToolInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && newToolInput.trim()) {
@@ -1637,7 +1689,7 @@ ${skill.body}`
             </div>
             <textarea
               placeholder="Skill body (markdown with SQL patterns, metrics, domain knowledge)..."
-              value={newSkill.body}
+              value={newSkill.body || ''}
               onChange={(e) => setNewSkill({ ...newSkill, body: e.target.value })}
               className="w-full px-2 py-1 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none mb-2"
               rows={8}
@@ -1688,7 +1740,7 @@ ${skill.body}`
                   <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Name</label>
                   <input
                     type="text"
-                    value={editingSkill.name}
+                    value={editingSkill.name || ''}
                     onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
                     className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                   />
@@ -1697,7 +1749,7 @@ ${skill.body}`
                   <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Description</label>
                   <input
                     type="text"
-                    value={editingSkill.description}
+                    value={editingSkill.description || ''}
                     onChange={(e) => setEditingSkill({ ...editingSkill, description: e.target.value })}
                     className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                   />
@@ -1727,7 +1779,7 @@ ${skill.body}`
                     <input
                       type="text"
                       placeholder="Add tool (e.g., run_sql)"
-                      value={newToolInput}
+                      value={newToolInput || ''}
                       onChange={(e) => setNewToolInput(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && newToolInput.trim()) {
@@ -1763,7 +1815,7 @@ ${skill.body}`
                 <div className="flex-1">
                   <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Body (Markdown)</label>
                   <textarea
-                    value={editingSkill.body}
+                    value={editingSkill.body || ''}
                     onChange={(e) => setEditingSkill({ ...editingSkill, body: e.target.value })}
                     className="w-full min-h-[250px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
                   />
@@ -1971,7 +2023,7 @@ ${skill.body}`
                     {editingRule?.id === rule.id ? (
                       <div className="space-y-2">
                         <textarea
-                          value={editingRule.summary}
+                          value={editingRule.summary || ''}
                           onChange={(e) => setEditingRule({ ...editingRule, summary: e.target.value })}
                           className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
                           rows={2}
@@ -2002,7 +2054,7 @@ ${skill.body}`
                           </p>
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
-                              onClick={() => setEditingRule({ id: rule.id, summary: rule.summary })}
+                              onClick={() => setEditingRule({ id: rule.id, summary: rule.summary || '' })}
                               className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
                               title="Edit rule"
                             >
@@ -2186,13 +2238,22 @@ ${skill.body}`
                   <tr
                     key={fact.name}
                     className={`border-b border-gray-100 dark:border-gray-800 last:border-b-0 group ${
-                      fact.is_persisted ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''
+                      fact.source === 'config'
+                        ? 'bg-purple-50/50 dark:bg-purple-900/10'
+                        : fact.is_persisted
+                        ? 'bg-amber-50/50 dark:bg-amber-900/10'
+                        : ''
                     }`}
                   >
                     <td className="py-2 px-1 font-medium text-gray-700 dark:text-gray-300">
                       <span className="flex items-center gap-1 flex-wrap">
                         {fact.name}
-                        {fact.is_persisted && (
+                        {fact.source === 'config' && (
+                          <span className="px-1 py-0.5 text-[10px] bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-200 rounded">
+                            core
+                          </span>
+                        )}
+                        {fact.is_persisted && fact.source !== 'config' && (
                           <span className="px-1 py-0.5 text-[10px] bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 rounded">
                             saved
                           </span>
@@ -2208,25 +2269,30 @@ ${skill.body}`
                       {String(fact.value)}
                     </td>
                     <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
-                      {fact.source}
+                      {fact.source === 'config' ? 'core' : fact.source}
                     </td>
                     <td className="py-2 px-1 flex items-center gap-1">
-                      {!fact.is_persisted && (
-                        <button
-                          onClick={() => handlePersistFact(fact.name)}
-                          className="p-1 text-gray-300 dark:text-gray-600 hover:text-amber-500 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="Save permanently"
-                        >
-                          <ArrowUpTrayIcon className="w-3 h-3" />
-                        </button>
+                      {/* Don't show persist/forget buttons for config facts */}
+                      {fact.source !== 'config' && (
+                        <>
+                          {!fact.is_persisted && (
+                            <button
+                              onClick={() => handlePersistFact(fact.name)}
+                              className="p-1 text-gray-300 dark:text-gray-600 hover:text-amber-500 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                              title="Save permanently"
+                            >
+                              <ArrowUpTrayIcon className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleForgetFact(fact.name)}
+                            className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Forget fact"
+                          >
+                            <MinusIcon className="w-3 h-3" />
+                          </button>
+                        </>
                       )}
-                      <button
-                        onClick={() => handleForgetFact(fact.name)}
-                        className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="Forget fact"
-                      >
-                        <MinusIcon className="w-3 h-3" />
-                      </button>
                     </td>
                   </tr>
                 ))}

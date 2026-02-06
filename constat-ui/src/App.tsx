@@ -11,7 +11,6 @@ import { LoginPage } from '@/components/auth/LoginPage'
 import { ProofDAGPanel } from '@/components/proof/ProofDAGPanel'
 import { HelpModal } from '@/components/help/HelpModal'
 import { useSessionStore } from '@/store/sessionStore'
-import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
 import * as sessionsApi from '@/api/sessions'
@@ -215,43 +214,19 @@ function MainApp() {
   }, [session, createSession, userId])
 
   const handleNewQuery = async () => {
-    // Clear conversation state but keep the same session (preserves DBs, projects, entities, learnings)
-    useProofStore.getState().clearFacts()
+    setIsCreatingNewSession(true)
+    try {
+      // Create a brand new session (preserves old session in history)
+      useProofStore.getState().clearFacts()
+      lastSavedRef.current = ''
 
-    // Clear conversation-related state only
-    useSessionStore.setState({
-      messages: [],
-      suggestions: [],
-      plan: null,
-      queuedMessages: [],
-      clarification: null,
-      status: 'idle',
-      executionPhase: 'idle',
-      currentStepNumber: 0,
-      stepAttempt: 1,
-      stepMessageIds: {},
-      liveMessageId: null,
-      thinkingMessageId: null,
-      lastQueryStartStep: 0,
-      queryContext: null,
-    })
+      // Create new session - this preserves the old session in history
+      await createSession(userId, true) // forceNew = true
 
-    // Clear query-produced artifacts (tables, artifacts, facts, step codes) but NOT data sources/entities
-    const artifactStore = useArtifactStore.getState()
-    artifactStore.clearQueryResults()
-
-    // Reset saved messages state for this session
-    lastSavedRef.current = ''
-
-    // Reset backend session context (clears plan, scratchpad, datastore tables, session facts)
-    // Also clears persisted messages
-    if (session) {
-      sessionsApi.resetContext(session.session_id).catch(err =>
-        console.error('Failed to reset session context:', err)
-      )
+      queryInputRef.current?.focus()
+    } finally {
+      setIsCreatingNewSession(false)
     }
-
-    queryInputRef.current?.focus()
   }
 
   // Proof panel state
@@ -270,6 +245,9 @@ function MainApp() {
   const [isHelpOpen, setIsHelpOpen] = useState(false)
   const handleShowHelp = () => setIsHelpOpen(true)
 
+  // New query loading state
+  const [isCreatingNewSession, setIsCreatingNewSession] = useState(false)
+
   // Show connecting overlay until session exists and WebSocket is connected
   if (!session || !wsConnected) {
     return <ConnectingOverlay phase={initPhase} />
@@ -283,6 +261,7 @@ function MainApp() {
         onNewQuery={handleNewQuery}
         onShowProof={handleShowProof}
         onShowHelp={handleShowHelp}
+        isCreatingNewSession={isCreatingNewSession}
       />
       <ClarificationDialog />
       <PlanApprovalDialog />

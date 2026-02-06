@@ -81,6 +81,10 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   const [projects, setProjects] = useState<ProjectInfo[]>([])
   const [loadingProjects, setLoadingProjects] = useState(false)
 
+  // Loading state for session operations
+  const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null)
+  const [creatingSession, setCreatingSession] = useState(false)
+
   // Project editor modal state
   const [editingProject, setEditingProject] = useState<string | null>(null)
   const [projectContent, setProjectContent] = useState('')
@@ -125,12 +129,21 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       setMenuOpen(false)
       return
     }
+
+    setSwitchingSessionId(sessionId)
     try {
-      // Fetch session and messages in parallel
+      console.log('[switchSession] Switching to session:', sessionId)
+      // Use createSession to restore/reconnect - it handles both in-memory and historical sessions
+      // getSession only looks in memory and returns 404 for historical sessions
       const [session, messagesResult] = await Promise.all([
-        sessionsApi.getSession(sessionId),
-        sessionsApi.getMessages(sessionId).catch(() => ({ messages: [] })),
+        sessionsApi.createSession(currentSession?.user_id || 'default', sessionId),
+        sessionsApi.getMessages(sessionId).catch((err) => {
+          console.warn('[switchSession] Failed to fetch messages:', err)
+          return { messages: [] }
+        }),
       ])
+      console.log('[switchSession] Restored session:', session.session_id)
+      console.log('[switchSession] Fetched messages:', messagesResult.messages?.length || 0)
 
       // Clear current state
       useArtifactStore.getState().clear()
@@ -138,21 +151,27 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       // Restore messages BEFORE connecting WebSocket (prevents welcome message overwrite)
       if (messagesResult.messages && messagesResult.messages.length > 0) {
         const restoredMessages = messagesResult.messages.map(m => ({
-          ...m,
+          id: m.id,
+          type: m.type as 'user' | 'system' | 'plan' | 'step' | 'output' | 'error' | 'thinking',
+          content: m.content,
           timestamp: new Date(m.timestamp),
+          stepNumber: m.stepNumber,
+          isFinalInsight: m.isFinalInsight,
         }))
+        console.log('[switchSession] Restored messages:', restoredMessages.length)
         useSessionStore.setState({ messages: restoredMessages, suggestions: [], plan: null })
       } else {
+        console.log('[switchSession] No messages to restore, clearing')
         useSessionStore.getState().clearMessages()
       }
 
       // Set session with preserveMessages to avoid clearing restored messages
       setSession(session, { preserveMessages: true })
 
-      // Update localStorage with new session ID
-      localStorage.setItem('constat-session-id', sessionId)
+      // Update localStorage with user-specific session key
+      sessionsApi.storeSessionId(sessionId, session.user_id)
 
-      // Fetch all session data to restore state
+      // Fetch all session data to restore state (parallel for speed)
       const artifactStore = useArtifactStore.getState()
       await Promise.all([
         artifactStore.fetchTables(sessionId),
@@ -161,19 +180,29 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         artifactStore.fetchEntities(sessionId),
         artifactStore.fetchDataSources(sessionId),
         artifactStore.fetchStepCodes(sessionId),
+        artifactStore.fetchLearnings(),
+        artifactStore.fetchAllRoles(sessionId),
+        artifactStore.fetchPromptContext(sessionId),
       ])
 
       setMenuOpen(false)
     } catch (error) {
       console.error('Failed to switch session:', error)
+    } finally {
+      setSwitchingSessionId(null)
     }
   }
 
   const handleNewSession = async () => {
-    // createSession with forceNew=true generates a new session ID
-    await createSession(undefined, true)
-    setMenuOpen(false)
-    onNewSession?.()
+    setCreatingSession(true)
+    try {
+      // createSession with forceNew=true generates a new session ID
+      await createSession(undefined, true)
+      setMenuOpen(false)
+      onNewSession?.()
+    } finally {
+      setCreatingSession(false)
+    }
   }
 
   const [projectError, setProjectError] = useState<string | null>(null)
@@ -327,10 +356,18 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                         </h3>
                         <button
                           onClick={handleNewSession}
-                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                          disabled={creatingSession || switchingSessionId !== null}
+                          className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           title="New session"
                         >
-                          <PlusIcon className="w-4 h-4" />
+                          {creatingSession ? (
+                            <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                          ) : (
+                            <PlusIcon className="w-4 h-4" />
+                          )}
                         </button>
                       </div>
                       <div className="space-y-1 max-h-64 overflow-y-auto">
@@ -359,24 +396,39 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                         ) : sessions.length === 0 && !currentSession ? (
                           <p className="text-xs text-gray-400 py-2">No sessions yet</p>
                         ) : (
-                          sessions.map((session) => (
-                            <button
-                              key={session.session_id}
-                              onClick={() => handleSwitchSession(session.session_id)}
-                              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
-                            >
-                              <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 text-gray-400" />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium truncate text-gray-900 dark:text-gray-100">
-                                  {getSessionTitle(session)}
-                                </p>
-                                <p className="text-xs text-gray-500 dark:text-gray-400">
-                                  {formatRelativeTime(session.last_activity)}
-                                  {session.tables_count > 0 && ` · ${session.tables_count} tables`}
-                                </p>
-                              </div>
-                            </button>
-                          ))
+                          sessions.map((session) => {
+                            const isLoading = switchingSessionId === session.session_id
+                            return (
+                              <button
+                                key={session.session_id}
+                                onClick={() => handleSwitchSession(session.session_id)}
+                                disabled={switchingSessionId !== null || creatingSession}
+                                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors ${
+                                  isLoading
+                                    ? 'bg-primary-50 dark:bg-primary-900/20'
+                                    : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                              >
+                                {isLoading ? (
+                                  <svg className="w-4 h-4 flex-shrink-0 text-primary-500 animate-spin" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                  </svg>
+                                ) : (
+                                  <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium truncate text-gray-900 dark:text-gray-100">
+                                    {getSessionTitle(session)}
+                                  </p>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    {isLoading ? 'Restoring...' : formatRelativeTime(session.last_activity)}
+                                    {!isLoading && session.tables_count > 0 && ` · ${session.tables_count} tables`}
+                                  </p>
+                                </div>
+                              </button>
+                            )
+                          })
                         )}
                       </div>
                     </div>

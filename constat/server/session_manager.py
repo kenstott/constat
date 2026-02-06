@@ -45,6 +45,10 @@ class ManagedSession:
     current_query: Optional[str] = None
     execution_id: Optional[str] = None
 
+    # History session ID (timestamp-based, e.g., '2026-02-05_160420_697412')
+    # This is different from session_id which is the server/client UUID
+    _history_session_id: Optional[str] = None
+
     # Active project filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
     active_projects: list[str] = field(default_factory=list)
 
@@ -61,8 +65,8 @@ class ManagedSession:
 
     @property
     def history_session_id(self) -> Optional[str]:
-        """Get the session ID used for history storage."""
-        return self.session.session_id if self.session else None
+        """Get the session ID used for history storage (timestamp-based)."""
+        return self._history_session_id
 
     def touch(self) -> None:
         """Update last activity timestamp."""
@@ -72,6 +76,82 @@ class ManagedSession:
         """Check if session has exceeded timeout."""
         expiry = self.last_activity + timedelta(minutes=timeout_minutes)
         return datetime.now(timezone.utc) > expiry
+
+    def save_resources(self) -> None:
+        """Save dynamic resources (dbs, file_refs, projects) to disk."""
+        from constat.storage.history import SessionHistory
+
+        history_id = self.history_session_id
+        if not history_id:
+            return
+
+        history = SessionHistory(user_id=self.user_id)
+
+        # Gather resources
+        resources = {
+            "dynamic_dbs": getattr(self, "_dynamic_dbs", []),
+            "dynamic_apis": getattr(self, "_dynamic_apis", []),
+            "file_refs": getattr(self, "_file_refs", []),
+            "active_projects": self.active_projects or [],
+        }
+
+        # Save to state file
+        state = history.load_state(history_id) or {}
+        state["resources"] = resources
+        history.save_state(history_id, state)
+        logger.debug(f"Saved session resources: {len(resources['dynamic_dbs'])} dbs, {len(resources['dynamic_apis'])} apis, {len(resources['file_refs'])} refs")
+
+    def restore_resources(self) -> None:
+        """Restore dynamic resources from disk."""
+        from constat.storage.history import SessionHistory
+
+        history_id = self.history_session_id
+        if not history_id:
+            return
+
+        history = SessionHistory(user_id=self.user_id)
+        state = history.load_state(history_id)
+        if not state or "resources" not in state:
+            return
+
+        resources = state["resources"]
+
+        # Restore to managed session
+        self._dynamic_dbs = resources.get("dynamic_dbs", [])
+        self._dynamic_apis = resources.get("dynamic_apis", [])
+        self._file_refs = resources.get("file_refs", [])
+        self.active_projects = resources.get("active_projects", [])
+
+        logger.info(f"Restored session resources: {len(self._dynamic_dbs)} dbs, {len(self._dynamic_apis)} apis, {len(self._file_refs)} refs, {len(self.active_projects)} projects")
+
+        # Re-add databases to schema_manager
+        if self._dynamic_dbs and self.session.schema_manager:
+            from constat.core.config import DatabaseConfig
+            for db in self._dynamic_dbs:
+                try:
+                    db_config = DatabaseConfig(
+                        type=db.get("type", "csv"),
+                        uri=db.get("uri", ""),
+                        description=db.get("description", ""),
+                    )
+                    self.session.schema_manager.add_database_dynamic(db["name"], db_config)
+                    logger.debug(f"Restored database: {db['name']}")
+                except Exception as e:
+                    logger.warning(f"Failed to restore database {db['name']}: {e}")
+
+        # Re-add APIs to session resources
+        if self._dynamic_apis and self.session.resources:
+            for api in self._dynamic_apis:
+                try:
+                    self.session.resources.add_api(
+                        name=api["name"],
+                        description=api.get("description", ""),
+                        api_type=api.get("type", "rest"),
+                        source="session",
+                    )
+                    logger.debug(f"Restored API: {api['name']}")
+                except Exception as e:
+                    logger.warning(f"Failed to restore API {api['name']}: {e}")
 
 
 class SessionManager:
@@ -101,25 +181,40 @@ class SessionManager:
         self._cleanup_task: Optional[asyncio.Task] = None
 
     def create_session(self, session_id: str, user_id: str = "default") -> str:
-        """Create a new Session instance.
+        """Create or restore a Session instance.
+
+        If session_id exists in history (on disk), restores it with all artifacts,
+        tables, and context. Otherwise creates a new session.
 
         Args:
             session_id: Session ID provided by client
             user_id: User ID for session ownership
 
         Returns:
-            Session ID for the new session
+            Session ID for the new/restored session
 
         Raises:
             RuntimeError: If max concurrent sessions limit is reached
         """
+        from constat.storage.history import SessionHistory
+
         with self._lock:
             # Check session limit
             if len(self._sessions) >= self._server_config.max_concurrent_sessions:
                 raise RuntimeError(
                     f"Maximum concurrent sessions ({self._server_config.max_concurrent_sessions}) reached"
                 )
-            logger.debug(f"Creating session {session_id} for user {user_id}")
+
+            # Check if this session exists in history (can be restored)
+            history = SessionHistory(user_id=user_id)
+            history_session_id = history.find_session_by_server_id(session_id)
+            historical_session = history.get_session(history_session_id) if history_session_id else None
+            is_restore = historical_session is not None
+
+            if is_restore:
+                logger.info(f"Restoring session {session_id} (history_id={history_session_id})")
+            else:
+                logger.debug(f"Creating new session {session_id}")
 
             # Create Session config with server-appropriate settings
             session_config = SessionConfig(
@@ -138,6 +233,23 @@ class SessionManager:
                 user_id=user_id,
                 data_dir=self._server_config.data_dir,
             )
+
+            # If historical session exists, restore it (loads datastore, scratchpad, etc.)
+            if is_restore and history_session_id:
+                if session.resume(history_session_id):
+                    logger.info(f"Successfully restored session {session_id} (history_id={history_session_id}) with datastore")
+                else:
+                    logger.warning(f"Failed to restore session {session_id} (history_id={history_session_id}), continuing as new")
+            else:
+                # Create session directory upfront (not waiting for first query)
+                history_session_id = history.create_session(
+                    config_dict=self._config.model_dump() if hasattr(self._config, 'model_dump') else {},
+                    databases=[],
+                    apis=[],
+                    documents=[],
+                    server_session_id=session_id,
+                )
+                logger.info(f"Created session directory: {history_session_id} (server_id={session_id})")
 
             # Create stores for API
             fact_store = FactStore(user_id=user_id)
@@ -161,9 +273,14 @@ class SessionManager:
                 user_id=user_id,
                 created_at=now,
                 last_activity=now,
+                _history_session_id=history_session_id,
             )
 
             self._sessions[session_id] = managed
+
+            # Restore dynamic resources (dbs, file_refs, projects) if this is a restore
+            if is_restore:
+                managed.restore_resources()
 
             # Run NER for session's visible documents (base + loaded projects)
             # This creates chunk-entity links scoped to this session
@@ -186,20 +303,36 @@ class SessionManager:
             logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
             return
 
-        # Get session's entity catalog
-        schema_entities = list(session.schema_manager.get_entity_names())
-        api_entities = list(session._get_api_entity_names())
-        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema entities, {len(api_entities)} API entities")
-        logger.debug(f"Session {session_id}: schema_entities={schema_entities[:20]}")
-
-        # Get active project IDs (empty on fresh session)
+        # Get active project IDs and session database names
         project_ids = []
+        session_db_names = []
         if hasattr(self, '_sessions') and session_id in self._sessions:
             managed = self._sessions[session_id]
             project_ids = managed.active_projects or []
+            # Get names of dynamically added databases (include their columns in entities)
+            if hasattr(managed, '_dynamic_dbs'):
+                session_db_names = [db["name"] for db in managed._dynamic_dbs]
+
+        # Get session's entity catalog
+        # Include columns only for session-added databases (their columns are meaningful)
+        # Config databases often have generic column names ("id", "name", "date")
+        schema_entities = list(session.schema_manager.get_entity_names(
+            include_columns_for_dbs=session_db_names
+        ))
+        api_entities = list(session._get_api_entity_names())
+        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema entities, {len(api_entities)} API entities")
+        logger.debug(f"Session {session_id}: schema_entities={schema_entities[:20]}, session_dbs={session_db_names}")
 
         # Run entity extraction
         try:
+            # Clear existing entity links before re-extraction (handles db add/remove)
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                logger.info(f"Session {session_id}: clearing existing entities and links")
+                session.doc_tools._vector_store.clear_session_entities(session_id)
+                logger.info(f"Session {session_id}: cleared existing entity links")
+            else:
+                logger.warning(f"Session {session_id}: no vector_store to clear entities from")
+
             logger.info(f"Session {session_id}: running extract_entities_for_session with project_ids={project_ids}, {len(schema_entities)} schema entities")
             if schema_entities:
                 logger.debug(f"Session {session_id}: sample schema_entities: {schema_entities[:10]}")
@@ -215,6 +348,25 @@ class SessionManager:
                 logger.warning(f"Session {session_id}: NO entity links created (link_count={link_count})")
         except Exception as e:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
+
+    def refresh_entities(self, session_id: str) -> None:
+        """Refresh entity extraction for a session.
+
+        Call this after dynamically adding or removing databases to update
+        the session's entity catalog.
+
+        Args:
+            session_id: Session ID to refresh
+        """
+        logger.info(f"refresh_entities({session_id}): starting")
+        with self._lock:
+            if session_id not in self._sessions:
+                logger.warning(f"Cannot refresh entities: session {session_id} not found")
+                return
+            managed = self._sessions[session_id]
+            logger.info(f"refresh_entities({session_id}): calling _run_entity_extraction")
+            self._run_entity_extraction(session_id, managed.session)
+            logger.info(f"refresh_entities({session_id}): complete")
 
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.

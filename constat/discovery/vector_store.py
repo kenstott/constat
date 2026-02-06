@@ -1246,14 +1246,30 @@ class DuckDBVectorStore(VectorStoreBackend):
         result = self._conn.execute("SELECT COUNT(*) FROM entities").fetchone()
         return result[0] if result else 0
 
-    def clear_session_entities(self, session_id: str) -> None:
+    def clear_session_entities(self, session_id: str) -> tuple[int, int]:
         """Clear all entities and chunk_entities for a session.
 
         Args:
             session_id: Session ID to clear
+
+        Returns:
+            Tuple of (links_deleted, entities_deleted)
         """
+        # Count before delete
+        link_count = self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)",
+            [session_id]
+        ).fetchone()[0]
+        entity_count = self._conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE session_id = ?",
+            [session_id]
+        ).fetchone()[0]
+
         self._conn.execute("DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id])
         self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
+
+        logger.info(f"clear_session_entities({session_id[:8]}): deleted {link_count} links, {entity_count} entities")
+        return link_count, entity_count
 
     def clear_project_session_entities(self, session_id: str, project_id: str) -> int:
         """Clear entities for a specific project in a session.

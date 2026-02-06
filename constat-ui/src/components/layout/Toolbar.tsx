@@ -16,14 +16,20 @@ interface ToolbarProps {
   onNewQuery?: () => void
   onShowProof?: () => void
   onShowHelp?: () => void
+  isCreatingNewSession?: boolean
 }
 
-export function Toolbar({ onNewQuery, onShowProof, onShowHelp }: ToolbarProps) {
+export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSession }: ToolbarProps) {
   const { session, status, cancelExecution } = useSessionStore()
   const { databases, apis, documents, facts, artifacts, tables, stepCodes } = useArtifactStore()
 
   // Count datasources (databases + APIs + documents)
   const datasourceCount = databases.length + apis.length + documents.length
+
+  // Count results (tables + non-code/error/output artifacts) - matches Results accordion
+  const excludedArtifactTypes = new Set(['code', 'error', 'output', 'table'])
+  const resultArtifacts = artifacts.filter((a) => !excludedArtifactTypes.has(a.artifact_type))
+  const resultsCount = tables.length + resultArtifacts.length
 
   const isExecuting = status === 'planning' || status === 'executing'
 
@@ -36,11 +42,18 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp }: ToolbarProps) {
       <div className="flex items-center gap-2">
         <button
           onClick={onNewQuery}
-          disabled={isExecuting}
+          disabled={isExecuting || isCreatingNewSession}
           className="btn-secondary text-xs disabled:opacity-50"
         >
-          <PlusIcon className="w-4 h-4 mr-1" />
-          New Query
+          {isCreatingNewSession ? (
+            <svg className="w-4 h-4 mr-1 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+          ) : (
+            <PlusIcon className="w-4 h-4 mr-1" />
+          )}
+          {isCreatingNewSession ? 'Creating...' : 'New Query'}
         </button>
 
         <button
@@ -83,7 +96,7 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp }: ToolbarProps) {
           </div>
           <div className="flex items-center gap-1" title="Results: Tables, charts, and other analysis outputs">
             <DocumentIcon className="w-4 h-4" />
-            <span>{tables.length + artifacts.length}</span>
+            <span>{resultsCount}</span>
           </div>
           <div className="flex items-center gap-1" title="Facts: Discovered insights and computed values stored for reference">
             <LightBulbIcon className="w-4 h-4" />

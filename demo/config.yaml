@@ -46,12 +46,12 @@ databases:
       SKUs link to sales.products via naming convention.
 
   # File-based data sources (CSV, JSON, Parquet, Arrow)
-  web_metrics:
-    type: csv
-    path: data/website_metrics.csv
-    description: |
-      Daily web analytics by page (90 days). Columns: date, page, visitors,
-      page_views, bounce_rate, avg_session_duration
+#  web_metrics:
+#    type: csv
+#    path: data/website_metrics.csv
+#    description: |
+#      Daily web analytics by page (90 days). Columns: date, page, visitors,
+#      page_views, bounce_rate, avg_session_duration
 
   events:
     type: json

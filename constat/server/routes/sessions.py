@@ -42,6 +42,7 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
     """Convert ManagedSession to SessionResponse."""
     tables_count = 0
     artifacts_count = 0
+    summary = None
 
     if managed.session.datastore:
         try:
@@ -56,6 +57,24 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
         except Exception:
             pass
 
+        # Get summary from datastore meta or history
+        try:
+            summary = managed.session.datastore.get_session_meta("summary")
+        except Exception:
+            pass
+
+    # Try to get summary from history if not in datastore
+    if not summary and managed.session.history:
+        try:
+            # Use find_session_by_server_id to get the history session ID
+            history_session_id = managed.session.history.find_session_by_server_id(managed.session_id)
+            if history_session_id:
+                hist = managed.session.history.get_session(history_session_id)
+                if hist:
+                    summary = hist.summary
+        except Exception:
+            pass
+
     return SessionResponse(
         session_id=managed.session_id,
         user_id=managed.user_id,
@@ -63,6 +82,7 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
         created_at=managed.created_at,
         last_activity=managed.last_activity,
         current_query=managed.current_query,
+        summary=summary,
         active_projects=managed.active_projects,
         tables_count=tables_count,
         artifacts_count=artifacts_count,
@@ -225,8 +245,10 @@ async def create_session(
     # Use authenticated user_id, but allow body.user_id as fallback when auth disabled
     effective_user_id = user_id if user_id != "default" else (body.user_id or "default")
     client_session_id = body.session_id
+    logger.info(f"[create_session] user_id={effective_user_id}, session_id={client_session_id}")
 
     # Check if session already exists (reconnect case)
+    logger.debug(f"[create_session] checking for existing session...")
     existing = session_manager.get_session_or_none(client_session_id)
     if existing:
         logger.info(f"Reconnecting to existing session {client_session_id}")
@@ -234,8 +256,11 @@ async def create_session(
         return _session_to_response(existing)
 
     # Create new session with client-provided session_id
+    logger.debug(f"[create_session] creating new session...")
     session_id = session_manager.create_session(session_id=client_session_id, user_id=effective_user_id)
+    logger.debug(f"[create_session] session created, getting managed session...")
     managed = session_manager.get_session(session_id)
+    logger.debug(f"[create_session] got managed session")
 
     # Load preferred projects from user preferences (only for new sessions)
     preferred_projects = get_selected_projects(effective_user_id)
@@ -275,6 +300,7 @@ async def list_sessions(
     # Get in-memory sessions
     in_memory = session_manager.list_sessions(user_id=effective_user_id)
     in_memory_ids = {s.session_id for s in in_memory}
+    logger.debug(f"[list_sessions] in_memory_ids: {in_memory_ids}")
 
     # Convert in-memory sessions to responses
     responses = [_session_to_response(s) for s in in_memory]
@@ -283,25 +309,29 @@ async def list_sessions(
     try:
         history = SessionHistory(user_id=effective_user_id)
         historical = history.list_sessions(limit=50)
+        logger.debug(f"[list_sessions] historical: {[(h.session_id, h.server_session_id) for h in historical]}")
 
         for hist in historical:
-            if hist.session_id not in in_memory_ids:
-                # Convert historical session to response format
-                try:
-                    created_at = datetime.fromisoformat(hist.created_at.replace("Z", "+00:00"))
-                except (ValueError, AttributeError):
-                    created_at = datetime.now(timezone.utc)
+            # Skip sessions without server_session_id or already in memory
+            if not hist.server_session_id or hist.server_session_id in in_memory_ids:
+                continue
 
-                responses.append(SessionResponse(
-                    session_id=hist.session_id,
-                    user_id=hist.user_id or effective_user_id,
-                    status=SessionStatus.IDLE,  # Historical sessions are idle
-                    created_at=created_at,
-                    last_activity=created_at,  # Use created_at as last activity for historical
-                    current_query=hist.summary,
-                    tables_count=0,
-                    artifacts_count=0,
-                ))
+            try:
+                created_at = datetime.fromisoformat(hist.created_at.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                created_at = datetime.now(timezone.utc)
+
+            responses.append(SessionResponse(
+                session_id=hist.server_session_id,
+                user_id=hist.user_id or effective_user_id,
+                status=SessionStatus.IDLE,
+                created_at=created_at,
+                last_activity=created_at,
+                current_query=hist.summary,
+                summary=hist.summary,
+                tables_count=0,
+                artifacts_count=0,
+            ))
     except Exception as e:
         logger.warning(f"Failed to load historical sessions: {e}")
 

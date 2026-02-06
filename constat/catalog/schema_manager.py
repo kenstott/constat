@@ -282,16 +282,19 @@ class SchemaManager:
                         comment=db_config.description,
                         database_type=source_type,
                     )
-                    # Get columns from file
+                    # Get columns from file metadata
                     try:
-                        columns = connector.get_columns()
+                        file_metadata = connector.get_metadata()
                         table_meta.columns = [
-                            ColumnMetadata(name=c["name"], type=c.get("type", "unknown"))
-                            for c in columns
+                            ColumnMetadata(name=c.name, type=c.data_type)
+                            for c in file_metadata.columns
                         ]
-                        logger.info(f"  File source has {len(table_meta.columns)} columns")
+                        col_names = [c.name for c in table_meta.columns]
+                        logger.info(f"  File source has {len(table_meta.columns)} columns: {col_names}")
                     except Exception as e:
                         logger.warning(f"  Failed to get columns: {e}")
+                        import traceback
+                        logger.warning(f"  Traceback: {traceback.format_exc()}")
                     self.metadata_cache[f"{db_name}.{db_name}"] = table_meta
                     logger.info(f"  Added to metadata_cache: {db_name}.{db_name}")
             elif db_config.is_nosql():
@@ -332,9 +335,28 @@ class SchemaManager:
                 else:
                     logger.warning(f"  No engine created for {db_name}")
 
-            # Note: Chunks are pre-built at server startup by _warmup_vector_store().
-            # This method only adds the connection and metadata for query execution.
             logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
+
+            # Build chunks for semantic search
+            # Initialize model and vector_store if not already done
+            logger.info(f"  Initializing vector_store and model for chunks...")
+            logger.info(f"  _vector_store is None: {self._vector_store is None}")
+            logger.info(f"  _model is None: {self._model is None}")
+
+            if self._vector_store is None:
+                from constat.discovery.vector_store import DuckDBVectorStore
+                self._vector_store = DuckDBVectorStore()
+                logger.info(f"  Created DuckDBVectorStore")
+            if self._model is None:
+                self._model = EmbeddingModelLoader.get_instance().get_model()
+                logger.info(f"  Loaded embedding model: {self._model is not None}")
+
+            if self._model is not None and self._vector_store is not None:
+                logger.info(f"  Calling _add_chunks_for_database({db_name})...")
+                self._add_chunks_for_database(db_name)
+                logger.info(f"  Built chunks for database: {db_name}")
+            else:
+                logger.warning(f"  SKIPPING chunks: model={self._model is not None}, vector_store={self._vector_store is not None}")
 
             logger.info(f"Dynamically added database: {db_name} ({source_type})")
             return True
@@ -1001,6 +1023,122 @@ class SchemaManager:
             except Exception as e:
                 logger.warning(f"Failed to store schema chunks for {db_name}: {e}")
 
+    def _remove_chunks_for_database(self, db_name: str) -> int:
+        """Remove chunks for a specific database.
+
+        Used when dynamically removing a database.
+
+        Args:
+            db_name: Name of the database to remove chunks for
+
+        Returns:
+            Number of chunks deleted
+        """
+        if self._vector_store is None:
+            logger.warning(f"_remove_chunks_for_database({db_name}): no vector_store")
+            return 0
+
+        # Get all document names for this database from metadata_cache
+        # Format is "schema:{db_name}.{table_name}" for tables
+        # and "schema:{db_name}.{table_name}.{col_name}" for columns
+        total_deleted = 0
+
+        # Find all tables that belong to this database
+        table_keys = [k for k in self.metadata_cache.keys() if k.startswith(f"{db_name}.")]
+        logger.info(f"_remove_chunks_for_database({db_name}): found {len(table_keys)} table keys: {table_keys}")
+
+        for table_key in table_keys:
+            # Delete table chunk
+            table_doc_name = f"schema:{table_key}"
+            deleted = self._vector_store.delete_resource_chunks(
+                source_id="__base__",
+                resource_type="database",
+                resource_name=table_doc_name,
+            )
+            total_deleted += deleted
+
+            # Delete column chunks
+            table_meta = self.metadata_cache.get(table_key)
+            if table_meta:
+                for col in table_meta.columns:
+                    col_doc_name = f"schema:{table_key}.{col.name}"
+                    deleted = self._vector_store.delete_resource_chunks(
+                        source_id="__base__",
+                        resource_type="database",
+                        resource_name=col_doc_name,
+                    )
+                    total_deleted += deleted
+
+        # Also delete by pattern matching on document_name (fallback for edge cases)
+        # This catches chunks where metadata_cache doesn't have entries
+        if hasattr(self._vector_store, '_conn'):
+            try:
+                pattern = f"schema:{db_name}.%"
+                # First get chunk_ids for deleting chunk_entities
+                chunk_ids = self._vector_store._conn.execute(
+                    "SELECT chunk_id FROM embeddings WHERE document_name LIKE ?",
+                    [pattern]
+                ).fetchall()
+                chunk_ids = [row[0] for row in chunk_ids]
+
+                if chunk_ids:
+                    # Delete chunk_entities links
+                    placeholders = ",".join(["?" for _ in chunk_ids])
+                    self._vector_store._conn.execute(
+                        f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+                        chunk_ids
+                    )
+
+                    # Delete embeddings
+                    self._vector_store._conn.execute(
+                        f"DELETE FROM embeddings WHERE chunk_id IN ({placeholders})",
+                        chunk_ids
+                    )
+                    total_deleted += len(chunk_ids)
+                    logger.info(f"_remove_chunks_for_database({db_name}): deleted {len(chunk_ids)} additional chunks by pattern")
+            except Exception as e:
+                logger.warning(f"_remove_chunks_for_database({db_name}): pattern delete failed: {e}")
+
+        logger.info(f"Removed {total_deleted} chunks for database {db_name}")
+        return total_deleted
+
+    def remove_database_dynamic(self, db_name: str) -> bool:
+        """Dynamically remove a database.
+
+        Removes metadata, connections, and chunks for the database.
+
+        Args:
+            db_name: Name of the database to remove
+
+        Returns:
+            True if successfully removed
+        """
+        logger.info(f"remove_database_dynamic({db_name}): starting removal")
+        try:
+            # Remove chunks first (before removing from metadata_cache)
+            chunks_deleted = self._remove_chunks_for_database(db_name)
+            logger.info(f"remove_database_dynamic({db_name}): deleted {chunks_deleted} chunks")
+
+            # Remove from metadata_cache
+            keys_to_remove = [k for k in self.metadata_cache.keys() if k.startswith(f"{db_name}.")]
+            for key in keys_to_remove:
+                del self.metadata_cache[key]
+            logger.info(f"remove_database_dynamic({db_name}): removed {len(keys_to_remove)} metadata_cache entries")
+
+            # Remove connections
+            if db_name in self.file_connections:
+                del self.file_connections[db_name]
+            if db_name in self.nosql_connections:
+                del self.nosql_connections[db_name]
+            if db_name in self.connections:
+                del self.connections[db_name]
+
+            logger.info(f"Dynamically removed database: {db_name} ({chunks_deleted} chunks)")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to remove database {db_name}: {e}")
+            return False
+
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
 
@@ -1261,7 +1399,11 @@ class SchemaManager:
 
         return results
 
-    def get_entity_names(self, include_columns: bool = False) -> list[str]:
+    def get_entity_names(
+        self,
+        include_columns: bool = False,
+        include_columns_for_dbs: list[str] | None = None,
+    ) -> list[str]:
         """Return table names (and optionally column names) for entity extraction.
 
         Returns raw names (e.g., "performance_reviews") so EntityExtractor can
@@ -1271,20 +1413,26 @@ class SchemaManager:
         generic ("date", "name", "status") and cause false matches in documents.
 
         Args:
-            include_columns: If True, also include column names (default False)
+            include_columns: If True, include column names for all databases
+            include_columns_for_dbs: List of database names for which to include
+                column names (even if include_columns is False). Useful for
+                session-added databases where column names are meaningful.
 
         Returns:
             List of unique entity names (raw, not normalized)
         """
         entities = set()
+        include_columns_set = set(include_columns_for_dbs or [])
 
         for table_meta in self.metadata_cache.values():
             # Add table name (without database prefix for matching)
             # Keep raw name so EntityExtractor can generate all pattern variants
             entities.add(table_meta.name)
 
-            # Optionally add column names
-            if include_columns:
+            # Include column names if:
+            # 1. include_columns is True (for all databases), OR
+            # 2. This database is in include_columns_for_dbs list
+            if include_columns or table_meta.database in include_columns_set:
                 for col in table_meta.columns:
                     entities.add(col.name)
 

@@ -412,7 +412,8 @@ class Session:
 
         # Session state
         # Note: self.session_id is set at the top of __init__ (required parameter)
-        self.server_session_id: Optional[str] = None  # Server UUID for reverse lookup
+        # Store server_session_id for history mapping (allows find_session_by_server_id)
+        self.server_session_id: Optional[str] = session_id  # Server UUID for reverse lookup
         self.plan: Optional[Plan] = None
         self.scratchpad = Scratchpad()
         self.datastore: Optional[RegistryAwareDataStore] = None  # Persistent storage (only shared state between steps)

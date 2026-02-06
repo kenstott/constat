@@ -475,6 +475,10 @@ class RegistryAwareDataStore:
         """
         self._datastore.clear_step_data(step_number)
 
+    def clear_session_data(self) -> None:
+        """Clear all session data (tables, artifacts, scratchpad, state)."""
+        self._datastore.clear_session_data()
+
     def close(self) -> None:
         """Close both DuckDB and underlying datastore."""
         if self._duckdb is not None:

@@ -119,6 +119,10 @@ class SessionResponse(BaseModel):
         default=None,
         description="Current query being processed",
     )
+    summary: Optional[str] = Field(
+        default=None,
+        description="Brief summary/description of the session",
+    )
     active_projects: list[str] = Field(
         default_factory=list,
         description="Active project filenames (e.g., ['sales-analytics.yaml'])",
@@ -512,6 +516,29 @@ class DatabaseAddRequest(BaseModel):
     )
 
 
+class ApiAddRequest(BaseModel):
+    """Request to add an API connection."""
+
+    name: str = Field(description="API name")
+    type: str = Field(
+        default="rest",
+        description="API type (rest, graphql, openapi)",
+    )
+    base_url: str = Field(description="Base URL for the API")
+    description: Optional[str] = Field(
+        default=None,
+        description="Optional description",
+    )
+    auth_type: Optional[str] = Field(
+        default=None,
+        description="Authentication type (bearer, api_key, basic)",
+    )
+    auth_header: Optional[str] = Field(
+        default=None,
+        description="Auth header name (e.g., Authorization, X-API-Key)",
+    )
+
+
 class SessionDatabaseInfo(BaseModel):
     """Information about a session database."""
 
@@ -543,6 +570,7 @@ class SessionApiInfo(BaseModel):
     connected: bool = Field(description="Whether API is reachable")
     from_config: bool = Field(description="Whether from config (vs session-added)")
     source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    is_dynamic: bool = Field(default=False, description="Whether dynamically added (vs config)")
 
 
 class SessionDocumentInfo(BaseModel):

@@ -61,7 +61,13 @@ export function ConversationPanel() {
 
     // Key artifacts from current query (published/starred)
     const currentQueryArtifacts = artifacts.filter((a) => isFromCurrentQuery(a.step_number))
-    const keyArtifacts = currentQueryArtifacts.filter((a) => a.is_key_result)
+    let keyArtifacts = currentQueryArtifacts.filter((a) => a.is_key_result)
+
+    // If no key artifacts in current query, fall back to ALL key artifacts
+    if (keyArtifacts.length === 0) {
+      keyArtifacts = artifacts.filter((a) => a.is_key_result)
+      console.log('[viewResult] No key artifacts in current query, using all key artifacts')
+    }
 
     // Markdown documents (highest priority for final results)
     const keyMarkdown = keyArtifacts.filter((a) =>
@@ -76,9 +82,13 @@ export function ConversationPanel() {
     // Tables in key artifacts
     const keyTables = keyArtifacts.filter((a) => a.artifact_type === 'table')
 
-    // Find best item from current query - prioritize markdown documents
+    // Find best item - prioritize markdown documents
+    console.log('[viewResult v2025-02-05] lastQueryStartStep:', lastQueryStartStep)
+    console.log('[viewResult v2025-02-05] keyArtifacts:', keyArtifacts.map(a => `${a.id}:${a.name}(${a.artifact_type})`))
+    console.log('[viewResult v2025-02-05] keyMarkdown:', keyMarkdown.map(a => `${a.id}:${a.name}`))
     if (keyMarkdown.length > 0) {
       const best = keyMarkdown.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyMarkdown)
+      console.log('[viewResult v2025-02-05] Selected markdown:', best?.id, best?.name)
       if (best) openFullscreenArtifact({ type: 'artifact', id: best.id })
     } else if (keyVisualizations.length > 0) {
       const best = keyVisualizations.find(a => hasPriorityKeyword(a.name, a.title)) || getMostRecent(keyVisualizations)
