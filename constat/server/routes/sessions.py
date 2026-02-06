@@ -110,12 +110,15 @@ def _load_projects_into_session(
 
     # Load all projects and check they exist
     loaded_projects = []
+    logger.debug(f"[_load_projects] Loading projects: {project_filenames}")
+    logger.debug(f"[_load_projects] Available projects in config: {list(config.projects.keys())}")
     for filename in project_filenames:
         project = config.load_project(filename)
         if not project:
-            logger.warning(f"Project not found when loading preferences: {filename}")
+            logger.warning(f"Project not found when loading preferences: {filename} (available: {list(config.projects.keys())})")
             continue
         loaded_projects.append((filename, project))
+        logger.debug(f"[_load_projects] Loaded project: {filename} -> {project.name}")
 
     if not loaded_projects:
         return [], []
@@ -264,15 +267,19 @@ async def create_session(
 
     # Load preferred projects from user preferences (only for new sessions)
     preferred_projects = get_selected_projects(effective_user_id)
+    logger.info(f"[create_session] preferred_projects from preferences: {preferred_projects}")
     if preferred_projects:
         logger.info(f"Loading {len(preferred_projects)} preferred projects for user {effective_user_id}")
         loaded, conflicts = _load_projects_into_session(managed, preferred_projects)
+        logger.info(f"[create_session] after _load_projects_into_session: loaded={loaded}, conflicts={conflicts}, active_projects={managed.active_projects}")
         if conflicts:
             logger.warning(f"Project conflicts when loading preferences: {conflicts}")
         if loaded:
             logger.info(f"Loaded preferred projects: {loaded}")
             # Run NER for newly loaded project documents
             session_manager._run_entity_extraction(session_id, managed.session)
+    else:
+        logger.info(f"[create_session] No preferred projects found for user {effective_user_id}")
 
     return _session_to_response(managed)
 
