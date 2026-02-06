@@ -1043,8 +1043,9 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.executemany(
             """
-            INSERT OR IGNORE INTO chunk_entities (chunk_id, entity_id, confidence)
+            INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
             VALUES (?, ?, ?)
+            ON CONFLICT (chunk_id, entity_id) DO NOTHING
             """,
             unique_records,
         )
