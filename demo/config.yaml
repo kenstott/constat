@@ -46,12 +46,12 @@ databases:
       SKUs link to sales.products via naming convention.
 
   # File-based data sources (CSV, JSON, Parquet, Arrow)
-#  web_metrics:
-#    type: csv
-#    path: data/website_metrics.csv
-#    description: |
-#      Daily web analytics by page (90 days). Columns: date, page, visitors,
-#      page_views, bounce_rate, avg_session_duration
+  web_metrics:
+    type: csv
+    path: data/website_metrics.csv
+    description: |
+      Daily web analytics by page (90 days). Columns: date, page, visitors,
+      page_views, bounce_rate, avg_session_duration
 
   events:
     type: json
@@ -105,33 +105,63 @@ execution:
   timeout_seconds: 120
   max_retries: 5
   allowed_imports:
+    # Data analysis
     - pandas
     - numpy
+    - polars
+    - statistics
+    # Standard library - core
     - json
     - datetime
-    - statistics
-    - polars
-    - tempfile
-    - os            # File path operations
-    # Standard library
+    - time
+    - calendar
     - re
     - math
+    - decimal
+    - random
+    - typing
+    # Standard library - data structures
     - collections
+    - dataclasses
+    - enum
+    - heapq
+    - bisect
+    # Standard library - functional
     - itertools
     - functools
-    # Visualization libraries
+    - operator
+    - copy
+    # Standard library - strings and text
+    - string
+    - textwrap
+    - pprint
+    - html
+    # Standard library - files and I/O
+    - os
+    - pathlib
+    - io
+    - tempfile
+    - csv
+    - zipfile
+    - gzip
+    - struct
+    # Standard library - encoding and hashing
+    - base64
+    - hashlib
+    - uuid
+    - urllib
+    # Visualization
     - plotly
     - altair
     - matplotlib
     - seaborn
     - folium
-    # Document/artifact creation
-    - openpyxl      # Excel files (.xlsx)
-    - xlsxwriter    # Excel files with formatting
-    - docx          # Word documents (.docx) - python-docx
-    - pptx          # PowerPoint (.pptx) - python-pptx
-    - reportlab     # PDF generation
-    - pypdf         # PDF manipulation
-    - PIL           # Image processing (Pillow)
-    - io            # In-memory file handling
-    - tabulate      # Table formatting (used by pandas to_markdown)
+    # Document and artifact creation
+    - openpyxl
+    - xlsxwriter
+    - docx
+    - pptx
+    - reportlab
+    - pypdf
+    - PIL
+    - tabulate

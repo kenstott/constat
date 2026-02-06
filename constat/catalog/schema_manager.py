@@ -29,6 +29,7 @@ from constat.core.config import Config, DatabaseConfig, DatabaseCredentials
 from constat.embedding_loader import EmbeddingModelLoader
 from constat.catalog.nosql.base import NoSQLConnector
 from constat.catalog.file.connector import FileConnector, FileType
+from constat.catalog.sql_transpiler import TranspilingConnection
 
 
 @dataclass
@@ -166,7 +167,7 @@ class SchemaManager:
 
     def __init__(self, config: Config):
         self.config = config
-        self.connections: dict[str, Engine] = {}  # SQL connections
+        self.connections: dict[str, Union[Engine, TranspilingConnection]] = {}  # SQL connections
         self.nosql_connections: dict[str, NoSQLConnector] = {}  # NoSQL connections
         self.file_connections: dict[str, FileConnector] = {}  # File data sources
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
@@ -182,6 +183,15 @@ class SchemaManager:
 
         # Progress callback (set during initialize)
         self._progress_callback: Optional[Callable[[str, int, int, str], None]] = None
+
+    def _get_raw_engine(self, conn: Union[Engine, TranspilingConnection]) -> Engine:
+        """Get the raw SQLAlchemy Engine from a connection.
+
+        Handles both raw Engine and TranspilingConnection wrappers.
+        """
+        if isinstance(conn, TranspilingConnection):
+            return conn.engine
+        return conn
 
     def initialize(
         self,
@@ -323,8 +333,9 @@ class SchemaManager:
                 # SQL database
                 logger.info(f"  Connecting as SQL database")
                 self._connect_sql(db_name, db_config)
-                engine = self.connections.get(db_name)
-                if engine:
+                conn = self.connections.get(db_name)
+                if conn:
+                    engine = self._get_raw_engine(conn)
                     inspector = inspect(engine)
                     table_names = inspector.get_table_names()
                     logger.info(f"  SQL database has {len(table_names)} tables: {table_names}")
@@ -418,7 +429,12 @@ class SchemaManager:
         self.file_connections[db_name] = connector
 
     def _connect_sql(self, db_name: str, db_config: DatabaseConfig) -> None:
-        """Connect to a SQL database via SQLAlchemy."""
+        """Connect to a SQL database via SQLAlchemy.
+
+        The connection is wrapped in TranspilingConnection to enable automatic
+        SQL dialect transpilation. LLM-generated code can use PostgreSQL syntax,
+        which is automatically translated to the target database's dialect.
+        """
         config_dir = self.config.config_dir if self.config else None
         connection_uri = db_config.get_connection_uri(config_dir)
 
@@ -431,7 +447,13 @@ class SchemaManager:
         # Test connection
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        self.connections[db_name] = engine
+
+        # Wrap in TranspilingConnection for cross-dialect SQL support
+        # LLM generates PostgreSQL-style SQL, which gets transpiled to target dialect
+        wrapped = TranspilingConnection(engine)
+        self.connections[db_name] = wrapped
+        logger.debug(f"Connected to {db_name} with transpilation: postgres -> {wrapped.target_dialect}")
+
         # Track read-only status
         if db_config.read_only:
             self._read_only_databases.add(db_name)
@@ -528,7 +550,8 @@ class SchemaManager:
         """Introspect all tables/collections in all databases."""
         # Count total items for progress
         total_items = len(self.file_connections)  # Files are 1:1
-        for db_name, engine in self.connections.items():
+        for db_name, conn in self.connections.items():
+            engine = self._get_raw_engine(conn)
             inspector = inspect(engine)
             total_items += len(inspector.get_table_names())
         for db_name, connector in self.nosql_connections.items():
@@ -537,7 +560,8 @@ class SchemaManager:
         current = 0
 
         # Introspect SQL databases
-        for db_name, engine in self.connections.items():
+        for db_name, conn in self.connections.items():
+            engine = self._get_raw_engine(conn)
             inspector = inspect(engine)
 
             for table_name in inspector.get_table_names():
@@ -1476,8 +1500,12 @@ class SchemaManager:
             return self.file_connections[database]
         raise KeyError(f"Database not found: {database}")
 
-    def get_sql_connection(self, database: str) -> Engine:
-        """Get SQLAlchemy engine for a SQL database."""
+    def get_sql_connection(self, database: str) -> Union[Engine, TranspilingConnection]:
+        """Get SQL connection for a database.
+
+        Returns a TranspilingConnection wrapper that auto-transpiles SQL
+        from PostgreSQL dialect to the target database's dialect.
+        """
         if database not in self.connections:
             raise KeyError(f"SQL database not found: {database}")
         return self.connections[database]

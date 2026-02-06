@@ -37,6 +37,8 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "duckdb>=0.9",
     "duckdb-engine>=0.10",
+    # SQL dialect transpilation
+    "sqlglot>=25.0",
     # LLM providers
     "ollama>=0.1",
     # GraphQL API server
