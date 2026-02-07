@@ -78,6 +78,19 @@ function getTableRowCount(value: unknown): number | null {
   return Math.max(0, lines.length - 2) // Subtract header and separator
 }
 
+// Helper to detect row count string like "14 rows" or "14 records"
+function parseRowCountString(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  const match = value.trim().match(/^(\d+)\s*(rows?|records?)$/i)
+  return match ? parseInt(match[1], 10) : null
+}
+
+// Extract table name from fact node name (e.g., "I4: raise_recommendations" -> "raise_recommendations")
+function extractTableName(nodeName: string): string | null {
+  const match = nodeName.match(/^[PI]\d+:\s*(.+)$/)
+  return match ? match[1].trim() : null
+}
+
 interface DagNode {
   id: string
   parentIds: string[]
@@ -744,6 +757,10 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               {selectedNode.value !== undefined && (() => {
                 const tableRowCount = getTableRowCount(selectedNode.value)
                 const isTable = tableRowCount !== null
+                const rowCountFromString = parseRowCountString(selectedNode.value)
+                const tableName = extractTableName(selectedNode.name)
+                const isRowCountString = rowCountFromString !== null && tableName !== null
+
                 return (
                   <div>
                     <div className="flex items-center justify-between">
@@ -783,6 +800,20 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                         >
                           {String(selectedNode.value)}
                         </ReactMarkdown>
+                      ) : isRowCountString ? (
+                        <button
+                          onClick={() => {
+                            useUIStore.getState().openFullscreenArtifact({
+                              type: 'table',
+                              name: tableName,
+                            })
+                          }}
+                          className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                          title={`View ${tableName} table`}
+                        >
+                          <TableCellsIcon className="w-4 h-4" />
+                          {rowCountFromString} rows
+                        </button>
                       ) : (
                         <pre className="font-mono text-sm bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto">
                           {typeof selectedNode.value === 'string' ? selectedNode.value : JSON.stringify(selectedNode.value, null, 2)}
