@@ -2660,7 +2660,7 @@ NOT_POSSIBLE: <reason>
 
         source_hints_text = "\n".join(source_hints) if source_hints else "No data sources configured."
         logger.debug(f"DB: source_hints_text: {source_hints_text[:200]}...")
-        logger.debug(f"DB: db_names: {db_names}")
+        logger.debug(f"DB: config_db_names: {config_db_names}")
 
         # Get schema overview
         schema_overview = self.schema_manager.get_overview()

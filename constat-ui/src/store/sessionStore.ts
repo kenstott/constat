@@ -198,6 +198,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       } catch (err) {
         console.warn('[createSession] Could not restore proof facts:', err)
       }
+
+      // Restore step codes and inference codes (code snippets shown in artifact panel)
+      try {
+        const artifactStore = useArtifactStore.getState()
+        await Promise.all([
+          artifactStore.fetchStepCodes(sessionId),
+          artifactStore.fetchInferenceCodes(sessionId),
+        ])
+        console.log('[createSession] Restored step and inference codes')
+      } catch (err) {
+        console.warn('[createSession] Could not restore codes:', err)
+      }
     }
 
     // Initialize with restored messages (or empty for new session)
@@ -832,6 +844,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           artifactStore.fetchTables(session.session_id)
           artifactStore.fetchArtifacts(session.session_id)
           artifactStore.fetchFacts(session.session_id)
+          artifactStore.fetchInferenceCodes(session.session_id)
           artifactStore.fetchLearnings()
         }
         // Process queued messages after a short delay to let UI update

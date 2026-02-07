@@ -180,6 +180,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         artifactStore.fetchEntities(sessionId),
         artifactStore.fetchDataSources(sessionId),
         artifactStore.fetchStepCodes(sessionId),
+        artifactStore.fetchInferenceCodes(sessionId),
         artifactStore.fetchLearnings(),
         artifactStore.fetchAllRoles(sessionId),
         artifactStore.fetchPromptContext(sessionId),

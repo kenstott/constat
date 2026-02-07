@@ -160,7 +160,8 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       try {
         const resp = await sessionsApi.getArtifactVersions(session.session_id, artifact.id)
         setVersions(resp.versions)
-      } catch {
+      } catch (err) {
+        console.error('Failed to load artifact versions:', err)
         return
       }
     }
@@ -622,35 +623,40 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
             <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
               ({typeLabel})
             </span>
-            {hasVersions && (
-              <div className="relative flex-shrink-0" ref={versionDropdownRef}>
-                <button
-                  onClick={handleVersionBadgeClick}
-                  className="px-1.5 py-0.5 text-[10px] font-medium bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded hover:bg-indigo-200 dark:hover:bg-indigo-800/40 transition-colors"
-                  title={`Version ${artifact.version ?? 1} of ${artifact.version_count ?? 1} — click to browse`}
-                >
-                  v{artifact.version ?? 1}
-                </button>
-                {showVersions && versions && (
-                  <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[180px]">
-                    {versions.map((v) => (
-                      <button
-                        key={v.id}
-                        onClick={(e) => { e.stopPropagation(); handleSelectVersion(v.id) }}
-                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex justify-between items-center gap-2 ${
-                          (viewingVersionId === v.id || (!viewingVersionId && v.id === artifact.id))
-                            ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400'
-                            : 'text-gray-700 dark:text-gray-300'
-                        }`}
-                      >
-                        <span>v{v.version}</span>
-                        <span className="text-gray-400 dark:text-gray-500">step {v.step_number}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="relative flex-shrink-0" ref={versionDropdownRef}>
+              <button
+                onClick={hasVersions ? handleVersionBadgeClick : undefined}
+                className={`px-1.5 py-0.5 text-[10px] font-medium rounded transition-colors ${
+                  hasVersions
+                    ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-200 dark:hover:bg-indigo-800/40 cursor-pointer'
+                    : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-default'
+                }`}
+                title={hasVersions
+                  ? `Version ${artifact.version ?? 1} of ${artifact.version_count ?? 1} — click to browse`
+                  : `Version ${artifact.version ?? 1}`
+                }
+              >
+                v{artifact.version ?? 1}
+              </button>
+              {showVersions && versions && (
+                <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[180px]">
+                  {versions.map((v) => (
+                    <button
+                      key={v.id}
+                      onClick={(e) => { e.stopPropagation(); handleSelectVersion(v.id) }}
+                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex justify-between items-center gap-2 ${
+                        (viewingVersionId === v.id || (!viewingVersionId && v.id === artifact.id))
+                          ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400'
+                          : 'text-gray-700 dark:text-gray-300'
+                      }`}
+                    >
+                      <span>v{v.version}</span>
+                      <span className="text-gray-400 dark:text-gray-500">step {v.step_number}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {viewingVersionId && (
               <span className="px-1 py-0.5 text-[10px] bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded flex-shrink-0">
                 viewing older version

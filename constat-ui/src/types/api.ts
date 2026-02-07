@@ -139,6 +139,21 @@ export interface TableInfo {
   columns: string[]
   is_starred?: boolean
   role_id?: string | null  // Role provenance - which role created this table
+  version?: number
+  version_count?: number
+}
+
+export interface TableVersionInfo {
+  version: number
+  step_number?: number
+  row_count: number
+  created_at?: string
+}
+
+export interface TableVersionsResponse {
+  name: string
+  current_version: number
+  versions: TableVersionInfo[]
 }
 
 export interface TableData {

@@ -1219,6 +1219,11 @@ class Session:
                     reasoning="Embedded value",
                     source=FactSource.LLM_KNOWLEDGE,
                 )
+                if self.history:
+                    self.history.save_inference_premise(
+                        self.session_id, fact_id, fact_name,
+                        node.value, "embedded", fact_desc or ""
+                    )
                 return node.value, node.confidence, "user"
 
             # Check cache
@@ -1458,6 +1463,13 @@ RULES:
 
             if fact and fact.value is not None:
                 resolved_premises[fact_id] = fact
+                if self.history:
+                    self.history.save_inference_premise(
+                        self.session_id, fact_id, fact_name,
+                        fact.value,
+                        fact.source.value if hasattr(fact.source, 'value') else str(fact.source),
+                        fact_desc or ""
+                    )
                 self.fact_resolver.add_user_fact(
                     fact_name=fact_name,
                     value=fact.value,
@@ -1497,16 +1509,50 @@ RULES:
 
                     if self.datastore:
                         try:
-                            count_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {ref_table}")
-                            row_count = int(count_df.iloc[0, 0])
+                            profile = self._profile_table(ref_table)
+                            row_count = profile["row_count"]
+
+                            # Build profile summary
+                            profile_lines = [f"**{ref_table}**: {row_count} rows, {profile['column_count']} columns"]
+                            issues = []
+                            for col in profile["columns"]:
+                                col_line = f"  - `{col['name']}` ({col['type']}): {col['distinct']} distinct"
+                                if col["null_pct"] > 0:
+                                    col_line += f", {col['null_pct']:.0f}% null"
+                                if col["all_null"]:
+                                    col_line += " **ALL NULL**"
+                                    issues.append(col["name"])
+                                profile_lines.append(col_line)
+
+                            if profile["duplicate_rows"] > 0:
+                                profile_lines.append(f"\n  Duplicate rows: {profile['duplicate_rows']}")
+                                issues.append(f"{profile['duplicate_rows']} duplicate rows")
+
+                            profile_text = "\n".join(profile_lines)
+                            logger.info(f"[VERIFY] {inf_id} profile for '{ref_table}':\n{profile_text}")
+
+                            if issues:
+                                logger.warning(f"[VERIFY] {inf_id} data quality issues in '{ref_table}': {issues}")
+
+                            # Save profile as artifact
+                            if self.datastore:
+                                inf_step = 1000 + int(inf_id[1:])
+                                self.datastore.add_artifact(
+                                    inf_step, 0, "markdown", profile_text,
+                                    name=f"profile_{ref_table}",
+                                    title=f"Data Profile: {ref_table}",
+                                    content_type="text/markdown",
+                                )
+
                             resolved_inferences[inf_id] = f"Verified: {row_count} records"
                             self.fact_resolver.add_user_fact(
                                 fact_name=inf_name,
-                                value=f"{row_count} records verified",
-                                reasoning=f"Verified {ref_table} contains data",
+                                value=f"{row_count} records verified" + (f" (issues: {', '.join(issues)})" if issues else ""),
+                                reasoning=profile_text,
                                 source=FactSource.DERIVED,
                             )
-                            return f"Verified: {row_count} records", 0.95, "derived"
+                            confidence = 0.7 if issues else 0.95
+                            return f"Verified: {row_count} records", confidence, "derived"
                         except Exception as ve:
                             raise ValueError(f"Verification failed: {ve}")
 
@@ -1582,6 +1628,7 @@ RULES:
                             )
                     else:
                         # Regular table in datastore
+                        sample_info = ""
                         if self.datastore:
                             try:
                                 schema_df = self.datastore.query(f"DESCRIBE {dep_table}")
@@ -1595,7 +1642,23 @@ RULES:
                                     columns_info = f" columns: {list(sample.columns)}"
                                 except Exception as e2:
                                     logger.debug(f"Failed to get columns for {dep_table}: {e2}")
-                        tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}")
+                            # Fetch sample row to show actual data shape
+                            try:
+                                sample_df = self.datastore.query(f"SELECT * FROM {dep_table} LIMIT 1")
+                                if len(sample_df) > 0:
+                                    row_dict = {}
+                                    for col in sample_df.columns:
+                                        val = sample_df.iloc[0][col]
+                                        val_str = str(val)
+                                        if len(val_str) > 120:
+                                            val_str = val_str[:120] + "..."
+                                        row_dict[col] = val_str
+                                    sample_info = f"\n    sample row: {row_dict}"
+                                    row_count = self.datastore.query(f"SELECT COUNT(*) AS cnt FROM {dep_table}").iloc[0, 0]
+                                    sample_info += f"\n    total rows: {row_count}"
+                            except Exception as e:
+                                logger.debug(f"Failed to get sample for {dep_table}: {e}")
+                        tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}{sample_info}")
                 else:
                     scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
 
@@ -1607,12 +1670,55 @@ REFERENCED TABLES (query from database with db_query()):
 {chr(10).join(referenced_tables)}
 """
 
-            # Build API sources section for prompt
+            # Build API sources section for prompt (with schema info)
             api_sources_section = ""
+            api_schema_cache: dict[str, dict] = {}
             if api_sources:
+                # Fetch schema for referenced APIs to include in prompt
+                schema_lines = list(api_sources)
+                all_apis = self.get_all_apis()
+                if all_apis:
+                    from constat.catalog.api_executor import APIExecutor
+                    api_executor = APIExecutor(self.config, project_apis=self._project_apis)
+                    for api_name, api_config in all_apis.items():
+                        # Only fetch schema for APIs referenced in this inference
+                        if not any(f"api_{api_name}" in s for s in api_sources):
+                            continue
+                        try:
+                            if api_config.type == "graphql":
+                                overview = api_executor.get_schema_overview(api_name)
+                                api_schema_cache[api_name] = overview
+                                schema_lines.append(f"\nSchema for api_{api_name} (GraphQL):")
+                                for q in overview.get("queries", []):
+                                    args_str = ", ".join(q.get("args", []))
+                                    schema_lines.append(f"  query {q['name']}({args_str}) -> {q.get('returns', '?')}")
+                                    # Get detailed return fields for this query
+                                    try:
+                                        detail = api_executor.get_query_schema(api_name, q["name"])
+                                        if detail.get("return_fields"):
+                                            GRAPHQL_SCALARS = {"String", "Int", "Float", "Boolean", "ID"}
+                                            field_strs = []
+                                            for f in detail["return_fields"]:
+                                                ftype = f['type']
+                                                # Extract base type name (strip [], !)
+                                                base = ftype.replace("[", "").replace("]", "").replace("!", "").strip()
+                                                if base in GRAPHQL_SCALARS:
+                                                    field_strs.append(f"{f['name']}: {ftype} (scalar, NO subfields)")
+                                                else:
+                                                    field_strs.append(f"{f['name']}: {ftype}")
+                                            schema_lines.append(f"    fields: {', '.join(field_strs)}")
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            logger.debug(f"Failed to get API schema for {api_name}: {e}")
+
                 api_sources_section = f"""
 API SOURCES (fetch with api_<name>() functions):
-{chr(10).join(api_sources)}
+{chr(10).join(schema_lines)}
+
+IMPORTANT: api_<name>(query) returns the 'data' dict from the GraphQL response.
+Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ name }} currency }} }}')
+         result == {{"country": {{"name": "United Kingdom", "languages": [{{"name": "English"}}], "currency": "GBP"}}}}
 """
 
             # Build dynamic data source descriptions
@@ -1644,11 +1750,11 @@ API SOURCES (fetch with api_<name>() functions):
             data_source_apis.append("- db_query(sql) -> pd.DataFrame (tries all SQL databases)")
 
             # APIs
-            all_apis = self.get_all_apis()
-            if all_apis:
-                for api_name, api_config in all_apis.items():
+            all_apis_for_desc = self.get_all_apis()
+            if all_apis_for_desc:
+                for api_name, api_config in all_apis_for_desc.items():
                     if api_config.type == "graphql":
-                        data_source_apis.append(f"- api_{api_name}('query {{ ... }}') -> data (GraphQL)")
+                        data_source_apis.append(f"- api_{api_name}(query_string) -> dict (GraphQL 'data' portion)")
                     else:
                         data_source_apis.append(f"- api_{api_name}('GET /endpoint', {{params}}) -> data (REST)")
 
@@ -1689,7 +1795,8 @@ API SOURCES (fetch with api_<name>() functions):
                     code = re.sub(r'^```\w*\n?', '', code)
                     code = re.sub(r'\n?```$', '', code)
 
-                logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}: code length={len(code)} chars")
+                logger.info(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}: code length={len(code)} chars")
+                logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} code:\n{code}")
 
                 # Auto-fix DataFrame boolean errors
                 code = re.sub(r'\bif\s+(df|result|data)\s*:', r'if not \1.empty:', code)
@@ -1723,6 +1830,8 @@ API SOURCES (fetch with api_<name>() functions):
                 exec_globals["pd"] = pd
                 exec_globals["np"] = np
                 exec_globals["db_query"] = db_query
+                exec_globals["llm_map"] = self._create_llm_map_helper()
+                self._inference_used_llm_map = False  # Reset per inference
 
                 # Add resolved values to context
                 for pid, fact in resolved_premises.items():
@@ -1767,6 +1876,8 @@ API SOURCES (fetch with api_<name>() functions):
                     break
                 except Exception as e:
                     last_error = str(e)
+                    logger.warning(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}/{max_retries} failed: {last_error}")
+                    logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} code:\n{code}")
                     if first_error is None:
                         first_error = last_error
                         first_code = code
@@ -1819,15 +1930,102 @@ API SOURCES (fetch with api_<name>() functions):
                     resolved_inferences[inf_id] = "completed"
                     result_value = "completed"
 
+            # Persist inference code to disk (separate from step plan code)
+            if self.history and code:
+                output = captured.getvalue().strip()
+                self.history.save_inference_code(
+                    session_id=self.session_id,
+                    inference_id=inf_id,
+                    name=inf_name,
+                    operation=operation,
+                    code=code,
+                    attempt=attempt + 1,
+                    output=output or None,
+                )
+
+            # Detect all-null columns in result table (data quality smell)
+            if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
+                try:
+                    null_check = self.datastore.query(
+                        f"SELECT column_name FROM (SELECT * FROM {table_name} LIMIT 1000) "
+                        f"UNPIVOT (value FOR column_name IN (*)) "
+                        f"GROUP BY column_name HAVING COUNT(CASE WHEN value IS NOT NULL AND value != '' THEN 1 END) = 0"
+                    )
+                except Exception:
+                    null_check = pd.DataFrame()
+                if len(null_check) > 0:
+                    null_cols = list(null_check['column_name'])
+                    logger.warning(
+                        f"[INFERENCE_CODE] {inf_id} ({inf_name}): table '{table_name}' has ALL-NULL columns: {null_cols}. "
+                        f"This likely indicates failed data enrichment."
+                    )
+
+            # Reduce confidence if inference used LLM fuzzy mapping
+            used_llm = getattr(self, '_inference_used_llm_map', False)
+            confidence = 0.65 if used_llm else 0.9
+            source = FactSource.LLM_KNOWLEDGE if used_llm else FactSource.DERIVED
+
             self.fact_resolver.add_user_fact(
                 fact_name=inf_name,
                 value=result_value,
-                reasoning=f"Computed: {operation}",
-                source=FactSource.DERIVED,
+                reasoning=f"Computed: {operation}" + (" (includes LLM fuzzy mapping)" if used_llm else ""),
+                source=source,
                 context=f"Code:\n{code}" if code else None,
             )
 
-            return result_value, 0.9, "derived"
+            return result_value, confidence, "llm_knowledge" if used_llm else "derived"
+
+    def _profile_table(self, table_name: str) -> dict:
+        """Profile a datastore table for data quality assessment.
+
+        Returns dict with row_count, column_count, duplicate_rows, and per-column stats.
+        """
+        row_count_df = self.datastore.query(f"SELECT COUNT(*) as cnt FROM {table_name}")
+        row_count = int(row_count_df.iloc[0, 0])
+
+        schema_df = self.datastore.query(f"DESCRIBE {table_name}")
+        columns = []
+        for _, row in schema_df.iterrows():
+            col_name = row.iloc[0]
+            col_type = str(row.iloc[1]) if len(row) > 1 else "unknown"
+            try:
+                stats = self.datastore.query(
+                    f"SELECT "
+                    f"COUNT(DISTINCT \"{col_name}\") as distinct_count, "
+                    f"SUM(CASE WHEN \"{col_name}\" IS NULL OR CAST(\"{col_name}\" AS VARCHAR) = '' THEN 1 ELSE 0 END) as null_count "
+                    f"FROM {table_name}"
+                )
+                distinct = int(stats.iloc[0]['distinct_count'])
+                null_count = int(stats.iloc[0]['null_count'])
+            except Exception:
+                distinct = 0
+                null_count = row_count
+
+            null_pct = (null_count / row_count * 100) if row_count > 0 else 0
+            columns.append({
+                "name": col_name,
+                "type": col_type,
+                "distinct": distinct,
+                "null_count": null_count,
+                "null_pct": null_pct,
+                "all_null": null_count == row_count,
+            })
+
+        # Check for duplicate rows
+        try:
+            dup_df = self.datastore.query(
+                f"SELECT COUNT(*) - COUNT(DISTINCT *) as dups FROM (SELECT * FROM {table_name})"
+            )
+            duplicate_rows = int(dup_df.iloc[0, 0])
+        except Exception:
+            duplicate_rows = 0
+
+        return {
+            "row_count": row_count,
+            "column_count": len(columns),
+            "columns": columns,
+            "duplicate_rows": duplicate_rows,
+        }
 
     def _make_json_serializable(self, obj: Any) -> Any:
         """Convert an object to be JSON-serializable.
@@ -1997,6 +2195,78 @@ API SOURCES (fetch with api_<name>() functions):
             """
             return self._resolve_llm_knowledge(question)
         return llm_ask
+
+    def _create_llm_map_helper(self) -> callable:
+        """Create a helper for batch fuzzy mapping using LLM knowledge.
+
+        Returns a function that maps a list of values to a target domain
+        (e.g., country names → ISO codes) using LLM foundational knowledge.
+        Results are flagged as low-confidence in the proof tree.
+        """
+        def llm_map(values: list[str], target: str, source_desc: str = "values") -> dict[str, str]:
+            """Map a list of values to a target domain using LLM knowledge.
+
+            Use this for fuzzy mapping tasks where exact matching isn't possible
+            and no authoritative data source is available. Results will have
+            REDUCED CONFIDENCE in the proof tree.
+
+            Args:
+                values: List of source values to map (e.g., ["United Kingdom", "Burma"])
+                target: Description of what to map to (e.g., "ISO 3166-1 alpha-2 country code")
+                source_desc: Label for the source values (e.g., "country names")
+
+            Returns:
+                Dict mapping source values to target values.
+                Unmappable values map to None.
+
+            Example:
+                iso_map = llm_map(["United Kingdom", "Siam"], "ISO 3166-1 alpha-2 country code")
+                # {"United Kingdom": "GB", "Siam": "TH"}
+            """
+            import json as _json
+
+            # Batch all values into a single LLM call
+            values_str = "\n".join(f"- {v}" for v in values)
+            prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
+
+{values_str}
+
+Respond with ONLY valid JSON: a single object mapping each input value to its {target}.
+If a value cannot be confidently mapped, map it to null.
+
+Example format: {{"input1": "mapped1", "input2": "mapped2", "input3": null}}
+
+YOUR JSON RESPONSE:"""
+
+            result = self.router.execute(
+                task_type=TaskType.SYNTHESIS,
+                system=f"You map {source_desc} to {target}. Output ONLY valid JSON. Use null for uncertain mappings.",
+                user_message=prompt,
+                max_tokens=self.router.max_output_tokens,
+            )
+
+            response = result.content.strip()
+            if "```" in response:
+                response = re.sub(r'```\w*\n?', '', response).strip()
+
+            if not response.startswith("{"):
+                logger.warning(f"[LLM_MAP] Could not parse response: {response[:200]}")
+                return {v: None for v in values}
+
+            mapping = _json.loads(response)
+
+            mapped_count = sum(1 for v in mapping.values() if v is not None)
+            logger.info(
+                f"[LLM_MAP] Mapped {mapped_count}/{len(values)} {source_desc} → {target} "
+                f"(confidence: reduced, source: llm_knowledge)"
+            )
+
+            # Flag that this inference used LLM mapping
+            self._inference_used_llm_map = True
+
+            return mapping
+
+        return llm_map
 
     def _is_current_plan_sensitive(self) -> bool:
         """Check if the current plan involves sensitive data."""
@@ -6015,6 +6285,12 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # Log the follow-up query
         self.history.log_user_input(self.session_id, question, "followup")
 
+        # Detect corrections/hints and save as learnings
+        from constat.api.detection.correction import detect_nl_correction
+        nl_correction = detect_nl_correction(question)
+        if nl_correction.detected:
+            self._save_correction_as_learning(question)
+
         # Fast path: check if this is a simple "show me X" request for existing data
         # This avoids expensive LLM classification for simple data lookups
         show_result = self._try_show_existing_data(question)
@@ -6078,26 +6354,18 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         next_step_number = max((e["step_number"] for e in existing_scratchpad), default=0) + 1
 
         # Generate a plan for the follow-up, providing context
-        context_prompt = f"""Previous work in this session:
-
-{scratchpad_context}
-
-Available tables from previous steps:
-{', '.join(t['name'] for t in existing_tables) if existing_tables else '(none)'}
-
-Available state variables:
-{existing_state if existing_state else '(none)'}
-
-**DATASET REUSE GUIDELINES**:
-When the follow-up modifies existing analysis (a "steer"):
-1. REUSE existing table/fact names - e.g., update `final_answer` rather than create `final_answer_v2`
-2. OVERWRITE existing datasets when the modification replaces previous results
-3. Only create NEW names when truly adding new data alongside existing data
-4. Reference and build on existing tables/state rather than recreating from scratch
-5. The final result should only contain items that address the complete plan (original + extensions)
-
-Follow-up question: {question}
-"""
+        existing_tables_list = (
+            chr(10).join(f'  - `{t["name"]}`: {t.get("row_count", "?")} rows (step {t.get("step_number", "?")})' for t in existing_tables)
+            if existing_tables else '(none)'
+        )
+        first_table_name = existing_tables[0]["name"] if existing_tables else "final_answer"
+        context_prompt = load_prompt("followup_context.md").format(
+            scratchpad_context=scratchpad_context,
+            existing_tables_list=existing_tables_list,
+            existing_state=existing_state if existing_state else '(none)',
+            first_table_name=first_table_name,
+            question=question,
+        )
         # Emit planning start event
         self._emit_event(StepEvent(
             event_type="planning_start",
@@ -6568,7 +6836,7 @@ PREMISE RULES:
 - Use "database" for SQL queries to configured databases
 - Use "api" for external API data (GraphQL or REST endpoints)
 - Use "document" for reference documents, policies, and guidelines
-- Use "llm_knowledge" ONLY for universal facts (mathematical constants like Pi, scientific facts)
+- Use "llm_knowledge" for universal facts (mathematical constants, scientific facts) and well-established reference data (ISO codes, country info, currency codes)
 - For known universal values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: llm_knowledge]
 - NEVER ASSUME personal values (age, location, preferences) - use [source: user] and leave value as ?
 - Example: P4: my_age = ? (User's age) [source: user]
@@ -6589,6 +6857,7 @@ INFERENCE RULES:
 - CRITICAL: Only ONE verify_exists() at the very end, referencing the computed answer. Do NOT add validate() or verify() steps before it.
 - Operations like date extraction, filtering, grouping belong HERE, not in premises
 - Keep operations simple: filter, join, group_sum, count, apply_rules, calculate, etc.
+- For FUZZY MAPPING (e.g., free-text country names → ISO codes): plan the inference to first attempt mapping via data sources (APIs, databases), then use llm_map() as fallback for unmatched values. This reduces confidence but enables mapping when no exact data source exists.
 
 CONCLUSION:
 C: <final sentence describing what the final inference contains - use ENGLISH NAMES not I1/I2 references>
@@ -7564,14 +7833,25 @@ Focus on the key finding and its significance."""
             for inf in inferences:
                 iid = inf['id']
                 value = resolved_inferences.get(iid)
+                # Get actual confidence and reasoning from DAG node
+                inf_name = inf.get('name', iid)
+                dag_node = dag.get_node(inf_name)
+                node_confidence = dag_node.confidence if dag_node else (1.0 if value is not None else 0.0)
+                # Get reasoning from the fact resolver if available
+                node_reasoning = None
+                if self.fact_resolver:
+                    fact = self.fact_resolver.get_fact(inf_name)
+                    if fact and hasattr(fact, 'reasoning'):
+                        node_reasoning = fact.reasoning
                 deps = [p['id'] for p in premises]  # Inferences depend on premises
                 proof_nodes.append({
                     "id": iid,
-                    "name": inf.get('name', iid),
+                    "name": inf_name,
                     "value": value,
                     "source": "derived",
-                    "confidence": 1.0 if value is not None else 0.0,
+                    "confidence": node_confidence,
                     "dependencies": deps,
+                    "reasoning": node_reasoning,
                 })
 
             return {

@@ -12,6 +12,15 @@ interface StepCode {
   code: string
 }
 
+// Inference code from auditable mode (matches API response)
+interface InferenceCode {
+  inference_id: string
+  name: string
+  operation: string
+  code: string
+  attempt: number
+}
+
 // Prompt context types
 interface PromptContext {
   systemPrompt: string
@@ -52,6 +61,7 @@ interface ArtifactState {
   apis: ApiSourceInfo[]
   documents: DocumentSourceInfo[]
   stepCodes: StepCode[]
+  inferenceCodes: InferenceCode[]
   promptContext: PromptContext | null
   allSkills: SkillInfo[]
   allRoles: RoleInfo[]
@@ -72,6 +82,7 @@ interface ArtifactState {
   fetchEntities: (sessionId: string, entityType?: string) => Promise<void>
   fetchLearnings: () => Promise<void>
   fetchStepCodes: (sessionId: string) => Promise<void>
+  fetchInferenceCodes: (sessionId: string) => Promise<void>
   fetchDatabases: (sessionId: string) => Promise<void>
   fetchDataSources: (sessionId: string) => Promise<void>
   fetchPromptContext: (sessionId: string) => Promise<void>
@@ -112,6 +123,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   tables: [],
   facts: [],
   stepCodes: [],
+  inferenceCodes: [],
   entities: [],
   learnings: [],
   rules: [],
@@ -185,8 +197,16 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       const response = await sessionsApi.listStepCodes(sessionId)
       set({ stepCodes: response.steps })
     } catch (error) {
-      // Step codes endpoint might not exist on older servers
       console.warn('Failed to fetch step codes:', error)
+    }
+  },
+
+  fetchInferenceCodes: async (sessionId) => {
+    try {
+      const response = await sessionsApi.listInferenceCodes(sessionId)
+      set({ inferenceCodes: response.inferences })
+    } catch (error) {
+      console.warn('Failed to fetch inference codes:', error)
     }
   },
 
@@ -607,6 +627,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       apis: [],
       documents: [],
       stepCodes: [],
+  inferenceCodes: [],
       promptContext: null,
       allSkills: [],
       allRoles: [],
@@ -623,6 +644,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       tables: [],
       facts: [],
       stepCodes: [],
+  inferenceCodes: [],
       selectedArtifact: null,
       selectedTable: null,
       error: null,

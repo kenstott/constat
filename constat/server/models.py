@@ -271,12 +271,31 @@ class TableInfo(BaseModel):
         description="Column names",
     )
     is_starred: bool = Field(default=False, description="Whether the table is starred/promoted")
+    version: int = Field(default=1, description="Current version number")
+    version_count: int = Field(default=1, description="Total number of versions")
 
 
 class TableListResponse(BaseModel):
     """Response containing list of tables."""
 
     tables: list[TableInfo] = Field(description="List of tables")
+
+
+class TableVersionInfo(BaseModel):
+    """A single version entry for a table."""
+
+    version: int = Field(description="Version number")
+    step_number: Optional[int] = Field(default=None, description="Step that created this version")
+    row_count: int = Field(default=0, description="Number of rows in this version")
+    created_at: Optional[str] = Field(default=None, description="Creation timestamp")
+
+
+class TableVersionsResponse(BaseModel):
+    """Response containing version history for a table."""
+
+    name: str = Field(description="Table name")
+    current_version: int = Field(description="Latest version number")
+    versions: list[TableVersionInfo] = Field(description="All versions, newest first")
 
 
 class TableDataResponse(BaseModel):

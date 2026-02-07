@@ -626,6 +626,134 @@ class SessionHistory:
 
         return sorted(steps, key=lambda x: x["step_number"])
 
+    def _inferences_dir(self, session_id: str) -> Path:
+        """Get the inferences directory for inference code storage."""
+        return self._session_dir(session_id) / "inferences"
+
+    def save_inference_code(
+        self,
+        session_id: str,
+        inference_id: str,
+        name: str,
+        operation: str,
+        code: str,
+        attempt: int = 1,
+        output: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Save code for a specific inference node (auditable mode)."""
+        inferences_dir = self._inferences_dir(session_id)
+        self._ensure_dir(inferences_dir)
+
+        # Save code file (e.g., I1_code.py)
+        code_file = inferences_dir / f"{inference_id}_code.py"
+        with open(code_file, "w") as f:
+            f.write(f"# {inference_id}: {name} = {operation}\n\n")
+            f.write(code)
+
+        if output:
+            output_file = inferences_dir / f"{inference_id}_output.txt"
+            with open(output_file, "w") as f:
+                f.write(output)
+
+        if error:
+            error_file = inferences_dir / f"{inference_id}_error.txt"
+            with open(error_file, "w") as f:
+                f.write(error)
+
+        # Update index
+        index_file = inferences_dir / "index.jsonl"
+        entry = {
+            "inference_id": inference_id,
+            "name": name,
+            "operation": operation,
+            "attempt": attempt,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        with open(index_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def save_inference_premise(
+        self,
+        session_id: str,
+        premise_id: str,
+        name: str,
+        value: any,
+        source: str,
+        description: str = "",
+    ) -> None:
+        """Save metadata for a resolved premise (auditable mode)."""
+        inferences_dir = self._inferences_dir(session_id)
+        self._ensure_dir(inferences_dir)
+
+        premises_file = inferences_dir / "premises.jsonl"
+        entry = {
+            "premise_id": premise_id,
+            "name": name,
+            "value": str(value)[:500],
+            "source": source,
+            "description": description,
+        }
+        with open(premises_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def list_inference_premises(self, session_id: str) -> list[dict]:
+        """List all premises for a session's inference execution."""
+        inferences_dir = self._inferences_dir(session_id)
+        premises_file = inferences_dir / "premises.jsonl"
+        if not premises_file.exists():
+            return []
+
+        by_id = {}
+        with open(premises_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                by_id[data["premise_id"]] = data  # Last entry wins
+
+        return sorted(by_id.values(), key=lambda x: x["premise_id"])
+
+    def list_inference_codes(self, session_id: str) -> list[dict]:
+        """List all inference codes for a session."""
+        inferences_dir = self._inferences_dir(session_id)
+        if not inferences_dir.exists():
+            return []
+
+        inferences = []
+        index_file = inferences_dir / "index.jsonl"
+
+        if index_file.exists():
+            seen = set()
+            with open(index_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    iid = data["inference_id"]
+                    seen.add(iid)  # Last entry wins (latest attempt)
+                    code_file = inferences_dir / f"{iid}_code.py"
+                    if code_file.exists():
+                        with open(code_file) as cf:
+                            code = cf.read()
+                        inferences.append({
+                            "inference_id": iid,
+                            "name": data.get("name", ""),
+                            "operation": data.get("operation", ""),
+                            "code": code,
+                            "attempt": data.get("attempt", 1),
+                        })
+
+            # Deduplicate: keep last entry per inference_id
+            by_id = {}
+            for inf in inferences:
+                by_id[inf["inference_id"]] = inf
+            inferences = list(by_id.values())
+
+        return sorted(inferences, key=lambda x: x["inference_id"])
+
     def find_session_by_server_id(self, server_session_id: str) -> Optional[str]:
         """
         Find a history session ID by its server UUID.

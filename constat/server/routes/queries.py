@@ -317,11 +317,23 @@ def _create_event_handler(managed: ManagedSession):
 
             api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)
 
+            # Sanitize event data — replace non-serializable types
+            safe_data = event.data
+            if safe_data:
+                import pandas as pd
+                sanitized = {}
+                for k, v in safe_data.items():
+                    if isinstance(v, pd.DataFrame):
+                        sanitized[k] = f"DataFrame({len(v)} rows, {len(v.columns)} cols)"
+                    else:
+                        sanitized[k] = v
+                safe_data = sanitized
+
             ws_event = StepEventWS(
                 event_type=api_event_type,
                 session_id=managed.session_id,
                 step_number=event.step_number,
-                data=event.data,
+                data=safe_data,
             )
 
             # Put event on queue (non-blocking)

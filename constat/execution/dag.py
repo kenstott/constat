@@ -636,7 +636,19 @@ class DAGExecutor:
                 nodes_to_run = []
                 for name in level:
                     node = self.dag.get_node(name)
-                    if node and node.status == NodeStatus.PENDING:
+                    if not node:
+                        continue
+                    if node.status == NodeStatus.RESOLVED:
+                        # Pre-resolved (embedded value) — emit event so UI shows it
+                        if self.event_callback:
+                            self.event_callback("node_resolved", {
+                                "name": node.name,
+                                "fact_id": node.fact_id,
+                                "value": node.value,
+                                "confidence": node.confidence,
+                                "source": "embedded",
+                            })
+                    elif node.status == NodeStatus.PENDING:
                         nodes_to_run.append(node)
 
                 if not nodes_to_run:

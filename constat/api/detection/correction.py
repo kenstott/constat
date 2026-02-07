@@ -35,6 +35,16 @@ CORRECTION_PATTERNS: list[tuple[str, str]] = [
     # Assumptions
     (r"\bdon'?t\s+assume\s+(.+)\b", "dont_assume"),
     (r"\bnever\s+assume\s+(.+)\b", "never_assume"),
+
+    # Hints and instructional corrections
+    (r"\byou\s+(may|might|will)\s+need\s+to\s+use\b", "hint_need_to_use"),
+    (r"\byou\s+should\s+(use|try|check|look\s+at)\b", "hint_should_use"),
+    (r"\btry\s+using\b", "hint_try_using"),
+    (r"\bmake\s+sure\s+(to\s+)?(use|include|check)\b", "hint_make_sure"),
+    (r"\binstead[,]?\s+(use|try|you\s+should)\b", "hint_instead_use"),
+    (r"\buse\s+(\w+)\s+instead\s+of\b", "hint_use_instead_of"),
+    (r"\bthe\s+(right|correct)\s+(way|approach)\s+(is|would\s+be)\b", "hint_correct_way"),
+    (r"\byou\s+need\s+to\s+use\b", "hint_you_need"),
 ]
 
 

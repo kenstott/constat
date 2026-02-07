@@ -581,7 +581,7 @@ class APIExecutor:
         result = {"queries": [], "mutations": [], "types": {}}
 
         query_type_name = schema.get("queryType", {}).get("name", "Query")
-        mutation_type_name = schema.get("mutationType", {}).get("name")
+        mutation_type_name = (schema.get("mutationType") or {}).get("name")
 
         types = {t["name"]: t for t in schema.get("types", []) if t.get("name")}
 
@@ -649,7 +649,7 @@ class APIExecutor:
         schema = self.introspect_graphql(api_name)
 
         query_type_name = schema.get("queryType", {}).get("name", "Query")
-        mutation_type_name = schema.get("mutationType", {}).get("name")
+        mutation_type_name = (schema.get("mutationType") or {}).get("name")
 
         types = {t["name"]: t for t in schema.get("types", []) if t.get("name")}
 

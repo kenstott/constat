@@ -83,6 +83,9 @@ class DataStore:
         "_constat_plan_steps",
     }
 
+    # Pattern for versioned backup tables (e.g., "countries__v1", "results__v2")
+    _VERSION_BACKUP_PATTERN = re.compile(r'^(.+)__v(\d+)$')
+
     # Valid table name pattern: alphanumeric and underscores, must start with letter or underscore
     _VALID_TABLE_NAME_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
@@ -177,7 +180,8 @@ class DataStore:
                     row_count INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     description TEXT,
-                    role_id VARCHAR(255)
+                    role_id VARCHAR(255),
+                    version INTEGER DEFAULT 1
                 )
             """))
 
@@ -216,6 +220,14 @@ class DataStore:
             try:
                 conn.execute(text(
                     "ALTER TABLE _constat_artifacts ADD COLUMN version INTEGER DEFAULT 1"
+                ))
+            except Exception:
+                pass  # Column already exists
+
+            # Add version column to table registry for existing databases
+            try:
+                conn.execute(text(
+                    "ALTER TABLE _constat_table_registry ADD COLUMN version INTEGER DEFAULT 1"
                 ))
             except Exception:
                 pass  # Column already exists
@@ -348,6 +360,26 @@ class DataStore:
         # Serialize dict/list columns to JSON for SQLite compatibility
         df = self._serialize_complex_columns(df)
 
+        # Archive the current version before overwriting
+        new_version = 1
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT version FROM _constat_table_registry WHERE table_name = :name"),
+                {"name": name}
+            ).fetchone()
+            if result:
+                current_version = result[0] or 1
+                new_version = current_version + 1
+                # Copy current table data to versioned backup
+                backup_name = f"{name}__v{current_version}"
+                try:
+                    conn.execute(text(
+                        f"CREATE TABLE {self._validate_table_name(backup_name)} AS SELECT * FROM {self._validate_table_name(name)}"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass  # Table may not exist yet (first save after registry entry)
+
         # Use pandas to_sql for cross-database compatibility
         df.to_sql(name, self.engine, if_exists="replace", index=False)
 
@@ -361,6 +393,7 @@ class DataStore:
                 "row_count": len(df),
                 "description": description,
                 "role_id": role_id,
+                "version": new_version,
             }
         )
 
@@ -483,29 +516,115 @@ class DataStore:
 
     def list_tables(self) -> list[dict]:
         """
-        List all user tables with metadata.
+        List all user tables with metadata (excludes versioned backups).
 
         Returns:
             List of table info dicts
         """
         with self.engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT table_name, step_number, row_count, created_at, description, role_id
+                SELECT table_name, step_number, row_count, created_at, description, role_id, version
                 FROM _constat_table_registry
                 ORDER BY step_number, table_name
             """)).fetchall()
 
-        return [
-            {
-                "name": row[0],
+        results = []
+        for row in rows:
+            table_name = row[0]
+            # Skip versioned backup tables
+            if self._VERSION_BACKUP_PATTERN.match(table_name):
+                continue
+            version = row[6] or 1
+            results.append({
+                "name": table_name,
                 "step_number": row[1],
                 "row_count": row[2],
                 "created_at": str(row[3]) if row[3] else None,
                 "description": row[4],
                 "role_id": row[5],
-            }
-            for row in rows
-        ]
+                "version": version,
+                "version_count": version,  # version N means N versions exist (1..N)
+            })
+        return results
+
+    def get_table_versions(self, name: str) -> list[dict]:
+        """
+        Get all versions of a table (newest first).
+
+        Args:
+            name: Table name (without __v suffix)
+
+        Returns:
+            List of version metadata dicts
+        """
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT version, step_number, row_count, created_at FROM _constat_table_registry WHERE table_name = :name"),
+                {"name": name}
+            ).fetchone()
+
+        if not result:
+            return []
+
+        current_version = result[0] or 1
+        versions = []
+        for v in range(current_version, 0, -1):
+            if v == current_version:
+                versions.append({
+                    "version": v,
+                    "step_number": result[1],
+                    "row_count": result[2],
+                    "created_at": str(result[3]) if result[3] else None,
+                })
+            else:
+                # Get row count from backup table
+                backup_name = f"{name}__v{v}"
+                try:
+                    validated = self._validate_table_name(backup_name)
+                    with self.engine.connect() as conn:
+                        count_result = conn.execute(
+                            text(f"SELECT COUNT(*) FROM {validated}")
+                        ).fetchone()
+                    row_count = count_result[0] if count_result else 0
+                except Exception:
+                    row_count = 0
+                versions.append({
+                    "version": v,
+                    "step_number": None,
+                    "row_count": row_count,
+                    "created_at": None,
+                })
+        return versions
+
+    def load_table_version(self, name: str, version: int) -> Optional[pd.DataFrame]:
+        """
+        Load a specific version of a table.
+
+        Args:
+            name: Table name
+            version: Version number (latest version loads from main table)
+
+        Returns:
+            DataFrame or None if not found
+        """
+        # Get current version
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT version FROM _constat_table_registry WHERE table_name = :name"),
+                {"name": name}
+            ).fetchone()
+
+        if not result:
+            return None
+
+        current_version = result[0] or 1
+
+        if version == current_version:
+            return self.load_dataframe(name)
+
+        # Load from backup table
+        backup_name = f"{name}__v{version}"
+        return self.load_dataframe(backup_name)
 
     def get_table_schema(self, name: str) -> Optional[list[dict]]:
         """
@@ -539,7 +658,7 @@ class DataStore:
 
     def drop_table(self, name: str) -> bool:
         """
-        Drop a table.
+        Drop a table and all its versioned backups.
 
         Args:
             name: Table name
@@ -550,8 +669,26 @@ class DataStore:
         try:
             # Validate table name to prevent SQL injection
             validated_name = self._validate_table_name(name)
+
+            # Get current version to know how many backups exist
+            with self.engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT version FROM _constat_table_registry WHERE table_name = :name"),
+                    {"name": validated_name}
+                ).fetchone()
+
             with self.engine.begin() as conn:
+                # Drop the main table
                 conn.execute(text(f"DROP TABLE IF EXISTS {validated_name}"))
+                # Drop versioned backups
+                if result and result[0]:
+                    for v in range(1, result[0]):
+                        backup = f"{validated_name}__v{v}"
+                        try:
+                            self._validate_table_name(backup)
+                            conn.execute(text(f"DROP TABLE IF EXISTS {backup}"))
+                        except ValueError:
+                            pass
                 conn.execute(
                     text("DELETE FROM _constat_table_registry WHERE table_name = :name"),
                     {"name": validated_name}

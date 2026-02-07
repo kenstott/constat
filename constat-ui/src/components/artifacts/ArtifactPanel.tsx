@@ -120,6 +120,7 @@ export function ArtifactPanel() {
     apis,
     documents,
     stepCodes,
+    inferenceCodes,
     promptContext,
     allSkills,
     allRoles,
@@ -2494,6 +2495,72 @@ ${skill.body}`
                 </p>
                 <CodeViewer
                   code={step.code}
+                  language="python"
+                />
+              </div>
+            ))}
+          </div>
+        </AccordionSection>
+      )}
+
+      {/* Inference Code - auditable mode (separate from step code) */}
+      {inferenceCodes.length > 0 && (
+        <AccordionSection
+          id="inference-code"
+          title="Inference Code"
+          count={inferenceCodes.length}
+          icon={<CodeBracketIcon className="w-4 h-4" />}
+          action={
+            <button
+              onClick={async () => {
+                if (!session) return
+                try {
+                  const headers: Record<string, string> = {}
+                  const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+                  if (!isAuthDisabled) {
+                    const token = await useAuthStore.getState().getToken()
+                    if (token) {
+                      headers['Authorization'] = `Bearer ${token}`
+                    }
+                  }
+                  const response = await fetch(
+                    `/api/sessions/${session.session_id}/download-inference-code`,
+                    { headers, credentials: 'include' }
+                  )
+                  if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}))
+                    alert(errorData.detail || 'Failed to download inference code')
+                    return
+                  }
+                  const blob = await response.blob()
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `session_${session.session_id.slice(0, 8)}_inference.py`
+                  document.body.appendChild(a)
+                  a.click()
+                  document.body.removeChild(a)
+                  URL.revokeObjectURL(url)
+                } catch (err) {
+                  console.error('Download failed:', err)
+                  alert('Failed to download inference code. Please try again.')
+                }
+              }}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Download as Python script"
+            >
+              <ArrowDownTrayIcon className="w-4 h-4" />
+            </button>
+          }
+        >
+          <div className="space-y-3">
+            {inferenceCodes.map((inf) => (
+              <div key={inf.inference_id}>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  {inf.inference_id}: {inf.name} = {inf.operation}
+                </p>
+                <CodeViewer
+                  code={inf.code}
                   language="python"
                 />
               </div>

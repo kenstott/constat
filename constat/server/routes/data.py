@@ -27,6 +27,8 @@ from constat.server.models import (
     TableDataResponse,
     TableInfo,
     TableListResponse,
+    TableVersionInfo,
+    TableVersionsResponse,
 )
 from constat.server.session_manager import SessionManager
 
@@ -97,6 +99,8 @@ async def list_tables(
                     step_number=t.get("step_number", 0),
                     columns=t.get("columns", []),
                     is_starred=is_starred,
+                    version=t.get("version", 1),
+                    version_count=t.get("version_count", 1),
                 )
             )
 
@@ -104,6 +108,72 @@ async def list_tables(
     except Exception as e:
         logger.error(f"Error listing tables: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/tables/{table_name}/versions", response_model=TableVersionsResponse)
+async def get_table_versions(
+    session_id: str,
+    table_name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> TableVersionsResponse:
+    """Get version history for a table."""
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore for this session")
+
+    versions = managed.session.datastore.get_table_versions(table_name)
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
+
+    return TableVersionsResponse(
+        name=table_name,
+        current_version=versions[0]["version"] if versions else 1,
+        versions=[
+            TableVersionInfo(
+                version=v["version"],
+                step_number=v.get("step_number"),
+                row_count=v.get("row_count", 0),
+                created_at=v.get("created_at"),
+            )
+            for v in versions
+        ],
+    )
+
+
+@router.get("/{session_id}/tables/{table_name}/version/{version}", response_model=TableDataResponse)
+async def get_table_version_data(
+    session_id: str,
+    table_name: str,
+    version: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1000),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> TableDataResponse:
+    """Get data for a specific version of a table."""
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore for this session")
+
+    df = managed.session.datastore.load_table_version(table_name, version)
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"Table version not found: {table_name} v{version}")
+
+    total_rows = len(df)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_df = df.iloc[start:end]
+
+    return TableDataResponse(
+        name=table_name,
+        columns=list(df.columns),
+        data=page_df.to_dict(orient="records"),
+        total_rows=total_rows,
+        page=page,
+        page_size=page_size,
+        has_more=end < total_rows,
+    )
 
 
 @router.get("/{session_id}/tables/{table_name}", response_model=TableDataResponse)
@@ -1532,6 +1602,33 @@ async def list_step_codes(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{session_id}/inference-codes")
+async def list_inference_codes(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """List all inference codes for a session (auditable mode)."""
+    managed = session_manager.get_session_or_none(session_id)
+    history = None
+    history_session_id = None
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+    else:
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id=user_id)
+        history_session_id = history.find_session_by_server_id(session_id)
+
+    try:
+        inferences = history.list_inference_codes(history_session_id) if history_session_id else []
+        return {"inferences": inferences, "total": len(inferences)}
+    except Exception as e:
+        logger.error(f"Error listing inference codes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{session_id}/download-code")
 async def download_code(
     session_id: str,
@@ -2344,4 +2441,251 @@ async def download_code(
         raise
     except Exception as e:
         logger.error(f"Error downloading code: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/download-inference-code")
+async def download_inference_code(
+    session_id: str,
+    user_id: CurrentUserId,
+    session_manager: SessionManager = Depends(get_session_manager),
+):
+    """Download all inference codes as a standalone Python script.
+
+    Generates a self-contained script with API helpers, store class,
+    and each inference step as a function that can be run independently.
+    """
+    from fastapi.responses import Response
+
+    managed = session_manager.get_session_or_none(session_id)
+    history = None
+    history_session_id = None
+
+    if managed:
+        history = managed.session.history
+        history_session_id = managed.session.session_id
+    else:
+        from constat.storage.history import SessionHistory
+        history = SessionHistory(user_id=user_id)
+        history_session_id = history.find_session_by_server_id(session_id)
+
+    try:
+        if not history_session_id:
+            raise HTTPException(status_code=404, detail="No inference code available for this session.")
+
+        inferences = history.list_inference_codes(history_session_id)
+        if not inferences:
+            raise HTTPException(status_code=404, detail="No inference code available. Run an auditable query first.")
+
+        # Get API config for helpers
+        apis = []
+        if managed and managed.session.config and managed.session.config.apis:
+            for name, api_config in managed.session.config.apis.items():
+                apis.append({
+                    "name": name,
+                    "type": api_config.type,
+                    "url": api_config.url or "",
+                })
+
+        # Get database config
+        databases = []
+        if managed and managed.session.config and managed.session.config.databases:
+            for name, db_config in managed.session.config.databases.items():
+                if not db_config.is_file_source():
+                    databases.append({"name": name, "uri": db_config.uri or ""})
+
+        lines = [
+            '#!/usr/bin/env python3',
+            '"""',
+            f'Constat Inference Code - Session {session_id[:8]}',
+            '',
+            'Auto-generated from auditable mode execution.',
+            'Each inference function derives facts from premises using code.',
+            '"""',
+            '',
+            'import pandas as pd',
+            'import numpy as np',
+            'import duckdb',
+            'import json',
+            '',
+            '',
+            '# ============================================================================',
+            '# Store Class',
+            '# ============================================================================',
+            '',
+            'class _DataStore:',
+            '    def __init__(self):',
+            '        self._tables: dict[str, pd.DataFrame] = {}',
+            '        self._conn = duckdb.connect()',
+            '',
+            '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
+            '        self._tables[name] = df',
+            '        self._conn.register(name, df)',
+            '        print(f"Saved: {name} ({len(df)} rows)")',
+            '',
+            '    def query(self, sql: str) -> pd.DataFrame:',
+            '        return self._conn.execute(sql).fetchdf()',
+            '',
+            '    def load_dataframe(self, name: str) -> pd.DataFrame:',
+            '        if name not in self._tables:',
+            '            raise ValueError(f"Table not found: {name}")',
+            '        return self._tables[name]',
+            '',
+            '',
+            'store = _DataStore()',
+            '',
+        ]
+
+        # Add API helpers
+        if apis:
+            lines.extend(['import requests', ''])
+            for api in apis:
+                if api['type'] == 'graphql':
+                    lines.extend([
+                        f"API_{api['name'].upper()}_URL = '{api['url']}'",
+                        '',
+                        f'def api_{api["name"]}(query: str, variables: dict = None) -> dict:',
+                        f'    """GraphQL query against {api["name"]}."""',
+                        f'    resp = requests.post(API_{api["name"].upper()}_URL, json={{"query": query, "variables": variables or {{}}}})',
+                        '    resp.raise_for_status()',
+                        '    result = resp.json()',
+                        '    if "errors" in result and not result.get("data"):',
+                        '        raise ValueError(f"GraphQL errors (no data returned): {result[\'errors\'][0][\'message\']}")',
+                        '    return result.get("data", result)',
+                        '',
+                        '',
+                    ])
+                else:
+                    lines.extend([
+                        f"API_{api['name'].upper()}_URL = '{api['url']}'",
+                        '',
+                        f'def api_{api["name"]}(method_path: str, params: dict = None) -> dict:',
+                        f'    """REST call to {api["name"]}."""',
+                        '    parts = method_path.split(" ", 1)',
+                        '    method = parts[0].upper()',
+                        '    path = parts[1] if len(parts) > 1 else "/"',
+                        f'    url = API_{api["name"].upper()}_URL.rstrip("/") + ("/" + path.lstrip("/") if not path.startswith("/") else path)',
+                        '    resp = requests.request(method, url, params=params)',
+                        '    resp.raise_for_status()',
+                        '    return resp.json()',
+                        '',
+                        '',
+                    ])
+
+        # Add database helpers
+        if databases:
+            lines.append('from sqlalchemy import create_engine')
+            lines.append('')
+            for db in databases:
+                lines.append(f"db_{db['name']} = create_engine('{db['uri']}')")
+            lines.extend([
+                '',
+                'def db_query(sql: str) -> pd.DataFrame:',
+                '    """Query the first available database."""',
+            ])
+            first_db = databases[0]['name']
+            lines.append(f'    return pd.read_sql(sql, db_{first_db})')
+            lines.extend(['', ''])
+
+        # Add LLM map stub
+        lines.extend([
+            'def llm_map(values: list, target: str, source_desc: str = "") -> dict:',
+            '    """Fuzzy map values using LLM. Stub — implement with your LLM provider."""',
+            '    print(f"llm_map called for {len(values)} values -> {target}")',
+            '    return {v: None for v in values}',
+            '',
+            '',
+            '# ============================================================================',
+            '# Inference Functions',
+            '# ============================================================================',
+            '',
+        ])
+
+        # Add each inference as a function
+        for inf in inferences:
+            iid = inf["inference_id"]
+            name = inf.get("name", iid)
+            operation = inf.get("operation", "")
+            code = inf.get("code", "pass")
+
+            lines.append(f'def {iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}():')
+            lines.append(f'    """{iid}: {name} = {operation}"""')
+            for code_line in code.split('\n'):
+                if code_line.strip():
+                    lines.append(f'    {code_line}')
+                else:
+                    lines.append('')
+            lines.append('    return _result')
+            lines.extend(['', ''])
+
+        # Load premises for parameter generation
+        premises = history.list_inference_premises(history_session_id)
+        constant_premises = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
+
+        # Add main runner
+        lines.extend([
+            '# ============================================================================',
+            '# Main',
+            '# ============================================================================',
+            '',
+        ])
+
+        # Build run_proof signature with constant premises as kwargs
+        import ast as _ast
+        param_parts = []
+        for p in constant_premises:
+            pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+            value = p["value"]
+            try:
+                literal = _ast.literal_eval(value)
+                param_parts.append(f'{pname}={repr(literal)}')
+            except (ValueError, SyntaxError):
+                param_parts.append(f'{pname}={repr(value)}')
+
+        sig = ', '.join(param_parts)
+        lines.append(f'def run_proof({sig}):')
+        lines.append('    """Execute all inferences and return the final result."""')
+
+        # Store constants in premises table so inference code can access them
+        if constant_premises:
+            lines.append('    # Store premise constants')
+            lines.append('    _premises = {}')
+            for p in constant_premises:
+                pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+                lines.append(f'    _premises["{p["name"]}"] = {pname}')
+            lines.append('    store.save_dataframe("_premises", pd.DataFrame([_premises]))')
+            lines.append('')
+
+        lines.append('    _last = None')
+        for inf in inferences:
+            iid = inf["inference_id"]
+            name = inf.get("name", iid)
+            func_name = f'{iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}'
+            lines.append(f'    print("\\n=== {iid}: {name} ===")')
+            lines.append(f'    _last = {func_name}()')
+        lines.extend([
+            '',
+            '    return _last',
+            '',
+            '',
+            'if __name__ == "__main__":',
+            '    result = run_proof()',
+            '    print("\\n=== Final Result ===")',
+            '    print(result)',
+            '',
+        ])
+
+        script_content = '\n'.join(lines)
+        return Response(
+            content=script_content,
+            media_type="text/x-python",
+            headers={
+                "Content-Disposition": f'attachment; filename="session_{session_id[:8]}_inference.py"'
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading inference code: {e}")
         raise HTTPException(status_code=500, detail=str(e))

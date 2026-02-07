@@ -216,7 +216,10 @@ def summarize_proof(
             if deps:
                 proof_text += f"  Depends on: {deps}\n"
             if i.get("confidence"):
-                proof_text += f"  Confidence: {i.get('confidence') * 100:.0f}%\n"
+                conf = i.get("confidence")
+                proof_text += f"  Confidence: {conf * 100:.0f}%\n"
+                if conf < 0.9 and i.get("reasoning"):
+                    proof_text += f"  Reason for reduced confidence: {i.get('reasoning')}\n"
 
     prompt = f"""Summarize this proof derivation in clear prose:
 
@@ -227,6 +230,7 @@ Provide a narrative summary that:
 2. Explains the key data sources used (premises)
 3. Describes how conclusions were derived step by step
 4. States the final result and confidence level
+5. If any step has reduced confidence (<90%), explain WHY — cite the specific quality issues (e.g., ALL-NULL columns, data quality problems)
 
 Write as a clear explanation for someone reviewing the audit trail."""
 

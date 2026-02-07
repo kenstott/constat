@@ -1,6 +1,6 @@
 // Table Accordion - individual table with expandable details and fullscreen mode
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -13,7 +13,7 @@ import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
-import type { TableData, TableInfo } from '@/types/api'
+import type { TableData, TableInfo, TableVersionInfo } from '@/types/api'
 
 interface TableAccordionProps {
   table: TableInfo
@@ -29,10 +29,18 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+  const [showVersions, setShowVersions] = useState(false)
+  const [versions, setVersions] = useState<TableVersionInfo[] | null>(null)
+  const [viewingVersion, setViewingVersion] = useState<number | null>(null)
+  const versionDropdownRef = useRef<HTMLDivElement>(null)
+
+  const hasVersions = (table.version_count ?? 1) > 1
 
   // Fetch data when opened
   useEffect(() => {
     if (!session || !isOpen) return
+    // Skip if viewing a specific older version (content loaded by handleSelectVersion)
+    if (viewingVersion) return
 
     const fetchData = async () => {
       setLoading(true)
@@ -52,7 +60,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     }
 
     fetchData()
-  }, [session, table.name, page, isOpen])
+  }, [session, table.name, page, isOpen, viewingVersion])
 
   // Close fullscreen on Escape
   useEffect(() => {
@@ -64,6 +72,18 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)
   }, [isFullscreen])
+
+  // Close version dropdown on outside click
+  useEffect(() => {
+    if (!showVersions) return
+    const handleClick = (e: MouseEvent) => {
+      if (versionDropdownRef.current && !versionDropdownRef.current.contains(e.target as Node)) {
+        setShowVersions(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showVersions])
 
   const toggleOpen = () => {
     setIsOpen(!isOpen)
@@ -79,6 +99,60 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     e.stopPropagation()
     if (session) {
       toggleTableStar(session.session_id, table.name)
+    }
+  }
+
+  const handleVersionBadgeClick = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session || !hasVersions) return
+
+    if (showVersions) {
+      setShowVersions(false)
+      return
+    }
+
+    // Fetch versions if not loaded
+    if (!versions) {
+      try {
+        const resp = await sessionsApi.getTableVersions(session.session_id, table.name)
+        setVersions(resp.versions)
+      } catch (err) {
+        console.error('Failed to load table versions:', err)
+        return
+      }
+    }
+    setShowVersions(true)
+  }
+
+  const handleSelectVersion = async (version: number) => {
+    if (!session) return
+    setShowVersions(false)
+
+    const currentVersion = table.version ?? 1
+    if (version === currentVersion) {
+      // Back to current version
+      setViewingVersion(null)
+      setData(null)
+      return
+    }
+
+    setViewingVersion(version)
+    setLoading(true)
+    setError(null)
+    try {
+      const tableData = await sessionsApi.getTableVersionData(
+        session.session_id,
+        table.name,
+        version,
+        1 // reset to page 1
+      )
+      setData(tableData)
+      setPage(1)
+      setIsOpen(true)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -196,6 +270,8 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
     )
   }
 
+  const currentVersion = table.version ?? 1
+
   return (
     <>
       {/* Accordion Item */}
@@ -205,25 +281,66 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
           onClick={toggleOpen}
           className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             {isOpen ? (
-              <ChevronDownIcon className="w-4 h-4 text-gray-500" />
+              <ChevronDownIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
             ) : (
-              <ChevronRightIcon className="w-4 h-4 text-gray-500" />
+              <ChevronRightIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
             )}
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">
               {table.name}
             </span>
-            <span className="text-xs text-gray-400 dark:text-gray-500">
+            <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
               ({table.row_count} rows)
             </span>
+            <div className="relative flex-shrink-0" ref={versionDropdownRef}>
+              <button
+                onClick={hasVersions ? handleVersionBadgeClick : undefined}
+                className={`px-1.5 py-0.5 text-[10px] font-medium rounded transition-colors ${
+                  hasVersions
+                    ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-200 dark:hover:bg-indigo-800/40 cursor-pointer'
+                    : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-default'
+                }`}
+                title={hasVersions
+                  ? `Version ${currentVersion} of ${table.version_count ?? 1} — click to browse`
+                  : `Version ${currentVersion}`
+                }
+              >
+                v{viewingVersion ?? currentVersion}
+              </button>
+              {showVersions && versions && (
+                <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[200px]">
+                  {versions.map((v) => (
+                    <button
+                      key={v.version}
+                      onClick={(e) => { e.stopPropagation(); handleSelectVersion(v.version) }}
+                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex justify-between items-center gap-2 ${
+                        (viewingVersion === v.version || (!viewingVersion && v.version === currentVersion))
+                          ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400'
+                          : 'text-gray-700 dark:text-gray-300'
+                      }`}
+                    >
+                      <span>v{v.version}</span>
+                      <span className="text-gray-400 dark:text-gray-500">
+                        {v.row_count} rows{v.step_number != null ? ` · step ${v.step_number}` : ''}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {viewingVersion && (
+              <span className="px-1 py-0.5 text-[10px] bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded flex-shrink-0">
+                viewing older version
+              </span>
+            )}
             {table.role_id && (
-              <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">
+              <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded flex-shrink-0">
                 {table.role_id}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={handleToggleStar}
               className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"

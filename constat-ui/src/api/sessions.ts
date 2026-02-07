@@ -6,6 +6,7 @@ import type {
   SessionListResponse,
   TableInfo,
   TableData,
+  TableVersionsResponse,
   Artifact,
   ArtifactContent,
   ArtifactVersionsResponse,
@@ -88,6 +89,28 @@ export async function getTableData(
 ): Promise<TableData> {
   return get<TableData>(
     `/sessions/${sessionId}/tables/${tableName}?page=${page}&page_size=${pageSize}`
+  )
+}
+
+// Table Versions
+export async function getTableVersions(
+  sessionId: string,
+  tableName: string
+): Promise<TableVersionsResponse> {
+  return get<TableVersionsResponse>(
+    `/sessions/${sessionId}/tables/${encodeURIComponent(tableName)}/versions`
+  )
+}
+
+export async function getTableVersionData(
+  sessionId: string,
+  tableName: string,
+  version: number,
+  page = 1,
+  pageSize = 100
+): Promise<TableData> {
+  return get<TableData>(
+    `/sessions/${sessionId}/tables/${encodeURIComponent(tableName)}/version/${version}?page=${page}&page_size=${pageSize}`
   )
 }
 
@@ -279,6 +302,23 @@ export async function listStepCodes(
 ): Promise<{ steps: StepCode[]; total: number }> {
   return get<{ steps: StepCode[]; total: number }>(
     `/sessions/${sessionId}/steps`
+  )
+}
+
+// Inference Codes (auditable mode)
+export interface InferenceCode {
+  inference_id: string
+  name: string
+  operation: string
+  code: string
+  attempt: number
+}
+
+export async function listInferenceCodes(
+  sessionId: string
+): Promise<{ inferences: InferenceCode[]; total: number }> {
+  return get<{ inferences: InferenceCode[]; total: number }>(
+    `/sessions/${sessionId}/inference-codes`
   )
 }
 
