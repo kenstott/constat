@@ -112,7 +112,7 @@ interface SessionState {
   updateSession: (updates: Partial<Session>) => void
   submitQuery: (problem: string, isFollowup?: boolean) => Promise<void>
   cancelExecution: () => Promise<void>
-  approvePlan: (deletedSteps?: number[]) => Promise<void>
+  approvePlan: (deletedSteps?: number[], editedSteps?: Array<{ number: number; goal: string }>) => Promise<void>
   rejectPlan: (feedback: string, editedSteps?: Array<{ number: number; goal: string }>) => Promise<void>
   answerClarification: (answers: Record<number, string>) => void
   skipClarification: () => void
@@ -317,41 +317,51 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ status: 'cancelled', executionPhase: 'idle', currentStepNumber: 0, stepAttempt: 1 })
   },
 
-  approvePlan: async (deletedSteps?: number[]) => {
+  approvePlan: async (deletedSteps?: number[], editedSteps?: Array<{ number: number; goal: string }>) => {
     const { session, plan } = get()
     if (!session) return
 
-    const allSteps = plan?.steps || []
-    // Filter out deleted steps
-    const deletedSet = new Set(deletedSteps || [])
-    const steps = allSteps.filter((step, index) => {
-      const stepNum = step.number ?? index + 1
-      return !deletedSet.has(stepNum)
-    })
+    // If editedSteps provided, use those; otherwise use original plan steps (minus deleted)
+    let stepsToShow: Array<{ number: number; goal: string; role_id?: string; skill_ids?: string[] }>
+    if (editedSteps && editedSteps.length > 0) {
+      // Use edited steps - these are already renumbered and filtered
+      stepsToShow = editedSteps.map(s => ({ number: s.number, goal: s.goal }))
+    } else {
+      const allSteps = plan?.steps || []
+      // Filter out deleted steps
+      const deletedSet = new Set(deletedSteps || [])
+      stepsToShow = allSteps
+        .filter((step, index) => {
+          const stepNum = step.number ?? index + 1
+          return !deletedSet.has(stepNum)
+        })
+        .map((step, index) => ({
+          number: step.number ?? index + 1,
+          goal: step.goal || '',
+          role_id: step.role_id ?? undefined,
+          skill_ids: step.skill_ids ?? undefined,
+        }))
+    }
 
-    // Create message bubbles for remaining steps (pending until step_start)
+    // Create message bubbles for steps (pending until step_start)
     const stepMessageIds: Record<number, string> = {}
-    const stepMessages: Message[] = steps.map((step) => {
+    const stepMessages: Message[] = stepsToShow.map((step) => {
       const id = crypto.randomUUID()
-      const stepNum = step.number ?? allSteps.indexOf(step) + 1
-      stepMessageIds[stepNum] = id
-      // Use step's role_id and skill_ids from plan (planner-assigned)
-      const stepRole = step.role_id
-      const stepSkills = step.skill_ids?.length ? step.skill_ids : undefined
+      stepMessageIds[step.number] = id
       return {
         id,
         type: 'step' as const,
-        content: `Step ${stepNum}: ${step.goal || 'Pending'}`,
+        content: `Step ${step.number}: ${step.goal || 'Pending'}`,
         timestamp: new Date(),
-        stepNumber: stepNum,
+        stepNumber: step.number,
         isLive: false, // Not live until step starts
         isPending: true, // Pending animation until step starts
-        ...(stepRole ? { role: stepRole } : {}),
-        ...(stepSkills ? { skills: stepSkills } : {}),
+        ...(step.role_id ? { role: step.role_id } : {}),
+        ...(step.skill_ids?.length ? { skills: step.skill_ids } : {}),
       }
     })
 
-    await queriesApi.approvePlan(session.session_id, true, undefined, deletedSteps)
+    await queriesApi.approvePlan(session.session_id, true, undefined, deletedSteps, editedSteps)
     wsManager.approve()
     set((state) => ({
       messages: [...state.messages, ...stepMessages],

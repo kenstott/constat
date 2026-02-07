@@ -231,11 +231,18 @@ export function PlanApprovalDialog() {
       stepCounter++
     })
 
-    // Only pass additional instructions as feedback (empty string if none)
-    // The edited steps are passed as a separate structured parameter
-    const feedback = additionalInstructions.trim() || 'Edited plan'
+    const commentary = additionalInstructions.trim()
 
-    rejectPlan(feedback, editedStepsArray)
+    if (commentary) {
+      // Has additional commentary - requires replanning
+      rejectPlan(commentary, editedStepsArray)
+    } else {
+      // Just edits, no commentary - proceed directly with edited plan
+      // Pass deleted step numbers for backend to filter
+      const deletedStepNumbers = Array.from(deletedSteps)
+      approvePlan(deletedStepNumbers, editedStepsArray)
+    }
+
     setAdditionalInstructions('')
     setStepModifications({})
     setDeletedSteps(new Set())
