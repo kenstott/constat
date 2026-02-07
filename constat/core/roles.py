@@ -9,11 +9,12 @@ Roles are optional. If {base_dir}/roles.yaml exists, users can switch
 between defined roles. Each role adds a prompt to the system prompt.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
 import yaml
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ Return JSON with "description" (brief summary) and "prompt" (detailed instructio
         result = llm.generate(
             system=system_prompt,
             user_message=user_prompt,
-            max_tokens=1000,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Parse the JSON response

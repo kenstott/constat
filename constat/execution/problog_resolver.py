@@ -29,13 +29,13 @@ Usage:
     print(result.proof.to_trace())  # Shows symbolic proof tree
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Dict, List
-from enum import Enum
-import logging
-import tempfile
-import os
 import atexit
+import logging
+import os
+import tempfile
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Optional, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +346,7 @@ Generate the rules (just the Prolog code, no markdown):"""
             response = self.llm.generate(
                 system="You generate ProbLog rules for fact resolution. Output ONLY valid Prolog code.",
                 user_message=prompt,
-                max_tokens=1000,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             # Clean up response - remove markdown code blocks if present
@@ -490,7 +490,7 @@ def llm_query(question):
         response = resolver._llm.generate(
             system="Answer factual questions concisely with just the value.",
             user_message=q,
-            max_tokens=100,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Try to parse as number

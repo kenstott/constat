@@ -25,7 +25,7 @@ from constat.server.models import (
     SessionDataSourcesResponse,
     SessionDocumentInfo,
 )
-from constat.server.session_manager import ManagedSession, SessionManager
+from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +36,6 @@ def get_session_manager(request: Request) -> SessionManager:
     """Dependency to get session manager from app state."""
     return request.app.state.session_manager
 
-
-def _get_dynamic_dbs(managed: ManagedSession) -> list[dict[str, Any]]:
-    """Get dynamically added databases from session."""
-    if not hasattr(managed, "_dynamic_dbs"):
-        managed._dynamic_dbs = []
-    return managed._dynamic_dbs
-
-
-def _get_dynamic_apis(managed: ManagedSession) -> list[dict[str, Any]]:
-    """Get dynamically added APIs from session."""
-    if not hasattr(managed, "_dynamic_apis"):
-        managed._dynamic_apis = []
-    return managed._dynamic_apis
 
 
 @router.post("/{session_id}/databases", response_model=SessionDatabaseInfo)
@@ -184,7 +171,7 @@ async def add_database(
 
     # Track in managed session
     now = datetime.now(timezone.utc)
-    dynamic_dbs = _get_dynamic_dbs(managed)
+    dynamic_dbs = managed._dynamic_dbs
     db_info = {
         "name": body.name,
         "type": body.type,
@@ -301,7 +288,7 @@ async def list_databases(
                 seen_names.add(name)
 
     # Add dynamic databases (session-added)
-    dynamic_dbs = _get_dynamic_dbs(managed)
+    dynamic_dbs = managed._dynamic_dbs
     for db in dynamic_dbs:
         if db["name"] in seen_names:
             continue  # Skip duplicates
@@ -384,7 +371,7 @@ async def list_data_sources(
                 seen_apis.add(name)
 
     # Dynamic APIs (session-added)
-    dynamic_apis = _get_dynamic_apis(managed)
+    dynamic_apis = managed._dynamic_apis
     for api in dynamic_apis:
         if api["name"] in seen_apis:
             continue  # Skip duplicates
@@ -435,23 +422,18 @@ async def list_data_sources(
                 seen_docs.add(name)
 
     # Session-added file refs (documents)
-    try:
-        from constat.server.routes.files import _get_file_refs
-        file_refs = _get_file_refs(managed)
-        for ref in file_refs:
-            if ref["name"] in seen_docs:
-                continue
-            documents.append(SessionDocumentInfo(
-                name=ref["name"],
-                type=ref.get("uri", "").split(".")[-1] if ref.get("uri") else None,
-                description=ref.get("description"),
-                path=ref.get("uri"),
-                indexed=True,
-                source="session",
-                from_config=False,
-            ))
-    except Exception:
-        pass  # File refs might not exist
+    for ref in managed._file_refs:
+        if ref["name"] in seen_docs:
+            continue
+        documents.append(SessionDocumentInfo(
+            name=ref["name"],
+            type=ref.get("uri", "").split(".")[-1] if ref.get("uri") else None,
+            description=ref.get("description"),
+            path=ref.get("uri"),
+            indexed=True,
+            source="session",
+            from_config=False,
+        ))
 
     return SessionDataSourcesResponse(
         databases=databases,
@@ -490,8 +472,17 @@ async def remove_database(
             detail="Cannot remove config-defined database"
         )
 
+    # Check if it's a project database
+    for project_filename in managed.active_projects:
+        project = managed.session.config.load_project(project_filename)
+        if project and db_name in project.databases:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot remove project-defined database (from {project_filename})"
+            )
+
     # Find the database to get its file path before removing
-    dynamic_dbs = _get_dynamic_dbs(managed)
+    dynamic_dbs = managed._dynamic_dbs
     db_to_remove = next((db for db in dynamic_dbs if db["name"] == db_name), None)
 
     if not db_to_remove:
@@ -569,12 +560,7 @@ async def test_database_connection(
     """
     managed = session_manager.get_session(session_id)
 
-    # Find the database
-    db_config = managed.session.config.databases.get(db_name)
-    dynamic_dbs = _get_dynamic_dbs(managed)
-    dynamic_db = next((db for db in dynamic_dbs if db["name"] == db_name), None)
-
-    if not db_config and not dynamic_db:
+    if not managed.has_database(db_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
 
     # Test connection
@@ -596,6 +582,95 @@ async def test_database_connection(
         table_count=table_count,
         error=error,
     )
+
+
+@router.get("/{session_id}/databases/{db_name}/tables/{table_name}/preview")
+async def preview_database_table(
+    session_id: str,
+    db_name: str,
+    table_name: str,
+    page: int = 1,
+    page_size: int = 100,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Preview data from a source database table.
+
+    Args:
+        session_id: Session ID
+        db_name: Database name
+        table_name: Table name
+        page: Page number (1-indexed)
+        page_size: Number of rows per page
+
+    Returns:
+        Table data with columns, rows, and pagination info
+
+    Raises:
+        404: Session, database, or table not found
+        500: Query execution error
+    """
+    import pandas as pd
+
+    managed = session_manager.get_session(session_id)
+
+    if not managed.has_database(db_name):
+        raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
+
+    db_connection = managed.get_database_connection(db_name)
+    if not db_connection:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Database '{db_name}' is not connected. Try reconnecting.",
+        )
+
+    try:
+        # Calculate offset
+        offset = (page - 1) * page_size
+
+        # File-based sources use DuckDB; SQL sources use pd.read_sql
+        from constat.catalog.file.connector import FileConnector
+        if isinstance(db_connection, FileConnector):
+            import duckdb
+            conn = duckdb.connect(":memory:")
+            file_path = db_connection.path
+            ft = db_connection.file_type.value  # csv, json, parquet, etc.
+            read_fn = {
+                'csv': f"read_csv_auto('{file_path}')",
+                'tsv': f"read_csv_auto('{file_path}', delim='\\t')",
+                'json': f"read_json_auto('{file_path}')",
+                'jsonl': f"read_json_auto('{file_path}', format='newline_delimited')",
+                'parquet': f"read_parquet('{file_path}')",
+                'arrow': f"read_parquet('{file_path}')",
+                'feather': f"read_parquet('{file_path}')",
+            }.get(ft, f"read_csv_auto('{file_path}')")
+            df = conn.execute(f"SELECT * FROM {read_fn} LIMIT {page_size} OFFSET {offset}").df()
+            total_rows = conn.execute(f"SELECT COUNT(*) as cnt FROM {read_fn}").fetchone()[0]
+            conn.close()
+        else:
+            query = f'SELECT * FROM "{table_name}" LIMIT {page_size} OFFSET {offset}'
+            df = pd.read_sql(query, db_connection)
+            count_query = f'SELECT COUNT(*) as cnt FROM "{table_name}"'
+            count_df = pd.read_sql(count_query, db_connection)
+            total_rows = int(count_df.iloc[0]["cnt"])
+
+        # Convert to response format
+        columns = list(df.columns)
+        data = df.to_dict(orient="records")
+
+        return {
+            "database": db_name,
+            "table_name": table_name,
+            "columns": columns,
+            "data": data,
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "has_more": offset + len(data) < total_rows,
+        }
+
+    except Exception as e:
+        logger.error(f"Error previewing table {db_name}.{table_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error querying table: {e}")
 
 
 # =============================================================================
@@ -625,7 +700,7 @@ async def add_api(
     managed = session_manager.get_session(session_id)
 
     # Check for duplicate name
-    dynamic_apis = _get_dynamic_apis(managed)
+    dynamic_apis = managed._dynamic_apis
     if any(api["name"] == body.name for api in dynamic_apis):
         raise HTTPException(
             status_code=400,
@@ -711,7 +786,7 @@ async def remove_api(
         )
 
     # Find the API in dynamic APIs
-    dynamic_apis = _get_dynamic_apis(managed)
+    dynamic_apis = managed._dynamic_apis
     api_to_remove = next((api for api in dynamic_apis if api["name"] == api_name), None)
 
     if not api_to_remove:

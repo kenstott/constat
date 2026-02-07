@@ -7,10 +7,12 @@ type Theme = 'light' | 'dark' | 'system'
 
 // Artifact reference for fullscreen display
 interface FullscreenArtifact {
-  type: 'artifact' | 'table' | 'proof_value'
+  type: 'artifact' | 'table' | 'proof_value' | 'database_table'
   id?: number  // For artifacts
   name?: string  // For tables or proof node names
   content?: string  // For proof values (markdown tables)
+  dbName?: string  // For database_table type
+  tableName?: string  // For database_table type
 }
 
 interface UIState {

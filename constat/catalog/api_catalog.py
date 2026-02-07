@@ -25,7 +25,6 @@ import httpx
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-
 # Standard GraphQL introspection query
 INTROSPECTION_QUERY = """
 query IntrospectionQuery {

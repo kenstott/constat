@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic Claude provider with tool calling support."""
 
+    # Model output token limits
+    MODEL_OUTPUT_LIMITS = {
+        "claude-3-opus": 4096,
+        "claude-3-sonnet": 4096,
+        "claude-3-haiku": 4096,
+        "claude-3-5-sonnet": 8192,
+        "claude-3-5-haiku": 8192,
+        "claude-sonnet-4": 16384,
+        "claude-opus-4": 16384,
+    }
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -29,6 +40,14 @@ class AnthropicProvider(BaseLLMProvider):
     ):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+
+    @property
+    def max_output_tokens(self) -> int:
+        """Get max output tokens for the current model."""
+        for prefix, limit in self.MODEL_OUTPUT_LIMITS.items():
+            if self.model.startswith(prefix):
+                return limit
+        return 16384  # Default for newer models
 
     def generate(
         self,

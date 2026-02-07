@@ -16,9 +16,6 @@ Converts Session dicts to frozen dataclasses.
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from constat.context import ContextEstimator, ContextCompactor
-from constat.context import ContextStats as ContextStatsRaw
-from constat.context import CompactionResult as CompactionResultRaw
 from constat.api.detection import detect_display_overrides, detect_nl_correction
 from constat.api.learning import maybe_auto_compact
 from constat.api.summarization import (
@@ -40,18 +37,17 @@ from constat.api.types import (
     ReplayResult,
     ResumeResult,
     Rule,
-    SavedPlan,
     SessionState,
     SolveResult,
     StepInfo,
     SummarizeResult,
 )
+from constat.context import ContextEstimator, ContextCompactor
 from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse
 from constat.learning.compactor import LearningCompactor
 from constat.session import Session
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningCategory, LearningSource, LearningStore
-
 
 # Type alias for event callbacks
 EventCallback = Callable[[str, dict[str, Any]], None]

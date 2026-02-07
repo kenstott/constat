@@ -9,13 +9,13 @@
 
 """Base LLM provider interface."""
 
-from abc import ABC, abstractmethod
 import asyncio
+import logging
+import re
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-import logging
 from typing import Any, Callable, Optional
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,15 @@ class BaseLLMProvider(ABC):
         Returns True by default for providers that implement tool handling.
         """
         return True
+
+    @property
+    def max_output_tokens(self) -> int:
+        """Maximum output tokens supported by the model.
+
+        Override in subclasses based on model capabilities.
+        Default is 16384 which covers most modern models.
+        """
+        return 16384
 
     @abstractmethod
     def generate(

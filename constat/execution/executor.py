@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import ast
 import io
-import sys
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass

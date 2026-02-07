@@ -5380,7 +5380,14 @@ Provide a brief, high-level summary of the key findings."""
                     display_problem = suggestion_text
                     continue  # Go back to planning
 
-                # APPROVE - proceed with execution
+                # APPROVE - apply any edits/deletions, then proceed
+                if approval.edited_steps:
+                    self.plan = self._build_plan_from_edited_steps(problem, approval.edited_steps)
+                elif approval.deleted_steps:
+                    deleted_set = set(approval.deleted_steps)
+                    self.plan.steps = [s for s in self.plan.steps if s.number not in deleted_set]
+                    for i, step in enumerate(self.plan.steps, 1):
+                        step.number = i
                 break
             else:
                 # No approval required - proceed

@@ -23,7 +23,6 @@ from pathlib import Path
 
 import yaml
 
-
 # Default language
 DEFAULT_LANGUAGE = "en"
 

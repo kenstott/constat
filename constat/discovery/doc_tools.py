@@ -14,14 +14,11 @@ on-demand rather than loading everything into the system prompt.
 """
 
 import glob as glob_module
-import json
+import hashlib
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
-import hashlib
-import threading
-
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +28,6 @@ from constat.discovery.models import (
     DocumentChunk,
     LoadedDocument,
     StructuredFileSchema,
-    Entity,
     ChunkEntity,
 )
 from constat.discovery.vector_store import (

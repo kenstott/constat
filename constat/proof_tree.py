@@ -15,10 +15,10 @@ Displays a live tree view of fact resolution with status updates and intermediat
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
-from rich.tree import Tree
-from rich.text import Text
+
 from rich.panel import Panel
-from rich.console import Group
+from rich.text import Text
+from rich.tree import Tree
 
 
 class NodeStatus(Enum):

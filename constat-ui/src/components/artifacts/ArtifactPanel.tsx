@@ -141,6 +141,18 @@ export function ArtifactPanel() {
     updateSystemPrompt,
   } = useArtifactStore()
 
+  const [expandedDb, setExpandedDb] = useState<string | null>(null)
+  const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
+  const [dbTablesLoading, setDbTablesLoading] = useState<string | null>(null)
+  const [previewDb, setPreviewDb] = useState<string | null>(null)
+  const [previewTable, setPreviewTable] = useState<string | null>(null)
+  const [previewData, setPreviewData] = useState<sessionsApi.DatabaseTablePreview | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewPage, setPreviewPage] = useState(1)
+  const [expandedApi, setExpandedApi] = useState<string | null>(null)
+  const [apiEndpoints, setApiEndpoints] = useState<Record<string, sessionsApi.ApiEndpointInfo[]>>({})
+  const [apiEndpointsLoading, setApiEndpointsLoading] = useState<string | null>(null)
+  const [expandedEndpoint, setExpandedEndpoint] = useState<string | null>(null)
   const [showModal, setShowModal] = useState<ModalType>(null)
   const [modalInput, setModalInput] = useState({ name: '', value: '', uri: '', type: '', persist: false })
   const [compacting, setCompacting] = useState(false)
@@ -351,6 +363,82 @@ export function ArtifactPanel() {
       alert('Failed to load document. Please try again.')
     } finally {
       setLoadingDocument(false)
+    }
+  }
+
+  const FILE_DB_TYPES = new Set(['csv', 'json', 'jsonl', 'parquet', 'arrow', 'feather', 'tsv'])
+
+  const toggleDbExpand = async (dbName: string, dbType?: string) => {
+    if (expandedDb === dbName) {
+      setExpandedDb(null)
+      setPreviewDb(null)
+      setPreviewTable(null)
+      setPreviewData(null)
+      return
+    }
+    setExpandedDb(dbName)
+    setPreviewDb(null)
+    setPreviewTable(null)
+    setPreviewData(null)
+    if (!dbTables[dbName] && session) {
+      setDbTablesLoading(dbName)
+      try {
+        const res = await sessionsApi.listDatabaseTables(session.session_id, dbName)
+        setDbTables((prev) => ({ ...prev, [dbName]: res.tables }))
+        // File-based DBs are single-table — jump straight to preview
+        if (dbType && FILE_DB_TYPES.has(dbType) && res.tables.length === 1) {
+          openTablePreview(dbName, res.tables[0].name)
+        }
+      } catch (err) {
+        console.error('Failed to list tables:', err)
+        setDbTables((prev) => ({ ...prev, [dbName]: [] }))
+      } finally {
+        setDbTablesLoading(null)
+      }
+    } else if (dbTables[dbName] && dbType && FILE_DB_TYPES.has(dbType) && dbTables[dbName].length === 1) {
+      // Already cached — jump to preview
+      openTablePreview(dbName, dbTables[dbName][0].name)
+    }
+  }
+
+  const openTablePreview = async (dbName: string, tableName: string, page = 1) => {
+    if (!session) return
+    setPreviewDb(dbName)
+    setPreviewTable(tableName)
+    setPreviewPage(page)
+    setPreviewLoading(true)
+    try {
+      const data = await sessionsApi.getDatabaseTablePreview(
+        session.session_id, dbName, tableName, page
+      )
+      setPreviewData(data)
+    } catch (err) {
+      console.error('Failed to preview table:', err)
+      setPreviewData(null)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const toggleApiExpand = async (apiName: string) => {
+    if (expandedApi === apiName) {
+      setExpandedApi(null)
+      setExpandedEndpoint(null)
+      return
+    }
+    setExpandedApi(apiName)
+    setExpandedEndpoint(null)
+    if (!apiEndpoints[apiName] && session) {
+      setApiEndpointsLoading(apiName)
+      try {
+        const res = await sessionsApi.getApiSchema(session.session_id, apiName)
+        setApiEndpoints((prev) => ({ ...prev, [apiName]: res.endpoints }))
+      } catch (err) {
+        console.error('Failed to load API schema:', err)
+        setApiEndpoints((prev) => ({ ...prev, [apiName]: [] }))
+      } finally {
+        setApiEndpointsLoading(null)
+      }
     }
   }
 
@@ -1079,9 +1167,17 @@ ${skill.body}`
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <button
+                      onClick={() => toggleDbExpand(db.name, db.type)}
+                      className="flex items-center gap-1 text-sm font-medium text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 hover:underline"
+                    >
+                      {expandedDb === db.name ? (
+                        <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+                      ) : (
+                        <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+                      )}
                       {db.name}
-                    </span>
+                    </button>
                     {db.source && db.source !== 'config' && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                         db.source === 'session'
@@ -1096,7 +1192,6 @@ ${skill.body}`
                     <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
                       {db.type}
                     </span>
-                    {/* Only show delete for session-added databases (is_dynamic) */}
                     {db.is_dynamic && (
                       <button
                         onClick={async () => {
@@ -1119,7 +1214,7 @@ ${skill.body}`
                     )}
                   </div>
                 </div>
-                {db.table_count !== undefined && db.table_count > 0 && (
+                {expandedDb !== db.name && db.table_count !== undefined && db.table_count > 0 && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     {db.table_count} tables
                   </p>
@@ -1128,6 +1223,103 @@ ${skill.body}`
                   <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                     {db.description}
                   </p>
+                )}
+
+                {/* Expanded: table list */}
+                {expandedDb === db.name && (
+                  <div className="mt-2 ml-4 space-y-1">
+                    {dbTablesLoading === db.name ? (
+                      <div className="flex items-center gap-2 py-1">
+                        <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-primary-500" />
+                        <span className="text-xs text-gray-500">Loading tables...</span>
+                      </div>
+                    ) : (dbTables[db.name] || []).length === 0 ? (
+                      <p className="text-xs text-gray-500">No tables found</p>
+                    ) : (
+                      (dbTables[db.name] || []).map((t) => (
+                        <div key={t.name}>
+                          <button
+                            onClick={() => openTablePreview(db.name, t.name)}
+                            className={`w-full text-left text-xs px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${
+                              previewDb === db.name && previewTable === t.name
+                                ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                                : 'text-gray-600 dark:text-gray-400'
+                            }`}
+                          >
+                            <span className="font-medium">{t.name}</span>
+                            {t.row_count != null && (
+                              <span className="ml-1 text-gray-400">({t.row_count.toLocaleString()} rows)</span>
+                            )}
+                          </button>
+
+                          {/* Inline preview */}
+                          {previewDb === db.name && previewTable === t.name && (
+                            <div className="mt-1 mb-2 border border-gray-200 dark:border-gray-700 rounded overflow-hidden">
+                              {previewLoading ? (
+                                <div className="flex items-center justify-center py-4">
+                                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-500" />
+                                </div>
+                              ) : previewData ? (
+                                <div>
+                                  <div className="overflow-auto max-h-[200px]">
+                                    <table className="min-w-full text-xs">
+                                      <thead className="sticky top-0 bg-gray-50 dark:bg-gray-800">
+                                        <tr className="border-b border-gray-200 dark:border-gray-700">
+                                          {previewData.columns.map((col) => (
+                                            <th key={col} className="px-2 py-1 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                                              {col}
+                                            </th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                        {previewData.data.map((row, i) => (
+                                          <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                            {previewData.columns.map((col) => (
+                                              <td key={col} className="px-2 py-1 text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                                {row[col] != null && typeof row[col] === 'object'
+                                                  ? JSON.stringify(row[col])
+                                                  : String(row[col] ?? '')}
+                                              </td>
+                                            ))}
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                  {(previewData.has_more || previewPage > 1) && (
+                                    <div className="flex items-center justify-between text-xs px-2 py-1 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
+                                      <span className="text-gray-500">
+                                        {previewData.total_rows.toLocaleString()} rows
+                                      </span>
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => openTablePreview(db.name, t.name, previewPage - 1)}
+                                          disabled={previewPage === 1}
+                                          className="text-primary-600 dark:text-primary-400 disabled:opacity-50"
+                                        >
+                                          Prev
+                                        </button>
+                                        <button
+                                          onClick={() => openTablePreview(db.name, t.name, previewPage + 1)}
+                                          disabled={!previewData.has_more}
+                                          className="text-primary-600 dark:text-primary-400 disabled:opacity-50"
+                                        >
+                                          Next
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-gray-500 p-2">Failed to load preview</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
                 )}
               </div>
             ))}
@@ -1163,9 +1355,17 @@ ${skill.body}`
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <button
+                      onClick={() => toggleApiExpand(api.name)}
+                      className="flex items-center gap-1 text-sm font-medium text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 hover:underline"
+                    >
+                      {expandedApi === api.name ? (
+                        <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+                      ) : (
+                        <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+                      )}
                       {api.name}
-                    </span>
+                    </button>
                     {api.source && api.source !== 'config' && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                         api.source === 'session'
@@ -1186,7 +1386,6 @@ ${skill.body}`
                     >
                       {api.connected ? 'Available' : 'Pending'}
                     </span>
-                    {/* Only show delete for session-added APIs */}
                     {api.source === 'session' && (
                       <button
                         onClick={() => handleDeleteApi(api.name)}
@@ -1198,7 +1397,7 @@ ${skill.body}`
                     )}
                   </div>
                 </div>
-                {api.type && (
+                {expandedApi !== api.name && api.type && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     {api.type}
                   </p>
@@ -1207,6 +1406,112 @@ ${skill.body}`
                   <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                     {api.description}
                   </p>
+                )}
+
+                {/* Expanded: endpoint/query list */}
+                {expandedApi === api.name && (
+                  <div className="mt-2 ml-4 space-y-1">
+                    {apiEndpointsLoading === api.name ? (
+                      <div className="flex items-center gap-2 py-1">
+                        <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-primary-500" />
+                        <span className="text-xs text-gray-500">Loading schema...</span>
+                      </div>
+                    ) : (apiEndpoints[api.name] || []).length === 0 ? (
+                      <p className="text-xs text-gray-500">No endpoints found</p>
+                    ) : (() => {
+                      const allEps = apiEndpoints[api.name] || []
+
+                      const renderEndpoint = (ep: sessionsApi.ApiEndpointInfo) => (
+                        <div key={ep.name}>
+                          <button
+                            onClick={() => setExpandedEndpoint(expandedEndpoint === ep.name ? null : ep.name)}
+                            className={`w-full text-left text-xs px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${
+                              expandedEndpoint === ep.name
+                                ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
+                                : 'text-gray-600 dark:text-gray-400'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5">
+                              {expandedEndpoint === ep.name ? (
+                                <ChevronDownIcon className="w-2.5 h-2.5 flex-shrink-0" />
+                              ) : (
+                                <ChevronRightIcon className="w-2.5 h-2.5 flex-shrink-0" />
+                              )}
+                              <span className="font-medium">{ep.name}</span>
+                              {ep.return_type && (
+                                <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400">{ep.return_type}</span>
+                              )}
+                            </div>
+                            {ep.description && (
+                              <p className="text-[10px] text-gray-400 mt-0.5 ml-4">{ep.description}</p>
+                            )}
+                          </button>
+
+                          {expandedEndpoint === ep.name && ep.fields.length > 0 && (
+                            <div className="ml-6 mt-1 mb-2 border-l-2 border-gray-200 dark:border-gray-700 pl-2 space-y-0.5">
+                              <p className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Fields</p>
+                              {ep.fields.map((f) => (
+                                <div key={f.name} className="text-xs flex items-baseline gap-1.5">
+                                  <span className="font-medium text-gray-700 dark:text-gray-300">{f.name}</span>
+                                  <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400">{f.type}</span>
+                                  {f.is_required && (
+                                    <span className="text-[9px] text-red-500">required</span>
+                                  )}
+                                  {f.description && (
+                                    <span className="text-gray-400 truncate">{f.description}</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+
+                      const renderSection = (label: string, items: sessionsApi.ApiEndpointInfo[]) => (
+                        items.length > 0 ? (
+                          <div key={label}>
+                            <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
+                              {label} <span className="font-normal">({items.length})</span>
+                            </p>
+                            <div className="space-y-0.5">
+                              {items.map(renderEndpoint)}
+                            </div>
+                          </div>
+                        ) : null
+                      )
+
+                      // GraphQL: group by operation type + types
+                      const gqlKinds: Record<string, string> = {
+                        graphql_query: 'Queries',
+                        graphql_mutation: 'Mutations',
+                        graphql_subscription: 'Subscriptions',
+                        graphql_type: 'Types',
+                      }
+                      const gqlGroups = Object.entries(gqlKinds)
+                        .map(([kind, label]) => ({ label, items: allEps.filter((ep) => ep.kind === kind) }))
+                        .filter((g) => g.items.length > 0)
+
+                      // REST: operations grouped by HTTP method, then schema types
+                      const restOps = allEps.filter((ep) => ep.kind === 'rest' || (!ep.kind?.startsWith('graphql_') && !ep.kind?.includes('/') && ep.http_method))
+                      const restTypes = allEps.filter((ep) => ep.kind === 'rest/schema')
+                      const restOther = allEps.filter((ep) => !ep.kind?.startsWith('graphql_') && ep.kind !== 'rest' && ep.kind !== 'rest/schema' && !ep.http_method)
+                      const methodOrder = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+                      const restMethods = [...new Set(restOps.map((ep) => ep.http_method || 'OTHER'))]
+                        .sort((a, b) => (methodOrder.indexOf(a) === -1 ? 99 : methodOrder.indexOf(a)) - (methodOrder.indexOf(b) === -1 ? 99 : methodOrder.indexOf(b)))
+                      const restGroups = [
+                        ...restMethods.map((method) => ({ label: method, items: restOps.filter((ep) => (ep.http_method || 'OTHER') === method) })),
+                        ...(restTypes.length > 0 ? [{ label: 'Types', items: restTypes }] : []),
+                        ...(restOther.length > 0 ? [{ label: 'Other', items: restOther }] : []),
+                      ].filter((g) => g.items.length > 0)
+
+                      return (
+                        <div className="space-y-2">
+                          {gqlGroups.map((g) => renderSection(g.label, g.items))}
+                          {restGroups.map((g) => renderSection(g.label, g.items))}
+                        </div>
+                      )
+                    })()}
+                  </div>
                 )}
               </div>
             ))}

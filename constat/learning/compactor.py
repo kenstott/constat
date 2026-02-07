@@ -13,12 +13,12 @@ Analyzes patterns in raw learnings and creates generalized rules
 when sufficient similar learnings accumulate.
 """
 
+import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
-import json
-import re
 
 from constat.storage.learnings import LearningStore, LearningCategory
 
@@ -263,7 +263,7 @@ Output ONLY valid JSON, no explanation."""
             response = self.llm.generate(
                 system="You are identifying duplicate coding rules.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             content = response.strip() if isinstance(response, str) else response.content.strip()
@@ -324,7 +324,7 @@ Output ONLY valid JSON."""
             response = self.llm.generate(
                 system="You are checking if learnings match existing rules.",
                 user_message=prompt,
-                max_tokens=50,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             content = response.strip() if isinstance(response, str) else response.content.strip()
@@ -391,7 +391,7 @@ Output ONLY valid JSON."""
             response = self.llm.generate(
                 system="You are improving coding rules to be clearer and more actionable.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             content = response.strip() if isinstance(response, str) else response.content.strip()
@@ -451,7 +451,7 @@ Output ONLY valid JSON."""
             response = self.llm.generate(
                 system="You are consolidating duplicate coding rules.",
                 user_message=prompt,
-                max_tokens=200,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             content = response.strip() if isinstance(response, str) else response.content.strip()
@@ -507,7 +507,7 @@ Output ONLY valid JSON, no explanation."""
             response = self.llm.generate(
                 system="You are analyzing code learnings to find common patterns.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             # Parse response (generate returns string, not object)
@@ -582,7 +582,7 @@ Output ONLY valid JSON, no explanation."""
             response = self.llm.generate(
                 system="You are checking if code learnings describe the same pattern.",
                 user_message=prompt,
-                max_tokens=10,
+                max_tokens=self.llm.max_output_tokens,
             )
             # generate() returns string directly
             return "yes" in response.lower()
@@ -627,7 +627,7 @@ Output ONLY valid JSON, no explanation."""
             response = self.llm.generate(
                 system="You are creating coding best practices from observed patterns.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             # generate() returns string directly

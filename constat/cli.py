@@ -27,7 +27,7 @@ import click
 from rich.console import Console
 from rich.status import Status
 
-from constat.core.config import Config, DatabaseCredentials
+from constat.core.config import Config
 from constat.session import Session, SessionConfig
 from constat.repl import InteractiveREPL, FeedbackDisplay, SessionFeedbackHandler
 
@@ -354,7 +354,6 @@ def validate(config: str):
     Examples:
         constat validate -c config.yaml
     """
-    from rich.table import Table
 
     console.print(f"Validating: {config}\n")
 

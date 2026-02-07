@@ -1,4 +1,4 @@
-are# Constat
+# Constat
 
 A multi-step reasoning engine for data analysis with verifiable, auditable logic.
 
@@ -8,6 +8,12 @@ Constat enables LLM-powered data analysis with two key principles:
 
 1. **Verifiable, Auditable Logic**: Every conclusion can be traced back to its source data and reasoning steps
 2. **Universal Data Integration**: Connect to SQL databases, NoSQL stores, and cloud data services through a unified interface
+
+### Design Tradeoffs
+
+Constat decomposes problems into discrete, verifiable steps rather than generating a single monolithic response. This makes it slower than a traditional chatbot — each query goes through intent classification, planning, approval, multi-step execution, and synthesis. The payoff is that breaking problems into smaller tasks produces more accurate, auditable results. Each step can be inspected, retried, or corrected independently, and the full reasoning chain is preserved. Steps are organized as a DAG and parallelized where dependencies allow, recouping some of the overhead.
+
+Scalability patterns like progressive discovery (on-demand schema loading, vector-indexed documents, context preloading) are built in but have not been stress-tested at scale.
 
 ## Quick Start
 
@@ -20,17 +26,21 @@ python demo/setup_demo.py
 # Set your API key
 export ANTHROPIC_API_KEY=your_key_here
 
-# View available data sources
-constat schema -c demo/config.yaml
-
-# Start interactive session
-constat repl -c demo/config.yaml
+# Start both the API server and web UI
+./scripts/dev.sh demo/config.yaml        # macOS / Linux
+scripts\dev.bat demo\config.yaml          # Windows
 ```
 
-Example queries to try:
+Open http://localhost:5173 and try:
 - "Top 5 customers by total order value"
 - "Which pages have the highest bounce rate?"
 - "Average performance rating by department"
+
+Or use the terminal REPL instead:
+
+```bash
+constat repl -c demo/config.yaml
+```
 
 ## Execution and Provenance
 
@@ -43,9 +53,10 @@ session = Session(config)
 result = session.solve("What are the top 10 customers by revenue this quarter?")
 ```
 
-- Generates multi-step execution plans
+- Generates multi-step execution plans with user approval
 - Each step produces code, output, and narrative
 - Results include charts, tables, and insights
+- Clarification questions asked before planning when queries are ambiguous
 
 ### On-Demand Proof Generation
 
@@ -225,53 +236,53 @@ df = pd.read_parquet(file_transactions)
 ## Architecture
 
 ```
-                    +-------------------+
-                    |   User Request    |
-                    +-------------------+
-                            |
-                    +-------v-------+
-                    | Mode Selector |
-                    +-------+-------+
-                            |
-           +----------------+----------------+
-           |                                 |
-    +------v------+                   +------v------+
-    | Exploratory |                   |  Auditable  |
-    |    Mode     |                   |    Mode     |
-    +------+------+                   +------+------+
-           |                                 |
-    +------v------+                   +------v------+
-    | Multi-Step  |                   |    Fact     |
-    |   Planner   |                   |  Resolver   |
-    +------+------+                   +------+------+
-           |                                 |
-           +----------------+----------------+
-                            |
-              +-------------v-------------+
-              |     Discovery Tools       |
-              |  (tool-based or prompt)   |
-              +-------------+-------------+
-                            |
-    +-------+-------+-------+-------+-------+-------+
-    |       |       |       |       |       |       |
-   SQL   MongoDB Cassandra DynamoDB  Files  CosmosDB
-                                  (CSV/JSON/
-                                   Parquet)
+    +-------------+          +------------------+
+    |   Web UI    |          |   Terminal REPL   |
+    | (React SPA) |          | (Textual TUI)    |
+    +------+------+          +--------+---------+
+           |                          |
+    +------v------+                   |
+    |  REST API   |                   |
+    | (FastAPI +  |                   |
+    |  WebSocket) |                   |
+    +------+------+                   |
+           |                          |
+           +------------+-------------+
+                        |
+                +-------v-------+
+                | Intent        |
+                | Classifier    |
+                +-------+-------+
+                        |
+       +----------------+----------------+
+       |                                 |
++------v------+                   +------v------+
+| Exploratory |                   |  Auditable  |
+|    Mode     |                   |    Mode     |
++------+------+                   +------+------+
+       |                                 |
++------v------+                   +------v------+
+| Multi-Step  |                   |    Fact     |
+|   Planner   |                   |  Resolver   |
++------+------+                   +------+------+
+       |                                 |
+       +----------------+----------------+
+                        |
+          +-------------v-------------+
+          |     Discovery Tools       |
+          |  (tool-based or prompt)   |
+          +-------------+-------------+
+                        |
++-------+-------+-------+-------+-------+-------+
+|       |       |       |       |       |       |
+SQL   MongoDB Cassandra DynamoDB  Files  CosmosDB
+                                (CSV/JSON/
+                                 Parquet)
 ```
 
-### Discovery Mode (Automatic)
+### Discovery Mode
 
-Constat automatically detects whether the LLM model supports tool calling:
-
-| Model | Tool Calling | Prompt Mode |
-|-------|-------------|-------------|
-| Claude 3+ (Opus, Sonnet, Haiku) | Yes | Minimal prompt + discovery tools |
-| GPT-4, GPT-3.5-turbo | Yes | Minimal prompt + discovery tools |
-| Gemini | Yes | Minimal prompt + discovery tools |
-| Claude 2, Claude Instant | No | Full schema/API/docs in prompt |
-| GPT-3 Instruct | No | Full schema/API/docs in prompt |
-
-**Tool-based discovery** (modern models):
+All supported LLM providers use tool-based discovery:
 - Minimal system prompt (~500 tokens)
 - LLM uses tools to discover relevant schema, APIs, and documents on-demand
 - On-demand loading reduces token usage by 80-95%
@@ -282,7 +293,7 @@ Discovery tools include:
 - **Documents**: `list_documents`, `search_documents`, `get_document`, `get_document_section`
 
 Document discovery supports:
-- **Unstructured docs**: Markdown, text, PDF files with semantic search (sentence-transformers)
+- **Unstructured docs**: Markdown, text, PDF, DOCX, PPTX files with semantic search (sentence-transformers)
 - **Structured files**: CSV, JSON, JSONL, Parquet with automatic schema inference
 - **Section extraction**: Retrieve specific sections from large documents
 
@@ -290,11 +301,6 @@ Documents are indexed into a persistent vector store using DuckDB VSS (lazy, on 
 The index persists at `~/.constat/vectors.duckdb` by default, eliminating re-indexing on restart.
 During fact resolution and knowledge synthesis, relevant document excerpts are automatically
 retrieved via semantic search - no explicit discovery step required.
-
-**Full prompt mode** (legacy models):
-- Comprehensive system prompt with all metadata
-- Complete schema, API docs, and document content embedded
-- No tool calling required
 
 ## CLI Usage
 
@@ -304,6 +310,9 @@ constat solve "What are the top 5 customers by revenue?" -c config.yaml
 
 # Start interactive REPL
 constat repl -c config.yaml
+
+# Start API server (for web UI)
+constat serve -c config.yaml
 
 # View session history
 constat history
@@ -319,6 +328,28 @@ constat schema -c config.yaml
 
 # Generate sample config
 constat init
+```
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `solve <problem>` | Solve a single problem with multi-step planning |
+| `repl` | Start interactive REPL session (Textual TUI) |
+| `serve` | Start the REST API server for web UI access |
+| `history` | List recent sessions |
+| `resume <id>` | Resume a previous session |
+| `validate` | Validate a config file |
+| `schema` | Show database schema overview |
+| `init` | Generate a sample config.yaml |
+
+**`serve` options:**
+```bash
+constat serve -c config.yaml                  # Start on localhost:8000
+constat serve -c config.yaml --port 8080      # Custom port
+constat serve -c config.yaml --host 0.0.0.0   # Bind to all interfaces
+constat serve -c config.yaml --reload         # Auto-reload for development
+constat serve -c config.yaml --debug          # Enable debug logging
 ```
 
 ### REPL Commands
@@ -352,6 +383,8 @@ Once in the interactive REPL, these commands are available:
 | Command | Description |
 |---------|-------------|
 | `/databases`, `/db` | List configured databases |
+| `/apis`, `/api` | List configured APIs |
+| `/documents`, `/docs` | List configured documents |
 | `/files` | List all data files |
 | `/doc <path> [name]` | Add a document to this session |
 | `/discover [scope] <query>` | Search data sources (scope: database\|api\|document) |
@@ -384,7 +417,7 @@ Once in the interactive REPL, these commands are available:
 
 | Command | Description |
 |---------|-------------|
-| `/prove` | Verify conversation claims with auditable proof |
+| `/prove`, `/audit` | Verify conversation claims with auditable proof |
 
 **Settings:**
 
@@ -470,6 +503,296 @@ Constat learns from corrections and errors to improve over time. Learnings are s
 /compact-learnings  # Manually trigger compaction
 ```
 
+## Web UI
+
+Constat includes a React web application for browser-based access. Start the API server and UI together:
+
+```bash
+# Start the API server
+constat serve -c config.yaml
+
+# In another terminal, start the UI dev server
+cd constat-ui
+npm install
+npm run dev
+```
+
+**Features:**
+- Real-time streaming via WebSocket
+- Plan approval dialog before execution
+- Clarification dialog for ambiguous queries
+- Artifact panel with tables, charts, and code
+- Proof DAG visualization (D3-based directed acyclic graph)
+- Firebase authentication for multi-user deployments
+- Responsive layout with collapsible panels
+
+**Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, Zustand, React Query, D3, Plotly.js
+
+## REST API
+
+Constat provides a REST API via FastAPI with WebSocket support for real-time streaming.
+
+```bash
+constat serve -c config.yaml --port 8000
+```
+
+### Key Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check and server stats |
+| `POST` | `/api/sessions` | Create a new session |
+| `GET` | `/api/sessions` | List sessions |
+| `GET` | `/api/sessions/{id}` | Get session details |
+| `POST` | `/api/sessions/{id}/query` | Submit a query |
+| `GET` | `/api/sessions/{id}/plan` | Get current execution plan |
+| `POST` | `/api/sessions/{id}/plan/approve` | Approve an execution plan |
+| `POST` | `/api/sessions/{id}/cancel` | Cancel execution |
+| `WS` | `/api/sessions/{id}/ws` | WebSocket for real-time events |
+
+### Additional Route Groups
+
+| Prefix | Description |
+|--------|-------------|
+| `/api/sessions/{id}/...` | Data exploration, files, databases |
+| `/api/schema` | Schema introspection |
+| `/api/users` | User management |
+| `/api/sessions/roles` | Role management |
+| `/api/skills` | Skill management |
+| `/api/learnings` | Learning management |
+
+Full OpenAPI documentation is available at `/docs` when the server is running.
+
+## LLM Provider Support
+
+Multiple LLM providers for flexibility and cost optimization:
+
+```python
+from constat.providers import (
+    AnthropicProvider,
+    OpenAIProvider,
+    GeminiProvider,
+    GrokProvider,
+    MistralProvider,
+    CodestralProvider,
+    OllamaProvider,     # Local models
+    TogetherProvider,    # Hosted inference
+    GroqProvider,        # Fast inference
+    TaskRouter,          # Task-type routing with automatic escalation
+)
+
+# Direct provider usage
+provider = AnthropicProvider(model="claude-sonnet-4-20250514")
+
+# Task-type routing (recommended for production)
+from constat.core.config import LLMConfig
+router = TaskRouter(llm_config)
+result = router.execute(
+    task_type=TaskType.SQL_GENERATION,
+    system="Generate SQL...",
+    user_message="Get top 5 customers",
+)
+```
+
+### Task-Type Routing
+
+Route tasks to the most appropriate model with automatic escalation on failure:
+
+```yaml
+# config.yaml
+llm:
+  provider: anthropic              # Default provider
+  model: claude-sonnet-4-20250514
+  api_key: ${ANTHROPIC_API_KEY}
+
+  task_routing:
+    # SQL generation: try local SQLCoder first, escalate to cloud on failure
+    sql_generation:
+      models:
+        - provider: ollama
+          model: sqlcoder:7b
+        - model: claude-sonnet-4-20250514
+
+    # Python analysis: use sonnet, escalate to opus for complex tasks
+    python_analysis:
+      models:
+        - model: claude-sonnet-4-20250514
+      high_complexity_models:
+        - model: claude-opus-4-20250514
+
+    # Planning: always use cloud (no local fallback)
+    planning:
+      models:
+        - model: claude-sonnet-4-20250514
+
+    # Summarization: use fast/cheap model
+    summarization:
+      models:
+        - model: claude-3-5-haiku-20241022
+```
+
+**Task Types:**
+| Task Type | Description | Typical Models |
+|-----------|-------------|----------------|
+| `planning` | Multi-step plan generation | claude-sonnet, claude-opus |
+| `sql_generation` | Text-to-SQL queries | sqlcoder, claude-sonnet |
+| `python_analysis` | DataFrame transformations | codellama, claude-sonnet |
+| `summarization` | Result synthesis | claude-haiku, llama3.2 |
+| `intent_classification` | User intent detection | phi3, claude-haiku |
+| `fact_resolution` | Auditable fact derivation | claude-sonnet |
+
+**Benefits:**
+- **Automatic escalation**: Local model fails -> cloud model tries automatically
+- **Cost optimization**: Use cheaper/local models when they succeed
+- **Latency optimization**: Fast local models for quick tasks
+- **Privacy**: Route sensitive data through local models first
+- **Observability**: Track escalation rates per task type
+
+**Supported Providers:**
+| Provider | Name | Tool Support |
+|----------|------|--------------|
+| Anthropic | `anthropic` | Yes |
+| OpenAI | `openai` | Yes |
+| Google Gemini | `gemini` | Yes |
+| xAI Grok | `grok` | Yes |
+| Mistral AI | `mistral` | Yes |
+| Codestral | `codestral` | Yes |
+| Ollama (local) | `ollama` | Yes (llama3.2+) |
+| Together AI | `together` | Yes |
+| Groq | `groq` | Yes |
+
+## Roles
+
+Roles are user-defined personas that customize the LLM's behavior for specific analysis contexts. Each role provides a custom system prompt that shapes how the LLM approaches queries.
+
+Roles are stored per-user at `.constat/{user_id}/roles.yaml` and can be managed via the API or UI.
+
+## Skills
+
+Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context.
+
+This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
+
+### Skill Structure
+
+Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
+
+```
+.constat/skills/
+└── financial-analysis/
+    └── SKILL.md
+```
+
+### SKILL.md Format
+
+Each skill is defined as a Markdown file with YAML frontmatter:
+
+```markdown
+---
+name: financial-analysis
+description: Specialized instructions for financial data analysis
+allowed-tools:
+  - Read
+  - Grep
+  - list_tables
+  - get_table_schema
+---
+
+# Financial Analysis Skill
+
+## Key Concepts
+- Revenue recognition principles
+- Common financial metrics (Gross Margin, EBITDA, etc.)
+- Time period handling (MTD, QTD, YTD)
+
+## Analysis Guidelines
+1. Start with data quality checks
+2. Use appropriate aggregations
+3. Present results clearly
+```
+
+### Skill Discovery Paths
+
+Skills are discovered from multiple locations (in order of precedence):
+
+1. **Project skills**: `.constat/skills/` in the project directory
+2. **Global skills**: `~/.constat/skills/` in the user's home directory
+3. **Config-specified paths**: Additional paths defined in `config.yaml`
+
+### Configuring Additional Skill Paths
+
+Add custom skill directories in your config file:
+
+```yaml
+# config.yaml
+skills:
+  paths:
+    - /shared/team-skills/           # Team shared skills
+    - /opt/constat/standard-skills/  # Standard library
+    - ~/my-custom-skills/            # Personal skills (~ expanded)
+```
+
+Skills in config paths are searched after the default paths, so project and global skills take precedence.
+
+### Link Following
+
+Skills can reference additional files via markdown links. Links are parsed when the skill loads but content is fetched lazily (on-demand):
+
+```markdown
+# My Skill
+
+See the [indicator definitions](references/indicators.md) for details.
+For API docs, check [the official guide](https://example.com/docs.md).
+```
+
+**Supported link types:**
+- **Relative paths**: `[text](references/file.md)` - resolved relative to the skill folder
+- **URLs**: `[text](https://example.com/doc.md)` - fetched via HTTP
+
+**How it works:**
+1. When a skill loads, links are discovered and returned in the response
+2. Content is NOT fetched until explicitly requested via `resolve_skill_link`
+3. Fetched content is cached for subsequent calls
+
+### Creating a Skill
+
+1. Create a directory: `.constat/skills/my-skill/`
+2. Add a `SKILL.md` file with YAML frontmatter
+3. Define the skill's context, guidelines, and examples
+4. Optionally add referenced files in subdirectories (e.g., `references/`)
+
+Skills are automatically discovered and can be loaded when relevant to a query.
+
+## Key Concepts
+
+### Facts and Provenance
+
+Every piece of information is a `Fact` with:
+- **Value**: The actual data
+- **Source**: Where it came from (DATABASE, CONFIG, DERIVED, LLM_INFERENCE, LEARNED)
+- **Confidence**: How certain we are (1.0 for database queries, lower for inferences)
+- **Because**: The facts this was derived from
+
+### Derivation Traces
+
+When using `/prove`, every conclusion includes a full derivation trace showing:
+- The logical chain of reasoning
+- All data sources consulted
+- The exact queries executed
+- Confidence at each step
+
+### Lazy Resolution
+
+Facts are resolved only when needed:
+1. Check cache
+2. Check config
+3. Apply rules
+4. Query database
+5. Fall back to LLM knowledge
+6. Create sub-plan if complex
+
+This ensures efficient execution while maintaining full traceability.
+
 ## Configuration
 
 ### Configuration Hierarchy
@@ -517,7 +840,7 @@ Constat uses a layered configuration system with merge semantics:
 #==============================================================================
 llm:
   # Required: LLM provider
-  provider: anthropic                    # anthropic | openai | gemini | grok | ollama
+  provider: anthropic                    # anthropic | openai | gemini | grok | mistral | ollama
 
   # Required: Model to use
   model: claude-sonnet-4-20250514
@@ -1195,33 +1518,6 @@ The discovery module provides on-demand access to schema, API, and document info
 | **Documents** | `list_documents`, `get_document`, `search_documents`, `get_document_section` |
 | **Facts** | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts` |
 
-### Usage
-
-```python
-from constat.discovery import DiscoveryTools, PromptBuilder
-
-# Create discovery tools
-tools = DiscoveryTools(
-    schema_manager=schema_manager,
-    api_catalog=api_catalog,
-    config=config,
-)
-
-# Build prompt automatically based on model capabilities
-builder = PromptBuilder(tools)
-prompt, use_tools = builder.build_prompt("claude-sonnet-4-20250514")
-# → use_tools=True for modern models (minimal prompt)
-# → use_tools=False for legacy models (full metadata in prompt)
-
-# Execute discovery tools directly
-databases = tools.execute("list_databases", {})
-relevant = tools.execute("search_tables", {"query": "customer purchases"})
-
-# Check token savings
-estimate = builder.estimate_tokens("claude-sonnet-4-20250514")
-print(f"Savings: {estimate['savings_percent']}%")
-```
-
 ### Artifact Store Configuration
 
 The artifact store holds session state, execution history, and generated artifacts:
@@ -1238,263 +1534,26 @@ storage:
   artifact_store_uri: duckdb:///~/.constat/artifacts.duckdb
 ```
 
-## GraphQL API
-
-Constat provides a GraphQL API for integration with web applications:
-
-```python
-from constat.api.graphql import create_app
-
-app = create_app(
-    schema_manager=schema_manager,
-    fact_resolver=fact_resolver,
-    config=config,
-)
-
-# Run with: uvicorn constat.api.graphql.app:app
-```
-
-Available operations:
-- `createSession`: Start a new analysis session
-- `solve`: Execute a query in exploratory mode
-- `resolveFact`: Resolve a fact with full provenance
-- `sessionEvents`: Real-time updates via subscriptions
-
-## LLM Provider Support
-
-Multiple LLM providers for flexibility and cost optimization:
-
-```python
-from constat.providers import (
-    AnthropicProvider,
-    OpenAIProvider,
-    GeminiProvider,
-    GrokProvider,
-    OllamaProvider,  # Local models
-    TaskRouter,      # Task-type routing with automatic escalation
-)
-
-# Direct provider usage
-provider = AnthropicProvider(model="claude-sonnet-4-20250514")
-
-# Task-type routing (recommended for production)
-from constat.core.config import LLMConfig
-router = TaskRouter(llm_config)
-result = router.execute(
-    task_type=TaskType.SQL_GENERATION,
-    system="Generate SQL...",
-    user_message="Get top 5 customers",
-)
-```
-
-### Task-Type Routing
-
-Route tasks to the most appropriate model with automatic escalation on failure:
-
-```yaml
-# config.yaml
-llm:
-  provider: anthropic              # Default provider
-  model: claude-sonnet-4-20250514
-  api_key: ${ANTHROPIC_API_KEY}
-
-  task_routing:
-    # SQL generation: try local SQLCoder first, escalate to cloud on failure
-    sql_generation:
-      models:
-        - provider: ollama
-          model: sqlcoder:7b
-        - model: claude-sonnet-4-20250514
-
-    # Python analysis: use sonnet, escalate to opus for complex tasks
-    python_analysis:
-      models:
-        - model: claude-sonnet-4-20250514
-      high_complexity_models:
-        - model: claude-opus-4-20250514
-
-    # Planning: always use cloud (no local fallback)
-    planning:
-      models:
-        - model: claude-sonnet-4-20250514
-
-    # Summarization: use fast/cheap model
-    summarization:
-      models:
-        - model: claude-3-5-haiku-20241022
-```
-
-**Task Types:**
-| Task Type | Description | Typical Models |
-|-----------|-------------|----------------|
-| `planning` | Multi-step plan generation | claude-sonnet, claude-opus |
-| `sql_generation` | Text-to-SQL queries | sqlcoder, claude-sonnet |
-| `python_analysis` | DataFrame transformations | codellama, claude-sonnet |
-| `summarization` | Result synthesis | claude-haiku, llama3.2 |
-| `intent_classification` | User intent detection | phi3, claude-haiku |
-| `fact_resolution` | Auditable fact derivation | claude-sonnet |
-
-**Benefits:**
-- **Automatic escalation**: Local model fails → cloud model tries automatically
-- **Cost optimization**: Use cheaper/local models when they succeed
-- **Latency optimization**: Fast local models for quick tasks
-- **Privacy**: Route sensitive data through local models first
-- **Observability**: Track escalation rates per task type
-
-**Supported Providers:**
-| Provider | Name | Tool Support |
-|----------|------|--------------|
-| Anthropic | `anthropic` | Yes |
-| OpenAI | `openai` | Yes |
-| Google Gemini | `gemini` | Yes |
-| xAI Grok | `grok` | Yes |
-| Ollama (local) | `ollama` | Yes (llama3.2+) |
-| Together AI | `together` | Yes |
-| Groq | `groq` | Yes |
-
-## Skills
-
-Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context.
-
-This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
-
-### Skill Structure
-
-Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
-
-```
-.constat/skills/
-└── financial-analysis/
-    └── SKILL.md
-```
-
-### SKILL.md Format
-
-Each skill is defined as a Markdown file with YAML frontmatter:
-
-```markdown
----
-name: financial-analysis
-description: Specialized instructions for financial data analysis
-allowed-tools:
-  - Read
-  - Grep
-  - list_tables
-  - get_table_schema
----
-
-# Financial Analysis Skill
-
-## Key Concepts
-- Revenue recognition principles
-- Common financial metrics (Gross Margin, EBITDA, etc.)
-- Time period handling (MTD, QTD, YTD)
-
-## Analysis Guidelines
-1. Start with data quality checks
-2. Use appropriate aggregations
-3. Present results clearly
-```
-
-### Skill Discovery Paths
-
-Skills are discovered from multiple locations (in order of precedence):
-
-1. **Project skills**: `.constat/skills/` in the project directory
-2. **Global skills**: `~/.constat/skills/` in the user's home directory
-3. **Config-specified paths**: Additional paths defined in `config.yaml`
-
-### Configuring Additional Skill Paths
-
-Add custom skill directories in your config file:
-
-```yaml
-# config.yaml
-skills:
-  paths:
-    - /shared/team-skills/           # Team shared skills
-    - /opt/constat/standard-skills/  # Standard library
-    - ~/my-custom-skills/            # Personal skills (~ expanded)
-```
-
-Skills in config paths are searched after the default paths, so project and global skills take precedence.
-
-### Link Following
-
-Skills can reference additional files via markdown links. Links are parsed when the skill loads but content is fetched lazily (on-demand):
-
-```markdown
-# My Skill
-
-See the [indicator definitions](references/indicators.md) for details.
-For API docs, check [the official guide](https://example.com/docs.md).
-```
-
-**Supported link types:**
-- **Relative paths**: `[text](references/file.md)` - resolved relative to the skill folder
-- **URLs**: `[text](https://example.com/doc.md)` - fetched via HTTP
-
-**How it works:**
-1. When a skill loads, links are discovered and returned in the response
-2. Content is NOT fetched until explicitly requested via `resolve_skill_link`
-3. Fetched content is cached for subsequent calls
-
-### Creating a Skill
-
-1. Create a directory: `.constat/skills/my-skill/`
-2. Add a `SKILL.md` file with YAML frontmatter
-3. Define the skill's context, guidelines, and examples
-4. Optionally add referenced files in subdirectories (e.g., `references/`)
-
-Skills are automatically discovered and can be loaded when relevant to a query.
-
-## Key Concepts
-
-### Facts and Provenance
-
-Every piece of information is a `Fact` with:
-- **Value**: The actual data
-- **Source**: Where it came from (DATABASE, CONFIG, RULE, LLM_KNOWLEDGE)
-- **Confidence**: How certain we are (1.0 for database queries, lower for inferences)
-- **Because**: The facts this was derived from
-
-### Derivation Traces
-
-When using `/prove`, every conclusion includes a full derivation trace showing:
-- The logical chain of reasoning
-- All data sources consulted
-- The exact queries executed
-- Confidence at each step
-
-### Lazy Resolution
-
-Facts are resolved only when needed:
-1. Check cache
-2. Check config
-3. Apply rules
-4. Query database
-5. Fall back to LLM knowledge
-6. Create sub-plan if complex
-
-This ensures efficient execution while maintaining full traceability.
-
 ## Installation
 
 ```bash
 pip install constat
 
 # Optional dependencies for specific databases
-pip install constat[postgresql]  # PostgreSQL
-pip install constat[mongodb]     # MongoDB
-pip install constat[dynamodb]    # AWS DynamoDB
-pip install constat[cosmosdb]    # Azure Cosmos DB
-pip install constat[firestore]   # Google Firestore
-pip install constat[all]         # Everything
+pip install constat[mysql]        # MySQL
+pip install constat[mongodb]      # MongoDB
+pip install constat[dynamodb]     # AWS DynamoDB
+pip install constat[cosmosdb]     # Azure Cosmos DB
+pip install constat[firestore]    # Google Firestore
+pip install constat[openai]       # OpenAI provider
+pip install constat[extras]       # Polars, Excel, PDF generation
+pip install constat[all]          # Everything
 ```
 
 ## License
 
-PolyForm Small Business License 1.0.0
+Business Source License 1.1 (BSL 1.1)
 
 Free for individuals and organizations with <100 employees and <$1M revenue.
+Converts to Apache License 2.0 on 2029-01-21.
 For commercial licensing, contact kennethstott@gmail.com.

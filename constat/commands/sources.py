@@ -6,11 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from constat.commands.base import (
     CommandContext,
-    CommandResult,
     TableResult,
     ListResult,
     ErrorResult,

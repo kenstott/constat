@@ -16,7 +16,6 @@ import re
 
 from constat.api.types import DisplayOverrides
 
-
 # Display override patterns: (pattern, setting, value, is_persistent)
 # Persistent changes are detected by "always", "from now on", "stop", "never"
 # Single-turn overrides apply only to the current query

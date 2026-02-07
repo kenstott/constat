@@ -21,8 +21,8 @@ from typing import Optional
 
 import numpy as np
 
-from constat.embedding_loader import EmbeddingModelLoader
 from constat.core.skills import Skill, SkillManager
+from constat.embedding_loader import EmbeddingModelLoader
 
 logger = logging.getLogger(__name__)
 

@@ -305,12 +305,32 @@ class ArtifactInfo(BaseModel):
     is_key_result: bool = Field(default=False, description="Whether this is a key result")
     is_starred: bool = Field(default=False, description="Whether user has explicitly starred this")
     metadata: Optional[dict] = Field(default=None, description="Artifact metadata")
+    version: int = Field(default=1, description="Current version number")
+    version_count: int = Field(default=1, description="Total number of versions")
 
 
 class ArtifactListResponse(BaseModel):
     """Response containing list of artifacts."""
 
     artifacts: list[ArtifactInfo] = Field(description="List of artifacts")
+
+
+class ArtifactVersionInfo(BaseModel):
+    """A single version entry for an artifact."""
+
+    id: int = Field(description="Artifact ID for this version")
+    version: int = Field(description="Version number")
+    step_number: int = Field(description="Step that created this version")
+    attempt: int = Field(description="Attempt number")
+    created_at: Optional[str] = Field(default=None, description="Creation timestamp")
+
+
+class ArtifactVersionsResponse(BaseModel):
+    """Response containing version history for an artifact."""
+
+    name: str = Field(description="Artifact name")
+    current_version: int = Field(description="Latest version number")
+    versions: list[ArtifactVersionInfo] = Field(description="All versions, newest first")
 
 
 class ArtifactContentResponse(BaseModel):

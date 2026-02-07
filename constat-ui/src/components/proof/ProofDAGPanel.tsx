@@ -33,6 +33,7 @@ interface ProofDAGPanelProps {
   facts: Map<string, FactNode>
   isPlanningComplete?: boolean
   summary?: string | null  // LLM-generated proof summary
+  isSummaryGenerating?: boolean  // True while summary is being generated
 }
 
 // Status symbols as per design doc
@@ -58,10 +59,13 @@ const STATUS_BG_COLORS: Record<NodeStatus, string> = {
   pending: '#F3F4F6',     // gray-100
   planning: '#FEF9C3',    // yellow-100
   executing: '#DBEAFE',   // blue-100
-  resolved: '#DCFCE7',    // green-100
+  resolved: '#DCFCE7',    // green-100 (for Inferences)
   failed: '#FEE2E2',      // red-100
   blocked: '#FFEDD5',     // orange-100
 }
+
+// Darker resolved color for Premises (P nodes)
+const PREMISE_RESOLVED_BG = '#BBF7D0'  // green-200 (darker than green-100)
 
 // Node dimensions
 const NODE_WIDTH = 220
@@ -78,11 +82,28 @@ function getTableRowCount(value: unknown): number | null {
   return Math.max(0, lines.length - 2) // Subtract header and separator
 }
 
-// Helper to detect row count string like "14 rows" or "14 records"
-function parseRowCountString(value: unknown): number | null {
+// Helper to detect row count string like "14 rows", "14 records", or "(table_name) 14 rows"
+function parseRowCountString(value: unknown): { count: number; tableName?: string } | null {
   if (typeof value !== 'string') return null
-  const match = value.trim().match(/^(\d+)\s*(rows?|records?)$/i)
-  return match ? parseInt(match[1], 10) : null
+
+  // Match patterns like "(hr.employees) 15 rows" or "(table_name) 15 records"
+  const prefixMatch = value.trim().match(/^\(([^)]+)\)\s*(\d+)\s*(rows?|records?)$/i)
+  if (prefixMatch) {
+    let tableName = prefixMatch[1]
+    // Strip schema/database prefix (e.g., "hr.employees" -> "employees")
+    if (tableName.includes('.')) {
+      tableName = tableName.split('.').pop() || tableName
+    }
+    return { count: parseInt(prefixMatch[2], 10), tableName }
+  }
+
+  // Match simple patterns like "15 rows" or "15 records"
+  const simpleMatch = value.trim().match(/^(\d+)\s*(rows?|records?)$/i)
+  if (simpleMatch) {
+    return { count: parseInt(simpleMatch[1], 10) }
+  }
+
+  return null
 }
 
 // Extract table name from fact node name (e.g., "I4: raise_recommendations" -> "raise_recommendations")
@@ -191,24 +212,49 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary }: ProofDAGPanelProps) {
+export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
-  const [selectedNode, setSelectedNode] = useState<FactNode | null>(null)
+  const [selectedNodeStack, setSelectedNodeStack] = useState<FactNode[]>([])
+  const selectedNode = selectedNodeStack.length > 0 ? selectedNodeStack[selectedNodeStack.length - 1] : null
+  const pushSelectedNode = (node: FactNode) => setSelectedNodeStack(prev => [...prev, node])
+  const popSelectedNode = () => setSelectedNodeStack(prev => prev.slice(0, -1))
+  const clearSelectedNodes = () => setSelectedNodeStack([])
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
-  const [panelSize, setPanelSize] = useState({ width: 800, height: 600 })
-  const [panelPosition, setPanelPosition] = useState<{ x: number; y: number } | null>(null)
+  const [panelSize, setPanelSize] = useState(() => {
+    try {
+      const saved = localStorage.getItem('constat-proof-panel-geometry')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (parsed.width && parsed.height) return { width: parsed.width, height: parsed.height }
+      }
+    } catch { /* ignore */ }
+    return { width: typeof window !== 'undefined' ? window.innerWidth * 0.8 : 800, height: typeof window !== 'undefined' ? window.innerHeight * 0.8 : 600 }
+  })
+  const [panelPosition, setPanelPosition] = useState<{ x: number; y: number } | null>(() => {
+    try {
+      const saved = localStorage.getItem('constat-proof-panel-geometry')
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (parsed.x !== undefined && parsed.y !== undefined) return { x: parsed.x, y: parsed.y }
+      }
+    } catch { /* ignore */ }
+    return null
+  })
   const [, setIsResizing] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [showSummary, setShowSummary] = useState(false)
 
-  // Initialize panel size on mount
+  // Persist panel geometry to localStorage when size or position changes
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setPanelSize({ width: window.innerWidth * 0.8, height: window.innerHeight * 0.8 })
+    const data: Record<string, number> = { width: panelSize.width, height: panelSize.height }
+    if (panelPosition) {
+      data.x = panelPosition.x
+      data.y = panelPosition.y
     }
-  }, [])
+    localStorage.setItem('constat-proof-panel-geometry', JSON.stringify(data))
+  }, [panelSize, panelPosition])
 
   // Handle drag
   const handleDragStart = useCallback((e: React.MouseEvent) => {
@@ -443,7 +489,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     if (!nodeData) return null
 
     const status = nodeData.status
-    const bgColor = STATUS_BG_COLORS[status]
+    // Use darker shade for resolved Premises (P nodes)
+    const isPremise = nodeId.startsWith('P')
+    const bgColor = (status === 'resolved' && isPremise) ? PREMISE_RESOLVED_BG : STATUS_BG_COLORS[status]
     const borderColor = STATUS_COLORS[status]
 
     return (
@@ -458,7 +506,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           })
         }}
         onMouseLeave={() => setHoveredNode(null)}
-        onClick={() => setSelectedNode(nodeData)}
+        onClick={() => pushSelectedNode(nodeData)}
       >
         {/* Node rectangle */}
         <rect
@@ -693,7 +741,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           <div className="flex gap-2">
             {resultNode && resultNode.status === 'resolved' && (
               <button
-                onClick={() => setSelectedNode(resultNode)}
+                onClick={() => pushSelectedNode(resultNode)}
                 className="px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
               >
                 Show Final Result
@@ -702,13 +750,19 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             <button
               onClick={() => setShowSummary(true)}
               disabled={!summary}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors flex items-center gap-2 ${
                 summary
                   ? 'text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20'
                   : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
               }`}
-              title={summary ? 'View LLM-generated summary' : 'Summary generating...'}
+              title={summary ? 'View LLM-generated summary' : isSummaryGenerating ? 'Generating summary...' : 'Summary not available'}
             >
+              {isSummaryGenerating && (
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              )}
               Summary
             </button>
             <button
@@ -726,22 +780,38 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         <NodeTooltip node={hoveredNode.node} position={hoveredNode.position} />
       )}
 
-      {/* Detail Panel - shown when node is clicked */}
+      {/* Detail Panel - shown when node is clicked (stacked) */}
       {selectedNode && (
-        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20 pointer-events-auto" onClick={() => setSelectedNode(null)}>
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20 pointer-events-auto" onClick={() => clearSelectedNodes()}>
           <div
             className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto pointer-events-auto"
+            style={{
+              // Offset each stacked modal slightly for visual effect
+              transform: `translate(${(selectedNodeStack.length - 1) * 8}px, ${(selectedNodeStack.length - 1) * 8}px)`,
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
+                {selectedNodeStack.length > 1 && (
+                  <button
+                    onClick={popSelectedNode}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 mr-1"
+                    title="Back to previous"
+                  >
+                    ←
+                  </button>
+                )}
                 <span style={{ color: STATUS_COLORS[selectedNode.status] }} className="text-lg">
                   {STATUS_SYMBOLS[selectedNode.status]}
                 </span>
                 <h3 className="font-semibold text-gray-900 dark:text-gray-100">{selectedNode.name}</h3>
+                {selectedNodeStack.length > 1 && (
+                  <span className="text-xs text-gray-400 ml-2">({selectedNodeStack.length} deep)</span>
+                )}
               </div>
               <button
-                onClick={() => setSelectedNode(null)}
+                onClick={() => clearSelectedNodes()}
                 className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
               >
                 <XMarkIcon className="w-5 h-5" />
@@ -757,9 +827,33 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               {selectedNode.value !== undefined && (() => {
                 const tableRowCount = getTableRowCount(selectedNode.value)
                 const isTable = tableRowCount !== null
-                const rowCountFromString = parseRowCountString(selectedNode.value)
-                const tableName = extractTableName(selectedNode.name)
-                const isRowCountString = rowCountFromString !== null && tableName !== null
+                const rowCountInfo = parseRowCountString(selectedNode.value)
+                // Get table name from node name for materialized tables (e.g., "I4: results" -> "results")
+                const materializedTableName = extractTableName(selectedNode.name)
+                // Check if it's a database source reference like "(hr.employees) 15 rows"
+                const isDbSourceRef = rowCountInfo !== null && rowCountInfo.tableName !== undefined
+                // Check if it's a simple materialized table row count like "15 rows"
+                const isClickableRowCount = rowCountInfo !== null && !rowCountInfo.tableName && materializedTableName !== null
+
+                // For database source references, extract db and table name
+                // Format: "(db.table) N rows" - tableName from rowCountInfo is "db.table"
+                let dbName: string | undefined
+                let dbTableName: string | undefined
+                if (isDbSourceRef && rowCountInfo?.tableName) {
+                  const parts = rowCountInfo.tableName.split('.')
+                  if (parts.length >= 2) {
+                    dbName = parts[0]
+                    dbTableName = parts.slice(1).join('.')
+                  } else {
+                    // No dot - assume it's just a table name, try to get db from source
+                    dbTableName = rowCountInfo.tableName
+                    // Try to extract db name from source field (e.g., "database:hr")
+                    const sourceMatch = selectedNode.source?.match(/^database:(\w+)$/i)
+                    if (sourceMatch) {
+                      dbName = sourceMatch[1]
+                    }
+                  }
+                }
 
                 return (
                   <div>
@@ -800,19 +894,34 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                         >
                           {String(selectedNode.value)}
                         </ReactMarkdown>
-                      ) : isRowCountString ? (
+                      ) : isDbSourceRef && dbName && dbTableName ? (
+                        <button
+                          onClick={() => {
+                            useUIStore.getState().openFullscreenArtifact({
+                              type: 'database_table',
+                              dbName,
+                              tableName: dbTableName,
+                            })
+                          }}
+                          className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                          title={`View ${dbName}.${dbTableName} table`}
+                        >
+                          <TableCellsIcon className="w-4 h-4" />
+                          {rowCountInfo.count} rows
+                        </button>
+                      ) : isClickableRowCount ? (
                         <button
                           onClick={() => {
                             useUIStore.getState().openFullscreenArtifact({
                               type: 'table',
-                              name: tableName,
+                              name: materializedTableName,
                             })
                           }}
                           className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:underline"
-                          title={`View ${tableName} table`}
+                          title={`View ${materializedTableName} table`}
                         >
                           <TableCellsIcon className="w-4 h-4" />
-                          {rowCountFromString} rows
+                          {rowCountInfo.count} rows
                         </button>
                       ) : (
                         <pre className="font-mono text-sm bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto">
@@ -859,9 +968,24 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 <div>
                   <span className="text-xs font-medium text-gray-500 uppercase">Dependencies</span>
                   <div className="flex flex-wrap gap-2 mt-1">
-                    {selectedNode.dependencies.map((dep) => (
-                      <span key={dep} className="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-sm">{dep}</span>
-                    ))}
+                    {selectedNode.dependencies.map((dep) => {
+                      const depNode = facts.get(dep)
+                      if (depNode) {
+                        return (
+                          <button
+                            key={dep}
+                            onClick={() => pushSelectedNode(depNode)}
+                            className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-sm hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors cursor-pointer"
+                            title={`View ${dep}`}
+                          >
+                            {dep}
+                          </button>
+                        )
+                      }
+                      return (
+                        <span key={dep} className="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-sm">{dep}</span>
+                      )
+                    })}
                   </div>
                 </div>
               )}

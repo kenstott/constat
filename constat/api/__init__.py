@@ -33,15 +33,19 @@ Usage:
     ```
 """
 
+# Detection utilities (for direct use if needed)
+from constat.api.detection import (
+    CORRECTION_PATTERNS,
+    DISPLAY_OVERRIDE_PATTERNS,
+    detect_display_overrides,
+    detect_nl_correction,
+)
 # Factory function - primary entry point
 from constat.api.factory import create_api
-
-# Protocol definition
-from constat.api.protocol import ConstatAPI, EventCallback
-
 # Implementation
 from constat.api.impl import ConstatAPIImpl
-
+# Protocol definition
+from constat.api.protocol import ConstatAPI, EventCallback
 # Value objects (frozen dataclasses)
 from constat.api.types import (
     # Detection results
@@ -68,14 +72,6 @@ from constat.api.types import (
     ResumeResult,
     SolveResult,
     StepInfo,
-)
-
-# Detection utilities (for direct use if needed)
-from constat.api.detection import (
-    CORRECTION_PATTERNS,
-    DISPLAY_OVERRIDE_PATTERNS,
-    detect_display_overrides,
-    detect_nl_correction,
 )
 
 __all__ = [

@@ -26,6 +26,9 @@ Main classes:
 - Plan/Step: Multi-step execution plan
 """
 
+from constat.catalog.api_catalog import APICatalog, OperationType
+# Catalog
+from constat.catalog.schema_manager import SchemaManager, TableMetadata
 # Core models and configuration
 from constat.core.config import (
     APIConfig,
@@ -51,21 +54,11 @@ from constat.core.models import (
     StepType,
     TaskType,
 )
-
-# Storage
-from constat.storage.datastore import DataStore
-from constat.storage.history import SessionHistory
-
+from constat.execution.engine import QueryEngine
+from constat.execution.executor import ExecutionResult, PythonExecutor
 # Execution
 from constat.execution.planner import Planner
-from constat.execution.executor import ExecutionResult, PythonExecutor
-from constat.execution.engine import QueryEngine
 from constat.execution.scratchpad import Scratchpad
-
-# Catalog
-from constat.catalog.schema_manager import SchemaManager, TableMetadata
-from constat.catalog.api_catalog import APICatalog, OperationType
-
 # Providers
 from constat.providers import (
     BaseLLMProvider,
@@ -79,9 +72,11 @@ from constat.providers import (
     TogetherProvider,
     GroqProvider,
 )
-
 # Main session orchestrator
 from constat.session import Session
+# Storage
+from constat.storage.datastore import DataStore
+from constat.storage.history import SessionHistory
 
 __version__ = "0.1.0"
 

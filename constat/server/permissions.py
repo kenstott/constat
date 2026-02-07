@@ -184,7 +184,6 @@ def compute_effective_permissions(
         Dict with allowed_databases, allowed_apis, allowed_documents.
         None values mean no filtering.
     """
-    from constat.core.config import Config  # Import here to avoid circular
 
     # No permissions configured = everything available
     if not permissions_configured or user_perms is None:

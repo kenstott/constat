@@ -165,6 +165,22 @@ export interface Artifact {
   is_starred?: boolean
   metadata?: Record<string, unknown>
   role_id?: string | null  // Role provenance - which role created this artifact
+  version?: number
+  version_count?: number
+}
+
+export interface ArtifactVersionInfo {
+  id: number
+  version: number
+  step_number: number
+  attempt: number
+  created_at?: string
+}
+
+export interface ArtifactVersionsResponse {
+  name: string
+  current_version: number
+  versions: ArtifactVersionInfo[]
 }
 
 export interface ArtifactContent extends Artifact {

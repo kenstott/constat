@@ -16,7 +16,7 @@ wait for their prerequisites to complete.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from constat.core.models import Plan, Step, StepResult, StepStatus

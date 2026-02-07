@@ -14,7 +14,6 @@ It logs prompt characteristics to help identify bloated or sub-optimal prompts.
 """
 
 import json
-import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path

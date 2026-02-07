@@ -15,8 +15,8 @@ This module contains all REPL-specific code:
 - visualization: Charts, tables, and output rendering
 """
 
-from constat.repl.interactive import InteractiveREPL, run_repl
 from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler
+from constat.repl.interactive import InteractiveREPL, run_repl
 
 __all__ = [
     "InteractiveREPL",

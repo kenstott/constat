@@ -224,9 +224,9 @@ class PlanApprovalResponse:
     edited_steps: Optional[list[dict]] = None  # List of {"number": int, "goal": str}
 
     @classmethod
-    def approve(cls, deleted_steps: Optional[list[int]] = None) -> "PlanApprovalResponse":
+    def approve(cls, deleted_steps: Optional[list[int]] = None, edited_steps: Optional[list[dict]] = None) -> "PlanApprovalResponse":
         """Create an approval response."""
-        return cls(decision=PlanApproval.APPROVE, deleted_steps=deleted_steps)
+        return cls(decision=PlanApproval.APPROVE, deleted_steps=deleted_steps, edited_steps=edited_steps)
 
     @classmethod
     def reject(cls, reason: Optional[str] = None) -> "PlanApprovalResponse":

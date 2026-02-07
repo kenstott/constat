@@ -16,7 +16,6 @@ import re
 
 from constat.api.types import CorrectionDetection
 
-
 # Correction patterns: (pattern, correction_type)
 # Detects corrections in natural conversation
 CORRECTION_PATTERNS: list[tuple[str, str]] = [

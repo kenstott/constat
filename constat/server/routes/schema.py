@@ -89,6 +89,9 @@ async def list_database_tables(
     """
     managed = session_manager.get_session(session_id)
 
+    if not managed.has_database(database_name):
+        raise HTTPException(status_code=404, detail=f"Database not found: {database_name}")
+
     try:
         tables = managed.session.schema_manager.get_tables_for_db(database_name)
 
@@ -96,7 +99,7 @@ async def list_database_tables(
             "database": database_name,
             "tables": [
                 {
-                    "name": t.table_name,
+                    "name": t.name,
                     "row_count": t.row_count,
                     "column_count": len(t.columns),
                 }
@@ -105,7 +108,7 @@ async def list_database_tables(
         }
     except Exception as e:
         logger.error(f"Error listing tables: {e}")
-        raise HTTPException(status_code=404, detail=f"Database not found: {database_name}")
+        raise HTTPException(status_code=500, detail=f"Error listing tables for {database_name}: {e}")
 
 
 @router.get("/databases/{database_name}/tables/{table_name}", response_model=TableSchemaResponse)
@@ -238,18 +241,44 @@ async def get_api_schema(
     managed = session_manager.get_session(session_id)
 
     try:
+        # Check config APIs and project APIs
         api_config = managed.session.config.apis.get(api_name)
+        if not api_config:
+            for project_filename in managed.active_projects:
+                project = managed.session.config.load_project(project_filename)
+                if project and api_name in project.apis:
+                    api_config = project.apis[api_name]
+                    break
         if not api_config:
             raise HTTPException(status_code=404, detail=f"API not found: {api_name}")
 
-        # Get API metadata from schema manager
-        metadata = managed.session.api_schema_manager.get_api_overview(api_name)
+        # Get endpoints from api_schema_manager
+        endpoints_meta = managed.session.api_schema_manager.get_api_schema(api_name)
 
         return {
             "name": api_name,
             "type": api_config.type,
             "description": api_config.description,
-            "endpoints": metadata.get("endpoints", []) if metadata else [],
+            "endpoints": [
+                {
+                    "name": ep.endpoint_name,
+                    "kind": ep.api_type,
+                    "return_type": ep.return_type,
+                    "description": ep.description,
+                    "http_method": ep.http_method,
+                    "http_path": ep.http_path,
+                    "fields": [
+                        {
+                            "name": f.name,
+                            "type": f.type,
+                            "description": f.description,
+                            "is_required": f.is_required,
+                        }
+                        for f in ep.fields
+                    ],
+                }
+                for ep in endpoints_meta
+            ],
         }
 
     except HTTPException:

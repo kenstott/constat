@@ -9,9 +9,9 @@
 
 """MongoDB connector for document database support."""
 
-from typing import Optional, Any
+from typing import Optional
 
-from .base import NoSQLConnector, NoSQLType, CollectionMetadata, FieldInfo
+from .base import NoSQLConnector, NoSQLType, CollectionMetadata
 
 
 class MongoDBConnector(NoSQLConnector):

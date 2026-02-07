@@ -159,7 +159,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
                       key={col}
                       className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
                     >
-                      {String(row[col] ?? '')}
+                      {row[col] != null && typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col] ?? '')}
                     </td>
                   ))}
                 </tr>

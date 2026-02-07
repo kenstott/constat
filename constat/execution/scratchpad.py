@@ -14,9 +14,9 @@ allowing each step to read previous results and write new findings.
 It provides context continuity between steps.
 """
 
-from dataclasses import dataclass, field
-from typing import Optional
 import re
+from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass

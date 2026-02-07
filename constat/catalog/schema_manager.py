@@ -21,14 +21,13 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from constat.discovery.doc_tools import DocumentDiscoveryTools
 
-import numpy as np
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
-from constat.core.config import Config, DatabaseConfig, DatabaseCredentials
+from constat.core.config import Config, DatabaseConfig
 from constat.embedding_loader import EmbeddingModelLoader
 from constat.catalog.nosql.base import NoSQLConnector
-from constat.catalog.file.connector import FileConnector, FileType
+from constat.catalog.file.connector import FileConnector
 from constat.catalog.sql_transpiler import TranspilingConnection
 
 
@@ -1392,6 +1391,10 @@ class SchemaManager:
     def list_tables(self) -> list[str]:
         """Return list of all table full names."""
         return list(self.metadata_cache.keys())
+
+    def get_tables_for_db(self, database: str) -> list['TableMetadata']:
+        """Return all TableMetadata entries for a given database."""
+        return [m for m in self.metadata_cache.values() if m.database == database]
 
     def get_description_text(self) -> list[tuple[str, str]]:
         """Return all metadata text from schema for NER processing.

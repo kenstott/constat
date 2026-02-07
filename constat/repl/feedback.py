@@ -13,30 +13,26 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Callable
-from rich.console import Console, Group, RenderableType
-from rich.live import Live
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
-from rich.prompt import Prompt
-from rich.table import Table
-from rich.syntax import Syntax
-from rich.text import Text
-from rich.markdown import Markdown
-from rich.rule import Rule
-from rich.layout import Layout
-from rich.columns import Columns
-from rich.tree import Tree
-import threading
+from typing import Optional
 
 # prompt_toolkit for input with status bar
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style as PTStyle
+from rich.console import Console, Group, RenderableType
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.progress import Progress, TaskID
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
 
-from constat.proof_tree import ProofTree, NodeStatus
+from constat.proof_tree import ProofTree
 
 
 def _left_align_markdown(text: str) -> str:
@@ -46,8 +42,6 @@ def _left_align_markdown(text: str) -> str:
     return text
 
 from constat.execution.mode import (
-    Mode,
-    PlanApproval,
     PlanApprovalRequest,
     PlanApprovalResponse,
     Phase,

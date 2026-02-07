@@ -11,7 +11,6 @@ from typing import Any
 from constat.commands.base import (
     CommandContext,
     CommandResult,
-    TableResult,
     ListResult,
     TextResult,
     KeyValueResult,

@@ -9,13 +9,6 @@
 
 """Schema and API discovery with vector search and execution."""
 
-from .schema_manager import (
-    ColumnMetadata,
-    ForeignKey,
-    SchemaManager,
-    TableMatch,
-    TableMetadata,
-)
 from .api_catalog import (
     APICatalog,
     ArgumentType,
@@ -30,6 +23,13 @@ from .api_catalog import (
 from .api_executor import (
     APIExecutor,
     APIExecutionError,
+)
+from .schema_manager import (
+    ColumnMetadata,
+    ForeignKey,
+    SchemaManager,
+    TableMatch,
+    TableMetadata,
 )
 
 __all__ = [

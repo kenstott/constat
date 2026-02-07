@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-import numpy as np
 import requests
 
 from constat.core.config import Config, APIConfig
@@ -49,6 +48,7 @@ class APIEndpointMetadata:
     http_method: Optional[str] = None
     http_path: Optional[str] = None
     operation_id: Optional[str] = None
+    return_type: Optional[str] = None  # e.g., "[Breed!]!", "User"
 
     @property
     def full_name(self) -> str:
@@ -161,18 +161,24 @@ class APISchemaManager:
         self._model = EmbeddingModelLoader.get_instance().get_model()
         self._extract_entities_from_descriptions()
 
+    # Bump to invalidate cache when introspection logic changes
+    _CACHE_VERSION = 4
+
     def _compute_config_hash(self) -> str:
         """Compute hash of API config for cache invalidation."""
         if not self.config.apis:
             return "empty"
 
         config_data = {
-            name: {
-                "type": api.type,
-                "url": api.url,
-                "description": api.description,
-            }
-            for name, api in self.config.apis.items()
+            "_v": self._CACHE_VERSION,
+            **{
+                name: {
+                    "type": api.type,
+                    "url": api.url,
+                    "description": api.description,
+                }
+                for name, api in self.config.apis.items()
+            },
         }
         return hashlib.md5(json.dumps(config_data, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -202,6 +208,10 @@ class APISchemaManager:
                     api_type=data["api_type"],
                     description=data.get("description"),
                     fields=fields,
+                    http_method=data.get("http_method"),
+                    http_path=data.get("http_path"),
+                    operation_id=data.get("operation_id"),
+                    return_type=data.get("return_type"),
                 )
 
             return True
@@ -223,6 +233,10 @@ class APISchemaManager:
                     "endpoint_name": meta.endpoint_name,
                     "api_type": meta.api_type,
                     "description": meta.description,
+                    "return_type": meta.return_type,
+                    "http_method": meta.http_method,
+                    "http_path": meta.http_path,
+                    "operation_id": meta.operation_id,
                     "fields": [
                         {"name": f.name, "type": f.type, "description": f.description, "is_required": f.is_required}
                         for f in meta.fields
@@ -264,11 +278,35 @@ class APISchemaManager:
                         name
                         description
                         type {
-                            name
+                            ...TypeRef
+                        }
+                    }
+                }
+            }
+        }
+
+        fragment TypeRef on __Type {
+            kind
+            name
+            ofType {
+                kind
+                name
+                ofType {
+                    kind
+                    name
+                    ofType {
+                        kind
+                        name
+                        ofType {
                             kind
+                            name
                             ofType {
-                                name
                                 kind
+                                name
+                                ofType {
+                                    kind
+                                    name
+                                }
                             }
                         }
                     }
@@ -310,17 +348,20 @@ class APISchemaManager:
 
             # Skip common wrapper types
             if type_name in ("Query", "Mutation", "Subscription"):
-                # But extract their fields as top-level query/mutation endpoints
+                # Extract their fields as top-level query/mutation/subscription endpoints
+                kind = f"graphql_{type_name.lower()}"  # graphql_query, graphql_mutation, graphql_subscription
                 for field_def in type_def.get("fields") or []:
                     endpoint_name = field_def.get("name", "")
+                    return_type = self._get_type_name(field_def.get("type", {}), preserve_wrappers=True)
                     fields = self._extract_return_type_fields(field_def, types)
 
                     meta = APIEndpointMetadata(
                         api_name=name,
                         endpoint_name=endpoint_name,
-                        api_type="graphql_query",  # Query/mutation field
-                        description=field_def.get("description") or api_config.description,
+                        api_type=kind,
+                        description=field_def.get("description"),
                         fields=fields,
+                        return_type=return_type,
                     )
                     self.metadata_cache[meta.full_name] = meta
                 continue
@@ -365,10 +406,18 @@ class APISchemaManager:
 
         return []
 
-    def _get_type_name(self, type_info: dict) -> str:
-        """Extract type name from GraphQL type info (handling wrappers)."""
+    def _get_type_name(self, type_info: dict, preserve_wrappers: bool = False) -> str:
+        """Extract type name from GraphQL type info (handling wrappers).
+
+        Args:
+            type_info: GraphQL type introspection dict
+            preserve_wrappers: If True, return full signature like "[Breed!]!"
+        """
         if not type_info:
             return "Unknown"
+
+        if preserve_wrappers:
+            return self._build_type_signature(type_info)
 
         name = type_info.get("name")
         if name:
@@ -378,6 +427,27 @@ class APISchemaManager:
         of_type = type_info.get("ofType")
         if of_type:
             return self._get_type_name(of_type)
+
+        return "Unknown"
+
+    def _build_type_signature(self, type_info: dict) -> str:
+        """Build full GraphQL type signature like [Breed!]! from introspection."""
+        if not type_info:
+            return "Unknown"
+
+        kind = type_info.get("kind")
+        name = type_info.get("name")
+
+        if name:
+            return name
+
+        of_type = type_info.get("ofType")
+        if kind == "NON_NULL" and of_type:
+            return f"{self._build_type_signature(of_type)}!"
+        if kind == "LIST" and of_type:
+            return f"[{self._build_type_signature(of_type)}]"
+        if of_type:
+            return self._build_type_signature(of_type)
 
         return "Unknown"
 
@@ -459,9 +529,10 @@ class APISchemaManager:
                             is_required=param.get("required", False),
                         ))
 
-                    # Extract response schema fields
+                    # Extract response schema fields and return type
                     response_fields = self._extract_response_fields(operation, schemas)
                     fields.extend(response_fields)
+                    return_type = self._extract_rest_return_type(operation, schemas)
 
                     # Build description from summary and operation description
                     desc_parts = []
@@ -481,6 +552,7 @@ class APISchemaManager:
                         http_method=http_method,
                         http_path=path,
                         operation_id=operation_id,
+                        return_type=return_type,
                     )
                     self.metadata_cache[meta.full_name] = meta
 
@@ -541,6 +613,34 @@ class APISchemaManager:
                 break
 
         return fields
+
+    def _extract_rest_return_type(self, operation: dict, schemas: dict) -> Optional[str]:
+        """Extract the return type signature from a REST response schema."""
+        responses = operation.get("responses", {})
+
+        for code in ("200", "201"):
+            if code in responses:
+                content = responses[code].get("content", {})
+                json_content = content.get("application/json", {})
+                schema = json_content.get("schema", {})
+
+                if "$ref" in schema:
+                    return schema["$ref"].split("/")[-1]
+
+                if schema.get("type") == "array":
+                    items = schema.get("items", {})
+                    if "$ref" in items:
+                        item_name = items["$ref"].split("/")[-1]
+                        return f"[{item_name}]"
+                    item_type = items.get("type", "object")
+                    return f"[{item_type}]"
+
+                if schema.get("type"):
+                    return schema["type"]
+
+                break
+
+        return None
 
     def _add_basic_metadata(self, name: str, api_config: APIConfig) -> None:
         """Add basic metadata from config when introspection fails."""

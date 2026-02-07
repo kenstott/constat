@@ -23,7 +23,6 @@ Thresholds:
 - If below primary threshold, falls back to LLM classification
 """
 
-import hashlib
 import logging
 import re
 from pathlib import Path
@@ -34,7 +33,7 @@ import yaml
 
 from constat.core.models import TaskType
 from constat.embedding_loader import EmbeddingModelLoader
-from constat.execution.mode import Mode, Phase, PrimaryIntent, SubIntent, TurnIntent
+from constat.execution.mode import PrimaryIntent, SubIntent, TurnIntent
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +523,7 @@ Mode: {mode_str}"""
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system=system_prompt,
                 user_message=user_message,
-                max_tokens=100,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             return self._parse_llm_response(result.content, user_input)

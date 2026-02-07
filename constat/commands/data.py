@@ -63,7 +63,7 @@ def show_command(ctx: CommandContext) -> CommandResult:
 
         # Convert to table result
         columns = list(df.columns)
-        rows = df.head(100).values.tolist()  # Limit to 100 rows
+        rows = df.head(100).to_numpy().tolist()  # Limit to 100 rows
 
         footer = None
         if len(df) > 100:
@@ -94,7 +94,7 @@ def query_command(ctx: CommandContext) -> CommandResult:
         df = ctx.session.datastore.query(sql)
 
         columns = list(df.columns)
-        rows = df.head(100).values.tolist()
+        rows = df.head(100).to_numpy().tolist()
 
         footer = None
         if len(df) > 100:

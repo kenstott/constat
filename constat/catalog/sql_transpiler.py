@@ -13,8 +13,7 @@ automatic translation to SQLite, MySQL, DuckDB, etc.
 """
 
 import logging
-from typing import Optional, Union
-from functools import cached_property
+from typing import Union
 
 import pandas as pd
 
@@ -331,6 +330,10 @@ class TranspilingConnection:
         """Get a raw DBAPI connection."""
         return self._engine.raw_connection()
 
+    def cursor(self):
+        """Get a DBAPI cursor - needed for pandas read_sql compatibility."""
+        return self.raw_connection().cursor()
+
     def get_execution_options(self):
         """Get execution options."""
         return self._engine.get_execution_options()
@@ -346,6 +349,17 @@ class TranspilingConnection:
     # Pandas compatibility
     # pd.read_sql() checks for these attributes/methods
     # -------------------------------------------------------------------------
+
+    def rollback(self):
+        """Rollback - required by pandas when read_sql fails."""
+        # TranspilingConnection wraps an Engine, not a Connection.
+        # Engines don't have rollback, but pandas calls it on error.
+        # No-op is safe because each read_sql opens its own connection.
+        pass
+
+    def commit(self):
+        """Commit - required by some pandas code paths."""
+        pass
 
     def __enter__(self):
         """Context manager entry."""

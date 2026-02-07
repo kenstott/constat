@@ -31,13 +31,13 @@ SKILL.md format:
     Markdown instructions here...
 """
 
+import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
 import yaml
-import logging
-import os
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -536,7 +536,7 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         result = llm.generate(
             system=system_prompt,
             user_message=user_prompt,
-            max_tokens=4000,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         content = result.strip()

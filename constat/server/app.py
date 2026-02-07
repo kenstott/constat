@@ -626,7 +626,6 @@ def get_app() -> FastAPI:
     if _app is None:
         # Load default config for development
         import os
-        import re
         import yaml
         from pathlib import Path
         from dotenv import load_dotenv

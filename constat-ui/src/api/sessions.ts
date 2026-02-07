@@ -8,6 +8,7 @@ import type {
   TableData,
   Artifact,
   ArtifactContent,
+  ArtifactVersionsResponse,
   Fact,
   Entity,
   UploadedFile,
@@ -90,6 +91,80 @@ export async function getTableData(
   )
 }
 
+// Database source table preview (for viewing underlying data source tables)
+export interface DatabaseTablePreview {
+  database: string
+  table_name: string
+  columns: string[]
+  data: Record<string, unknown>[]
+  page: number
+  page_size: number
+  total_rows: number
+  has_more: boolean
+}
+
+export async function getDatabaseTablePreview(
+  sessionId: string,
+  dbName: string,
+  tableName: string,
+  page = 1,
+  pageSize = 100
+): Promise<DatabaseTablePreview> {
+  return get<DatabaseTablePreview>(
+    `/sessions/${sessionId}/databases/${dbName}/tables/${tableName}/preview?page=${page}&page_size=${pageSize}`
+  )
+}
+
+// Database schema (tables per database)
+export interface DatabaseTableInfo {
+  name: string
+  row_count: number | null
+  column_count: number
+}
+
+export async function listDatabaseTables(
+  sessionId: string,
+  dbName: string,
+): Promise<{ database: string; tables: DatabaseTableInfo[] }> {
+  return get<{ database: string; tables: DatabaseTableInfo[] }>(
+    `/schema/databases/${dbName}/tables?session_id=${sessionId}`
+  )
+}
+
+// API schema (endpoints per API)
+export interface ApiEndpointField {
+  name: string
+  type: string
+  description?: string
+  is_required: boolean
+}
+
+export interface ApiEndpointInfo {
+  name: string
+  kind?: string  // "graphql_query", "graphql_type", "rest", etc.
+  return_type?: string  // e.g., "[Breed!]!", "User"
+  description?: string
+  http_method?: string
+  http_path?: string
+  fields: ApiEndpointField[]
+}
+
+export interface ApiSchemaResponse {
+  name: string
+  type: string
+  description?: string
+  endpoints: ApiEndpointInfo[]
+}
+
+export async function getApiSchema(
+  sessionId: string,
+  apiName: string,
+): Promise<ApiSchemaResponse> {
+  return get<ApiSchemaResponse>(
+    `/schema/apis/${apiName}?session_id=${sessionId}`
+  )
+}
+
 // Artifacts
 export async function listArtifacts(sessionId: string): Promise<{ artifacts: Artifact[] }> {
   return get<{ artifacts: Artifact[] }>(`/sessions/${sessionId}/artifacts`)
@@ -100,6 +175,16 @@ export async function getArtifact(
   artifactId: number
 ): Promise<ArtifactContent> {
   return get<ArtifactContent>(`/sessions/${sessionId}/artifacts/${artifactId}`)
+}
+
+// Artifact Versions
+export async function getArtifactVersions(
+  sessionId: string,
+  artifactId: number
+): Promise<ArtifactVersionsResponse> {
+  return get<ArtifactVersionsResponse>(
+    `/sessions/${sessionId}/artifacts/${artifactId}/versions`
+  )
 }
 
 // Facts

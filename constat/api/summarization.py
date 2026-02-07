@@ -12,13 +12,14 @@
 Provides LLM-powered summarization of various session components.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
+
+import numpy as np
 
 from constat.api.types import SummarizeResult
 
 if TYPE_CHECKING:
     from constat.session import Session
-    from constat.storage.facts import FactStore
 
 
 def summarize_plan(session: "Session", llm) -> SummarizeResult:
@@ -280,7 +281,7 @@ def summarize_table(
 
         # Get basic stats for numeric columns
         stats = []
-        numeric_cols = df.select_dtypes(include=['number']).columns[:3]
+        numeric_cols = df.select_dtypes(include=[np.number]).columns[:3]
         for col in numeric_cols:
             stats.append(
                 f"{col}: min={df[col].min():.2f}, max={df[col].max():.2f}, "

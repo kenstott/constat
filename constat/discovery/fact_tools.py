@@ -15,8 +15,8 @@ to provide multi-source fact resolution with confidence scoring.
 
 from typing import Optional, Any
 
-from constat.execution.fact_resolver import FactResolver, Fact, FactSource
 from constat.discovery.doc_tools import DocumentDiscoveryTools
+from constat.execution.fact_resolver import FactResolver
 
 
 class FactResolutionTools:

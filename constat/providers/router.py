@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from constat.core.config import LLMConfig, ModelSpec, TaskRoutingConfig
+from constat.core.config import LLMConfig, ModelSpec
 from constat.core.models import TaskType
 from constat.providers.base import BaseLLMProvider
 
@@ -400,5 +400,5 @@ class TaskRouter:
             complexity="low",
         )
         if not result.success:
-            raise RuntimeError(f"LLM generation failed: {result.error or 'Unknown error'}")
+            raise RuntimeError(f"LLM generation failed: {result.content}")
         return result.content

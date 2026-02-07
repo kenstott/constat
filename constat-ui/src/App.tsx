@@ -230,7 +230,7 @@ function MainApp() {
   }
 
   // Proof panel state
-  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, openPanel: openProofPanel, closePanel: closeProofPanel, clearFacts } = useProofStore()
+  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, proofSummary, isSummaryGenerating, openPanel: openProofPanel, closePanel: closeProofPanel, clearFacts } = useProofStore()
   const { submitQuery } = useSessionStore()
 
   const handleShowProof = () => {
@@ -272,6 +272,7 @@ function MainApp() {
         facts={proofFacts}
         isPlanningComplete={isPlanningComplete}
         summary={proofSummary}
+        isSummaryGenerating={isSummaryGenerating}
       />
       <HelpModal
         isOpen={isHelpOpen}

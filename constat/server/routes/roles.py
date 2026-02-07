@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId
-from constat.server.session_manager import SessionManager, ManagedSession
-from constat.core.roles import RoleManager
+from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 

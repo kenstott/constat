@@ -26,13 +26,11 @@ from constat.api.types import (
     ReplayResult,
     ResumeResult,
     Rule,
-    SavedPlan,
     SessionState,
     SolveResult,
     SummarizeResult,
 )
 from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse
-
 
 # Type alias for event callbacks
 EventCallback = Callable[[str, dict[str, Any]], None]

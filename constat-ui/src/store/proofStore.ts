@@ -27,6 +27,7 @@ interface ProofState {
   isPlanningComplete: boolean  // True after all fact_start events received and execution begins
   isPanelOpen: boolean
   proofSummary: string | null  // LLM-generated summary when available
+  isSummaryGenerating: boolean  // True while summary is being generated
   hasCompletedProof: boolean  // True when a proof has completed (for View Proof button)
 
   // Actions
@@ -47,6 +48,7 @@ export const useProofStore = create<ProofState>((set, get) => ({
   isPlanningComplete: false,
   isPanelOpen: false,
   proofSummary: null,
+  isSummaryGenerating: false,
   hasCompletedProof: false,
 
   handleFactEvent: (eventType, data) => {
@@ -66,14 +68,20 @@ export const useProofStore = create<ProofState>((set, get) => ({
       return
     }
     if (eventType === 'proof_complete') {
-      set({ isProving: false, hasCompletedProof: true })
+      console.log('[proofStore] proof_complete received, starting summary generation')
+      set({ isProving: false, hasCompletedProof: true, isSummaryGenerating: true })
       return
     }
     if (eventType === 'proof_summary_ready') {
       // LLM-generated summary is available
       const summary = data.summary as string
-      console.log('[proofStore] proof_summary_ready')
-      set({ proofSummary: summary })
+      console.log('[proofStore] proof_summary_ready, summary length:', summary?.length || 0, 'summary:', summary?.substring(0, 100))
+      if (summary) {
+        set({ proofSummary: summary, isSummaryGenerating: false })
+      } else {
+        console.warn('[proofStore] proof_summary_ready received but summary is empty')
+        set({ isSummaryGenerating: false })
+      }
       return
     }
 

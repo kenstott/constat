@@ -14,46 +14,40 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
-import re
 import shutil
-import sys
 import threading
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from rich.console import Console, RenderableType
-from rich.panel import Panel
+from rich.console import RenderableType
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.markdown import Markdown
-from rich.tree import Tree
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import ScrollableContainer, Vertical, Horizontal, VerticalScroll
-from textual.widgets import Static, Input, RichLog, Footer, OptionList
+from textual.containers import ScrollableContainer, Vertical, Horizontal
+from textual.widgets import Static, Input, RichLog, OptionList
 from textual.widgets.option_list import Option
 from textual.reactive import reactive
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual import events, work
-from textual.worker import Worker, get_current_worker
+from textual import events
 from textual.suggester import Suggester
 
 from constat.session import Session, SessionConfig, ClarificationRequest, ClarificationResponse
 from constat.commands import HELP_COMMANDS
-from constat.execution.mode import Mode, Phase, PlanApprovalRequest, PlanApprovalResponse, PlanApproval
+from constat.execution.mode import Phase, PlanApprovalRequest, PlanApprovalResponse
 from constat.core.config import Config
-from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler, StatusLine, SPINNER_FRAMES
+from constat.repl.feedback import SPINNER_FRAMES
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
-from constat.proof_tree import ProofTree, NodeStatus
+from constat.proof_tree import ProofTree
 from constat.messages import get_vera_adjectives, STARTER_SUGGESTIONS
 
 
@@ -1000,7 +994,6 @@ class SidePanelContent(RichLog):
 
         Steps can have a 'completed' flag to show them as already done (for follow-ups).
         """
-        import time
         self._steps = []
         for i, step in enumerate(steps):
             is_completed = step.get("completed", False)
@@ -1022,7 +1015,6 @@ class SidePanelContent(RichLog):
 
         Preserves completed steps and adds new ones with renumbered step numbers.
         """
-        import time
         # Calculate starting number from existing steps
         start_num = max((s["number"] for s in self._steps), default=0) + 1
 
@@ -4718,7 +4710,7 @@ class ConstatREPLApp(App):
                 table_text = df.to_string()[:2000]
                 prompt = f"Summarize this table data concisely:\n\n{table_text}"
 
-            response = llm.complete(prompt, max_tokens=500)
+            response = llm.complete(prompt, max_tokens=llm.max_output_tokens)
             summary = response.content if hasattr(response, 'content') else str(response)
 
             log.write(Text(f"Summary: {target}", style="bold"))

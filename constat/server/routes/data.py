@@ -20,6 +20,8 @@ from constat.server.models import (
     ArtifactContentResponse,
     ArtifactInfo,
     ArtifactListResponse,
+    ArtifactVersionInfo,
+    ArtifactVersionsResponse,
     FactInfo,
     FactListResponse,
     TableDataResponse,
@@ -286,6 +288,8 @@ async def list_artifacts(
                     is_key_result=is_key_result,
                     is_starred=is_starred,
                     metadata=artifact_metadata,
+                    version=a.get("version", 1),
+                    version_count=a.get("version_count", 1),
                 )
             )
 
@@ -420,6 +424,50 @@ async def get_artifact(
     except Exception as e:
         logger.error(f"Error getting artifact: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/artifacts/{artifact_id}/versions", response_model=ArtifactVersionsResponse)
+async def get_artifact_versions(
+    session_id: str,
+    artifact_id: int,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> ArtifactVersionsResponse:
+    """Get version history for an artifact.
+
+    Args:
+        session_id: Session ID
+        artifact_id: Artifact ID (used to look up the artifact name)
+
+    Returns:
+        Version history (all versions of the same-named artifact)
+
+    Raises:
+        404: Session or artifact not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    if not managed.session.datastore:
+        raise HTTPException(status_code=404, detail="No datastore for this session")
+
+    artifact = managed.session.datastore.get_artifact_by_id(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_id}")
+
+    versions = managed.session.datastore.get_artifact_versions(artifact.name)
+    return ArtifactVersionsResponse(
+        name=artifact.name,
+        current_version=versions[0]["version"] if versions else 1,
+        versions=[
+            ArtifactVersionInfo(
+                id=v["id"],
+                version=v["version"],
+                step_number=v["step_number"],
+                attempt=v["attempt"],
+                created_at=v.get("created_at"),
+            )
+            for v in versions
+        ],
+    )
 
 
 @router.get("/{session_id}/artifacts/{artifact_id}/download")
@@ -1507,7 +1555,6 @@ async def download_code(
         404: Session not found or no code available
     """
     from fastapi.responses import Response
-    import pandas as pd
 
     # Try to get the session from memory first
     managed = session_manager.get_session_or_none(session_id)

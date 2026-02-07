@@ -36,18 +36,9 @@ import pandas as pd
 from sqlalchemy import (
     create_engine,
     MetaData,
-    Table,
-    Column,
-    Integer,
-    String,
-    Text,
-    DateTime,
     inspect,
     text,
-    func,
 )
-from sqlalchemy.engine import Engine
-from sqlalchemy.dialects import postgresql, sqlite
 
 from constat.core.models import Artifact, ArtifactType, ARTIFACT_MIME_TYPES
 
@@ -216,9 +207,18 @@ class DataStore:
                     description TEXT,
                     metadata_json TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    role_id VARCHAR(255)
+                    role_id VARCHAR(255),
+                    version INTEGER DEFAULT 1
                 )
             """))
+
+            # Add version column to existing databases (v1 dev, no migrations)
+            try:
+                conn.execute(text(
+                    "ALTER TABLE _constat_artifacts ADD COLUMN version INTEGER DEFAULT 1"
+                ))
+            except Exception:
+                pass  # Column already exists
 
             # Session metadata
             conn.execute(text("""
@@ -848,6 +848,17 @@ class DataStore:
         if name is None:
             name = f"artifact_{artifact_id}_{artifact_type}"
 
+        # Determine version: if name already exists, increment
+        version = 1
+        if name and not name.startswith("artifact_"):
+            with self.engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT MAX(version) FROM _constat_artifacts WHERE name = :name"),
+                    {"name": name}
+                ).fetchone()
+                if result[0] is not None:
+                    version = result[0] + 1
+
         # Serialize metadata
         metadata_json = json.dumps(metadata) if metadata else None
 
@@ -855,8 +866,8 @@ class DataStore:
             conn.execute(
                 text("""
                     INSERT INTO _constat_artifacts
-                    (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json, role_id)
-                    VALUES (:id, :name, :step_number, :attempt, :artifact_type, :content_type, :content, :title, :description, :metadata_json, :role_id)
+                    (id, name, step_number, attempt, artifact_type, content_type, content, title, description, metadata_json, role_id, version)
+                    VALUES (:id, :name, :step_number, :attempt, :artifact_type, :content_type, :content, :title, :description, :metadata_json, :role_id, :version)
                 """),
                 {
                     "id": artifact_id,
@@ -870,6 +881,7 @@ class DataStore:
                     "description": description,
                     "metadata_json": metadata_json,
                     "role_id": role_id,
+                    "version": version,
                 }
             )
 
@@ -1090,7 +1102,7 @@ class DataStore:
 
     def get_artifact_by_name(self, name: str) -> Optional[Artifact]:
         """
-        Get an artifact by its name.
+        Get the latest version of an artifact by its name.
 
         Args:
             name: Artifact name
@@ -1105,6 +1117,8 @@ class DataStore:
                            content, title, description, metadata_json, created_at
                     FROM _constat_artifacts
                     WHERE name = :name
+                    ORDER BY version DESC
+                    LIMIT 1
                 """),
                 {"name": name}
             ).fetchone()
@@ -1209,7 +1223,7 @@ class DataStore:
 
     def list_artifacts(self, include_content: bool = False) -> list[dict]:
         """
-        List artifact metadata.
+        List artifact metadata (latest version per name only).
 
         Args:
             include_content: If True, include content in results
@@ -1217,23 +1231,37 @@ class DataStore:
         Returns:
             List of artifact metadata dicts
         """
+        # Subquery to get latest version per name
+        latest_filter = """
+            WHERE (name, version) IN (
+                SELECT name, MAX(version) FROM _constat_artifacts GROUP BY name
+            )
+        """
+
         if include_content:
             with self.engine.connect() as conn:
-                rows = conn.execute(text("""
+                rows = conn.execute(text(f"""
                     SELECT id, name, step_number, attempt, artifact_type, content_type,
                            content, title, description, metadata_json, created_at, role_id
                     FROM _constat_artifacts
+                    {latest_filter}
                     ORDER BY step_number, attempt, id
                 """)).fetchall()
 
             return [self._row_to_artifact(row).to_dict() for row in rows]
         else:
             with self.engine.connect() as conn:
-                rows = conn.execute(text("""
-                    SELECT id, name, step_number, attempt, artifact_type, content_type,
-                           LENGTH(content) as content_length, title, description, created_at, role_id
-                    FROM _constat_artifacts
-                    ORDER BY step_number, attempt, id
+                rows = conn.execute(text(f"""
+                    SELECT a.id, a.name, a.step_number, a.attempt, a.artifact_type, a.content_type,
+                           LENGTH(a.content) as content_length, a.title, a.description,
+                           a.created_at, a.role_id, a.version,
+                           vc.version_count
+                    FROM _constat_artifacts a
+                    JOIN (
+                        SELECT name, MAX(version) as max_version, COUNT(*) as version_count
+                        FROM _constat_artifacts GROUP BY name
+                    ) vc ON a.name = vc.name AND a.version = vc.max_version
+                    ORDER BY a.step_number, a.attempt, a.id
                 """)).fetchall()
 
             return [
@@ -1249,9 +1277,43 @@ class DataStore:
                     "description": row[8],
                     "created_at": str(row[9]) if row[9] else None,
                     "role_id": row[10],
+                    "version": row[11],
+                    "version_count": row[12],
                 }
                 for row in rows
             ]
+
+    def get_artifact_versions(self, name: str) -> list[dict]:
+        """
+        Get all versions of an artifact by name (newest first).
+
+        Args:
+            name: Artifact name
+
+        Returns:
+            List of version metadata dicts (no content)
+        """
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT id, version, step_number, attempt, created_at
+                    FROM _constat_artifacts
+                    WHERE name = :name
+                    ORDER BY version DESC
+                """),
+                {"name": name}
+            ).fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "version": row[1],
+                "step_number": row[2],
+                "attempt": row[3],
+                "created_at": str(row[4]) if row[4] else None,
+            }
+            for row in rows
+        ]
 
     def get_artifacts_by_type(self, artifact_type: Union[ArtifactType, str]) -> list[Artifact]:
         """

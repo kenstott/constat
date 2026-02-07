@@ -9,14 +9,15 @@
 
 """Email utility for sending results from generated code."""
 
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from typing import Callable, Literal, Optional, Union
-import pandas as pd
 import io
+import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Callable, Literal, Optional, Union
+
+import pandas as pd
 
 from constat.core.config import EmailConfig
 

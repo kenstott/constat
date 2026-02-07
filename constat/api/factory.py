@@ -14,7 +14,7 @@ exposing implementation details.
 """
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 from constat.api.impl import ConstatAPIImpl
 from constat.api.protocol import ConstatAPI

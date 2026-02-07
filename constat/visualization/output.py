@@ -35,11 +35,10 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
-import sys
-import subprocess
 
 if TYPE_CHECKING:
     from constat.storage.datastore import DataStore

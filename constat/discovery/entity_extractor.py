@@ -24,14 +24,12 @@ from typing import Optional
 
 import spacy
 from spacy.language import Language
-from spacy.pipeline import EntityRuler
 
 from constat.discovery.models import (
     DocumentChunk,
     Entity,
     ChunkEntity,
     SemanticType,
-    NerType,
     normalize_entity_name,
     display_entity_name,
 )

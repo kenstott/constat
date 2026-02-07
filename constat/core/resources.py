@@ -14,7 +14,6 @@ Computed once at session start and updated on project changes.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass

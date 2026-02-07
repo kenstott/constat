@@ -12,8 +12,9 @@ Compact DAG renderer - nodes as plain text without boxes.
 Long linear chains rendered horizontally with count-based snaking.
 """
 
-import networkx as nx
 from typing import Dict, List, Set, Tuple
+
+import networkx as nx
 
 
 class CompactDAG:

@@ -13,13 +13,13 @@ Provides storage for learnings (raw corrections) and rules (compacted patterns)
 that persist across sessions, stored in .constat/<user_id>/learnings.yaml.
 """
 
+import re
+import threading
+import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
-import threading
-import uuid
-import re
+from typing import Optional
 
 import yaml
 

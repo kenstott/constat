@@ -69,9 +69,9 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
         {isExecuting && (
           <button
             onClick={cancelExecution}
-            className="btn-secondary text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+            className="btn-secondary text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 animate-pulse border-red-300 dark:border-red-700"
           >
-            <StopIcon className="w-4 h-4 mr-1" />
+            <StopIcon className="w-4 h-4 mr-1 animate-spin" style={{ animationDuration: '3s' }} />
             Cancel
           </button>
         )}

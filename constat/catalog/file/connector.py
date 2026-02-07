@@ -15,9 +15,7 @@ with the same interface pattern as SQL and NoSQL connectors.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Optional
-import glob as glob_module
 
 
 class FileType(Enum):

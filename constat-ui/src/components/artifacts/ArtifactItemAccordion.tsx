@@ -1,6 +1,6 @@
 // Artifact Item Accordion - individual artifact with expandable content and fullscreen mode
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -13,7 +13,7 @@ import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
-import type { Artifact, ArtifactContent, TableData } from '@/types/api'
+import type { Artifact, ArtifactContent, ArtifactVersionInfo, TableData } from '@/types/api'
 
 interface ArtifactItemAccordionProps {
   artifact: Artifact
@@ -30,8 +30,13 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
   const [tablePage, setTablePage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showVersions, setShowVersions] = useState(false)
+  const [versions, setVersions] = useState<ArtifactVersionInfo[] | null>(null)
+  const [viewingVersionId, setViewingVersionId] = useState<number | null>(null)
+  const versionDropdownRef = useRef<HTMLDivElement>(null)
 
   const isTable = artifact.artifact_type === 'table'
+  const hasVersions = (artifact.version_count ?? 1) > 1
 
   const handleToggleStar = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -48,6 +53,8 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
   // Fetch content when opened (or when table page changes)
   useEffect(() => {
     if (!session || !isOpen) return
+    // Skip if viewing a specific older version (content loaded by handleSelectVersion)
+    if (viewingVersionId) return
     // Skip if already loaded for non-tables
     if (!isTable && content) return
 
@@ -78,7 +85,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     }
 
     fetchContent()
-  }, [session, artifact.id, artifact.name, isOpen, content, isTable, tablePage])
+  }, [session, artifact.id, artifact.name, isOpen, content, isTable, tablePage, viewingVersionId])
 
   // Close fullscreen on Escape
   useEffect(() => {
@@ -126,6 +133,64 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
   }, [session, artifact.id, artifact.name])
+
+  // Close version dropdown on outside click
+  useEffect(() => {
+    if (!showVersions) return
+    const handleClick = (e: MouseEvent) => {
+      if (versionDropdownRef.current && !versionDropdownRef.current.contains(e.target as Node)) {
+        setShowVersions(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showVersions])
+
+  const handleVersionBadgeClick = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!session || !hasVersions) return
+
+    if (showVersions) {
+      setShowVersions(false)
+      return
+    }
+
+    // Fetch versions if not loaded
+    if (!versions) {
+      try {
+        const resp = await sessionsApi.getArtifactVersions(session.session_id, artifact.id)
+        setVersions(resp.versions)
+      } catch {
+        return
+      }
+    }
+    setShowVersions(true)
+  }
+
+  const handleSelectVersion = async (versionId: number) => {
+    if (!session) return
+    setShowVersions(false)
+
+    if (versionId === artifact.id) {
+      // Back to current version
+      setViewingVersionId(null)
+      setContent(null)
+      return
+    }
+
+    setViewingVersionId(versionId)
+    setLoading(true)
+    setError(null)
+    try {
+      const artifactContent = await sessionsApi.getArtifact(session.session_id, versionId)
+      setContent(artifactContent)
+      setIsOpen(true)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const toggleOpen = () => {
     setIsOpen(!isOpen)
@@ -301,7 +366,7 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
                         key={col}
                         className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
                       >
-                        {String(row[col] ?? '')}
+                        {row[col] != null && typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col] ?? '')}
                       </td>
                     ))}
                   </tr>
@@ -557,6 +622,40 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
             <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
               ({typeLabel})
             </span>
+            {hasVersions && (
+              <div className="relative flex-shrink-0" ref={versionDropdownRef}>
+                <button
+                  onClick={handleVersionBadgeClick}
+                  className="px-1.5 py-0.5 text-[10px] font-medium bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 rounded hover:bg-indigo-200 dark:hover:bg-indigo-800/40 transition-colors"
+                  title={`Version ${artifact.version ?? 1} of ${artifact.version_count ?? 1} — click to browse`}
+                >
+                  v{artifact.version ?? 1}
+                </button>
+                {showVersions && versions && (
+                  <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[180px]">
+                    {versions.map((v) => (
+                      <button
+                        key={v.id}
+                        onClick={(e) => { e.stopPropagation(); handleSelectVersion(v.id) }}
+                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex justify-between items-center gap-2 ${
+                          (viewingVersionId === v.id || (!viewingVersionId && v.id === artifact.id))
+                            ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400'
+                            : 'text-gray-700 dark:text-gray-300'
+                        }`}
+                      >
+                        <span>v{v.version}</span>
+                        <span className="text-gray-400 dark:text-gray-500">step {v.step_number}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {viewingVersionId && (
+              <span className="px-1 py-0.5 text-[10px] bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded flex-shrink-0">
+                viewing older version
+              </span>
+            )}
             {artifact.role_id && (
               <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded flex-shrink-0">
                 {artifact.role_id}

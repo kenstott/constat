@@ -20,8 +20,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-from constat.core.config import Config, ContextPreloadConfig
 from constat.catalog.schema_manager import SchemaManager, TableMetadata
+from constat.core.config import Config
 
 
 @dataclass

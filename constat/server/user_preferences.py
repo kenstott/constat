@@ -12,7 +12,7 @@ Stores user preferences in .constat/{user_id}/preferences.yaml including:
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 

@@ -7,15 +7,14 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from constat.core.skills import SkillManager
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
 from constat.server.session_manager import SessionManager
-from constat.core.skills import SkillManager, Skill
 
 logger = logging.getLogger(__name__)
 

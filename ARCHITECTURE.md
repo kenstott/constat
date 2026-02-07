@@ -7,16 +7,31 @@ Technical documentation of the system architecture and logic flow.
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          Client Access Layer                                 │
-│         ┌───────────────┐ ┌───────────────┐ ┌───────────────────┐           │
-│         │      CLI      │ │     REPL      │ │    Python SDK     │           │
-│         │   (cli.py)    │ │  (repl.py)    │ │   (session.py)    │           │
-│         └───────┬───────┘ └───────┬───────┘ └─────────┬─────────┘           │
-└─────────────────┼─────────────────┼───────────────────┼─────────────────────┘
-                  └─────────────────┼───────────────────┘
-                                    │
-                                    ▼
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌───────────────────┐  │
+│  │   Web UI     │ │     CLI      │ │  Textual     │ │    Python SDK     │  │
+│  │ (constat-ui/)│ │   (cli.py)   │ │    REPL      │ │   (session.py)    │  │
+│  │  React/TS    │ │              │ │(textual_     │ │                   │  │
+│  │              │ │              │ │  repl.py)    │ │                   │  │
+│  └──────┬───────┘ └──────┬───────┘ └──────┬───────┘ └─────────┬─────────┘  │
+└─────────┼────────────────┼────────────────┼───────────────────┼────────────┘
+          │                └────────────────┼───────────────────┘
+          │   REST + WebSocket              │
+          └──────────┐                      │
+                     ▼                      │
+┌─────────────────────────────────────┐     │
+│  Server Layer (constat/server/)     │     │
+│  ┌──────────────────────────────┐   │     │
+│  │  FastAPI (app.py)            │   │     │
+│  │  REST routes + WebSocket     │   │     │
+│  │  SessionManager              │   │     │
+│  │  Firebase Auth               │   │     │
+│  └──────────────┬───────────────┘   │     │
+└─────────────────┼───────────────────┘     │
+                  └─────────────┬───────────┘
+                                │
+                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Sessjust ion Layer                                   │
+│                            Session Layer                                     │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                         Session (session.py)                             ││
 │  │  - Orchestrates execution                                                ││
@@ -26,41 +41,114 @@ Technical documentation of the system architecture and logic flow.
 │  └───────────────────────────────┬─────────────────────────────────────────┘│
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │
-          ┌────────────────────────┼────────────────────────┐
-          │                        │                        │
-          ▼                        ▼                        ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────────────┐
-│ Mode: Exploratory│    │ Mode: Auditable │    │      Shared Services        │
-│                 │    │                 │    │                             │
-│ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────────────────────┐ │
-│ │   Planner   │ │    │ │FactResolver │ │    │ │    SchemaManager        │ │
-│ │(planner.py) │ │    │ │(fact_       │ │    │ │ (schema_manager.py)     │ │
-│ └──────┬──────┘ │    │ │ resolver.py)│ │    │ └─────────────────────────┘ │
-│        │        │    │ └──────┬──────┘ │    │ ┌─────────────────────────┐ │
-│        ▼        │    │        │        │    │ │     TaskRouter          │ │
-│ ┌─────────────┐ │    │        ▼        │    │ │ (providers/router.py)   │ │
-│ │  Executor   │ │    │ ┌─────────────┐ │    │ └─────────────────────────┘ │
-│ │(executor.py)│ │    │ │ Derivation  │ │    │ ┌─────────────────────────┐ │
-│ └─────────────┘ │    │ │   Trace     │ │    │ │    DataStore            │ │
-└─────────────────┘    │ └─────────────┘ │    │ │ (datastore.py)          │ │
-                       └─────────────────┘    │ └─────────────────────────┘ │
-                                              └─────────────────────────────┘
-                                                            │
-                    ┌───────────────────────────────────────┴───────────────┐
-                    │                   Data Sources                         │
-                    │  (All external systems that Constat queries)           │
-                    │                                                        │
-                    │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-                    │  │   SQL    │ │  NoSQL   │ │  Files   │ │ External │  │
-                    │  │Databases │ │Databases │ │(CSV/JSON/│ │   APIs   │  │
-                    │  │(SQLAlch.)│ │Connectors│ │ Parquet) │ │(GraphQL) │  │
-                    │  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
-                    └────────────────────────────────────────────────────────┘
+               ┌───────────────────┼───────────────────────┐
+               │                   │                       │
+               ▼                   ▼                       ▼
+┌──────────────────────┐ ┌──────────────────┐ ┌───────────────────────────────┐
+│  Intent Classifier   │ │ Execution Modes  │ │      Shared Services          │
+│ (intent_classifier.  │ │                  │ │                               │
+│  py)                 │ │ ┌──────────────┐ │ │ ┌───────────────────────────┐ │
+│                      │ │ │ Exploratory  │ │ │ │    SchemaManager          │ │
+│ Embedding + LLM      │ │ │  Planner     │ │ │ │ (schema_manager.py)       │ │
+│ classification →     │ │ │  Executor    │ │ │ └───────────────────────────┘ │
+│ CLARIFY / PLAN /     │ │ │  DAG Sched.  │ │ │ ┌───────────────────────────┐ │
+│ EXECUTE / PROVE      │ │ └──────────────┘ │ │ │    TaskRouter             │ │
+│                      │ │ ┌──────────────┐ │ │ │ (providers/router.py)     │ │
+│                      │ │ │  Auditable   │ │ │ └───────────────────────────┘ │
+│                      │ │ │ FactResolver │ │ │ ┌───────────────────────────┐ │
+│                      │ │ │ ProbLog      │ │ │ │    DataStore              │ │
+│                      │ │ │ Proof Tree   │ │ │ │ (datastore.py)            │ │
+│                      │ │ └──────────────┘ │ │ └───────────────────────────┘ │
+└──────────────────────┘ └──────────────────┘ │ ┌───────────────────────────┐ │
+                                              │ │    DiscoveryTools         │ │
+                                              │ │ (discovery/)              │ │
+                                              │ └───────────────────────────┘ │
+                                              │ ┌───────────────────────────┐ │
+                                              │ │    LearningStore          │ │
+                                              │ │ (storage/learnings.py)    │ │
+                                              │ └───────────────────────────┘ │
+                                              └───────────────────────────────┘
+                                                             │
+                  ┌──────────────────────────────────────────┴──────────────────┐
+                  │                    Data Sources                              │
+                  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
+                  │  │   SQL    │ │  NoSQL   │ │  Files   │ │ External │       │
+                  │  │Databases │ │Databases │ │(CSV/JSON/│ │   APIs   │       │
+                  │  │(SQLAlch.)│ │Connectors│ │ Parquet) │ │(GraphQL/ │       │
+                  │  │          │ │(MongoDB, │ │          │ │ OpenAPI) │       │
+                  │  │          │ │ DynamoDB,│ │          │ │          │       │
+                  │  │          │ │ Elastic, │ │          │ │          │       │
+                  │  │          │ │ CosmosDB,│ │          │ │          │       │
+                  │  │          │ │Cassandra,│ │          │ │          │       │
+                  │  │          │ │Firestore)│ │          │ │          │       │
+                  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
+                  └────────────────────────────────────────────────────────────┘
 ```
 
 **Key distinction:**
-- **Client Access Layer**: Ways to USE Constat (CLI, REPL, Python SDK)
+- **Client Access Layer**: Ways to USE Constat (Web UI, CLI, Textual REPL, Python SDK)
+- **Server Layer**: FastAPI REST API + WebSocket for the Web UI and external consumers
 - **Data Sources**: External systems Constat QUERIES (SQL databases, NoSQL databases, file-based sources like CSV/JSON/Parquet, and external GraphQL/REST APIs via API Executor)
+
+## Intent Classification (`execution/intent_classifier.py`)
+
+All queries are classified before routing to an execution mode.
+
+**IntentClassifier** uses a two-tier approach:
+1. **Embedding similarity** against exemplar intents (BAAI/bge-large-en-v1.5, 1024 dimensions)
+2. **LLM fallback** for low-confidence classifications
+
+**Classification thresholds:**
+- Primary intent: 0.80 confidence (determines code path)
+- Sub-intent: 0.65 confidence (defaults to None if below)
+
+**Intent types** (defined in `execution/intent.py`):
+
+| Intent | Description |
+|--------|-------------|
+| NEW_QUESTION | Fresh query requiring planning |
+| QUERY | Simple data lookup |
+| LOOKUP | Knowledge/document lookup |
+| DRILL_DOWN | Dig deeper into previous results |
+| COMPARE | Compare datasets or results |
+| SUMMARIZE | Summarize previous analysis |
+| EXPORT | Export data/artifacts |
+| EXTEND | Add to existing plan |
+| REDO | Re-execute with changes |
+| MODIFY_FACT | Change an assumed fact |
+| STEER_PLAN | Redirect plan execution |
+| REFINE_SCOPE | Narrow or broaden scope |
+| CHALLENGE | Question a result |
+| MODE_SWITCH | Switch execution mode |
+| PROVENANCE | Ask about data lineage |
+| CREATE_ARTIFACT | Generate chart/report/email |
+| TRIGGER_ACTION | Execute a side-effect |
+| PREDICT | Forecasting request |
+| ALERT | Set up a monitor |
+| RESET | Clear session state |
+
+**Mode preservation:** Redo-like intents (REDO, PREDICT, MODIFY_FACT, REFINE_SCOPE, STEER_PLAN) preserve the previous execution mode unless MODE_SWITCH is explicit.
+
+**Multi-intent support:** Messages are split on sentence delimiters (`.` and `;`) and each segment is classified independently.
+
+## Execution Modes (`execution/mode.py`)
+
+```python
+class Mode(Enum):
+    EXPLORATORY = "exploratory"  # Multi-step planner (default)
+    PROOF = "proof"              # Fact resolver with derivation traces
+```
+
+```python
+class Phase(Enum):
+    IDLE = "idle"                        # Waiting for input
+    PLANNING = "planning"                # Generating/revising plan
+    AWAITING_APPROVAL = "awaiting_approval"  # Plan ready, needs approval
+    EXECUTING = "executing"              # Execution in progress
+    FAILED = "failed"                    # Execution failed
+```
+
+All queries run exploratory by default. Use `/prove` for auditable proofs.
 
 ## Request Processing Flow
 
@@ -73,7 +161,23 @@ User Question: "What are the top 5 customers by revenue this quarter?"
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  0. CLARIFICATION PHASE (if needed)                                         │
+│  0. INTENT CLASSIFICATION                                                   │
+│                                                                             │
+│  IntentClassifier analyzes query:                                           │
+│    - Embedding similarity against exemplar intents                          │
+│    - LLM fallback for low-confidence cases                                  │
+│    - Result: NEW_QUESTION → route to planning                               │
+│                                                                             │
+│  For follow-ups, intent determines routing:                                 │
+│    - DRILL_DOWN → follow_up() with context preservation                     │
+│    - REDO → re-execute with modifications                                   │
+│    - EXPORT → generate artifact from existing results                       │
+│    - etc.                                                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. CLARIFICATION PHASE (if needed)                                         │
 │                                                                             │
 │  System detects ambiguous requests that need clarification before planning: │
 │    - Geographic scope: "how many bears?" → "In what region?"                │
@@ -85,18 +189,11 @@ User Question: "What are the top 5 customers by revenue this quarter?"
 │    1. Present clarifying questions to user                                  │
 │    2. User provides answers (or skips to proceed anyway)                    │
 │    3. Enhanced question passed to planning phase                            │
-│                                                                             │
-│  Example:                                                                   │
-│    User: "How many bears are there?"                                        │
-│    System: "Please clarify:"                                                │
-│      1. In what geographic region? (US, global, specific state?)            │
-│    User: "In Yellowstone National Park"                                     │
-│    → Enhanced: "How many bears are there? In Yellowstone National Park"     │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. PLANNING PHASE                                                          │
+│  2. PLANNING PHASE                                                          │
 │                                                                             │
 │  Input:                                                                     │
 │    - User question                                                          │
@@ -110,69 +207,69 @@ User Question: "What are the top 5 customers by revenue this quarter?"
 │      3. Rank and select top 5                                               │
 │      4. Format results with customer details                                │
 │                                                                             │
-│  Output: Plan object with Step objects                                      │
+│  Output: Plan object with Step objects arranged as a DAG                    │
+│  Phase transitions: PLANNING → AWAITING_APPROVAL                            │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  2. STEP EXECUTION LOOP (for each step)                                     │
+│  3. PLAN APPROVAL                                                           │
 │                                                                             │
+│  User reviews plan and can:                                                 │
+│    - Approve as-is                                                          │
+│    - Suggest modifications → re-plan with feedback                          │
+│    - Reject entirely                                                        │
+│                                                                             │
+│  Phase transitions: AWAITING_APPROVAL → EXECUTING                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  4. DAG EXECUTION (for each step, parallelized where possible)              │
+│                                                                             │
+│  ParallelScheduler runs steps in waves based on dependency graph:           │
+│    - Wave 0: All leaf steps (no dependencies) run in parallel               │
+│    - Wave N: Steps depending on Wave 0..N-1 run when dependencies resolve   │
+│    - Max concurrent: 5 steps, per-step timeout: 60s                         │
+│    - fail_fast: stop all on first failure                                   │
+│                                                                             │
+│  For each step:                                                             │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │  2a. Code Generation                                                  │  │
-│  │                                                                       │  │
-│  │  Input:                                                               │  │
-│  │    - Step goal                                                        │  │
-│  │    - Schema details (on-demand via tools)                             │  │
+│  │  4a. Code Generation                                                  │  │
+│  │  LLM generates Python code using:                                     │  │
+│  │    - Step goal + schema tools (on-demand discovery)                   │  │
 │  │    - Scratchpad (previous step results)                               │  │
-│  │    - Available tables in datastore                                    │  │
-│  │                                                                       │  │
-│  │  LLM generates: Python code                                           │  │
+│  │    - Available DataStore tables                                       │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 │                            │                                                │
 │                            ▼                                                │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │  2b. Code Execution                                                   │  │
-│  │                                                                       │  │
-│  │  Executor runs code in sandboxed environment:                         │  │
-│  │    - Database connections available (db, db_sales, etc.)              │  │
-│  │    - DataStore for saving/loading results                             │  │
-│  │    - pandas, numpy available                                          │  │
-│  │    - Timeout enforced                                                 │  │
-│  │    - Import whitelist checked                                         │  │
-│  │                                                                       │  │
-│  │  Output captured: stdout, stderr, exceptions                          │  │
+│  │  4b. Code Execution (sandboxed subprocess)                            │  │
+│  │  Available: db connections, store, pandas, numpy                      │  │
+│  │  Enforced: timeout, import whitelist, path restrictions               │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 │                            │                                                │
 │                            ▼                                                │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │  2c. Error Handling / Retry Loop                                      │  │
-│  │                                                                       │  │
-│  │  If execution fails:                                                  │  │
-│  │    1. Format error message with traceback                             │  │
-│  │    2. Send error + previous code to LLM                               │  │
-│  │    3. LLM generates corrected code                                    │  │
-│  │    4. Retry execution                                                 │  │
-│  │    5. Repeat until success or max_retries                             │  │
+│  │  4c. Error Handling / Retry Loop                                      │  │
+│  │  Error + traceback + previous code → LLM → corrected code → retry    │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 │                            │                                                │
 │                            ▼                                                │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │  2d. State Persistence                                                │  │
-│  │                                                                       │  │
-│  │  - DataFrames auto-saved to DataStore                                 │  │
-│  │  - Scratchpad updated with step summary                               │  │
-│  │  - Artifacts recorded (code, output, errors)                          │  │
-│  │  - Events emitted for UI feedback                                     │  │
+│  │  4d. State Persistence                                                │  │
+│  │  DataFrames auto-saved, scratchpad updated, artifacts recorded        │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  3. COMPLETION                                                              │
+│  5. COMPLETION                                                              │
 │                                                                             │
 │  - All step outputs combined                                                │
 │  - Session recorded in history                                              │
 │  - DataStore persisted for future queries                                   │
+│  - Learnings extracted and stored                                           │
 │  - Result returned to caller                                                │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -212,9 +309,9 @@ User Question: "Is customer C001 a VIP?"
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  3. LAZY FACT RESOLUTION                                                    │
+│  3. LAZY FACT RESOLUTION (parallel within each level)                       │
 │                                                                             │
-│  For each required fact, resolve in order:                                  │
+│  FactNode DAG built with dependencies. Resolved level by level:             │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │  Resolution Hierarchy:                                                  ││
@@ -226,69 +323,54 @@ User Question: "Is customer C001 a VIP?"
 │  │       │             (e.g., vip_threshold = 100000)                      ││
 │  │       ▼ (miss)                                                          ││
 │  │  3. DATABASE      - Can be queried from a database?                     ││
-│  │       │             LLM generates SQL query                             ││
+│  │       │             LLM generates SQL → transpiled to target dialect    ││
 │  │       │             Confidence: 1.0                                     ││
 │  │       ▼ (miss)                                                          ││
-│  │  4. LLM KNOWLEDGE - LLM foundational knowledge?                         ││
+│  │  4. DOCUMENT      - Found in configured documents?                      ││
+│  │       │             Semantic search via vector embeddings               ││
+│  │       ▼ (miss)                                                          ││
+│  │  5. LLM KNOWLEDGE - LLM foundational knowledge?                         ││
 │  │       │             (e.g., "Paris is capital of France")                ││
 │  │       │             Confidence: 0.6-0.8                                 ││
 │  │       ▼ (miss)                                                          ││
-│  │  5. SUB-PLAN      - Requires multi-step derivation?                     ││
+│  │  6. SUB-PLAN      - Requires multi-step derivation?                     ││
 │  │       │             Generate mini-plan and execute                      ││
 │  │       ▼ (fail)                                                          ││
-│  │  6. UNRESOLVED    - Return with missing facts explanation               ││
+│  │  7. UNRESOLVED    - Return with missing facts explanation               ││
 │  │                     User can provide facts via follow-up                ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 │                                                                             │
-│  User-Provided Facts (follow-up flow):                                      │
-│                                                                             │
-│  When facts are unresolved, the user can provide them in natural language:  │
-│    User: "There were 1 million people at the march"                         │
-│    → LLM extracts: march_attendance = 1000000                               │
-│    → Fact added to cache with source: USER_PROVIDED                         │
-│    → Resolution re-attempted with new fact available                        │
-│                                                                             │
-│                                                                             │
-│  Example resolution for is_vip(C001):                                       │
-│                                                                             │
-│    is_vip(C001) = ?                                                         │
-│      └─ customer_revenue(C001) = ?                                          │
-│           └─ DATABASE: SELECT SUM(amount) FROM orders WHERE customer_id='C001' │
-│           └─ Result: 150000, Confidence: 1.0                                │
-│      └─ vip_threshold = ?                                                   │
-│           └─ CONFIG: config.yaml                                            │
-│           └─ Result: 100000, Confidence: 1.0                                │
-│      └─ 150000 > 100000 = True                                              │
-│    is_vip(C001) = True                                                      │
+│  Parallel execution:                                                        │
+│    Level 0 (leaf facts) → resolved concurrently via asyncio.gather          │
+│    Level N → resolved once Level 0..N-1 complete                            │
+│    Sub-proofs resolved recursively with parallelization at each level       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  4. DERIVATION TRACE GENERATION                                             │
+│  4. PROOF TREE + DERIVATION TRACE                                           │
 │                                                                             │
-│  Build complete trace showing:                                              │
-│    - Each fact and its value                                                │
-│    - Source of each fact (DATABASE, CONFIG, LLM_KNOWLEDGE, DERIVED)         │
-│    - Confidence level                                                       │
-│    - Exact query/timestamp for database facts                               │
-│    - Reasoning at each step                                                 │
+│  ProofNode tree built showing:                                              │
+│    - Each fact, its value, source, and confidence                           │
+│    - Exact SQL query or code used                                           │
+│    - Hierarchical children for sub-facts                                    │
+│    - Status: PENDING → RESOLVING → RESOLVED / FAILED / CACHED              │
 │                                                                             │
-│  Output:                                                                    │
-│    is_vip(customer_id=C001) = True                                          │
-│      derived_from:                                                          │
-│        customer_revenue(customer_id=C001) = 150000                          │
-│          source: DATABASE                                                   │
-│          query: SELECT SUM(amount) FROM orders WHERE customer_id = 'C001'   │
-│          executed_at: 2025-01-11T10:23:45Z                                  │
-│          confidence: 1.0                                                    │
-│                                                                             │
-│        vip_threshold = 100000                                               │
-│          source: CONFIG (config.yaml)                                       │
-│          confidence: 1.0                                                    │
-│                                                                             │
-│      reasoning: Customer revenue ($150,000) exceeds VIP threshold ($100,000)│
+│  Rendered as Rich Tree in REPL or interactive DAG in Web UI                 │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### ProbLog Resolver (`execution/problog_resolver.py`)
+
+Alternative fact resolution engine using logic programming semantics:
+
+- Facts are **predicates** (ground truths from database queries)
+- Dependencies are **rules** (symbolic derivations)
+- Resolution is **depth-first search** (Prolog-style)
+- Proofs come automatically from the resolution trace
+- Confidence values propagated as probabilities
+
+Register SQL executors for database-backed predicates. `resolve_fact()` returns a value plus `proof.to_trace()` for the full derivation chain.
 
 ### Knowledge Mode: Document Lookup + LLM Synthesis
 
@@ -318,55 +400,24 @@ User Question: "Explain the revenue recognition process"
 │    - Search query: "revenue recognition process"                            │
 │    - Vector embeddings via sentence-transformers                            │
 │    - Return top-k relevant excerpts with relevance scores                   │
-│                                                                             │
-│  Results:                                                                   │
-│    [1] From 'accounting-policies' (relevance: 0.85)                        │
-│        "Revenue is recognized when performance obligations..."              │
-│    [2] From 'finance-procedures' (relevance: 0.72)                         │
-│        "The five-step model for revenue recognition..."                     │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  3. LLM SYNTHESIS                                                           │
 │                                                                             │
-│  Input to LLM:                                                              │
-│    - System prompt: Knowledge mode instructions                             │
-│    - User question                                                          │
-│    - Document excerpts with source attribution                              │
-│                                                                             │
-│  LLM synthesizes explanation:                                               │
-│    - Combines document content with world knowledge                         │
-│    - Cites specific documents when referencing them                         │
-│    - Distinguishes between documented facts and general knowledge           │
+│  LLM synthesizes explanation from document excerpts + world knowledge.      │
+│  Cites specific documents. Single LLM call, no planning.                    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  4. OUTPUT WITH SOURCES                                                     │
 │                                                                             │
-│  Returns:                                                                   │
-│    - Synthesized explanation                                                │
-│    - Sources consulted (document names, sections, relevance)                │
-│    - No plan (skips planning phase entirely)                                │
-│                                                                             │
-│  Example output:                                                            │
-│    Revenue recognition follows a five-step process as defined in           │
-│    ASC 606 and documented in the accounting policies guide:                │
-│    1. Identify the contract...                                             │
-│                                                                             │
-│    **Sources consulted:**                                                   │
-│    - accounting-policies (Revenue Recognition)                              │
-│    - finance-procedures                                                     │
+│  Returns synthesized explanation with sources consulted.                    │
+│  No plan, no code execution, fast response time.                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-**Key characteristics of Knowledge Mode:**
-- No multi-step planning required
-- No code execution or database queries
-- Direct LLM synthesis with document context
-- Shows sources consulted for transparency
-- Fast response time (single LLM call)
 
 ### Follow-Up Questions (Context Preservation)
 
@@ -397,17 +448,9 @@ Follow-up: "Now compare this to last year"
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  FOLLOW-UP PLAN GENERATION                                                  │
 │                                                                             │
-│  LLM sees:                                                                  │
-│    - Previous scratchpad context                                            │
-│    - Available tables from previous steps                                   │
-│    - New question: "compare this to last year"                              │
-│                                                                             │
-│  Generates incremental plan:                                                │
-│    Step 3: Query Q4 2023 data (load_dataframe not needed - fresh query)     │
-│    Step 4: Join with existing q4_revenue table                              │
-│    Step 5: Calculate YoY growth percentages                                 │
-│                                                                             │
-│  Steps are numbered to continue from previous work.                         │
+│  LLM sees previous scratchpad context + available tables + new question.    │
+│  Generates incremental plan continuing from previous work.                  │
+│  Steps numbered to continue from previous work.                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -415,16 +458,18 @@ Follow-up: "Now compare this to last year"
 
 ### Session (`session.py`)
 
-The central orchestrator that manages the execution lifecycle.
+The central orchestrator (~9,500 lines) that manages the execution lifecycle.
 
 **Responsibilities:**
-- Initialize components (SchemaManager, TaskRouter, Planner, Executor)
+- Initialize components (SchemaManager, TaskRouter, Planner, Executor, IntentClassifier)
 - Route LLM requests via TaskRouter based on task type with automatic escalation
-- Manage session state (datastore, scratchpad)
-- Execute plans step-by-step
-- Handle retries and errors
-- Emit events for monitoring
+- Manage session state (datastore, scratchpad, context)
+- Execute plans step-by-step with DAG-based parallel scheduling
+- Handle retries, errors, and mode transitions
+- Emit events for monitoring and feedback
 - Record history for resumption
+- Integrate with learning system (store and apply learnings/rules)
+- Detect and handle meta-questions without data queries
 
 **Key Methods:**
 - `solve(problem)` - Full execution from question to answer
@@ -433,6 +478,69 @@ The central orchestrator that manages the execution lifecycle.
 - `get_state()` - Inspect current session state
 - `set_clarification_callback(callback)` - Set handler for ambiguous questions
 - `set_approval_callback(callback)` - Set handler for plan approval
+
+### Server (`server/app.py`)
+
+FastAPI application serving the REST API and WebSocket connections.
+
+**App Factory** creates the FastAPI app with:
+- CORS middleware
+- Config hashing for incremental updates
+- SessionManager for server-side session lifecycle
+- Firebase authentication integration
+
+**Routes** (`server/routes/`):
+
+| Route Module | Endpoints |
+|-------------|-----------|
+| `queries.py` | Query execution, streaming results |
+| `data.py` | Data management, table operations |
+| `databases.py` | Database configuration CRUD |
+| `schema.py` | Schema introspection |
+| `sessions.py` | Session lifecycle (create, resume, list) |
+| `files.py` | File upload, document management |
+| `learnings.py` | Learning and rule storage |
+| `roles.py` | Role management |
+| `skills.py` | Skill discovery and management |
+| `users.py` | User operations |
+
+**WebSocket** (`server/websocket.py`): Real-time streaming of execution events (plan updates, step progress, results) to the Web UI.
+
+**SessionManager** (`server/session_manager.py`): Server-side session lifecycle management, maps API sessions to Session instances.
+
+### DAG Execution (`execution/dag.py`, `execution/parallel_scheduler.py`)
+
+Plans are represented as directed acyclic graphs for parallel execution.
+
+**FactNode** - Node in the execution DAG:
+- `name`, `description`, `source` (database/document/knowledge/computed)
+- `dependencies` - list of FactNodes this depends on
+- Status: `PENDING` → `RUNNING` → `RESOLVED` / `FAILED`
+- Execution metadata: `sql_query`, `code`, `row_count`, `confidence`
+- Properties: `is_leaf` (no dependencies), `is_table` (row_count > 1)
+
+**ParallelScheduler** - Level-based parallel execution:
+
+```
+Wave 0: [step_a, step_b, step_c]  ← all leaves, run in parallel
+Wave 1: [step_d, step_e]          ← depend on wave 0, run when ready
+Wave 2: [step_f]                  ← depends on wave 1
+```
+
+**SchedulerConfig:**
+- `max_concurrent`: 5 steps
+- `step_timeout`: 60 seconds
+- `fail_fast`: True (stop all on first failure)
+
+**ExecutionContext:** Manages cancellation with `is_cancelled()` check for running steps.
+
+### Engine (`execution/engine.py`)
+
+Single-shot query execution engine for simpler queries that don't need full planning.
+
+**QueryResult:** `success`, `answer`, `code`, `attempts`, `error`, `attempt_history`
+
+Uses SCHEMA_TOOLS + DOC_TOOLS for on-demand discovery. Automatic retry on errors via `format_error_for_retry`.
 
 ### Planner (`execution/planner.py`)
 
@@ -444,13 +552,8 @@ Converts natural language questions into executable plans.
 - System prompt (domain context)
 
 **Output:**
-- Plan object with ordered Step objects
+- Plan object with ordered Step objects (DAG structure with dependencies)
 - Each step has: goal, expected_inputs, expected_outputs
-
-**LLM Interaction:**
-- Uses schema tools to query detailed table info
-- Considers available data sources
-- Structures multi-step approach
 
 ### Executor (`execution/executor.py`)
 
@@ -468,6 +571,62 @@ Runs generated Python code in a sandboxed environment.
 - `store` - DataStore for persistence
 - `pd`, `np` - pandas, numpy
 
+### SQL Transpiler (`catalog/sql_transpiler.py`)
+
+Cross-dialect SQL compatibility layer using SQLGlot.
+
+**How it works:**
+1. LLM generates SQL in the **canonical dialect** (PostgreSQL)
+2. SQLGlot transpiles to the target database's SQL dialect automatically
+
+**Supported dialects:**
+
+| SQLAlchemy Driver | SQLGlot Dialect |
+|-------------------|-----------------|
+| sqlite | sqlite |
+| postgresql/psycopg2 | postgres |
+| mysql/pymysql | mysql |
+| duckdb | duckdb |
+| snowflake | snowflake |
+| bigquery | bigquery |
+| redshift | redshift |
+| mssql/pyodbc | tsql |
+| oracle | oracle |
+| clickhouse | clickhouse |
+| databricks | databricks |
+| spark | spark |
+| trino | trino |
+| presto | presto |
+| awsathena | presto |
+| hive | hive |
+
+### Context Management (`context.py`)
+
+Monitors and compacts session context to stay within token budgets.
+
+**ContextStats** tracks:
+- `total_tokens`, broken down by: scratchpad, state variables, table metadata, artifacts
+- Largest items for targeted compaction
+- Thresholds: WARNING at 50K tokens, CRITICAL at 100K tokens
+
+**ContextCompactor** - Automatic compaction when context reaches critical size:
+- Summarizes old scratchpad entries
+- Samples large tables (MAX_TABLE_ROWS: 1,000)
+- Truncates long narratives (MAX_NARRATIVE_CHARS: 2,000)
+
+### Proof Tree (`proof_tree.py`)
+
+Visualization of fact resolution derivation chains.
+
+**ProofNode:**
+- `name`, `description`, `value`, `source`, `confidence`
+- `status`: PENDING → RESOLVING → RESOLVED / FAILED / CACHED
+- `children`: sub-facts forming the derivation
+- `query`: SQL or code used to resolve
+- `result_summary`: intermediate result text
+
+Rendered as a Rich Tree in the REPL or interactive D3 DAG in the Web UI.
+
 ### DataStore (`storage/datastore.py`)
 
 Persistent storage for session state.
@@ -484,13 +643,29 @@ Persistent storage for session state.
 - Each step runs in isolation
 - Must explicitly save to share data
 
+### Storage Layer (`storage/`)
+
+| Module | Purpose |
+|--------|---------|
+| `datastore.py` | Session data persistence (DataFrames, state, scratchpad) |
+| `registry.py` | Central registry for tables and artifacts (TableRecord, ArtifactRecord) |
+| `registry_datastore.py` | Registry-aware DataStore integration |
+| `history.py` | Execution history tracking and retrieval |
+| `learnings.py` | Learning and rule storage |
+| `facts.py` | Fact storage and retrieval |
+| `duckdb_pool.py` | ThreadLocal DuckDB connection pool |
+| `monitors.py` | Monitoring and alert storage |
+| `bookmarks.py` | Session bookmark management |
+| `parquet_store.py` | Parquet file storage backend |
+| `session_store.py` | Session persistence |
+
+**ConstatRegistry** (`registry.py`): Central registry tracking all tables and artifacts across sessions. Records include user_id, session_id, description, row_count, columns, and provenance (role_id, is_published, is_final_step).
+
 ### SchemaManager (`catalog/schema_manager.py`)
 
 Provides schema information to the LLM for SQL databases, NoSQL databases, and file-based data sources.
 
 **Unified Data Source Support:**
-
-The SchemaManager handles SQL, NoSQL, and file-based sources transparently:
 
 ```yaml
 databases:
@@ -527,26 +702,29 @@ databases:
 
 **Schema introspection by type:**
 - SQL: Uses SQLAlchemy inspector for table/column metadata
-- NoSQL: Samples documents to infer schema
-- Files: Reads sample rows to infer column names, types, and sample values
+- NoSQL: Samples documents to infer schema (connectors in `catalog/nosql/`)
+- Files: Reads sample rows to infer column names, types, and sample values (`catalog/file/connector.py`)
 
 All data sources appear uniformly in the schema overview and vector search.
 
-**FileConnector (`catalog/file/connector.py`):**
+**NoSQL Connectors** (`catalog/nosql/`):
 
-Handles CSV, JSON, JSONL, Parquet, and Arrow/Feather files:
-- Schema inference from file samples
-- Row count estimation
-- Metadata generation for vector embeddings
-- Support for local and remote paths (s3://, https://, etc.)
+| Connector | Backend |
+|-----------|---------|
+| `mongodb.py` | MongoDB |
+| `dynamodb.py` | AWS DynamoDB |
+| `elasticsearch.py` | Elasticsearch |
+| `cosmosdb.py` | Azure Cosmos DB |
+| `cassandra.py` | Apache Cassandra |
+| `firestore.py` | Google Firestore |
+
+**FileConnector** (`catalog/file/connector.py`): Handles CSV, JSON, JSONL, Parquet, and Arrow/Feather files. Schema inference from samples, row count estimation, metadata generation for vector embeddings, support for local and remote paths.
 
 ### DiscoveryTools (`discovery/tools.py`)
 
 Provides on-demand schema, API, and document discovery via tool calling.
 
 **Automatic Mode Selection:**
-
-The system automatically detects whether the LLM supports tool calling:
 
 | Model Type | Tool Support | Prompt Mode |
 |------------|--------------|-------------|
@@ -563,53 +741,35 @@ The system automatically detects whether the LLM supports tool calling:
 | Facts | `resolve_fact`, `add_fact`, `extract_facts_from_text`, `list_known_facts`, `get_unresolved_facts` |
 | Skills | `list_skills`, `get_skill`, `search_skills` |
 
-**Token Savings:**
+**Extended Discovery Modules:**
 
-| Scenario | Current (full prompt) | With Tools | Savings |
-|----------|----------------------|------------|---------|
-| 5 DBs, 50 tables | ~8,000 tokens | ~500 + ~800 discovered | 84% |
-| 10 APIs, 100 ops | ~12,000 tokens | ~500 + ~600 discovered | 91% |
-| 20 documents | ~15,000 tokens | ~500 + ~400 discovered | 94% |
+| Module | Purpose |
+|--------|---------|
+| `schema_tools.py` | SchemaDiscoveryTools for database schema |
+| `api_tools.py` | APIDiscoveryTools for external APIs |
+| `doc_tools.py` | DocumentDiscoveryTools with incremental refresh and vector search |
+| `fact_tools.py` | FactResolutionTools |
+| `skill_tools.py` | SkillManager for skill discovery |
+| `unified_discovery.py` | Unified discovery interface |
+| `vector_store.py` | DuckDB VSS vector embeddings for semantic search |
+| `concept_detector.py` | Concept detection in queries |
+| `entity_extractor.py` | Named entity extraction |
 
-**PromptBuilder Usage:**
+### SkillManager (`discovery/skill_tools.py`, `core/skills.py`)
 
-```python
-from constat.discovery import DiscoveryTools, PromptBuilder
-
-tools = DiscoveryTools(schema_manager, api_catalog, config)
-builder = PromptBuilder(tools)
-
-# Automatic mode selection based on model
-prompt, use_tools = builder.build_prompt("claude-sonnet-4-20250514")
-# → use_tools=True, minimal prompt
-
-prompt, use_tools = builder.build_prompt("claude-2")
-# → use_tools=False, full metadata embedded
-
-# Check token estimates
-estimate = builder.estimate_tokens("claude-sonnet-4-20250514")
-# → {"mode": "tool_discovery", "savings_percent": 85, ...}
-```
-
-### SkillManager (`discovery/skill_tools.py`)
-
-Manages discovery and loading of domain-specific skill modules. This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
+Manages domain-specific skill modules following the [Agent Skills](https://agentskills.io) open standard.
 
 **Skill Structure:**
 
-Skills are stored in directories following the pattern `skills/<skill-name>/SKILL.md`:
-
 ```
-.constat/skills/
-├── financial-analysis/
-│   └── SKILL.md
-└── healthcare-compliance/
-    └── SKILL.md
+.constat/{user_id}/skills/{skill-name}/
+├── SKILL.md          (required - YAML frontmatter + Markdown)
+├── scripts/          (optional executable code)
+├── references/       (optional documentation)
+└── assets/           (optional templates, icons)
 ```
 
 **SKILL.md Format:**
-
-Each skill is a Markdown file with YAML frontmatter:
 
 ```markdown
 ---
@@ -620,6 +780,7 @@ allowed-tools:
   - Grep
   - list_tables
   - get_table_schema
+user-invocable: false
 ---
 
 # Financial Analysis Skill
@@ -630,109 +791,62 @@ allowed-tools:
 ...
 ```
 
+**SKILL.md Frontmatter fields:**
+- `name`, `description`, `allowed-tools`, `context`, `agent`, `model`
+- `disable-model-invocation` - prevent LLM from auto-selecting this skill
+- `user-invocable` - can be triggered directly by user
+- `argument-hint` - usage hint for invocation
+
 **Discovery Paths (in order of precedence):**
-
 1. **Project skills**: `.constat/skills/` in the project directory
-2. **Global skills**: `~/.constat/skills/` in the user's home directory
-3. **Config-specified paths**: Additional paths defined in `config.yaml`
+2. **User skills**: `.constat/{user_id}/skills/`
+3. **Global skills**: `~/.constat/skills/` in the user's home directory
+4. **Config-specified paths**: Additional paths defined in `config.yaml`
 
-**SkillMetadata:**
+**Link Following (Lazy):** Skills can reference additional files via markdown links. Links are discovered on load but content is NOT fetched until needed. Supports relative paths and URLs with caching.
 
-Parsed from YAML frontmatter:
-- `name` - Skill identifier
-- `description` - What the skill provides
-- `allowed-tools` - List of tools the skill can use
-- `context` - Additional context for the LLM
-- `agent` - Optional agent type to use
+### Roles (`core/roles.py`)
 
-**Link Following (Lazy):**
+User-defined personas that customize system prompts.
 
-Skills can reference additional files via markdown links. Links are discovered when the skill loads but content is NOT fetched until needed:
+**Role dataclass:**
+- `name` - Role identifier
+- `prompt` - Text appended to system prompt
+- `description` - Human-readable description
 
-```markdown
-# In SKILL.md
-See [indicator definitions](references/indicators.md) for details.
-Check [API docs](https://example.com/docs.md) for integration.
-```
-
-- **Relative paths**: Resolved relative to the skill folder
-- **URLs**: Fetched via HTTP on-demand
-- **Caching**: Resolved content is cached for subsequent calls
-
-**Usage:**
-
-```python
-from constat.discovery.skill_tools import SkillManager
-
-manager = SkillManager()
-
-# List all available skills
-skills = manager.discover_skills()
-
-# Get a specific skill (includes discovered links)
-skill = manager.get_skill("financial-analysis")
-print(skill.links)  # [SkillLink(text="indicators", target="references/indicators.md", ...)]
-
-# Lazy load a referenced file or URL
-content = manager.resolve_skill_link("financial-analysis", "references/indicators.md")
-content = manager.resolve_skill_link("financial-analysis", "https://example.com/docs.md")
-```
-
-### MetadataPreloadCache (`catalog/preload_cache.py`)
-
-Caches relevant table metadata for faster session startup.
-
-**Purpose:**
-- Eliminates discovery tool calls for common query patterns
-- Preloads schema info into context at session start
-- Uses seed patterns (from config) to identify relevant tables via vector similarity
-
-**Configuration:**
+**RoleManager:** Loads roles from `.constat/{user_id}/roles.yaml`. Manages multiple roles with one `active_role` at a time.
 
 ```yaml
-context_preload:
-  seed_patterns:
-    - "sales"
-    - "customer"
-    - "revenue"
-  similarity_threshold: 0.3   # Min similarity for inclusion
-  max_tables: 50              # Limit tables to avoid context overflow
+# .constat/default/roles.yaml
+roles:
+  - name: financial-analyst
+    description: Focus on financial metrics and reporting
+    prompt: |
+      You are a senior financial analyst. Focus on revenue trends,
+      margin analysis, and financial KPIs.
+  - name: data-engineer
+    description: Focus on data quality and pipeline concerns
+    prompt: |
+      You are a data engineer. Focus on data quality, schema design,
+      and pipeline efficiency.
 ```
 
-**How it works:**
-1. On `/refresh`, seed patterns are matched against all table/column names
-2. Tables above similarity threshold are cached to `.constat/metadata_preload.json`
-3. On session start, cached schema is loaded directly into context
-4. No tool call needed for tables matching seed patterns
+### Commands System (`commands/`)
 
-### DocumentDiscoveryTools (`discovery/doc_tools.py`)
+Structured command framework for interactive REPL commands.
 
-Provides on-demand access to reference documents with incremental refresh.
+| Module | Commands |
+|--------|----------|
+| `data.py` | `/tables`, `/show`, `/query`, `/code`, `/artifacts`, `/export`, `/download-code` |
+| `session_cmds.py` | `/state`, `/reset`, `/facts`, `/context`, `/preferences`, `/learnings`, `/rules`, `/roles`, `/skills` |
+| `sources.py` | Data source management |
+| `help.py` | `/help` |
 
-**Incremental Refresh:**
+**CommandContext:** Provides access to session state (has_datastore, has_plan).
 
-Documents are refreshed incrementally based on file modification times:
+**CommandResult types:** `TextResult`, `TableResult` with format specifications.
 
-```python
-# Refresh returns statistics
-stats = doc_tools.refresh()
-# → {"added": 1, "updated": 2, "removed": 0, "unchanged": 5}
-```
-
-- **Added**: New documents since last refresh
-- **Updated**: Documents with changed file modification times
-- **Removed**: Documents deleted or removed from config
-- **Unchanged**: Documents that haven't changed
-
-**Vector Index:**
-
-Documents are chunked and embedded for semantic search:
-
-```python
-# Search documents semantically
-results = doc_tools.search_documents("VIP customer criteria")
-# → Returns relevant document chunks with scores
-```
+**Command Registry** (`registry.py`): Registration and dispatch of commands by name.
 
 ### APICatalog (`catalog/api_catalog.py`)
 
@@ -745,39 +859,41 @@ Provides API operation metadata for external services.
 | GraphQL | Auto-introspection | Countries API |
 | OpenAPI | Spec parsing (URL, file, inline) | Petstore API |
 
+**API Executor** (`catalog/api_executor.py`): Executes API operations discovered via GraphQL/OpenAPI. Separate from APICatalog which handles metadata.
+
+**API Schema Manager** (`catalog/api_schema_manager.py`): Advanced API schema management beyond APICatalog's basic metadata.
+
+### API Detection & Summarization (`api/`)
+
+Higher-level API layer wrapping Session for structured consumers.
+
+| Module | Purpose |
+|--------|---------|
+| `impl.py` | ConstatAPIImpl - wraps Session, converts dicts to frozen dataclasses |
+| `protocol.py` | ConstatAPI interface definition |
+| `types.py` | API type definitions |
+| `factory.py` | Provider factory |
+| `summarization.py` | Summarization of facts, plans, sessions, tables |
+| `learning.py` | Learning integration |
+| `detection/` | Display overrides, NL correction detection |
+
+### MetadataPreloadCache (`catalog/preload_cache.py`)
+
+Caches relevant table metadata for faster session startup.
+
 **Configuration:**
 
 ```yaml
-apis:
-  # GraphQL - auto-introspects schema
-  countries:
-    type: graphql
-    url: https://countries.trevorblades.com/graphql
-
-  # OpenAPI - parses spec to discover endpoints
-  petstore:
-    type: openapi
-    spec_url: https://petstore.swagger.io/v2/swagger.json
-
-  # OpenAPI inline - for simple APIs without a spec file
-  weather:
-    type: openapi
-    url: https://api.weather.gov
-    spec_inline:
-      openapi: "3.0.0"
-      paths:
-        /points/{lat},{lon}:
-          get:
-            operationId: getPoint
-            parameters:
-              - name: lat
-                in: path
-                required: true
+context_preload:
+  seed_patterns:
+    - "sales"
+    - "customer"
+    - "revenue"
+  similarity_threshold: 0.3
+  max_tables: 50
 ```
 
-**LLM Tools:**
-- `find_api_operations(query)` - Semantic search for relevant operations
-- `get_api_operation(name)` - Full metadata for an operation
+On `/refresh`, seed patterns match against table/column names via vector similarity. Results cached to `.constat/metadata_preload.json` and loaded directly into context on session start.
 
 ### FactResolver (`execution/fact_resolver.py`)
 
@@ -790,57 +906,26 @@ Resolves facts with full provenance for auditable mode.
 | CACHE | Preserved | Previously resolved fact |
 | CONFIG | 1.0 | Config value |
 | DATABASE | 1.0 | Query result |
+| DOCUMENT | 0.9 | Document excerpt |
+| API | 1.0 | External API result |
 | LLM_KNOWLEDGE | Parsed (default 0.6) | World knowledge |
 | LLM_HEURISTIC | Parsed (default 0.6) | Industry standard |
-| SUB_PLAN | min(dependencies) | Computed from other facts |
+| RULE | 1.0 | Registered function |
+| DERIVED | min(dependencies) | Computed from other facts |
+| SUB_PLAN | min(dependencies) | Multi-step derivation |
 | USER_PROVIDED | 1.0 | User stated in follow-up |
 | UNRESOLVED | 0.0 | Could not resolve |
 
-**Resolution Strategy:**
-1. Check cache (includes user-provided facts from prior turns)
-2. Check config
-3. Query database (LLM generates SQL)
-4. Ask LLM for knowledge/heuristics
-5. Generate sub-plan for complex derivations
-6. Return UNRESOLVED (user can provide via follow-up)
-
-**Parallel Fact Resolution:**
-
-Top-level assumed facts are independent and can be resolved in parallel:
-
-```
-User Question
-     │
-     ▼
-┌─────────────────────────────────────────┐
-│  LLM: Identify Required Facts           │
-│  Returns: [fact_a, fact_b, fact_c, ...] │
-└─────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────┐
-│  Parallel Fact Resolution               │
-│                                         │
-│  asyncio.gather(                        │
-│      resolve(fact_a),  ─┐               │
-│      resolve(fact_b),  ─┼─► ~2 sec      │
-│      resolve(fact_c),  ─┤   (parallel)  │
-│      resolve(fact_d),  ─┘               │
-│  )                                      │
-└─────────────────────────────────────────┘
-     │
-     ▼
-     Execute Computation → Answer + Proof
-```
-
-For derived facts requiring multi-step calculations, the system generates **sub-proofs** recursively, with the sub-facts at each level also resolved in parallel.
+**Tier2Strategy** - LLM assessment for unresolved facts:
+- DERIVABLE: Can be computed from 2+ inputs
+- KNOWN: LLM can provide directly
+- USER_REQUIRED: Needs human input
 
 **User-Provided Facts:**
 
 When facts are unresolved, users can provide them in natural language:
 
 ```python
-# User provides missing fact
 session.provide_facts("There were 1 million people at the march")
 # → Extracts: march_attendance = 1000000
 # → Added to cache with source: USER_PROVIDED
@@ -849,9 +934,36 @@ session.provide_facts("There were 1 million people at the march")
 
 REPL commands: `/unresolved` to view missing facts, `/facts <text>` to provide them.
 
-### FeedbackDisplay (`feedback.py`)
+### Learning System (`learning/compactor.py`, `storage/learnings.py`)
 
-Rich-based terminal UI for real-time feedback.
+Accumulates raw learnings from user corrections and promotes them to rules.
+
+**LearningCompactor:**
+- Analyzes patterns in raw learnings
+- Creates generalized rules when sufficient similar learnings accumulate
+
+**CompactionResult:**
+- `rules_created`, `rules_strengthened`, `rules_merged`
+- `learnings_archived`, `learnings_expired`
+- `groups_found`, `skipped_low_confidence`, `errors`
+
+**Configuration:**
+- `CONFIDENCE_THRESHOLD`: 0.60
+- `AUTO_COMPACT_THRESHOLD`: 50 unpromoted learnings
+- `MIN_GROUP_SIZE`: 2 learnings to form a rule
+
+### Email Integration (`email.py`)
+
+SMTP-based email with Markdown rendering and attachments.
+
+- `SensitiveDataError` for unauthorized sensitive data emailing
+- `SensitivityChecker` type for context-aware sensitivity checks
+- MIME multipart with CSS-styled HTML from Markdown
+- Base64-encoded attachments for results/artifacts
+
+### FeedbackDisplay (`repl/feedback.py`)
+
+Rich-based terminal UI for real-time feedback (~110KB).
 
 **Events Displayed:**
 - Plan overview with step checklist
@@ -860,9 +972,9 @@ Rich-based terminal UI for real-time feedback.
 - Timing information
 - Tables created
 
-### InteractiveREPL (`repl.py`)
+### InteractiveREPL (`repl/interactive.py`)
 
-Interactive command loop for exploration.
+Interactive command loop for exploration (~101KB).
 
 **Features:**
 - Automatic clarification prompts for ambiguous questions
@@ -871,7 +983,16 @@ Interactive command loop for exploration.
 - Schema-aware typeahead completions
 - Session history and resume capability
 
-**Commands:**
+### TextualREPL (`textual_repl.py`)
+
+Alternative Textual-based REPL (~5,375 lines) with:
+- Persistent status bar
+- Rich console rendering (panels, syntax highlighting, tables, markdown, trees)
+- Async worker pattern for non-blocking execution
+- Modal screens for interactions
+- Keyboard bindings and follow-up suggestions
+
+**REPL Commands:**
 - `/tables` - Show available tables
 - `/show <table>` - Display table contents
 - `/query <sql>` - Run SQL on datastore
@@ -888,6 +1009,30 @@ Interactive command loop for exploration.
 - `/replay <name>` - Replay a saved plan
 - `/history` - List previous sessions
 - `/resume <id>` - Continue a session
+- `/prove` - Switch to auditable mode
+- `/roles` - List/switch roles
+- `/skills` - List available skills
+- `/learnings` - View stored learnings
+- `/rules` - View compacted rules
+- `/export` - Export results
+- `/artifacts` - List generated artifacts
+
+## Web UI (`constat-ui/`)
+
+React 18 SPA built with TypeScript, Vite, and Tailwind CSS.
+
+**Key dependencies:**
+- **State**: Zustand
+- **Data fetching**: TanStack React Query
+- **Tables**: TanStack React Table
+- **Charts**: Plotly.js (via react-plotly.js)
+- **Graphs**: D3 + d3-dag (proof DAG visualization)
+- **Markdown**: react-markdown + remark-gfm
+- **Code**: react-syntax-highlighter
+- **Auth**: Firebase
+- **UI**: Headless UI + Heroicons
+
+Communicates with the server via REST API + WebSocket for real-time streaming.
 
 ## Data Flow
 
@@ -922,31 +1067,24 @@ Step N                              Step N+1
 ### Event Flow
 
 ```
-Session                    FeedbackHandler            FeedbackDisplay
+Session                    FeedbackHandler            Display (REPL / WebSocket)
    │                              │                          │
    │  emit(step_start)            │                          │
    │─────────────────────────────▶│                          │
    │                              │   step_start(...)        │
    │                              │─────────────────────────▶│
-   │                              │                          │ Print: "Step 1: ..."
+   │                              │                          │ REPL: Rich panel
+   │                              │                          │ Web: WS message
    │                              │                          │
    │  emit(generating)            │                          │
    │─────────────────────────────▶│                          │
    │                              │   step_generating(...)   │
    │                              │─────────────────────────▶│
-   │                              │                          │ Print: "generating..."
-   │                              │                          │
-   │  emit(executing)             │                          │
-   │─────────────────────────────▶│                          │
-   │                              │   step_executing(...)    │
-   │                              │─────────────────────────▶│
-   │                              │                          │ Print: "executing..."
    │                              │                          │
    │  emit(step_complete)         │                          │
    │─────────────────────────────▶│                          │
    │                              │   step_complete(...)     │
    │                              │─────────────────────────▶│
-   │                              │                          │ Print: "OK 2.3s"
 ```
 
 ## Error Handling
@@ -1026,8 +1164,9 @@ Code Execution
 3. **Task-Type Routing** - Route tasks to specialized models (SQLCoder for SQL, haiku for summaries)
 4. **Automatic Escalation** - Try local/cheap models first, escalate to cloud on failure
 5. **Batch Resolution** - Resolve multiple facts in one LLM call
-6. **Context Truncation** - Summarize old scratchpad entries
-7. **Parallel Fact Resolution** - Resolve independent facts concurrently (3-5x speedup)
+6. **Context Compaction** - Summarize old scratchpad entries, sample large tables
+7. **Parallel Execution** - DAG-based step scheduling (up to 5 concurrent steps)
+8. **Parallel Fact Resolution** - Resolve independent facts concurrently (3-5x speedup)
    - Top-level assumed facts have no dependencies → resolve in parallel
    - Rate-limited to avoid API throttling (semaphore + RPM tracking)
    - Sub-proofs resolved recursively with parallelization at each level
@@ -1046,49 +1185,25 @@ Routes tasks to appropriate models with automatic escalation on failure.
 
 ```yaml
 llm:
-  provider: anthropic              # Default provider
+  provider: anthropic
   model: claude-sonnet-4-20250514
 
   task_routing:
     sql_generation:
       models:
-        - provider: ollama           # Try local first
+        - provider: ollama
           model: sqlcoder:7b
-        - model: claude-sonnet-4-20250514  # Escalate on failure
+        - model: claude-sonnet-4-20250514
 
     python_analysis:
       models:
         - model: claude-sonnet-4-20250514
-      high_complexity_models:        # Use for complex tasks
+      high_complexity_models:
         - model: claude-opus-4-20250514
 
     planning:
       models:
         - model: claude-sonnet-4-20250514
-```
-
-**Usage:**
-
-```python
-from constat.providers import TaskRouter
-from constat.core.config import LLMConfig
-from constat.core.models import TaskType
-
-router = TaskRouter(llm_config)
-
-# Execute with automatic model selection and escalation
-result = router.execute(
-    task_type=TaskType.SQL_GENERATION,
-    system="Generate SQL...",
-    user_message="Get top 5 customers",
-    complexity="medium",  # or "high" for complex tasks
-)
-
-if result.escalations:
-    print(f"Escalated: {result.escalations}")
-
-# Get escalation statistics
-stats = router.get_escalation_stats()
 ```
 
 **Task Type Routing:**
@@ -1134,6 +1249,8 @@ Task Request
 - `openai` - OpenAI GPT
 - `gemini` - Google Gemini
 - `grok` - xAI Grok
+- `mistral` - Mistral AI (Large, Small, Nemo)
+- `codestral` - Mistral code-specialized models
 - `ollama` - Local Ollama
 - `together` - Together AI
 - `groq` - Groq

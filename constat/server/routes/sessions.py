@@ -17,13 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from constat.core.api import EntityManager
 from constat.server.auth import CurrentUserId, CurrentUserEmail
-from constat.server.permissions import get_user_permissions
 from constat.server.models import (
     SessionCreate,
     SessionResponse,
     SessionListResponse,
     SessionStatus,
 )
+from constat.server.permissions import get_user_permissions
 from constat.server.session_manager import SessionManager, ManagedSession
 from constat.server.user_preferences import get_selected_projects, set_selected_projects
 from constat.storage.history import SessionHistory

@@ -19,7 +19,6 @@ from typing import Any, Optional
 
 import pandas as pd
 
-
 # Rough estimate: 1 token ≈ 4 characters for English text
 CHARS_PER_TOKEN = 4
 

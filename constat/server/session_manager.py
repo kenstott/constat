@@ -14,14 +14,13 @@ Manages server-side Session instances, tracking lifecycle, timeout, and cleanup.
 
 import asyncio
 import logging
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Optional
+from typing import Optional, Any
 
-from constat.core.config import Config
 from constat.api.impl import ConstatAPIImpl
+from constat.core.config import Config
 from constat.server.config import ServerConfig
 from constat.server.models import SessionStatus
 from constat.session import Session, SessionConfig
@@ -52,6 +51,11 @@ class ManagedSession:
     # Active project filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
     active_projects: list[str] = field(default_factory=list)
 
+    # Dynamic resources (databases, APIs, file refs) added during the session
+    _dynamic_dbs: list[dict[str, Any]] = field(default_factory=list)
+    _dynamic_apis: list[dict[str, Any]] = field(default_factory=list)
+    _file_refs: list[dict[str, Any]] = field(default_factory=list)
+
     # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
 
@@ -77,6 +81,52 @@ class ManagedSession:
         expiry = self.last_activity + timedelta(minutes=timeout_minutes)
         return datetime.now(timezone.utc) > expiry
 
+    def has_database(self, db_name: str) -> bool:
+        """Check if a database exists in any source (config, project, dynamic, schema_manager)."""
+        # Config databases
+        if db_name in self.session.config.databases:
+            return True
+        # Project databases
+        for project_filename in self.active_projects:
+            project = self.session.config.load_project(project_filename)
+            if project and db_name in project.databases:
+                return True
+        # Dynamic databases
+        if any(db["name"] == db_name for db in self._dynamic_dbs):
+            return True
+        # Schema manager (covers all loaded databases)
+        sm = self.session.schema_manager
+        if sm and (db_name in sm.connections or db_name in sm.file_connections
+                   or db_name in getattr(sm, 'nosql_connections', {})):
+            return True
+        return False
+
+    def get_database_connection(self, db_name: str) -> Any:
+        """Get a usable connection for a database. Returns None if unavailable."""
+        sm = self.session.schema_manager
+        if sm:
+            try:
+                return sm.get_connection(db_name)
+            except KeyError:
+                pass
+        return None
+
+    def get_all_database_names(self) -> set[str]:
+        """Return union of all database names from every source."""
+        names: set[str] = set()
+        names.update(self.session.config.databases.keys())
+        for project_filename in self.active_projects:
+            project = self.session.config.load_project(project_filename)
+            if project:
+                names.update(project.databases.keys())
+        names.update(db["name"] for db in self._dynamic_dbs)
+        sm = self.session.schema_manager
+        if sm:
+            names.update(sm.connections.keys())
+            names.update(sm.file_connections.keys())
+            names.update(getattr(sm, 'nosql_connections', {}).keys())
+        return names
+
     def save_resources(self) -> None:
         """Save dynamic resources (dbs, file_refs, projects) to disk."""
         from constat.storage.history import SessionHistory
@@ -89,9 +139,9 @@ class ManagedSession:
 
         # Gather resources
         resources = {
-            "dynamic_dbs": getattr(self, "_dynamic_dbs", []),
-            "dynamic_apis": getattr(self, "_dynamic_apis", []),
-            "file_refs": getattr(self, "_file_refs", []),
+            "dynamic_dbs": self._dynamic_dbs,
+            "dynamic_apis": self._dynamic_apis,
+            "file_refs": self._file_refs,
             "active_projects": self.active_projects or [],
         }
 
@@ -310,8 +360,7 @@ class SessionManager:
             managed = self._sessions[session_id]
             project_ids = managed.active_projects or []
             # Get names of dynamically added databases (include their columns in entities)
-            if hasattr(managed, '_dynamic_dbs'):
-                session_db_names = [db["name"] for db in managed._dynamic_dbs]
+            session_db_names = [db["name"] for db in managed._dynamic_dbs]
 
         # Get session's entity catalog
         # Include columns only for session-added databases (their columns are meaningful)

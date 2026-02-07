@@ -351,13 +351,6 @@ async def delete_file(
 # ============================================================================
 
 
-def _get_file_refs(managed: ManagedSession) -> list[dict[str, Any]]:
-    """Get file references from session."""
-    # File refs are stored on the session object
-    if not hasattr(managed, "_file_refs"):
-        managed._file_refs = []
-    return managed._file_refs
-
 
 @router.post("/{session_id}/file-refs", response_model=FileRefInfo)
 async def add_file_reference(
@@ -398,7 +391,7 @@ async def add_file_reference(
 
     # Track in managed session
     now = datetime.now(timezone.utc)
-    file_refs = _get_file_refs(managed)
+    file_refs = managed._file_refs
     file_refs.append({
         "name": body.name,
         "uri": body.uri,
@@ -440,7 +433,7 @@ async def list_file_references(
         404: Session not found
     """
     managed = session_manager.get_session(session_id)
-    file_refs = _get_file_refs(managed)
+    file_refs = managed._file_refs
 
     return FileRefListResponse(
         file_refs=[
@@ -476,7 +469,7 @@ async def delete_file_reference(
         404: Session or file reference not found
     """
     managed = session_manager.get_session(session_id)
-    file_refs = _get_file_refs(managed)
+    file_refs = managed._file_refs
 
     # Find and remove from file refs
     original_len = len(file_refs)
@@ -647,8 +640,7 @@ async def upload_documents(
                     table_count = sum(1 for k in managed.session.schema_manager.metadata_cache if k.startswith(f"{name}."))
 
                 # Track in managed session's dynamic databases for list_databases endpoint
-                from constat.server.routes.databases import _get_dynamic_dbs
-                dynamic_dbs = _get_dynamic_dbs(managed)
+                dynamic_dbs = managed._dynamic_dbs
                 dynamic_dbs.append({
                     "name": name,
                     "type": file_type,
@@ -677,7 +669,7 @@ async def upload_documents(
                 )
 
                 # Track as a file reference
-                file_refs = _get_file_refs(managed)
+                file_refs = managed._file_refs
                 file_refs.append({
                     "name": name,
                     "uri": uri,

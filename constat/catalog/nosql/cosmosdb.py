@@ -11,7 +11,7 @@
 
 from typing import Optional, Any
 
-from .base import NoSQLConnector, NoSQLType, CollectionMetadata, FieldInfo
+from .base import NoSQLConnector, NoSQLType, CollectionMetadata
 
 
 class CosmosDBConnector(NoSQLConnector):

@@ -9,7 +9,7 @@
 
 """Cassandra connector for wide-column database support."""
 
-from typing import Optional, Any
+from typing import Optional
 
 from .base import NoSQLConnector, NoSQLType, CollectionMetadata, FieldInfo
 

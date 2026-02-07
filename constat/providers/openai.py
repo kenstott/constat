@@ -24,6 +24,16 @@ class OpenAIProvider(BaseLLMProvider):
     Supports GPT-4, GPT-4 Turbo, GPT-4o, and other OpenAI models.
     """
 
+    # Model output token limits
+    MODEL_OUTPUT_LIMITS = {
+        "gpt-4o": 16384,
+        "gpt-4-turbo": 4096,
+        "gpt-4": 8192,
+        "gpt-3.5": 4096,
+        "o1": 32768,
+        "o3": 32768,
+    }
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -54,6 +64,14 @@ class OpenAIProvider(BaseLLMProvider):
 
         self.client = OpenAI(**kwargs)
         self.model = model
+
+    @property
+    def max_output_tokens(self) -> int:
+        """Get max output tokens for the current model."""
+        for prefix, limit in self.MODEL_OUTPUT_LIMITS.items():
+            if self.model.startswith(prefix):
+                return limit
+        return 16384  # Default for newer models
 
     def generate(
         self,

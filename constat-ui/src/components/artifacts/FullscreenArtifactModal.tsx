@@ -6,12 +6,14 @@ import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
 import * as sessionsApi from '@/api/sessions'
 import type { ArtifactContent, TableData } from '@/types/api'
+import type { DatabaseTablePreview } from '@/api/sessions'
 
 export function FullscreenArtifactModal() {
   const { fullscreenArtifact, closeFullscreenArtifact } = useUIStore()
   const { session } = useSessionStore()
   const [content, setContent] = useState<ArtifactContent | null>(null)
   const [tableData, setTableData] = useState<TableData | null>(null)
+  const [dbTableData, setDbTableData] = useState<DatabaseTablePreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tablePage, setTablePage] = useState(1)
@@ -42,6 +44,7 @@ export function FullscreenArtifactModal() {
       setError(null)
       setContent(null)
       setTableData(null)
+      setDbTableData(null)
 
       try {
         if (fullscreenArtifact.type === 'table' && fullscreenArtifact.name) {
@@ -51,6 +54,14 @@ export function FullscreenArtifactModal() {
             tablePage
           )
           setTableData(data)
+        } else if (fullscreenArtifact.type === 'database_table' && fullscreenArtifact.dbName && fullscreenArtifact.tableName) {
+          const data = await sessionsApi.getDatabaseTablePreview(
+            session.session_id,
+            fullscreenArtifact.dbName,
+            fullscreenArtifact.tableName,
+            tablePage
+          )
+          setDbTableData(data)
         } else if (fullscreenArtifact.type === 'artifact' && fullscreenArtifact.id) {
           const artifactContent = await sessionsApi.getArtifact(
             session.session_id,
@@ -128,7 +139,7 @@ export function FullscreenArtifactModal() {
       )
     }
 
-    // Table content
+    // Table content (session datastore tables)
     if (fullscreenArtifact.type === 'table' && tableData) {
       return (
         <div className="h-full flex flex-col">
@@ -154,7 +165,7 @@ export function FullscreenArtifactModal() {
                         key={col}
                         className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
                       >
-                        {String(row[col] ?? '')}
+                        {row[col] != null && typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col] ?? '')}
                       </td>
                     ))}
                   </tr>
@@ -180,6 +191,69 @@ export function FullscreenArtifactModal() {
                 <button
                   onClick={() => setTablePage((p) => p + 1)}
                   disabled={!tableData.has_more}
+                  className="px-3 py-1 text-sm border rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // Database source table content
+    if (fullscreenArtifact.type === 'database_table' && dbTableData) {
+      return (
+        <div className="h-full flex flex-col">
+          <div className="flex-1 overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-white dark:bg-gray-900">
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  {dbTableData.columns.map((col) => (
+                    <th
+                      key={col}
+                      className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap"
+                    >
+                      {col}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {dbTableData.data.map((row, i) => (
+                  <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    {dbTableData.columns.map((col) => (
+                      <td
+                        key={col}
+                        className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
+                      >
+                        {row[col] != null && typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {(dbTableData.has_more || tablePage > 1) && (
+            <div className="flex items-center justify-between text-sm px-4 py-3 border-t border-gray-200 dark:border-gray-700">
+              <span className="text-gray-500 dark:text-gray-400">
+                Page {tablePage} of {Math.ceil(dbTableData.total_rows / dbTableData.page_size)}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setTablePage((p) => Math.max(1, p - 1))}
+                  disabled={tablePage === 1}
+                  className="px-3 py-1 text-sm border rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setTablePage((p) => p + 1)}
+                  disabled={!dbTableData.has_more}
                   className="px-3 py-1 text-sm border rounded hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
                 >
                   Next
@@ -348,6 +422,8 @@ export function FullscreenArtifactModal() {
 
   const title = fullscreenArtifact.type === 'table'
     ? fullscreenArtifact.name
+    : fullscreenArtifact.type === 'database_table'
+    ? `${fullscreenArtifact.dbName}.${fullscreenArtifact.tableName}`
     : fullscreenArtifact.type === 'proof_value'
     ? fullscreenArtifact.name || 'Proof Value'
     : content?.title || content?.name || 'Artifact'
@@ -364,6 +440,11 @@ export function FullscreenArtifactModal() {
             {fullscreenArtifact.type === 'table' && tableData && (
               <span className="text-sm text-gray-500 dark:text-gray-400">
                 ({tableData.total_rows} rows)
+              </span>
+            )}
+            {fullscreenArtifact.type === 'database_table' && dbTableData && (
+              <span className="text-sm text-gray-500 dark:text-gray-400">
+                ({dbTableData.total_rows} rows)
               </span>
             )}
           </div>

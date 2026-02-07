@@ -17,6 +17,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 
+from constat.api.types import SolveResult, FollowUpResult
+from constat.messages import WelcomeMessage
 from constat.server.models import (
     ApprovalRequest,
     ApprovalResponse,
@@ -29,16 +31,13 @@ from constat.server.models import (
     StepResponse,
 )
 from constat.server.session_manager import SessionManager, ManagedSession
-from constat.messages import WelcomeMessage, STARTER_SUGGESTIONS
 from constat.session import (
     StepEvent,
     PlanApprovalRequest,
     PlanApprovalResponse,
-    PlanApproval,
     ClarificationRequest,
     ClarificationResponse,
 )
-from constat.api.types import SolveResult, FollowUpResult
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +204,8 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
         if response.get("approved"):
             managed.status = SessionStatus.EXECUTING
             deleted_steps = response.get("deleted_steps")
-            return PlanApprovalResponse.approve(deleted_steps=deleted_steps)
+            edited_steps = response.get("edited_steps")
+            return PlanApprovalResponse.approve(deleted_steps=deleted_steps, edited_steps=edited_steps)
         else:
             feedback = response.get("feedback", "")
             edited_steps = response.get("edited_steps")

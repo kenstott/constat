@@ -17,11 +17,11 @@ The DuckDB backend is preferred for persistence and performance with larger
 document collections.
 """
 
+import hashlib
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
-import hashlib
-import logging
 
 import numpy as np
 
