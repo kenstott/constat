@@ -2205,13 +2205,42 @@ ${skill.body}`
         icon={<LightBulbIcon className="w-4 h-4" />}
         command="/facts"
         action={
-          <button
-            onClick={() => openModal('fact')}
-            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Add fact"
-          >
-            <PlusIcon className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            {facts.length > 0 && (
+              <button
+                onClick={() => {
+                  // Generate CSV content with name, value columns
+                  const csvRows = [
+                    ['name', 'value'],
+                    ...facts.map(f => [
+                      // Escape quotes and wrap in quotes if contains comma
+                      `"${String(f.name).replace(/"/g, '""')}"`,
+                      `"${String(f.value).replace(/"/g, '""')}"`
+                    ])
+                  ]
+                  const csvContent = csvRows.map(row => row.join(',')).join('\n')
+                  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+                  const url = URL.createObjectURL(blob)
+                  const link = document.createElement('a')
+                  link.href = url
+                  link.download = 'facts.csv'
+                  link.click()
+                  URL.revokeObjectURL(url)
+                }}
+                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                title="Download facts as CSV"
+              >
+                <ArrowDownTrayIcon className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={() => openModal('fact')}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Add fact"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          </div>
         }
       >
         {facts.length === 0 ? (
