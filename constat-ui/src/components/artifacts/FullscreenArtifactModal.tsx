@@ -31,6 +31,12 @@ export function FullscreenArtifactModal() {
   useEffect(() => {
     if (!fullscreenArtifact || !session) return
 
+    // proof_value type doesn't need fetching - content is already provided
+    if (fullscreenArtifact.type === 'proof_value') {
+      setLoading(false)
+      return
+    }
+
     const fetchContent = async () => {
       setLoading(true)
       setError(null)
@@ -78,6 +84,47 @@ export function FullscreenArtifactModal() {
         <div className="flex items-center justify-center h-full text-red-500">
           Error: {error}
         </div>
+      )
+    }
+
+    // Proof value content (markdown table from proof node)
+    if (fullscreenArtifact.type === 'proof_value' && fullscreenArtifact.content) {
+      const isDark = document.documentElement.classList.contains('dark')
+      return (
+        <iframe
+          srcDoc={`
+            <!DOCTYPE html>
+            <html class="${isDark ? 'dark' : ''}">
+            <head>
+              <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+              <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 24px; margin: 0; line-height: 1.6; color: #1f2937; background: #fff; }
+                html.dark body { color: #e5e7eb; background: #111827; }
+                table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                html.dark th, html.dark td { border-color: #374151; }
+                th { background: #f5f5f5; font-weight: 600; }
+                html.dark th { background: #1f2937; }
+                tr:nth-child(even) { background: #f9fafb; }
+                html.dark tr:nth-child(even) { background: #1f2937; }
+                code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
+                html.dark code { background: #1f2937; }
+                pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+                html.dark pre { background: #1f2937; }
+              </style>
+            </head>
+            <body>
+              <div id="content"></div>
+              <script>
+                document.getElementById('content').innerHTML = marked.parse(${JSON.stringify(fullscreenArtifact.content)});
+              </script>
+            </body>
+            </html>
+          `}
+          className="w-full h-full border-0"
+          title={fullscreenArtifact.name || 'Proof Value'}
+          sandbox="allow-scripts"
+        />
       )
     }
 
@@ -301,6 +348,8 @@ export function FullscreenArtifactModal() {
 
   const title = fullscreenArtifact.type === 'table'
     ? fullscreenArtifact.name
+    : fullscreenArtifact.type === 'proof_value'
+    ? fullscreenArtifact.name || 'Proof Value'
     : content?.title || content?.name || 'Artifact'
 
   return (

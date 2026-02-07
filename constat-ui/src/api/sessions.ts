@@ -562,3 +562,39 @@ export async function getMyPermissions(): Promise<UserPermissions> {
 export async function resetContext(sessionId: string): Promise<{ status: string }> {
   return post<{ status: string }>(`/sessions/${sessionId}/reset-context`, {})
 }
+
+// Proof facts storage (for restoring proof panel on session resume)
+export interface StoredProofFact {
+  id: string
+  name: string
+  description?: string
+  status: 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
+  value?: unknown
+  source?: string
+  confidence?: number
+  tier?: number
+  strategy?: string
+  formula?: string
+  reason?: string
+  dependencies: string[]
+  elapsed_ms?: number
+}
+
+export async function saveProofFacts(
+  sessionId: string,
+  facts: StoredProofFact[],
+  summary?: string | null
+): Promise<{ status: string; count: number }> {
+  return post<{ status: string; count: number }>(
+    `/sessions/${sessionId}/proof-facts`,
+    { facts, summary }
+  )
+}
+
+export async function getProofFacts(
+  sessionId: string
+): Promise<{ facts: StoredProofFact[]; summary: string | null }> {
+  return get<{ facts: StoredProofFact[]; summary: string | null }>(
+    `/sessions/${sessionId}/proof-facts`
+  )
+}

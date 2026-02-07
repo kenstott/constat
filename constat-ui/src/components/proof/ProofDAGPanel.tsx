@@ -2,10 +2,11 @@
 // Uses d3-dag for proper directed acyclic graph layout
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { XMarkIcon } from '@heroicons/react/24/outline'
+import { XMarkIcon, TableCellsIcon } from '@heroicons/react/24/outline'
 import * as d3dag from 'd3-dag'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useUIStore } from '@/store/uiStore'
 
 // Node status types matching server events
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
@@ -66,6 +67,16 @@ const STATUS_BG_COLORS: Record<NodeStatus, string> = {
 const NODE_WIDTH = 220
 const NODE_HEIGHT = 50
 const NODE_RADIUS = 8
+
+// Helper to detect markdown table and count rows
+function getTableRowCount(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  // Check if it looks like a markdown table (has | and header separator)
+  if (!value.includes('|') || !value.includes('---')) return null
+  // Count data rows (exclude header and separator)
+  const lines = value.split('\n').filter(l => l.trim().startsWith('|'))
+  return Math.max(0, lines.length - 2) // Subtract header and separator
+}
 
 interface DagNode {
   id: string
@@ -530,8 +541,16 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         <div className="flex-1 overflow-auto p-4">
           {nodes.length === 0 ? (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
-              <p className="text-lg">{STATUS_SYMBOLS.pending} No facts being resolved yet.</p>
-              <p className="text-sm mt-2">Facts will appear here as they are resolved.</p>
+              <div className="animate-pulse">
+                <div className="flex justify-center mb-4">
+                  <div className="relative">
+                    <div className="w-12 h-12 border-4 border-gray-200 dark:border-gray-700 rounded-full" />
+                    <div className="absolute top-0 left-0 w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                </div>
+                <p className="text-lg">{STATUS_SYMBOLS.planning} Generating proof plan...</p>
+                <p className="text-sm mt-2">Analyzing the problem and identifying required facts.</p>
+              </div>
             </div>
           ) : !isPlanningComplete ? (
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
@@ -722,35 +741,57 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.description}</p>
                 </div>
               )}
-              {selectedNode.value !== undefined && (
-                <div>
-                  <span className="text-xs font-medium text-gray-500 uppercase">Value</span>
-                  <div className="mt-1 overflow-x-auto">
-                    {typeof selectedNode.value === 'string' && selectedNode.value.includes('|') ? (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          table: ({ children }) => (
-                            <table className="text-sm border-collapse w-full">{children}</table>
-                          ),
-                          th: ({ children }) => (
-                            <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 bg-gray-100 dark:bg-gray-700 text-left font-medium">{children}</th>
-                          ),
-                          td: ({ children }) => (
-                            <td className="border border-gray-300 dark:border-gray-600 px-3 py-2">{children}</td>
-                          ),
-                        }}
-                      >
-                        {selectedNode.value}
-                      </ReactMarkdown>
-                    ) : (
-                      <pre className="font-mono text-sm bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto">
-                        {typeof selectedNode.value === 'string' ? selectedNode.value : JSON.stringify(selectedNode.value, null, 2)}
-                      </pre>
-                    )}
+              {selectedNode.value !== undefined && (() => {
+                const tableRowCount = getTableRowCount(selectedNode.value)
+                const isTable = tableRowCount !== null
+                return (
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-gray-500 uppercase">Value</span>
+                      {isTable && (
+                        <button
+                          onClick={() => {
+                            useUIStore.getState().openFullscreenArtifact({
+                              type: 'proof_value',
+                              name: selectedNode.name,
+                              content: String(selectedNode.value),
+                            })
+                          }}
+                          className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                          title="View full table"
+                        >
+                          <TableCellsIcon className="w-3 h-3" />
+                          {tableRowCount} rows
+                        </button>
+                      )}
+                    </div>
+                    <div className="mt-1 overflow-x-auto">
+                      {isTable ? (
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ children }) => (
+                              <table className="text-sm border-collapse w-full">{children}</table>
+                            ),
+                            th: ({ children }) => (
+                              <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 bg-gray-100 dark:bg-gray-700 text-left font-medium">{children}</th>
+                            ),
+                            td: ({ children }) => (
+                              <td className="border border-gray-300 dark:border-gray-600 px-3 py-2">{children}</td>
+                            ),
+                          }}
+                        >
+                          {String(selectedNode.value)}
+                        </ReactMarkdown>
+                      ) : (
+                        <pre className="font-mono text-sm bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto">
+                          {typeof selectedNode.value === 'string' ? selectedNode.value : JSON.stringify(selectedNode.value, null, 2)}
+                        </pre>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                )
+              })()}
               <div className="grid grid-cols-2 gap-4 text-sm">
                 {selectedNode.source && (
                   <div>

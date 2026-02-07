@@ -187,6 +187,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       } catch (err) {
         console.warn('[createSession] Could not restore messages:', err)
       }
+
+      // Also try to restore proof facts
+      try {
+        const { facts: storedFacts, summary } = await sessionsApi.getProofFacts(sessionId)
+        if (storedFacts && storedFacts.length > 0) {
+          useProofStore.getState().importFacts(storedFacts, summary)
+          console.log('[createSession] Restored', storedFacts.length, 'proof facts')
+        }
+      } catch (err) {
+        console.warn('[createSession] Could not restore proof facts:', err)
+      }
     }
 
     // Initialize with restored messages (or empty for new session)
@@ -958,10 +969,44 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'fact_executing':
       case 'fact_resolved':
       case 'fact_failed':
-      case 'dag_execution_start':
-      case 'proof_complete':
-      case 'proof_summary_ready': {
+      case 'dag_execution_start': {
         useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+        break
+      }
+
+      case 'proof_summary_ready': {
+        const proofStore = useProofStore.getState()
+        proofStore.handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+
+        // Save proof facts again with summary included
+        const { session } = get()
+        if (session) {
+          const facts = proofStore.exportFacts()
+          const summary = (event.data as Record<string, unknown>).summary as string
+          if (facts.length > 0) {
+            sessionsApi.saveProofFacts(session.session_id, facts, summary).catch(err => {
+              console.error('Failed to save proof summary:', err)
+            })
+          }
+        }
+        break
+      }
+
+      case 'proof_complete': {
+        const proofStore = useProofStore.getState()
+        proofStore.handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+
+        // Save proof facts for session restoration
+        const { session } = get()
+        if (session) {
+          const facts = proofStore.exportFacts()
+          const summary = proofStore.proofSummary
+          if (facts.length > 0) {
+            sessionsApi.saveProofFacts(session.session_id, facts, summary).catch(err => {
+              console.error('Failed to save proof facts:', err)
+            })
+          }
+        }
         break
       }
 

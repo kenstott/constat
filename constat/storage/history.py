@@ -773,6 +773,38 @@ class SessionHistory:
         with open(messages_path) as f:
             return json.load(f)
 
+    def save_proof_facts_by_server_id(
+        self, server_session_id: str, facts: list[dict], summary: str | None = None
+    ) -> None:
+        """Save proof facts using server session ID."""
+        history_session_id = self.find_session_by_server_id(server_session_id)
+        if not history_session_id:
+            raise ValueError(f"No session found for server_id={server_session_id}")
+
+        proof_path = self._session_dir(history_session_id) / "proof_facts.json"
+        with open(proof_path, "w") as f:
+            json.dump({"facts": facts, "summary": summary}, f, indent=2)
+
+    def load_proof_facts_by_server_id(
+        self, server_session_id: str
+    ) -> tuple[list[dict], str | None]:
+        """Load proof facts using server session ID.
+
+        Returns:
+            Tuple of (facts list, summary or None)
+        """
+        history_session_id = self.find_session_by_server_id(server_session_id)
+        if not history_session_id:
+            return [], None
+
+        proof_path = self._session_dir(history_session_id) / "proof_facts.json"
+        if not proof_path.exists():
+            return [], None
+
+        with open(proof_path) as f:
+            data = json.load(f)
+            return data.get("facts", []), data.get("summary")
+
     def delete_session(self, session_id: str) -> bool:
         """
         Delete a session and all its artifacts.

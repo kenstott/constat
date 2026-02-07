@@ -546,6 +546,64 @@ async def save_messages(
     return {"status": "saved", "count": len(messages)}
 
 
+@router.get("/{session_id}/proof-facts")
+async def get_proof_facts(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Get proof facts for a session.
+
+    Returns stored proof facts for UI restoration after refresh/reconnect.
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        Dict with facts list and optional summary
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+
+    # Get proof facts from session history
+    history = SessionHistory(user_id=managed.user_id or "default")
+    facts, summary = history.load_proof_facts_by_server_id(session_id)
+
+    return {"facts": facts, "summary": summary}
+
+
+@router.post("/{session_id}/proof-facts")
+async def save_proof_facts(
+    session_id: str,
+    body: dict,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Save proof facts for a session.
+
+    Persists proof facts for UI restoration after refresh/reconnect.
+
+    Args:
+        session_id: Session ID
+        body: Dict with facts list and optional summary
+
+    Returns:
+        Status confirmation
+
+    Raises:
+        404: Session not found
+    """
+    managed = session_manager.get_session(session_id)
+    facts = body.get("facts", [])
+    summary = body.get("summary")
+
+    # Save proof facts to session history
+    history = SessionHistory(user_id=managed.user_id or "default")
+    history.save_proof_facts_by_server_id(session_id, facts, summary)
+
+    return {"status": "saved", "count": len(facts)}
+
+
 @router.post("/{session_id}/reset-context")
 async def reset_context(
     session_id: str,

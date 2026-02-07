@@ -264,14 +264,14 @@ export function MessageBubble({
               </ReactMarkdown>
             )}
           </div>
-          {/* View Result button for final insights */}
+          {/* View Result/Proof button for final insights */}
           {isFinalInsight && onViewResult && (
             <button
               onClick={onViewResult}
               className="mt-3 flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
             >
               <EyeIcon className="w-4 h-4" />
-              View Result
+              {content.toLowerCase().includes('proof') ? 'View Proof' : 'View Result'}
             </button>
           )}
           {/* Expand/Collapse button */}

@@ -27,6 +27,7 @@ interface ProofState {
   isPlanningComplete: boolean  // True after all fact_start events received and execution begins
   isPanelOpen: boolean
   proofSummary: string | null  // LLM-generated summary when available
+  hasCompletedProof: boolean  // True when a proof has completed (for View Proof button)
 
   // Actions
   handleFactEvent: (eventType: string, data: Record<string, unknown>) => void
@@ -34,14 +35,19 @@ interface ProofState {
   openPanel: () => void
   closePanel: () => void
   togglePanel: () => void
+
+  // Persistence
+  exportFacts: () => FactNode[]
+  importFacts: (facts: FactNode[], summary?: string | null) => void
 }
 
-export const useProofStore = create<ProofState>((set) => ({
+export const useProofStore = create<ProofState>((set, get) => ({
   facts: new Map(),
   isProving: false,
   isPlanningComplete: false,
   isPanelOpen: false,
   proofSummary: null,
+  hasCompletedProof: false,
 
   handleFactEvent: (eventType, data) => {
     const factName = data.fact_name as string
@@ -60,7 +66,7 @@ export const useProofStore = create<ProofState>((set) => ({
       return
     }
     if (eventType === 'proof_complete') {
-      set({ isProving: false })
+      set({ isProving: false, hasCompletedProof: true })
       return
     }
     if (eventType === 'proof_summary_ready') {
@@ -137,11 +143,32 @@ export const useProofStore = create<ProofState>((set) => ({
     })
   },
 
-  clearFacts: () => set({ facts: new Map(), isProving: false, isPlanningComplete: false, proofSummary: null }),
+  clearFacts: () => set({ facts: new Map(), isProving: false, isPlanningComplete: false, proofSummary: null, hasCompletedProof: false }),
 
   openPanel: () => set({ isPanelOpen: true }),
 
   closePanel: () => set({ isPanelOpen: false }),
 
   togglePanel: () => set((state) => ({ isPanelOpen: !state.isPanelOpen })),
+
+  // Export facts for persistence
+  exportFacts: () => {
+    const { facts } = get()
+    return Array.from(facts.values())
+  },
+
+  // Import facts from persistence (for session restore)
+  importFacts: (facts: FactNode[], summary?: string | null) => {
+    const factsMap = new Map<string, FactNode>()
+    for (const fact of facts) {
+      factsMap.set(fact.id, fact)
+    }
+    set({
+      facts: factsMap,
+      isProving: false,
+      isPlanningComplete: true,  // Restored proofs are already complete
+      proofSummary: summary ?? null,
+      hasCompletedProof: facts.length > 0,
+    })
+  },
 }))
