@@ -217,7 +217,9 @@ export function PlanApprovalDialog() {
   const handleRevise = () => {
     // Build structured edited steps array for backend
     const editedStepsArray: Array<{ number: number; goal: string }> = []
-    let stepCounter = 1
+    // Preserve original starting step number (e.g. 4 for follow-up plans)
+    const firstStepNum = steps.length > 0 ? (steps[0].number ?? 1) : 1
+    let stepCounter = firstStepNum
 
     steps.forEach((step) => {
       const stepNum = step.number ?? steps.indexOf(step) + 1

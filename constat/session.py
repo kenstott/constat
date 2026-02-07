@@ -3155,6 +3155,7 @@ Do not include any explanation or extra text."""
         self,
         problem: str,
         edited_steps: list[dict],
+        start_number: int = 1,
     ) -> Plan:
         """
         Build a Plan directly from user-edited steps, skipping the planner.
@@ -3165,6 +3166,7 @@ Do not include any explanation or extra text."""
         Args:
             problem: The original problem
             edited_steps: List of {"number": int, "goal": str} from user edits
+            start_number: First step number (e.g. 4 for follow-up after 3 initial steps)
 
         Returns:
             Plan object ready for execution
@@ -3179,11 +3181,12 @@ Do not include any explanation or extra text."""
                 normalized = step.goal.lower().strip()
                 original_steps_by_goal[normalized] = step
 
-        # Build new steps with sequential numbering
+        # Build new steps with sequential numbering from start_number
         new_steps = []
-        for i, edited in enumerate(edited_steps, start=1):
+        for i, edited in enumerate(edited_steps):
+            step_num = start_number + i
             goal = edited.get("goal", "")
-            original_number = edited.get("number", i)
+            original_number = edited.get("number", step_num)
 
             # Try to find original step for metadata (by goal similarity)
             normalized_goal = goal.lower().strip()
@@ -3195,11 +3198,11 @@ Do not include any explanation or extra text."""
 
             # Create step with preserved metadata where available
             step = Step(
-                number=i,  # Renumber sequentially
+                number=step_num,  # Renumber sequentially from start_number
                 goal=goal,
                 expected_inputs=original.expected_inputs if original else [],
                 expected_outputs=original.expected_outputs if original else [],
-                depends_on=[i - 1] if i > 1 else [],  # Sequential dependencies for safety
+                depends_on=[step_num - 1] if step_num > start_number else [],  # Sequential dependencies for safety
                 step_type=original.step_type if original else StepType.PYTHON,
                 task_type=original.task_type if original else TaskType.PYTHON_ANALYSIS,
                 complexity=original.complexity if original else "medium",
@@ -3626,7 +3629,7 @@ CRITICAL INTENT RULES (apply in order):
                 intents=[DetectedIntent(intent="NEW_QUESTION", confidence=0.5)],
             )
 
-    def _detect_ambiguity(self, problem: str, is_auditable_mode: bool = False) -> Optional[ClarificationRequest]:
+    def _detect_ambiguity(self, problem: str, is_auditable_mode: bool = False, session_tables: Optional[list[dict]] = None) -> Optional[ClarificationRequest]:
         """
         Detect if a question is ambiguous and needs clarification before planning.
 
@@ -3639,6 +3642,7 @@ CRITICAL INTENT RULES (apply in order):
         Args:
             problem: The user's question
             is_auditable_mode: If True, defer personal value questions to lazy resolution
+            session_tables: List of existing session tables (from datastore.list_tables())
 
         Returns:
             ClarificationRequest if clarification needed, None otherwise
@@ -3668,6 +3672,14 @@ CRITICAL INTENT RULES (apply in order):
             if is_auditable_mode else
             "For personal values mentioned (like 'my age'), you MAY ask since exploratory mode needs all values upfront."
         )
+        # Format session tables so the LLM knows what datasets already exist
+        session_tables_text = ""
+        if session_tables:
+            table_lines = ["\n## Session Tables (datasets created during this conversation)"]
+            for t in session_tables:
+                table_lines.append(f"- `{t['name']}`: {t.get('row_count', '?')} rows (step {t.get('step_number', '?')})")
+            session_tables_text = "\n".join(table_lines)
+
         prompt = load_prompt("detect_ambiguity.md").format(
             problem=problem,
             schema_overview=ctx["schema_overview"],
@@ -3676,6 +3688,7 @@ CRITICAL INTENT RULES (apply in order):
             user_facts=ctx["user_facts"],
             learnings_text=learnings_text,
             personal_values_guidance=personal_values_guidance,
+            session_tables=session_tables_text,
         )
 
         try:
@@ -5303,7 +5316,8 @@ Provide a brief, high-level summary of the key findings."""
             return self._analyze_question(problem)
 
         def run_ambiguity():
-            return self._detect_ambiguity(problem, is_auditable_mode=True)
+            existing_tables = self.datastore.list_tables()
+            return self._detect_ambiguity(problem, is_auditable_mode=True, session_tables=existing_tables)
 
         def run_dynamic_context():
             # Match skills and roles dynamically based on query
@@ -6316,7 +6330,8 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
 
         # Check for ambiguity and request clarification if needed
         if self.session_config.ask_clarifications and self._clarification_callback:
-            clarification_request = self._detect_ambiguity(question)
+            existing_tables = self.datastore.list_tables()
+            clarification_request = self._detect_ambiguity(question, session_tables=existing_tables)
             if clarification_request:
                 enhanced_question = self._request_clarification(clarification_request)
                 if enhanced_question:
@@ -6428,57 +6443,93 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 }
 
             elif approval.decision == PlanApproval.SUGGEST:
-                # For follow-ups, replan with feedback
-                context_prompt_with_feedback = f"""{context_prompt}
+                # Check if user edited steps but provided no meaningful feedback
+                suggestion_text = (approval.suggestion or "").strip()
+                has_edited_steps = bool(approval.edited_steps)
+                has_meaningful_feedback = bool(suggestion_text) and suggestion_text not in ("", "Edited plan")
 
-User feedback: {approval.suggestion}
+                if has_edited_steps and not has_meaningful_feedback:
+                    # User edited steps directly — use edited plan without replanning
+                    logger.info("[follow_up REPLAN] User edited steps with no feedback - using edited plan directly")
+                    follow_up_plan = self._build_plan_from_edited_steps(
+                        question, approval.edited_steps, start_number=next_step_number
+                    )
+                else:
+                    # User has meaningful feedback — replan
+                    if has_edited_steps:
+                        edited_plan_text = "\n".join(
+                            f"{step['number']}. {step['goal']}" for step in approval.edited_steps
+                        )
+                        context_prompt_with_feedback = f"""{context_prompt}
+
+**Requested plan structure (follow this exactly):**
+{edited_plan_text}
+
+**User notes:** {suggestion_text}"""
+                    else:
+                        context_prompt_with_feedback = f"""{context_prompt}
+
+User feedback: {suggestion_text}
 """
-                # Emit replanning event
-                self._emit_event(StepEvent(
-                    event_type="replanning",
-                    step_number=0,
-                    data={"feedback": approval.suggestion}
-                ))
 
-                self._sync_user_facts_to_planner()
-                self._sync_available_roles_to_planner()
-                planner_response = self.planner.plan(context_prompt_with_feedback)
-                follow_up_plan = planner_response.plan
+                    # Emit replanning event
+                    self._emit_event(StepEvent(
+                        event_type="replanning",
+                        step_number=0,
+                        data={"feedback": suggestion_text}
+                    ))
 
-                # Renumber steps again
+                    self._sync_user_facts_to_planner()
+                    self._sync_available_roles_to_planner()
+                    planner_response = self.planner.plan(context_prompt_with_feedback)
+                    follow_up_plan = planner_response.plan
+
+                    # Renumber steps to continue from where we left off
+                    for i, step in enumerate(follow_up_plan.steps):
+                        step.number = next_step_number + i
+
+                    # Emit updated plan
+                    self._emit_event(StepEvent(
+                        event_type="plan_ready",
+                        step_number=0,
+                        data={
+                            "steps": [
+                                {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                                for s in follow_up_plan.steps
+                            ],
+                            "reasoning": planner_response.reasoning,
+                            "is_followup": True,
+                        }
+                    ))
+
+                    # Request approval again
+                    approval = self._request_approval(question, planner_response)
+                    if approval.decision == PlanApproval.REJECT:
+                        return {
+                            "success": False,
+                            "rejected": True,
+                            "plan": follow_up_plan,
+                            "reason": approval.reason,
+                            "message": "Follow-up plan was rejected by user.",
+                        }
+                    elif approval.decision == PlanApproval.COMMAND:
+                        return {
+                            "success": False,
+                            "command": approval.command,
+                            "message": "Slash command entered during approval.",
+                        }
+
+            # APPROVE — apply any edits/deletions to the follow-up plan
+            if approval.edited_steps:
+                follow_up_plan = self._build_plan_from_edited_steps(
+                    question, approval.edited_steps, start_number=next_step_number
+                )
+            elif approval.deleted_steps:
+                deleted_set = set(approval.deleted_steps)
+                follow_up_plan.steps = [s for s in follow_up_plan.steps if s.number not in deleted_set]
+                # Renumber remaining steps sequentially from next_step_number
                 for i, step in enumerate(follow_up_plan.steps):
                     step.number = next_step_number + i
-
-                # Emit updated plan
-                self._emit_event(StepEvent(
-                    event_type="plan_ready",
-                    step_number=0,
-                    data={
-                        "steps": [
-                            {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
-                            for s in follow_up_plan.steps
-                        ],
-                        "reasoning": planner_response.reasoning,
-                        "is_followup": True,
-                    }
-                ))
-
-                # Request approval again
-                approval = self._request_approval(question, planner_response)
-                if approval.decision == PlanApproval.REJECT:
-                    return {
-                        "success": False,
-                        "rejected": True,
-                        "plan": follow_up_plan,
-                        "reason": approval.reason,
-                        "message": "Follow-up plan was rejected by user.",
-                    }
-                elif approval.decision == PlanApproval.COMMAND:
-                    return {
-                        "success": False,
-                        "command": approval.command,
-                        "message": "Slash command entered during approval.",
-                    }
 
         # Materialize facts table before execution starts
         self._materialize_facts_table()
@@ -8096,6 +8147,10 @@ Prove all of the above claims and provide a complete audit trail."""
             combined_problem = original_problem
 
         logger.debug(f"[prove_conversation] Running proof for: {combined_problem[:150]}...")
+
+        # Clear old inference codes from previous proof runs
+        if self.history and self.session_id:
+            self.history.clear_inferences(self.session_id)
 
         # Emit proof_start event so UI shows "Generating proof..." instead of "Planning..."
         self._emit_event(StepEvent(

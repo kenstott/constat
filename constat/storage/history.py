@@ -630,6 +630,13 @@ class SessionHistory:
         """Get the inferences directory for inference code storage."""
         return self._session_dir(session_id) / "inferences"
 
+    def clear_inferences(self, session_id: str) -> None:
+        """Remove all inference code files for a session (used before proof re-run)."""
+        import shutil
+        inferences_dir = self._inferences_dir(session_id)
+        if inferences_dir.exists():
+            shutil.rmtree(inferences_dir)
+
     def save_inference_code(
         self,
         session_id: str,

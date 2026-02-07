@@ -594,6 +594,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'proof_start':
         ensureLiveMessage('Generating proof...', 'planning')
         set({ status: 'planning' })
+        // Clear previous inference codes (proof is a complete re-run)
+        useArtifactStore.getState().clearInferenceCodes()
         // Also forward to proofStore to clear previous facts
         useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
         break

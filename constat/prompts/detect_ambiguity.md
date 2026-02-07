@@ -3,11 +3,12 @@ Analyze this question for ambiguity. Determine if critical parameters are missin
 Question: "{problem}"
 
 Available data sources (databases AND APIs - both are valid data sources):
-{schema_overview}{api_overview}{doc_overview}{user_facts}{learnings_text}
+{schema_overview}{api_overview}{doc_overview}{user_facts}{learnings_text}{session_tables}
 
 IMPORTANT: If an API can provide the data needed for the question, the question is CLEAR.
 For example, if the question asks about countries and a countries API is available, that's sufficient.
 If a user fact provides needed information (like user_email for sending results), USE IT - do not ask again.
+If session tables exist and the question references a dataset, match it to the most relevant session table - do NOT ask which dataset.
 
 ONLY ask about SCOPE and APPROACH - things that affect how to structure the analysis:
 1. Geographic scope (country, region, state, etc.) - unless an API provides this

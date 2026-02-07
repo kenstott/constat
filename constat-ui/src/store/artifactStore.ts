@@ -116,6 +116,7 @@ interface ArtifactState {
   deleteLearning: (learningId: string) => Promise<void>
   clear: () => void
   clearQueryResults: () => void  // Clear artifacts/tables/facts/stepCodes but keep data sources/entities/learnings
+  clearInferenceCodes: () => void  // Clear inference codes on proof re-run
 }
 
 export const useArtifactStore = create<ArtifactState>((set, get) => ({
@@ -649,4 +650,5 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       selectedTable: null,
       error: null,
     }),
+  clearInferenceCodes: () => set({ inferenceCodes: [] }),
 }))
