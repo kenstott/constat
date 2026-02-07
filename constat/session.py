@@ -8292,14 +8292,18 @@ Prove all of the above claims and provide a complete audit trail."""
             ))
 
             # Generate proof summary asynchronously
-            if result.get("success") and result.get("proof_nodes"):
+            proof_nodes = result.get("proof_nodes", [])
+            logger.info(f"[prove_conversation] Generating summary: success={result.get('success')}, proof_nodes count={len(proof_nodes)}")
+            if result.get("success") and proof_nodes:
                 try:
                     from constat.api.summarization import summarize_proof
+                    logger.info(f"[prove_conversation] Calling summarize_proof with {len(proof_nodes)} nodes")
                     summary_result = summarize_proof(
                         problem=result.get("problem", combined_problem),
-                        proof_nodes=result.get("proof_nodes", []),
+                        proof_nodes=proof_nodes,
                         llm=self.router,
                     )
+                    logger.info(f"[prove_conversation] summarize_proof returned success={summary_result.success}, has_summary={bool(summary_result.summary)}, error={summary_result.error}")
                     if summary_result.success and summary_result.summary:
                         # Save as artifact
                         if self.datastore:
@@ -8318,8 +8322,13 @@ Prove all of the above claims and provide a complete audit trail."""
                             step_number=0,
                             data={"summary": summary_result.summary}
                         ))
+                        logger.info(f"[prove_conversation] Proof summary generated and emitted")
+                    else:
+                        logger.warning(f"[prove_conversation] summarize_proof failed: {summary_result.error}")
                 except Exception as e:
-                    logger.warning(f"Failed to generate proof summary: {e}")
+                    logger.warning(f"Failed to generate proof summary: {e}", exc_info=True)
+            else:
+                logger.warning(f"[prove_conversation] Skipping summary: success={result.get('success')}, has_nodes={bool(proof_nodes)}")
 
             return result
 

@@ -184,7 +184,12 @@ def summarize_proof(
     Returns:
         SummarizeResult with proof summary or error
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"[summarize_proof] Called with {len(proof_nodes)} nodes, problem={problem[:100]}...")
+
     if not proof_nodes:
+        logger.warning("[summarize_proof] No proof nodes provided")
         return SummarizeResult(success=False, error="No proof nodes to summarize")
 
     # Build proof chain description
@@ -225,13 +230,16 @@ Provide a narrative summary that:
 Write as a clear explanation for someone reviewing the audit trail."""
 
     try:
+        logger.info(f"[summarize_proof] Calling LLM generate with prompt length={len(prompt)}")
         result = llm.generate(
             system="You are an auditor explaining a proof derivation clearly and accurately.",
             user_message=prompt,
             max_tokens=1000,
         )
+        logger.info(f"[summarize_proof] LLM returned result length={len(result) if result else 0}")
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
+        logger.error(f"[summarize_proof] LLM call failed: {e}", exc_info=True)
         return SummarizeResult(success=False, error=str(e))
 
 

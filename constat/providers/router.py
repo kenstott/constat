@@ -105,6 +105,14 @@ class TaskRouter:
         """Register callback for escalation events."""
         self._on_escalation = callback
 
+    @property
+    def max_output_tokens(self) -> int:
+        """Get max output tokens from the default provider."""
+        # Get default provider spec
+        spec = ModelSpec(model=self.llm_config.model)
+        provider = self._get_provider(spec)
+        return provider.max_output_tokens
+
     def _get_provider_class(self, provider_name: str) -> type:
         """Get the provider class by name."""
         class_path = self.PROVIDER_CLASSES.get(provider_name.lower())
@@ -380,6 +388,9 @@ class TaskRouter:
 
         Returns:
             Generated text content
+
+        Raises:
+            RuntimeError: If the LLM call fails
         """
         result = self.execute(
             task_type=TaskType.SUMMARIZATION,  # Use summarization as generic task
@@ -388,4 +399,6 @@ class TaskRouter:
             max_tokens=max_tokens,
             complexity="low",
         )
-        return result.content if result.success else ""
+        if not result.success:
+            raise RuntimeError(f"LLM generation failed: {result.error or 'Unknown error'}")
+        return result.content
