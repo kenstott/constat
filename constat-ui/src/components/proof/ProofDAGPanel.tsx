@@ -288,6 +288,29 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
   const failedCount = nodes.filter((n) => n.status === 'failed').length
   const pendingCount = nodes.filter((n) => n.status !== 'resolved' && n.status !== 'failed').length
 
+  // Find final inference node (highest tier or node that nothing depends on)
+  const finalNode = useMemo(() => {
+    if (nodes.length === 0) return null
+    // Collect all node IDs that are dependencies
+    const dependencyIds = new Set<string>()
+    nodes.forEach((n) => n.dependencies.forEach((d) => dependencyIds.add(d)))
+    // Find nodes that aren't dependencies of anything (leaf/final nodes)
+    const finalNodes = nodes.filter((n) => !dependencyIds.has(n.id))
+    // Among final nodes, prefer inference (I) nodes over premises (P)
+    const inferenceNodes = finalNodes.filter((n) => n.id.startsWith('I'))
+    if (inferenceNodes.length > 0) {
+      // Return the one with highest tier, or highest number if no tier
+      return inferenceNodes.reduce((best, curr) => {
+        const currNum = parseInt(curr.id.slice(1)) || 0
+        const bestNum = parseInt(best.id.slice(1)) || 0
+        return (curr.tier ?? currNum) > (best.tier ?? bestNum) ? curr : best
+      })
+    }
+    return finalNodes[0] || null
+  }, [nodes])
+
+  const isProofComplete = pendingCount === 0 && resolvedCount > 0
+
   if (!isOpen) return null
 
   // Render edge path with curve
@@ -539,6 +562,23 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
             </div>
           )}
         </div>
+
+        {/* Confidence Summary - shown when proof is complete */}
+        {isProofComplete && finalNode && finalNode.status === 'resolved' && (
+          <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-green-50 dark:bg-green-900/20">
+            <div className="flex items-center justify-center gap-3">
+              <span className="text-green-600 dark:text-green-400 text-lg">{STATUS_SYMBOLS.resolved}</span>
+              <span className="text-sm font-medium text-green-800 dark:text-green-200">
+                Proven with {finalNode.confidence !== undefined ? `${(finalNode.confidence * 100).toFixed(0)}%` : 'high'} confidence
+              </span>
+              {finalNode.value !== undefined && (
+                <span className="text-sm text-green-700 dark:text-green-300">
+                  = <span className="font-mono">{typeof finalNode.value === 'string' ? finalNode.value : JSON.stringify(finalNode.value)}</span>
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Legend */}
         <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 text-xs">
