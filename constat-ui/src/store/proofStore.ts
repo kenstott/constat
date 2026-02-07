@@ -24,6 +24,7 @@ interface ProofState {
   // Proof facts DAG
   facts: Map<string, FactNode>
   isProving: boolean
+  isPlanningComplete: boolean  // True after all fact_start events received and execution begins
   isPanelOpen: boolean
 
   // Actions
@@ -37,10 +38,31 @@ interface ProofState {
 export const useProofStore = create<ProofState>((set) => ({
   facts: new Map(),
   isProving: false,
+  isPlanningComplete: false,
   isPanelOpen: false,
 
   handleFactEvent: (eventType, data) => {
     const factName = data.fact_name as string
+    console.log(`[proofStore] ${eventType}:`, factName, data.dependencies)
+
+    // Handle events that don't require fact_name
+    if (eventType === 'proof_start') {
+      // Clear facts and start proving, but don't open panel until DAG is complete
+      set({ facts: new Map(), isProving: true, isPlanningComplete: false })
+      return
+    }
+    if (eventType === 'dag_execution_start') {
+      // All fact_start events have been received - now open the panel
+      console.log('[proofStore] dag_execution_start - all nodes known, opening panel')
+      set({ isPlanningComplete: true, isPanelOpen: true })
+      return
+    }
+    if (eventType === 'proof_complete') {
+      set({ isProving: false })
+      return
+    }
+
+    // Remaining events require fact_name
     if (!factName) return
 
     set((state) => {
@@ -57,9 +79,11 @@ export const useProofStore = create<ProofState>((set) => ({
           next.set(factName, {
             ...existing,
             description: data.fact_description as string | undefined,
+            dependencies: (data.dependencies as string[]) || existing.dependencies,
             status: 'pending',
           })
-          return { facts: next, isProving: true, isPanelOpen: true }
+          // Don't open panel during planning - wait for DAG to be complete
+          return { facts: next, isProving: true }
 
         case 'fact_planning':
           next.set(factName, {
@@ -98,16 +122,13 @@ export const useProofStore = create<ProofState>((set) => ({
           })
           return { facts: next }
 
-        case 'proof_complete':
-          return { isProving: false }
-
         default:
           return {}
       }
     })
   },
 
-  clearFacts: () => set({ facts: new Map(), isProving: false }),
+  clearFacts: () => set({ facts: new Map(), isProving: false, isPlanningComplete: false }),
 
   openPanel: () => set({ isPanelOpen: true }),
 

@@ -300,6 +300,7 @@ def _create_event_handler(managed: ManagedSession):
                 "progress": EventType.PROGRESS,
                 "dynamic_context": EventType.DYNAMIC_CONTEXT,
                 "planning_start": EventType.PLANNING_START,
+                "proof_start": EventType.PROOF_START,
                 "replanning": EventType.REPLANNING,
                 "synthesizing": EventType.SYNTHESIZING,
                 "generating_insights": EventType.GENERATING_INSIGHTS,
@@ -309,6 +310,7 @@ def _create_event_handler(managed: ManagedSession):
                 "fact_executing": EventType.FACT_EXECUTING,
                 "fact_resolved": EventType.FACT_RESOLVED,
                 "fact_failed": EventType.FACT_FAILED,
+                "dag_execution_start": EventType.DAG_EXECUTION_START,
                 "proof_complete": EventType.PROOF_COMPLETE,
             }
 

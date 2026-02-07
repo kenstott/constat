@@ -13,6 +13,7 @@ import { HelpModal } from '@/components/help/HelpModal'
 import { useSessionStore } from '@/store/sessionStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
+import { useUIStore } from '@/store/uiStore'
 import * as sessionsApi from '@/api/sessions'
 
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
@@ -230,8 +231,14 @@ function MainApp() {
   }
 
   // Proof panel state
-  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, openPanel: openProofPanel, closePanel: closeProofPanel, clearFacts } = useProofStore()
+  const { facts: proofFacts, isPanelOpen: isProofPanelOpen, isPlanningComplete, openPanel: openProofPanel, closePanel: closeProofPanel, clearFacts } = useProofStore()
   const { submitQuery } = useSessionStore()
+  const { expandArtifactSection } = useUIStore()
+
+  const handleViewResults = useCallback(() => {
+    closeProofPanel()
+    expandArtifactSection('results')
+  }, [closeProofPanel, expandArtifactSection])
 
   const handleShowProof = () => {
     // Clear previous proof state and open panel
@@ -269,7 +276,9 @@ function MainApp() {
       <ProofDAGPanel
         isOpen={isProofPanelOpen}
         onClose={closeProofPanel}
+        onViewResults={handleViewResults}
         facts={proofFacts}
+        isPlanningComplete={isPlanningComplete}
       />
       <HelpModal
         isOpen={isHelpOpen}

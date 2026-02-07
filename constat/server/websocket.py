@@ -60,9 +60,11 @@ class SessionWebSocket:
         "fact_planning": EventType.FACT_PLANNING,
         "fact_executing": EventType.FACT_EXECUTING,
         "fact_failed": EventType.FACT_FAILED,
+        "dag_execution_start": EventType.DAG_EXECUTION_START,
         "proof_complete": EventType.PROOF_COMPLETE,
         "progress": EventType.PROGRESS,
         "planning_start": EventType.PLANNING_START,
+        "proof_start": EventType.PROOF_START,
         "table_created": EventType.TABLE_CREATED,
         "artifact_created": EventType.ARTIFACT_CREATED,
     })

@@ -231,6 +231,7 @@ When correcting or updating previous results:
 - **NEVER print raw DataFrames** - `print(df)`, `print(df.head())` produce unreadable output
 - Tables saved to `store` appear automatically as clickable artifacts - don't dump their contents to stdout
 - For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
+- **Don't label expected fallbacks as errors** - if data isn't in store and you query the database instead, that's normal operation. Say "Querying database..." not "Error: not found in store". Reserve "Error:" for actual failures that prevent the step from completing.
 
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers.
@@ -1365,7 +1366,7 @@ YOUR JSON RESPONSE:"""
             task_type=TaskType.SYNTHESIS,
             system="You output ONLY valid JSON with a single value (number, string, or ISO date). No explanations.",
             user_message=knowledge_prompt,
-            max_tokens=100,
+            max_tokens=self.router.max_output_tokens,
         )
 
         response = result.content.strip()
@@ -1592,7 +1593,7 @@ RULES:
                         task_type=TaskType.SQL_GENERATION,
                         system="Output raw SQL only. No markdown.",
                         user_message=sql_prompt,
-                        max_tokens=500,
+                        max_tokens=self.router.max_output_tokens,
                     )
 
                     sql = sql_result.content.strip()
@@ -1856,6 +1857,7 @@ CRITICAL Rules:
 3. End with `_result = <value>`
 4. ALWAYS save result: store.save_dataframe('{table_name}', result_df)
 5. For REFERENCED tables, use db_query() to query from database directly
+6. Don't label expected fallbacks as errors - querying the database when data isn't in store is normal. Say "Querying database..." not "Error: not found"
 
 Return ONLY Python code, no markdown."""
 
@@ -1874,7 +1876,7 @@ Return ONLY Python code, no markdown."""
                     task_type=TaskType.SQL_GENERATION,
                     system="Generate Python code. Return only executable code.",
                     user_message=prompt,
-                    max_tokens=1200,
+                    max_tokens=self.router.max_output_tokens,
                 )
 
                 code = code_result.content.strip()
@@ -3010,7 +3012,7 @@ Do not include any explanation or extra text."""
             response = self.llm.generate(
                 system="You are a technical writer summarizing coding lessons learned.",
                 user_message=prompt,
-                max_tokens=100,
+                max_tokens=self.router.max_output_tokens,
             )
             # generate() returns string directly
             return response.strip()
@@ -3418,7 +3420,7 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system="You analyze user questions efficiently. Be precise and concise.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.router.max_output_tokens,
             )
 
             response = result.content.strip()
@@ -3702,7 +3704,7 @@ DOCUMENT-AWARE SUGGESTIONS:
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system="You detect ambiguity in data analysis requests. Be practical - only flag truly ambiguous requests.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.router.max_output_tokens,
             )
 
             response = result.content.strip()
@@ -3888,7 +3890,7 @@ Examples:
                 task_type=TaskType.GENERAL,
                 system="You are a helpful assistant matching questions to known facts.",
                 user_message=prompt,
-                max_tokens=200,
+                max_tokens=self.router.max_output_tokens,
             )
 
             response = result.content.strip()
@@ -4275,7 +4277,7 @@ Reference tables with backticks: `table_name`"""
             task_type=TaskType.SUMMARIZATION,
             system="You are a data analyst presenting findings. Be clear and direct.",
             user_message=prompt,
-            max_tokens=1000,
+            max_tokens=self.router.max_output_tokens,
         )
 
         if not result.success:
@@ -4327,7 +4329,7 @@ If no concrete facts to extract, respond with: NO_FACTS"""
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system="You extract key facts and metrics from analysis results.",
                 user_message=prompt,
-                max_tokens=400,
+                max_tokens=self.router.max_output_tokens,
             )
 
             response = result.content.strip()
@@ -4419,7 +4421,7 @@ Return ONLY the suggestions, one per line, no numbering or bullets."""
                 task_type=TaskType.SUMMARIZATION,
                 system="You suggest actionable follow-up analysis requests. Never ask clarifying questions.",
                 user_message=prompt,
-                max_tokens=200,
+                max_tokens=self.router.max_output_tokens,
             )
 
             # Parse suggestions (one per line)
@@ -4637,7 +4639,7 @@ Provide a detailed explanation or suggest what specific data to examine."""
                     task_type=TaskType.SYNTHESIS,
                     system="You are a helpful data analyst providing detailed explanations.",
                     user_message=prompt,
-                    max_tokens=1000,
+                    max_tokens=self.router.max_output_tokens,
                 )
 
                 return {
@@ -4683,7 +4685,7 @@ Provide a clear, structured summary focusing on what the user asked for."""
                             task_type=TaskType.SUMMARIZATION,
                             system="You are a document summarizer. Extract key concepts and structure your response clearly.",
                             user_message=prompt,
-                            max_tokens=1000,
+                            max_tokens=self.router.max_output_tokens,
                         )
 
                         return {
@@ -4716,7 +4718,7 @@ Provide a brief, high-level summary of the key findings."""
                     task_type=TaskType.SUMMARIZATION,
                     system="You are a concise summarizer. Focus on key insights.",
                     user_message=prompt,
-                    max_tokens=500,
+                    max_tokens=self.router.max_output_tokens,
                 )
 
                 return {
@@ -6318,7 +6320,7 @@ NEW_REQUEST: <the new request, or NONE>
             response = self.llm.generate(
                 system="You are an intent classifier. Analyze user messages precisely.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=self.router.max_output_tokens,
             )
 
             result = {
@@ -6401,7 +6403,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             response = self.llm.generate(
                 system="You classify user responses precisely. Distinguish between direct answers and guidance about where to find answers.",
                 user_message=prompt,
-                max_tokens=200,
+                max_tokens=self.router.max_output_tokens,
             )
 
             result = {"type": "VALUE", "value": user_response, "steer": None}
@@ -7087,7 +7089,7 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
             task_type=TaskType.INTENT_CLASSIFICATION,
             system="You analyze questions and decompose them into premises and inferences for auditable answers.",
             user_message=fact_plan_prompt,
-            max_tokens=1500,
+            max_tokens=self.router.max_output_tokens,
         )
         fact_plan_text = result.content
 
@@ -7300,7 +7302,7 @@ REMEMBER:
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system="You analyze questions and decompose them into premises and inferences for auditable answers. CRITICAL: Ensure all fact references are valid.",
                 user_message=retry_prompt,
-                max_tokens=1500,
+                max_tokens=self.router.max_output_tokens,
             )
 
             # Re-parse the retried plan
@@ -7514,6 +7516,22 @@ REMEMBER:
             # Parse plan into DAG
             dag = parse_plan_to_dag(premises, inferences)
 
+            # Emit fact_start for ALL nodes upfront so UI can show complete DAG
+            for node in dag.nodes.values():
+                # Determine if premise or inference (use fact_id, not dict key which is node.name)
+                is_premise = node.fact_id.startswith("P")
+                self._emit_event(StepEvent(
+                    event_type="fact_start",
+                    step_number=0,
+                    data={
+                        "fact_name": f"{node.fact_id}: {node.name}",
+                        "fact_id": node.fact_id,
+                        "fact_description": node.description if hasattr(node, 'description') else None,
+                        "dependencies": [f"{dag.nodes[dep].fact_id}: {dep}" for dep in node.dependencies if dep in dag.nodes] if node.dependencies else [],
+                        "is_premise": is_premise,
+                    }
+                ))
+
             # Get schema for SQL generation
             detailed_schema = self.schema_manager.get_overview()
 
@@ -7556,6 +7574,16 @@ REMEMBER:
                                 return other_node.name
                         return None
 
+                    # Emit fact_executing for DAG visualization
+                    self._emit_event(StepEvent(
+                        event_type="fact_executing",
+                        step_number=level + 1,
+                        data={
+                            "fact_name": f"{fact_id}: {node_name}",
+                            "fact_id": fact_id,
+                        }
+                    ))
+
                     if is_premise:
                         # Parent = what inference uses this premise
                         consumer = find_consumer(node_name)
@@ -7588,6 +7616,25 @@ REMEMBER:
                     confidence = data.get("confidence", 0.9)
                     source = data.get("source", "")
                     is_premise = fact_id.startswith("P") if fact_id else level == 0
+
+                    # Get dependencies for this node (dag.nodes keyed by name, not fact_id)
+                    node_obj = dag.nodes.get(node_name)
+                    deps = [f"{dag.nodes[dep].fact_id}: {dep}" for dep in node_obj.dependencies if dep in dag.nodes] if node_obj and node_obj.dependencies else []
+
+                    # Emit fact_resolved for DAG visualization
+                    self._emit_event(StepEvent(
+                        event_type="fact_resolved",
+                        step_number=level + 1,
+                        data={
+                            "fact_name": f"{fact_id}: {node_name}",
+                            "fact_id": fact_id,
+                            "value": value,
+                            "confidence": confidence,
+                            "source": source,
+                            "dependencies": deps,
+                        }
+                    ))
+
                     if is_premise:
                         derivation_lines.append(f"- {fact_id}: {node_name} = {str(value)[:100]} (confidence: {confidence:.0%})")
                         self._emit_event(StepEvent(
@@ -7605,6 +7652,18 @@ REMEMBER:
                 elif event_type == "node_failed":
                     error = data.get("error", "Unknown error")
                     logger.error(f"{fact_id} ({node_name}) failed: {error}")
+
+                    # Emit fact_failed for DAG visualization
+                    self._emit_event(StepEvent(
+                        event_type="fact_failed",
+                        step_number=level + 1,
+                        data={
+                            "fact_name": f"{fact_id}: {node_name}",
+                            "fact_id": fact_id,
+                            "reason": error,
+                        }
+                    ))
+
                     self._emit_event(StepEvent(
                         event_type="premise_resolved" if fact_id.startswith("P") else "inference_failed",
                         step_number=level + 1,
@@ -7669,7 +7728,16 @@ REMEMBER:
                 }
 
             logger.info(f"Executing DAG with {len(premises)} premises and {len(inferences)} inferences")
-            result = executor.execute()
+
+            # Temporarily disable fact_resolver events during DAG execution
+            # Session.py already emits all necessary events with consistent naming (e.g., "P1: employees")
+            # fact_resolver.resolve_tiered() emits duplicate events with different naming (e.g., "employees")
+            saved_callback = self.fact_resolver._event_callback
+            self.fact_resolver._event_callback = None
+            try:
+                result = executor.execute()
+            finally:
+                self.fact_resolver._event_callback = saved_callback
 
             # Emit event to stop live plan display
             self._emit_event(StepEvent(
@@ -7782,7 +7850,7 @@ Provide a concise, clear answer with inline artifact references."""
                 task_type=TaskType.SYNTHESIS,
                 system="You synthesize answers from resolved facts with full provenance.",
                 user_message=synthesis_prompt,
-                max_tokens=1500,
+                max_tokens=self.router.max_output_tokens,
             )
 
             if not synthesis_result.success:
@@ -7839,7 +7907,7 @@ Focus on the key finding and its significance."""
                         task_type=TaskType.SYNTHESIS,
                         system="You analyze proofs and provide actionable insights.",
                         user_message=insights_prompt,
-                        max_tokens=500,
+                        max_tokens=self.router.max_output_tokens,
                     )
                     insights = insights_result.content
                 except Exception as e:
@@ -8044,7 +8112,7 @@ If you don't have enough information, say so rather than guessing."""
                 task_type=TaskType.SYNTHESIS,
                 system=system_prompt,
                 user_message=user_message,
-                max_tokens=2000,
+                max_tokens=self.router.max_output_tokens,
             )
 
             answer = result.content
@@ -8164,6 +8232,13 @@ Prove all of the above claims and provide a complete audit trail."""
             combined_problem = original_problem
 
         logger.debug(f"[prove_conversation] Running proof for: {combined_problem[:150]}...")
+
+        # Emit proof_start event so UI shows "Generating proof..." instead of "Planning..."
+        self._emit_event(StepEvent(
+            event_type="proof_start",
+            step_number=0,
+            data={"problem": combined_problem[:100]}
+        ))
 
         # For proof mode, we do NOT pass cached/derived facts as hints.
         # Proof must derive from GROUND TRUTH sources only (databases, APIs, documents).

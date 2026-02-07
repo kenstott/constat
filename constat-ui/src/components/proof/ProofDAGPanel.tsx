@@ -27,7 +27,9 @@ interface FactNode {
 interface ProofDAGPanelProps {
   isOpen: boolean
   onClose: () => void
+  onViewResults?: () => void
   facts: Map<string, FactNode>
+  isPlanningComplete?: boolean
 }
 
 // Status symbols as per design doc
@@ -142,12 +144,59 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
+export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlanningComplete = false }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
+  const [panelSize, setPanelSize] = useState({ width: 800, height: 600 })
+  const [, setIsResizing] = useState(false)
+
+  // Initialize panel size on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setPanelSize({ width: window.innerWidth * 0.8, height: window.innerHeight * 0.8 })
+    }
+  }, [])
+
+  // Handle resize
+  const handleMouseDown = useCallback((e: React.MouseEvent, direction: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w') => {
+    e.preventDefault()
+    setIsResizing(true)
+    const startX = e.clientX
+    const startY = e.clientY
+    const startWidth = panelSize.width
+    const startHeight = panelSize.height
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX
+      const deltaY = moveEvent.clientY - startY
+
+      setPanelSize(() => {
+        let newWidth = startWidth
+        let newHeight = startHeight
+
+        if (direction.includes('e')) newWidth = Math.max(400, startWidth + deltaX)
+        if (direction.includes('w')) newWidth = Math.max(400, startWidth - deltaX)
+        if (direction.includes('s')) newHeight = Math.max(300, startHeight + deltaY)
+        if (direction.includes('n')) newHeight = Math.max(300, startHeight - deltaY)
+
+        return { width: newWidth, height: newHeight }
+      })
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [panelSize.width, panelSize.height])
 
   // Convert facts Map to DAG structure
+  // Recalculate when isPlanningComplete changes to ensure all dependencies are resolved
   const dagData = useMemo(() => {
     const nodes = Array.from(facts.values())
     if (nodes.length === 0) return null
@@ -157,12 +206,13 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
     const dagNodes: DagNode[] = nodes.map(node => ({
       id: node.id,
       // Filter dependencies to only include nodes that exist in our facts
+      // Once planning is complete, all nodes should exist so all edges connect
       parentIds: node.dependencies.filter(dep => facts.has(dep)),
       data: node,
     }))
 
     return dagNodes
-  }, [facts])
+  }, [facts, isPlanningComplete])
 
   // Compute DAG layout
   const layout = useMemo(() => {
@@ -264,12 +314,16 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
     )
   }
 
-  // Render node
+  // Render node - always get fresh data from facts Map
   const renderNode = (
-    nodeData: FactNode,
+    nodeId: string,
     x: number,
     y: number
   ) => {
+    // Get fresh node data from facts Map (not cached in layout)
+    const nodeData = facts.get(nodeId)
+    if (!nodeData) return null
+
     const status = nodeData.status
     const bgColor = STATUS_BG_COLORS[status]
     const borderColor = STATUS_COLORS[status]
@@ -324,8 +378,21 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl max-w-[90vw] max-h-[85vh] flex flex-col">
+    <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+      <div
+        ref={panelRef}
+        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col pointer-events-auto border border-gray-200 dark:border-gray-700 relative"
+        style={{ width: panelSize.width, height: panelSize.height, maxWidth: '95vw', maxHeight: '95vh' }}
+      >
+        {/* Resize handles */}
+        <div className="absolute -top-1 -left-1 w-3 h-3 cursor-nw-resize" onMouseDown={(e) => handleMouseDown(e, 'nw')} />
+        <div className="absolute -top-1 -right-1 w-3 h-3 cursor-ne-resize" onMouseDown={(e) => handleMouseDown(e, 'ne')} />
+        <div className="absolute -bottom-1 -left-1 w-3 h-3 cursor-sw-resize" onMouseDown={(e) => handleMouseDown(e, 'sw')} />
+        <div className="absolute -bottom-1 -right-1 w-3 h-3 cursor-se-resize" onMouseDown={(e) => handleMouseDown(e, 'se')} />
+        <div className="absolute top-0 left-3 right-3 h-1 cursor-n-resize" onMouseDown={(e) => handleMouseDown(e, 'n')} />
+        <div className="absolute bottom-0 left-3 right-3 h-1 cursor-s-resize" onMouseDown={(e) => handleMouseDown(e, 's')} />
+        <div className="absolute left-0 top-3 bottom-3 w-1 cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'w')} />
+        <div className="absolute right-0 top-3 bottom-3 w-1 cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'e')} />
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
           <div>
@@ -361,6 +428,14 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
             <div className="text-center text-gray-500 py-8 min-w-[500px]">
               <p className="text-lg">{STATUS_SYMBOLS.pending} No facts being resolved yet.</p>
               <p className="text-sm mt-2">Facts will appear here as they are resolved.</p>
+            </div>
+          ) : !isPlanningComplete ? (
+            <div className="text-center text-gray-500 py-8 min-w-[500px]">
+              <div className="animate-pulse">
+                <p className="text-lg">{STATUS_SYMBOLS.planning} Planning proof...</p>
+                <p className="text-sm mt-2">Analyzing dependencies and building resolution graph.</p>
+                <p className="text-xs mt-4 text-gray-400">{nodes.length} facts identified</p>
+              </div>
             </div>
           ) : layout ? (
             <svg
@@ -404,8 +479,12 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
                 {Array.from(layout.graph.links()).map((link) => {
                   const source = link.source
                   const target = link.target
-                  const sourceData = (source.data as DagNode).data
-                  const targetData = (target.data as DagNode).data
+                  const sourceDagNode = source.data as DagNode
+                  const targetDagNode = target.data as DagNode
+                  // Get fresh status from facts Map
+                  const sourceData = facts.get(sourceDagNode.id)
+                  const targetData = facts.get(targetDagNode.id)
+                  if (!sourceData || !targetData) return null
 
                   return renderEdge(
                     source.x + layout.offsetX,
@@ -414,7 +493,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
                     target.y + layout.offsetY,
                     sourceData.status,
                     targetData.status,
-                    `${source.data.id}-${target.data.id}`
+                    `${sourceDagNode.id}-${targetDagNode.id}`
                   )
                 })}
               </g>
@@ -422,9 +501,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
               {/* Render nodes */}
               <g className="nodes">
                 {Array.from(layout.graph.nodes()).map((node) => {
-                  const nodeData = (node.data as DagNode).data
+                  const dagNode = node.data as DagNode
                   return renderNode(
-                    nodeData,
+                    dagNode.id,
                     node.x + layout.offsetX,
                     node.y + layout.offsetY
                   )
@@ -440,6 +519,13 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
 
         {/* Legend */}
         <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 text-xs">
+          <span className="flex items-center gap-1 font-medium text-gray-700 dark:text-gray-300">
+            <span className="text-blue-600">P</span> = Premise
+          </span>
+          <span className="flex items-center gap-1 font-medium text-gray-700 dark:text-gray-300">
+            <span className="text-purple-600">I</span> = Inference
+          </span>
+          <span className="text-gray-300 dark:text-gray-600">|</span>
           {Object.entries(STATUS_SYMBOLS).map(([status, symbol]) => (
             <span key={status} className="flex items-center gap-1">
               <span style={{ color: STATUS_COLORS[status as NodeStatus] }}>{symbol}</span>
@@ -451,12 +537,25 @@ export function ProofDAGPanel({ isOpen, onClose, facts }: ProofDAGPanelProps) {
         {/* Footer */}
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
           <span className="text-xs text-gray-500">Hover over nodes for details</span>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-          >
-            Close
-          </button>
+          <div className="flex gap-2">
+            {onViewResults && (
+              <button
+                onClick={() => {
+                  onViewResults()
+                  onClose()
+                }}
+                className="px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+              >
+                View Results
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
 

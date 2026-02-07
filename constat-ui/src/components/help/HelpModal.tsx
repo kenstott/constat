@@ -4,6 +4,7 @@ import { Fragment } from 'react'
 import { Dialog, Transition } from '@headlessui/react'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import helpContent from '@/data/help.md?raw'
 
 interface HelpModalProps {
@@ -56,6 +57,7 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
                 <div className="px-6 py-4 max-h-[70vh] overflow-y-auto">
                   <div className="prose prose-sm dark:prose-invert max-w-none">
                     <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
                       components={{
                         table: ({ children }) => (
                           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">

@@ -223,6 +223,10 @@ class RegistryAwareDataStore:
         except Exception:
             return None
 
+    def get_table_data(self, name: str) -> Optional[pd.DataFrame]:
+        """Alias for load_dataframe for compatibility."""
+        return self.load_dataframe(name)
+
     def query(self, sql: str) -> pd.DataFrame:
         """Execute SQL query over DuckDB views (which read from Parquet)."""
         conn = self._get_duckdb()

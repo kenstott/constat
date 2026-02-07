@@ -42,6 +42,7 @@ class EventType(str, Enum):
 
     # Planning events
     PLANNING_START = "planning_start"
+    PROOF_START = "proof_start"
     REPLANNING = "replanning"
     PLAN_READY = "plan_ready"
     PLAN_APPROVED = "plan_approved"
@@ -62,6 +63,7 @@ class EventType(str, Enum):
     FACT_PLANNING = "fact_planning"  # Tier 1/Tier 2 planning
     FACT_EXECUTING = "fact_executing"  # Derivation/query executing
     FACT_FAILED = "fact_failed"  # Resolution failed
+    DAG_EXECUTION_START = "dag_execution_start"  # DAG ready, execution beginning
     PROOF_COMPLETE = "proof_complete"  # All facts resolved, DAG complete
 
     # Progress events
