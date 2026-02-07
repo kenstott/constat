@@ -1,0 +1,124 @@
+# User-facing help content for i18n support.
+# All strings shown to the user in help output.
+
+help_commands:
+  # Each entry: [command, description, category]
+  # Data Exploration
+  - ["/help, /h", "Show this help message", "Data Exploration"]
+  - ["/tables", "List available tables", "Data Exploration"]
+  - ["/show <table>", "Show table contents", "Data Exploration"]
+  - ["/export <table> [file]", "Export table to CSV or XLSX", "Data Exploration"]
+  - ["/query <sql>", "Run SQL query on datastore", "Data Exploration"]
+  - ["/code [step]", "Show generated code (all or specific step)", "Data Exploration"]
+  - ["/download-code [file]", "Download all code as Python script", "Data Exploration"]
+  - ["/artifacts [all]", "Show artifacts (use 'all' for intermediate)", "Data Exploration"]
+  # Session Management
+  - ["/state", "Show session state", "Session"]
+  - ["/reset", "Clear session state and start fresh", "Session"]
+  - ["/redo [instruction]", "Retry last query (with optional modifications)", "Session"]
+  - ["/update, /refresh", "Refresh metadata and rebuild cache", "Session"]
+  - ["/context", "Show context size and token usage", "Session"]
+  - ["/compact", "Compact context to reduce token usage", "Session"]
+  # Facts & Memory
+  - ["/facts", "Show cached facts from this session", "Facts"]
+  - ["/remember <fact>", "Persist a session fact", "Facts"]
+  - ["/forget <name>", "Forget a remembered fact", "Facts"]
+  # Plans & History
+  - ["/save <name>", "Save current plan for replay", "Plans"]
+  - ["/share <name>", "Save plan as shared (all users)", "Plans"]
+  - ["/plans", "List saved plans", "Plans"]
+  - ["/replay <name>", "Replay a saved plan", "Plans"]
+  - ["/history, /sessions", "List recent sessions", "Plans"]
+  - ["/resume <id>", "Resume a previous session", "Plans"]
+  # Data Sources
+  - ["/databases", "List configured databases", "Data Sources"]
+  - ["/database <uri> [name]", "Add a database to this session", "Data Sources"]
+  - ["/apis", "List configured APIs", "Data Sources"]
+  - ["/api <spec_url> [name]", "Add an API to this session", "Data Sources"]
+  - ["/documents, /docs", "List all documents", "Data Sources"]
+  - ["/files", "List all data files", "Data Sources"]
+  - ["/doc <path> [name] [desc]", "Add a document to this session", "Data Sources"]
+  # Preferences
+  - ["/verbose [on|off]", "Toggle verbose mode", "Preferences"]
+  - ["/raw [on|off]", "Toggle raw output display", "Preferences"]
+  - ["/insights [on|off]", "Toggle insight synthesis", "Preferences"]
+  - ["/preferences", "Show current preferences", "Preferences"]
+  - ["/user [name]", "Show or set current user", "Preferences"]
+  # Analysis
+  - ["/discover [scope] <query>", "Search data sources (database|api|document)", "Analysis"]
+  - ["/summarize <target>", "Summarize plan|session|facts|<table>", "Analysis"]
+  - ["/prove", "Verify conversation claims with auditable proof", "Analysis"]
+  - ["/correct <text>", "Record a correction for future reference", "Analysis"]
+  - ["/learnings", "Show learnings and rules", "Analysis"]
+  - ["/compact-learnings", "Promote similar learnings into rules", "Analysis"]
+  - ["/rule <text>", "Add a new rule directly", "Analysis"]
+  - ["/rule-edit <id> <text>", "Edit an existing rule", "Analysis"]
+  - ["/rule-delete <id>", "Delete a rule", "Analysis"]
+  # Roles & Skills
+  - ["/role [name]", "Show or set current role", "Roles & Skills"]
+  - ["/roles", "List available roles", "Roles & Skills"]
+  - ["/role-create <name>", "Create a new role", "Roles & Skills"]
+  - ["/role-edit <name> <prompt>", "Edit a role's prompt", "Roles & Skills"]
+  - ["/role-delete <name>", "Delete a role", "Roles & Skills"]
+  - ["/role-draft <name> <desc>", "Draft a role using AI", "Roles & Skills"]
+  - ["/skill [name]", "Show active or activate a skill", "Roles & Skills"]
+  - ["/skills", "List available skills", "Roles & Skills"]
+  - ["/skill-create <name>", "Create a new skill", "Roles & Skills"]
+  - ["/skill-edit <name> <content>", "Edit a skill's content", "Roles & Skills"]
+  - ["/skill-delete <name>", "Delete a skill", "Roles & Skills"]
+  - ["/skill-deactivate <name>", "Deactivate a skill", "Roles & Skills"]
+  - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Roles & Skills"]
+  # Exit
+  - ["/quit, /q", "Exit the session", "Exit"]
+
+keyboard_shortcuts:
+  - ["Ctrl+Left", "Shrink side panel"]
+  - ["Ctrl+Right", "Expand side panel"]
+  - ["Up/Down", "Navigate command history"]
+  - ["Ctrl+C / Esc", "Cancel current operation"]
+  - ["Ctrl+D", "Exit"]
+
+help_tips:
+  - "Ask questions naturally to analyze your data"
+  - "Use numbered suggestions (1, 2, 3...) as shortcuts"
+  - 'Use "why?" or "explain" to drill down into results'
+
+# Command registry descriptions (used in command lookup/autocomplete)
+command_descriptions:
+  help: "Show help information"
+  tables: "List available tables"
+  show: "Show table contents"
+  query: "Run SQL query"
+  code: "Show generated code"
+  artifacts: "List artifacts"
+  export: "Export table to file"
+  download-code: "Download code as Python script"
+  state: "Show session state"
+  reset: "Reset session"
+  facts: "Show cached facts"
+  context: "Show context usage"
+  preferences: "Show preferences"
+  databases: "List databases"
+  apis: "List APIs"
+  documents: "List documents"
+  files: "List data files"
+  discover: "Semantic search across all data sources"
+  learnings: "Show learnings and rules"
+  rule: "Add a new rule"
+  rule-edit: "Edit an existing rule"
+  rule-delete: "Delete a rule"
+  correct: "Record a correction"
+  role: "Set or show current role"
+  roles: "List available roles"
+  role-create: "Create a new role"
+  role-edit: "Edit a role's prompt"
+  role-delete: "Delete a role"
+  role-draft: "Draft a role using AI"
+  skill: "Show or activate a skill"
+  skills: "List available skills"
+  skill-create: "Create a new skill"
+  skill-edit: "Edit a skill's content"
+  skill-delete: "Delete a skill"
+  skill-deactivate: "Deactivate a skill"
+  skill-draft: "Draft a skill using AI"
+  prove: "Verify conversation with auditable proof"

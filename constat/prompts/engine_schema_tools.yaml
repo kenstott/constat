@@ -1,0 +1,26 @@
+# Schema tool definitions for the query engine (discovery phase).
+
+tools:
+  - name: get_table_schema
+    description: "Get detailed schema for a specific table including columns, types, primary keys, foreign keys, and row count."
+    input_schema:
+      type: object
+      properties:
+        table:
+          type: string
+          description: "Table name as 'database.table' or just 'table' if unambiguous"
+      required: [table]
+
+  - name: find_relevant_tables
+    description: "Search for tables relevant to a query using semantic similarity. Returns tables with relevance scores."
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "Natural language description of what data is needed"
+        top_k:
+          type: integer
+          description: "Maximum number of results (default 5)"
+          default: 5
+      required: [query]

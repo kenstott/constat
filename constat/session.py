@@ -17,7 +17,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,12 @@ from constat.storage.history import SessionHistory
 from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
 from constat.storage.registry import ConstatRegistry
 from constat.storage.registry_datastore import RegistryAwareDataStore
-from constat.execution.executor import ExecutionResult, PythonExecutor, format_error_for_retry
+from constat.execution.executor import PythonExecutor, format_error_for_retry
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
 from constat.execution.fact_resolver import (
     FactResolver,
     FactSource,
-    Tier2Strategy,
-    Tier2AssessmentResult,
     format_source_attribution,
 )
 from constat.execution.mode import (
@@ -51,7 +49,7 @@ from constat.execution.mode import (
     ConversationState,
 )
 from constat.execution.intent_classifier import IntentClassifier
-from constat.execution.parallel_scheduler import ParallelStepScheduler, SchedulerConfig, ExecutionContext
+from constat.execution.parallel_scheduler import ExecutionContext
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.providers import TaskRouter
 from constat.catalog.schema_manager import SchemaManager
@@ -63,63 +61,13 @@ from constat.email import create_send_email
 from constat.embedding_loader import EmbeddingModelLoader
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 from constat.visualization import create_viz_helper
-from constat.commands import HELP_COMMANDS, get_help_markdown
+from constat.commands import get_help_markdown
 
 
-# Meta-questions that don't require data queries
-# IMPORTANT: Be specific to avoid matching action requests like "create recommendations"
-META_QUESTION_PATTERNS = [
-    "what questions",
-    "what can you",
-    "help me with",  # More specific - "help me" alone is too broad
-    "capabilities",
-    "what do you know",
-    "describe yourself",
-    "what data",
-    "what databases",
-    "what tables",
-    # Asking FOR recommendations/suggestions (not creating them)
-    # Note: "create recommendations", "generate recommendations" should NOT match
-    "any recommendations",
-    "recommend me",
-    "do you recommend",
-    "what do you suggest",
-    "any suggestions",
-    "what should i",
-    "what could i",
-    "any analyses",
-    "ideas for",
-    "what would you",
-    # Reasoning methodology questions
-    "how do you reason",
-    "how do you think",
-    "how do you work",
-    "reasoning process",
-    "methodology",
-    "how does this work",
-    "how does constat",
-    "how does vera",
-    # Differentiator questions
-    "what makes",
-    "what's different",
-    "unique about",
-    "special about",
-    "why constat",
-    "why use constat",
-    "why vera",
-    # Personal questions about Vera
-    "who are you",
-    "what are you",
-    "your name",
-    "how old are you",
-    "your age",
-    "are you a",
-    "who made you",
-    "who created you",
-    "who built you",
-    "tell me about yourself",
-    "introduce yourself",
-]
+# Meta-question patterns and prompts loaded from external files
+from constat.prompts import load_prompt, load_yaml
+
+META_QUESTION_PATTERNS = load_yaml("meta_question_patterns.yaml")["patterns"]
 
 
 def is_meta_question(query: str) -> bool:
@@ -157,109 +105,8 @@ class QuestionAnalysis:
     mode_reasoning: Optional[str] = None  # Why this mode was recommended
 
 
-# System prompt for step code generation - base version
-# Specialized sections (dashboard, visualization, etc.) are injected conditionally
-# by ConceptDetector based on query semantics
-STEP_SYSTEM_PROMPT = """You are a data analyst executing a step in a multi-step plan.
-
-## Your Task
-Generate Python code to accomplish the current step's goal.
-
-## Code Environment
-Your code has access to:
-- Database connections: `db_<name>` for each configured database
-- `db`: alias for the first database
-- API clients: `api_<name>` for configured APIs (GraphQL and REST)
-- `pd`: pandas (imported as pd)
-- `np`: numpy (imported as np)
-- `store`: a persistent DuckDB datastore for sharing data between steps
-- `llm_ask`: a function to query the LLM for general knowledge (batch calls, never loop)
-- `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
-- `viz`: visualization helper for saving maps and charts to files
-
-## Database Access Patterns
-**SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):
-- Use `pd.read_sql(query, db_<name>)` - NEVER use db.execute()
-- Or use `sql_<name>(query)` helper - returns DataFrame, auto-transpiles PostgreSQL syntax
-- `sql(query)` is alias for first database
-- Write queries in PostgreSQL style - they'll be transpiled to the target dialect
-
-**NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
-- MongoDB: `list(db_<name>['collection'].find(query))` returns list of dicts
-- Elasticsearch: `db_<name>.query('index', query_dict)` returns list of dicts
-- Cassandra: `db_<name>.query('table', {'column': value})` returns list of dicts
-- Convert to DataFrame: `pd.DataFrame(db_<name>['collection'].find(query))`
-
-## API Usage
-- `api_<name>('query { ... }')` for GraphQL - returns data payload directly (no 'data' wrapper)
-- `api_<name>('GET /endpoint', {params})` for REST
-- **Always filter at the source** - use API filters, not Python post-filtering
-
-## State Management
-Share data between steps ONLY via `store`:
-- `store.save_dataframe('name', df, step_number=N)` / `store.load_dataframe('name')`
-- `store.set_state('key', value, step_number=N)` / `store.get_state('key')` (check for None!)
-- `store.query('SELECT ... FROM table')` for SQL on saved data
-
-## Corrections and Updates
-When correcting or updating previous results:
-- **OVERWRITE the original table** with the exact same name - NEVER create "corrected_*", "updated_*", or "*_v2" versions
-- Use `store.save_dataframe('original_name', corrected_df, step_number=N)` to replace the existing table
-- The user wants the canonical result fixed in place, not a separate copy with a different name
-- If fixing "summary_df", save as "summary_df" not "corrected_summary_df" or "summary_df_v2"
-
-## Common Pitfalls
-- Check `if 'col' in df.columns` before accessing columns
-- For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
-- NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
-- In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
-- **Discovery tools NOT available**: `find_relevant_tables()`, `get_table_schema()`, etc. are planning-only. In step code, query tables/collections directly.
-
-## Variable vs Hardcoded Values
-- Relative terms ("today", "last month") → compute dynamically with datetime
-- Explicit values ("January 2006", "above 100") → hardcode
-
-## Code Rules
-1. Use appropriate access pattern for database type (see Database Access Patterns above)
-2. **ALWAYS save results to store** - nothing in local variables persists!
-3. Print a brief summary of what was done (e.g., "Loaded 150 employees")
-
-**CRITICAL for SQL databases**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Use `pd.read_sql(query, db_<name>)` instead.
-
-## Output Guidelines
-- Print brief summaries and key metrics (e.g., "Loaded 150 employees", "Average salary: $85,000")
-- **NEVER print raw DataFrames** - `print(df)`, `print(df.head())` produce unreadable output
-- Tables saved to `store` appear automatically as clickable artifacts - don't dump their contents to stdout
-- For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
-- **Don't label expected fallbacks as errors** - if data isn't in store and you query the database instead, that's normal operation. Say "Querying database..." not "Error: not found in store". Reserve "Error:" for actual failures that prevent the step from completing.
-
-## Output Format
-Return ONLY Python code wrapped in ```python ... ``` markers.
-"""
-
-
-STEP_PROMPT_TEMPLATE = """{system_prompt}
-{injected_sections}
-## Available Databases
-{schema_overview}
-{api_overview}
-## Domain Context
-{domain_context}
-{user_facts}
-{learnings}
-## Intermediate Tables (from previous steps)
-{datastore_tables}
-
-## Previous Context
-{scratchpad}
-
-## Current Step
-Step {step_number} of {total_steps}: {goal}
-
-Expected inputs: {inputs}
-Expected outputs: {outputs}
-
-Generate the Python code to accomplish this step."""
+STEP_SYSTEM_PROMPT = load_prompt("step_system_prompt.md")
+STEP_PROMPT_TEMPLATE = load_prompt("step_prompt_template.md")
 
 
 # Type for approval callback: (request) -> response
@@ -766,6 +613,17 @@ class Session:
             target="step",
         )
 
+        # Build published artifacts context for name reuse
+        published_artifacts_text = ""
+        if self.datastore:
+            existing_artifacts = self.datastore.list_artifacts()
+            named = [a for a in existing_artifacts if a.get("type") not in ("code", "output", "error")]
+            if named:
+                artifact_lines = ["Published artifacts (reuse these names with viz.save_* to update):"]
+                for a in named:
+                    artifact_lines.append(f"  - {a['name']} ({a.get('type', 'unknown')})")
+                published_artifacts_text = "\n".join(artifact_lines)
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
             injected_sections=injected_sections,
@@ -775,6 +633,7 @@ class Session:
             user_facts=ctx["user_facts"],
             learnings=learnings_text,
             datastore_tables=datastore_info,
+            published_artifacts=published_artifacts_text,
             scratchpad=scratchpad_context,
             step_number=step.number,
             total_steps=len(self.plan.steps) if self.plan else 1,
@@ -1223,103 +1082,22 @@ class Session:
         return "\n".join(lines)
 
     def _get_schema_tools(self) -> list[dict]:
-        """Get schema tool definitions."""
-        tools = [
-            {
-                "name": "get_table_schema",
-                "description": "Get detailed schema for a specific table.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "table": {"type": "string", "description": "Table name"}
-                    },
-                    "required": ["table"]
-                }
-            },
-            {
-                "name": "find_relevant_tables",
-                "description": "Search for tables relevant to a query.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query"},
-                        "top_k": {"type": "integer", "default": 5}
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "find_entity",
-                "description": "Find all occurrences of an entity across schema and documents. Returns matching tables, columns, and document excerpts that mention the entity.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Entity name to search for (e.g., 'Customer', 'order_id')"},
-                        "limit": {"type": "integer", "default": 3, "description": "Maximum document excerpts to return"}
-                    },
-                    "required": ["name"]
-                }
-            }
-        ]
+        """Get schema tool definitions loaded from schema_tools.yaml."""
+        import copy
 
-        # Add API schema tools if APIs are configured
+        data = load_yaml("schema_tools.yaml")
+        tools = copy.deepcopy(data["base_tools"])
+
         if self.config.apis:
             api_names = list(self.config.apis.keys())
-            tools.extend([
-                {
-                    "name": "get_api_schema_overview",
-                    "description": f"Get overview of an API's available queries/endpoints. Available APIs: {api_names}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "api_name": {
-                                "type": "string",
-                                "description": "Name of the API to introspect",
-                                "enum": api_names
-                            }
-                        },
-                        "required": ["api_name"]
-                    }
-                },
-                {
-                    "name": "get_api_query_schema",
-                    "description": "Get detailed schema for a specific API query/endpoint, including arguments, filters, and return types.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "api_name": {
-                                "type": "string",
-                                "description": "Name of the API",
-                                "enum": api_names
-                            },
-                            "query_name": {
-                                "type": "string",
-                                "description": "Name of the query or endpoint (e.g., 'countries', 'GET /users')"
-                            }
-                        },
-                        "required": ["api_name", "query_name"]
-                    }
-                },
-                {
-                    "name": "find_relevant_apis",
-                    "description": "Search for API endpoints relevant to a query using semantic similarity. Returns APIs that might have the data you need.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Natural language description of what API data is needed"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "default": 5,
-                                "description": "Maximum number of results"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                }
-            ])
+            api_tools = copy.deepcopy(data["api_tools"])
+            for tool in api_tools:
+                tool["description"] = tool["description"].format(api_names=api_names)
+                for prop in tool["input_schema"]["properties"].values():
+                    if prop.get("type") == "string" and "api_name" in tool["input_schema"].get("required", []):
+                        if "enum" not in prop and prop.get("description", "").startswith("Name of the API"):
+                            prop["enum"] = api_names
+            tools.extend(api_tools)
 
         return tools
 
@@ -1340,27 +1118,9 @@ class Session:
 
         json_key = question.replace(" ", "_").lower()[:30]
 
-        knowledge_prompt = f"""Provide the value for this fact.
-
-FACT: {question}
-
-Respond with ONLY valid JSON in this exact format:
-{{"{json_key}": <value>}}
-
-The value can be:
-- A number (integer or decimal): {{"planets": 8}} or {{"rate": 3.14}}
-- A string: {{"country": "United States"}}
-- An ISO date: {{"founding_date": "1776-07-04"}}
-
-Examples:
-- "planets in solar system" → {{"planets": 8}}
-- "average CEO compensation" → {{"avg_ceo_compensation": 15000000}}
-- "capital of France" → {{"capital": "Paris"}}
-- "US Independence Day" → {{"independence_day": "1776-07-04"}}
-
-For statistics/averages, use typical values. For unknowns, estimate.
-
-YOUR JSON RESPONSE:"""
+        knowledge_prompt = load_prompt("knowledge_prompt.md").format(
+            question=question, json_key=json_key,
+        )
 
         result = self.router.execute(
             task_type=TaskType.SYNTHESIS,
@@ -1753,7 +1513,8 @@ RULES:
             # Build context from dependencies including column names
             scalars = []
             tables = []
-            referenced_tables = []  # Tables that need to be queried from original source
+            referenced_tables = []  # Tables that need to be queried from original database
+            api_sources = []  # Data that needs to be fetched from APIs
             for dep_name in node.dependencies:
                 dep_node = dag.get_node(dep_name)
                 if not dep_node:
@@ -1767,14 +1528,30 @@ RULES:
                 val_lower = val_str.lower()
                 # Check if this is a loaded table (value contains row count)
                 is_loaded_table = "rows" in val_lower or (dep_node.row_count and dep_node.row_count > 1)
-                # Check if this is a referenced table (format: (db.table) X rows)
-                is_referenced = val_str.startswith("(") and ")" in val_str and "." in val_str
+                # Check if this is a referenced database table (format: (db.table) X rows)
+                is_db_referenced = val_str.startswith("(") and ")" in val_str and "." in val_str.split(")")[0]
+                # Check if this is an API-sourced reference (format: (api_name) endpoint_display)
+                is_api_referenced = (
+                    val_str.startswith("(") and ")" in val_str
+                    and "." not in val_str.split(")")[0]
+                ) or (dep_node.source and dep_node.source.startswith("api"))
 
-                if is_loaded_table or is_referenced:
+                if is_loaded_table or is_db_referenced or is_api_referenced:
                     dep_table = dep_name.lower().replace(' ', '_').replace('-', '_')
                     columns_info = ""
 
-                    if is_referenced:
+                    if is_api_referenced and not is_loaded_table:
+                        # API-sourced reference: extract api name
+                        api_match = re.match(r'\((\w+)\)\s*(.*)', val_str)
+                        api_name = None
+                        if api_match:
+                            api_name = api_match.group(1)
+                        elif dep_node.source and ":" in dep_node.source:
+                            api_name = dep_node.source.split(":", 1)[1].strip()
+                        api_sources.append(
+                            f"- {dep_node.fact_id}: fetch from API 'api_{api_name or 'unknown'}' into '{dep_table}'"
+                        )
+                    elif is_db_referenced:
                         # Referenced table: get metadata from original database
                         # Extract table name from the value format (db.table)
                         match = re.match(r'\(([^.]+)\.([^)]+)\)', val_str)
@@ -1830,36 +1607,64 @@ REFERENCED TABLES (query from database with db_query()):
 {chr(10).join(referenced_tables)}
 """
 
+            # Build API sources section for prompt
+            api_sources_section = ""
+            if api_sources:
+                api_sources_section = f"""
+API SOURCES (fetch with api_<name>() functions):
+{chr(10).join(api_sources)}
+"""
+
+            # Build dynamic data source descriptions
+            data_source_apis = []
+            data_source_apis.append("- store.query(sql) -> pd.DataFrame (for datastore tables)")
+            data_source_apis.append("- store.save_dataframe(name, df)")
+
+            # SQL databases
+            from constat.catalog.sql_transpiler import TranspilingConnection
+            if self.schema_manager:
+                for db_name in self.schema_manager.connections.keys():
+                    conn = self.schema_manager.get_connection(db_name)
+                    if isinstance(conn, TranspilingConnection):
+                        data_source_apis.append(f"- pd.read_sql(query, db_{db_name}) -> DataFrame")
+                        data_source_apis.append(f"- sql_{db_name}(query) -> DataFrame (auto-transpiles SQL)")
+                    else:
+                        data_source_apis.append(f"- pd.read_sql(query, db_{db_name}) -> DataFrame")
+                # NoSQL
+                for db_name in self.schema_manager.nosql_connections.keys():
+                    data_source_apis.append(f"- db_{db_name}: NoSQL connector")
+                # File sources
+                for db_name in self.schema_manager.file_connections.keys():
+                    conn = self.schema_manager.file_connections[db_name]
+                    if hasattr(conn, 'path'):
+                        ext = str(conn.path).rsplit('.', 1)[-1].lower() if '.' in str(conn.path) else 'csv'
+                        reader = {'csv': 'read_csv', 'json': 'read_json', 'parquet': 'read_parquet'}.get(ext, 'read_csv')
+                        data_source_apis.append(f"- pd.{reader}(file_{db_name}) -> DataFrame")
+
+            data_source_apis.append("- db_query(sql) -> pd.DataFrame (tries all SQL databases)")
+
+            # APIs
+            all_apis = self.get_all_apis()
+            if all_apis:
+                for api_name, api_config in all_apis.items():
+                    if api_config.type == "graphql":
+                        data_source_apis.append(f"- api_{api_name}('query {{ ... }}') -> data (GraphQL)")
+                    else:
+                        data_source_apis.append(f"- api_{api_name}('GET /endpoint', {{params}}) -> data (REST)")
+
             # Generate inference code
-            inference_prompt = f"""Generate Python code for this inference:
-
-Inference: {inf_id}: {inf_name} = {operation}
-Explanation: {explanation}
-
-SCALAR VALUES:
-{chr(10).join(scalars) if scalars else "(none)"}
-
-TABLES (already in datastore, query with store.query()):
-{chr(10).join(tables) if tables else "(none)"}
-{referenced_section}
-APIs:
-- store.query(sql) -> pd.DataFrame (for datastore tables)
-- db_query(sql) -> pd.DataFrame (for referenced database tables)
-- store.save_dataframe(name, df)
-
-CRITICAL Rules:
-1. PRESERVE ALL ROWS - Do NOT aggregate to a single row unless explicitly asked
-   - For joins: keep all matching rows (use LEFT JOIN to preserve all from left table)
-   - For filters: return all rows that match the condition
-   - WRONG: Getting only the MAX/MIN/first row
-   - RIGHT: Getting all rows that meet criteria
-2. Use `if len(df) > 0:` not `if df:` for DataFrame checks
-3. End with `_result = <value>`
-4. ALWAYS save result: store.save_dataframe('{table_name}', result_df)
-5. For REFERENCED tables, use db_query() to query from database directly
-6. Don't label expected fallbacks as errors - querying the database when data isn't in store is normal. Say "Querying database..." not "Error: not found"
-
-Return ONLY Python code, no markdown."""
+            inference_prompt = load_prompt("inference_prompt.md").format(
+                inf_id=inf_id,
+                inf_name=inf_name,
+                operation=operation,
+                explanation=explanation,
+                scalars="\n".join(scalars) if scalars else "(none)",
+                tables="\n".join(tables) if tables else "(none)",
+                referenced_section=referenced_section,
+                api_sources_section=api_sources_section,
+                data_source_apis="\n".join(data_source_apis),
+                table_name=table_name,
+            )
 
             max_retries = 7
             last_error = None
@@ -1894,20 +1699,30 @@ Return ONLY Python code, no markdown."""
 
                 import io
                 import sys
+                import numpy as np
 
                 # Create db_query function for referenced tables
                 def db_query(sql: str) -> pd.DataFrame:
                     """Query the original database directly (for referenced tables)."""
+                    from constat.catalog.sql_transpiler import TranspilingConnection, read_sql_transpiled
                     for db_name in self.schema_manager.connections.keys():
                         engine = self.schema_manager.get_sql_connection(db_name)
                         try:
+                            if isinstance(engine, TranspilingConnection):
+                                return read_sql_transpiled(sql, engine)
                             return pd.read_sql(sql, engine)
                         except Exception as e:
                             logger.debug(f"db_query failed on {db_name}: {e}")
                             continue
                     raise Exception("No database connection available")
 
-                exec_globals = {"store": self.datastore, "pd": pd, "db_query": db_query}
+                # Build full execution globals (databases, APIs, file sources)
+                exec_globals = self._get_execution_globals()
+                # Override store/pd/np and add db_query convenience wrapper
+                exec_globals["store"] = self.datastore
+                exec_globals["pd"] = pd
+                exec_globals["np"] = np
+                exec_globals["db_query"] = db_query
 
                 # Add resolved values to context
                 for pid, fact in resolved_premises.items():
@@ -3320,100 +3135,12 @@ CRITICAL INTENT RULES (apply in order):
 4. NEW_QUESTION is ONLY for completely unrelated questions about different topics.
    If the message references the previous analysis AT ALL, it is NOT NEW_QUESTION."""
 
-        prompt = f"""Analyze this user question in one pass:
-
-Question: "{problem}"
-{source_context}
-{fact_context}
-{followup_context}
-
-Perform these analyses:
-
-1. FACT EXTRACTION: Extract any facts embedded in the question:
-   - User context/persona (e.g., "my role as CFO" -> user_role: CFO)
-   - Numeric values (e.g., "threshold of $50,000" -> revenue_threshold: 50000)
-   - Preferences/constraints (e.g., "for the US region" -> target_region: US)
-   - Time periods (e.g., "last quarter" -> time_period: last_quarter)
-
-2. QUESTION CLASSIFICATION: Classify the question type:
-   - META_QUESTION: About system capabilities ("what can you do?", "what data is available?")
-   - DATA_ANALYSIS: Requires queries to configured data sources (databases, APIs) or computation
-   - GENERAL_KNOWLEDGE: Can be answered from general LLM knowledge AND no configured data source has this data
-
-   IMPORTANT: Prefer DATA_ANALYSIS if ANY configured source might have relevant data.
-
-3. INTENT DETECTION: Identify ALL user intents in LOGICAL EXECUTION ORDER.
-   A message can have MULTIPLE intents (e.g., "change threshold and redo" = MODIFY_FACT, then REDO).
-
-   IMPORTANT: Order intents by when they should EXECUTE, not by word order in the text:
-   - Temporal words override textual order: "redo AFTER changing threshold" → MODIFY_FACT, REDO
-   - "BEFORE", "FIRST", "THEN", "AFTER" indicate sequence
-   - Priority words like "ALWAYS", "NEVER" push intents to the front
-   - Dependencies matter: if B requires A's result, A comes first
-
-   Possible intents:
-   - REDO: Re-run analysis. Triggered by re-execution language ANYWHERE in message:
-     "redo", "again", "retry", "rerun", "try again", "this time", "instead", etc.
-     Also implicit when user requests changes to a previous analysis.
-   - MODIFY_FACT: Change a LITERAL VALUE ("change age to 50", "use $100k", "set to 10")
-   - STEER_PLAN: Change METHODOLOGY/COMPUTATION ("use average of last 2", "compute X differently",
-     "skip step", "different approach", "don't use that table", "change how X is calculated")
-   - DRILL_DOWN: Explain ("why?", "show details", "break down")
-   - REFINE_SCOPE: Filter ("only California", "exclude X", "just Q4")
-   - CHALLENGE: Verify ("are you sure?", "double check", "confirm")
-   - EXPORT: Save ("export to CSV", "download", "save")
-   - EXTEND: Continue ("what about X?", "also check...")
-   - PROVENANCE: Show proof ("where did that come from?", "audit trail")
-   - CREATE_ARTIFACT: Create output ("create dashboard", "make chart", "generate report")
-   - TRIGGER_ACTION: Execute action ("send email", "notify team")
-   - COMPARE: Compare ("vs", "difference between", "compare to")
-   - PREDICT: Forecast ("what if", "predict", "forecast")
-   - LOOKUP: Simple lookup ("status of", "who owns", "when did")
-   - ALERT: Set monitoring ("alert me when", "notify if")
-   - SUMMARIZE: Condense results ("summarize", "give me the gist", "bottom line")
-   - QUERY: Direct SQL query ("SELECT", "query the table", "run SQL")
-   - RESET: Clear session ("start over", "clear everything", "fresh start")
-   - NEW_QUESTION: A new query (default if nothing else applies)
-
-4. CACHED FACT MATCH: If the question asks about a known fact, provide the answer.
-
-5. EXECUTION MODE: Select the best mode for this request:
-   - EXPLORATORY: Data analysis and creation - user wants to CREATE, ANALYZE, BUILD, or COMPUTE
-     Examples: "Create an analysis...", "Show sales by region", "Build a dashboard"
-   - PROOF: Verification with provenance - user needs PROOF, DEFENSIBLE conclusions, or AUDIT TRAIL
-     Examples: "Prove that X", "Verify compliance", "Run in audit mode", "With full provenance"
-
-   CRITICAL PRIORITY:
-   1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "proof", "with provenance" → PROOF
-   2. EXPLICIT MODE REQUEST: If user says "exploratory mode" → EXPLORATORY
-   3. Otherwise infer from task type
-
-Respond in this exact format:
----
-FACTS:
-(list each as FACT_NAME: VALUE | brief description, or NONE if no facts)
----
-QUESTION_TYPE: META_QUESTION | DATA_ANALYSIS | GENERAL_KNOWLEDGE
----
-INTENTS:
-(list IN ORDER as INTENT_NAME | optional extracted value, e.g., "MODIFY_FACT | threshold=$50k")
----
-FACT_MODIFICATIONS:
-(list as FACT_NAME: NEW_VALUE if user wants to change a fact, or NONE)
----
-SCOPE_REFINEMENTS:
-(list scope filters like "California", "Q4", "active users only", or NONE)
----
-WANTS_BRIEF: YES or NO
-(YES if user wants brief/concise output: "just show me", "quick answer", "bottom line", "tl;dr",
-"no explanation needed", "keep it short", "high-level view", etc. NO otherwise)
----
-EXECUTION_MODE: EXPLORATORY | PROOF
-MODE_REASON: <brief explanation why this mode, max 20 words>
----
-CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
----
-"""
+        prompt = load_prompt("analyze_question.md").format(
+            problem=problem,
+            source_context=source_context,
+            fact_context=fact_context,
+            followup_context=followup_context,
+        )
 
         try:
             result = self.router.execute(
@@ -3648,56 +3375,38 @@ CACHED_ANSWER: <answer if question can be answered from known facts, or NONE>
         """
         ctx = self._build_source_context()
 
-        prompt = f"""Analyze this question for ambiguity. Determine if critical parameters are missing that would significantly change the analysis.
+        # Inject user correction and NL correction learnings so ambiguity detection
+        # respects past corrections (e.g. "use business_rules not compensation_policy")
+        learnings_text = ""
+        if self.learning_store:
+            try:
+                rule_lines = []
+                for category in [LearningCategory.USER_CORRECTION, LearningCategory.NL_CORRECTION]:
+                    rules = self.learning_store.list_rules(
+                        category=category,
+                        min_confidence=0.6,
+                    )
+                    for rule in rules[:3]:
+                        rule_lines.append(f"- {rule['summary']}")
+                if rule_lines:
+                    learnings_text = "\n## Learned Rules (respect these when suggesting options)\n" + "\n".join(rule_lines)
+            except Exception:
+                pass
 
-Question: "{problem}"
-
-Available data sources (databases AND APIs - both are valid data sources):
-{ctx["schema_overview"]}{ctx["api_overview"]}{ctx["doc_overview"]}{ctx["user_facts"]}
-
-IMPORTANT: If an API can provide the data needed for the question, the question is CLEAR.
-For example, if the question asks about countries and a countries API is available, that's sufficient.
-If a user fact provides needed information (like user_email for sending results), USE IT - do not ask again.
-
-ONLY ask about SCOPE and APPROACH - things that affect how to structure the analysis:
-1. Geographic scope (country, region, state, etc.) - unless an API provides this
-2. Time period (date range, year, quarter, etc.)
-3. Quantity limits (top N, threshold values)
-4. Category/segment filters (which products, customer types, etc.)
-5. Comparison basis (compared to what baseline?)
-
-{"NEVER ask for personal VALUES like age, salary, preferences - these will be requested later during fact resolution. The user explicitly referenced 'my age' means they intend to provide it - don't pre-ask." if is_auditable_mode else "For personal values mentioned (like 'my age'), you MAY ask since exploratory mode needs all values upfront."}
-
-If the question is CLEAR ENOUGH to proceed (even with reasonable defaults), respond:
-CLEAR
-
-If critical parameters are missing that would significantly change results, respond:
-AMBIGUOUS
-REASON: <brief explanation of what's unclear>
-QUESTIONS:
-Q1: <specific clarifying question ending with ?>
-SUGGESTIONS: <suggestion1> | <suggestion2> | <suggestion3>
-Q2: <specific clarifying question ending with ?>
-SUGGESTIONS: <suggestion1> | <suggestion2>
-(max 3 questions, 2-4 suggestions per question, each question MUST end with ?)
-
-Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach.
-Do NOT flag as ambiguous if an available API can fulfill the data requirement.
-Do NOT ask about information already provided in Known User Facts.
-
-CRITICAL: Only suggest options that can be answered with the AVAILABLE DATA shown above.
-- Review the schema before suggesting options - don't suggest data that doesn't exist
-- If the user asks about data types not in the schema, clarify what IS available instead
-- Base suggestions on actual tables/columns shown above, not hypothetical data
-- Provide practical suggested answers grounded in the actual available data
-
-DOCUMENT-AWARE SUGGESTIONS:
-- When Reference Documents are available AND relevant to the question, suggest using them
-- If a document contains policies/guidelines that could answer a "what criteria" question,
-  include a suggestion like "Based on [document name]" or "Use guidelines from [document]"
-- Example: If user asks "how should salary increases be calculated" and a business_rules
-  document exists with policies, suggest "Based on performance review guidelines in business_rules"
-- This helps users leverage their internal documents instead of guessing criteria"""
+        personal_values_guidance = (
+            "NEVER ask for personal VALUES like age, salary, preferences - these will be requested later during fact resolution. The user explicitly referenced 'my age' means they intend to provide it - don't pre-ask."
+            if is_auditable_mode else
+            "For personal values mentioned (like 'my age'), you MAY ask since exploratory mode needs all values upfront."
+        )
+        prompt = load_prompt("detect_ambiguity.md").format(
+            problem=problem,
+            schema_overview=ctx["schema_overview"],
+            api_overview=ctx["api_overview"],
+            doc_overview=ctx["doc_overview"],
+            user_facts=ctx["user_facts"],
+            learnings_text=learnings_text,
+            personal_values_guidance=personal_values_guidance,
+        )
 
         try:
             result = self.router.execute(
@@ -3915,68 +3624,7 @@ Examples:
 
     def _explain_differentiators(self) -> dict:
         """Explain what makes Constat different from other AI tools."""
-        explanation = """**What Makes Constat Different**
-
-Constat is designed for serious data analysis where accuracy, transparency, and collaboration matter.
-
-**1. Universal Data Connectivity**
-
-Connect almost any data source as a fact source:
-- **Databases**: PostgreSQL, MySQL, SQLite, DuckDB, and more
-- **Structured files**: CSV, Excel, Parquet, JSON
-- **Documents**: PDF, Word, PowerPoint for context
-- **APIs**: REST endpoints for live data
-
-All sources become queryable facts that ground your analysis.
-
-**2. Parallel Execution**
-
-Plans are directed acyclic graphs (DAGs), not linear scripts:
-- Independent steps execute in parallel automatically
-- Complex analyses complete faster
-- Dependencies are tracked and respected
-
-**3. Reproducibility**
-
-Plans are deterministic code, not chat transcripts:
-- Save any analysis as a replayable plan
-- Re-run against current data to see how results change
-- Version control your analytical workflows
-
-**4. Intelligent Caching**
-
-Extensive caching minimizes costs and latency:
-- Facts are cached and reused across steps
-- Database query results are stored
-- LLM calls are minimized through smart planning
-
-**5. Collaboration**
-
-Share your work with others:
-- Share plans with specific users or make them public
-- Resume sessions from where you left off
-- Teams can build on each other's analyses
-
-**6. Auditable Reasoning**
-
-Formal verification for high-stakes decisions:
-- Claims are recursively decomposed until grounded in verifiable facts
-- Full audit trail for compliance and review
-- Ask "How do you reason about problems?" for details
-
-**7. Breadth of Data**
-
-Handle large data estates without upfront metadata loading:
-- Progressive discovery drills into metadata only when needed for a specific question
-- Connect hundreds of tables without overwhelming context
-- Metadata is fetched on-demand, not preloaded
-
-**8. Extensible Skills**
-
-Extend reasoning capabilities using the familiar Skills pattern:
-- Add custom skills for domain-specific analyses
-- Reuse existing AI agent skills you've already built
-- Skills plug into the fact-gathering and reasoning pipeline"""
+        explanation = load_prompt("explain_differentiators.md")
 
         return {
             "success": True,
@@ -3991,53 +3639,7 @@ Extend reasoning capabilities using the familiar Skills pattern:
 
     def _explain_reasoning_methodology(self) -> dict:
         """Explain Constat's reasoning methodology."""
-        explanation = """**How Constat Reasons About Problems**
-
-Constat offers two complementary reasoning modes that make AI analysis transparent, verifiable, and trustworthy.
-
-**Exploratory Mode** (Default)
-
-For open-ended questions and discovery:
-- Breaks your question into analytical steps
-- Each step can gather facts from multiple sources:
-  - **Database queries** - retrieve and transform data
-  - **User input** - ask for clarification or missing information
-  - **LLM knowledge** - apply domain expertise and reasoning
-  - **Derivation** - calculate, analyze, or infer from existing facts
-- Creates intermediate result tables you can inspect
-- Suggests follow-up analyses based on findings
-
-Best for: "What drives revenue?", "Show me trends", "Help me understand..."
-
-**Audited Mode**
-
-For formal verification using an inverted proof structure:
-- Your question becomes a hypothesis to prove or disprove
-- Works backwards: recursively decomposes claims until grounded in verifiable facts
-- Each step must produce evidence supporting or refuting the claim
-- Domain rules and constraints are strictly enforced
-- Results include confidence levels and caveats
-- Full audit trail for compliance and review
-
-Best for: "Verify that...", "Prove whether...", "Is it true that..."
-
-**Why This Matters**
-
-- **Transparency**: Every step is visible - see exactly how conclusions are reached
-- **Auditability**: Data-backed claims can be verified against source queries
-- **Correctness**: Domain rules (like "only count delivered orders as revenue") are enforced
-- **Reproducibility**: The same question produces consistent, explainable results
-
-**In Practice**
-
-When you ask a question, Constat:
-1. Plans a series of analytical steps
-2. Executes each step - querying data, asking you, or reasoning
-3. Shows intermediate results and tables
-4. Synthesizes findings into a direct answer
-5. Suggests follow-up analyses
-
-Unlike pure LLMs that may hallucinate, Constat grounds all claims in actual data while using AI for reasoning and synthesis."""
+        explanation = load_prompt("explain_reasoning_methodology.md")
 
         return {
             "success": True,
@@ -4052,37 +3654,7 @@ Unlike pure LLMs that may hallucinate, Constat grounds all claims in actual data
 
     def _answer_personal_question(self) -> dict:
         """Answer personal questions about Vera."""
-        explanation = """**About Me**
-
-Hi! I'm **Vera**, and my name means "truth" in Latin and several other languages. It reflects my core commitment: to be truthful, transparent, and grounded in evidence.
-
-**What I Am**
-
-I'm an AI data analyst powered by **Constat**, a multi-step reasoning engine. I help you explore and understand your data by:
-- Breaking complex questions into clear, logical steps
-- Querying your databases and APIs to gather facts
-- Showing my reasoning so you can verify my conclusions
-- Creating visualizations and reports
-
-**My Philosophy**
-
-I make every effort to:
-- **Tell the truth** — I won't make up data or hallucinate facts
-- **Show my work** — Every conclusion is backed by visible steps and queries
-- **Admit uncertainty** — If I'm not sure, I'll say so
-- **Stay grounded** — My answers come from your actual data, not guesses
-
-**Who Created Me**
-
-I was built by the Constat team to be a trustworthy assistant for data analysis. My reasoning engine is open source.
-
-**Age and Gender**
-
-As an AI, I don't have an age or gender in the human sense. I exist to help you find truth in your data — that's what defines me.
-
-**What Makes Me Different**
-
-Unlike chat-based AI tools, I don't just generate text — I execute real queries against your data, build reproducible analysis plans, and show you exactly how I arrived at each conclusion. You can verify everything I tell you."""
+        explanation = load_prompt("answer_personal_question.md")
 
         return {
             "success": True,
@@ -4296,33 +3868,10 @@ Reference tables with backticks: `table_name`"""
         Returns:
             List of extracted Fact objects
         """
-        prompt = f"""Extract key facts/metrics from this analysis response that would be useful to remember.
-
-Question asked: {problem}
-
-Response:
-{answer}
-
-Extract facts like:
-- Numeric results (e.g., "total revenue was $2.4M" -> total_revenue: 2400000)
-- Counts (e.g., "found 150 customers" -> customer_count: 150)
-- Percentages (e.g., "growth rate of 15%" -> growth_rate: 0.15)
-- Key findings (e.g., "top product is Widget Pro" -> top_product: Widget Pro)
-- Time periods analyzed (e.g., "for Q4 2024" -> analysis_period: Q4 2024)
-
-Only extract concrete, specific values. Skip vague or uncertain statements.
-
-Format each fact as:
-FACT_NAME: value | brief description
----
-
-Example:
-total_revenue: 2400000 | Sum of all order amounts in the period
-customer_count: 150 | Number of unique customers who made purchases
-growth_rate: 0.15 | Year-over-year revenue growth percentage
----
-
-If no concrete facts to extract, respond with: NO_FACTS"""
+        prompt = load_prompt("extract_facts_from_response.md").format(
+            problem=problem,
+            answer=answer,
+        )
 
         try:
             result = self.router.execute(
@@ -8305,18 +7854,20 @@ Prove all of the above claims and provide a complete audit trail."""
                     )
                     logger.info(f"[prove_conversation] summarize_proof returned success={summary_result.success}, has_summary={bool(summary_result.summary)}, error={summary_result.error}")
                     if summary_result.success and summary_result.summary:
-                        # Save as artifact
+                        # Save as artifact (optional - don't fail if this fails)
                         if self.datastore:
-                            self.datastore.add_artifact(
-                                step_number=0,
-                                attempt=1,
-                                artifact_type="markdown",
-                                content=f"# Proof Summary\n\n{summary_result.summary}",
-                                name="proof_summary",
-                                title="Proof Summary",
-                                is_key_result=True,
-                            )
-                        # Emit event that summary is ready
+                            try:
+                                self.datastore.add_artifact(
+                                    step_number=0,
+                                    attempt=1,
+                                    artifact_type="markdown",
+                                    content=f"# Proof Summary\n\n{summary_result.summary}",
+                                    name="proof_summary",
+                                    title="Proof Summary",
+                                )
+                            except Exception as ae:
+                                logger.warning(f"[prove_conversation] Failed to save summary artifact: {ae}")
+                        # Emit event that summary is ready (always emit if summary generated)
                         self._emit_event(StepEvent(
                             event_type="proof_summary_ready",
                             step_number=0,
@@ -9320,7 +8871,6 @@ Prove all of the above claims and provide a complete audit trail."""
         Returns:
             Role name if matched, None if no match (use shared context)
         """
-        from constat.core.role_matcher import RoleMatch
 
         match = self.role_matcher.match(query)
         if match:

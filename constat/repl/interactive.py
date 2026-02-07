@@ -9,8 +9,14 @@
 
 """Interactive REPL for refinement loop."""
 
+from pathlib import Path
 from typing import Optional
 
+# prompt_toolkit for input with status bar at bottom and auto-completion
+from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style as PTStyle
 # Rich for output (tables, panels, syntax highlighting)
 from rich.console import Console
 from rich.panel import Panel
@@ -18,145 +24,17 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
-# prompt_toolkit for input with status bar at bottom and auto-completion
-from prompt_toolkit import prompt as pt_prompt
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.styles import Style as PTStyle
-from prompt_toolkit.completion import WordCompleter, FuzzyWordCompleter
-
-import os
-import re
-import random
-import sys
-from pathlib import Path
-from constat.session import Session, SessionConfig
-from constat.execution.mode import Mode, Phase
+from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
+from constat.execution.mode import Mode
 from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler
-from constat.visualization.output import clear_pending_outputs, get_pending_outputs
+from constat.session import Session, SessionConfig
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
-from constat.api.impl import ConstatAPIImpl
-from constat.api.types import DisplayOverrides, CorrectionDetection
+from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 
-
-# =============================================================================
-# VERA'S PERSONALITY ADJECTIVES
-# Two adjectives are randomly combined on each REPL start:
-#   - RELIABLE: dependable, trustworthy, consistent
-#   - HONEST: truthful, candid, transparent
-# =============================================================================
-
-RELIABLE_ADJECTIVES = [
-    # Classic/Formal
-    "dependable", "reliable", "trustworthy", "steadfast", "unwavering",
-    "consistent", "solid", "stable", "faithful", "devoted", "dedicated",
-    "committed", "resolute", "determined", "tenacious", "persistent",
-    "unfailing", "infallible", "unshakeable", "unflappable", "imperturbable",
-    "meticulous", "rigorous", "thorough", "diligent", "assiduous",
-    "conscientious", "scrupulous", "painstaking", "exacting", "precise",
-
-    # Compound - Material/Strength
-    "rock-solid", "iron-willed", "steel-nerved", "granite-steady",
-    "diamond-hard", "titanium-tough", "carbon-fiber-strong", "kevlar-wrapped",
-    "adamantium-grade", "mithril-forged", "vibranium-infused", "oak-sturdy",
-    "mountain-firm", "bedrock-stable", "concrete-reliable", "cast-iron",
-
-    # Compound - Battle/Test
-    "battle-tested", "combat-proven", "field-hardened", "war-room-ready",
-    "stress-tested", "pressure-forged", "trial-by-fire-certified",
-    "audit-surviving", "edge-case-hardened", "chaos-tested", "murphy-proof",
-
-    # Compound - Technical
-    "bulletproof", "bomb-proof", "crash-proof", "glitch-immune",
-    "bug-resistant", "error-allergic", "fault-tolerant", "redundancy-backed",
-    "failsafe-equipped", "backup-ready", "disaster-proof", "apocalypse-ready",
-    "enterprise-grade", "production-hardened", "mission-critical-certified",
-
-    # Compound - Precision
-    "laser-focused", "sniper-accurate", "surgeon-precise", "watchmaker-careful",
-    "Swiss-watch-precise", "atomic-clock-accurate", "GPS-level-precise",
-    "micrometer-exact", "pixel-perfect", "decimal-place-obsessed",
-
-    # Compound - Nature/Elements
-    "lighthouse-steady", "compass-true", "anchor-stable", "north-star-guided",
-    "old-growth-rooted", "deep-ocean-calm", "glacier-patient", "volcano-powered",
-
-    # Compound - Professional
-    "boardroom-ready", "CFO-approved", "auditor-friendly", "regulator-compliant",
-    "due-diligence-passing", "SOC2-certified", "bank-vault-secure",
-
-    # Compound - Quirky/Fun
-    "caffeine-powered", "deadline-crushing", "crunch-time-clutch",
-    "Monday-morning-functional", "3am-deployment-ready", "demo-day-dependable",
-    "investor-meeting-ready", "client-facing-polished", "stakeholder-approved",
-
-    # Compound - Hyperbolic
-    "absolutely-unbreakable", "categorically-dependable", "pathologically-reliable",
-    "obsessively-consistent", "fanatically-thorough", "religiously-accurate",
-    "compulsively-precise", "neurotically-careful", "almost-paranoid-level-prepared",
-]
-
-HONEST_ADJECTIVES = [
-    # Classic/Formal
-    "honest", "truthful", "candid", "forthright", "sincere", "genuine",
-    "authentic", "transparent", "frank", "direct", "straightforward",
-    "plain-spoken", "outspoken", "blunt", "unvarnished", "unfiltered",
-    "unembellished", "unadulterated", "undisguised", "unconcealed",
-    "open", "aboveboard", "upfront", "level", "square", "veracious",
-    "principled", "ethical", "honorable", "credible", "earnest",
-
-    # Compound - Communication Style
-    "straight-shooting", "straight-talking", "plain-talking", "truth-telling",
-    "fact-stating", "no-nonsense", "no-spin", "no-fluff", "no-BS",
-    "cards-on-the-table", "what-you-see-is-what-you-get", "tell-it-like-it-is",
-    "cut-to-the-chase", "bottom-line-first", "TL;DR-ready",
-
-    # Compound - Filter/Spin Free
-    "filter-free", "spin-free", "BS-free", "hype-free", "buzzword-free",
-    "jargon-allergic", "corporate-speak-averse", "marketing-immune",
-    "spin-doctor-proof", "PR-resistant", "agenda-free", "bias-aware",
-
-    # Compound - Intensity
-    "radically-transparent", "aggressively-honest", "militantly-clear",
-    "ruthlessly-honest", "brutally-frank", "savagely-direct",
-    "unapologetically-blunt", "fearlessly-candid", "boldly-truthful",
-    "refreshingly-blunt", "disarmingly-direct", "surprisingly-forthright",
-
-    # Compound - Pathological
-    "pathologically-truthful", "compulsively-honest", "constitutionally-incapable-of-lying",
-    "genetically-transparent", "allergic-to-BS", "physically-unable-to-spin",
-    "truth-addicted", "fact-obsessed", "accuracy-compelled", "honesty-hardwired",
-
-    # Compound - Clarity
-    "crystal-clear", "glass-transparent", "window-clean", "see-through-honest",
-    "HDTV-clear", "4K-transparent", "fiber-optic-direct", "zero-latency-honest",
-
-    # Compound - Professional
-    "audit-trail-friendly", "compliance-ready", "disclosure-complete",
-    "footnote-thorough", "caveat-including", "asterisk-acknowledging",
-    "fine-print-reading", "terms-and-conditions-honoring", "due-diligence-level",
-
-    # Compound - Quirky/Fun
-    "pinky-swear-honest", "scout's-honor-truthful", "cross-my-heart-sincere",
-    "lie-detector-passing", "Pinocchio-nose-free", "truth-serum-unnecessary",
-    "polygraph-ready", "under-oath-comfortable", "deposition-proof",
-
-    # Compound - Data/Analysis
-    "data-driven-honest", "evidence-backed", "source-citing", "receipt-keeping",
-    "methodology-explaining", "assumption-stating", "uncertainty-acknowledging",
-    "confidence-interval-providing", "margin-of-error-disclosing", "p-value-reporting",
-
-    # Compound - Limitations
-    "limitation-admitting", "blind-spot-acknowledging", "mistake-owning",
-    "correction-issuing", "update-providing", "wrong-admitting",
-    "I-don't-know-saying", "uncertainty-embracing", "humility-having",
-]
-
-
-def get_vera_adjectives() -> tuple[str, str]:
-    """Return a random pair of (reliable, honest) adjectives for Vera's intro."""
-    return (random.choice(RELIABLE_ADJECTIVES), random.choice(HONEST_ADJECTIVES))
+# Vera's personality - imported from shared source
+from constat.messages import RELIABLE_ADJECTIVES, HONEST_ADJECTIVES, get_vera_adjectives
 
 
 # Commands available in the REPL

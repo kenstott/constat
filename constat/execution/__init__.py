@@ -9,28 +9,15 @@
 
 """Planning and code execution."""
 
+from constat.prompts import load_prompt
+
 # Shared retry prompt template for code generation failures
-RETRY_PROMPT_TEMPLATE = """Your previous code failed to execute.
-
-{error_details}
-
-Previous code:
-```python
-{previous_code}
-```
-
-Please fix the code and try again. Return ONLY the corrected Python code wrapped in ```python ... ``` markers."""
+RETRY_PROMPT_TEMPLATE = load_prompt("retry.md")
 
 
-from .planner import Planner
-from .executor import ExecutionResult, PythonExecutor
 from .engine import QueryEngine
-from .scratchpad import Scratchpad
+from .executor import ExecutionResult, PythonExecutor
 from .fact_resolver import Fact, FactSource, FactResolver, ResolutionStrategy
-from .mode import (
-    Mode,
-    ExecutionConfig,
-)
 from .intent import (
     FollowUpIntent,
     DetectedIntent,
@@ -42,6 +29,12 @@ from .intent import (
     ORDER_CONFIRMATION_THRESHOLD,
     from_analysis as intent_from_analysis,
 )
+from .mode import (
+    Mode,
+    ExecutionConfig,
+)
+from .planner import Planner
+from .scratchpad import Scratchpad
 
 __all__ = [
     # Shared constants

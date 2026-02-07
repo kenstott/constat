@@ -18,25 +18,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from constat.prompts import load_yaml
 
-# Vera's personality adjectives
-RELIABLE_ADJECTIVES = [
-    "dependable", "reliable", "trustworthy", "steadfast", "unwavering",
-    "rock-solid", "battle-tested", "bulletproof", "laser-focused",
-]
-
-HONEST_ADJECTIVES = [
-    "honest", "truthful", "candid", "forthright", "sincere",
-    "straight-shooting", "no-nonsense", "radically-transparent",
-]
-
-# Starter suggestions for new sessions
-STARTER_SUGGESTIONS = [
-    "What data is available?",
-    "What can you help me with?",
-    "How do you reason about problems?",
-    "What makes you different, Vera?",
-]
+# Vera's personality loaded from YAML (single source of truth)
+_personality = load_yaml("vera_personality.yaml")
+RELIABLE_ADJECTIVES = _personality["reliable_adjectives"]
+HONEST_ADJECTIVES = _personality["honest_adjectives"]
+STARTER_SUGGESTIONS = _personality["starter_suggestions"]
 
 
 def get_vera_adjectives() -> tuple[str, str]:

@@ -1,0 +1,60 @@
+# Meta-questions that don't require data queries
+# IMPORTANT: Be specific to avoid matching action requests like "create recommendations"
+#
+# All patterns are matched as case-insensitive substrings against the user query.
+
+patterns:
+  - "what questions"
+  - "what can you"
+  - "help me with"  # More specific - "help me" alone is too broad
+  - "capabilities"
+  - "what do you know"
+  - "describe yourself"
+  - "what data"
+  - "what databases"
+  - "what tables"
+
+  # Asking FOR recommendations/suggestions (not creating them)
+  # Note: "create recommendations", "generate recommendations" should NOT match
+  - "any recommendations"
+  - "recommend me"
+  - "do you recommend"
+  - "what do you suggest"
+  - "any suggestions"
+  - "what should i"
+  - "what could i"
+  - "any analyses"
+  - "ideas for"
+  - "what would you"
+
+  # Reasoning methodology questions
+  - "how do you reason"
+  - "how do you think"
+  - "how do you work"
+  - "reasoning process"
+  - "methodology"
+  - "how does this work"
+  - "how does constat"
+  - "how does vera"
+
+  # Differentiator questions
+  - "what makes"
+  - "what's different"
+  - "unique about"
+  - "special about"
+  - "why constat"
+  - "why use constat"
+  - "why vera"
+
+  # Personal questions about Vera
+  - "who are you"
+  - "what are you"
+  - "your name"
+  - "how old are you"
+  - "your age"
+  - "are you a"
+  - "who made you"
+  - "who created you"
+  - "who built you"
+  - "tell me about yourself"
+  - "introduce yourself"

@@ -1,0 +1,80 @@
+# Schema tool definitions for planning-phase discovery.
+# API tools are appended dynamically when APIs are configured.
+
+base_tools:
+  - name: get_table_schema
+    description: "Get detailed schema for a specific table."
+    input_schema:
+      type: object
+      properties:
+        table:
+          type: string
+          description: "Table name"
+      required: [table]
+
+  - name: find_relevant_tables
+    description: "Search for tables relevant to a query."
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "Search query"
+        top_k:
+          type: integer
+          default: 5
+      required: [query]
+
+  - name: find_entity
+    description: "Find all occurrences of an entity across schema and documents. Returns matching tables, columns, and document excerpts that mention the entity."
+    input_schema:
+      type: object
+      properties:
+        name:
+          type: string
+          description: "Entity name to search for (e.g., 'Customer', 'order_id')"
+        limit:
+          type: integer
+          default: 3
+          description: "Maximum document excerpts to return"
+      required: [name]
+
+# These tools are added when APIs are configured.
+# {api_names} is injected at runtime into description and enum fields.
+api_tools:
+  - name: get_api_schema_overview
+    description: "Get overview of an API's available queries/endpoints. Available APIs: {api_names}"
+    input_schema:
+      type: object
+      properties:
+        api_name:
+          type: string
+          description: "Name of the API to introspect"
+      required: [api_name]
+
+  - name: get_api_query_schema
+    description: "Get detailed schema for a specific API query/endpoint, including arguments, filters, and return types."
+    input_schema:
+      type: object
+      properties:
+        api_name:
+          type: string
+          description: "Name of the API"
+        query_name:
+          type: string
+          description: "Name of the query or endpoint (e.g., 'countries', 'GET /users')"
+      required: [api_name, query_name]
+
+  - name: find_relevant_apis
+    description: "Search for API endpoints relevant to a query using semantic similarity. Returns APIs that might have the data you need."
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "Natural language description of what API data is needed"
+        limit:
+          type: integer
+          default: 5
+          description: "Maximum number of results"
+      required: [query]

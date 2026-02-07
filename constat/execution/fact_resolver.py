@@ -40,9 +40,9 @@ import logging
 import random
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Optional, Union
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -646,58 +646,9 @@ class Tier2AssessmentResult:
     question: Optional[str] = None
 
 
-# Tier 2 Assessment Prompt Template
-TIER2_ASSESSMENT_PROMPT = """
-Tier 1 resolution failed for: {fact_name}
-Description: {fact_description}
+from constat.prompts import load_prompt
 
-Resolved premises in current plan:
-{resolved_premises}
-
-Pending premises in current plan:
-{pending_premises}
-
-Available data sources (already searched, fact not found directly):
-{available_sources}
-
-Assess the best resolution strategy:
-
-STRATEGY: DERIVABLE | KNOWN | USER_REQUIRED
-
-CRITICAL: DERIVABLE requires a plan with 2+ DISTINCT inputs being composed.
-- Valid: "X = A / B" (two inputs composed with formula)
-- Valid: "X = filter(A, condition from B)" (two inputs)
-- INVALID: "try looking up synonym Y instead" (single lookup, REJECTED)
-- INVALID: "search for alternative_name" (synonym hunting, REJECTED)
-
-If you cannot devise a formula with 2+ distinct inputs, do NOT use DERIVABLE.
-
-CONFIDENCE: 0.0-1.0
-REASONING: <brief explanation of why this strategy>
-
-If DERIVABLE:
-  FORMULA: <computation formula, must reference 2+ inputs>
-  INPUTS: <list of (input_name, source) tuples, e.g., [("salaries", "premise:P1"), ("industry_avg", "llm_knowledge")]>
-
-If KNOWN:
-  VALUE: <the answer - only use for general/industry knowledge you're confident about>
-  CAVEAT: <any limitations or uncertainty>
-
-If USER_REQUIRED:
-  QUESTION: <clear question to ask the user>
-
-Respond in valid JSON format:
-{{
-  "strategy": "DERIVABLE" | "KNOWN" | "USER_REQUIRED",
-  "confidence": 0.0-1.0,
-  "reasoning": "...",
-  "formula": "..." or null,
-  "inputs": [["name", "source"], ...] or null,
-  "value": ... or null,
-  "caveat": "..." or null,
-  "question": "..." or null
-}}
-"""
+TIER2_ASSESSMENT_PROMPT = load_prompt("tier2_assessment.md")
 
 
 # Thresholds for storing arrays as tables (to avoid context bloat)
@@ -1140,7 +1091,7 @@ class FactResolver:
             response = self.llm.generate(
                 system="You assess fact resolution strategies. Respond only with valid JSON.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             # Parse JSON response
@@ -1329,7 +1280,6 @@ class FactResolver:
             Fact with value, confidence, and provenance
         """
         import logging
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         logger = logging.getLogger(__name__)
 
         # Use tiered resolution if enabled
@@ -1773,7 +1723,7 @@ Respond with ONLY the JSON object, no explanation."""
             response = self.llm.generate(
                 system="You are a data resolution expert. Generate resolution specs in JSON format.",
                 user_message=prompt,
-                max_tokens=800,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             # Clean up response
@@ -1974,7 +1924,7 @@ Respond with ONLY the JSON object, no explanation."""
             if len(result_df) == 1 and len(result_df.columns) == 1:
                 value = result_df.iloc[0, 0]
             else:
-                value = result_df.to_dict('records')
+                value = result_df.to_dict(orient='records')
 
             fact = Fact(
                 name=cache_key,
@@ -2372,7 +2322,7 @@ NOT_POSSIBLE: <reason>
             response = self.llm.generate(
                 system="You are an API expert. Determine which API can provide the requested data and how to query it.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             if "NOT_POSSIBLE" in response:
@@ -2786,7 +2736,7 @@ If this fact cannot be DIRECTLY resolved from the available sources, respond wit
                 response = self.llm.generate(
                     system="You are a Python data expert. Generate code to extract facts from data sources.",
                     user_message=prompt,
-                    max_tokens=2000,
+                    max_tokens=self.llm.max_output_tokens,
                 )
             else:
                 # Retry with error context
@@ -2806,7 +2756,7 @@ Original request:
                 response = self.llm.generate(
                     system="You are a Python data expert. Generate code to extract facts from data sources.",
                     user_message=retry_prompt,
-                    max_tokens=2000,
+                    max_tokens=self.llm.max_output_tokens,
                 )
 
             logger.debug(f"DB: LLM response (first 300 chars): {response[:300]}...")
@@ -2874,7 +2824,7 @@ Original request:
                     if len(value) == 1 and len(value.columns) == 1:
                         value = value.iloc[0, 0]
                     else:
-                        value = value.to_dict('records')
+                        value = value.to_dict(orient='records')
 
                 # Check if should store as table
                 if isinstance(value, list) and self._datastore and self._should_store_as_table(value):
@@ -3011,7 +2961,7 @@ NOT_FOUND
             response = self.llm.generate(
                 system="You extract facts and policies from documents. Return content in its natural format.",
                 user_message=prompt,
-                max_tokens=800,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             logger.debug(f"DOC: LLM response: {response[:300]}...")
@@ -3119,7 +3069,7 @@ UNKNOWN
             response = self.llm.generate(
                 system="You are a knowledgeable assistant. Provide facts you're confident about.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             if "UNKNOWN" in response:
@@ -3264,7 +3214,7 @@ Remember: 2+ DISTINCT inputs with a FORMULA, or return None if not derivable.
                     response = self.llm.generate(
                         system="You are a Python expert. Generate fact derivation functions. Keep code simple and complete.",
                         user_message=prompt,
-                        max_tokens=800,
+                        max_tokens=self.llm.max_output_tokens,
                     )
                 else:
                     # Retry with error context
@@ -3284,7 +3234,7 @@ Original request:
                     response = self.llm.generate(
                         system="You are a Python expert. Generate fact derivation functions. Keep code simple and complete.",
                         user_message=retry_prompt,
-                        max_tokens=800,
+                        max_tokens=self.llm.max_output_tokens,
                     )
 
                 # Extract code
@@ -3486,7 +3436,7 @@ REASONING: User is focused on US region analysis
             response = self.llm.generate(
                 system="You are a fact extraction assistant. Extract structured facts from natural language.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             if "NO_FACTS" in response:
@@ -3741,7 +3691,7 @@ Use uppercase for Variables that need binding, lowercase for constants.
         response = self.llm.generate(
             system="You decompose questions into Prolog-style goals and rules.",
             user_message=decompose_prompt,
-            max_tokens=800,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Parse the response
@@ -4083,7 +4033,7 @@ VARIABLES:
         template_response = self.llm.generate(
             system="You create answer templates with variables. Be thorough - include ALL variables needed.",
             user_message=template_prompt,
-            max_tokens=800,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Parse template and variables
@@ -4129,7 +4079,7 @@ Example:
         dep_response = self.llm.generate(
             system="You analyze variable dependencies.",
             user_message=dependency_prompt,
-            max_tokens=400,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Parse dependencies
@@ -4336,7 +4286,7 @@ Be specific and exhaustive - list ALL facts needed to verify the claim."""
         decompose_text = self.llm.generate(
             system="You are analyzing verification requests to identify required facts.",
             user_message=decompose_prompt,
-            max_tokens=1000,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Parse required facts
@@ -4463,7 +4413,7 @@ CAVEATS: <any limitations or caveats>"""
         synthesis_text = self.llm.generate(
             system="You are synthesizing verification results from resolved facts.",
             user_message=synthesis_prompt,
-            max_tokens=1500,
+            max_tokens=self.llm.max_output_tokens,
         )
 
         # Parse the synthesis
@@ -5033,7 +4983,7 @@ NOT_POSSIBLE: <reason>
             response = await self._call_llm_with_rate_limit(
                 system="You are a SQL expert. Generate precise queries to resolve facts.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             if "NOT_POSSIBLE" in response:
@@ -5139,7 +5089,7 @@ UNKNOWN
             response = await self._call_llm_with_rate_limit(
                 system="You are a knowledgeable assistant. Provide facts you're confident about.",
                 user_message=prompt,
-                max_tokens=300,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             if "UNKNOWN" in response:
@@ -5231,7 +5181,7 @@ Generate the derivation function for {fact_name}:
             response = await self._call_llm_with_rate_limit(
                 system="You are a Python expert. Generate fact derivation functions.",
                 user_message=prompt,
-                max_tokens=500,
+                max_tokens=self.llm.max_output_tokens,
             )
 
             code = response

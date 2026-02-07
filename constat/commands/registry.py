@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Callable, Optional, TYPE_CHECKING
 
 from constat.commands.base import CommandContext, CommandResult, ErrorResult
+from constat.prompts import load_yaml
 
 if TYPE_CHECKING:
     from constat.session import Session
@@ -59,54 +60,57 @@ from constat.commands.sources import (
 )
 
 
+# Command descriptions loaded from YAML for i18n support
+_cmd_desc = load_yaml("help_strings.yaml")["command_descriptions"]
+
 # Command registry: maps command name(s) to handler
 # Each entry: (aliases, handler, description)
 COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult], str]] = [
     # Help
-    (("/help", "/h"), help_command, "Show help information"),
+    (("/help", "/h"), help_command, _cmd_desc["help"]),
     # Data exploration
-    (("/tables",), tables_command, "List available tables"),
-    (("/show",), show_command, "Show table contents"),
-    (("/query",), query_command, "Run SQL query"),
-    (("/code",), code_command, "Show generated code"),
-    (("/artifacts",), artifacts_command, "List artifacts"),
-    (("/export",), export_command, "Export table to file"),
-    (("/download-code",), download_code_command, "Download code as Python script"),
+    (("/tables",), tables_command, _cmd_desc["tables"]),
+    (("/show",), show_command, _cmd_desc["show"]),
+    (("/query",), query_command, _cmd_desc["query"]),
+    (("/code",), code_command, _cmd_desc["code"]),
+    (("/artifacts",), artifacts_command, _cmd_desc["artifacts"]),
+    (("/export",), export_command, _cmd_desc["export"]),
+    (("/download-code",), download_code_command, _cmd_desc["download-code"]),
     # Session management
-    (("/state", "/status"), state_command, "Show session state"),
-    (("/reset",), reset_command, "Reset session"),
-    (("/facts",), facts_command, "Show cached facts"),
-    (("/context",), context_command, "Show context usage"),
-    (("/preferences",), preferences_command, "Show preferences"),
+    (("/state", "/status"), state_command, _cmd_desc["state"]),
+    (("/reset",), reset_command, _cmd_desc["reset"]),
+    (("/facts",), facts_command, _cmd_desc["facts"]),
+    (("/context",), context_command, _cmd_desc["context"]),
+    (("/preferences",), preferences_command, _cmd_desc["preferences"]),
     # Data sources
-    (("/databases",), databases_command, "List databases"),
-    (("/apis",), apis_command, "List APIs"),
-    (("/documents", "/docs"), documents_command, "List documents"),
-    (("/files",), files_command, "List data files"),
-    (("/discover",), discover_command, "Semantic search across all data sources"),
+    (("/databases",), databases_command, _cmd_desc["databases"]),
+    (("/apis",), apis_command, _cmd_desc["apis"]),
+    (("/documents", "/docs"), documents_command, _cmd_desc["documents"]),
+    (("/files",), files_command, _cmd_desc["files"]),
+    (("/discover",), discover_command, _cmd_desc["discover"]),
     # Learnings & Rules
-    (("/learnings",), learnings_command, "Show learnings and rules"),
-    (("/rule",), rule_command, "Add a new rule"),
-    (("/rule-edit",), rule_edit_command, "Edit an existing rule"),
-    (("/rule-delete",), rule_delete_command, "Delete a rule"),
-    (("/correct",), correct_command, "Record a correction"),
+    (("/learnings",), learnings_command, _cmd_desc["learnings"]),
+    (("/rule",), rule_command, _cmd_desc["rule"]),
+    (("/rule-edit",), rule_edit_command, _cmd_desc["rule-edit"]),
+    (("/rule-delete",), rule_delete_command, _cmd_desc["rule-delete"]),
+    (("/correct",), correct_command, _cmd_desc["correct"]),
     # Roles
-    (("/role",), role_command, "Set or show current role"),
-    (("/roles",), roles_command, "List available roles"),
-    (("/role-create",), role_create_command, "Create a new role"),
-    (("/role-edit",), role_edit_command, "Edit a role's prompt"),
-    (("/role-delete",), role_delete_command, "Delete a role"),
-    (("/role-draft",), role_draft_command, "Draft a role using AI"),
+    (("/role",), role_command, _cmd_desc["role"]),
+    (("/roles",), roles_command, _cmd_desc["roles"]),
+    (("/role-create",), role_create_command, _cmd_desc["role-create"]),
+    (("/role-edit",), role_edit_command, _cmd_desc["role-edit"]),
+    (("/role-delete",), role_delete_command, _cmd_desc["role-delete"]),
+    (("/role-draft",), role_draft_command, _cmd_desc["role-draft"]),
     # Skills
-    (("/skill",), skill_command, "Show or activate a skill"),
-    (("/skills",), skills_command, "List available skills"),
-    (("/skill-create",), skill_create_command, "Create a new skill"),
-    (("/skill-edit",), skill_edit_command, "Edit a skill's content"),
-    (("/skill-delete",), skill_delete_command, "Delete a skill"),
-    (("/skill-deactivate",), skill_deactivate_command, "Deactivate a skill"),
-    (("/skill-draft",), skill_draft_command, "Draft a skill using AI"),
+    (("/skill",), skill_command, _cmd_desc["skill"]),
+    (("/skills",), skills_command, _cmd_desc["skills"]),
+    (("/skill-create",), skill_create_command, _cmd_desc["skill-create"]),
+    (("/skill-edit",), skill_edit_command, _cmd_desc["skill-edit"]),
+    (("/skill-delete",), skill_delete_command, _cmd_desc["skill-delete"]),
+    (("/skill-deactivate",), skill_deactivate_command, _cmd_desc["skill-deactivate"]),
+    (("/skill-draft",), skill_draft_command, _cmd_desc["skill-draft"]),
     # Proof/verification
-    (("/prove",), prove_command, "Verify conversation with auditable proof"),
+    (("/prove",), prove_command, _cmd_desc["prove"]),
 ]
 
 # Build lookup dict for fast access
