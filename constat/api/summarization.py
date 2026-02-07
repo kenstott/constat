@@ -58,7 +58,7 @@ Provide a 2-3 sentence summary covering:
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=300,
+            max_tokens=self.llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -116,7 +116,7 @@ Provide a 2-3 sentence summary of what this session has accomplished and its cur
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=300,
+            max_tokens=self.llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -159,7 +159,76 @@ Provide a summary covering:
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=300,
+            max_tokens=self.llm.max_output_tokens,
+        )
+        return SummarizeResult(success=True, summary=result)
+    except Exception as e:
+        return SummarizeResult(success=False, error=str(e))
+
+
+def summarize_proof(
+    problem: str,
+    proof_nodes: list[dict],
+    llm,
+) -> SummarizeResult:
+    """Generate a narrative summary of a proof derivation.
+
+    This creates an LLM-generated explanation of the proof steps,
+    separate from the exact derivation chain.
+
+    Args:
+        problem: The original problem/claim being proven
+        proof_nodes: List of proof nodes with id, name, value, source, dependencies
+        llm: LLM provider for generating summary
+
+    Returns:
+        SummarizeResult with proof summary or error
+    """
+    if not proof_nodes:
+        return SummarizeResult(success=False, error="No proof nodes to summarize")
+
+    # Build proof chain description
+    premises = [n for n in proof_nodes if n.get("id", "").startswith("P")]
+    inferences = [n for n in proof_nodes if n.get("id", "").startswith("I")]
+
+    proof_text = f"Claim: {problem}\n\n"
+
+    if premises:
+        proof_text += "Premises (data sources):\n"
+        for p in premises:
+            value_str = str(p.get("value", ""))[:200]
+            proof_text += f"- {p.get('id')}: {p.get('name')} = {value_str}\n"
+            if p.get("source"):
+                proof_text += f"  Source: {p.get('source')}\n"
+
+    if inferences:
+        proof_text += "\nInferences (derived facts):\n"
+        for i in inferences:
+            value_str = str(i.get("value", ""))[:200]
+            deps = ", ".join(i.get("dependencies", []))
+            proof_text += f"- {i.get('id')}: {i.get('name')} = {value_str}\n"
+            if deps:
+                proof_text += f"  Depends on: {deps}\n"
+            if i.get("confidence"):
+                proof_text += f"  Confidence: {i.get('confidence') * 100:.0f}%\n"
+
+    prompt = f"""Summarize this proof derivation in clear prose:
+
+{proof_text}
+
+Provide a narrative summary that:
+1. States what was being proven
+2. Explains the key data sources used (premises)
+3. Describes how conclusions were derived step by step
+4. States the final result and confidence level
+
+Write as a clear explanation for someone reviewing the audit trail."""
+
+    try:
+        result = llm.generate(
+            system="You are an auditor explaining a proof derivation clearly and accurately.",
+            user_message=prompt,
+            max_tokens=1000,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -231,7 +300,7 @@ Provide a 2-3 sentence summary covering:
         result = llm.generate(
             system="You are a concise data analyst.",
             user_message=prompt,
-            max_tokens=300,
+            max_tokens=self.llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
 

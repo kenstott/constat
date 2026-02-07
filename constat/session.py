@@ -7992,6 +7992,32 @@ Focus on the key finding and its significance."""
             except Exception as e:
                 logger.warning(f"Failed to generate DFD: {e}")
 
+            # Build proof nodes for summary generation
+            proof_nodes = []
+            for p in premises:
+                pid = p['id']
+                resolved = resolved_premises.get(pid)
+                proof_nodes.append({
+                    "id": pid,
+                    "name": p['name'],
+                    "value": resolved.value if resolved else None,
+                    "source": resolved.source.value if resolved and hasattr(resolved.source, 'value') else str(resolved.source) if resolved else p.get('source'),
+                    "confidence": resolved.confidence if resolved else None,
+                    "dependencies": [],
+                })
+            for inf in inferences:
+                iid = inf['id']
+                value = resolved_inferences.get(iid)
+                deps = [p['id'] for p in premises]  # Inferences depend on premises
+                proof_nodes.append({
+                    "id": iid,
+                    "name": inf.get('name', iid),
+                    "value": value,
+                    "source": "derived",
+                    "confidence": 1.0 if value is not None else 0.0,
+                    "dependencies": deps,
+                })
+
             return {
                 "success": True,
                 "mode": Mode.PROOF.value,
@@ -8001,6 +8027,8 @@ Focus on the key finding and its significance."""
                 "derivation": derivation_trace,
                 "derivation_chain": derivation_trace,  # Alias for UI
                 "sources": sources,
+                "proof_nodes": proof_nodes,  # For summary generation
+                "problem": problem,  # Original problem text
                 "suggestions": [
                     "Show me the supporting data for this verification",
                     "What assumptions were made in this analysis?",
@@ -8262,6 +8290,36 @@ Prove all of the above claims and provide a complete audit trail."""
                     "confidence": result.get("confidence", 0.0),
                 }
             ))
+
+            # Generate proof summary asynchronously
+            if result.get("success") and result.get("proof_nodes"):
+                try:
+                    from constat.api.summarization import summarize_proof
+                    summary_result = summarize_proof(
+                        problem=result.get("problem", combined_problem),
+                        proof_nodes=result.get("proof_nodes", []),
+                        llm=self.router,
+                    )
+                    if summary_result.success and summary_result.summary:
+                        # Save as artifact
+                        if self.datastore:
+                            self.datastore.add_artifact(
+                                step_number=0,
+                                attempt=1,
+                                artifact_type="markdown",
+                                content=f"# Proof Summary\n\n{summary_result.summary}",
+                                name="proof_summary",
+                                title="Proof Summary",
+                                is_key_result=True,
+                            )
+                        # Emit event that summary is ready
+                        self._emit_event(StepEvent(
+                            event_type="proof_summary_ready",
+                            step_number=0,
+                            data={"summary": summary_result.summary}
+                        ))
+                except Exception as e:
+                    logger.warning(f"Failed to generate proof summary: {e}")
 
             return result
 

@@ -62,6 +62,7 @@ class SessionWebSocket:
         "fact_failed": EventType.FACT_FAILED,
         "dag_execution_start": EventType.DAG_EXECUTION_START,
         "proof_complete": EventType.PROOF_COMPLETE,
+        "proof_summary_ready": EventType.PROOF_SUMMARY_READY,
         "progress": EventType.PROGRESS,
         "planning_start": EventType.PLANNING_START,
         "proof_start": EventType.PROOF_START,

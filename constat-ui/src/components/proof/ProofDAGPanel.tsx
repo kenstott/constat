@@ -31,6 +31,7 @@ interface ProofDAGPanelProps {
   onClose: () => void
   facts: Map<string, FactNode>
   isPlanningComplete?: boolean
+  summary?: string | null  // LLM-generated proof summary
 }
 
 // Status symbols as per design doc
@@ -166,7 +167,7 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false }: ProofDAGPanelProps) {
+export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
@@ -176,6 +177,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const [panelPosition, setPanelPosition] = useState<{ x: number; y: number } | null>(null)
   const [, setIsResizing] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  const [showSummary, setShowSummary] = useState(false)
 
   // Initialize panel size on mount
   useEffect(() => {
@@ -666,6 +668,18 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               </button>
             )}
             <button
+              onClick={() => setShowSummary(true)}
+              disabled={!summary}
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                summary
+                  ? 'text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20'
+                  : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+              }`}
+              title={summary ? 'View LLM-generated summary' : 'Summary generating...'}
+            >
+              Summary
+            </button>
+            <button
               onClick={onClose}
               className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
             >
@@ -791,6 +805,34 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.elapsed_ms}ms</p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Summary Panel - shown when summary button clicked */}
+      {showSummary && summary && (
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20" onClick={() => setShowSummary(false)}>
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">Proof Summary</h3>
+              <button
+                onClick={() => setShowSummary(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4">
+              <p className="text-xs text-gray-500 mb-3 italic">LLM-generated summary of the proof derivation</p>
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {summary}
+                </ReactMarkdown>
+              </div>
             </div>
           </div>
         </div>

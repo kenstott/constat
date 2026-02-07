@@ -65,6 +65,7 @@ class EventType(str, Enum):
     FACT_FAILED = "fact_failed"  # Resolution failed
     DAG_EXECUTION_START = "dag_execution_start"  # DAG ready, execution beginning
     PROOF_COMPLETE = "proof_complete"  # All facts resolved, DAG complete
+    PROOF_SUMMARY_READY = "proof_summary_ready"  # LLM-generated summary available
 
     # Progress events
     PROGRESS = "progress"

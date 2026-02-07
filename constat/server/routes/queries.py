@@ -312,6 +312,7 @@ def _create_event_handler(managed: ManagedSession):
                 "fact_failed": EventType.FACT_FAILED,
                 "dag_execution_start": EventType.DAG_EXECUTION_START,
                 "proof_complete": EventType.PROOF_COMPLETE,
+                "proof_summary_ready": EventType.PROOF_SUMMARY_READY,
             }
 
             api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)

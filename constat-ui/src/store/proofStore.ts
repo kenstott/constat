@@ -26,6 +26,7 @@ interface ProofState {
   isProving: boolean
   isPlanningComplete: boolean  // True after all fact_start events received and execution begins
   isPanelOpen: boolean
+  proofSummary: string | null  // LLM-generated summary when available
 
   // Actions
   handleFactEvent: (eventType: string, data: Record<string, unknown>) => void
@@ -40,6 +41,7 @@ export const useProofStore = create<ProofState>((set) => ({
   isProving: false,
   isPlanningComplete: false,
   isPanelOpen: false,
+  proofSummary: null,
 
   handleFactEvent: (eventType, data) => {
     const factName = data.fact_name as string
@@ -48,7 +50,7 @@ export const useProofStore = create<ProofState>((set) => ({
     // Handle events that don't require fact_name
     if (eventType === 'proof_start') {
       // Clear facts and start proving, but don't open panel until DAG is complete
-      set({ facts: new Map(), isProving: true, isPlanningComplete: false })
+      set({ facts: new Map(), isProving: true, isPlanningComplete: false, proofSummary: null })
       return
     }
     if (eventType === 'dag_execution_start') {
@@ -59,6 +61,13 @@ export const useProofStore = create<ProofState>((set) => ({
     }
     if (eventType === 'proof_complete') {
       set({ isProving: false })
+      return
+    }
+    if (eventType === 'proof_summary_ready') {
+      // LLM-generated summary is available
+      const summary = data.summary as string
+      console.log('[proofStore] proof_summary_ready')
+      set({ proofSummary: summary })
       return
     }
 
@@ -128,7 +137,7 @@ export const useProofStore = create<ProofState>((set) => ({
     })
   },
 
-  clearFacts: () => set({ facts: new Map(), isProving: false, isPlanningComplete: false }),
+  clearFacts: () => set({ facts: new Map(), isProving: false, isPlanningComplete: false, proofSummary: null }),
 
   openPanel: () => set({ isPanelOpen: true }),
 

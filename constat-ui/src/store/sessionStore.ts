@@ -8,6 +8,7 @@ import * as sessionsApi from '@/api/sessions'
 import { getOrCreateSessionId, createNewSessionId } from '@/api/sessions'
 import * as queriesApi from '@/api/queries'
 import { useArtifactStore } from './artifactStore'
+import { useProofStore } from './proofStore'
 
 interface Message {
   id: string
@@ -102,6 +103,9 @@ interface SessionState {
     skills?: { name: string; similarity: number }[]
   } | null
 
+  // Session creation state (for disabling input during new query)
+  isCreatingSession: boolean
+
   // Actions
   createSession: (userId?: string, forceNew?: boolean) => Promise<void>
   setSession: (session: Session | null, options?: { preserveMessages?: boolean }) => void
@@ -146,8 +150,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   roles: [],
   currentRole: null,
   queryContext: null,
+  isCreatingSession: false,
 
   createSession: async (userId = 'default', forceNew = false) => {
+    // Mark session as being created (disables input)
+    set({ isCreatingSession: true })
+
     // Disconnect old WebSocket FIRST to prevent any events during transition
     wsManager.disconnect()
 
@@ -198,6 +206,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       thinkingMessageId: null,
       lastQueryStartStep: 0,
       queryContext: null,
+      isCreatingSession: false,
     })
 
     // Connect WebSocket - server will send welcome message on connect
@@ -547,6 +556,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'planning_start':
         ensureLiveMessage('Planning...', 'planning')
         set({ status: 'planning' })  // Don't clear queryContext - it was set by dynamic_context
+        break
+
+      case 'proof_start':
+        ensureLiveMessage('Generating proof...', 'planning')
+        set({ status: 'planning' })
+        // Also forward to proofStore to clear previous facts
+        useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
         break
 
       case 'replanning':
@@ -942,10 +958,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'fact_executing':
       case 'fact_resolved':
       case 'fact_failed':
-      case 'proof_complete': {
-        import('./proofStore').then(({ useProofStore }) => {
-          useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
-        })
+      case 'dag_execution_start':
+      case 'proof_complete':
+      case 'proof_summary_ready': {
+        useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
         break
       }
 

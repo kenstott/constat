@@ -341,6 +341,7 @@ export type EventType =
   | 'fact_failed'
   | 'dag_execution_start'
   | 'proof_complete'
+  | 'proof_summary_ready'
   | 'progress'
   | 'query_complete'
   | 'query_error'
