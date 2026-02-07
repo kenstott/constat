@@ -477,7 +477,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           fontWeight={500}
           className="select-none"
         >
-          {nodeData.name.length > 22 ? nodeData.name.slice(0, 20) + '...' : nodeData.name}
+          {nodeData.name.length > 27 ? nodeData.name.slice(0, 24) + '...' : nodeData.name}
         </text>
       </g>
     )
