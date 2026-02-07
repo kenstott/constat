@@ -4,6 +4,8 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import * as d3dag from 'd3-dag'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Node status types matching server events
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
@@ -61,7 +63,7 @@ const STATUS_BG_COLORS: Record<NodeStatus, string> = {
 }
 
 // Node dimensions
-const NODE_WIDTH = 160
+const NODE_WIDTH = 220
 const NODE_HEIGHT = 50
 const NODE_RADIUS = 8
 
@@ -74,7 +76,7 @@ interface DagNode {
 function NodeTooltip({ node, position }: { node: FactNode; position: { x: number; y: number } }) {
   return (
     <div
-      className="fixed z-[100] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-3 max-w-xs"
+      className="fixed z-[100] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-3 max-w-md"
       style={{
         left: position.x + 10,
         top: position.y + 10,
@@ -86,11 +88,32 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
           <div className="text-gray-600 dark:text-gray-400">{node.description}</div>
         )}
         {node.value !== undefined && (
-          <div className="flex gap-2">
+          <div>
             <span className="text-gray-500">Value:</span>
-            <span className="font-mono text-gray-900 dark:text-gray-100">
-              {JSON.stringify(node.value)}
-            </span>
+            {typeof node.value === 'string' && node.value.includes('|') ? (
+              <div className="mt-1 overflow-x-auto">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    table: ({ children }) => (
+                      <table className="text-xs border-collapse">{children}</table>
+                    ),
+                    th: ({ children }) => (
+                      <th className="border border-gray-300 dark:border-gray-600 px-2 py-1 bg-gray-100 dark:bg-gray-700 text-left">{children}</th>
+                    ),
+                    td: ({ children }) => (
+                      <td className="border border-gray-300 dark:border-gray-600 px-2 py-1">{children}</td>
+                    ),
+                  }}
+                >
+                  {node.value}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <span className="font-mono text-gray-900 dark:text-gray-100 ml-2">
+                {JSON.stringify(node.value)}
+              </span>
+            )}
           </div>
         )}
         {node.source && (
@@ -371,7 +394,7 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
           fontWeight={500}
           className="select-none"
         >
-          {nodeData.name.length > 14 ? nodeData.name.slice(0, 12) + '...' : nodeData.name}
+          {nodeData.name.length > 22 ? nodeData.name.slice(0, 20) + '...' : nodeData.name}
         </text>
       </g>
     )
@@ -397,7 +420,7 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Proof Resolution DAG
+              Proof
             </h2>
             <div className="flex gap-4 text-xs text-gray-500 mt-1">
               <span className="flex items-center gap-1">
@@ -540,10 +563,7 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
           <div className="flex gap-2">
             {onViewResults && (
               <button
-                onClick={() => {
-                  onViewResults()
-                  onClose()
-                }}
+                onClick={onViewResults}
                 className="px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
               >
                 View Results

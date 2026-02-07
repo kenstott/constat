@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useUIStore } from '@/store/uiStore'
+import { useProofStore } from '@/store/proofStore'
 import { MessageBubble } from './MessageBubble'
 import { AutocompleteInput } from './AutocompleteInput'
 import {
@@ -14,9 +15,10 @@ import {
 } from '@heroicons/react/24/outline'
 
 export function ConversationPanel() {
-  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, lastQueryStartStep } = useSessionStore()
+  const { session, messages, submitQuery, queuedMessages, removeQueuedMessage, lastQueryStartStep, isCreatingSession } = useSessionStore()
   const { artifacts, tables } = useArtifactStore()
   const { openFullscreenArtifact } = useUIStore()
+  const { openPanel: openProofPanel } = useProofStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
 
@@ -192,7 +194,9 @@ export function ConversationPanel() {
                 isPending={message.isPending}
                 defaultExpanded={message.defaultExpanded}
                 isFinalInsight={message.isFinalInsight}
-                onViewResult={message.isFinalInsight && hasViewableResults() ? handleViewResult : undefined}
+                onViewResult={message.isFinalInsight ? (
+                  message.content?.toLowerCase().includes('proof') ? openProofPanel : (hasViewableResults() ? handleViewResult : undefined)
+                ) : undefined}
                 role={message.role}
                 skills={message.skills}
               />
@@ -233,7 +237,7 @@ export function ConversationPanel() {
       </div>
 
       {/* Query input */}
-      <AutocompleteInput onSubmit={handleSubmit} />
+      <AutocompleteInput onSubmit={handleSubmit} disabled={isCreatingSession} />
     </div>
   )
 }
