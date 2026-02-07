@@ -171,6 +171,7 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
+  const [selectedNode, setSelectedNode] = useState<FactNode | null>(null)
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
   const [panelSize, setPanelSize] = useState({ width: 800, height: 600 })
   const [panelPosition, setPanelPosition] = useState<{ x: number; y: number } | null>(null)
@@ -424,6 +425,7 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
           })
         }}
         onMouseLeave={() => setHoveredNode(null)}
+        onClick={() => setSelectedNode(nodeData)}
       >
         {/* Node rectangle */}
         <rect
@@ -667,8 +669,124 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
       </div>
 
       {/* Tooltip */}
-      {hoveredNode && (
+      {hoveredNode && !selectedNode && (
         <NodeTooltip node={hoveredNode.node} position={hoveredNode.position} />
+      )}
+
+      {/* Detail Panel - shown when node is clicked */}
+      {selectedNode && (
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20" onClick={() => setSelectedNode(null)}>
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span style={{ color: STATUS_COLORS[selectedNode.status] }} className="text-lg">
+                  {STATUS_SYMBOLS[selectedNode.status]}
+                </span>
+                <h3 className="font-semibold text-gray-900 dark:text-gray-100">{selectedNode.name}</h3>
+              </div>
+              <button
+                onClick={() => setSelectedNode(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              {selectedNode.description && (
+                <div>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Description</span>
+                  <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.description}</p>
+                </div>
+              )}
+              {selectedNode.value !== undefined && (
+                <div>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Value</span>
+                  <div className="mt-1 overflow-x-auto">
+                    {typeof selectedNode.value === 'string' && selectedNode.value.includes('|') ? (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          table: ({ children }) => (
+                            <table className="text-sm border-collapse w-full">{children}</table>
+                          ),
+                          th: ({ children }) => (
+                            <th className="border border-gray-300 dark:border-gray-600 px-3 py-2 bg-gray-100 dark:bg-gray-700 text-left font-medium">{children}</th>
+                          ),
+                          td: ({ children }) => (
+                            <td className="border border-gray-300 dark:border-gray-600 px-3 py-2">{children}</td>
+                          ),
+                        }}
+                      >
+                        {selectedNode.value}
+                      </ReactMarkdown>
+                    ) : (
+                      <pre className="font-mono text-sm bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto">
+                        {typeof selectedNode.value === 'string' ? selectedNode.value : JSON.stringify(selectedNode.value, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                {selectedNode.source && (
+                  <div>
+                    <span className="text-xs font-medium text-gray-500 uppercase">Source</span>
+                    <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.source}</p>
+                  </div>
+                )}
+                {selectedNode.confidence !== undefined && (
+                  <div>
+                    <span className="text-xs font-medium text-gray-500 uppercase">Confidence</span>
+                    <p className="text-gray-700 dark:text-gray-300 mt-1">{(selectedNode.confidence * 100).toFixed(0)}%</p>
+                  </div>
+                )}
+                {selectedNode.tier !== undefined && (
+                  <div>
+                    <span className="text-xs font-medium text-gray-500 uppercase">Tier</span>
+                    <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.tier}</p>
+                  </div>
+                )}
+                {selectedNode.strategy && (
+                  <div>
+                    <span className="text-xs font-medium text-gray-500 uppercase">Strategy</span>
+                    <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.strategy}</p>
+                  </div>
+                )}
+              </div>
+              {selectedNode.formula && (
+                <div>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Formula</span>
+                  <pre className="font-mono text-sm bg-gray-50 dark:bg-gray-900 p-3 rounded mt-1">{selectedNode.formula}</pre>
+                </div>
+              )}
+              {selectedNode.dependencies.length > 0 && (
+                <div>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Dependencies</span>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {selectedNode.dependencies.map((dep) => (
+                      <span key={dep} className="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-sm">{dep}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedNode.reason && (
+                <div>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Reason</span>
+                  <p className="text-red-600 dark:text-red-400 mt-1">{selectedNode.reason}</p>
+                </div>
+              )}
+              {selectedNode.elapsed_ms !== undefined && (
+                <div>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Elapsed Time</span>
+                  <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.elapsed_ms}ms</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* CSS for animations */}
