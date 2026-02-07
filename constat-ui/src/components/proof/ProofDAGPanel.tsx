@@ -173,7 +173,9 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
   const [panelSize, setPanelSize] = useState({ width: 800, height: 600 })
+  const [panelPosition, setPanelPosition] = useState<{ x: number; y: number } | null>(null)
   const [, setIsResizing] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
 
   // Initialize panel size on mount
   useEffect(() => {
@@ -181,6 +183,42 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
       setPanelSize({ width: window.innerWidth * 0.8, height: window.innerHeight * 0.8 })
     }
   }, [])
+
+  // Handle drag
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    // Only start drag if clicking on the header background, not buttons
+    if ((e.target as HTMLElement).closest('button')) return
+
+    e.preventDefault()
+    setIsDragging(true)
+
+    const panel = panelRef.current
+    if (!panel) return
+
+    const rect = panel.getBoundingClientRect()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startLeft = panelPosition?.x ?? rect.left
+    const startTop = panelPosition?.y ?? rect.top
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX
+      const deltaY = moveEvent.clientY - startY
+      setPanelPosition({
+        x: startLeft + deltaX,
+        y: startTop + deltaY,
+      })
+    }
+
+    const handleMouseUp = () => {
+      setIsDragging(false)
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [panelPosition])
 
   // Handle resize
   const handleMouseDown = useCallback((e: React.MouseEvent, direction: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w') => {
@@ -424,11 +462,17 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+    <div className={`fixed inset-0 z-40 ${panelPosition ? '' : 'flex items-center justify-center'} pointer-events-none`}>
       <div
         ref={panelRef}
         className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl flex flex-col pointer-events-auto border border-gray-200 dark:border-gray-700 relative"
-        style={{ width: panelSize.width, height: panelSize.height, maxWidth: '95vw', maxHeight: '95vh' }}
+        style={{
+          width: panelSize.width,
+          height: panelSize.height,
+          maxWidth: '95vw',
+          maxHeight: '95vh',
+          ...(panelPosition ? { position: 'absolute', left: panelPosition.x, top: panelPosition.y } : {}),
+        }}
       >
         {/* Resize handles */}
         <div className="absolute -top-1 -left-1 w-3 h-3 cursor-nw-resize" onMouseDown={(e) => handleMouseDown(e, 'nw')} />
@@ -439,8 +483,11 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
         <div className="absolute bottom-0 left-3 right-3 h-1 cursor-s-resize" onMouseDown={(e) => handleMouseDown(e, 's')} />
         <div className="absolute left-0 top-3 bottom-3 w-1 cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'w')} />
         <div className="absolute right-0 top-3 bottom-3 w-1 cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'e')} />
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+        {/* Header - draggable */}
+        <div
+          className={`flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          onMouseDown={handleDragStart}
+        >
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
               Proof
