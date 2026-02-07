@@ -715,9 +715,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
       {/* Detail Panel - shown when node is clicked */}
       {selectedNode && (
-        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20" onClick={() => setSelectedNode(null)}>
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20 pointer-events-auto" onClick={() => setSelectedNode(null)}>
           <div
-            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto"
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto pointer-events-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
@@ -853,9 +853,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
       {/* Summary Panel - shown when summary button clicked */}
       {showSummary && summary && (
-        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20" onClick={() => setShowSummary(false)}>
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/20 pointer-events-auto" onClick={() => setShowSummary(false)}>
           <div
-            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto"
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl max-h-[80vh] overflow-auto pointer-events-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
