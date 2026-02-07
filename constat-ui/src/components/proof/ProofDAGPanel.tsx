@@ -29,7 +29,6 @@ interface FactNode {
 interface ProofDAGPanelProps {
   isOpen: boolean
   onClose: () => void
-  onViewResults?: () => void
   facts: Map<string, FactNode>
   isPlanningComplete?: boolean
 }
@@ -167,7 +166,7 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlanningComplete = false }: ProofDAGPanelProps) {
+export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
@@ -347,6 +346,14 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
     }
     return finalNodes[0] || null
   }, [nodes])
+
+  // Find penultimate node (the one that final node depends on - contains the actual result)
+  const resultNode = useMemo(() => {
+    if (!finalNode || finalNode.dependencies.length === 0) return finalNode
+    // Get the first dependency of the final node (should be the result)
+    const depId = finalNode.dependencies[0]
+    return nodes.find((n) => n.id === depId) || finalNode
+  }, [finalNode, nodes])
 
   const isProofComplete = pendingCount === 0 && resolvedCount > 0
 
@@ -648,14 +655,14 @@ export function ProofDAGPanel({ isOpen, onClose, onViewResults, facts, isPlannin
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
-          <span className="text-xs text-gray-500">Hover over nodes for details</span>
+          <span className="text-xs text-gray-500">Click nodes for details</span>
           <div className="flex gap-2">
-            {onViewResults && (
+            {resultNode && resultNode.status === 'resolved' && (
               <button
-                onClick={onViewResults}
+                onClick={() => setSelectedNode(resultNode)}
                 className="px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
               >
-                View Results
+                Show Final Result
               </button>
             )}
             <button
