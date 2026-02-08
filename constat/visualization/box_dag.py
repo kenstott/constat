@@ -382,6 +382,7 @@ def generate_proof_dfd(
 
     # Build mapping from fact_id (P1, I1) to English variable name
     fact_to_name: Dict[str, str] = {}
+    used_names: Dict[str, int] = {}
     for s in steps:
         fact_id = s.get("fact_id", "")
         goal = s.get("goal", "")
@@ -393,6 +394,12 @@ def generate_proof_dfd(
             # Truncate to fit
             if len(english_name) > max_name_len:
                 english_name = english_name[:max_name_len]
+            # Deduplicate: append suffix if name already used
+            if english_name in used_names:
+                used_names[english_name] += 1
+                english_name = f"{english_name}_{used_names[english_name]}"
+            else:
+                used_names[english_name] = 1
             fact_to_name[fact_id] = english_name
         elif fact_id:
             fact_to_name[fact_id] = fact_id  # Fallback to fact_id

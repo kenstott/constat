@@ -571,25 +571,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           className={`flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
           onMouseDown={handleDragStart}
         >
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Proof
-            </h2>
-            <div className="flex gap-4 text-xs text-gray-500 mt-1">
-              <span className="flex items-center gap-1">
-                <span className="text-green-600">{STATUS_SYMBOLS.resolved}</span>
-                {resolvedCount} resolved
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="text-red-600">{STATUS_SYMBOLS.failed}</span>
-                {failedCount} failed
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="text-blue-600">{STATUS_SYMBOLS.executing}</span>
-                {pendingCount} in progress
-              </span>
-            </div>
-          </div>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Proof
+          </h2>
           <button
             onClick={onClose}
             className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
@@ -718,21 +702,27 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           </div>
         )}
 
-        {/* Legend */}
-        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 text-xs">
+        {/* Legend + counts */}
+        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex flex-wrap items-center gap-4 text-xs">
           <span className="flex items-center gap-1 font-medium text-gray-700 dark:text-gray-300">
-            <span className="text-blue-600">P</span> = Premise
+            <span className="text-blue-600">P</span> Premise
           </span>
           <span className="flex items-center gap-1 font-medium text-gray-700 dark:text-gray-300">
-            <span className="text-purple-600">I</span> = Inference
+            <span className="text-purple-600">I</span> Inference
           </span>
           <span className="text-gray-300 dark:text-gray-600">|</span>
-          {Object.entries(STATUS_SYMBOLS).map(([status, symbol]) => (
-            <span key={status} className="flex items-center gap-1">
-              <span style={{ color: STATUS_COLORS[status as NodeStatus] }}>{symbol}</span>
-              <span className="text-gray-600 dark:text-gray-400 capitalize">{status}</span>
-            </span>
-          ))}
+          <span className="flex items-center gap-1">
+            <span style={{ color: STATUS_COLORS.resolved }}>{STATUS_SYMBOLS.resolved}</span>
+            <span className="text-gray-600 dark:text-gray-400">{resolvedCount} resolved</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span style={{ color: STATUS_COLORS.failed }}>{STATUS_SYMBOLS.failed}</span>
+            <span className="text-gray-600 dark:text-gray-400">{failedCount} failed</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span style={{ color: STATUS_COLORS.pending }}>{STATUS_SYMBOLS.pending}</span>
+            <span className="text-gray-600 dark:text-gray-400">{pendingCount} pending</span>
+          </span>
         </div>
 
         {/* Footer */}

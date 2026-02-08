@@ -23,14 +23,25 @@ CRITICAL Rules:
 4. ALWAYS save result: store.save_dataframe('{table_name}', result_df)
 5. For REFERENCED database tables, use db_query() or pd.read_sql(query, db_<name>)
 6. For API SOURCES, use api_<name>() to fetch data, then convert to DataFrame with pd.DataFrame()
+   REST APIs often wrap data in paginated responses. Always extract the array:
+   ```
+   response = api_name('GET /endpoint', {{params}})
+   if isinstance(response, dict):
+       # Try common wrapper keys
+       for key in ['data', 'results', 'items', 'records']:
+           if key in response and isinstance(response[key], list):
+               response = response[key]
+               break
+   df = pd.DataFrame(response)
+   ```
 7. Don't label expected fallbacks as errors - querying a database or API when data isn't in store is normal
-8. For FUZZY MAPPING (e.g., free-text names → codes): first try the data source (API/database).
-   For values that can't be matched exactly, use `llm_map(values, target, source_desc)` as fallback:
+8. For ANY VALUE MAPPING (e.g., names → codes, categories → labels, descriptions → standard values):
+   NEVER hardcode a mapping dictionary. Always use `llm_map(values, target, source_desc)`:
    ```
-   unmatched = [name for name in names if name not in exact_matches]
-   fuzzy = llm_map(unmatched, "ISO 3166-1 alpha-2 country code", "country names")
+   mapping = llm_map(df['country'].unique().tolist(), "ISO 3166-1 alpha-2 country code", "country names")
+   df['country_iso'] = df['country'].map(mapping)
    ```
-   This reduces proof confidence — use only when data sources can't resolve the mapping.
+   This applies even when mappings seem obvious. Hardcoded dicts embed unverifiable LLM knowledge.
 9. NEVER use bare `except:` that silently writes empty strings or default values for API calls.
    Let API errors propagate so the retry mechanism can fix the query.
    WRONG: `except: data = ""`

@@ -14,5 +14,6 @@ Available state variables:
 - Only create a NEW name when adding a genuinely separate dataset alongside existing ones
 - Reference and build on existing tables/state rather than recreating from scratch
 - The final result should only contain items that address the complete plan (original + extensions)
+- **ENHANCE = UPDATE SOURCE**: "enhance X", "add column to X", "enrich X" → the plan MUST end with a step that saves the updated X. Intermediate mapping/lookup tables are not the deliverable.
 
 Follow-up question: {question}

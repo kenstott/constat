@@ -195,7 +195,7 @@ def _create_approval_callback(managed: ManagedSession, loop: asyncio.AbstractEve
         try:
             response = future.result(timeout=600)  # 10 minute timeout
         except Exception as e:
-            logger.error(f"Error waiting for approval: {e}")
+            logger.error(f"Error waiting for approval: {type(e).__name__}: {e}")
             return PlanApprovalResponse.approve()  # Default to approve on error
 
         if response is None:

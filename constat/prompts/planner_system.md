@@ -45,6 +45,7 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
       - MongoDB: Use $match with $in array
       - Elasticsearch: Use terms query
     - General principle: Query smaller dataset first, push those values as constants to filter the larger dataset; avoid loading large datasets into Python when the database can filter
+11. **ENHANCE = UPDATE THE SOURCE TABLE** - When the task is to "enhance", "add columns to", or "extend" an existing table, the **final step MUST update that table**. Intermediate steps may create lookup/mapping/reference tables, but those are NOT the deliverable — the updated source table is. Example: "enhance breeds with standard country" → final step must save updated `breeds` with the new column, not just a separate `country_mapping` table.
 
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).

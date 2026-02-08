@@ -264,34 +264,37 @@ export function MessageBubble({
               </ReactMarkdown>
             )}
           </div>
-          {/* View Result/Proof button for final insights */}
-          {isFinalInsight && onViewResult && (
-            <button
-              onClick={onViewResult}
-              className="mt-3 flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
-            >
-              <EyeIcon className="w-4 h-4" />
-              {content.toLowerCase().includes('proof') ? 'View Proof' : 'View Result'}
-            </button>
-          )}
-          {/* Expand/Collapse button */}
-          {needsExpansion && (
-            <button
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="mt-2 flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-            >
-              {isExpanded ? (
-                <>
-                  <ChevronUpIcon className="w-3 h-3" />
-                  Show less
-                </>
-              ) : (
-                <>
-                  <ChevronDownIcon className="w-3 h-3" />
-                  Show more
-                </>
+          {/* Action buttons row */}
+          {(needsExpansion || (isFinalInsight && onViewResult)) && (
+            <div className="mt-2 flex items-center gap-3">
+              {needsExpansion && (
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+                >
+                  {isExpanded ? (
+                    <>
+                      <ChevronUpIcon className="w-3 h-3" />
+                      Show less
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDownIcon className="w-3 h-3" />
+                      Show more
+                    </>
+                  )}
+                </button>
               )}
-            </button>
+              {isFinalInsight && onViewResult && (
+                <button
+                  onClick={onViewResult}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
+                >
+                  <EyeIcon className="w-4 h-4" />
+                  {content.toLowerCase().includes('proof') ? 'View Proof' : 'View Result'}
+                </button>
+              )}
+            </div>
           )}
           {children}
         </div>

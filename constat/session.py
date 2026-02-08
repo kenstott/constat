@@ -1709,6 +1709,17 @@ REFERENCED TABLES (query from database with db_query()):
                                             schema_lines.append(f"    fields: {', '.join(field_strs)}")
                                     except Exception:
                                         pass
+                            else:
+                                # REST API: include endpoint info if available
+                                if self.schema_manager and hasattr(self.schema_manager, 'api_schema_manager'):
+                                    endpoints = self.schema_manager.api_schema_manager.get_api_schema(api_name)
+                                    if endpoints:
+                                        schema_lines.append(f"\nEndpoints for api_{api_name} (REST):")
+                                        for ep in endpoints[:10]:
+                                            schema_lines.append(f"  {ep.method} {ep.path} - {ep.description or ep.endpoint_name}")
+                                schema_lines.append(f"\nIMPORTANT: api_{api_name} is REST. Response is often paginated:")
+                                schema_lines.append(f"  response = api_{api_name}('GET /endpoint', {{params}})")
+                                schema_lines.append(f"  # Extract array from wrapper: check 'data', 'results', 'items' keys")
                         except Exception as e:
                             logger.debug(f"Failed to get API schema for {api_name}: {e}")
 
@@ -1962,6 +1973,25 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
             # Reduce confidence if inference used LLM fuzzy mapping
             used_llm = getattr(self, '_inference_used_llm_map', False)
+
+            # Safety net: detect hardcoded mapping dicts in generated code
+            # LLM sometimes embeds its knowledge as a literal dict instead of calling llm_map()
+            if not used_llm and code and '.map(' in code:
+                # Check for dict literals with 3+ string key-value pairs followed by .map()
+                import ast
+                try:
+                    tree = ast.parse(code)
+                    for node_ast in ast.walk(tree):
+                        if isinstance(node_ast, ast.Dict) and len(node_ast.keys) >= 3:
+                            # Check if most keys are string constants
+                            str_keys = sum(1 for k in node_ast.keys if isinstance(k, ast.Constant) and isinstance(k.value, str))
+                            if str_keys >= 3:
+                                used_llm = True
+                                logger.info(f"[INFERENCE_CODE] {inf_id}: detected hardcoded mapping dict ({str_keys} string keys) — flagging as LLM knowledge")
+                                break
+                except Exception:
+                    pass
+
             confidence = 0.65 if used_llm else 0.9
             source = FactSource.LLM_KNOWLEDGE if used_llm else FactSource.DERIVED
 
@@ -2484,14 +2514,11 @@ YOUR JSON RESPONSE:"""
 
         # Get row counts of existing tables to detect duplicates by size
         # (cheap heuristic - if same rows, likely same data)
-        existing_row_counts = {}
+        existing_row_counts: dict[int, str] = {}
         for t in existing_tables:
-            try:
-                df = self.datastore.get_dataframe(t["name"])
-                if df is not None:
-                    existing_row_counts[len(df)] = t["name"]
-            except Exception:
-                pass
+            row_count = t.get("row_count")
+            if row_count is not None:
+                existing_row_counts[row_count] = t["name"]
 
         for var_name, value in namespace.items():
             # Skip internal variables
@@ -2615,8 +2642,10 @@ YOUR JSON RESPONSE:"""
                 }
             ))
 
-            # Track tables before execution
-            tables_before = set(t['name'] for t in self.datastore.list_tables()) if self.datastore else set()
+            # Track tables before execution (name + version to detect updates)
+            tables_before_list = self.datastore.list_tables() if self.datastore else []
+            tables_before = set(t['name'] for t in tables_before_list)
+            versions_before = {t['name']: t.get('version', 1) for t in tables_before_list}
 
             # Execute
             exec_globals = self._get_execution_globals()
@@ -2642,9 +2671,17 @@ YOUR JSON RESPONSE:"""
                         fixed_code=code,
                     )
 
-                # Detect new tables created
-                tables_after = set(t['name'] for t in self.datastore.list_tables()) if self.datastore else set()
-                tables_created = list(tables_after - tables_before)
+                # Detect new AND updated tables
+                tables_after_list = self.datastore.list_tables() if self.datastore else []
+                tables_after = set(t['name'] for t in tables_after_list)
+                versions_after = {t['name']: t.get('version', 1) for t in tables_after_list}
+                new_tables = tables_after - tables_before
+                updated_tables = {
+                    name for name in tables_before & tables_after
+                    if versions_after.get(name, 1) > versions_before.get(name, 1)
+                    and not name.startswith('_')  # Skip internal tables
+                }
+                tables_created = list(new_tables | updated_tables)
 
                 self._emit_event(StepEvent(
                     event_type="step_complete",
@@ -3150,6 +3187,101 @@ Do not include any explanation or extra text."""
         )
 
         return self._approval_callback(request)
+
+    def _ensure_enhance_updates_source(
+        self,
+        question: str,
+        plan: Plan,
+        existing_tables: list[dict],
+    ) -> Plan:
+        """Append an update step when an 'enhance' plan only creates a mapping table.
+
+        The LLM planner consistently decomposes "enhance X with Y" into
+        analyze → fetch reference → create mapping, but omits the final
+        "apply mapping back to X" step. This method detects that pattern
+        and appends the missing step.
+        """
+        import re
+
+        # Only applies when there are steps and existing tables
+        if not plan.steps or not existing_tables:
+            return plan
+
+        # Detect enhance intent
+        enhance_re = re.compile(
+            r'\b(?:enhance|enrich|extend|augment)\b|'
+            r'\badd\s+(?:a\s+)?(?:column|field|the)\b',
+            re.IGNORECASE,
+        )
+        if not enhance_re.search(question):
+            return plan
+
+        # Find candidate target table by matching table name fragments to question
+        # Prefer higher step_number (most recent working dataset) to break ties
+        question_lower = question.lower()
+        candidates = [t for t in existing_tables if not t['name'].startswith('_')]
+
+        target_table = None
+        best_score = (0, -1)  # (word_overlap, step_number)
+        for t in candidates:
+            name = t['name']
+            name_parts = [p for p in name.lower().replace('_', ' ').split() if len(p) > 3]
+            overlap = sum(1 for p in name_parts if p in question_lower)
+            step_num = t.get('step_number', 0) or 0
+            score = (overlap, step_num)
+            if score > best_score and overlap > 0:
+                best_score = score
+                target_table = name
+
+        if not target_table:
+            return plan
+
+        # Check whether the last step already updates the target table
+        last_step = plan.steps[-1]
+        last_goal_lower = last_step.goal.lower()
+        target_words = [p for p in target_table.lower().replace('_', ' ').split() if len(p) > 3]
+
+        mentions_target = any(w in last_goal_lower for w in target_words)
+        mentions_update = any(
+            kw in last_goal_lower
+            for kw in ['update', 'add column', 'enhance', 'enrich', 'modify', 'apply', 'save back']
+        )
+
+        if mentions_target and mentions_update:
+            return plan  # Already correct
+
+        # Check if ANY step already updates the target
+        for step in plan.steps:
+            goal_lower = step.goal.lower()
+            if any(w in goal_lower for w in target_words) and any(
+                kw in goal_lower
+                for kw in ['update', 'add column', 'enhance', 'enrich', 'modify', 'apply', 'save back']
+            ):
+                return plan  # Some step already handles it
+
+        # Append the missing update step
+        logger.info(
+            f"[PLAN_VALIDATION] Enhance plan missing update step for '{target_table}'. Appending step."
+        )
+        last = plan.steps[-1]
+        update_step = Step(
+            number=last.number + 1,
+            goal=(
+                f"Apply the mapping from previous steps to update `{target_table}` "
+                f"by adding the new column(s) and saving it back with the same name"
+            ),
+            expected_inputs=[
+                last.expected_outputs[0] if last.expected_outputs else "mapping",
+                target_table,
+            ],
+            expected_outputs=[target_table],
+            depends_on=[last.number],
+            task_type=TaskType.PYTHON_ANALYSIS,
+            complexity="low",
+            role_id=last.role_id,
+        )
+        plan.steps.append(update_step)
+        return plan
 
     def _build_plan_from_edited_steps(
         self,
@@ -6396,6 +6528,11 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         planner_response = self.planner.plan(context_prompt)
         follow_up_plan = planner_response.plan
 
+        # Validate: ensure "enhance" plans include a step that updates the source table
+        follow_up_plan = self._ensure_enhance_updates_source(
+            question, follow_up_plan, existing_tables,
+        )
+
         # Emit planning complete event
         self._emit_event(StepEvent(
             event_type="planning_complete",
@@ -6483,6 +6620,11 @@ User feedback: {suggestion_text}
                     self._sync_available_roles_to_planner()
                     planner_response = self.planner.plan(context_prompt_with_feedback)
                     follow_up_plan = planner_response.plan
+
+                    # Validate: ensure "enhance" plans include a step that updates the source table
+                    follow_up_plan = self._ensure_enhance_updates_source(
+                        question, follow_up_plan, existing_tables,
+                    )
 
                     # Renumber steps to continue from where we left off
                     for i, step in enumerate(follow_up_plan.steps):
@@ -8292,8 +8434,10 @@ Prove all of the above claims and provide a complete audit trail."""
 
             start_time = time.time()
 
-            # Track tables before execution
-            tables_before = set(t['name'] for t in self.datastore.list_tables())
+            # Track tables before execution (name + version to detect updates)
+            tables_before_list = self.datastore.list_tables()
+            tables_before = set(t['name'] for t in tables_before_list)
+            versions_before = {t['name']: t.get('version', 1) for t in tables_before_list}
 
             # Execute stored code
             exec_globals = self._get_execution_globals()
@@ -8304,8 +8448,16 @@ Prove all of the above claims and provide a complete audit trail."""
                 self._auto_save_results(result.namespace, step_number)
 
             duration_ms = int((time.time() - start_time) * 1000)
-            tables_after = set(t['name'] for t in self.datastore.list_tables())
-            tables_created = list(tables_after - tables_before)
+            tables_after_list = self.datastore.list_tables()
+            tables_after = set(t['name'] for t in tables_after_list)
+            versions_after = {t['name']: t.get('version', 1) for t in tables_after_list}
+            new_tables = tables_after - tables_before
+            updated_tables = {
+                name for name in tables_before & tables_after
+                if versions_after.get(name, 1) > versions_before.get(name, 1)
+                and not name.startswith('_')
+            }
+            tables_created = list(new_tables | updated_tables)
 
             if result.success:
                 self._emit_event(StepEvent(
@@ -9032,7 +9184,9 @@ Prove all of the above claims and provide a complete audit trail."""
             ))
 
             start_time = time.time()
-            tables_before = set(t['name'] for t in self.datastore.list_tables())
+            tables_before_list = self.datastore.list_tables()
+            tables_before = set(t['name'] for t in tables_before_list)
+            versions_before = {t['name']: t.get('version', 1) for t in tables_before_list}
 
             exec_globals = self._get_execution_globals()
             result = self.executor.execute(code, exec_globals)
@@ -9041,8 +9195,16 @@ Prove all of the above claims and provide a complete audit trail."""
                 self._auto_save_results(result.namespace, step_number)
 
             duration_ms = int((time.time() - start_time) * 1000)
-            tables_after = set(t['name'] for t in self.datastore.list_tables())
-            tables_created = list(tables_after - tables_before)
+            tables_after_list = self.datastore.list_tables()
+            tables_after = set(t['name'] for t in tables_after_list)
+            versions_after = {t['name']: t.get('version', 1) for t in tables_after_list}
+            new_tables = tables_after - tables_before
+            updated_tables = {
+                name for name in tables_before & tables_after
+                if versions_after.get(name, 1) > versions_before.get(name, 1)
+                and not name.startswith('_')
+            }
+            tables_created = list(new_tables | updated_tables)
 
             if result.success:
                 self._emit_event(StepEvent(

@@ -356,22 +356,37 @@ export function PlanApprovalDialog() {
               Cancel
             </button>
             <div className="flex items-center gap-2">
-              {hasAnyChanges && (
+              {hasAnyChanges ? (
+                <>
+                  <button
+                    onClick={() => {
+                      setStepModifications({})
+                      setDeletedSteps(new Set())
+                      setExpandedSteps(new Set())
+                      setAdditionalInstructions('')
+                    }}
+                    className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  >
+                    <ArrowPathIcon className="w-4 h-4" />
+                    Restore Original
+                  </button>
+                  <button
+                    onClick={handleRevise}
+                    className="px-5 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors flex items-center gap-2"
+                  >
+                    <CheckCircleIcon className="w-4 h-4" />
+                    Execute
+                  </button>
+                </>
+              ) : (
                 <button
-                  onClick={handleRevise}
-                  className="px-4 py-2 text-sm font-medium rounded-lg border border-amber-500 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center gap-2"
+                  onClick={handleApprove}
+                  className="px-5 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors flex items-center gap-2"
                 >
-                  <ArrowPathIcon className="w-4 h-4" />
-                  Revise Plan
+                  <CheckCircleIcon className="w-4 h-4" />
+                  Approve
                 </button>
               )}
-              <button
-                onClick={handleApprove}
-                className="px-5 py-2 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors flex items-center gap-2"
-              >
-                <CheckCircleIcon className="w-4 h-4" />
-                Approve
-              </button>
             </div>
           </div>
         </DialogPanel>

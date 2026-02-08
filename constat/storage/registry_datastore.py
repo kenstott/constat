@@ -149,6 +149,9 @@ class RegistryAwareDataStore:
         """
         Save a DataFrame to Parquet with DuckDB view and registry.
 
+        If a table with this name already exists, the previous data is archived
+        as a versioned backup (e.g. name__v1.parquet) before overwriting.
+
         Args:
             name: Table name
             df: DataFrame to save
@@ -163,6 +166,15 @@ class RegistryAwareDataStore:
 
         conn = self._get_duckdb()
         parquet_path = self._parquet_path(name)
+
+        # Archive existing version before overwriting
+        if parquet_path.exists():
+            # Find the next version number
+            version = 1
+            while self._parquet_path(f"{name}__v{version}").exists():
+                version += 1
+            backup_path = self._parquet_path(f"{name}__v{version}")
+            parquet_path.rename(backup_path)
 
         # Save to Parquet using DuckDB (efficient writer)
         conn.execute(f"DROP VIEW IF EXISTS {name}")
@@ -196,8 +208,19 @@ class RegistryAwareDataStore:
             role_id=role_id,
         )
 
+    def _version_count(self, name: str) -> int:
+        """Count how many versions exist for a table (including current)."""
+        count = 0
+        if self._parquet_path(name).exists():
+            count = 1
+        version = 1
+        while self._parquet_path(f"{name}__v{version}").exists():
+            count += 1
+            version += 1
+        return max(count, 1)
+
     def drop_table(self, name: str) -> bool:
-        """Drop a table (view, Parquet, and registry entries)."""
+        """Drop a table (view, Parquet, versioned backups, and registry entries)."""
         conn = self._get_duckdb()
 
         try:
@@ -209,6 +232,16 @@ class RegistryAwareDataStore:
         parquet_path = self._parquet_path(name)
         if parquet_path.exists():
             parquet_path.unlink()
+
+        # Remove versioned backups
+        version = 1
+        while True:
+            backup_path = self._parquet_path(f"{name}__v{version}")
+            if backup_path.exists():
+                backup_path.unlink()
+                version += 1
+            else:
+                break
 
         # Remove from central registry
         self._registry.delete_table(self._user_id, self._session_id, name)
@@ -226,6 +259,74 @@ class RegistryAwareDataStore:
     def get_table_data(self, name: str) -> Optional[pd.DataFrame]:
         """Alias for load_dataframe for compatibility."""
         return self.load_dataframe(name)
+
+    def get_table_versions(self, name: str) -> list[dict]:
+        """Get all versions of a table, newest first."""
+        versions = []
+        conn = self._get_duckdb()
+
+        # Current version (highest number)
+        parquet_path = self._parquet_path(name)
+        if parquet_path.exists():
+            try:
+                row_count = conn.execute(
+                    f"SELECT COUNT(*) FROM read_parquet('{parquet_path}')"
+                ).fetchone()[0]
+            except Exception:
+                row_count = 0
+            # Find the version number for the current file
+            version_num = 1
+            while self._parquet_path(f"{name}__v{version_num}").exists():
+                version_num += 1
+            versions.append({
+                "version": version_num,
+                "row_count": row_count,
+                "is_current": True,
+            })
+
+        # Archived versions (descending)
+        v = version_num - 1 if versions else 0
+        while v >= 1:
+            backup_path = self._parquet_path(f"{name}__v{v}")
+            if backup_path.exists():
+                try:
+                    row_count = conn.execute(
+                        f"SELECT COUNT(*) FROM read_parquet('{backup_path}')"
+                    ).fetchone()[0]
+                except Exception:
+                    row_count = 0
+                versions.append({
+                    "version": v,
+                    "row_count": row_count,
+                    "is_current": False,
+                })
+            v -= 1
+
+        return versions
+
+    def load_table_version(self, name: str, version: int) -> Optional[pd.DataFrame]:
+        """Load a specific version of a table."""
+        conn = self._get_duckdb()
+
+        # Check if this is the current version
+        current_version = 1
+        while self._parquet_path(f"{name}__v{current_version}").exists():
+            current_version += 1
+
+        if version == current_version:
+            # Current version
+            parquet_path = self._parquet_path(name)
+        else:
+            # Archived version
+            parquet_path = self._parquet_path(f"{name}__v{version}")
+
+        if not parquet_path.exists():
+            return None
+
+        try:
+            return conn.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+        except Exception:
+            return None
 
     def query(self, sql: str) -> pd.DataFrame:
         """Execute SQL query over DuckDB views (which read from Parquet)."""
@@ -248,6 +349,8 @@ class RegistryAwareDataStore:
                 "description": t.description,
                 "is_published": t.is_published,
                 "is_final_step": t.is_final_step,
+                "version": self._version_count(t.name),
+                "version_count": self._version_count(t.name),
             }
             for t in tables
         ]

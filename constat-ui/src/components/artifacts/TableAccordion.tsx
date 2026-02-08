@@ -275,11 +275,11 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
   return (
     <>
       {/* Accordion Item */}
-      <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-        {/* Header */}
+      <div className="border border-gray-200 dark:border-gray-700 rounded-lg">
+        {/* Header - overflow-visible to allow version dropdown to escape */}
         <button
           onClick={toggleOpen}
-          className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          className="relative w-full flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors rounded-t-lg"
         >
           <div className="flex items-center gap-2 min-w-0">
             {isOpen ? (
@@ -371,7 +371,7 @@ export function TableAccordion({ table, initiallyOpen = false }: TableAccordionP
 
         {/* Collapsible Content */}
         {isOpen && (
-          <div className="px-3 py-2 bg-white dark:bg-gray-900">
+          <div className="px-3 py-2 bg-white dark:bg-gray-900 overflow-hidden rounded-b-lg">
             {renderTable('200px')}
           </div>
         )}

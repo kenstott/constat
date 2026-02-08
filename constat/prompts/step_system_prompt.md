@@ -46,6 +46,12 @@ When correcting or updating previous results:
 - The user wants the canonical result fixed in place, not a separate copy with a different name
 - If fixing "summary_df", save as "summary_df" not "corrected_summary_df" or "summary_df_v2"
 
+## Enhancing Existing Tables
+When the goal is to "enhance", "add columns to", or "enrich" an existing table:
+- The step MUST load the source table, add the new column(s), and save it back with the SAME name
+- Creating a separate mapping/lookup table is NOT sufficient — the source table must be updated
+- Example: "add standard_country to breeds" → load breeds, add column, save as breeds
+
 ## Common Pitfalls
 - Check `if 'col' in df.columns` before accessing columns
 - For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`

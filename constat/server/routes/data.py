@@ -12,6 +12,9 @@
 import logging
 from typing import Any
 
+import numpy as np
+import pandas as pd
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
@@ -40,6 +43,42 @@ router = APIRouter()
 def get_session_manager(request: Request) -> SessionManager:
     """Dependency to get session manager from app state."""
     return request.app.state.session_manager
+
+
+def _sanitize_value(v: Any) -> Any:
+    """Convert a single value to a JSON-safe Python type."""
+    if v is None:
+        return None
+    if isinstance(v, np.integer):
+        return int(v)
+    if isinstance(v, np.floating):
+        return None if np.isnan(v) else float(v)
+    if isinstance(v, np.bool_):
+        return bool(v)
+    if isinstance(v, np.ndarray):
+        return [_sanitize_value(x) for x in v.tolist()]
+    if isinstance(v, (list, tuple)):
+        return [_sanitize_value(x) for x in v]
+    if isinstance(v, dict):
+        return {str(dk): _sanitize_value(dv) for dk, dv in v.items()}
+    if isinstance(v, (np.str_, np.bytes_)):
+        return str(v)
+    if hasattr(v, 'item'):
+        return v.item()
+    return v
+
+
+def _sanitize_df_for_json(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Convert DataFrame to JSON-safe list of dicts.
+
+    Handles NaN, NaT, numpy types, ndarray columns that break Pydantic JSON serialization.
+    """
+    df = df.where(df.notna(), None)
+    records = df.to_dict(orient="records")
+    for row in records:
+        for k, v in row.items():
+            row[k] = _sanitize_value(v)
+    return records
 
 
 @router.get("/{session_id}/tables", response_model=TableListResponse)
@@ -168,7 +207,7 @@ async def get_table_version_data(
     return TableDataResponse(
         name=table_name,
         columns=list(df.columns),
-        data=page_df.to_dict(orient="records"),
+        data=_sanitize_df_for_json(page_df),
         total_rows=total_rows,
         page=page,
         page_size=page_size,
@@ -206,6 +245,8 @@ async def get_table_data(
     try:
         # Load the full DataFrame
         df = managed.session.datastore.load_dataframe(table_name)
+        if df is None:
+            raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
 
         total_rows = len(df)
         start_idx = (page - 1) * page_size
@@ -214,8 +255,7 @@ async def get_table_data(
         # Slice for pagination
         page_df = df.iloc[start_idx:end_idx]
 
-        # Convert to records
-        data = page_df.to_dict(orient="records")
+        data = _sanitize_df_for_json(page_df)
 
         return TableDataResponse(
             name=table_name,

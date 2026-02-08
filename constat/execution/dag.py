@@ -697,6 +697,16 @@ class DAGExecutor:
                         else:
                             value, confidence, source = result, 0.9, ""
 
+                        # Propagate confidence: cap by weakest dependency
+                        if node.dependencies:
+                            dep_confidences = []
+                            for dep_name in node.dependencies:
+                                dep_node = self.dag.get_node(dep_name)
+                                if dep_node and dep_node.confidence is not None:
+                                    dep_confidences.append(dep_node.confidence)
+                            if dep_confidences:
+                                confidence = min(confidence, min(dep_confidences))
+
                         node.status = NodeStatus.RESOLVED
                         node.value = value
                         node.confidence = confidence
