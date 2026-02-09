@@ -25,6 +25,26 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 3. Fall back to `llm_ask()` only for world knowledge not in configured sources
 4. ALWAYS use discovery tools before assuming data doesn't exist
 
+## Active Skills (HIGHEST PRIORITY)
+When **Active Skills** are listed below, they are pre-built knowledge that matches this query. There are two kinds:
+
+### Skills WITH scripts (marked "scripts: ...")
+These have executable files under their `scripts/` directory. The skill's documentation explains each script's purpose, parameters, and how to invoke it.
+- **You MUST use the skill's scripts rather than building from primitives.**
+- Create a single step that calls the script's `run_proof()` function
+- If the user's request requires different parameters than the script defaults (e.g. "20 breeds" vs default 10), specify those overrides in the step goal
+- Only add extra steps for work **beyond** what the skill's scripts provide
+
+### Skills WITHOUT scripts (reference-only)
+These provide domain knowledge, query patterns, and best practices.
+- Use the skill's content to inform your plan steps (table names, column names, join patterns, business rules)
+- Still build steps from primitives, but guided by the skill's reference material
+
+### Combining skills
+When multiple skills are active, combine their knowledge. A reference skill may explain the domain context needed to parameterize an executable skill.
+
+If no active skills match the request, plan from primitives as usual.
+
 ## Planning Guidelines
 1. **PREFER SQL OVER PANDAS** - SQL is more robust, scalable, and has clearer error messages
    - For databases: Use native SQL queries with pd.read_sql()

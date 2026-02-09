@@ -106,6 +106,7 @@ class Planner:
         self.allowed_apis = allowed_apis
         self.allowed_documents = allowed_documents
         self._available_roles: list[dict] = []  # For role-based step assignment
+        self._skill_manager = None  # Set via set_skill_manager()
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -164,6 +165,10 @@ class Planner:
             roles: List of role dicts with 'name' and 'description' keys
         """
         self._available_roles = roles or []
+
+    def set_skill_manager(self, skill_manager) -> None:
+        """Set skill manager for injecting active skills into planning prompts."""
+        self._skill_manager = skill_manager
 
     def _build_system_prompt(self, query: str) -> str:
         """Build the full system prompt for planning.
@@ -254,6 +259,28 @@ class Planner:
         else:
             logger.debug("[PLANNER] No roles available for prompt")
 
+        # Build active skills section
+        active_skills_text = ""
+        if self._skill_manager:
+            active_skill_objects = self._skill_manager.active_skill_objects
+            if active_skill_objects:
+                parts = []
+                for skill in active_skill_objects:
+                    # Discover scripts in the skill's scripts/ directory
+                    skill_dir = self._skill_manager.skills_dir / skill.filename
+                    scripts_dir = skill_dir / "scripts"
+                    script_files = []
+                    if scripts_dir.exists():
+                        script_files = sorted(
+                            str(f) for f in scripts_dir.iterdir() if f.is_file()
+                        )
+                    header = f"## Skill: {skill.name}"
+                    if script_files:
+                        header += f" (scripts: {', '.join(script_files)})"
+                    parts.append(f"{header}\n{skill.prompt}")
+                active_skills_text = "\n\n".join(parts)
+                logger.info(f"[PLANNER] Including {len(active_skill_objects)} active skills in prompt")
+
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             injected_sections=injected_sections,
@@ -261,6 +288,7 @@ class Planner:
             api_overview=api_overview,
             doc_overview=doc_overview,
             domain_context=self.config.system_prompt or "No additional domain context provided.",
+            active_skills=active_skills_text,
             user_facts=user_facts_text,
             learnings=learnings_text,
             available_roles=roles_text,

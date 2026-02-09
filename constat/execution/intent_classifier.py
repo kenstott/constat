@@ -473,7 +473,9 @@ class IntentClassifier:
                 "using best embedding match despite low confidence"
             )
             primary, _ = self._classify_primary(user_input)
-            sub, _ = self._classify_sub(primary, user_input)
+            sub, sub_confidence = self._classify_sub(primary, user_input)
+            if sub is not None and sub_confidence < SUB_THRESHOLD:
+                sub = None
             target = self._extract_target(primary, user_input)
             return TurnIntent(primary=primary, sub=sub, target=target)
 
@@ -523,7 +525,7 @@ Mode: {mode_str}"""
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system=system_prompt,
                 user_message=user_message,
-                max_tokens=self.llm.max_output_tokens,
+                max_tokens=self._llm_provider.max_output_tokens,
             )
 
             return self._parse_llm_response(result.content, user_input)
@@ -532,7 +534,9 @@ Mode: {mode_str}"""
             logger.error(f"LLM fallback failed: {e}")
             # Fall back to embedding match
             primary, _ = self._classify_primary(user_input)
-            sub, _ = self._classify_sub(primary, user_input)
+            sub, sub_confidence = self._classify_sub(primary, user_input)
+            if sub is not None and sub_confidence < SUB_THRESHOLD:
+                sub = None
             target = self._extract_target(primary, user_input)
             return TurnIntent(primary=primary, sub=sub, target=target)
 

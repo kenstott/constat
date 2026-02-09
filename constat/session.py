@@ -253,6 +253,7 @@ class Session:
             api_schema_manager=self.api_schema_manager,
         )
 
+
         self.executor = PythonExecutor(
             timeout_seconds=config.execution.timeout_seconds,
             allowed_imports=config.execution.allowed_imports or None,
@@ -321,6 +322,9 @@ class Session:
         from constat.core.skill_matcher import SkillMatcher
         self.skill_matcher = SkillMatcher(self.skill_manager)
         # Initialize lazily on first use to avoid blocking startup
+
+        # Wire skill manager into planner so active skills appear in planning prompts
+        self.planner.set_skill_manager(self.skill_manager)
 
         # Track current role for this query (None = shared context)
         self._current_role_id: Optional[str] = None
@@ -2136,9 +2140,45 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             parts.append(role_prompt)
 
         # Skills prompts (if any active)
-        skills_prompt = self.skill_manager.get_skills_prompt()
-        if skills_prompt:
-            parts.append(f"# Active Skills\n\n{skills_prompt}")
+        active_skill_objects = self.skill_manager.active_skill_objects
+        if active_skill_objects:
+            skill_parts = []
+            for skill in active_skill_objects:
+                skill_dir = self.skill_manager.skills_dir / skill.filename
+                scripts_dir = skill_dir / "scripts"
+                script_files = []
+                if scripts_dir.exists():
+                    script_files = sorted(
+                        str(f) for f in scripts_dir.iterdir() if f.is_file()
+                    )
+                if script_files:
+                    skill_parts.append(
+                        f"## Skill: {skill.name} — EXECUTE, DO NOT REWRITE\n"
+                        f"Scripts: {', '.join(script_files)}\n\n"
+                        f"**Load the script and call its `run_proof()` function.** Do NOT reimplement the logic.\n\n"
+                        f"Pattern:\n"
+                        f"```python\n"
+                        f"import pandas as pd\n\n"
+                        f"# 1. Load script into its own namespace\n"
+                        f"_ns = {{}}\n"
+                        f"exec(open('{script_files[0]}').read(), _ns)\n\n"
+                        f"# 2. Call run_proof() with parameter overrides — returns dict[str, str] of Parquet file paths\n"
+                        f"file_paths = _ns['run_proof']()  # e.g. {{'_result': '/tmp/.../result.parquet', ...}}\n\n"
+                        f"# 3. Load and save each dataset to the session store\n"
+                        f"for name, path in file_paths.items():\n"
+                        f"    store.save_dataframe(name, pd.read_parquet(path))\n"
+                        f"_result = pd.read_parquet(file_paths['_result'])\n"
+                        f"```\n\n"
+                        f"IMPORTANT:\n"
+                        f"- `run_proof()` accepts keyword arguments to override default parameters. Check the documentation for available parameters.\n"
+                        f"- It returns a dict mapping dataset names to Parquet file paths. `_result` is the final output.\n"
+                        f"- Load each Parquet file with `pd.read_parquet()` and save to `store`.\n\n"
+                        f"Skill documentation:\n\n"
+                        f"{skill.prompt}"
+                    )
+                else:
+                    skill_parts.append(f"## Skill: {skill.name} (reference)\n{skill.prompt}")
+            parts.append("# Active Skills\n\n" + "\n\n".join(skill_parts))
 
         return "\n\n".join(parts)
 
@@ -5642,9 +5682,19 @@ Provide a brief, high-level summary of the key findings."""
         # Emit dynamic context event (role and skills matched for this query)
         logger.info(f"[DYNAMIC_CONTEXT] dynamic_context={dynamic_context}")
         if dynamic_context:
+            # Activate matched skills so they flow into planner and codegen prompts
+            matched_skills = dynamic_context.get("skills", [])
+            if matched_skills:
+                skill_names = [s["name"] for s in matched_skills]
+                activated = self.skill_manager.set_active_skills(skill_names)
+                logger.info(f"[DYNAMIC_CONTEXT] Activated skills: {activated}")
+                if activated:
+                    speculative_plan = None
+                    logger.debug("[PARALLEL] Skills activated, discarding speculative plan")
+
             event_data = {
                 "role": dynamic_context.get("role"),
-                "skills": dynamic_context.get("skills"),
+                "skills": matched_skills,
                 "role_source": dynamic_context.get("role_source"),
             }
             logger.info(f"[DYNAMIC_CONTEXT] Emitting event with data: role={event_data.get('role')}, skills={event_data.get('skills')}")

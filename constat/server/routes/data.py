@@ -2530,6 +2530,8 @@ def generate_inference_script(
         'import numpy as np',
         'import duckdb',
         'import json',
+        'import tempfile',
+        'from pathlib import Path',
         '',
         '',
         '# ============================================================================',
@@ -2538,26 +2540,48 @@ def generate_inference_script(
         '',
         'class _DataStore:',
         '    def __init__(self):',
-        '        self._tables: dict[str, pd.DataFrame] = {}',
         '        self._conn = duckdb.connect()',
+        '        self._output_dir: Path | None = None',
+        '        self._files: dict[str, str] = {}',
+        '',
+        '    def _ensure_output_dir(self) -> Path:',
+        '        if self._output_dir is None:',
+        '            self._output_dir = Path(tempfile.mkdtemp(prefix="constat_skill_"))',
+        '        return self._output_dir',
         '',
         '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
-        '        self._tables[name] = df',
         '        self._conn.register(name, df)',
-        '        print(f"Saved: {name} ({len(df)} rows)")',
+        '        out = self._ensure_output_dir() / f"{name}.parquet"',
+        '        df.to_parquet(out, index=False)',
+        '        self._files[name] = str(out)',
+        '        print(f"Saved: {name} ({len(df)} rows) -> {out}")',
         '',
         '    def query(self, sql: str) -> pd.DataFrame:',
         '        return self._conn.execute(sql).fetchdf()',
         '',
         '    def load_dataframe(self, name: str) -> pd.DataFrame:',
-        '        if name not in self._tables:',
+        '        if name not in self._files:',
         '            raise ValueError(f"Table not found: {name}")',
-        '        return self._tables[name]',
+        '        return pd.read_parquet(self._files[name])',
         '',
         '',
         'store = _DataStore()',
         '',
     ]
+
+    # Add module-level defaults for constant premises (overridable via run_proof kwargs)
+    constant_premises_early = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
+    if constant_premises_early:
+        lines.append('# Default parameters (overridable via run_proof kwargs)')
+        for p in constant_premises_early:
+            pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+            value = p["value"]
+            try:
+                literal = _ast.literal_eval(value)
+                lines.append(f'_{pname} = {repr(literal)}')
+            except (ValueError, SyntaxError):
+                lines.append(f'_{pname} = {repr(value)}')
+        lines.append('')
 
     # Add API helpers
     if apis:
@@ -2654,8 +2678,10 @@ def generate_inference_script(
 
     # Build run_proof signature with constant premises as kwargs
     param_parts = []
+    param_names = []
     for p in constant_premises:
         pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+        param_names.append((pname, p["name"]))
         value = p["value"]
         try:
             literal = _ast.literal_eval(value)
@@ -2665,15 +2691,24 @@ def generate_inference_script(
 
     sig = ', '.join(param_parts)
     lines.append(f'def run_proof({sig}):')
-    lines.append('    """Execute all inferences and return the final result."""')
+    lines.append('    """Execute all inferences and return collected datasets.')
+    lines.append('')
+    lines.append('    Returns:')
+    lines.append('        dict[str, str]: Map of dataset name to Parquet file path.')
+    lines.append('        The final result is also available under the "_result" key.')
+    lines.append('    """')
 
-    # Store constants in premises table so inference code can access them
+    # Set module-level defaults from params so inference functions can read them
     if constant_premises:
+        global_names = [f'_{pname}' for pname, _ in param_names]
+        lines.append(f'    global {", ".join(global_names)}')
+        for pname, original_name in param_names:
+            lines.append(f'    _{pname} = {pname}')
+        lines.append('')
         lines.append('    # Store premise constants')
         lines.append('    _premises = {}')
-        for p in constant_premises:
-            pname = p["name"].lower().replace(" ", "_").replace("-", "_")
-            lines.append(f'    _premises["{p["name"]}"] = {pname}')
+        for pname, original_name in param_names:
+            lines.append(f'    _premises["{original_name}"] = {pname}')
         lines.append('    store.save_dataframe("_premises", pd.DataFrame([_premises]))')
         lines.append('')
 
@@ -2686,13 +2721,17 @@ def generate_inference_script(
         lines.append(f'    _last = {func_name}()')
     lines.extend([
         '',
-        '    return _last',
+        '    # Save final result and return file paths',
+        '    if _last is not None and hasattr(_last, "to_parquet"):',
+        '        store.save_dataframe("_result", _last)',
+        '    return dict(store._files)',
         '',
         '',
         'if __name__ == "__main__":',
-        '    result = run_proof()',
-        '    print("\\n=== Final Result ===")',
-        '    print(result)',
+        '    paths = run_proof()',
+        '    print("\\n=== Output Files ===")',
+        '    for name, path in paths.items():',
+        '        print(f"  {name}: {path}")',
         '',
     ])
 

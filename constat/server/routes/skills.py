@@ -271,6 +271,21 @@ async def create_skill_from_proof(
     if not hasattr(session, "skill_manager"):
         raise HTTPException(status_code=500, detail="Skill manager not available")
 
+    # Extract script parameters from premises (for SKILL.md documentation)
+    import ast as _ast
+    script_params = []
+    if session.history and session.session_id:
+        premises = session.history.list_inference_premises(session.session_id)
+        for p in premises:
+            if p.get("source") in ("embedded", "llm_knowledge"):
+                pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+                value = p["value"]
+                try:
+                    default = repr(_ast.literal_eval(value))
+                except (ValueError, SyntaxError):
+                    default = repr(value)
+                script_params.append({"name": pname, "default": default})
+
     # Generate SKILL.md content via LLM
     try:
         content, description = session.skill_manager.skill_from_proof(
@@ -280,6 +295,7 @@ async def create_skill_from_proof(
             original_problem=original_problem,
             llm=session.llm,
             description=skill_request.description or None,
+            script_params=script_params or None,
         )
     except Exception as e:
         logger.error(f"Failed to generate skill from proof: {e}")
