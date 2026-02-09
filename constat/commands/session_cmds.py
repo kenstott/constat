@@ -792,7 +792,8 @@ def prove_command(ctx: CommandContext) -> CommandResult:
         )
 
     # Run the proof (events will be emitted to UI)
-    result = session.prove_conversation()
+    guidance = ctx.args.strip() if ctx.args else None
+    result = session.prove_conversation(guidance=guidance)
 
     if result.get("error"):
         return ErrorResult(error=result["error"])

@@ -277,9 +277,9 @@ function MainApp() {
         isSummaryGenerating={isSummaryGenerating}
         sessionId={session?.session_id}
         onSkillCreated={() => fetchAllSkills()}
-        onRedo={() => {
+        onRedo={(guidance) => {
           clearFacts()
-          submitQuery('/prove', true)
+          submitQuery(guidance ? `/prove ${guidance}` : '/prove', true)
         }}
       />
       <HelpModal

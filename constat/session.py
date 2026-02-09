@@ -8291,13 +8291,16 @@ If you don't have enough information, say so rather than guessing."""
                 "output": f"Failed to generate explanation: {e}",
             }
 
-    def prove_conversation(self) -> dict:
+    def prove_conversation(self, guidance: str | None = None) -> dict:
         """
         Re-run the original request in proof/auditable mode.
 
         Takes the original problem from the session and runs it through
         the auditable solver, reusing existing facts and tables from
         the exploratory session.
+
+        Args:
+            guidance: Optional user guidance for the proof (e.g., "focus on X", "use table Y")
 
         Returns:
             Dict with proof results (same format as _solve_auditable)
@@ -8338,6 +8341,10 @@ Prove all of the above claims and provide a complete audit trail."""
             logger.debug(f"[prove_conversation] Combined problem with {len(follow_ups)} follow-ups")
         else:
             combined_problem = original_problem
+
+        if guidance:
+            combined_problem += f"\n\nAdditional guidance for this proof: {guidance}"
+            logger.debug(f"[prove_conversation] Added guidance: {guidance[:100]}")
 
         logger.debug(f"[prove_conversation] Running proof for: {combined_problem[:150]}...")
 

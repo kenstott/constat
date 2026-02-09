@@ -607,25 +607,31 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
 
         system_prompt = """You are an expert at creating SKILL files for a data analysis assistant.
 
-You are converting a COMPLETED PROOF (verified facts with derivation strategies and inference code) into a reusable skill.
+You are converting a completed analysis (verified facts with derivation strategies and inference code) into a reusable skill.
 
 A skill file has two parts:
 
 1. **YAML frontmatter** (between ---):
    - name: skill identifier (kebab-case)
-   - description: brief description of what domain/patterns this covers
+   - description: A SPECIFIC description of what was analyzed — name the actual data sources, entities, and domain. NOT a generic pattern description.
    - allowed-tools: list of tools (typically: list_tables, get_table_schema, run_sql)
 
 2. **Markdown body**: Domain-specific reference content including:
-   - Key metrics and their calculations (as tables)
-   - Common SQL query patterns (as code blocks)
-   - Domain terminology and relationships
-   - Best practices for this domain
-   - Reference to `scripts/proof.py` for executable proof code
+   - What specific data was analyzed (name the actual tables, APIs, entities)
+   - The specific pipeline/derivation chain that was executed
+   - Key query patterns used (as code blocks) — use the ACTUAL table/column names from the analysis
+   - Metrics and calculations that were performed
+   - Reference to `scripts/proof.py` for the executable script
 
-IMPORTANT: Distill the proof into REUSABLE DOMAIN PATTERNS, not specific values.
-Extract the strategies, query patterns, and metric definitions — not the particular numbers.
-The skill should help someone solve SIMILAR problems, not just replay this exact proof.
+IMPORTANT: Be SPECIFIC, not generic. The description and content must reflect what THIS analysis actually did.
+- Name the actual data sources (specific APIs, databases, tables)
+- Name the actual entities analyzed (e.g., "cat breeds" not "records")
+- Show the actual query patterns used, not abstracted placeholders
+- Extract reusable patterns BUT anchor them to the specific domain and data of this analysis
+- The reader should understand exactly what data was involved and what was derived
+
+BAD description: "Data enhancement and enrichment patterns for creating randomized datasets"
+GOOD description: "Cat breed enrichment: fetching breeds from CatFacts API, joining with Countries GraphQL API for language and currency data"
 
 Output the complete SKILL.md content (frontmatter + markdown body). No explanation outside the skill content."""
 
@@ -640,16 +646,18 @@ Output the complete SKILL.md content (frontmatter + markdown body). No explanati
             }
             nodes_summary.append(entry)
 
-        user_prompt = f"""Create a skill named "{name}" from this completed proof.
+        user_prompt = f"""Create a skill named "{name}" from this completed analysis.
 
 Original problem: {original_problem}
 
-{f"Proof summary: {proof_summary}" if proof_summary else ""}
+{f"Summary: {proof_summary}" if proof_summary else ""}
 
-Proof nodes (verified facts with derivation strategies):
+Analysis steps (verified facts with derivation strategies):
 {json.dumps(nodes_summary, indent=2)}
 
-Generate a SKILL.md that captures the reusable domain patterns, SQL queries, and metric definitions from this proof. Include a note that `scripts/proof.py` contains the executable proof code."""
+Generate a SKILL.md that specifically describes what was analyzed, the data sources used, the derivation pipeline, and the key query patterns. Be specific — name the actual tables, APIs, entities, and columns. Include a note that `scripts/proof.py` contains the executable script.
+
+The script in `scripts/proof.py` is fixed — only its input parameters can vary. Describe the skill in terms of what the script ACTUALLY does with those specific data sources, not what it COULD do in the abstract. The parameters define the only axes of generalization."""
 
         result = llm.generate(
             system=system_prompt,

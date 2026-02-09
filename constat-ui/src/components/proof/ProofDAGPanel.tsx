@@ -37,7 +37,7 @@ interface ProofDAGPanelProps {
   isSummaryGenerating?: boolean  // True while summary is being generated
   sessionId?: string
   onSkillCreated?: () => void
-  onRedo?: () => void
+  onRedo?: (guidance?: string) => void
 }
 
 // Status symbols as per design doc
@@ -225,6 +225,8 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const [showSkillForm, setShowSkillForm] = useState(false)
   const [skillName, setSkillName] = useState('')
   const [isSavingSkill, setIsSavingSkill] = useState(false)
+  const [showRedoForm, setShowRedoForm] = useState(false)
+  const [redoGuidance, setRedoGuidance] = useState('')
   const pushSelectedNode = (node: FactNode) => setSelectedNodeStack(prev => [...prev, node])
   const popSelectedNode = () => setSelectedNodeStack(prev => prev.slice(0, -1))
   const clearSelectedNodes = () => setSelectedNodeStack([])
@@ -865,13 +867,46 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
           <span className="text-xs text-gray-500">Click nodes for details</span>
           <div className="flex gap-2 items-center">
-            {isProofComplete && onRedo && (
+            {isProofComplete && onRedo && !showRedoForm && (
               <button
-                onClick={onRedo}
+                onClick={() => setShowRedoForm(true)}
                 className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
               >
                 Redo
               </button>
+            )}
+            {showRedoForm && onRedo && (
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  onRedo(redoGuidance.trim() || undefined)
+                  setShowRedoForm(false)
+                  setRedoGuidance('')
+                }}
+              >
+                <input
+                  type="text"
+                  value={redoGuidance}
+                  onChange={(e) => setRedoGuidance(e.target.value)}
+                  placeholder="Guidance (optional)..."
+                  className="px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-amber-500 w-48"
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-1 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded transition-colors"
+                >
+                  Prove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
+                  className="px-2 py-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  Cancel
+                </button>
+              </form>
             )}
             {isProofComplete && sessionId && !showSkillForm && (
               <button
