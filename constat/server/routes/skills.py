@@ -325,6 +325,12 @@ async def create_skill_from_proof(
         except Exception as e:
             logger.warning(f"Failed to write proof script: {e}")
 
+    # Invalidate cached skill manager so list_skills sees the new skill
+    server_config = get_server_config(request)
+    cache_key = (user_id, str(server_config.data_dir))
+    if cache_key in _skill_managers:
+        _skill_managers[cache_key].reload()
+
     return CreateSkillFromProofResponse(
         name=skill_request.name,
         content=content,

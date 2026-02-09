@@ -63,6 +63,22 @@ class StepStatus(Enum):
     SKIPPED = "skipped"
 
 
+class ValidationOnFail(Enum):
+    """Action to take when a post-validation fails."""
+    RETRY = "retry"        # Re-codegen the step with validation error as context
+    CLARIFY = "clarify"    # Ask user via existing clarification system
+    WARN = "warn"          # Log warning, continue execution
+
+
+@dataclass
+class PostValidation:
+    """A post-execution validation assertion for a step."""
+    expression: str          # Python expression to eval (e.g., "len(df) > 0")
+    description: str         # Human-readable description
+    on_fail: ValidationOnFail = ValidationOnFail.RETRY
+    clarify_question: str = ""  # Question for user if on_fail=CLARIFY
+
+
 class ArtifactType(Enum):
     """Type of artifact produced by a step."""
     # Code and execution artifacts
@@ -162,6 +178,9 @@ class Step:
     # Skills provide domain-specific instructions for code generation
     skill_ids: Optional[list[str]] = None
 
+    # Post-execution validations (assertions checked after successful execution)
+    post_validations: list["PostValidation"] = field(default_factory=list)
+
     # Populated during execution
     status: StepStatus = StepStatus.PENDING
     code: Optional[str] = None
@@ -202,6 +221,9 @@ class StepResult:
 
     # Suggestions for alternative approaches when step fails
     suggestions: list[FailureSuggestion] = field(default_factory=list)
+
+    # Warnings from post-validations with on_fail=WARN
+    validation_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass

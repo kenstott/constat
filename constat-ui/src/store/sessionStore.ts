@@ -717,6 +717,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
+      case 'validation_retry': {
+        // Post-validation failed, step will retry
+        const validation = (event.data.validation as string) || 'Validation failed'
+        updateStepMessage(event.step_number, `Step ${event.step_number}: Retrying (${validation})...`)
+        set({ executionPhase: 'retrying' })
+        break
+      }
+
+      case 'validation_warnings': {
+        // Post-validation warnings (non-blocking)
+        const warnings = (event.data.warnings as string[]) || []
+        if (warnings.length > 0) {
+          const warningText = warnings.map(w => `⚠ ${w}`).join('\n')
+          const { messages } = get()
+          const stepMsgId = get().stepMessageIds[event.step_number]
+          if (stepMsgId) {
+            const existing = messages.find(m => m.id === stepMsgId)
+            if (existing) {
+              get().updateMessage(stepMsgId, { content: `${existing.content}\n${warningText}` })
+            }
+          }
+        }
+        break
+      }
+
       case 'synthesizing':
       case 'generating_insights': {
         // Show "Generating insights..." with animation

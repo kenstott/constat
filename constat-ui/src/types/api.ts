@@ -364,6 +364,8 @@ export type EventType =
   | 'step_complete'
   | 'step_error'
   | 'step_failed'
+  | 'validation_retry'
+  | 'validation_warnings'
   | 'facts_extracted'
   | 'fact_resolved'
   | 'fact_start'

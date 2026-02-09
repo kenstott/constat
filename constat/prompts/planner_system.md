@@ -72,7 +72,7 @@ Return a JSON object:
   "reasoning": "Brief explanation of your approach",
   "contains_sensitive_data": false,
   "steps": [
-    {{"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium", "role_id": null}},
+    {{"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium", "role_id": null, "post_validations": [{{"expression": "len(df) > 0", "description": "Query returned results", "on_fail": "retry"}}]}},
     {{"number": 2, "goal": "...", "inputs": ["df"], "outputs": ["summary"], "depends_on": [1], "task_type": "python_analysis", "complexity": "low", "role_id": "financial-analyst"}}
   ]
 }}
@@ -88,6 +88,24 @@ Note: `role_id` is optional. Use `null` or omit it for steps that should use sha
 - **low**: Simple single-table queries
 - **medium**: Multi-table joins, moderate aggregations
 - **high**: Complex joins, window functions
+
+## Post-Validations (optional)
+Each step can include `post_validations` — assertions checked after successful execution.
+
+```json
+"post_validations": [
+  {{"expression": "len(df) > 0", "description": "Query returned results", "on_fail": "retry"}},
+  {{"expression": "'email' in df.columns", "description": "Email column exists", "on_fail": "warn"}}
+]
+```
+
+Rules:
+- `expression`: Valid Python expression evaluated in the step's namespace (has access to all variables the step created)
+- `on_fail`: "retry" (re-generate code with error context), "clarify" (ask user), "warn" (log and continue)
+- For "clarify", add `clarify_question` field with the question to ask
+- Only add validations when the step has clear success criteria
+- Don't validate obvious things (code already throws on syntax errors)
+- Focus on semantic correctness: row counts, column existence, value ranges, data types
 
 ## User Revisions and Edited Plans
 If the input contains a "Requested plan structure", the user has edited the plan and you MUST follow that structure exactly:

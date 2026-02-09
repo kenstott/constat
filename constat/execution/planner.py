@@ -18,7 +18,7 @@ from typing import Optional, Union, TYPE_CHECKING
 from constat.core.config import Config
 
 logger = logging.getLogger(__name__)
-from constat.core.models import Plan, PlannerResponse, Step, StepType, TaskType
+from constat.core.models import Plan, PlannerResponse, PostValidation, Step, StepType, TaskType, ValidationOnFail
 from constat.providers import TaskRouter
 from constat.providers.base import BaseLLMProvider
 from constat.catalog.schema_manager import SchemaManager
@@ -36,6 +36,28 @@ from constat.prompts import load_prompt
 
 PLANNER_SYSTEM_PROMPT = load_prompt("planner_system.md")
 PLANNER_PROMPT_TEMPLATE = load_prompt("planner_template.md")
+
+
+def _parse_post_validations(raw: list[dict]) -> list[PostValidation]:
+    """Parse raw post-validation dicts into PostValidation objects."""
+    validations = []
+    for entry in raw:
+        expression = entry.get("expression", "")
+        description = entry.get("description", "")
+        if not expression or not description:
+            continue
+        on_fail_str = entry.get("on_fail", "retry")
+        try:
+            on_fail = ValidationOnFail(on_fail_str)
+        except ValueError:
+            on_fail = ValidationOnFail.RETRY
+        validations.append(PostValidation(
+            expression=expression,
+            description=description,
+            on_fail=on_fail,
+            clarify_question=entry.get("clarify_question", ""),
+        ))
+    return validations
 
 
 class Planner:
@@ -501,6 +523,7 @@ class Planner:
                 task_type=task_type,
                 complexity=step_data.get("complexity", "medium"),
                 role_id=step_data.get("role_id"),  # Role context for this step
+                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
             ))
 
         plan = Plan(
@@ -642,6 +665,7 @@ Return the plan in JSON format."""
                 task_type=task_type,
                 complexity=step_data.get("complexity", "medium"),
                 role_id=step_data.get("role_id"),  # Role context for this step
+                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
             ))
 
         # Mark completed steps

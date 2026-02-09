@@ -22,7 +22,7 @@ from typing import Callable, Optional, Any
 logger = logging.getLogger(__name__)
 
 from constat.core.config import Config
-from constat.core.models import Plan, PlannerResponse, Step, StepResult, StepStatus, StepType, TaskType
+from constat.core.models import Plan, PlannerResponse, PostValidation, Step, StepResult, StepStatus, StepType, TaskType, ValidationOnFail
 from constat.core.resources import SessionResources
 from constat.storage.datastore import DataStore
 from constat.storage.history import SessionHistory
@@ -2706,6 +2706,45 @@ YOUR JSON RESPONSE:"""
                         fixed_code=code,
                     )
 
+                # Run post-validations
+                validation_warnings: list[str] = []
+                if step.post_validations:
+                    validation_warnings, failed_validation = self._run_post_validations(step, result.namespace)
+
+                    if failed_validation:
+                        if failed_validation.on_fail == ValidationOnFail.CLARIFY:
+                            clarify_response = self._ask_validation_clarification(
+                                step, failed_validation
+                            )
+                            if clarify_response:
+                                last_code = code
+                                last_error = f"Validation failed: {failed_validation.description}. User guidance: {clarify_response}"
+                                continue
+                            # User skipped — treat as warning
+                            validation_warnings.append(f"Skipped: {failed_validation.description}")
+
+                        elif failed_validation.on_fail == ValidationOnFail.RETRY:
+                            last_code = code
+                            last_error = (
+                                f"Code executed without errors, but post-validation failed.\n"
+                                f"Validation: {failed_validation.description}\n"
+                                f"Expression: {failed_validation.expression}\n"
+                                f"The code must be fixed so this validation passes."
+                            )
+                            self._emit_event(StepEvent(
+                                event_type="validation_retry",
+                                step_number=step.number,
+                                data={"validation": failed_validation.description}
+                            ))
+                            continue
+
+                    if validation_warnings:
+                        self._emit_event(StepEvent(
+                            event_type="validation_warnings",
+                            step_number=step.number,
+                            data={"warnings": validation_warnings}
+                        ))
+
                 # Detect new AND updated tables
                 tables_after_list = self.datastore.list_tables() if self.datastore else []
                 tables_after = set(t['name'] for t in tables_after_list)
@@ -2751,6 +2790,7 @@ YOUR JSON RESPONSE:"""
                     duration_ms=duration_ms,
                     tables_created=tables_created,
                     code=code,
+                    validation_warnings=validation_warnings,
                 )
 
             # Prepare for retry
@@ -2835,6 +2875,68 @@ YOUR JSON RESPONSE:"""
             duration_ms=duration_ms,
             suggestions=suggestions,
         )
+
+    def _run_post_validations(
+        self, step: Step, namespace: dict
+    ) -> tuple[list[str], PostValidation | None]:
+        """Run post-validations against step's execution namespace.
+
+        Returns:
+            (warnings, first_failing_validation)
+            - warnings: list of warning messages from on_fail=WARN validations
+            - first_failing_validation: first RETRY or CLARIFY validation that failed, or None
+        """
+        warnings: list[str] = []
+        for v in step.post_validations:
+            try:
+                result = eval(v.expression, {"__builtins__": __builtins__}, namespace)  # noqa: S307
+                passed = bool(result)
+            except Exception as e:
+                logger.warning(f"[Step {step.number}] Post-validation expression error: {v.expression} -> {e}")
+                passed = False
+
+            if not passed:
+                if v.on_fail == ValidationOnFail.WARN:
+                    warnings.append(f"Validation warning: {v.description}")
+                else:
+                    # RETRY or CLARIFY — return immediately
+                    return warnings, v
+        return warnings, None
+
+    def _ask_validation_clarification(self, step: Step, validation: PostValidation) -> str | None:
+        """Ask user for clarification when a post-validation fails with on_fail=CLARIFY.
+
+        Returns:
+            User's response string, or None if skipped/unavailable.
+        """
+        if not self._clarification_callback:
+            return None
+
+        question = validation.clarify_question or f"Validation failed: {validation.description}. How should we proceed?"
+        request = ClarificationRequest(
+            original_question=step.goal,
+            ambiguity_reason=f"Post-validation failed: {validation.description}",
+            questions=[ClarificationQuestion(question=question)],
+        )
+
+        self._emit_event(StepEvent(
+            event_type="clarification_needed",
+            step_number=step.number,
+            data={
+                "reason": request.ambiguity_reason,
+                "questions": request.questions,
+            }
+        ))
+
+        response = self._clarification_callback(request)
+        if response.skip:
+            return None
+
+        # Return first non-empty answer
+        for answer in response.answers.values():
+            if answer:
+                return answer
+        return None
 
     def _capture_error_learning(self, context: dict, fixed_code: str) -> None:
         """Capture a learning from a successful error fix.
