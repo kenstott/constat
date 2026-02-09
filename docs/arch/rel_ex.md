@@ -1,10 +1,12 @@
 # Relationship Extraction Architecture
 
+> **Status:** Pass 1 (co-occurrence) is implemented and used in production. Pass 2 (SVO extraction) is **future work** — too noisy for automated relationship creation. SVO extraction is viable as a **suggestion method**: extract candidate triples, surface in UI, user confirms or discards, confirmed relationships persist to the curated `relationships` config (see `config_merge.md` section 6). Same pattern as glossary auto-suggest bindings.
+
 ## Overview
 
 Extract semantic relationships between entities using a two-pass approach:
-1. **Pass 1 (cheap)**: Co-occurrence detection via shared chunks
-2. **Pass 2 (targeted)**: SVO extraction scoped to co-occurring pairs
+1. **Pass 1 (cheap)**: Co-occurrence detection via shared chunks — **automated, reliable**
+2. **Pass 2 (targeted)**: SVO extraction scoped to co-occurring pairs — **suggestion-only, user confirms**
 
 This approach avoids expensive full-text parsing by using co-occurrence as a filter.
 

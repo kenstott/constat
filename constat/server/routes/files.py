@@ -338,7 +338,7 @@ async def delete_file(
     _save_uploaded_files_for_session(managed, files)
 
     # Refresh entities to remove any references to the deleted file
-    session_manager.refresh_entities(session_id)
+    session_manager.refresh_entities_async(session_id)
 
     return {
         "status": "deleted",
@@ -401,7 +401,7 @@ async def add_file_reference(
     })
 
     # Refresh entities to include the new file reference
-    session_manager.refresh_entities(session_id)
+    session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     managed.save_resources()
@@ -491,7 +491,7 @@ async def delete_file_reference(
         chunks_deleted = vector_store.delete_document(doc_name, session_id)
 
     # Refresh entities to remove references to the deleted file
-    session_manager.refresh_entities(session_id)
+    session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     managed.save_resources()
@@ -701,7 +701,7 @@ async def upload_documents(
     indexed_count = sum(1 for r in results if r.get("status") == "indexed")
 
     if database_count > 0 or indexed_count > 0:
-        session_manager.refresh_entities(session_id)
+        session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     if database_count > 0 or indexed_count > 0:

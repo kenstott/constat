@@ -370,6 +370,7 @@ export type EventType =
   | 'fact_planning'
   | 'fact_executing'
   | 'fact_failed'
+  | 'fact_blocked'
   | 'dag_execution_start'
   | 'proof_complete'
   | 'proof_summary_ready'
@@ -384,6 +385,8 @@ export type EventType =
   | 'autocomplete_response'
   | 'synthesizing'
   | 'generating_insights'
+  | 'entity_rebuild_start'
+  | 'entity_rebuild_complete'
 
 export interface WSEvent {
   event_type: EventType

@@ -642,6 +642,123 @@ class APISchemaManager:
 
         return None
 
+    def add_api_dynamic(self, name: str, api_config: APIConfig) -> bool:
+        """Dynamically add and introspect an API after initialization.
+
+        This allows adding APIs at runtime without reinitializing
+        the entire API schema manager.
+
+        Args:
+            name: Name for the API
+            api_config: API configuration
+
+        Returns:
+            True if successfully added
+        """
+        try:
+            # Introspect based on type
+            if api_config.type == "graphql":
+                self._introspect_graphql(name, api_config)
+            else:
+                self._introspect_rest(name, api_config)
+
+            # Build chunks for semantic search
+            if self._vector_store is None:
+                from constat.discovery.vector_store import DuckDBVectorStore
+                self._vector_store = DuckDBVectorStore()
+            if self._model is None:
+                self._model = EmbeddingModelLoader.get_instance().get_model()
+
+            if self._model is not None and self._vector_store is not None:
+                self._add_chunks_for_api(name)
+
+            logger.info(f"Dynamically added API: {name} ({api_config.type})")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to dynamically add API {name}: {e}")
+            return False
+
+    def _add_chunks_for_api(self, api_name: str) -> None:
+        """Build and store chunks for a single API's endpoints.
+
+        Args:
+            api_name: Name of the API to build chunks for
+        """
+        from constat.discovery.models import DocumentChunk, ChunkType
+
+        chunks: list[DocumentChunk] = []
+        for full_name, meta in self.metadata_cache.items():
+            if meta.api_name != api_name:
+                continue
+
+            field_names = [f.name for f in meta.fields]
+
+            # Determine chunk_type based on api_type
+            if meta.api_type == "graphql_query":
+                endpoint_chunk_type = ChunkType.GRAPHQL_QUERY
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "graphql_mutation":
+                endpoint_chunk_type = ChunkType.GRAPHQL_MUTATION
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "graphql_type":
+                endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
+                field_chunk_type = ChunkType.GRAPHQL_FIELD
+            elif meta.api_type == "rest/schema":
+                endpoint_chunk_type = ChunkType.API_SCHEMA
+                field_chunk_type = ChunkType.API_SCHEMA
+            else:
+                endpoint_chunk_type = ChunkType.API_ENDPOINT
+                field_chunk_type = ChunkType.API_ENDPOINT
+
+            # Endpoint chunk
+            if meta.description:
+                endpoint_content = f"{meta.endpoint_name} endpoint: {meta.description}"
+            else:
+                endpoint_content = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
+                if meta.http_method and meta.http_path:
+                    endpoint_content += f" ({meta.http_method} {meta.http_path})"
+                if field_names:
+                    endpoint_content += f" with fields: {', '.join(field_names)}"
+
+            chunks.append(DocumentChunk(
+                document_name=f"api:{full_name}",
+                content=endpoint_content,
+                section=meta.api_type,
+                chunk_index=0,
+                source="api",
+                chunk_type=endpoint_chunk_type,
+            ))
+
+            # Field chunks
+            for i, field_meta in enumerate(meta.fields):
+                if field_meta.description:
+                    field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
+                else:
+                    field_type = field_meta.type if field_meta.type else "unknown type"
+                    field_content = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint"
+
+                chunks.append(DocumentChunk(
+                    document_name=f"api:{full_name}.{field_meta.name}",
+                    content=field_content,
+                    section=meta.api_type,
+                    chunk_index=i,
+                    source="api",
+                    chunk_type=field_chunk_type,
+                ))
+
+        if not chunks:
+            logger.debug(f"No metadata to create chunks for API: {api_name}")
+            return
+
+        if self._model is not None:
+            try:
+                texts = [c.content for c in chunks]
+                embeddings = self._model.encode(texts, convert_to_numpy=True)
+                self._vector_store.add_chunks(chunks, embeddings, source="api")
+                logger.info(f"Stored {len(chunks)} chunks for API: {api_name}")
+            except Exception as e:
+                logger.warning(f"Failed to store chunks for API {api_name}: {e}")
+
     def _add_basic_metadata(self, name: str, api_config: APIConfig) -> None:
         """Add basic metadata from config when introspection fails."""
         meta = APIEndpointMetadata(

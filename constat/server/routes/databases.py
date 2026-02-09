@@ -186,9 +186,9 @@ async def add_database(
     }
     dynamic_dbs.append(db_info)
 
-    # Refresh entities to include the new database tables/columns
+    # Refresh entities in background (non-blocking)
     if connected:
-        session_manager.refresh_entities(session_id)
+        session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     managed.save_resources()
@@ -524,10 +524,8 @@ async def remove_database(
             except Exception as e:
                 logger.warning(f"Failed to delete file {file_path}: {e}")
 
-    # Refresh entities to remove references to the deleted database
-    logger.info(f"remove_database({db_name}): calling refresh_entities")
-    session_manager.refresh_entities(session_id)
-    logger.info(f"remove_database({db_name}): refresh_entities complete")
+    # Refresh entities in background (non-blocking)
+    session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     managed.save_resources()
@@ -737,8 +735,22 @@ async def add_api(
         source="session",
     )
 
-    # Refresh entities to include the new API
-    session_manager.refresh_entities(session_id)
+    # Introspect API and build chunks/embeddings for semantic search
+    endpoint_count = 0
+    if managed.session.api_schema_manager:
+        from constat.core.config import APIConfig
+        api_config = APIConfig(
+            type=body.type,
+            url=body.base_url,
+            description=body.description or "",
+        )
+        if body.auth_type and body.auth_header:
+            api_config.headers = {body.auth_header: ""}  # Placeholder, actual token set at request time
+        managed.session.api_schema_manager.add_api_dynamic(body.name, api_config)
+        endpoint_count = sum(1 for k, m in managed.session.api_schema_manager.metadata_cache.items() if m.api_name == body.name)
+
+    # Refresh entities in background (non-blocking)
+    session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     managed.save_resources()
@@ -799,10 +811,8 @@ async def remove_api(
     # Remove from session resources
     managed.session.resources.remove_api(api_name)
 
-    # Refresh entities to remove references to the deleted API
-    logger.info(f"remove_api({api_name}): calling refresh_entities")
-    session_manager.refresh_entities(session_id)
-    logger.info(f"remove_api({api_name}): refresh_entities complete")
+    # Refresh entities in background (non-blocking)
+    session_manager.refresh_entities_async(session_id)
 
     # Persist resources for session restoration
     managed.save_resources()

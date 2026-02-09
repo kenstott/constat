@@ -179,11 +179,11 @@ export function ArtifactPanel() {
   const [newToolInput, setNewToolInput] = useState('')
   // Role editing state
   const [draftingRole, setDraftingRole] = useState(false)
-  const [editingRole, setEditingRole] = useState<{ name: string; prompt: string; description: string } | null>(null)
+  const [editingRole, setEditingRole] = useState<{ name: string; prompt: string; description: string; skills: string[] } | null>(null)
   const [expandedRoles, setExpandedRoles] = useState<Set<string>>(new Set())
   const [roleContents, setRoleContents] = useState<Record<string, { prompt: string; description: string }>>({})
   const [creatingRole, setCreatingRole] = useState(false)
-  const [newRole, setNewRole] = useState({ name: '', prompt: '', description: '' })
+  const [newRole, setNewRole] = useState({ name: '', prompt: '', description: '', skills: [] as string[] })
   // System prompt editing state (admin only)
   const [editingSystemPrompt, setEditingSystemPrompt] = useState(false)
   const [systemPromptDraft, setSystemPromptDraft] = useState('')
@@ -275,7 +275,7 @@ export function ArtifactPanel() {
       type: modalInput.type || 'rest',
     })
     fetchDataSources(session.session_id)
-    fetchEntities(session.session_id)  // Refresh entities after adding API
+    // Entities refresh via entity_rebuild_complete WS event
     setShowModal(null)
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
@@ -287,7 +287,7 @@ export function ArtifactPanel() {
     try {
       await sessionsApi.removeApi(session.session_id, apiName)
       fetchDataSources(session.session_id)
-      fetchEntities(session.session_id)  // Refresh entities after deletion
+      // Entities refresh via entity_rebuild_complete WS event
     } catch (err) {
       console.error('Failed to remove API:', err)
       alert('Failed to remove API. Please try again.')
@@ -304,7 +304,7 @@ export function ArtifactPanel() {
       try {
         await sessionsApi.uploadDocuments(session.session_id, selectedFiles)
         fetchDataSources(session.session_id)
-        fetchEntities(session.session_id)  // Refresh entities after indexing
+        // Entities refresh via entity_rebuild_complete WS event
         setShowModal(null)
         setSelectedFiles([])
         setDocSourceType('files')
@@ -319,7 +319,7 @@ export function ArtifactPanel() {
         uri: modalInput.uri,
       })
       fetchDataSources(session.session_id)
-      fetchEntities(session.session_id)  // Refresh entities after indexing
+      // Entities refresh via entity_rebuild_complete WS event
       setShowModal(null)
     }
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
@@ -332,7 +332,7 @@ export function ArtifactPanel() {
     try {
       await sessionsApi.deleteFileRef(session.session_id, docName)
       fetchDataSources(session.session_id)
-      fetchEntities(session.session_id)  // Refresh entities after deletion
+      // Entities refresh via entity_rebuild_complete WS event
     } catch (err) {
       console.error('Failed to delete document:', err)
       alert('Failed to delete document. Please try again.')
@@ -541,7 +541,7 @@ ${skill.body}`
     setDraftingRole(true)
     try {
       const result = await rolesApi.draftRole(session.session_id, newRole.name.trim(), newRole.description.trim())
-      setNewRole(prev => ({ ...prev, prompt: result.prompt || '', description: result.description || prev.description }))
+      setNewRole(prev => ({ ...prev, prompt: result.prompt || '', description: result.description || prev.description, skills: result.skills || [] }))
     } catch (err) {
       console.error('Failed to draft role:', err)
     } finally {
@@ -620,7 +620,7 @@ ${skill.body}`
       )
       if (response.ok) {
         const data = await response.json()
-        setEditingRole({ name: data.name, prompt: data.prompt || '', description: data.description || '' })
+        setEditingRole({ name: data.name, prompt: data.prompt || '', description: data.description || '', skills: data.skills || [] })
       }
     } catch (err) {
       console.error('Failed to fetch role content:', err)
@@ -646,7 +646,7 @@ ${skill.body}`
         }
       )
       if (response.ok) {
-        setNewRole({ name: '', prompt: '', description: '' })
+        setNewRole({ name: '', prompt: '', description: '', skills: [] })
         setCreatingRole(false)
         fetchAllRoles(session.session_id)
       }
@@ -670,7 +670,7 @@ ${skill.body}`
           method: 'PUT',
           headers,
           credentials: 'include',
-          body: JSON.stringify({ prompt: editingRole.prompt, description: editingRole.description }),
+          body: JSON.stringify({ prompt: editingRole.prompt, description: editingRole.description, skills: editingRole.skills }),
         }
       )
       if (response.ok) {
@@ -1201,7 +1201,7 @@ ${skill.body}`
                           try {
                             await sessionsApi.removeDatabase(session.session_id, db.name)
                             await fetchDataSources(session.session_id)
-                            await fetchEntities(session.session_id)
+                            // Entities refresh via entity_rebuild_complete WS event
                           } catch (err) {
                             console.error('Failed to remove database:', err)
                             alert('Failed to remove database. Please try again.')
@@ -1721,6 +1721,30 @@ ${skill.body}`
               onChange={(e) => setNewRole({ ...newRole, prompt: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[100px] resize-none"
             />
+            {allSkills.length > 0 && (
+              <div className="mb-2">
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Skills</label>
+                <div className="flex flex-wrap gap-1">
+                  {allSkills.map((skill) => (
+                    <button
+                      key={skill.name}
+                      onClick={() => {
+                        const has = newRole.skills.includes(skill.name)
+                        setNewRole({ ...newRole, skills: has ? newRole.skills.filter(s => s !== skill.name) : [...newRole.skills, skill.name] })
+                      }}
+                      className={`px-2 py-0.5 text-xs rounded-full border ${
+                        newRole.skills.includes(skill.name)
+                          ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300'
+                          : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400'
+                      }`}
+                      title={skill.description}
+                    >
+                      {skill.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="flex gap-1 items-center">
               <button
                 onClick={handleDraftRole}
@@ -1743,7 +1767,7 @@ ${skill.body}`
               <button
                 onClick={() => {
                   setCreatingRole(false)
-                  setNewRole({ name: '', prompt: '', description: '' })
+                  setNewRole({ name: '', prompt: '', description: '', skills: [] })
                 }}
                 className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 title="Cancel"
@@ -1773,6 +1797,30 @@ ${skill.body}`
                 onChange={(e) => setEditingRole({ ...editingRole, prompt: e.target.value })}
                 className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
               />
+              {allSkills.length > 0 && (
+                <div className="mt-2">
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Skills</label>
+                  <div className="flex flex-wrap gap-1">
+                    {allSkills.map((skill) => (
+                      <button
+                        key={skill.name}
+                        onClick={() => {
+                          const has = editingRole.skills.includes(skill.name)
+                          setEditingRole({ ...editingRole, skills: has ? editingRole.skills.filter(s => s !== skill.name) : [...editingRole.skills, skill.name] })
+                        }}
+                        className={`px-2 py-0.5 text-xs rounded-full border ${
+                          editingRole.skills.includes(skill.name)
+                            ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300'
+                            : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400'
+                        }`}
+                        title={skill.description}
+                      >
+                        {skill.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="flex justify-end gap-2 mt-4">
                 <button
                   onClick={() => setEditingRole(null)}
@@ -2437,7 +2485,7 @@ ${skill.body}`
       {stepCodes.length > 0 && (
         <AccordionSection
           id="code"
-          title="Code"
+          title="Exploratory Code"
           count={stepCodes.length}
           icon={<CodeBracketIcon className="w-4 h-4" />}
           command="/code"

@@ -77,6 +77,25 @@ export interface DraftSkillResponse {
   description: string
 }
 
+export interface CreateSkillFromProofResponse {
+  name: string
+  content: string
+  description: string
+  has_script: boolean
+}
+
+// Create a skill from a completed proof
+export async function createSkillFromProof(
+  sessionId: string,
+  name: string,
+  description: string = ''
+): Promise<CreateSkillFromProofResponse> {
+  return post<CreateSkillFromProofResponse>(
+    `/skills/from-proof?session_id=${encodeURIComponent(sessionId)}`,
+    { name, description }
+  )
+}
+
 // Draft a skill using AI
 export async function draftSkill(
   sessionId: string,

@@ -7,6 +7,7 @@ import * as d3dag from 'd3-dag'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useUIStore } from '@/store/uiStore'
+import { createSkillFromProof } from '@/api/skills'
 
 // Node status types matching server events
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
@@ -34,6 +35,9 @@ interface ProofDAGPanelProps {
   isPlanningComplete?: boolean
   summary?: string | null  // LLM-generated proof summary
   isSummaryGenerating?: boolean  // True while summary is being generated
+  sessionId?: string
+  onSkillCreated?: () => void
+  onRedo?: () => void
 }
 
 // Status symbols as per design doc
@@ -212,12 +216,15 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false }: ProofDAGPanelProps) {
+export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
   const [selectedNodeStack, setSelectedNodeStack] = useState<FactNode[]>([])
   const selectedNode = selectedNodeStack.length > 0 ? selectedNodeStack[selectedNodeStack.length - 1] : null
+  const [showSkillForm, setShowSkillForm] = useState(false)
+  const [skillName, setSkillName] = useState('')
+  const [isSavingSkill, setIsSavingSkill] = useState(false)
   const pushSelectedNode = (node: FactNode) => setSelectedNodeStack(prev => [...prev, node])
   const popSelectedNode = () => setSelectedNodeStack(prev => prev.slice(0, -1))
   const clearSelectedNodes = () => setSelectedNodeStack([])
@@ -396,7 +403,8 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const nodes = Array.from(facts.values())
   const resolvedCount = nodes.filter((n) => n.status === 'resolved').length
   const failedCount = nodes.filter((n) => n.status === 'failed').length
-  const pendingCount = nodes.filter((n) => n.status !== 'resolved' && n.status !== 'failed').length
+  const blockedCount = nodes.filter((n) => n.status === 'blocked').length
+  const pendingCount = nodes.filter((n) => n.status !== 'resolved' && n.status !== 'failed' && n.status !== 'blocked').length
 
   // Find final inference node (highest tier or node that nothing depends on)
   const finalNode = useMemo(() => {
@@ -427,7 +435,83 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     return nodes.find((n) => n.id === depId) || finalNode
   }, [finalNode, nodes])
 
-  const isProofComplete = pendingCount === 0 && resolvedCount > 0
+  const isProofComplete = pendingCount === 0 && (resolvedCount > 0 || failedCount > 0)
+
+  // Compute critical path: longest dependency chain by elapsed_ms (or node count)
+  const criticalPath = useMemo(() => {
+    if (!isProofComplete || nodes.length === 0 || failedCount > 0) return new Set<string>()
+
+    // Build adjacency: node -> its dependencies (parents)
+    const nodeMap = new Map(nodes.map(n => [n.id, n]))
+
+    // Topological order (BFS using in-degree)
+    const inDegree = new Map<string, number>()
+    const children = new Map<string, string[]>() // parent -> children that depend on it
+    for (const n of nodes) {
+      inDegree.set(n.id, n.dependencies.length)
+      children.set(n.id, [])
+    }
+    for (const n of nodes) {
+      for (const dep of n.dependencies) {
+        children.get(dep)?.push(n.id)
+      }
+    }
+
+    const topoOrder: string[] = []
+    const queue = nodes.filter(n => n.dependencies.length === 0).map(n => n.id)
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      topoOrder.push(cur)
+      for (const child of (children.get(cur) || [])) {
+        const deg = (inDegree.get(child) || 1) - 1
+        inDegree.set(child, deg)
+        if (deg === 0) queue.push(child)
+      }
+    }
+
+    // DP: longest path to each node (sum of elapsed_ms, fallback to 1 per node)
+    const longestTo = new Map<string, { cost: number; prev: string | null }>()
+    for (const id of topoOrder) {
+      const n = nodeMap.get(id)!
+      const selfCost = n.elapsed_ms ?? 1
+      if (n.dependencies.length === 0) {
+        longestTo.set(id, { cost: selfCost, prev: null })
+      } else {
+        let bestCost = -1
+        let bestPrev: string | null = null
+        for (const dep of n.dependencies) {
+          const depCost = longestTo.get(dep)?.cost ?? 0
+          if (depCost > bestCost) {
+            bestCost = depCost
+            bestPrev = dep
+          }
+        }
+        longestTo.set(id, { cost: bestCost + selfCost, prev: bestPrev })
+      }
+    }
+
+    // Find the terminal node with longest path (use finalNode if available)
+    let endNode = finalNode?.id || ''
+    if (!endNode) {
+      let maxCost = -1
+      for (const [id, { cost }] of longestTo) {
+        if (cost > maxCost) {
+          maxCost = cost
+          endNode = id
+        }
+      }
+    }
+
+    // Trace back
+    const pathSet = new Set<string>()
+    let cur: string | null = endNode
+    while (cur) {
+      pathSet.add(cur)
+      cur = longestTo.get(cur)?.prev ?? null
+    }
+
+    return pathSet
+  }, [nodes, isProofComplete, failedCount, finalNode])
 
   if (!isOpen) return null
 
@@ -439,7 +523,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     targetY: number,
     sourceStatus: NodeStatus,
     targetStatus: NodeStatus,
-    key: string
+    key: string,
+    sourceId?: string,
+    targetId?: string,
   ) => {
     // Create curved path from source bottom to target top
     const startY = sourceY + NODE_HEIGHT / 2
@@ -448,9 +534,13 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
 
     const path = `M ${sourceX} ${startY} C ${sourceX} ${midY}, ${targetX} ${midY}, ${targetX} ${endY}`
 
+    // Critical path edge: both source and target on critical path
+    const isCriticalEdge = sourceId && targetId && criticalPath.has(sourceId) && criticalPath.has(targetId)
+
     // Determine edge color based on resolution status
     const isResolved = sourceStatus === 'resolved'
-    const strokeColor = isResolved ? STATUS_COLORS.resolved : '#CBD5E1'
+    const strokeColor = isCriticalEdge ? '#D97706' : isResolved ? STATUS_COLORS.resolved : '#CBD5E1'
+    const strokeW = isCriticalEdge ? 3 : 2
 
     return (
       <g key={key}>
@@ -459,9 +549,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
           d={path}
           fill="none"
           stroke={strokeColor}
-          strokeWidth={2}
-          markerEnd="url(#arrowhead)"
-          className={isResolved ? '' : 'opacity-50'}
+          strokeWidth={strokeW}
+          markerEnd={isCriticalEdge ? 'url(#arrowhead-critical)' : 'url(#arrowhead)'}
+          className={isResolved || isCriticalEdge ? '' : 'opacity-50'}
         />
         {/* Animated flow indicator for executing edges */}
         {(sourceStatus === 'executing' || targetStatus === 'executing') && (
@@ -493,6 +583,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
     const isPremise = nodeId.startsWith('P')
     const bgColor = (status === 'resolved' && isPremise) ? PREMISE_RESOLVED_BG : STATUS_BG_COLORS[status]
     const borderColor = STATUS_COLORS[status]
+    const isOnCriticalPath = criticalPath.has(nodeId)
 
     return (
       <g
@@ -508,6 +599,21 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         onMouseLeave={() => setHoveredNode(null)}
         onClick={() => pushSelectedNode(nodeData)}
       >
+        {/* Critical path glow */}
+        {isOnCriticalPath && (
+          <rect
+            width={NODE_WIDTH + 4}
+            height={NODE_HEIGHT + 4}
+            x={-2}
+            y={-2}
+            rx={NODE_RADIUS + 1}
+            ry={NODE_RADIUS + 1}
+            fill="none"
+            stroke="#D97706"
+            strokeWidth={2}
+            opacity={0.6}
+          />
+        )}
         {/* Node rectangle */}
         <rect
           width={NODE_WIDTH}
@@ -640,6 +746,19 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                     fill={STATUS_COLORS.resolved}
                   />
                 </marker>
+                <marker
+                  id="arrowhead-critical"
+                  markerWidth="10"
+                  markerHeight="7"
+                  refX="9"
+                  refY="3.5"
+                  orient="auto"
+                >
+                  <polygon
+                    points="0 0, 10 3.5, 0 7"
+                    fill="#D97706"
+                  />
+                </marker>
               </defs>
 
               {/* Render edges first (below nodes) */}
@@ -661,7 +780,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                     target.y + layout.offsetY,
                     sourceData.status,
                     targetData.status,
-                    `${sourceDagNode.id}-${targetDagNode.id}`
+                    `${sourceDagNode.id}-${targetDagNode.id}`,
+                    sourceDagNode.id,
+                    targetDagNode.id,
                   )
                 })}
               </g>
@@ -719,16 +840,92 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             <span style={{ color: STATUS_COLORS.failed }}>{STATUS_SYMBOLS.failed}</span>
             <span className="text-gray-600 dark:text-gray-400">{failedCount} failed</span>
           </span>
+          {blockedCount > 0 && (
+            <span className="flex items-center gap-1">
+              <span style={{ color: STATUS_COLORS.blocked }}>{STATUS_SYMBOLS.blocked}</span>
+              <span className="text-gray-600 dark:text-gray-400">{blockedCount} blocked</span>
+            </span>
+          )}
           <span className="flex items-center gap-1">
             <span style={{ color: STATUS_COLORS.pending }}>{STATUS_SYMBOLS.pending}</span>
             <span className="text-gray-600 dark:text-gray-400">{pendingCount} pending</span>
           </span>
+          {criticalPath.size > 0 && (
+            <>
+              <span className="text-gray-300 dark:text-gray-600">|</span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-3 h-0.5 rounded" style={{ backgroundColor: '#D97706' }} />
+                <span className="text-gray-600 dark:text-gray-400">Critical path</span>
+              </span>
+            </>
+          )}
         </div>
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
           <span className="text-xs text-gray-500">Click nodes for details</span>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {isProofComplete && onRedo && (
+              <button
+                onClick={onRedo}
+                className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
+              >
+                Redo
+              </button>
+            )}
+            {isProofComplete && sessionId && !showSkillForm && (
+              <button
+                onClick={() => setShowSkillForm(true)}
+                className="px-4 py-2 text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors"
+              >
+                Save as Skill
+              </button>
+            )}
+            {showSkillForm && sessionId && (
+              <form
+                className="flex items-center gap-2"
+                onSubmit={async (e) => {
+                  e.preventDefault()
+                  if (!skillName.trim() || isSavingSkill) return
+                  setIsSavingSkill(true)
+                  try {
+                    await createSkillFromProof(sessionId, skillName.trim())
+                    setShowSkillForm(false)
+                    setSkillName('')
+                    onSkillCreated?.()
+                  } catch (err) {
+                    console.error('Failed to save skill:', err)
+                  } finally {
+                    setIsSavingSkill(false)
+                  }
+                }}
+              >
+                <input
+                  type="text"
+                  value={skillName}
+                  onChange={(e) => setSkillName(e.target.value)}
+                  placeholder="Skill name..."
+                  className="px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  autoFocus
+                  disabled={isSavingSkill}
+                />
+                <button
+                  type="submit"
+                  disabled={!skillName.trim() || isSavingSkill}
+                  className="px-3 py-1 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 rounded transition-colors"
+                >
+                  {isSavingSkill ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowSkillForm(false); setSkillName('') }}
+                  disabled={isSavingSkill}
+                  className="px-2 py-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  Cancel
+                </button>
+              </form>
+            )}
             {resultNode && resultNode.status === 'resolved' && (
               <button
                 onClick={() => pushSelectedNode(resultNode)}
@@ -1102,6 +1299,14 @@ export function useProofFacts() {
           next.set(factName, {
             ...existing,
             status: 'failed',
+            reason: data.reason as string | undefined,
+          })
+          break
+
+        case 'fact_blocked':
+          next.set(factName, {
+            ...existing,
+            status: 'blocked',
             reason: data.reason as string | undefined,
           })
           break

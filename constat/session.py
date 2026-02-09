@@ -235,10 +235,9 @@ class Session:
         self.doc_tools = DocumentDiscoveryTools(config)
         logger.debug(f"Session init: DocumentDiscoveryTools took {time.time() - t0:.2f}s")
 
-        # Extract NER entities from all chunks (base + active projects)
+        # Entity extraction is handled by session_manager.refresh_entities_async()
+        # after session creation — not during __init__ to avoid dual extraction race
         self._entities_extracted = False
-        project_ids = list(config.projects.keys()) if config.projects else None
-        self.extract_entities(project_ids)
 
         # Task router for model routing with escalation
         self.router = TaskRouter(config.llm)
@@ -310,9 +309,13 @@ class Session:
         self.role_matcher = RoleMatcher(self.role_manager)
         # Initialize lazily on first use to avoid blocking startup
 
-        # Skill manager for user-defined skills ({data_dir}/{user_id}/skills/)
+        # Skill manager: loads system, project, and user skills in precedence order
         from constat.core.skills import SkillManager
-        self.skill_manager = SkillManager(user_id=self.user_id, base_dir=self.data_dir)
+        system_skills_dir = Path(config.config_dir) / "skills" if config.config_dir else None
+        self.skill_manager = SkillManager(
+            user_id=self.user_id, base_dir=self.data_dir,
+            system_skills_dir=system_skills_dir,
+        )
 
         # Skill matcher for dynamic skill selection based on query
         from constat.core.skill_matcher import SkillMatcher
@@ -333,6 +336,9 @@ class Session:
 
         # Tool response cache for schema tools (cleared on refresh)
         self._tool_cache: dict[str, any] = {}
+
+        # Cached proof result (set after prove_conversation completes)
+        self.last_proof_result: Optional[dict] = None
 
         # Concept detector for conditional prompt injection
         t0 = time.time()
@@ -1769,6 +1775,35 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     else:
                         data_source_apis.append(f"- api_{api_name}('GET /endpoint', {{params}}) -> data (REST)")
 
+            # Build step code hints section (from exploratory session)
+            step_hints_section = ""
+            step_hints = getattr(self, '_proof_step_hints', [])
+            if step_hints:
+                relevant = []
+                op_lower = (operation or "").lower()
+                name_lower = (inf_name or "").lower()
+                for step in step_hints:
+                    goal_lower = (step.get("goal", "") or "").lower()
+                    # Include step if goal overlaps with inference operation or name
+                    if (any(word in goal_lower for word in name_lower.split() if len(word) > 3)
+                            or any(word in goal_lower for word in op_lower.split() if len(word) > 3)):
+                        relevant.append(step)
+                if not relevant and step_hints:
+                    # No keyword match — include all steps as general reference
+                    relevant = step_hints
+                if relevant:
+                    hints = []
+                    for step in relevant[:3]:  # Limit to 3 most relevant
+                        goal = step.get("goal", f"Step {step.get('step_number', '?')}")
+                        code_text = step.get("code", "")
+                        if len(code_text) > 800:
+                            code_text = code_text[:800] + "\n# ... (truncated)"
+                        hints.append(f"# Step: {goal}\n{code_text}")
+                    step_hints_section = (
+                        "\n\nREFERENCE CODE from exploratory session (use as hints, adapt as needed):\n"
+                        + "\n---\n".join(hints) + "\n"
+                    )
+
             # Generate inference code
             inference_prompt = load_prompt("inference_prompt.md").format(
                 inf_id=inf_id,
@@ -1781,7 +1816,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 api_sources_section=api_sources_section,
                 data_source_apis="\n".join(data_source_apis),
                 table_name=table_name,
-            )
+            ) + step_hints_section
 
             max_retries = 7
             last_error = None
@@ -7688,6 +7723,20 @@ REMEMBER:
                         data={"fact_name": f"{fact_id}: {node_name}", "error": error}
                     ))
 
+                elif event_type == "node_blocked":
+                    blocked_by = data.get("blocked_by", "dependency failed")
+                    logger.info(f"{fact_id} ({node_name}) blocked by {blocked_by}")
+
+                    self._emit_event(StepEvent(
+                        event_type="fact_blocked",
+                        step_number=level + 1,
+                        data={
+                            "fact_name": f"{fact_id}: {node_name}",
+                            "fact_id": fact_id,
+                            "reason": f"blocked by {blocked_by}",
+                        }
+                    ))
+
                 elif event_type == "node_started":
                     # Log actual thread start for parallelism diagnosis
                     start_time = data.get("start_time_ms", 0)
@@ -7861,6 +7910,7 @@ IMPORTANT INSTRUCTIONS:
 5. ONLY reference artifacts that were actually created - do not invent table names
 6. Focus on the key findings and conclusions, not on showing raw data
 7. If the user asked for recommendations/suggestions, summarize them with key values
+8. EVALUATE GOAL COMPLETENESS: Re-read the original question carefully. Explicitly assess whether EVERY aspect of the question has been addressed. If any goal was partially or not addressed, state what is missing and why.
 
 Provide a concise, clear answer with inline artifact references."""
 
@@ -7918,7 +7968,8 @@ Sources used: {', '.join(source_types) if source_types else 'various'}
 
 Write a SHORT summary (2-3 sentences max) in plain prose explaining what this analysis shows.
 Do NOT use bullet points or numbered lists. Just a brief paragraph.
-Focus on the key finding and its significance."""
+Focus on the key finding and its significance.
+If the original question had multiple goals or sub-questions, note whether all were addressed."""
 
                 try:
                     insights_result = self.router.execute(
@@ -8290,6 +8341,17 @@ Prove all of the above claims and provide a complete audit trail."""
 
         logger.debug(f"[prove_conversation] Running proof for: {combined_problem[:150]}...")
 
+        # Gather step codes from exploratory session as hints for inference generation
+        self._proof_step_hints = []
+        if self.history and self.session_id:
+            try:
+                step_codes = self.history.list_step_codes(self.session_id)
+                if step_codes:
+                    self._proof_step_hints = step_codes
+                    logger.info(f"[prove_conversation] Loaded {len(step_codes)} step code hints for proof")
+            except Exception as e:
+                logger.debug(f"[prove_conversation] Could not load step codes: {e}")
+
         # Clear old inference codes from previous proof runs
         if self.history and self.session_id:
             self.history.clear_inferences(self.session_id)
@@ -8365,6 +8427,7 @@ Prove all of the above claims and provide a complete audit trail."""
             else:
                 logger.warning(f"[prove_conversation] Skipping summary: success={result.get('success')}, has_nodes={bool(proof_nodes)}")
 
+            self.last_proof_result = result
             return result
 
         except Exception as e:
@@ -8373,6 +8436,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
         finally:
             self.session_config.auto_approve = original_auto_approve
+            self._proof_step_hints = []
 
     def replay(self, problem: str) -> dict:
         """
@@ -9482,6 +9546,29 @@ Prove all of the above claims and provide a complete audit trail."""
             else:
                 self._current_role_id = None
                 logger.info("[CONTEXT] No role matched for query")
+
+        # Step 3: Merge role-declared skills
+        # If the selected role declares explicit skills, add them if not already matched
+        if role_info:
+            role_obj = self.role_manager.get_role(role_info["name"])
+            if role_obj and role_obj.skills:
+                matched_skill_names = {s["name"] for s in skills_info}
+                for skill_name in role_obj.skills:
+                    if skill_name not in matched_skill_names:
+                        skill_obj = self.skill_manager.get_skill(skill_name)
+                        if skill_obj:
+                            skills_info.append({
+                                "name": skill_obj.name,
+                                "description": skill_obj.description,
+                                "similarity": 1.0,
+                                "source": "role",
+                            })
+                            skills_prompts.append(
+                                f"## {skill_obj.name} (required by role: {role_info['name']})\n{skill_obj.prompt}"
+                            )
+                            logger.info(f"[CONTEXT] Added role-declared skill: {skill_name}")
+                        else:
+                            logger.warning(f"Role '{role_info['name']}' declares skill '{skill_name}' but it was not found")
 
         return {
             "role": role_info,

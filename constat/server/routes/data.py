@@ -2484,6 +2484,221 @@ async def download_code(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _gather_source_configs(managed) -> tuple[list[dict], list[dict]]:
+    """Extract api and database configs from a session for script generation."""
+    apis = []
+    if managed and managed.session.config and managed.session.config.apis:
+        for name, api_config in managed.session.config.apis.items():
+            apis.append({
+                "name": name,
+                "type": api_config.type,
+                "url": api_config.url or "",
+            })
+
+    databases = []
+    if managed and managed.session.config and managed.session.config.databases:
+        for name, db_config in managed.session.config.databases.items():
+            if not db_config.is_file_source():
+                databases.append({"name": name, "uri": db_config.uri or ""})
+
+    return apis, databases
+
+
+def generate_inference_script(
+    inferences: list[dict],
+    premises: list[dict],
+    apis: list[dict],
+    databases: list[dict],
+    session_label: str,
+) -> str:
+    """Generate a standalone Python script from inference codes.
+
+    Returns the script content as a string.
+    """
+    import ast as _ast
+
+    lines = [
+        '#!/usr/bin/env python3',
+        '"""',
+        f'Constat Inference Code - Session {session_label}',
+        '',
+        'Auto-generated from auditable mode execution.',
+        'Each inference function derives facts from premises using code.',
+        '"""',
+        '',
+        'import pandas as pd',
+        'import numpy as np',
+        'import duckdb',
+        'import json',
+        '',
+        '',
+        '# ============================================================================',
+        '# Store Class',
+        '# ============================================================================',
+        '',
+        'class _DataStore:',
+        '    def __init__(self):',
+        '        self._tables: dict[str, pd.DataFrame] = {}',
+        '        self._conn = duckdb.connect()',
+        '',
+        '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
+        '        self._tables[name] = df',
+        '        self._conn.register(name, df)',
+        '        print(f"Saved: {name} ({len(df)} rows)")',
+        '',
+        '    def query(self, sql: str) -> pd.DataFrame:',
+        '        return self._conn.execute(sql).fetchdf()',
+        '',
+        '    def load_dataframe(self, name: str) -> pd.DataFrame:',
+        '        if name not in self._tables:',
+        '            raise ValueError(f"Table not found: {name}")',
+        '        return self._tables[name]',
+        '',
+        '',
+        'store = _DataStore()',
+        '',
+    ]
+
+    # Add API helpers
+    if apis:
+        lines.extend(['import requests', ''])
+        for api in apis:
+            if api['type'] == 'graphql':
+                lines.extend([
+                    f"API_{api['name'].upper()}_URL = '{api['url']}'",
+                    '',
+                    f'def api_{api["name"]}(query: str, variables: dict = None) -> dict:',
+                    f'    """GraphQL query against {api["name"]}."""',
+                    f'    resp = requests.post(API_{api["name"].upper()}_URL, json={{"query": query, "variables": variables or {{}}}})',
+                    '    resp.raise_for_status()',
+                    '    result = resp.json()',
+                    '    if "errors" in result and not result.get("data"):',
+                    '        raise ValueError(f"GraphQL errors (no data returned): {result[\'errors\'][0][\'message\']}")',
+                    '    return result.get("data", result)',
+                    '',
+                    '',
+                ])
+            else:
+                lines.extend([
+                    f"API_{api['name'].upper()}_URL = '{api['url']}'",
+                    '',
+                    f'def api_{api["name"]}(method_path: str, params: dict = None) -> dict:',
+                    f'    """REST call to {api["name"]}."""',
+                    '    parts = method_path.split(" ", 1)',
+                    '    method = parts[0].upper()',
+                    '    path = parts[1] if len(parts) > 1 else "/"',
+                    f'    url = API_{api["name"].upper()}_URL.rstrip("/") + ("/" + path.lstrip("/") if not path.startswith("/") else path)',
+                    '    resp = requests.request(method, url, params=params)',
+                    '    resp.raise_for_status()',
+                    '    return resp.json()',
+                    '',
+                    '',
+                ])
+
+    # Add database helpers
+    if databases:
+        lines.append('from sqlalchemy import create_engine')
+        lines.append('')
+        for db in databases:
+            lines.append(f"db_{db['name']} = create_engine('{db['uri']}')")
+        lines.extend([
+            '',
+            'def db_query(sql: str) -> pd.DataFrame:',
+            '    """Query the first available database."""',
+        ])
+        first_db = databases[0]['name']
+        lines.append(f'    return pd.read_sql(sql, db_{first_db})')
+        lines.extend(['', ''])
+
+    # Add LLM map stub
+    lines.extend([
+        'def llm_map(values: list, target: str, source_desc: str = "") -> dict:',
+        '    """Fuzzy map values using LLM. Stub — implement with your LLM provider."""',
+        '    print(f"llm_map called for {len(values)} values -> {target}")',
+        '    return {v: None for v in values}',
+        '',
+        '',
+        '# ============================================================================',
+        '# Inference Functions',
+        '# ============================================================================',
+        '',
+    ])
+
+    # Add each inference as a function
+    for inf in inferences:
+        iid = inf["inference_id"]
+        name = inf.get("name", iid)
+        operation = inf.get("operation", "")
+        code = inf.get("code", "pass")
+
+        lines.append(f'def {iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}():')
+        lines.append(f'    """{iid}: {name} = {operation}"""')
+        for code_line in code.split('\n'):
+            if code_line.strip():
+                lines.append(f'    {code_line}')
+            else:
+                lines.append('')
+        lines.append('    return _result')
+        lines.extend(['', ''])
+
+    # Load premises for parameter generation
+    constant_premises = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
+
+    # Add main runner
+    lines.extend([
+        '# ============================================================================',
+        '# Main',
+        '# ============================================================================',
+        '',
+    ])
+
+    # Build run_proof signature with constant premises as kwargs
+    param_parts = []
+    for p in constant_premises:
+        pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+        value = p["value"]
+        try:
+            literal = _ast.literal_eval(value)
+            param_parts.append(f'{pname}={repr(literal)}')
+        except (ValueError, SyntaxError):
+            param_parts.append(f'{pname}={repr(value)}')
+
+    sig = ', '.join(param_parts)
+    lines.append(f'def run_proof({sig}):')
+    lines.append('    """Execute all inferences and return the final result."""')
+
+    # Store constants in premises table so inference code can access them
+    if constant_premises:
+        lines.append('    # Store premise constants')
+        lines.append('    _premises = {}')
+        for p in constant_premises:
+            pname = p["name"].lower().replace(" ", "_").replace("-", "_")
+            lines.append(f'    _premises["{p["name"]}"] = {pname}')
+        lines.append('    store.save_dataframe("_premises", pd.DataFrame([_premises]))')
+        lines.append('')
+
+    lines.append('    _last = None')
+    for inf in inferences:
+        iid = inf["inference_id"]
+        name = inf.get("name", iid)
+        func_name = f'{iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}'
+        lines.append(f'    print("\\n=== {iid}: {name} ===")')
+        lines.append(f'    _last = {func_name}()')
+    lines.extend([
+        '',
+        '    return _last',
+        '',
+        '',
+        'if __name__ == "__main__":',
+        '    result = run_proof()',
+        '    print("\\n=== Final Result ===")',
+        '    print(result)',
+        '',
+    ])
+
+    return '\n'.join(lines)
+
+
 @router.get("/{session_id}/download-inference-code")
 async def download_inference_code(
     session_id: str,
@@ -2517,205 +2732,16 @@ async def download_inference_code(
         if not inferences:
             raise HTTPException(status_code=404, detail="No inference code available. Run an auditable query first.")
 
-        # Get API config for helpers
-        apis = []
-        if managed and managed.session.config and managed.session.config.apis:
-            for name, api_config in managed.session.config.apis.items():
-                apis.append({
-                    "name": name,
-                    "type": api_config.type,
-                    "url": api_config.url or "",
-                })
-
-        # Get database config
-        databases = []
-        if managed and managed.session.config and managed.session.config.databases:
-            for name, db_config in managed.session.config.databases.items():
-                if not db_config.is_file_source():
-                    databases.append({"name": name, "uri": db_config.uri or ""})
-
-        lines = [
-            '#!/usr/bin/env python3',
-            '"""',
-            f'Constat Inference Code - Session {session_id[:8]}',
-            '',
-            'Auto-generated from auditable mode execution.',
-            'Each inference function derives facts from premises using code.',
-            '"""',
-            '',
-            'import pandas as pd',
-            'import numpy as np',
-            'import duckdb',
-            'import json',
-            '',
-            '',
-            '# ============================================================================',
-            '# Store Class',
-            '# ============================================================================',
-            '',
-            'class _DataStore:',
-            '    def __init__(self):',
-            '        self._tables: dict[str, pd.DataFrame] = {}',
-            '        self._conn = duckdb.connect()',
-            '',
-            '    def save_dataframe(self, name: str, df: pd.DataFrame, **kwargs) -> None:',
-            '        self._tables[name] = df',
-            '        self._conn.register(name, df)',
-            '        print(f"Saved: {name} ({len(df)} rows)")',
-            '',
-            '    def query(self, sql: str) -> pd.DataFrame:',
-            '        return self._conn.execute(sql).fetchdf()',
-            '',
-            '    def load_dataframe(self, name: str) -> pd.DataFrame:',
-            '        if name not in self._tables:',
-            '            raise ValueError(f"Table not found: {name}")',
-            '        return self._tables[name]',
-            '',
-            '',
-            'store = _DataStore()',
-            '',
-        ]
-
-        # Add API helpers
-        if apis:
-            lines.extend(['import requests', ''])
-            for api in apis:
-                if api['type'] == 'graphql':
-                    lines.extend([
-                        f"API_{api['name'].upper()}_URL = '{api['url']}'",
-                        '',
-                        f'def api_{api["name"]}(query: str, variables: dict = None) -> dict:',
-                        f'    """GraphQL query against {api["name"]}."""',
-                        f'    resp = requests.post(API_{api["name"].upper()}_URL, json={{"query": query, "variables": variables or {{}}}})',
-                        '    resp.raise_for_status()',
-                        '    result = resp.json()',
-                        '    if "errors" in result and not result.get("data"):',
-                        '        raise ValueError(f"GraphQL errors (no data returned): {result[\'errors\'][0][\'message\']}")',
-                        '    return result.get("data", result)',
-                        '',
-                        '',
-                    ])
-                else:
-                    lines.extend([
-                        f"API_{api['name'].upper()}_URL = '{api['url']}'",
-                        '',
-                        f'def api_{api["name"]}(method_path: str, params: dict = None) -> dict:',
-                        f'    """REST call to {api["name"]}."""',
-                        '    parts = method_path.split(" ", 1)',
-                        '    method = parts[0].upper()',
-                        '    path = parts[1] if len(parts) > 1 else "/"',
-                        f'    url = API_{api["name"].upper()}_URL.rstrip("/") + ("/" + path.lstrip("/") if not path.startswith("/") else path)',
-                        '    resp = requests.request(method, url, params=params)',
-                        '    resp.raise_for_status()',
-                        '    return resp.json()',
-                        '',
-                        '',
-                    ])
-
-        # Add database helpers
-        if databases:
-            lines.append('from sqlalchemy import create_engine')
-            lines.append('')
-            for db in databases:
-                lines.append(f"db_{db['name']} = create_engine('{db['uri']}')")
-            lines.extend([
-                '',
-                'def db_query(sql: str) -> pd.DataFrame:',
-                '    """Query the first available database."""',
-            ])
-            first_db = databases[0]['name']
-            lines.append(f'    return pd.read_sql(sql, db_{first_db})')
-            lines.extend(['', ''])
-
-        # Add LLM map stub
-        lines.extend([
-            'def llm_map(values: list, target: str, source_desc: str = "") -> dict:',
-            '    """Fuzzy map values using LLM. Stub — implement with your LLM provider."""',
-            '    print(f"llm_map called for {len(values)} values -> {target}")',
-            '    return {v: None for v in values}',
-            '',
-            '',
-            '# ============================================================================',
-            '# Inference Functions',
-            '# ============================================================================',
-            '',
-        ])
-
-        # Add each inference as a function
-        for inf in inferences:
-            iid = inf["inference_id"]
-            name = inf.get("name", iid)
-            operation = inf.get("operation", "")
-            code = inf.get("code", "pass")
-
-            lines.append(f'def {iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}():')
-            lines.append(f'    """{iid}: {name} = {operation}"""')
-            for code_line in code.split('\n'):
-                if code_line.strip():
-                    lines.append(f'    {code_line}')
-                else:
-                    lines.append('')
-            lines.append('    return _result')
-            lines.extend(['', ''])
-
-        # Load premises for parameter generation
+        apis, databases = _gather_source_configs(managed)
         premises = history.list_inference_premises(history_session_id)
-        constant_premises = [p for p in premises if p.get("source") in ("embedded", "llm_knowledge")]
 
-        # Add main runner
-        lines.extend([
-            '# ============================================================================',
-            '# Main',
-            '# ============================================================================',
-            '',
-        ])
-
-        # Build run_proof signature with constant premises as kwargs
-        import ast as _ast
-        param_parts = []
-        for p in constant_premises:
-            pname = p["name"].lower().replace(" ", "_").replace("-", "_")
-            value = p["value"]
-            try:
-                literal = _ast.literal_eval(value)
-                param_parts.append(f'{pname}={repr(literal)}')
-            except (ValueError, SyntaxError):
-                param_parts.append(f'{pname}={repr(value)}')
-
-        sig = ', '.join(param_parts)
-        lines.append(f'def run_proof({sig}):')
-        lines.append('    """Execute all inferences and return the final result."""')
-
-        # Store constants in premises table so inference code can access them
-        if constant_premises:
-            lines.append('    # Store premise constants')
-            lines.append('    _premises = {}')
-            for p in constant_premises:
-                pname = p["name"].lower().replace(" ", "_").replace("-", "_")
-                lines.append(f'    _premises["{p["name"]}"] = {pname}')
-            lines.append('    store.save_dataframe("_premises", pd.DataFrame([_premises]))')
-            lines.append('')
-
-        lines.append('    _last = None')
-        for inf in inferences:
-            iid = inf["inference_id"]
-            name = inf.get("name", iid)
-            func_name = f'{iid.lower()}_{name.lower().replace(" ", "_").replace("-", "_")}'
-            lines.append(f'    print("\\n=== {iid}: {name} ===")')
-            lines.append(f'    _last = {func_name}()')
-        lines.extend([
-            '',
-            '    return _last',
-            '',
-            '',
-            'if __name__ == "__main__":',
-            '    result = run_proof()',
-            '    print("\\n=== Final Result ===")',
-            '    print(result)',
-            '',
-        ])
-
-        script_content = '\n'.join(lines)
+        script_content = generate_inference_script(
+            inferences=inferences,
+            premises=premises,
+            apis=apis,
+            databases=databases,
+            session_label=session_id[:8],
+        )
         return Response(
             content=script_content,
             media_type="text/x-python",

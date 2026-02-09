@@ -13,6 +13,7 @@ import { HelpModal } from '@/components/help/HelpModal'
 import { useSessionStore } from '@/store/sessionStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
+import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
 
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
@@ -110,6 +111,7 @@ function SplashScreen() {
 function MainApp() {
   const { session, wsConnected, createSession, messages } = useSessionStore()
   const { userId } = useAuthStore()
+  const { fetchAllSkills } = useArtifactStore()
   const queryInputRef = useRef<HTMLTextAreaElement>(null)
   const initializingRef = useRef(false)
   const [initPhase, setInitPhase] = useState<InitPhase>('creating_session')
@@ -273,6 +275,12 @@ function MainApp() {
         isPlanningComplete={isPlanningComplete}
         summary={proofSummary}
         isSummaryGenerating={isSummaryGenerating}
+        sessionId={session?.session_id}
+        onSkillCreated={() => fetchAllSkills()}
+        onRedo={() => {
+          clearFacts()
+          submitQuery('/prove', true)
+        }}
       />
       <HelpModal
         isOpen={isHelpOpen}

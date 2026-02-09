@@ -24,6 +24,7 @@ class RoleInfo(BaseModel):
     name: str
     prompt: str
     description: str = ""
+    skills: list[str] = []
     is_active: bool = False
 
 
@@ -51,12 +52,14 @@ class CreateRoleRequest(BaseModel):
     name: str
     prompt: str
     description: str = ""
+    skills: list[str] = []
 
 
 class UpdateRoleRequest(BaseModel):
     """Request to update a role."""
     prompt: str
     description: str = ""
+    skills: list[str] = []
 
 
 class RoleContentResponse(BaseModel):
@@ -64,6 +67,7 @@ class RoleContentResponse(BaseModel):
     name: str
     prompt: str
     description: str
+    skills: list[str] = []
     path: str
 
 
@@ -78,6 +82,7 @@ class DraftRoleResponse(BaseModel):
     name: str
     prompt: str
     description: str
+    skills: list[str] = []
 
 
 def get_session_manager(request: Request) -> SessionManager:
@@ -118,6 +123,7 @@ async def list_roles(
                 name=name,
                 prompt=role.prompt[:200] + "..." if len(role.prompt) > 200 else role.prompt,
                 description=role.description,
+                skills=role.skills,
                 is_active=(name == current_role),
             ))
 
@@ -197,6 +203,7 @@ async def get_role_content(
         name=role.name,
         prompt=role.prompt,
         description=role.description,
+        skills=role.skills,
         path=str(role_manager.roles_file_path),
     )
 
@@ -224,11 +231,13 @@ async def create_role(
             name=request_body.name,
             prompt=request_body.prompt,
             description=request_body.description,
+            skills=request_body.skills,
         )
         return RoleInfo(
             name=role.name,
             prompt=role.prompt,
             description=role.description,
+            skills=role.skills,
             is_active=False,
         )
     except ValueError as e:
@@ -262,6 +271,7 @@ async def update_role(
         name=role_name,
         prompt=request_body.prompt,
         description=request_body.description,
+        skills=request_body.skills,
     )
     return {"status": "updated", "name": role_name}
 
@@ -308,16 +318,27 @@ async def draft_role(
     if not hasattr(session, "role_manager"):
         raise HTTPException(status_code=500, detail="Role manager not available")
 
+    # Gather available skills for the LLM to choose from
+    available_skills: list[dict[str, str]] = []
+    if hasattr(session, "skill_manager"):
+        for skill in session.skill_manager.list_skills():
+            available_skills.append({
+                "name": skill.name,
+                "description": skill.description or "",
+            })
+
     try:
         role = session.role_manager.draft_role(
             name=request_body.name,
             user_description=request_body.user_description,
             llm=session.llm,
+            available_skills=available_skills,
         )
         return DraftRoleResponse(
             name=role.name,
             prompt=role.prompt,
             description=role.description,
+            skills=role.skills,
         )
     except ValueError as e:
         logger.error(f"Failed to draft role: {e}")

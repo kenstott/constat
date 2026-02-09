@@ -22,7 +22,7 @@ from typing import Optional, Any
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
 from constat.server.config import ServerConfig
-from constat.server.models import SessionStatus
+from constat.server.models import EventType, SessionStatus
 from constat.session import Session, SessionConfig
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
@@ -332,13 +332,14 @@ class SessionManager:
             if is_restore:
                 managed.restore_resources()
 
-            # Run NER for session's visible documents (base + loaded projects)
-            # This creates chunk-entity links scoped to this session
-            self._run_entity_extraction(session_id, session)
-
             logger.info(f"Created session {session_id} for user {user_id}")
 
-            return session_id
+        # Run NER in background (non-blocking session creation)
+        # Entity links populate progressively; queries work via vector search until done
+        # MUST be outside `with self._lock:` — refresh_entities_async acquires the same lock
+        self.refresh_entities_async(session_id)
+
+        return session_id
 
     def _run_entity_extraction(self, session_id: str, session: Session) -> None:
         """Run NER for session's visible documents.
@@ -353,12 +354,15 @@ class SessionManager:
             logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
             return
 
-        # Get active project IDs and session database names
-        project_ids = []
+        # Get project IDs (config + active) and session database names
+        project_ids = list(session.config.projects.keys()) if session.config.projects else []
         session_db_names = []
         if hasattr(self, '_sessions') and session_id in self._sessions:
             managed = self._sessions[session_id]
-            project_ids = managed.active_projects or []
+            # Merge active projects (may include dynamically activated ones)
+            for p in (managed.active_projects or []):
+                if p not in project_ids:
+                    project_ids.append(p)
             # Get names of dynamically added databases (include their columns in entities)
             session_db_names = [db["name"] for db in managed._dynamic_dbs]
 
@@ -399,7 +403,7 @@ class SessionManager:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
 
     def refresh_entities(self, session_id: str) -> None:
-        """Refresh entity extraction for a session.
+        """Refresh entity extraction for a session (synchronous).
 
         Call this after dynamically adding or removing databases to update
         the session's entity catalog.
@@ -416,6 +420,58 @@ class SessionManager:
             logger.info(f"refresh_entities({session_id}): calling _run_entity_extraction")
             self._run_entity_extraction(session_id, managed.session)
             logger.info(f"refresh_entities({session_id}): complete")
+
+    def refresh_entities_async(self, session_id: str) -> None:
+        """Refresh entity extraction in a background thread.
+
+        Non-blocking — returns immediately and pushes ENTITY_REBUILD_START
+        and ENTITY_REBUILD_COMPLETE events via the session's WebSocket queue.
+
+        Args:
+            session_id: Session ID to refresh
+        """
+        with self._lock:
+            if session_id not in self._sessions:
+                logger.warning(f"Cannot refresh entities async: session {session_id} not found")
+                return
+            managed = self._sessions[session_id]
+
+        def _run():
+            import time
+            t0 = time.time()
+            try:
+                self._push_event(managed, EventType.ENTITY_REBUILD_START, {
+                    "session_id": session_id,
+                })
+                self._run_entity_extraction(session_id, managed.session)
+                duration_ms = int((time.time() - t0) * 1000)
+                self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, {
+                    "session_id": session_id,
+                    "duration_ms": duration_ms,
+                })
+                logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
+            except Exception as e:
+                logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
+
+        import threading
+        thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
+        thread.start()
+
+    @staticmethod
+    def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:
+        """Push an event to a managed session's WebSocket queue."""
+        from constat.server.models import StepEventWS
+        try:
+            ws_event = StepEventWS(
+                event_type=event_type,
+                session_id=managed.session_id,
+                step_number=0,
+                timestamp=datetime.now(timezone.utc),
+                data=data,
+            )
+            managed.event_queue.put_nowait(ws_event.model_dump(mode="json"))
+        except asyncio.QueueFull:
+            logger.warning(f"Event queue full for session {managed.session_id}, dropping {event_type}")
 
     def get_session(self, session_id: str) -> ManagedSession:
         """Get a managed session by ID.

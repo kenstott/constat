@@ -10,7 +10,7 @@ between defined roles. Each role adds a prompt to the system prompt.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +39,7 @@ class Role:
     name: str
     prompt: str
     description: str = ""
+    skills: list[str] = field(default_factory=list)
 
 
 class RoleManager:
@@ -79,6 +80,7 @@ class RoleManager:
                         name=name,
                         prompt=config["prompt"].strip(),
                         description=config.get("description", "").strip(),
+                        skills=config.get("skills", []) or [],
                     )
                     logger.debug(f"Loaded role: {name}")
 
@@ -159,21 +161,26 @@ class RoleManager:
 
         role = self._roles[name]
         # Build YAML for single role
+        role_data: dict = {
+            "prompt": role.prompt,
+            "description": role.description,
+        }
+        if role.skills:
+            role_data["skills"] = role.skills
         content = yaml.dump({
-            name: {
-                "prompt": role.prompt,
-                "description": role.description,
-            }
+            name: role_data,
         }, default_flow_style=False, allow_unicode=True)
         return content, str(self._roles_file)
 
-    def update_role(self, name: str, prompt: str, description: str = "") -> bool:
+    def update_role(self, name: str, prompt: str, description: str = "",
+                    skills: list[str] | None = None) -> bool:
         """Update or create a role.
 
         Args:
             name: Role name
             prompt: Role prompt
             description: Role description
+            skills: Optional list of skill names this role requires
 
         Returns:
             True if successful
@@ -186,10 +193,18 @@ class RoleManager:
             data = {}
 
         # Update the role
-        data[name] = {
+        role_data: dict = {
             "prompt": prompt.strip(),
             "description": description.strip(),
         }
+        if skills is not None:
+            role_data["skills"] = skills
+        elif name in data and isinstance(data[name], dict):
+            # Preserve existing skills if not explicitly provided
+            existing_skills = data[name].get("skills", [])
+            if existing_skills:
+                role_data["skills"] = existing_skills
+        data[name] = role_data
 
         # Write back
         with open(self._roles_file, "w") as f:
@@ -236,13 +251,15 @@ class RoleManager:
         self.reload()
         return True
 
-    def create_role(self, name: str, prompt: str, description: str = "") -> Role:
+    def create_role(self, name: str, prompt: str, description: str = "",
+                    skills: list[str] | None = None) -> Role:
         """Create a new role.
 
         Args:
             name: Role name
             prompt: Role prompt
             description: Role description
+            skills: Optional list of skill names this role requires
 
         Returns:
             The created Role
@@ -253,16 +270,18 @@ class RoleManager:
         if name in self._roles:
             raise ValueError(f"Role '{name}' already exists")
 
-        self.update_role(name, prompt, description)
+        self.update_role(name, prompt, description, skills=skills)
         return self._roles[name]
 
-    def draft_role(self, name: str, user_description: str, llm) -> Role:
+    def draft_role(self, name: str, user_description: str, llm,
+                   available_skills: list[dict[str, str]] | None = None) -> Role:
         """Draft a role using LLM based on user description.
 
         Args:
             name: Role name
             user_description: Natural language description of the desired role
             llm: LLM provider with generate() method
+            available_skills: List of {"name": str, "description": str} for skill selection
 
         Returns:
             The drafted Role (not yet saved)
@@ -272,13 +291,26 @@ class RoleManager:
         """
         import json
 
-        system_prompt = """You are an expert at creating PERSONA roles for a data analysis assistant.
+        skills_section = ""
+        if available_skills:
+            skill_lines = "\n".join(
+                f"- **{s['name']}**: {s['description']}" for s in available_skills
+            )
+            skills_section = f"""
+Available skills that can be attached to roles (select relevant ones):
+{skill_lines}
+
+If any skills are relevant to this role, include them in the "skills" array (use exact names).
+If none are relevant, return an empty "skills" array."""
+
+        system_prompt = f"""You are an expert at creating PERSONA roles for a data analysis assistant.
 
 A role defines a PERSONA - combining communication style, priorities, perspective, and domain context relevant to that role.
 
-Roles have two components:
+Roles have three components:
 1. **description**: A brief (1 sentence) description of the persona
 2. **prompt**: Instructions defining the persona's behavior, priorities, and domain context
+3. **skills**: List of skill names to activate when this role is selected
 
 Good role prompts define:
 - Communication style (concise vs detailed, technical vs accessible, formal vs casual)
@@ -286,25 +318,24 @@ Good role prompts define:
 - Output preferences (bullet points, executive summaries, detailed breakdowns)
 - Domain-specific guidance relevant to this role's perspective
 - What to emphasize or de-emphasize
-- Optionally, skills to reference for deeper domain knowledge
 
 Examples:
 - "Executive" role: Leads with recommendations, 2-3 bullet max, quantifies impact, skips details
 - "HR Analyst" role: Focus on workforce metrics, compliance awareness, PII sensitivity, pay equity
 - "Risk Officer" role: Highlights uncertainties, flags anomalies, conservative interpretations
-
-Output ONLY valid JSON with keys: "description" and "prompt". No explanation."""
+{skills_section}
+Output ONLY valid JSON with keys: "description", "prompt", and "skills". No explanation."""
 
         user_prompt = f"""Create a role named "{name}" based on this description:
 
 {user_description}
 
-Return JSON with "description" (brief summary) and "prompt" (detailed instructions for the assistant)."""
+Return JSON with "description" (brief summary), "prompt" (detailed instructions), and "skills" (list of skill names)."""
 
         result = llm.generate(
             system=system_prompt,
             user_message=user_prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
 
         # Parse the JSON response
@@ -318,8 +349,15 @@ Return JSON with "description" (brief summary) and "prompt" (detailed instructio
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse LLM response as JSON: {e}")
 
+        # Validate skills against available list
+        suggested_skills = parsed.get("skills", [])
+        if available_skills:
+            valid_names = {s["name"] for s in available_skills}
+            suggested_skills = [s for s in suggested_skills if s in valid_names]
+
         return Role(
             name=name,
             prompt=parsed.get("prompt", ""),
             description=parsed.get("description", ""),
+            skills=suggested_skills,
         )

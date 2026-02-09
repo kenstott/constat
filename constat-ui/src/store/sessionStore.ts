@@ -1038,6 +1038,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'progress':
         // Progress events could update a progress bar if needed
         break
+
+      case 'entity_rebuild_complete': {
+        // Entity extraction finished in background — refresh entities
+        const { session: s } = get()
+        if (s) {
+          useArtifactStore.getState().fetchEntities(s.session_id)
+        }
+        break
+      }
+
+      case 'entity_rebuild_start':
+        // Could show a loading indicator if desired
+        break
     }
   },
 

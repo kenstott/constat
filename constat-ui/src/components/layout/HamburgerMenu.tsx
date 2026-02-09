@@ -227,7 +227,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       // Refresh data sources and entities to show merged sources
       const artifactStore = useArtifactStore.getState()
       await artifactStore.fetchDataSources(currentSession.session_id)
-      await artifactStore.fetchEntities(currentSession.session_id)
+      // Entities refresh via entity_rebuild_complete WS event
     } catch (error: unknown) {
       console.error('Failed to set projects:', error)
       // Handle conflict errors

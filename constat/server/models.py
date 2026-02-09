@@ -88,6 +88,10 @@ class EventType(str, Enum):
     SYNTHESIZING = "synthesizing"
     GENERATING_INSIGHTS = "generating_insights"
 
+    # Entity extraction events
+    ENTITY_REBUILD_START = "entity_rebuild_start"
+    ENTITY_REBUILD_COMPLETE = "entity_rebuild_complete"
+
 
 # ============================================================================
 # Session Models

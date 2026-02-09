@@ -145,6 +145,14 @@ export const useProofStore = create<ProofState>((set, get) => ({
           })
           return { facts: next }
 
+        case 'fact_blocked':
+          next.set(factName, {
+            ...existing,
+            status: 'blocked',
+            reason: data.reason as string | undefined,
+          })
+          return { facts: next }
+
         default:
           return {}
       }

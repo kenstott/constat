@@ -6,6 +6,7 @@ export interface DraftRoleResponse {
   name: string
   prompt: string
   description: string
+  skills: string[]
 }
 
 // Draft a role using AI

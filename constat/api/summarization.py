@@ -231,6 +231,7 @@ Provide a narrative summary that:
 3. Describes how conclusions were derived step by step
 4. States the final result and confidence level
 5. If any step has reduced confidence (<90%), explain WHY — cite the specific quality issues (e.g., ALL-NULL columns, data quality problems)
+6. GOAL EVALUATION: Re-read the original claim/question. Assess whether every aspect of the original question was fully addressed by the proof. If any goals were only partially met or missed entirely, explicitly state what was not covered and why.
 
 Write as a clear explanation for someone reviewing the audit trail."""
 

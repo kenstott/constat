@@ -116,37 +116,43 @@ class Skill:
 
 
 class SkillManager:
-    """Manages user skills loaded from {base_dir}/{user_id}/skills/."""
+    """Manages skills loaded from system, project, and user directories.
 
-    def __init__(self, user_id: str = "default", base_dir: Optional[Path] = None):
+    Precedence order (later overrides earlier by name):
+        1. System:  {config_dir}/skills/  (alongside config.yaml)
+        2. Project: {project_dir}/skills/ (for each active project)
+        3. User:    {base_dir}/{user_id}/skills/
+    """
+
+    def __init__(self, user_id: str = "default", base_dir: Optional[Path] = None,
+                 system_skills_dir: Optional[Path] = None):
         """Initialize the skill manager.
 
         Args:
             user_id: User identifier
             base_dir: Base .constat directory. Defaults to ./.constat
+            system_skills_dir: System skills directory (config_dir/skills/).
         """
         self._user_id = user_id
         self._base_dir = base_dir or Path(".constat")
         self._skills_dir = get_skills_dir(user_id, self._base_dir)
+        self._system_skills_dir = system_skills_dir
+        self._project_skill_dirs: list[Path] = []
         self._skills: dict[str, Skill] = {}
         self._active_skills: set[str] = set()
         self._ensure_skills_dir()
         self._load_skills()
 
     def _ensure_skills_dir(self) -> None:
-        """Ensure the skills directory exists."""
+        """Ensure the user skills directory exists."""
         self._skills_dir.mkdir(parents=True, exist_ok=True)
 
-    def _load_skills(self) -> None:
-        """Load skills from SKILL.md files in skill directories."""
-        self._skills.clear()
-
-        if not self._skills_dir.exists():
-            logger.debug(f"No skills directory at {self._skills_dir}")
+    def _load_skills_from_dir(self, skills_dir: Path, source: str) -> None:
+        """Load skills from a single directory, overriding existing entries by name."""
+        if not skills_dir.exists():
             return
 
-        # Look for directories containing SKILL.md
-        for skill_dir in self._skills_dir.iterdir():
+        for skill_dir in skills_dir.iterdir():
             if not skill_dir.is_dir():
                 continue
 
@@ -160,24 +166,16 @@ class SkillManager:
 
                 frontmatter, body = parse_frontmatter(content)
 
-                # Required/recommended fields
                 name = frontmatter.get("name", skill_dir.name)
                 description = frontmatter.get("description", "").strip()
                 prompt = body.strip()
 
-                # Tool restrictions
                 allowed_tools = frontmatter.get("allowed-tools", [])
-
-                # Invocation control
                 disable_model_invocation = frontmatter.get("disable-model-invocation", False)
                 user_invocable = frontmatter.get("user-invocable", True)
-
-                # Execution context
                 context = frontmatter.get("context", "")
                 agent = frontmatter.get("agent", "")
                 model = frontmatter.get("model", "")
-
-                # UI hints
                 argument_hint = frontmatter.get("argument-hint", "")
 
                 if prompt:
@@ -194,12 +192,46 @@ class SkillManager:
                         model=model,
                         argument_hint=argument_hint,
                     )
-                    logger.debug(f"Loaded skill: {name} from {skill_dir.name}/SKILL.md")
+                    logger.debug(f"Loaded skill: {name} from {skill_dir.name}/SKILL.md ({source})")
 
             except Exception as e:
                 logger.warning(f"Failed to load skill from {skill_file}: {e}")
 
-        logger.info(f"Loaded {len(self._skills)} skills from {self._skills_dir}")
+    def _load_skills(self) -> None:
+        """Load skills from all directories in precedence order.
+
+        System < project < user (last wins).
+        """
+        self._skills.clear()
+
+        # 1. System skills (lowest precedence) - alongside config.yaml
+        if self._system_skills_dir:
+            self._load_skills_from_dir(self._system_skills_dir, "system")
+
+        # 2. Active project skill dirs
+        for project_dir in self._project_skill_dirs:
+            self._load_skills_from_dir(project_dir, "project")
+
+        # 3. User skills (highest precedence)
+        self._load_skills_from_dir(self._skills_dir, "user")
+
+        logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, projects={len(self._project_skill_dirs)}, user={self._skills_dir})")
+
+    def add_project_skills(self, project_dir: Path) -> None:
+        """Add a project skills directory and reload.
+
+        Args:
+            project_dir: Path to the project's skills/ directory.
+        """
+        if project_dir not in self._project_skill_dirs:
+            self._project_skill_dirs.append(project_dir)
+            self._load_skills()
+
+    def remove_project_skills(self, project_dir: Path) -> None:
+        """Remove a project skills directory and reload."""
+        if project_dir in self._project_skill_dirs:
+            self._project_skill_dirs.remove(project_dir)
+            self._load_skills()
 
     def reload(self) -> None:
         """Reload skills from files."""
@@ -536,7 +568,7 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         result = llm.generate(
             system=system_prompt,
             user_message=user_prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
 
         content = result.strip()
@@ -557,3 +589,89 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
                 pass
 
         return content, description
+
+    def skill_from_proof(
+        self,
+        name: str,
+        proof_nodes: list[dict],
+        proof_summary: str | None,
+        original_problem: str,
+        llm,
+        description: str | None = None,
+    ) -> tuple[str, str]:
+        """Distill a completed proof into SKILL.md content.
+
+        Returns (content, description).
+        """
+        import json
+
+        system_prompt = """You are an expert at creating SKILL files for a data analysis assistant.
+
+You are converting a COMPLETED PROOF (verified facts with derivation strategies and inference code) into a reusable skill.
+
+A skill file has two parts:
+
+1. **YAML frontmatter** (between ---):
+   - name: skill identifier (kebab-case)
+   - description: brief description of what domain/patterns this covers
+   - allowed-tools: list of tools (typically: list_tables, get_table_schema, run_sql)
+
+2. **Markdown body**: Domain-specific reference content including:
+   - Key metrics and their calculations (as tables)
+   - Common SQL query patterns (as code blocks)
+   - Domain terminology and relationships
+   - Best practices for this domain
+   - Reference to `scripts/proof.py` for executable proof code
+
+IMPORTANT: Distill the proof into REUSABLE DOMAIN PATTERNS, not specific values.
+Extract the strategies, query patterns, and metric definitions — not the particular numbers.
+The skill should help someone solve SIMILAR problems, not just replay this exact proof.
+
+Output the complete SKILL.md content (frontmatter + markdown body). No explanation outside the skill content."""
+
+        # Serialize proof nodes for the prompt
+        nodes_summary = []
+        for node in proof_nodes:
+            entry = {
+                "name": node.get("name", ""),
+                "strategy": node.get("strategy", ""),
+                "source": node.get("source", ""),
+                "formula": node.get("formula", ""),
+            }
+            nodes_summary.append(entry)
+
+        user_prompt = f"""Create a skill named "{name}" from this completed proof.
+
+Original problem: {original_problem}
+
+{f"Proof summary: {proof_summary}" if proof_summary else ""}
+
+Proof nodes (verified facts with derivation strategies):
+{json.dumps(nodes_summary, indent=2)}
+
+Generate a SKILL.md that captures the reusable domain patterns, SQL queries, and metric definitions from this proof. Include a note that `scripts/proof.py` contains the executable proof code."""
+
+        result = llm.generate(
+            system=system_prompt,
+            user_message=user_prompt,
+            max_tokens=llm.max_output_tokens,
+        )
+
+        content = result.strip()
+        # Remove markdown code block wrapper if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
+
+        # Extract description from frontmatter
+        extracted_description = description or ""
+        if content.startswith("---"):
+            try:
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    frontmatter = yaml.safe_load(parts[1])
+                    extracted_description = frontmatter.get("description", extracted_description)
+            except Exception:
+                pass
+
+        return content, extracted_description

@@ -38,6 +38,7 @@ class NodeStatus(Enum):
     RUNNING = "running"
     RESOLVED = "resolved"
     FAILED = "failed"
+    BLOCKED = "blocked"
 
 
 @dataclass
@@ -213,9 +214,47 @@ class ExecutionDAG:
         """Check if all nodes are resolved."""
         return all(n.status == NodeStatus.RESOLVED for n in self.nodes.values())
 
+    def is_terminal(self) -> bool:
+        """Check if all nodes are in a terminal state (resolved, failed, or blocked)."""
+        terminal = {NodeStatus.RESOLVED, NodeStatus.FAILED, NodeStatus.BLOCKED}
+        return all(n.status in terminal for n in self.nodes.values())
+
     def get_failed_nodes(self) -> list[FactNode]:
         """Get all failed nodes."""
         return [n for n in self.nodes.values() if n.status == NodeStatus.FAILED]
+
+    def get_blocked_nodes(self) -> list[FactNode]:
+        """Get all blocked nodes."""
+        return [n for n in self.nodes.values() if n.status == NodeStatus.BLOCKED]
+
+    def get_transitive_dependents(self, name: str) -> list[str]:
+        """Get all nodes that transitively depend on the given node (BFS)."""
+        # Build reverse adjacency: node -> list of nodes that depend on it
+        dependents: dict[str, list[str]] = {n: [] for n in self.nodes}
+        for node in self.nodes.values():
+            for dep in node.dependencies:
+                if dep in dependents:
+                    dependents[dep].append(node.name)
+
+        visited: set[str] = set()
+        queue = list(dependents.get(name, []))
+        result: list[str] = []
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            result.append(current)
+            queue.extend(dependents.get(current, []))
+        return result
+
+    def mark_blocked(self, name: str, blocked_by: str = "") -> None:
+        """Mark a node as blocked."""
+        if name in self.nodes:
+            node = self.nodes[name]
+            if node.status == NodeStatus.PENDING:
+                node.status = NodeStatus.BLOCKED
+                node.error = f"blocked by {blocked_by}" if blocked_by else "dependency failed"
 
 
 def parse_plan_to_dag(
@@ -629,9 +668,6 @@ class DAGExecutor:
                         })
                     break
 
-                if self.fail_fast and failed_nodes:
-                    break
-
                 # Get nodes in this level that need execution
                 nodes_to_run = []
                 for name in level:
@@ -730,6 +766,17 @@ class DAGExecutor:
                                 "fact_id": node.fact_id,
                                 "error": str(e),
                             })
+
+                        # Propagate blocked to all transitive dependents
+                        for dep_name in self.dag.get_transitive_dependents(node.name):
+                            self.dag.mark_blocked(dep_name, blocked_by=node.name)
+                            dep_node = self.dag.get_node(dep_name)
+                            if dep_node and dep_node.status == NodeStatus.BLOCKED and self.event_callback:
+                                self.event_callback("node_blocked", {
+                                    "name": dep_node.name,
+                                    "fact_id": dep_node.fact_id,
+                                    "blocked_by": node.name,
+                                })
 
                 if cancelled:
                     break

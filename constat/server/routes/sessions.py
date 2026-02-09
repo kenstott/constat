@@ -11,6 +11,7 @@
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -212,6 +213,12 @@ def _load_projects_into_session(
             documents=project.documents,
         )
         logger.info(f"Registered project resources from {filename}")
+
+    # Register project skills directories
+    for filename, project in valid_projects:
+        if project.source_path:
+            project_skills_dir = Path(project.source_path).parent / "skills"
+            managed.session.skill_manager.add_project_skills(project_skills_dir)
 
     # Sync resources to session history (session.json)
     managed.session.sync_resources_to_history()

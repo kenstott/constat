@@ -233,6 +233,106 @@ async def draft_skill(
         raise HTTPException(status_code=500, detail=f"Failed to draft skill: {str(e)}")
 
 
+class CreateSkillFromProofRequest(BaseModel):
+    name: str
+    description: str = ""
+
+
+class CreateSkillFromProofResponse(BaseModel):
+    name: str
+    content: str
+    description: str
+    has_script: bool
+
+
+@router.post("/skills/from-proof", response_model=CreateSkillFromProofResponse)
+async def create_skill_from_proof(
+    request: Request,
+    session_id: str,
+    skill_request: CreateSkillFromProofRequest,
+    user_id: CurrentUserId,
+) -> CreateSkillFromProofResponse:
+    """Create a skill from a completed proof."""
+    session_manager = get_session_manager(request)
+    managed = session_manager.get_session(session_id)
+    if not managed or managed.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = managed.session
+
+    if not session.last_proof_result:
+        raise HTTPException(status_code=404, detail="No proof result available. Run /prove first.")
+
+    proof_result = session.last_proof_result
+    proof_nodes = proof_result.get("proof_nodes", [])
+    proof_summary = proof_result.get("summary")
+    original_problem = proof_result.get("problem", "")
+
+    if not hasattr(session, "skill_manager"):
+        raise HTTPException(status_code=500, detail="Skill manager not available")
+
+    # Generate SKILL.md content via LLM
+    try:
+        content, description = session.skill_manager.skill_from_proof(
+            name=skill_request.name,
+            proof_nodes=proof_nodes,
+            proof_summary=proof_summary,
+            original_problem=original_problem,
+            llm=session.llm,
+            description=skill_request.description or None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate skill from proof: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate skill: {str(e)}")
+
+    # Create the skill directory and SKILL.md
+    try:
+        skill = session.skill_manager.create_skill(
+            name=skill_request.name,
+            prompt="",
+            description=description,
+        )
+        session.skill_manager.update_skill_content(skill_request.name, content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Generate and write scripts/proof.py
+    has_script = False
+    if session.history and session.session_id:
+        try:
+            from constat.server.routes.data import generate_inference_script, _gather_source_configs
+
+            inferences = session.history.list_inference_codes(session.session_id)
+            if inferences:
+                apis, databases = _gather_source_configs(managed)
+                premises = session.history.list_inference_premises(session.session_id)
+                script_content = generate_inference_script(
+                    inferences=inferences,
+                    premises=premises,
+                    apis=apis,
+                    databases=databases,
+                    session_label=session.session_id[:8],
+                )
+
+                safe_name = "".join(
+                    c if c.isalnum() or c in "-_" else "-"
+                    for c in skill_request.name.lower()
+                )
+                scripts_dir = session.skill_manager.skills_dir / safe_name / "scripts"
+                scripts_dir.mkdir(parents=True, exist_ok=True)
+                (scripts_dir / "proof.py").write_text(script_content)
+                has_script = True
+        except Exception as e:
+            logger.warning(f"Failed to write proof script: {e}")
+
+    return CreateSkillFromProofResponse(
+        name=skill_request.name,
+        content=content,
+        description=description,
+        has_script=has_script,
+    )
+
+
 # Wildcard routes MUST come after specific path routes like /skills/draft
 @router.get("/skills/{skill_name}", response_model=SkillContentResponse)
 async def get_skill_content(
