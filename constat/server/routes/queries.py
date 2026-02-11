@@ -377,7 +377,7 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             logger.debug(f"Registered clarification callback for session {managed.session_id}")
 
         # Auto-detect follow-up: if session already has datastore tables, treat as follow-up
-        if not is_followup and managed.session.datastore.list_tables():
+        if not is_followup and managed.session.datastore and managed.session.datastore.list_tables():
             logger.info(f"Auto-detected follow-up for session {managed.session_id} (existing tables found)")
             is_followup = True
 
