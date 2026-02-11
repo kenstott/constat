@@ -589,13 +589,18 @@ class Session:
 
     def _build_step_prompt(self, step: Step) -> str:
         """Build the prompt for generating step code."""
-        # Format datastore tables info
+        # Format datastore tables info with column metadata
         if self.datastore:
             tables = self.datastore.list_tables()
             if tables:
                 table_lines = ["Available in `store` (load with `store.load_dataframe('name')` or query with SQL):"]
                 for t in tables:
-                    table_lines.append(f"  - {t['name']}: {t['row_count']} rows (from step {t['step_number']})")
+                    schema = self.datastore.get_table_schema(t['name'])
+                    if schema:
+                        col_names = [c['name'] for c in schema]
+                        table_lines.append(f"  - {t['name']}: {t['row_count']} rows, columns: {col_names}")
+                    else:
+                        table_lines.append(f"  - {t['name']}: {t['row_count']} rows")
                 datastore_info = "\n".join(table_lines)
             else:
                 datastore_info = "(no tables saved yet)"
@@ -3202,17 +3207,22 @@ YOUR JSON RESPONSE:"""
                             )
                             if clarify_response:
                                 last_code = code
-                                last_error = f"Validation failed: {failed_validation.description}. User guidance: {clarify_response}"
+                                stdout_hint = f"\nCode stdout:\n{result.stdout[-2000:]}" if result.stdout else ""
+                                last_error = f"Validation failed: {failed_validation.description}. User guidance: {clarify_response}{stdout_hint}"
                                 continue
                             # User skipped — treat as warning
                             validation_warnings.append(f"Skipped: {failed_validation.description}")
 
                         elif failed_validation.on_fail == ValidationOnFail.RETRY:
                             last_code = code
+                            stdout_context = ""
+                            if result.stdout:
+                                stdout_context = f"\nCode stdout (shows actual state):\n{result.stdout[-2000:]}\n"
                             last_error = (
                                 f"Code executed without errors, but post-validation failed.\n"
                                 f"Validation: {failed_validation.description}\n"
                                 f"Expression: {failed_validation.expression}\n"
+                                f"{stdout_context}"
                                 f"The code must be fixed so this validation passes."
                             )
                             self._emit_event(StepEvent(
