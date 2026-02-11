@@ -1755,7 +1755,17 @@ RULES:
                 else:
                     if dep_node.source == "document":
                         # Document premises: tell LLM to use doc_read() instead of variable reference
-                        doc_name = dep_name.lower().replace(' ', '_').replace('-', '_')
+                        # Use source_db (from "document:<name>") if available, else fall back to premise name
+                        doc_name = dep_node.source_db or dep_name.lower().replace(' ', '_').replace('-', '_')
+                        # Validate the doc name against configured documents
+                        if self.doc_tools:
+                            configured_docs = list(self.doc_tools._loaded_documents.keys()) + list(getattr(self.doc_tools, '_document_configs', {}).keys())
+                            if doc_name not in configured_docs and configured_docs:
+                                # Try to find a matching configured document
+                                for cfg_name in configured_docs:
+                                    if cfg_name in dep_name.lower() or dep_name.lower() in cfg_name:
+                                        doc_name = cfg_name
+                                        break
                         scalars.append(
                             f"- {dep_node.fact_id} ({dep_name}): [DOCUMENT] "
                             f"Load at runtime with `doc_read('{doc_name}')` — do NOT reference {dep_node.fact_id} as a variable"
@@ -7832,7 +7842,8 @@ QUESTION: <restate the question>
 PREMISES:
 P1: <fact_name> = ? (<what data to retrieve>) [source: database:<db_name>]
 P2: <fact_name> = ? (<description>) [source: api:<api_name>]
-P3: <fact_name> = <known_value> (<description>) [source: llm_knowledge]
+P3: <fact_name> = ? (<description>) [source: document:<doc_name>]
+P4: <fact_name> = <known_value> (<description>) [source: llm_knowledge]
 
 PREMISE RULES:
 - Premises are DATA only (tables, records, values) - NOT functions or operations
@@ -7840,7 +7851,7 @@ PREMISE RULES:
 - Use "cache" for data already in cache (PREFERRED - fastest)
 - Use "database" for SQL queries to configured databases
 - Use "api" for external API data (GraphQL or REST endpoints)
-- Use "document" for reference documents, policies, and guidelines
+- Use "document:<doc_name>" for reference documents, policies, and guidelines (e.g., [source: document:business_rules])
 - Use "llm_knowledge" for universal facts (mathematical constants, scientific facts) and well-established reference data (ISO codes, country info, currency codes)
 - For known universal values, embed directly: P2: pi_value = 3.14159 (Pi constant) [source: llm_knowledge]
 - NEVER ASSUME personal values (age, location, preferences) - use [source: user] and leave value as ?
