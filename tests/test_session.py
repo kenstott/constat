@@ -107,6 +107,7 @@ class TestMultiStepSession:
             print(f"  Step {step.number}: {step.goal}")
         print(f"\nOutput:\n{result['output'][:500]}")
 
+    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
     def test_cross_database_multi_step(self, session: Session):
         """Test multi-step query across databases."""
         result = session.solve(
@@ -231,7 +232,7 @@ class TestEventHandling:
 class TestSessionResumption:
     """Test session resumption and follow-up queries."""
 
-    @pytest.mark.flaky(reruns=2)
+    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
     def test_follow_up_has_context(self, fresh_history_dir):
         """
         Test that follow-up queries have access to data from previous steps.

@@ -1808,25 +1808,30 @@ class DocumentDiscoveryTools:
                 if path.exists():
                     suffix = path.suffix.lower()
 
-                    # Binary document formats - return file path for local app to open
-                    if suffix in (".pdf", ".docx", ".xlsx", ".pptx"):
-                        return {
-                            "name": name,
-                            "type": "file",
-                            "path": str(path),
-                            "format": suffix[1:],  # pdf, docx, xlsx, pptx
-                        }
-
-                    # Check for structured data files - use schema metadata
-                    schema = _infer_structured_schema(path, doc_config.description)
-                    if schema:
-                        content = schema.to_metadata_doc()
-                        doc_format = schema.file_format
-                    # Text-based files - return content for rendering
+                    # Binary document formats - extract text content
+                    if suffix == ".pdf":
+                        content = self._extract_pdf_text(path)
+                        doc_format = "text"
+                    elif suffix == ".docx":
+                        content = self._extract_docx_text(path)
+                        doc_format = "text"
+                    elif suffix == ".xlsx":
+                        content = self._extract_xlsx_text(path)
+                        doc_format = "text"
+                    elif suffix == ".pptx":
+                        content = self._extract_pptx_text(path)
+                        doc_format = "text"
                     else:
-                        content = path.read_text()
-                        if doc_format == "auto":
-                            doc_format = self._detect_format(suffix)
+                        # Check for structured data files - use schema metadata
+                        schema = _infer_structured_schema(path, doc_config.description)
+                        if schema:
+                            content = schema.to_metadata_doc()
+                            doc_format = schema.file_format
+                        # Text-based files - return content for rendering
+                        else:
+                            content = path.read_text()
+                            if doc_format == "auto":
+                                doc_format = self._detect_format(suffix)
                 else:
                     raise FileNotFoundError(f"Document file not found: {doc_config.path}")
 

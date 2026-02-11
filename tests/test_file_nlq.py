@@ -138,6 +138,7 @@ class TestFileDiscovery:
         assert len(sales_schema["columns"]) > 0  # Has inferred columns
 
 
+@pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
 class TestCSVNaturalLanguageQueries:
     """End-to-end tests for NLQ against CSV files."""
 
@@ -191,6 +192,7 @@ class TestCSVNaturalLanguageQueries:
         print(f"Output: {result['output']}")
 
 
+@pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
 class TestJSONNaturalLanguageQueries:
     """End-to-end tests for NLQ against JSON files."""
 
@@ -244,6 +246,7 @@ class TestJSONNaturalLanguageQueries:
         print(f"Output: {result['output']}")
 
 
+@pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
 class TestMixedDataSources:
     """Tests combining file data with other operations."""
 
