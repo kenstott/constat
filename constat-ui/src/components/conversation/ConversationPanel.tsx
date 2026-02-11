@@ -28,7 +28,9 @@ export function ConversationPanel() {
   }, [messages, queuedMessages])
 
   const handleSubmit = (query: string) => {
-    const isFollowup = messages.some((m) => m.type === 'user')
+    // Check both client-side messages and server-side session state for follow-up detection
+    // session.status === 'completed' catches restored sessions where messages were cleared
+    const isFollowup = messages.some((m) => m.type === 'user') || session?.status === 'completed'
     submitQuery(query, isFollowup)
   }
 
