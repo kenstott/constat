@@ -42,6 +42,7 @@ CRITICAL Rules:
    - `llm_classify(values, categories, context)` — classification into fixed categories
    - `llm_extract(texts, fields, context)` — structured field extraction from free text. `fields` is a list of strings. Returns a dict if one text is passed, list of dicts if multiple.
    - `llm_summarize(texts, instruction)` — text summarization/condensation
+   - `llm_score(texts, min_val, max_val, instruction)` — numeric scoring with reasoning. Returns list of `(score, reasoning)` tuples
 
    Example (mapping):
    mapping = llm_map(df['country'].unique().tolist(), "ISO 3166-1 alpha-2 country code", "country names")
@@ -50,6 +51,11 @@ CRITICAL Rules:
    Example (classification):
    classes = llm_classify(df['description'].tolist(), ["bug", "feature", "question"], "support tickets")
    df['category'] = df['description'].map(classes)
+
+   Example (scoring):
+   results = llm_score(df['review_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate sentiment of this employee evaluation")
+   df['sentiment_score'] = [score for score, _ in results]
+   df['score_reasoning'] = [reason for _, reason in results]
 
    Hardcoded dicts embed unverifiable LLM knowledge and WILL be flagged.
 9. MISSING COLUMNS: If an expected column is missing, raise an error listing actual columns:

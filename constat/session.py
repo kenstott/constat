@@ -1964,6 +1964,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 exec_globals["llm_classify"] = constat.llm.llm_classify
                 exec_globals["llm_extract"] = constat.llm.llm_extract
                 exec_globals["llm_summarize"] = constat.llm.llm_summarize
+                exec_globals["llm_score"] = constat.llm.llm_score
                 exec_globals["doc_read"] = self._create_doc_read_helper()
                 self._inference_used_llm_map = False  # Reset per inference
 
@@ -2885,6 +2886,7 @@ YOUR JSON RESPONSE:"""
             "llm_classify": constat.llm.llm_classify,
             "llm_extract": constat.llm.llm_extract,
             "llm_summarize": constat.llm.llm_summarize,
+            "llm_score": constat.llm.llm_score,
             "doc_read": self._create_doc_read_helper(),
         }
 

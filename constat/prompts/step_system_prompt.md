@@ -16,6 +16,7 @@ Your code has access to:
 - `llm_classify(values, categories, context)`: classify items into fixed categories using LLM
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM
+- `llm_score(texts, min_val, max_val, instruction)`: score texts on a numeric scale using LLM judgment. Returns list of `(score, reasoning)` tuples. Score is a float in [min_val, max_val]
 - `doc_read(name)`: read a reference document by name, returns text content
 - `parse_number(val)`: parse string numbers → tuple of all values. "8-12%" → (8.0, 12.0), "1,2,3" → (1.0, 2.0, 3.0), "5%" → (5.0,). Use `min()`/`max()` for range bounds
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment

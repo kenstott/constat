@@ -9,9 +9,9 @@
 
 """LLM primitives for auditable data transformations.
 
-Provides llm_map, llm_classify, llm_extract, llm_summarize — importable
-by generated scripts. Auto-detects provider from env vars for standalone use;
-call set_backend(router) for in-session use.
+Provides llm_map, llm_classify, llm_extract, llm_summarize, llm_score —
+importable by generated scripts. Auto-detects provider from env vars for
+standalone use; call set_backend(router) for in-session use.
 """
 
 from __future__ import annotations
@@ -442,6 +442,82 @@ YOUR JSON RESPONSE:"""
 
     _notify(LLMCallEvent(
         primitive="llm_summarize",
+        input_count=len(texts),
+        null_count=null_count,
+        model_used=model_used,
+        provider_used=provider_used,
+    ))
+
+    return results
+
+
+def llm_score(
+    texts: list[str],
+    min_val: float = 0.0,
+    max_val: float = 1.0,
+    instruction: str = "Rate each text",
+) -> list[tuple[float | None, str]]:
+    """Score texts on a numeric scale using LLM judgment.
+
+    Args:
+        texts: List of texts to score.
+        min_val: Minimum score value (inclusive).
+        max_val: Maximum score value (inclusive).
+        instruction: Scoring instruction describing what to evaluate.
+
+    Returns:
+        List of (score, reasoning) tuples, one per input text.
+        score is a float in [min_val, max_val], or None if unscorable.
+        reasoning is a short explanation of the score.
+    """
+    texts_str = "\n---\n".join(f"[{i+1}] {t}" for i, t in enumerate(texts))
+
+    prompt = f"""{instruction}
+
+Score each of the following {len(texts)} texts on a scale from {min_val} to {max_val}.
+
+{texts_str}
+
+Respond with ONLY valid JSON: an array of objects, one per input text.
+Each object must have "score" (number between {min_val} and {max_val}, or null) and "reasoning" (brief explanation).
+
+Example format: [{{"score": {min_val}, "reasoning": "..."}}, {{"score": {max_val}, "reasoning": "..."}}, {{"score": null, "reasoning": "cannot evaluate"}}]
+
+YOUR JSON RESPONSE:"""
+
+    content, model_used, provider_used = _execute(
+        system=f"You score texts on a scale from {min_val} to {max_val}. Output ONLY a valid JSON array of objects with 'score' and 'reasoning' keys.",
+        user_message=prompt,
+    )
+
+    content = _parse_json(content)
+
+    if not content.startswith("["):
+        logger.warning(f"[LLM_SCORE] Could not parse response: {content[:200]}")
+        results = [(None, "") for _ in texts]
+    else:
+        raw = json.loads(content)
+        results = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                score = entry.get("score")
+                reasoning = entry.get("reasoning", "")
+                if score is not None:
+                    score = max(min_val, min(max_val, float(score)))
+                results.append((score, reasoning))
+            elif isinstance(entry, (int, float)):
+                # Fallback: plain number without reasoning
+                results.append((max(min_val, min(max_val, float(entry))), ""))
+            else:
+                results.append((None, ""))
+
+    null_count = sum(1 for s, _ in results if s is None)
+    logger.info(
+        f"[LLM_SCORE] Scored {len(texts) - null_count}/{len(texts)} texts on [{min_val}, {max_val}]"
+    )
+
+    _notify(LLMCallEvent(
+        primitive="llm_score",
         input_count=len(texts),
         null_count=null_count,
         model_used=model_used,
