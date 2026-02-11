@@ -72,7 +72,10 @@ CRITICAL Rules:
     - Lists of domain-specific string constants for classification — use llm_classify()
     - Manually constructed extraction results — use llm_extract()
     All LLM knowledge must flow through llm_* primitives for tracking and auditability.
-12. DOCUMENT-SOURCED DATA: When business rules, policy thresholds, or configuration values
+12. DOCUMENT-SOURCED DATA: `doc_read()` is ONLY for configured reference documents listed
+    as [DOCUMENT] dependencies in the SCALAR VALUES section above.
+    NEVER call doc_read() for data that is in a datastore table — use store.query() instead.
+    When business rules, policy thresholds, or configuration values
     come from a reference document, NEVER hardcode them. Load the document at runtime:
     ```
     policy_text = doc_read('compensation_policy')

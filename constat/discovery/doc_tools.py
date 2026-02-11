@@ -1790,7 +1790,13 @@ class DocumentDiscoveryTools:
                     break
 
         if not doc_config:
-            raise ValueError(f"Document not configured: {name}")
+            configured = list(self.config.documents.keys())
+            raise ValueError(
+                f"Document not configured: {name}. "
+                f"Configured documents: {configured}. "
+                f"doc_read() is ONLY for configured reference documents. "
+                f"If the data is in a datastore table, use store.query() instead."
+            )
         content = ""
         doc_format = doc_config.format
 
