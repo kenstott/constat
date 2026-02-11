@@ -339,5 +339,5 @@ class TestSessionResumption:
         session_id = str(uuid.uuid4())
         session = Session(config, session_id=session_id, history=history)
 
-        with pytest.raises(ValueError, match="No active session"):
+        with pytest.raises(ValueError, match="No datastore available"):
             session.follow_up("Some follow-up question")

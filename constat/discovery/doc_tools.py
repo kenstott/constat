@@ -1691,7 +1691,7 @@ class DocumentDiscoveryTools:
         if not hasattr(self._vector_store, 'find_entity_by_name'):
             return []
 
-        entity = self._vector_store.find_entity_by_name(entity_name, self._active_project_ids, session_id)
+        entity = self._vector_store.find_entity_by_name(entity_name, project_ids=self._active_project_ids, session_id=session_id)
         if not entity:
             return []
 

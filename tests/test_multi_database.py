@@ -62,6 +62,7 @@ Choose the appropriate database based on the query domain.
 
     schema_manager = SchemaManager(config)
     schema_manager.initialize()
+    schema_manager.build_chunks()
 
     return QueryEngine(config, schema_manager, max_retries=3)
 

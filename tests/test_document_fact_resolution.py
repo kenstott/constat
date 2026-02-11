@@ -382,6 +382,7 @@ class TestProductionDiscoveryPath:
 
         schema_manager = SchemaManager(production_config)
         schema_manager.initialize()
+        schema_manager.build_chunks()
 
         # Check that chunks were created for tables
         vs = schema_manager._vector_store
@@ -430,6 +431,7 @@ class TestProductionDiscoveryPath:
                 # Initialize schema manager (creates table chunks)
                 schema_manager = SchemaManager(production_config)
                 schema_manager.initialize()
+                schema_manager.build_chunks()
 
                 # Get the vector store from schema manager
                 schema_vs = schema_manager._vector_store

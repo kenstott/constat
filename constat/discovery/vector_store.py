@@ -1173,26 +1173,41 @@ class DuckDBVectorStore(VectorStoreBackend):
     def find_entity_by_name(
         self,
         name: str,
-        session_id: str,
+        project_ids: Optional[list[str]] = None,
+        session_id: Optional[str] = None,
     ) -> Optional[Entity]:
         """Find an entity by its name (case-insensitive).
 
         Args:
             name: Entity name to search for
-            session_id: Session ID (required - entities are session-scoped)
+            project_ids: Optional project IDs to scope the search
+            session_id: Optional session ID to scope the search
 
         Returns:
             Entity if found, None otherwise
         """
+        conditions = ["LOWER(name) = LOWER(?)"]
+        params: list = [name]
+
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+
+        if project_ids:
+            placeholders = ", ".join("?" for _ in project_ids)
+            conditions.append(f"project_id IN ({placeholders})")
+            params.extend(project_ids)
+
+        where = " AND ".join(conditions)
         result = self._conn.execute(
-            """
+            f"""
             SELECT id, name, display_name, semantic_type, ner_type,
                    session_id, project_id, created_at
             FROM entities
-            WHERE LOWER(name) = LOWER(?) AND session_id = ?
+            WHERE {where}
             LIMIT 1
             """,
-            [name, session_id],
+            params,
         ).fetchone()
 
         if not result:

@@ -63,9 +63,10 @@ A VIP customer is defined as one with lifetime value > $100,000.
 
 @pytest.fixture(scope="module")
 def schema_manager(config) -> SchemaManager:
-    """Create and initialize schema manager."""
+    """Create and initialize schema manager with vector search."""
     sm = SchemaManager(config)
     sm.initialize()
+    sm.build_chunks()
     return sm
 
 

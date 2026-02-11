@@ -250,6 +250,7 @@ class TestSchemaManagerWithFiles:
 
         manager = SchemaManager(config)
         manager.initialize()
+        manager.build_chunks()
 
         # Search for sales-related data
         results = manager.find_relevant_tables("product sales transactions")

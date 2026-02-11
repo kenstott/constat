@@ -540,10 +540,11 @@ class TestAsyncGenerateIntegrationWithFactResolver:
         from constat.execution.fact_resolver import AsyncFactResolver
 
         # Create a mock LLM without async_generate
-        mock_llm = MagicMock(spec=['generate'])  # Only has generate, not async_generate
+        mock_llm = MagicMock(spec=['generate', 'max_output_tokens'])  # Only has generate, not async_generate
         mock_llm.generate = MagicMock(
             return_value="VALUE: 99\nCONFIDENCE: 0.8\nTYPE: heuristic\nREASONING: Fallback"
         )
+        mock_llm.max_output_tokens = 500
 
         resolver = AsyncFactResolver(llm=mock_llm)
 
