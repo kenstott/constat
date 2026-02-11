@@ -160,8 +160,8 @@ class TestSchemaManagerOverview:
         """Overview includes database names and table counts."""
         overview = schema_manager.get_overview()
 
-        assert "chinook:" in overview
-        assert "11 tables" in overview
+        assert "chinook" in overview
+        assert "db_chinook" in overview
 
     def test_overview_lists_tables(self, schema_manager: SchemaManager):
         """Overview includes table names."""
@@ -189,59 +189,66 @@ class TestSchemaManagerOverview:
         assert estimated_tokens < 500, f"Overview too long: ~{estimated_tokens} tokens"
 
 
+@pytest.fixture(scope="module")
+def schema_manager_with_vectors(schema_manager: SchemaManager) -> SchemaManager:
+    """Schema manager with build_chunks() called for vector search."""
+    schema_manager.build_chunks()
+    return schema_manager
+
+
 class TestSchemaManagerVectorSearch:
     """Test semantic search over table schemas."""
 
-    def test_finds_relevant_tables_for_revenue_query(self, schema_manager: SchemaManager):
+    def test_finds_relevant_tables_for_revenue_query(self, schema_manager_with_vectors: SchemaManager):
         """Vector search finds invoice-related tables for revenue queries."""
-        results = schema_manager.find_relevant_tables("customer revenue and sales totals")
+        results = schema_manager_with_vectors.find_relevant_tables("customer revenue and sales totals")
 
         table_names = [r["table"] for r in results]
         # Should find Invoice, InvoiceLine, Customer
         assert "Invoice" in table_names or "InvoiceLine" in table_names
 
-    def test_finds_relevant_tables_for_music_query(self, schema_manager: SchemaManager):
+    def test_finds_relevant_tables_for_music_query(self, schema_manager_with_vectors: SchemaManager):
         """Vector search finds music-related tables for track queries."""
-        results = schema_manager.find_relevant_tables("song tracks albums and artists")
+        results = schema_manager_with_vectors.find_relevant_tables("song tracks albums and artists")
 
         table_names = [r["table"] for r in results]
         # Should find Track, Album, Artist
         assert "Track" in table_names
         assert "Album" in table_names or "Artist" in table_names
 
-    def test_finds_relevant_tables_for_genre_query(self, schema_manager: SchemaManager):
+    def test_finds_relevant_tables_for_genre_query(self, schema_manager_with_vectors: SchemaManager):
         """Vector search finds Genre table for genre queries."""
-        results = schema_manager.find_relevant_tables("music genres like rock and jazz")
+        results = schema_manager_with_vectors.find_relevant_tables("music genres like rock and jazz")
 
         table_names = [r["table"] for r in results]
         assert "Genre" in table_names
 
-    def test_returns_relevance_scores(self, schema_manager: SchemaManager):
+    def test_returns_relevance_scores(self, schema_manager_with_vectors: SchemaManager):
         """Results include relevance scores between 0 and 1."""
-        results = schema_manager.find_relevant_tables("customer purchases")
+        results = schema_manager_with_vectors.find_relevant_tables("customer purchases")
 
         for result in results:
             assert "relevance" in result
             assert 0 <= result["relevance"] <= 1
 
-    def test_returns_requested_number_of_results(self, schema_manager: SchemaManager):
+    def test_returns_requested_number_of_results(self, schema_manager_with_vectors: SchemaManager):
         """top_k parameter limits results."""
-        results_3 = schema_manager.find_relevant_tables("data", top_k=3)
-        results_5 = schema_manager.find_relevant_tables("data", top_k=5)
+        results_3 = schema_manager_with_vectors.find_relevant_tables("data", top_k=3)
+        results_5 = schema_manager_with_vectors.find_relevant_tables("data", top_k=5)
 
         assert len(results_3) == 3
         assert len(results_5) == 5
 
-    def test_results_ordered_by_relevance(self, schema_manager: SchemaManager):
+    def test_results_ordered_by_relevance(self, schema_manager_with_vectors: SchemaManager):
         """Results are ordered by descending relevance."""
-        results = schema_manager.find_relevant_tables("customer invoices")
+        results = schema_manager_with_vectors.find_relevant_tables("customer invoices")
 
         relevances = [r["relevance"] for r in results]
         assert relevances == sorted(relevances, reverse=True)
 
-    def test_results_include_summary(self, schema_manager: SchemaManager):
+    def test_results_include_summary(self, schema_manager_with_vectors: SchemaManager):
         """Results include a brief summary with column names."""
-        results = schema_manager.find_relevant_tables("track names")
+        results = schema_manager_with_vectors.find_relevant_tables("track names")
 
         for result in results:
             assert "summary" in result
@@ -335,10 +342,6 @@ class TestProgressCallback:
         introspecting_events = [e for e in progress_events if e[0] == "introspecting"]
         assert len(introspecting_events) > 0
 
-        # Should have indexing stage
-        indexing_events = [e for e in progress_events if e[0] == "indexing"]
-        assert len(indexing_events) > 0
-
     def test_progress_callback_stages_in_order(self, config: Config, fresh_vector_store):
         """Progress stages occur in correct order."""
         stages = []
@@ -350,9 +353,8 @@ class TestProgressCallback:
         manager = SchemaManager(config)
         manager.initialize(progress_callback=callback)
 
-        # Stages should be in order: connecting -> introspecting -> indexing
+        # initialize() has connecting -> introspecting stages
         assert stages.index("connecting") < stages.index("introspecting")
-        assert stages.index("introspecting") < stages.index("indexing")
 
     def test_progress_callback_current_increments(self, config: Config, fresh_vector_store):
         """Current value increments within each stage."""

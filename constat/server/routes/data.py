@@ -2496,10 +2496,24 @@ def _gather_source_configs(managed) -> tuple[list[dict], list[dict]]:
             })
 
     databases = []
+    seen_db_names = set()
     if managed and managed.session.config and managed.session.config.databases:
         for name, db_config in managed.session.config.databases.items():
             if not db_config.is_file_source():
                 databases.append({"name": name, "uri": db_config.uri or ""})
+                seen_db_names.add(name)
+
+    # Include dynamically added databases (from projects) not in base config
+    if managed and hasattr(managed.session, 'schema_manager'):
+        from constat.catalog.sql_transpiler import TranspilingConnection
+        for name, conn in managed.session.schema_manager.connections.items():
+            if name not in seen_db_names:
+                if isinstance(conn, TranspilingConnection):
+                    uri = str(conn.engine.url)
+                else:
+                    uri = str(conn.url)
+                databases.append({"name": name, "uri": uri})
+                seen_db_names.add(name)
 
     return apis, databases
 
@@ -2625,21 +2639,12 @@ def generate_inference_script(
         lines.append('')
         for db in databases:
             lines.append(f"db_{db['name']} = create_engine('{db['uri']}')")
-        lines.extend([
-            '',
-            'def db_query(sql: str) -> pd.DataFrame:',
-            '    """Query the first available database."""',
-        ])
-        first_db = databases[0]['name']
-        lines.append(f'    return pd.read_sql(sql, db_{first_db})')
         lines.extend(['', ''])
 
-    # Add LLM map stub
+    # LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)
     lines.extend([
-        'def llm_map(values: list, target: str, source_desc: str = "") -> dict:',
-        '    """Fuzzy map values using LLM. Stub — implement with your LLM provider."""',
-        '    print(f"llm_map called for {len(values)} values -> {target}")',
-        '    return {v: None for v in values}',
+        '# LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)',
+        'from constat.llm import llm_map, llm_classify, llm_extract, llm_summarize',
         '',
         '',
         '# ============================================================================',

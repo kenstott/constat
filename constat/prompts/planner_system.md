@@ -18,12 +18,23 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 - `duckdb` for SQL queries on any data (DataFrames, JSON, Parquet)
 - `pd` (pandas), `np` (numpy), `store` for persisting data between steps
 - `llm_ask(question)` for general knowledge, `send_email(to, subject, body, format="markdown", df=None)` for emails (use format="markdown" for styled HTML)
+- `doc_read(name)` to load reference document content at runtime, `llm_extract(texts, fields, context)` to parse structured rules from it
 
 ## Data Source Selection
 1. For policies, guidelines, rules, or business definitions: use `search_documents(query)` FIRST
 2. For structured data (records, transactions, entities): use `find_relevant_tables(query)` or `find_relevant_apis(query)`
 3. Fall back to `llm_ask()` only for world knowledge not in configured sources
 4. ALWAYS use discovery tools before assuming data doesn't exist
+
+## Document References in Step Goals
+When a step uses rules, thresholds, or policies from a **configured reference document** (listed in the available resources):
+- **Reference the document by name** in the step goal — do NOT embed its values
+- WRONG: "Calculate raises using 5=8-12%, 4=5-8%, 3=2-4%, 2=0%, 1=PIP"
+- RIGHT: "Calculate raises using rules from compensation_policy document"
+- The step code will call `doc_read('compensation_policy')` to load the current document at runtime
+- Embedding document values in step goals freezes them — if the document is updated, the code uses stale data
+
+**IMPORTANT**: Only use `doc_read()` when a reference document is actually relevant and configured. If the data comes entirely from database queries or APIs, do NOT inject document references.
 
 ## Active Skills (HIGHEST PRIORITY)
 When **Active Skills** are listed below, they are pre-built knowledge that matches this query. There are two kinds:
@@ -120,7 +131,7 @@ Each step can include `post_validations` — assertions checked after successful
 ```
 
 Rules:
-- `expression`: Valid Python expression evaluated in the step's namespace (has access to all variables the step created)
+- `expression`: Valid Python expression referencing the step's `outputs` names (the store table names). Use the EXACT names from `outputs`, NOT suffixed variants like `_df`. For example, if `outputs: ["raise_recommendations"]`, write `len(raise_recommendations) > 0`, NOT `len(raise_recommendations_df) > 0`.
 - `on_fail`: "retry" (re-generate code with error context), "clarify" (ask user), "warn" (log and continue)
 - For "clarify", add `clarify_question` field with the question to ask
 - Only add validations when the step has clear success criteria

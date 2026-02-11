@@ -724,8 +724,14 @@ class DAGExecutor:
                     node = futures[future]
                     try:
                         result = future.result()
-                        # Support both (value, confidence) and (value, confidence, source) returns
-                        if isinstance(result, tuple) and len(result) >= 3:
+                        # Support tuples up to 5 elements: (v, conf, src, validations, profile)
+                        validations = None
+                        profile = None
+                        if isinstance(result, tuple) and len(result) >= 5:
+                            value, confidence, source, validations, profile = result[0], result[1], result[2], result[3], result[4]
+                        elif isinstance(result, tuple) and len(result) >= 4:
+                            value, confidence, source, validations = result[0], result[1], result[2], result[3]
+                        elif isinstance(result, tuple) and len(result) >= 3:
                             value, confidence, source = result[0], result[1], result[2]
                         elif isinstance(result, tuple) and len(result) == 2:
                             value, confidence = result
@@ -748,13 +754,18 @@ class DAGExecutor:
                         node.confidence = confidence
 
                         if self.event_callback:
-                            self.event_callback("node_resolved", {
+                            event_data = {
                                 "name": node.name,
                                 "fact_id": node.fact_id,
                                 "value": value,
                                 "confidence": confidence,
                                 "source": source,
-                            })
+                            }
+                            if validations:
+                                event_data["validations"] = validations
+                            if profile:
+                                event_data["profile"] = profile
+                            self.event_callback("node_resolved", event_data)
                     except Exception as e:
                         node.status = NodeStatus.FAILED
                         node.error = str(e)

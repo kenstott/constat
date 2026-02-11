@@ -52,6 +52,7 @@ from constat.execution.intent_classifier import IntentClassifier
 from constat.execution.parallel_scheduler import ExecutionContext
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.providers import TaskRouter
+import constat.llm
 from constat.catalog.schema_manager import SchemaManager
 from constat.catalog.api_schema_manager import APISchemaManager
 from constat.catalog.preload_cache import MetadataPreloadCache
@@ -241,6 +242,9 @@ class Session:
 
         # Task router for model routing with escalation
         self.router = TaskRouter(config.llm)
+
+        constat.llm.set_backend(self.router)
+        constat.llm.on_call(self._handle_llm_call_event)
 
         # Default provider (for backward compatibility - e.g., fact resolver)
         self.llm = self.router._get_provider(
@@ -604,8 +608,8 @@ class Session:
         else:
             scratchpad_context = self.scratchpad.get_recent_context(max_steps=5)
 
-        # Build source context
-        ctx = self._build_source_context()
+        # Build source context with semantic search for step-relevant tables
+        ctx = self._build_source_context(query=step.goal)
 
         # Build codegen learnings section - only for code generation steps
         # Skip for summarization, planning, intent classification etc.
@@ -1085,10 +1089,84 @@ class Session:
             table_count = by_db[db_name]
             row_count = total_rows_by_db[db_name]
             if db_name in db_descriptions:
-                lines.append(f"  {db_name}: {db_descriptions[db_name]} ({table_count} tables, ~{row_count:,} rows)")
+                lines.append(f"  {db_name} (connection: db_{db_name}): {db_descriptions[db_name]} ({table_count} tables, ~{row_count:,} rows)")
             else:
-                lines.append(f"  {db_name}: {table_count} tables, ~{row_count:,} rows")
+                lines.append(f"  {db_name} (connection: db_{db_name}): {table_count} tables, ~{row_count:,} rows")
 
+        return "\n".join(lines)
+
+    def _format_relevant_tables(self, tables: list[dict]) -> str:
+        """Format semantically matched tables with database connection names."""
+        if not tables:
+            return self._get_brief_schema_summary()
+
+        lines = ["Relevant tables (use pd.read_sql(query, db_<name>) with the correct connection):"]
+
+        # Group by database for clarity
+        by_db: dict[str, list] = {}
+        for t in tables:
+            by_db.setdefault(t["database"], []).append(t)
+
+        for db_name, db_tables in sorted(by_db.items()):
+            lines.append(f"\n  Database '{db_name}' — connection: db_{db_name}")
+            for t in db_tables:
+                full_name = t["name"]
+                table_meta = self.schema_manager.metadata_cache.get(full_name) if self.schema_manager else None
+                if table_meta:
+                    col_names = ", ".join(c.name for c in table_meta.columns[:15])
+                    if len(table_meta.columns) > 15:
+                        col_names += f", ... (+{len(table_meta.columns) - 15} more)"
+                    lines.append(f"    {table_meta.name}({col_names}) ~{table_meta.row_count} rows")
+                else:
+                    lines.append(f"    {t.get('name', '')}: {t.get('summary', '')}")
+
+        lines.append("\nUse `find_relevant_tables(query)` or `get_table_schema(table)` for other tables.")
+        return "\n".join(lines)
+
+    def _format_relevant_apis(self, apis: list[dict]) -> str:
+        """Format semantically matched APIs."""
+        if not apis:
+            # Fall back to listing all configured APIs
+            if self.resources.has_apis():
+                api_lines = ["\n## Available APIs"]
+                for name, api_info in self.resources.apis.items():
+                    api_type = api_info.api_type.upper()
+                    desc = api_info.description or f"{api_type} endpoint"
+                    api_lines.append(f"- **{name}** ({api_type}): {desc}")
+                return "\n".join(api_lines)
+            return ""
+
+        lines = ["\n## Relevant APIs"]
+        for a in apis:
+            name = a.get("name", "")
+            desc = a.get("description", "")
+            api_type = a.get("type", "").upper()
+            lines.append(f"- **{name}** ({api_type}): {desc}")
+            if a.get("fields"):
+                lines.append(f"  Fields: {', '.join(a['fields'][:10])}")
+        return "\n".join(lines)
+
+    def _format_relevant_docs(self, docs: list[dict]) -> str:
+        """Format semantically matched documents."""
+        if not docs:
+            # Fall back to listing all configured documents
+            if self.resources.has_documents():
+                doc_lines = ["\n## Reference Documents"]
+                for name, doc_info in self.resources.documents.items():
+                    desc = doc_info.description or doc_info.doc_type
+                    doc_lines.append(f"- **{name}**: {desc}")
+                return "\n".join(doc_lines)
+            return ""
+
+        lines = ["\n## Relevant Documents"]
+        for d in docs:
+            name = d.get("name", "")
+            section = d.get("section", "")
+            excerpt = d.get("excerpt", "")
+            section_info = f" (section: {section})" if section else ""
+            lines.append(f"- **{name}**{section_info}")
+            if excerpt:
+                lines.append(f"  > {excerpt[:200]}")
         return "\n".join(lines)
 
     def _get_schema_tools(self) -> list[dict]:
@@ -1670,13 +1748,21 @@ RULES:
                                 logger.debug(f"Failed to get sample for {dep_table}: {e}")
                         tables.append(f"- {dep_node.fact_id}: stored as '{dep_table}'{columns_info}{sample_info}")
                 else:
-                    scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
+                    if dep_node.source == "document":
+                        # Document premises: tell LLM to use doc_read() instead of variable reference
+                        doc_name = dep_name.lower().replace(' ', '_').replace('-', '_')
+                        scalars.append(
+                            f"- {dep_node.fact_id} ({dep_name}): [DOCUMENT] "
+                            f"Load at runtime with `doc_read('{doc_name}')` — do NOT reference {dep_node.fact_id} as a variable"
+                        )
+                    else:
+                        scalars.append(f"- {dep_node.fact_id} ({dep_name}): {dep_node.value}")
 
             # Build referenced tables section for prompt
             referenced_section = ""
             if referenced_tables:
                 referenced_section = f"""
-REFERENCED TABLES (query from database with db_query()):
+REFERENCED TABLES (query with pd.read_sql(sql, db_<name>)):
 {chr(10).join(referenced_tables)}
 """
 
@@ -1768,8 +1854,6 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                         reader = {'csv': 'read_csv', 'json': 'read_json', 'parquet': 'read_parquet'}.get(ext, 'read_csv')
                         data_source_apis.append(f"- pd.{reader}(file_{db_name}) -> DataFrame")
 
-            data_source_apis.append("- db_query(sql) -> pd.DataFrame (tries all SQL databases)")
-
             # APIs
             all_apis_for_desc = self.get_all_apis()
             if all_apis_for_desc:
@@ -1808,6 +1892,15 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                         + "\n---\n".join(hints) + "\n"
                     )
 
+            # Build codegen learnings for inference
+            inference_learnings = ""
+            try:
+                inference_learnings = self._get_codegen_learnings(
+                    f"inference {inf_id}: {operation}", TaskType.SQL_GENERATION
+                )
+            except Exception as e:
+                logger.debug(f"Failed to get codegen learnings for inference: {e}")
+
             # Generate inference code
             inference_prompt = load_prompt("inference_prompt.md").format(
                 inf_id=inf_id,
@@ -1821,12 +1914,16 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 data_source_apis="\n".join(data_source_apis),
                 table_name=table_name,
             ) + step_hints_section
+            if inference_learnings:
+                inference_prompt += f"\n\nLEARNINGS FROM PREVIOUS ERRORS:\n{inference_learnings}"
 
             max_retries = 7
             last_error = None
             code = None
             first_error = None  # Track for learning capture
             first_code = None
+            _val_passed = []  # True assertions (structural + user-specified)
+            _val_profile = []  # Data profile stats for human review
 
             for attempt in range(max_retries):
                 prompt = inference_prompt
@@ -1858,29 +1955,16 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 import sys
                 import numpy as np
 
-                # Create db_query function for referenced tables
-                def db_query(sql: str) -> pd.DataFrame:
-                    """Query the original database directly (for referenced tables)."""
-                    from constat.catalog.sql_transpiler import TranspilingConnection, read_sql_transpiled
-                    for db_name in self.schema_manager.connections.keys():
-                        engine = self.schema_manager.get_sql_connection(db_name)
-                        try:
-                            if isinstance(engine, TranspilingConnection):
-                                return read_sql_transpiled(sql, engine)
-                            return pd.read_sql(sql, engine)
-                        except Exception as e:
-                            logger.debug(f"db_query failed on {db_name}: {e}")
-                            continue
-                    raise Exception("No database connection available")
-
                 # Build full execution globals (databases, APIs, file sources)
                 exec_globals = self._get_execution_globals()
-                # Override store/pd/np and add db_query convenience wrapper
                 exec_globals["store"] = self.datastore
                 exec_globals["pd"] = pd
                 exec_globals["np"] = np
-                exec_globals["db_query"] = db_query
-                exec_globals["llm_map"] = self._create_llm_map_helper()
+                exec_globals["llm_map"] = constat.llm.llm_map
+                exec_globals["llm_classify"] = constat.llm.llm_classify
+                exec_globals["llm_extract"] = constat.llm.llm_extract
+                exec_globals["llm_summarize"] = constat.llm.llm_summarize
+                exec_globals["doc_read"] = self._create_doc_read_helper()
                 self._inference_used_llm_map = False  # Reset per inference
 
                 # Add resolved values to context
@@ -1909,6 +1993,115 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 try:
                     sys.stdout = captured
                     exec(code, exec_globals)
+
+                    # --- Post-execution validation ---
+                    _val_computed = exec_globals.get('_result')
+                    _val_tables = [t['name'] for t in self.datastore.list_tables()] if self.datastore else []
+                    _val_output = captured.getvalue().strip()
+                    _val_error = None
+                    _val_passed = []  # True assertions (structural + user-specified)
+                    _val_profile = []  # Data profile stats for human review
+
+                    # 1. Result exists (unless table saved or stdout produced)
+                    if _val_computed is None and table_name not in _val_tables and not _val_output:
+                        _val_error = f"No result produced. Set _result, save table '{table_name}', or print output."
+                    else:
+                        _val_passed.append("Result produced")
+
+                    # 2. DataFrame not empty
+                    if not _val_error and _val_computed is not None and hasattr(_val_computed, 'empty') and _val_computed.empty:
+                        _val_error = f"Result DataFrame is empty (0 rows). Expected data in '{table_name}'."
+                    elif not _val_error and _val_computed is not None and hasattr(_val_computed, 'empty'):
+                        _val_passed.append(f"DataFrame has {len(_val_computed)} rows")
+
+                    # 3. Saved table has rows
+                    if not _val_error and table_name in _val_tables:
+                        _row_ct = int(self.datastore.query(f'SELECT COUNT(*) FROM "{table_name}"').iloc[0, 0])
+                        if _row_ct == 0:
+                            _val_error = f"Table '{table_name}' saved but has 0 rows."
+                        else:
+                            _val_passed.append(f"Table '{table_name}' has {_row_ct} rows")
+
+                    # 4. No all-null columns
+                    if not _val_error and table_name in _val_tables:
+                        try:
+                            _null_df = self.datastore.query(
+                                f'SELECT column_name FROM (SELECT * FROM "{table_name}" LIMIT 1000) '
+                                f'UNPIVOT (value FOR column_name IN (*)) '
+                                f'GROUP BY column_name HAVING COUNT(CASE WHEN value IS NOT NULL AND value != \'\' THEN 1 END) = 0'
+                            )
+                            if len(_null_df) > 0:
+                                _val_error = f"Table '{table_name}' has all-NULL columns: {list(_null_df['column_name'])}. Data enrichment likely failed."
+                            else:
+                                _val_passed.append("No all-NULL columns")
+                        except Exception:
+                            pass
+
+                    # 5. Column-level profiling → _val_profile (stats for human review)
+                    if not _val_error and table_name in _val_tables:
+                        try:
+                            _cols_df = self.datastore.query(f'SELECT * FROM "{table_name}" LIMIT 0')
+                            for _c in _cols_df.columns:
+                                try:
+                                    _stats = self.datastore.query(
+                                        f'SELECT MIN("{_c}") as mn, MAX("{_c}") as mx, '
+                                        f'COUNT("{_c}") as cnt, COUNT(*) as total '
+                                        f'FROM "{table_name}"'
+                                    )
+                                    _mn, _mx = _stats.iloc[0]['mn'], _stats.iloc[0]['mx']
+                                    _cnt = int(_stats.iloc[0]['cnt'])
+                                    _tot = int(_stats.iloc[0]['total'])
+                                    if isinstance(_mn, (int, float)) and isinstance(_mx, (int, float)):
+                                        if _mn == _mx:
+                                            _val_profile.append(f"{_c}: all values = {_mn}")
+                                        else:
+                                            _val_profile.append(f"{_c}: {_mn} to {_mx}")
+                                    if _cnt < _tot:
+                                        _val_profile.append(f"{_c}: {_cnt}/{_tot} non-null")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    # 6. Input-output row ratio vs dependencies
+                    if not _val_error and table_name in _val_tables and node.dependencies:
+                        try:
+                            _out_ct = int(self.datastore.query(f'SELECT COUNT(*) FROM "{table_name}"').iloc[0, 0])
+                            for _dep_name in node.dependencies:
+                                _dep_node = dag.get_node(_dep_name)
+                                if _dep_node and _dep_node.row_count and _dep_node.row_count > 1:
+                                    if abs(_out_ct - _dep_node.row_count) <= max(1, _dep_node.row_count * 0.2):
+                                        _val_profile.append(f"Row count matches {_dep_node.fact_id} ({_out_ct} vs {_dep_node.row_count})")
+                                    elif _out_ct > _dep_node.row_count:
+                                        _val_profile.append(f"Expanded from {_dep_node.fact_id}: {_dep_node.row_count} → {_out_ct} rows")
+                                    else:
+                                        _val_profile.append(f"Filtered from {_dep_node.fact_id}: {_dep_node.row_count} → {_out_ct} rows")
+                        except Exception:
+                            pass
+
+                    # 7. User-specified validations (from query constraints)
+                    _user_validations = getattr(self, '_proof_user_validations', [])
+                    if not _val_error and _user_validations and table_name in _val_tables:
+                        for _uv in _user_validations:
+                            try:
+                                _uv_result = self.datastore.query(_uv['sql'].format(table=table_name))
+                                _uv_ok = bool(_uv_result.iloc[0, 0]) if len(_uv_result) > 0 else False
+                                if _uv_ok:
+                                    _val_passed.append(f"{_uv['label']}")
+                                else:
+                                    _val_error = f"User validation failed: {_uv['label']}"
+                            except Exception as _uv_e:
+                                logger.debug(f"User validation '{_uv.get('label', '?')}' skipped for {table_name}: {_uv_e}")
+
+                    if _val_error:
+                        last_error = _val_error
+                        logger.warning(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} validation: {_val_error}")
+                        if first_error is None:
+                            first_error = last_error
+                            first_code = code
+                        continue
+                    # --- End validation ---
+
                     last_error = None
                     # Capture learning if this was a successful retry
                     if attempt > 0 and first_error and self.learning_store:
@@ -1993,23 +2186,6 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     output=output or None,
                 )
 
-            # Detect all-null columns in result table (data quality smell)
-            if self.datastore and table_name in [t['name'] for t in self.datastore.list_tables()]:
-                try:
-                    null_check = self.datastore.query(
-                        f"SELECT column_name FROM (SELECT * FROM {table_name} LIMIT 1000) "
-                        f"UNPIVOT (value FOR column_name IN (*)) "
-                        f"GROUP BY column_name HAVING COUNT(CASE WHEN value IS NOT NULL AND value != '' THEN 1 END) = 0"
-                    )
-                except Exception:
-                    null_check = pd.DataFrame()
-                if len(null_check) > 0:
-                    null_cols = list(null_check['column_name'])
-                    logger.warning(
-                        f"[INFERENCE_CODE] {inf_id} ({inf_name}): table '{table_name}' has ALL-NULL columns: {null_cols}. "
-                        f"This likely indicates failed data enrichment."
-                    )
-
             # Reduce confidence if inference used LLM fuzzy mapping
             used_llm = getattr(self, '_inference_used_llm_map', False)
 
@@ -2042,7 +2218,189 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 context=f"Code:\n{code}" if code else None,
             )
 
-            return result_value, confidence, "llm_knowledge" if used_llm else "derived"
+            return result_value, confidence, "llm_knowledge" if used_llm else "derived", _val_passed, _val_profile
+
+    @staticmethod
+    def _find_skill_script(scripts_dir: Path) -> Path | None:
+        """Find the first executable Python script in a skill's scripts directory."""
+        if not scripts_dir.exists():
+            return None
+        for ext in ("*.py",):
+            scripts = sorted(scripts_dir.glob(ext))
+            if scripts:
+                return scripts[0]
+        return None
+
+    def _execute_skill_script(self, script_path: Path, problem: str) -> dict | None:
+        """Execute a skill script directly, bypassing planning.
+
+        Looks for a callable entry point (run_proof, run, main) in the script.
+        Returns solve()-compatible result dict on success, None on failure.
+        """
+        import time
+        start_time = time.time()
+        skill_name = script_path.parent.parent.name
+
+        self._emit_event(StepEvent(
+            event_type="step_start",
+            step_number=1,
+            data={"goal": f"Executing skill: {skill_name}"}
+        ))
+
+        try:
+            script_content = script_path.read_text()
+
+            # Build execution globals with all session resources
+            exec_globals = self._get_execution_globals()
+            exec_globals['__file__'] = str(script_path)
+
+            # Execute the script to define entry point functions
+            exec(compile(script_content, str(script_path), 'exec'), exec_globals)
+
+            # Find entry point: try common names
+            entry_fn = None
+            for fn_name in ('run_proof', 'run', 'main'):
+                fn = exec_globals.get(fn_name)
+                if callable(fn):
+                    entry_fn = fn
+                    break
+
+            if entry_fn is None:
+                logger.warning(f"[SKILL_EXEC] No entry point (run_proof/run/main) found in {script_path.name}")
+                return None
+
+            # Run the entry point
+            results = entry_fn()
+
+            if not isinstance(results, dict):
+                logger.warning(f"[SKILL_EXEC] Entry point returned {type(results)}, expected dict")
+                return None
+
+            # Save result tables to datastore
+            # run_proof() returns {name: parquet_path} or {name: DataFrame}
+            import pandas as pd
+            saved_tables = []
+            for name, val in results.items():
+                if name == '_result':
+                    continue
+                if isinstance(val, pd.DataFrame):
+                    self.datastore.save_dataframe(name, val, step_number=1)
+                    saved_tables.append(name)
+                elif isinstance(val, str) and val.endswith('.parquet'):
+                    df = pd.read_parquet(val)
+                    self.datastore.save_dataframe(name, df, step_number=1)
+                    saved_tables.append(name)
+
+            # Save _result as the primary output
+            primary_result = results.get('_result')
+            if isinstance(primary_result, pd.DataFrame):
+                self.datastore.save_dataframe('_result', primary_result, step_number=1)
+            elif isinstance(primary_result, str) and primary_result.endswith('.parquet'):
+                df = pd.read_parquet(primary_result)
+                self.datastore.save_dataframe('_result', df, step_number=1)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            self._emit_event(StepEvent(
+                event_type="step_complete",
+                step_number=1,
+                data={
+                    "goal": f"Skill execution complete ({len(saved_tables)} tables)",
+                    "duration_ms": duration_ms,
+                }
+            ))
+
+            logger.info(f"[SKILL_EXEC] Success: {len(saved_tables)} tables saved in {duration_ms}ms")
+
+            return {
+                "steps": [{"step_number": 1, "goal": f"Skill: {skill_name}", "status": "success"}],
+                "tables": saved_tables,
+                "mode": "skill",
+                "duration_ms": duration_ms,
+            }
+
+        except Exception as e:
+            logger.warning(f"[SKILL_EXEC] Execution failed: {e}")
+            self._emit_event(StepEvent(
+                event_type="step_error",
+                step_number=1,
+                data={"error": str(e)}
+            ))
+            return None
+
+    def _extract_user_validations(self, problem: str, inferences: list[dict]) -> list[dict]:
+        """Extract user-specified validation constraints from the problem text.
+
+        Looks for explicit constraints like "ensure no raise exceeds 15%",
+        "verify total budget under $100k", etc. and converts them to SQL checks.
+
+        Returns list of dicts with 'label' and 'sql' keys.
+        The 'sql' value uses {table} placeholder for the target table name.
+        """
+        # Build inference context for the LLM
+        inf_desc = "\n".join(
+            f"- {inf.get('inference_id', '?')}: {inf.get('name', '')} = {inf.get('operation', '')}"
+            for inf in inferences
+        )
+
+        prompt = f"""Analyze this user request for explicit validation constraints (ensure, verify, validate, must, should not exceed, at least, between, limit, cap, maximum, minimum, etc.):
+
+USER REQUEST: {problem}
+
+INFERENCES (output tables):
+{inf_desc}
+
+Extract ONLY explicitly stated constraints. Do NOT invent constraints that aren't in the request.
+
+For each constraint, provide:
+- label: Human-readable description of the check
+- sql: A DuckDB SQL expression that returns TRUE if the constraint passes, using {{table}} as placeholder for the table name
+
+Respond with ONLY valid JSON array. Empty array [] if no explicit constraints found.
+
+Example:
+[
+  {{"label": "No raise exceeds 15%", "sql": "SELECT COUNT(*) = 0 FROM \\"{{table}}\\" WHERE raise_pct > 0.15"}},
+  {{"label": "Total budget under $100k", "sql": "SELECT SUM(raise_amount) < 100000 FROM \\"{{table}}\\""}}
+]
+
+YOUR JSON RESPONSE:"""
+
+        try:
+            result = self.router.execute(
+                task_type=TaskType.SQL_GENERATION,
+                system="Extract validation constraints from user requests. Output ONLY valid JSON.",
+                user_message=prompt,
+            )
+            content = result.content if hasattr(result, 'content') else str(result)
+            # Strip markdown fences
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            import json
+            validations = json.loads(content)
+            if isinstance(validations, list):
+                valid = [v for v in validations if isinstance(v, dict) and 'label' in v and 'sql' in v]
+                if valid:
+                    logger.info(f"[USER_VALIDATIONS] Extracted {len(valid)} constraints: {[v['label'] for v in valid]}")
+                return valid
+        except Exception as e:
+            logger.debug(f"[USER_VALIDATIONS] Extraction failed: {e}")
+
+        return []
+
+    def add_user_validation(self, label: str, sql: str) -> None:
+        """Add a user-specified validation constraint for proof inference checks.
+
+        Args:
+            label: Human-readable description (e.g., "No raise exceeds 15%")
+            sql: DuckDB SQL that returns TRUE if valid. Use {table} placeholder.
+        """
+        if not hasattr(self, '_proof_user_validations'):
+            self._proof_user_validations = []
+        self._proof_user_validations.append({"label": label, "sql": sql})
+        logger.info(f"[USER_VALIDATIONS] Added: {label}")
 
     def _profile_table(self, table_name: str) -> dict:
         """Profile a datastore table for data quality assessment.
@@ -2182,41 +2540,51 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
         return "\n\n".join(parts)
 
-    def _build_source_context(self, include_user_facts: bool = True) -> dict:
+    def _build_source_context(self, include_user_facts: bool = True, query: str = None) -> dict:
         """Build context about available data sources (schema, APIs, documents, facts).
+
+        Args:
+            include_user_facts: Whether to include resolved user facts
+            query: Optional natural language query for semantic source search.
+                   When provided, finds relevant tables, documents, and APIs
+                   via similarity search and includes targeted context.
 
         Returns:
             dict with keys: schema_overview, api_overview, doc_overview, user_facts
         """
-        # Schema overview - prefer preloaded hot tables over full listing
-        # Full table listings can be huge; use discovery tools for on-demand access
-        if self._preloaded_context:
-            # Use preloaded hot tables + brief summary of other databases
-            schema_overview = self._preloaded_context
-            schema_overview += "\n\nUse `find_relevant_tables(query)` or `get_table_schema(table)` for other tables."
+        # When query is provided, use semantic search across ALL source types
+        if query:
+            sources = self.find_relevant_sources(query, table_limit=10, doc_limit=5, api_limit=5)
+            schema_overview = self._format_relevant_tables(sources.get("tables", []))
+            api_overview = self._format_relevant_apis(sources.get("apis", []))
+            doc_overview = self._format_relevant_docs(sources.get("documents", []))
         else:
-            # No preload config - use brief database summary only
-            schema_overview = self._get_brief_schema_summary()
-            schema_overview += "\n\nUse discovery tools to explore schemas: `find_relevant_tables(query)`, `get_table_schema(table)`"
+            # Schema overview - prefer preloaded hot tables over full listing
+            if self._preloaded_context:
+                schema_overview = self._preloaded_context
+                schema_overview += "\n\nUse `find_relevant_tables(query)` or `get_table_schema(table)` for other tables."
+            else:
+                schema_overview = self._get_brief_schema_summary()
+                schema_overview += "\n\nUse discovery tools to explore schemas: `find_relevant_tables(query)`, `get_table_schema(table)`"
 
-        # API overview - use self.resources (single source of truth)
-        api_overview = ""
-        if self.resources.has_apis():
-            api_lines = ["\n## Available APIs"]
-            for name, api_info in self.resources.apis.items():
-                api_type = api_info.api_type.upper()
-                desc = api_info.description or f"{api_type} endpoint"
-                api_lines.append(f"- **{name}** ({api_type}): {desc}")
-            api_overview = "\n".join(api_lines)
+            # API overview - use self.resources (single source of truth)
+            api_overview = ""
+            if self.resources.has_apis():
+                api_lines = ["\n## Available APIs"]
+                for name, api_info in self.resources.apis.items():
+                    api_type = api_info.api_type.upper()
+                    desc = api_info.description or f"{api_type} endpoint"
+                    api_lines.append(f"- **{name}** ({api_type}): {desc}")
+                api_overview = "\n".join(api_lines)
 
-        # Document overview - use self.resources (single source of truth)
-        doc_overview = ""
-        if self.resources.has_documents():
-            doc_lines = ["\n## Reference Documents"]
-            for name, doc_info in self.resources.documents.items():
-                desc = doc_info.description or doc_info.doc_type
-                doc_lines.append(f"- **{name}**: {desc}")
-            doc_overview = "\n".join(doc_lines)
+            # Document overview - use self.resources (single source of truth)
+            doc_overview = ""
+            if self.resources.has_documents():
+                doc_lines = ["\n## Reference Documents"]
+                for name, doc_info in self.resources.documents.items():
+                    desc = doc_info.description or doc_info.doc_type
+                    doc_lines.append(f"- **{name}**: {desc}")
+                doc_overview = "\n".join(doc_lines)
 
         # User facts
         user_facts = ""
@@ -2301,77 +2669,55 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             return self._resolve_llm_knowledge(question)
         return llm_ask
 
-    def _create_llm_map_helper(self) -> callable:
-        """Create a helper for batch fuzzy mapping using LLM knowledge.
+    def _handle_llm_call_event(self, event) -> None:
+        """Callback from constat.llm primitives — flags LLM knowledge usage."""
+        self._inference_used_llm_map = True
 
-        Returns a function that maps a list of values to a target domain
-        (e.g., country names → ISO codes) using LLM foundational knowledge.
-        Results are flagged as low-confidence in the proof tree.
-        """
-        def llm_map(values: list[str], target: str, source_desc: str = "values") -> dict[str, str]:
-            """Map a list of values to a target domain using LLM knowledge.
+    def _create_doc_read_helper(self) -> callable:
+        """Create a helper to read reference documents at execution time."""
+        def doc_read(name: str) -> str:
+            """Read a reference document by name. Returns the document text content.
 
-            Use this for fuzzy mapping tasks where exact matching isn't possible
-            and no authoritative data source is available. Results will have
-            REDUCED CONFIDENCE in the proof tree.
+            Prints provenance info (source, path, modified date) to stdout so
+            consumers can verify the document is current.
 
             Args:
-                values: List of source values to map (e.g., ["United Kingdom", "Burma"])
-                target: Description of what to map to (e.g., "ISO 3166-1 alpha-2 country code")
-                source_desc: Label for the source values (e.g., "country names")
+                name: Document name as configured (e.g., 'compensation_policy', 'business_rules')
 
             Returns:
-                Dict mapping source values to target values.
-                Unmappable values map to None.
+                Document text content.
 
-            Example:
-                iso_map = llm_map(["United Kingdom", "Siam"], "ISO 3166-1 alpha-2 country code")
-                # {"United Kingdom": "GB", "Siam": "TH"}
+            Raises:
+                ValueError: If document not found or has no text content.
             """
-            import json as _json
+            from datetime import datetime
 
-            # Batch all values into a single LLM call
-            values_str = "\n".join(f"- {v}" for v in values)
-            prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
+            # Reload fresh to pick up any file changes
+            self.doc_tools._load_document_with_mtime(name)
 
-{values_str}
+            result = self.doc_tools.get_document(name)
+            if "error" in result:
+                raise ValueError(f"Document '{name}' not found: {result['error']}")
+            content = result.get("content")
+            if not content:
+                raise ValueError(f"Document '{name}' has no text content (may be binary)")
 
-Respond with ONLY valid JSON: a single object mapping each input value to its {target}.
-If a value cannot be confidently mapped, map it to null.
+            # Build provenance info
+            provenance_parts = [f"[DOC] Source: {name}"]
+            path = result.get("path")
+            if path:
+                provenance_parts.append(f"Path: {path}")
+            doc = self.doc_tools._loaded_documents.get(name)
+            if doc and doc.file_mtime:
+                mtime_str = datetime.fromtimestamp(doc.file_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                provenance_parts.append(f"Modified: {mtime_str}")
+            if doc and doc.content_hash:
+                provenance_parts.append(f"Hash: {doc.content_hash}")
+            print(" | ".join(provenance_parts))
 
-Example format: {{"input1": "mapped1", "input2": "mapped2", "input3": null}}
+            return content
 
-YOUR JSON RESPONSE:"""
-
-            result = self.router.execute(
-                task_type=TaskType.SYNTHESIS,
-                system=f"You map {source_desc} to {target}. Output ONLY valid JSON. Use null for uncertain mappings.",
-                user_message=prompt,
-                max_tokens=self.router.max_output_tokens,
-            )
-
-            response = result.content.strip()
-            if "```" in response:
-                response = re.sub(r'```\w*\n?', '', response).strip()
-
-            if not response.startswith("{"):
-                logger.warning(f"[LLM_MAP] Could not parse response: {response[:200]}")
-                return {v: None for v in values}
-
-            mapping = _json.loads(response)
-
-            mapped_count = sum(1 for v in mapping.values() if v is not None)
-            logger.info(
-                f"[LLM_MAP] Mapped {mapped_count}/{len(values)} {source_desc} → {target} "
-                f"(confidence: reduced, source: llm_knowledge)"
-            )
-
-            # Flag that this inference used LLM mapping
-            self._inference_used_llm_map = True
-
-            return mapping
-
-        return llm_map
+        return doc_read
 
     def _is_current_plan_sensitive(self) -> bool:
         """Check if the current plan involves sensitive data."""
@@ -2430,8 +2776,96 @@ YOUR JSON RESPONSE:"""
 
         Each step runs in isolation - only `store` (DuckDB) is shared.
         """
+        def parse_number(val):
+            """Parse string-formatted numbers, handling ranges, series, percentages, currency, and units.
+
+            Returns a tuple of ALL extracted numbers, preserving order.
+            Use min()/max() on the result for range bounds.
+
+            Examples:
+              "8-12%"           → (8.0, 12.0)
+              "5%"              → (5.0,)
+              "$1,200"          → (1200.0,)
+              "8 to 12"         → (8.0, 12.0)
+              "between 5 and 10"→ (5.0, 10.0)
+              "1, 2, 3"         → (1.0, 2.0, 3.0)
+              "1; 2; 3"         → (1.0, 2.0, 3.0)
+              "10k"             → (10000.0,)
+              "1.5M"            → (1500000.0,)
+              "(5%)"            → (-5.0,)
+              "up to 15%"       → (0.0, 15.0)
+              None / NaN        → (0.0,)
+            """
+            import re as _re
+            if val is None:
+                return (0.0,)
+            # Handle numeric passthrough
+            if isinstance(val, (int, float)):
+                if val != val:  # NaN check
+                    return (0.0,)
+                return (float(val),)
+
+            s = str(val).strip()
+            if not s:
+                return (0.0,)
+
+            # Detect accounting-style negatives: (5%) → -5
+            is_accounting_neg = s.startswith('(') and s.endswith(')')
+            if is_accounting_neg:
+                s = s[1:-1].strip()
+
+            # Strip currency symbols, normalize whitespace
+            s = _re.sub(r'[£€¥₹]', '', s)
+            s = s.replace('$', '').replace('%', '').replace(',', '').strip()
+
+            # Expand unit suffixes: k, M, B, T
+            _unit_mult = {'k': 1e3, 'K': 1e3, 'm': 1e6, 'M': 1e6, 'b': 1e9, 'B': 1e9, 't': 1e12, 'T': 1e12}
+            def _apply_unit(num_str):
+                num_str = num_str.strip()
+                if num_str and num_str[-1] in _unit_mult:
+                    try:
+                        return float(num_str[:-1]) * _unit_mult[num_str[-1]]
+                    except ValueError:
+                        pass
+                try:
+                    return float(num_str)
+                except ValueError:
+                    return None
+
+            # Split on range/list delimiters: -, –, —, to, and, /, ;, ,, |, or
+            parts = _re.split(r'\s*[-–—/;,|]\s*|\s+to\s+|\s+and\s+|\s+or\s+', s, flags=_re.IGNORECASE)
+            numbers = []
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                v = _apply_unit(p)
+                if v is not None:
+                    numbers.append(v)
+
+            # Fallback: regex extract all decimal numbers from original string
+            if not numbers:
+                for m in _re.finditer(r'-?\d+\.?\d*', s):
+                    try:
+                        numbers.append(float(m.group()))
+                    except ValueError:
+                        pass
+
+            if not numbers:
+                return (0.0,)
+
+            if is_accounting_neg:
+                numbers = [-n for n in numbers]
+
+            # "up to X" → (0, X)
+            if _re.match(r'up\s+to', str(val), _re.IGNORECASE) and len(numbers) == 1:
+                return (0.0, numbers[0])
+
+            return tuple(numbers)
+
         globals_dict = {
             "store": self.datastore,  # Persistent datastore - only shared state between steps
+            "parse_number": parse_number,  # Parse string numbers/ranges: "8-12%" → (8.0, 12.0)
             "llm_ask": self._create_llm_ask_helper(),  # LLM query helper for general knowledge
             "send_email": create_send_email(
                 self.config.email,
@@ -2447,6 +2881,11 @@ YOUR JSON RESPONSE:"""
             ),  # Visualization/file output helper
             "publish": self._create_publish_helper(),  # Mark artifact as published for artifacts panel
             "facts": self._get_facts_dict(),  # Resolved facts as dict (loaded from _facts table)
+            "llm_map": constat.llm.llm_map,
+            "llm_classify": constat.llm.llm_classify,
+            "llm_extract": constat.llm.llm_extract,
+            "llm_summarize": constat.llm.llm_summarize,
+            "doc_read": self._create_doc_read_helper(),
         }
 
         # Provide database connections from config
@@ -2725,6 +3164,7 @@ YOUR JSON RESPONSE:"""
             # Execute
             exec_globals = self._get_execution_globals()
             result = self.executor.execute(code, exec_globals)
+            logger.debug(f"[Step {step.number}] Execution result (attempt {attempt}): success={result.success}, error={result.error_message()[:200] if not result.success else 'none'}")
 
             # Auto-save any DataFrames or lists created during execution
             if result.success and self.datastore:
@@ -2749,7 +3189,9 @@ YOUR JSON RESPONSE:"""
                 # Run post-validations
                 validation_warnings: list[str] = []
                 if step.post_validations:
+                    logger.debug(f"[Step {step.number}] Running {len(step.post_validations)} post-validations (attempt {attempt})")
                     validation_warnings, failed_validation = self._run_post_validations(step, result.namespace)
+                    logger.debug(f"[Step {step.number}] Post-validation result: failed={failed_validation is not None}, warnings={len(validation_warnings)}")
 
                     if failed_validation:
                         if failed_validation.on_fail == ValidationOnFail.CLARIFY:
@@ -2927,6 +3369,17 @@ YOUR JSON RESPONSE:"""
             - first_failing_validation: first RETRY or CLARIFY validation that failed, or None
         """
         warnings: list[str] = []
+        # Inject store tables so validations can reference them by name
+        try:
+            for t in self.datastore.list_tables():
+                name = t["name"]
+                if name not in namespace:
+                    df = self.datastore.load_dataframe(name)
+                    if df is not None:
+                        namespace[name] = df
+                        logger.debug(f"[Step {step.number}] Injected store table '{name}' into validation namespace")
+        except Exception as e:
+            logger.warning(f"[Step {step.number}] Failed to inject store tables for validation: {e}")
         for v in step.post_validations:
             try:
                 result = eval(v.expression, {"__builtins__": __builtins__}, namespace)  # noqa: S307
@@ -3006,8 +3459,98 @@ YOUR JSON RESPONSE:"""
                 correction=summary,
                 source=LearningSource.AUTO_CAPTURE,
             )
+
+            # Auto-compact if too many raw learnings
+            stats = self.learning_store.get_stats()
+            if stats["unpromoted"] >= 50:
+                logger.info(f"[LEARNINGS] {stats['unpromoted']} unpromoted learnings — triggering compaction")
+                try:
+                    self._compact_learnings()
+                except Exception as ce:
+                    logger.warning(f"[LEARNINGS] Compaction failed (non-fatal): {ce}")
         except Exception as e:
             logger.debug(f"Learning capture failed (non-fatal): {e}")
+
+    def _compact_learnings(self) -> None:
+        """Compact raw learnings into rules using LLM to find patterns."""
+        unpromoted = [
+            l for l in self.learning_store.list_raw_learnings(limit=200, include_promoted=False)
+            if not l.get("promoted_to")
+        ]
+        if len(unpromoted) < 20:
+            return
+
+        # Format learnings for LLM
+        learning_texts = []
+        for l in unpromoted:
+            correction = l.get("correction", "")
+            category = l.get("category", "")
+            ctx = l.get("context", {})
+            error = ctx.get("error_message", "")[:100]
+            learning_texts.append(f"[{l['id']}] ({category}) {correction} | error: {error}")
+
+        prompt = f"""Group these {len(learning_texts)} code generation learnings into reusable rules.
+Each rule should capture a PATTERN that applies across multiple learnings.
+
+Learnings:
+{chr(10).join(learning_texts)}
+
+Return JSON array of rules:
+[
+  {{"summary": "Rule description", "category": "codegen_error", "confidence": 0.85, "source_ids": ["learn_xxx", "learn_yyy"], "tags": ["sql", "duckdb"]}}
+]
+
+Guidelines:
+- Only create a rule if 3+ learnings share the same pattern
+- confidence = fraction of learnings in the group that clearly match
+- Learnings not matching any pattern should be omitted (they stay as raw)
+- Keep summaries actionable: "Use X instead of Y when Z"
+
+Return ONLY the JSON array."""
+
+        result = self.router.execute(
+            task_type=TaskType.SYNTHESIS,
+            system="You analyze code error patterns and extract reusable rules.",
+            user_message=prompt,
+            max_tokens=4096,
+        )
+
+        # Parse rules
+        import json
+        text = result.content.strip()
+        if text.startswith("```"):
+            text = re.sub(r'^```\w*\n?', '', text)
+            text = re.sub(r'\n?```$', '', text)
+        try:
+            rules = json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("[LEARNINGS] Failed to parse compaction response as JSON")
+            return
+
+        promoted_count = 0
+        for rule_data in rules:
+            source_ids = rule_data.get("source_ids", [])
+            if len(source_ids) < 3:
+                continue
+            category_str = rule_data.get("category", "codegen_error")
+            try:
+                category = LearningCategory(category_str)
+            except ValueError:
+                category = LearningCategory.CODEGEN_ERROR
+
+            rule_id = self.learning_store.save_rule(
+                summary=rule_data["summary"],
+                category=category,
+                confidence=rule_data.get("confidence", 0.8),
+                source_learnings=source_ids,
+                tags=rule_data.get("tags", []),
+            )
+            # Archive promoted learnings
+            for lid in source_ids:
+                self.learning_store.archive_learning(lid, rule_id)
+                promoted_count += 1
+
+        logger.info(f"[LEARNINGS] Compacted {promoted_count} learnings into {len(rules)} rules")
 
     def _categorize_error(self, context: dict) -> LearningCategory:
         """Categorize an error for learning storage.
@@ -5692,6 +6235,20 @@ Provide a brief, high-level summary of the key findings."""
                     speculative_plan = None
                     logger.debug("[PARALLEL] Skills activated, discarding speculative plan")
 
+                # Direct skill execution: if top match has a script and high confidence, run it
+                top_skill = matched_skills[0]
+                if top_skill.get("similarity", 0) >= 0.85:
+                    skill_obj = self.skill_manager.get_skill(top_skill["name"])
+                    if skill_obj:
+                        scripts_dir = self.skill_manager.skills_dir / skill_obj.filename / "scripts"
+                        script_path = self._find_skill_script(scripts_dir)
+                        if script_path:
+                            logger.info(f"[SKILL_EXEC] Direct execution: {skill_obj.name} (similarity={top_skill['similarity']:.2f})")
+                            result = self._execute_skill_script(script_path, problem)
+                            if result is not None:
+                                return result
+                            logger.warning("[SKILL_EXEC] Direct execution failed, falling back to planning")
+
             event_data = {
                 "role": dynamic_context.get("role"),
                 "skills": matched_skills,
@@ -6105,6 +6662,7 @@ Provide a brief, high-level summary of the key findings."""
                         )
                         cancelled = True
                     except Exception as e:
+                        logger.error(f"[EXECUTION] Step {step.number} raised unhandled exception: {e}", exc_info=True)
                         result = StepResult(
                             success=False,
                             stdout="",
@@ -6112,6 +6670,7 @@ Provide a brief, high-level summary of the key findings."""
                             attempts=1,
                         )
 
+                    logger.debug(f"[EXECUTION] Step {step.number} result: success={result.success}, attempts={result.attempts}, error={result.error[:200] if result.error else 'none'}")
                     if result.success:
                         self.plan.mark_step_completed(step.number, result)
                         self.scratchpad.add_step_result(
@@ -6647,6 +7206,42 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # This single call determines intent, facts, AND execution mode
         analysis = self._analyze_question(question, previous_problem=previous_problem)
 
+        # Check for validation constraint addition (before REDO check)
+        intent_names = [i.intent for i in analysis.intents]
+        _validation_keywords = ("validate", "verify", "ensure", "assert", "check that", "confirm that")
+        session_mode = self.datastore.get_session_meta("mode") if self.datastore else "exploratory"
+        if session_mode == "auditable" and any(kw in question.lower() for kw in _validation_keywords):
+            # Extract validation from follow-up and re-run proof with it
+            new_validations = self._extract_user_validations(question, [])
+            if new_validations:
+                for v in new_validations:
+                    self.add_user_validation(v['label'], v['sql'])
+                return self.prove_conversation(guidance=f"Re-run with added validation: {question}")
+
+        # Check for REDO intent — apply fact modifications and re-execute
+        if "REDO" in intent_names:
+            # Apply any fact modifications first
+            for mod in analysis.fact_modifications:
+                self.fact_resolver.add_user_fact(
+                    fact_name=mod["fact_name"],
+                    value=mod["new_value"],
+                    reasoning=f"User correction: {question}",
+                )
+                logger.debug(f"[follow_up] Applied fact modification: {mod['fact_name']}={mod['new_value']}")
+            self.fact_resolver.add_user_facts_from_text(question)
+
+            # Determine mode: use LLM recommendation, fall back to session's current mode
+            session_mode = self.datastore.get_session_meta("mode") if self.datastore else "exploratory"
+            use_proof = analysis.recommended_mode == "PROOF" or session_mode == "auditable"
+            logger.info(f"[follow_up] REDO intent detected, mode={session_mode}, recommended={analysis.recommended_mode}, use_proof={use_proof}")
+
+            if use_proof:
+                return self.prove_conversation(guidance=question)
+            else:
+                # Re-run exploratory: get original problem, re-solve with updated facts
+                original_problem = self.datastore.get_session_meta("problem") if self.datastore else question
+                return self.solve(original_problem)
+
         # Check for ambiguity and request clarification if needed
         if self.session_config.ask_clarifications and self._clarification_callback:
             existing_tables = self.datastore.list_tables()
@@ -7161,7 +7756,12 @@ User feedback: {suggestion_text}
         ))
 
         # Get source context for the planner
+        # Proof planner is a single LLM call (no tool use), so it needs full table schemas
+        # _build_source_context may only return database names without tables
         ctx = self._build_source_context(include_user_facts=False)
+        # Override schema_overview with full schema if brief summary lacks table names
+        if self.schema_manager and "Table:" not in ctx.get("schema_overview", ""):
+            ctx["schema_overview"] = self.schema_manager.get_overview()
 
         # Build hint about cached facts for redo (helps LLM use consistent names)
         cached_facts_hint = ""
@@ -7191,11 +7791,24 @@ User feedback: {suggestion_text}
             hint_lines.append("")
             cached_facts_hint = "\n".join(hint_lines) + "\n"
 
+        # Extract document sources used during exploratory session
+        exploratory_docs_hint = ""
+        step_hints = getattr(self, '_proof_step_hints', [])
+        if step_hints:
+            doc_names = set()
+            for step in step_hints:
+                code = step.get("code", "")
+                for m in re.findall(r"""doc_read\(\s*['"]([^'"]+)['"]\s*\)""", code):
+                    doc_names.add(m)
+            if doc_names:
+                names_str = ", ".join(f'"{n}"' for n in sorted(doc_names))
+                exploratory_docs_hint = f"DOCUMENT CONSTRAINT: The exploratory analysis used these documents: {names_str}. Use the SAME document sources for consistency.\n\n"
+
         fact_plan_prompt = f"""Construct a logical derivation to answer this question with full provenance.
 
 Question: {problem}
 
-{cached_facts_hint}Available databases:
+{cached_facts_hint}{exploratory_docs_hint}Available databases:
 {ctx["schema_overview"]}
 {ctx["doc_overview"]}
 {ctx["api_overview"]}
@@ -7299,7 +7912,6 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
         fact_plan_text = result.content
 
         # Parse the proof structure
-        import re
         claim = ""
         premises = []  # P1, P2, ... - base facts from sources
         inferences = []  # I1, I2, ... - derived facts
@@ -7827,17 +8439,21 @@ REMEMBER:
                     deps = [f"{dag.nodes[dep].fact_id}: {dep}" for dep in node_obj.dependencies if dep in dag.nodes] if node_obj and node_obj.dependencies else []
 
                     # Emit fact_resolved for DAG visualization
+                    fact_resolved_data = {
+                        "fact_name": f"{fact_id}: {node_name}",
+                        "fact_id": fact_id,
+                        "value": value,
+                        "confidence": confidence,
+                        "source": source,
+                        "dependencies": deps,
+                    }
+                    validations = data.get("validations")
+                    if validations:
+                        fact_resolved_data["validations"] = validations
                     self._emit_event(StepEvent(
                         event_type="fact_resolved",
                         step_number=level + 1,
-                        data={
-                            "fact_name": f"{fact_id}: {node_name}",
-                            "fact_id": fact_id,
-                            "value": value,
-                            "confidence": confidence,
-                            "source": source,
-                            "dependencies": deps,
-                        }
+                        data=fact_resolved_data,
                     ))
 
                     if is_premise:
@@ -7903,7 +8519,10 @@ REMEMBER:
                     status = "FAILED" if failed else "COMPLETED"
                     logger.info(f"DAG timing: {fact_id} {status} - start:{start_ms} end:{end_ms} duration:{duration_ms}ms")
 
-            # Phase 4: Reset cancellation state before starting execution
+            # Phase 4: Extract user-specified validation constraints from the problem
+            self._proof_user_validations = self._extract_user_validations(problem, inferences)
+
+            # Reset cancellation state before starting execution
             self.reset_cancellation()
 
             # Execute DAG with parallel resolution

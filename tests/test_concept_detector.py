@@ -43,6 +43,8 @@ class TestPromptSections:
             "state_management",
             "llm_batching",
             "sensitive_data",
+            "file_output",
+            "prose_generation",
         }
         assert set(PROMPT_SECTIONS.keys()) == expected
 

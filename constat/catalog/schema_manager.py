@@ -1174,7 +1174,7 @@ class SchemaManager:
             lines.append(self.config.databases_description)
             lines.append("")
 
-        lines.append("Available databases:")
+        lines.append("Available databases and tables:")
 
         # Build a lookup for database descriptions
         db_descriptions = {
@@ -1191,11 +1191,10 @@ class SchemaManager:
         for db_name, tables in sorted(by_db.items()):
             total_rows = sum(t.row_count for t in tables)
 
-            # Include database description if available
-            if db_name in db_descriptions:
-                lines.append(f"  {db_name}: {db_descriptions[db_name]}")
-            else:
-                lines.append(f"  {db_name}: ({len(tables)} tables, ~{total_rows:,} rows)")
+            # Include database description and connection variable
+            desc = f" — {db_descriptions[db_name]}" if db_name in db_descriptions else ""
+            lines.append(f"\n  Database '{db_name}'{desc} (connection: db_{db_name})")
+            lines.append(f"  Use: pd.read_sql(query, db_{db_name})")
 
             # Include compact schema for each table (table_name(col1, col2, ...))
             for table in sorted(tables, key=lambda t: t.name):
@@ -1322,7 +1321,7 @@ class SchemaManager:
             List of dicts with table, database, relevance score, summary,
             and optionally documentation excerpts mentioning the table
         """
-        if self._vector_store is None or self._vector_store.count_catalog_entities(source='schema') == 0:
+        if self._vector_store is None or self._vector_store.count() == 0:
             return []
 
         # Lazy load the model only when needed for queries (uses shared loader)
@@ -1332,27 +1331,35 @@ class SchemaManager:
         # Embed the query
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-        # Search unified catalog entities for schema tables
-        search_results = self._vector_store.search_catalog_entities(
-            query_embedding, source='schema', entity_type='table', limit=top_k
-        )
+        # Search embeddings — fetch extra to filter for schema table chunks
+        from constat.discovery.models import ChunkType
+        search_results = self._vector_store.search(query_embedding, limit=top_k * 10)
 
+        # Filter to schema table chunks and deduplicate by table
+        seen_tables: set[str] = set()
         results = []
-        for entity in search_results:
-            full_name = entity["id"]
-            relevance = entity["similarity"]
-            # Vector store normalizes IDs to lowercase, but metadata_cache uses original case
-            # Look up using case-insensitive match
+        for _chunk_id, similarity, chunk in search_results:
+            if chunk.source != "schema" or chunk.chunk_type != ChunkType.DB_TABLE:
+                continue
+            # document_name format: "schema:db_name.TableName"
+            full_name = chunk.document_name.removeprefix("schema:")
+            if full_name in seen_tables:
+                continue
+            seen_tables.add(full_name)
+
+            # Look up in metadata cache (try exact, then case-insensitive)
             table_meta = self.metadata_cache.get(full_name)
             if not table_meta:
-                # Try case-insensitive lookup
                 for key, meta in self.metadata_cache.items():
                     if key.lower() == full_name.lower():
                         table_meta = meta
-                        full_name = key  # Use original case
+                        full_name = key
                         break
             if not table_meta:
                 continue
+
+            if len(results) >= top_k:
+                break
 
             # Generate a brief summary
             col_names = [c.name for c in table_meta.columns[:5]]
@@ -1364,7 +1371,7 @@ class SchemaManager:
                 "table": table_meta.name,
                 "database": table_meta.database,
                 "full_name": full_name,
-                "relevance": round(relevance, 3),
+                "relevance": round(similarity, 3),
                 "summary": summary,
                 # Database type - tells LLM what query semantics to use
                 "database_type": table_meta.database_type,  # e.g., "postgresql", "mongodb"

@@ -59,6 +59,8 @@ from constat.execution.executor import ExecutionResult, PythonExecutor
 # Execution
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
+# LLM primitives
+import constat.llm
 # Providers
 from constat.providers import (
     BaseLLMProvider,

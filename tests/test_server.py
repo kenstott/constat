@@ -18,6 +18,7 @@ Tests cover:
 """
 
 import asyncio
+import uuid
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -73,6 +74,7 @@ def create_mock_session():
     mock._cancelled = False
     mock.plan = None
     mock.datastore = None
+    mock.history = None
     mock.fact_resolver = MagicMock()
     mock.fact_resolver.get_all_facts.return_value = {}
     mock.scratchpad = MagicMock()
@@ -177,7 +179,7 @@ class TestSessionManager:
 
     def test_create_session(self, session_manager_with_mock):
         """Test creating a new session."""
-        session_id = session_manager_with_mock.create_session(user_id="test_user")
+        session_id = session_manager_with_mock.create_session(str(uuid.uuid4()), user_id="test_user")
 
         assert session_id is not None
         assert len(session_id) == 36  # UUID format
@@ -193,12 +195,12 @@ class TestSessionManager:
         manager = SessionManager(minimal_config, server_config)
 
         # Create two sessions
-        manager.create_session(user_id="user1")
-        manager.create_session(user_id="user2")
+        manager.create_session(str(uuid.uuid4()), user_id="user1")
+        manager.create_session(str(uuid.uuid4()), user_id="user2")
 
         # Third session should fail
         with pytest.raises(RuntimeError, match="Maximum concurrent sessions"):
-            manager.create_session(user_id="user3")
+            manager.create_session(str(uuid.uuid4()), user_id="user3")
 
     def test_get_session_not_found(self, session_manager_with_mock):
         """Test getting a non-existent session."""
@@ -212,9 +214,9 @@ class TestSessionManager:
 
     def test_list_sessions(self, session_manager_with_mock):
         """Test listing all sessions."""
-        session_manager_with_mock.create_session(user_id="user1")
-        session_manager_with_mock.create_session(user_id="user2")
-        session_manager_with_mock.create_session(user_id="user1")
+        session_manager_with_mock.create_session(str(uuid.uuid4()), user_id="user1")
+        session_manager_with_mock.create_session(str(uuid.uuid4()), user_id="user2")
+        session_manager_with_mock.create_session(str(uuid.uuid4()), user_id="user1")
 
         # List all
         all_sessions = session_manager_with_mock.list_sessions()
@@ -227,7 +229,7 @@ class TestSessionManager:
 
     def test_delete_session(self, session_manager_with_mock):
         """Test deleting a session."""
-        session_id = session_manager_with_mock.create_session(user_id="test")
+        session_id = session_manager_with_mock.create_session(str(uuid.uuid4()), user_id="test")
 
         assert session_manager_with_mock.delete_session(session_id) is True
         assert session_manager_with_mock.get_session_or_none(session_id) is None
@@ -242,7 +244,7 @@ class TestSessionManager:
         server_config = ServerConfig(session_timeout_minutes=0)  # Immediate expiry
         manager = SessionManager(minimal_config, server_config)
 
-        session_id = manager.create_session()
+        session_id = manager.create_session(str(uuid.uuid4()))
         managed = manager.get_session(session_id)
 
         # Should be expired immediately
@@ -253,8 +255,8 @@ class TestSessionManager:
         server_config = ServerConfig(session_timeout_minutes=0)
         manager = SessionManager(minimal_config, server_config)
 
-        manager.create_session()
-        manager.create_session()
+        manager.create_session(str(uuid.uuid4()))
+        manager.create_session(str(uuid.uuid4()))
 
         # Should cleanup both
         count = manager.cleanup_expired()
@@ -263,7 +265,7 @@ class TestSessionManager:
 
     def test_update_status(self, session_manager_with_mock):
         """Test updating session status."""
-        session_id = session_manager_with_mock.create_session()
+        session_id = session_manager_with_mock.create_session(str(uuid.uuid4()))
         session_manager_with_mock.update_status(session_id, SessionStatus.EXECUTING)
 
         managed = session_manager_with_mock.get_session(session_id)
@@ -271,8 +273,8 @@ class TestSessionManager:
 
     def test_get_stats(self, session_manager_with_mock):
         """Test getting session statistics."""
-        session_manager_with_mock.create_session()
-        session_id2 = session_manager_with_mock.create_session()
+        session_manager_with_mock.create_session(str(uuid.uuid4()))
+        session_id2 = session_manager_with_mock.create_session(str(uuid.uuid4()))
         session_manager_with_mock.update_status(session_id2, SessionStatus.EXECUTING)
 
         stats = session_manager_with_mock.get_stats()
@@ -369,20 +371,21 @@ class TestSessionEndpoints:
 
     def test_create_session(self, client_with_mock):
         """Test creating a session via API."""
+        sid = str(uuid.uuid4())
         response = client_with_mock.post(
             "/api/sessions",
-            json={"user_id": "test_user"}
+            json={"session_id": sid, "user_id": "test_user"}
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert "session_id" in data
+        assert data["session_id"] == sid
         assert data["user_id"] == "test_user"
         assert data["status"] == "idle"
 
     def test_create_session_default_user(self, client_with_mock):
         """Test creating a session with default user ID."""
-        response = client_with_mock.post("/api/sessions", json={})
+        response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
 
         assert response.status_code == 200
         data = response.json()
@@ -391,8 +394,8 @@ class TestSessionEndpoints:
     def test_list_sessions(self, client_with_mock):
         """Test listing sessions via API."""
         # Create sessions with default user (when auth disabled, no user_id = "default")
-        client_with_mock.post("/api/sessions", json={})
-        client_with_mock.post("/api/sessions", json={})
+        client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
+        client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
 
         # List sessions for default user (no filter)
         response = client_with_mock.get("/api/sessions")
@@ -404,7 +407,7 @@ class TestSessionEndpoints:
 
     def test_list_sessions_filter_by_user(self, client_with_mock):
         """Test filtering sessions by user ID."""
-        client_with_mock.post("/api/sessions", json={"user_id": "filter_test"})
+        client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4()), "user_id": "filter_test"})
 
         response = client_with_mock.get("/api/sessions?user_id=filter_test")
 
@@ -415,7 +418,7 @@ class TestSessionEndpoints:
     def test_get_session(self, client_with_mock):
         """Test getting a single session."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}")
@@ -435,7 +438,7 @@ class TestSessionEndpoints:
     def test_delete_session(self, client_with_mock):
         """Test deleting a session."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.delete(f"/api/sessions/{session_id}")
@@ -466,7 +469,7 @@ class TestQueryEndpoints:
     def test_submit_query(self, client_with_mock):
         """Test submitting a query."""
         # Create a session first
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.post(
@@ -491,7 +494,7 @@ class TestQueryEndpoints:
     def test_cancel_execution(self, client_with_mock):
         """Test cancelling execution."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.post(f"/api/sessions/{session_id}/cancel")
@@ -503,7 +506,7 @@ class TestQueryEndpoints:
     def test_get_plan_no_plan(self, client_with_mock):
         """Test getting plan when no plan exists."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/plan")
@@ -524,7 +527,7 @@ class TestDataEndpoints:
     def test_list_tables_empty(self, client_with_mock):
         """Test listing tables when none exist."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/tables")
@@ -536,7 +539,7 @@ class TestDataEndpoints:
     def test_list_artifacts_empty(self, client_with_mock):
         """Test listing artifacts when none exist."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/artifacts")
@@ -548,7 +551,7 @@ class TestDataEndpoints:
     def test_list_facts(self, client_with_mock):
         """Test listing facts."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/facts")
@@ -560,7 +563,7 @@ class TestDataEndpoints:
     def test_get_proof_tree(self, client_with_mock):
         """Test getting proof tree."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/proof-tree")
@@ -572,7 +575,7 @@ class TestDataEndpoints:
     def test_get_output(self, client_with_mock):
         """Test getting session output."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/output")
@@ -612,17 +615,26 @@ class TestWebSocket:
     def test_websocket_connect(self, client_with_mock):
         """Test WebSocket connection."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
             # Connection successful if we get here
             pass
 
+    @staticmethod
+    def _recv_until_type(websocket, expected_type: str, max_reads: int = 10):
+        """Read messages until we get one with the expected type, skipping background events."""
+        for _ in range(max_reads):
+            msg = websocket.receive_json()
+            if msg["type"] == expected_type:
+                return msg
+        raise AssertionError(f"Never received message with type={expected_type}")
+
     def test_websocket_send_cancel_command(self, client_with_mock):
         """Test sending cancel command via WebSocket."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
@@ -634,15 +646,14 @@ class TestWebSocket:
             # Send cancel command
             websocket.send_json({"action": "cancel"})
 
-            # Should receive acknowledgment
-            response = websocket.receive_json()
-            assert response["type"] == "ack"
+            # Should receive acknowledgment (skip any background entity events)
+            response = self._recv_until_type(websocket, "ack")
             assert response["payload"]["action"] == "cancel"
 
     def test_websocket_send_unknown_command(self, client_with_mock):
         """Test sending unknown command via WebSocket."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         with client_with_mock.websocket_connect(f"/api/sessions/{session_id}/ws") as websocket:
@@ -654,9 +665,8 @@ class TestWebSocket:
             # Send unknown command
             websocket.send_json({"action": "unknown_action"})
 
-            # Should receive error
-            response = websocket.receive_json()
-            assert response["type"] == "error"
+            # Should receive error (skip any background entity events)
+            response = self._recv_until_type(websocket, "error")
             assert "Unknown action" in response["payload"]["message"]
 
 
@@ -703,7 +713,7 @@ class TestErrorHandling:
     def test_missing_required_field(self, client_with_mock):
         """Test handling of missing required fields."""
         # Create a session first
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         # Query without problem field
@@ -748,7 +758,7 @@ class TestFileEndpoints:
     def test_list_files_empty(self, client_with_mock):
         """Test listing files when none uploaded."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/files")
@@ -760,7 +770,7 @@ class TestFileEndpoints:
     def test_list_file_refs_empty(self, client_with_mock):
         """Test listing file references when none exist."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/file-refs")
@@ -772,7 +782,7 @@ class TestFileEndpoints:
     def test_add_file_reference(self, client_with_mock):
         """Test adding a file reference."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.post(
@@ -797,7 +807,7 @@ class TestDatabaseEndpoints:
     def test_list_databases(self, client_with_mock):
         """Test listing databases."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/databases")
@@ -850,7 +860,7 @@ class TestEntityEndpoints:
     def test_list_entities(self, client_with_mock):
         """Test listing entities."""
         # Create a session
-        create_response = client_with_mock.post("/api/sessions", json={})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4())})
         session_id = create_response.json()["session_id"]
 
         response = client_with_mock.get(f"/api/sessions/{session_id}/entities")
@@ -866,7 +876,7 @@ class TestIntegration:
     def test_session_lifecycle(self, client_with_mock):
         """Test complete session lifecycle."""
         # 1. Create session
-        create_response = client_with_mock.post("/api/sessions", json={"user_id": "integration_test"})
+        create_response = client_with_mock.post("/api/sessions", json={"session_id": str(uuid.uuid4()), "user_id": "integration_test"})
         assert create_response.status_code == 200
         session_id = create_response.json()["session_id"]
 

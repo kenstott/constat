@@ -90,6 +90,9 @@ function parseFrontMatter(content: string): { frontMatter: Record<string, unknow
         currentKey = key.trim()
         if (value === '') {
           inArray = true
+        } else if (value.startsWith('[') && value.endsWith(']')) {
+          // Inline YAML array: [item1, item2, item3]
+          frontMatter[currentKey] = value.slice(1, -1).split(',').map(s => s.trim()).filter(Boolean)
         } else {
           frontMatter[currentKey] = value
         }
@@ -2204,7 +2207,8 @@ ${skill.body}`
               const isExpanded = expandedSkills.has(skill.name)
               const content = skillContents[skill.name]
               const { frontMatter, body } = content ? parseFrontMatter(content) : { frontMatter: null, body: '' }
-              const allowedTools = frontMatter?.['allowed-tools'] as string[] | undefined
+              const rawTools = frontMatter?.['allowed-tools']
+              const allowedTools = Array.isArray(rawTools) ? rawTools as string[] : typeof rawTools === 'string' ? rawTools.split(',').map(s => s.trim()).filter(Boolean) : undefined
 
               return (
                 <div key={skill.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">

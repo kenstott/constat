@@ -258,60 +258,43 @@ class TestReplCommand:
         result = runner.invoke(cli, ["repl", "-c", "/nonexistent/config.yaml"])
         assert result.exit_code != 0
 
-    @patch("constat.cli.InteractiveREPL")
-    @patch("constat.cli.Config.from_yaml")
-    def test_repl_starts(self, mock_config, mock_repl_class, runner, tmp_path):
+    @patch("constat.textual_repl.run_textual_repl")
+    def test_repl_starts(self, mock_run_repl, runner, tmp_path):
         """repl command starts REPL with correct config."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
 
-        mock_cfg = Mock()
-        mock_config.return_value = mock_cfg
-
-        mock_repl = Mock()
-        mock_repl_class.return_value = mock_repl
-
         result = runner.invoke(cli, ["repl", "-c", str(config_path)])
 
-        mock_repl.run.assert_called_once()
+        mock_run_repl.assert_called_once()
 
-    @patch("constat.cli.InteractiveREPL")
-    @patch("constat.cli.Config.from_yaml")
-    def test_repl_with_initial_problem(self, mock_config, mock_repl_class, runner, tmp_path):
+    @patch("constat.textual_repl.run_textual_repl")
+    def test_repl_with_initial_problem(self, mock_run_repl, runner, tmp_path):
         """repl --problem passes problem to REPL."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
-
-        mock_cfg = Mock()
-        mock_config.return_value = mock_cfg
-
-        mock_repl = Mock()
-        mock_repl_class.return_value = mock_repl
 
         result = runner.invoke(cli, [
             "repl", "-c", str(config_path),
             "-p", "Show me sales data"
         ])
 
-        mock_repl.run.assert_called_once_with(initial_problem="Show me sales data")
+        mock_run_repl.assert_called_once()
+        call_kwargs = mock_run_repl.call_args
+        assert call_kwargs.kwargs.get("problem") == "Show me sales data" or \
+            (len(call_kwargs.args) > 2 and call_kwargs.args[2] == "Show me sales data")
 
-    @patch("constat.cli.InteractiveREPL")
-    @patch("constat.cli.Config.from_yaml")
-    def test_repl_keyboard_interrupt_handled(self, mock_config, mock_repl_class, runner, tmp_path):
+    @patch("constat.textual_repl.run_textual_repl")
+    def test_repl_keyboard_interrupt_handled(self, mock_run_repl, runner, tmp_path):
         """repl handles KeyboardInterrupt gracefully."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
 
-        mock_cfg = Mock()
-        mock_config.return_value = mock_cfg
-
-        mock_repl = Mock()
-        mock_repl.run.side_effect = KeyboardInterrupt()
-        mock_repl_class.return_value = mock_repl
+        mock_run_repl.side_effect = KeyboardInterrupt()
 
         result = runner.invoke(cli, ["repl", "-c", str(config_path)])
 
-        assert "Goodbye" in result.output or result.exit_code == 0
+        assert result.exit_code == 0
 
 
 class TestHistoryCommand:
@@ -751,22 +734,16 @@ class TestStartupProgress:
 
         assert "Ready" in result.output
 
-    @patch("constat.cli.InteractiveREPL")
-    @patch("constat.cli.Config.from_yaml")
-    def test_repl_shows_ready_message(self, mock_config, mock_repl_class, runner, tmp_path):
-        """repl command shows Ready message after initialization."""
+    @patch("constat.textual_repl.run_textual_repl")
+    def test_repl_shows_ready_message(self, mock_run_repl, runner, tmp_path):
+        """repl command delegates to run_textual_repl successfully."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text("llm:\n  api_key: test\ndatabases: {}")
 
-        mock_cfg = Mock()
-        mock_config.return_value = mock_cfg
-
-        mock_repl = Mock()
-        mock_repl_class.return_value = mock_repl
-
         result = runner.invoke(cli, ["repl", "-c", str(config_path)])
 
-        assert "Ready" in result.output
+        assert result.exit_code == 0
+        mock_run_repl.assert_called_once()
 
     @patch("constat.cli.Session")
     @patch("constat.cli.Config.from_yaml")
