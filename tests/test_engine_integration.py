@@ -23,10 +23,13 @@ from constat.catalog.schema_manager import SchemaManager
 
 
 # Skip all tests if no API key
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY not set"
-)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        not os.environ.get("ANTHROPIC_API_KEY"),
+        reason="ANTHROPIC_API_KEY not set"
+    ),
+]
 
 FIXTURES_DIR = Path(__file__).parent.parent
 CHINOOK_DB = FIXTURES_DIR / "data" / "chinook.db"

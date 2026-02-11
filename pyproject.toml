@@ -113,3 +113,6 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+markers = [
+    "slow: requires LLM API calls or external services (deselect with '-m \"not slow\"')",
+]

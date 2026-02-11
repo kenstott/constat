@@ -28,6 +28,7 @@ from pathlib import Path
 
 # Skip all tests if API key not set
 pytestmark = [
+    pytest.mark.slow,
     pytest.mark.skipif(
         not os.environ.get("ANTHROPIC_API_KEY"),
         reason="ANTHROPIC_API_KEY not set"
