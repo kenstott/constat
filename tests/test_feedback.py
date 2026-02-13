@@ -402,7 +402,7 @@ class TestFeedbackDisplayState:
 class TestFeedbackDisplayLifecycle:
     """Tests for Live display lifecycle management."""
 
-    @patch('constat.repl.feedback.Live')
+    @patch('constat.repl.feedback._display_core.Live')
     def test_start_creates_live_display(self, MockLive):
         """start() creates and starts Live display."""
         display = FeedbackDisplay()
@@ -413,7 +413,7 @@ class TestFeedbackDisplayLifecycle:
         MockLive.return_value.start.assert_called_once()
         assert display._live is MockLive.return_value
 
-    @patch('constat.repl.feedback.Live')
+    @patch('constat.repl.feedback._display_core.Live')
     def test_stop_stops_live_display(self, MockLive):
         """stop() stops Live display and clears reference."""
         display = FeedbackDisplay()
@@ -433,7 +433,7 @@ class TestFeedbackDisplayLifecycle:
 
         assert display._live is None
 
-    @patch('constat.repl.feedback.Live')
+    @patch('constat.repl.feedback._display_core.Live')
     def test_multiple_stops_are_safe(self, MockLive):
         """Calling stop() multiple times is safe."""
         display = FeedbackDisplay()
