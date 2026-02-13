@@ -148,6 +148,10 @@ class FactResolver(GoalsMixin, SessionMixin, SourcesMixin, ResolutionMixin):
         """Register a rule function programmatically."""
         self._rules[fact_pattern] = func
 
+    def remove_fact(self, name: str) -> bool:
+        """Remove a fact from the cache. Returns True if found and removed."""
+        return self._cache.pop(name, None) is not None
+
     def set_resolution_context(
         self,
         resolved_premises: Optional[dict[str, "Fact"]] = None,

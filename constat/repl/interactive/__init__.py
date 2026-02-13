@@ -9,8 +9,6 @@
 
 """Interactive REPL for refinement loop."""
 
-from typing import Optional
-
 from constat.core.config import Config
 from constat.repl.interactive._core import _CoreMixin
 from constat.repl.interactive._data_commands import _DataCommandsMixin
@@ -40,7 +38,7 @@ class InteractiveREPL(
     """Interactive Read-Eval-Print Loop for Constat sessions."""
 
 
-def run_repl(config_path: str, verbose: bool = False, problem: Optional[str] = None) -> None:
+def run_repl(config_path: str, verbose: bool = False, problem: str | None = None) -> None:
     """Run the interactive REPL."""
     config = Config.from_yaml(config_path)
     repl = InteractiveREPL(config, verbose=verbose)

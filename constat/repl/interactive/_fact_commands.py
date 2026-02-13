@@ -10,6 +10,7 @@
 """Fact commands mixin — facts, remember, forget, learnings, corrections."""
 
 import logging
+import re
 
 from rich.table import Table
 
@@ -89,7 +90,6 @@ class _FactCommandsMixin:
         1. Promote session fact: /remember <fact-name> [as <new-name>]
         2. Extract from text: /remember my role is CFO
         """
-        import re
 
         if not fact_text.strip():
             self.console.print("[yellow]Usage: /remember <fact>[/yellow]")
@@ -190,8 +190,6 @@ class _FactCommandsMixin:
 
     def _extract_fact_without_session(self, text: str) -> list[dict]:
         """Extract facts from text without an active session (lightweight)."""
-        import re
-
         patterns = [
             (r"my\s+(\w+)\s+is\s+(.+)", lambda m: {"name": f"user_{m.group(1)}", "value": m.group(2).strip(), "description": f"User's {m.group(1)}"}),
             (r"i\s+am\s+(?:a|an)\s+(.+)", lambda m: {"name": "user_role", "value": m.group(1).strip(), "description": "User's role"}),
@@ -201,7 +199,7 @@ class _FactCommandsMixin:
 
         text_lower = text.lower()
         for pattern, extractor in patterns:
-            match = re.search(pattern, text_lower, re.IGNORECASE)
+            match = re.search(pattern, text_lower)
             if match:
                 return [extractor(match)]
 
@@ -224,7 +222,7 @@ class _FactCommandsMixin:
         if self.api.session:
             facts = self.api.session.fact_resolver.get_all_facts()
             if fact_name in facts:
-                self.api.session.fact_resolver._cache.pop(fact_name, None)
+                self.api.session.fact_resolver.remove_fact(fact_name)
                 if not found:
                     self.console.print(f"[green]Forgot session fact:[/green] {fact_name}")
                 found = True
@@ -272,13 +270,13 @@ class _FactCommandsMixin:
                 self.console.print(f"  [{conf:.0f}%] {r['summary'][:60]} [dim](applied {applied}x)[/dim]")
 
         raw = self.api.learning_store.list_raw_learnings(category=category, limit=20)
-        pending = [l for l in raw if not l.get("promoted_to")]
+        pending = [learning for learning in raw if not learning.get("promoted_to")]
         if pending:
             self.console.print(f"\n[bold]Pending Learnings[/bold] ({len(pending)})")
-            for l in pending[:10]:
-                cat = l.get("category", "")[:10]
-                lid = l.get("id", "")[:12]
-                self.console.print(f"  [dim]{lid}[/dim] [{cat}] {l['correction'][:50]}...")
+            for learning in pending[:10]:
+                cat = learning.get("category", "")[:10]
+                lid = learning.get("id", "")[:12]
+                self.console.print(f"  [dim]{lid}[/dim] [{cat}] {learning['correction'][:50]}...")
 
         stats = self.api.learning_store.get_stats()
         if stats.get("total_raw", 0) > 0 or stats.get("total_rules", 0) > 0:

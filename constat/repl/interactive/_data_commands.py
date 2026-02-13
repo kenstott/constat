@@ -10,8 +10,8 @@
 """Data commands mixin — tables, export, artifacts, databases, files, code, state."""
 
 import logging
+import re
 from pathlib import Path
-from typing import Optional
 
 from rich.syntax import Syntax
 
@@ -36,8 +36,10 @@ class _DataCommandsMixin:
         try:
             from constat.storage.registry import ConstatRegistry
             registry = ConstatRegistry()
-            tables = registry.list_tables(user_id=self.user_id, session_id=self.api.session.session_id)
-            registry.close()
+            try:
+                tables = registry.list_tables(user_id=self.user_id, session_id=self.api.session.session_id)
+            finally:
+                registry.close()
 
             if not tables:
                 self.console.print("[dim]No tables yet.[/dim]")
@@ -128,38 +130,38 @@ class _DataCommandsMixin:
         try:
             from constat.storage.registry import ConstatRegistry
             registry = ConstatRegistry()
+            try:
+                tables = registry.list_tables(user_id=self.user_id, session_id=session_id)
+                if tables:
+                    has_artifacts = True
+                    self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
+                    for t in tables:
+                        self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{self._role_suffix(t)}")
+                        if t.description:
+                            self.console.print(f"    {t.description}")
+                        file_path = Path(t.file_path)
+                        if file_path.exists():
+                            file_uri = file_path.resolve().as_uri()
+                            self.console.print(f"    {file_uri}")
 
-            tables = registry.list_tables(user_id=self.user_id, session_id=session_id)
-            if tables:
-                has_artifacts = True
-                self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
-                for t in tables:
-                    self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{self._role_suffix(t)}")
-                    if t.description:
-                        self.console.print(f"    {t.description}")
-                    file_path = Path(t.file_path)
-                    if file_path.exists():
-                        file_uri = file_path.resolve().as_uri()
-                        self.console.print(f"    {file_uri}")
+                artifacts = registry.list_artifacts(user_id=self.user_id, session_id=session_id)
+                if artifacts:
+                    has_artifacts = True
+                    self.console.print(f"\n[bold]Files[/bold] ({len(artifacts)})")
+                    for a in artifacts[:20]:
+                        file_path = Path(a.file_path)
+                        if file_path.exists():
+                            file_uri = file_path.resolve().as_uri()
+                            size_str = f"{a.size_bytes / 1024:.0f}KB" if a.size_bytes else ""
+                            self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]{self._role_suffix(a)}")
+                            if a.description:
+                                self.console.print(f"    {a.description}")
+                            self.console.print(f"    {file_uri}")
 
-            artifacts = registry.list_artifacts(user_id=self.user_id, session_id=session_id)
-            if artifacts:
-                has_artifacts = True
-                self.console.print(f"\n[bold]Files[/bold] ({len(artifacts)})")
-                for a in artifacts[:20]:
-                    file_path = Path(a.file_path)
-                    if file_path.exists():
-                        file_uri = file_path.resolve().as_uri()
-                        size_str = f"{a.size_bytes / 1024:.1f}KB" if a.size_bytes else ""
-                        self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]{self._role_suffix(a)}")
-                        if a.description:
-                            self.console.print(f"    {a.description}")
-                        self.console.print(f"    {file_uri}")
-
-                if len(artifacts) > 20:
-                    self.console.print(f"\n[dim]... and {len(artifacts) - 20} more[/dim]")
-
-            registry.close()
+                    if len(artifacts) > 20:
+                        self.console.print(f"\n[dim]... and {len(artifacts) - 20} more[/dim]")
+            finally:
+                registry.close()
 
         except Exception as e:
             logger.debug("Registry unavailable for artifacts: %s", e)
@@ -279,10 +281,8 @@ class _DataCommandsMixin:
         else:
             self.console.print("[yellow]Usage: /file [save|delete] <name> [<uri>] [--auth \"...\"] [--desc \"...\"][/yellow]")
 
-    def _extract_flag(self, text: str, flag: str) -> Optional[str]:
+    def _extract_flag(self, text: str, flag: str) -> str | None:
         """Extract a flag value from command text."""
-        import re
-
         pattern = rf'{flag}\s+"([^"]*)"'
         match = re.search(pattern, text)
         if match:
@@ -400,27 +400,23 @@ class _DataCommandsMixin:
                     self.console.print(f"    {f['description']}")
                 self.console.print(f"    [dim]{f['uri']}[/dim]")
 
-        if bookmark_files:
-            self.console.print(f"\n[bold]Bookmarked Files[/bold] ({len(bookmark_files)})")
-            for name, f in bookmark_files.items():
-                auth_status = " [auth]" if f.get("auth") else ""
-                self.console.print(f"  [cyan]{name}[/cyan]{auth_status}")
-                if f.get("description"):
-                    self.console.print(f"    {f['description']}")
-                self.console.print(f"    [dim]{f['uri']}[/dim]")
+        self._print_file_section("Bookmarked Files", bookmark_files)
+        self._print_file_section("Session Files", session_files)
 
-        if session_files:
-            self.console.print(f"\n[bold]Session Files[/bold] ({len(session_files)})")
-            for name, f in session_files.items():
-                auth_status = " [auth]" if f.get("auth") else ""
-                self.console.print(f"  [cyan]{name}[/cyan]{auth_status}")
-                if f.get("description"):
-                    self.console.print(f"    {f['description']}")
-                self.console.print(f"    [dim]{f['uri']}[/dim]")
+    def _print_file_section(self, title: str, files: dict) -> None:
+        """Print a section of files with auth status and URIs."""
+        if not files:
+            return
+        self.console.print(f"\n[bold]{title}[/bold] ({len(files)})")
+        for name, f in files.items():
+            auth_status = " [auth]" if f.get("auth") else ""
+            self.console.print(f"  [cyan]{name}[/cyan]{auth_status}")
+            if f.get("description"):
+                self.console.print(f"    {f['description']}")
+            self.console.print(f"    [dim]{f['uri']}[/dim]")
 
     def _mask_credentials(self, uri: str) -> str:
         """Mask credentials in a URI for display."""
-        import re
         return re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', uri)
 
     def _display_outputs(self) -> None:

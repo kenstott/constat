@@ -118,6 +118,19 @@ class StatusLine:
         """Set an arbitrary status message (overrides phase display when set)."""
         self._status_message = message
 
+    def get_toolbar_data(self) -> dict:
+        """Return current state as a dict for toolbar rendering."""
+        return {
+            "mode": getattr(self, "_mode", None),
+            "phase": self._phase,
+            "plan_name": self._plan_name,
+            "step_current": self._step_current,
+            "step_total": self._step_total,
+            "step_description": self._step_description,
+            "error_message": self._error_message,
+            "status_message": self._status_message,
+        }
+
     def advance_spinner(self) -> None:
         """Advance the spinner animation frame."""
         self._spinner_frame += 1
@@ -210,6 +223,13 @@ class PersistentStatusBar:
         status bar line.
         """
         return False
+
+    def get_toolbar_data(self) -> dict:
+        """Return current state as a dict for toolbar rendering."""
+        data = self._status_line.get_toolbar_data()
+        data["tables_count"] = self._tables_count
+        data["facts_count"] = self._facts_count
+        return data
 
     def print(self, *args, **kwargs) -> None:
         """Print to console directly."""

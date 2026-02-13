@@ -9,11 +9,12 @@
 
 """Core REPL mixin — __init__, prompt toolkit, dispatch, solve, run loop."""
 
+import html as html_module
 import logging
 import os
+import shutil
 import sys
 from collections.abc import Callable
-from typing import Optional
 
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.completion import WordCompleter
@@ -29,6 +30,7 @@ from constat.execution.mode import Mode
 from constat.messages import get_vera_adjectives
 from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.session import Session, SessionConfig
+from constat.session._types import StepEvent
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
 from constat.visualization.output import clear_pending_outputs
@@ -43,7 +45,7 @@ class _CoreMixin:
         self,
         config: Config,
         verbose: bool = False,
-        console: Optional[Console] = None,
+        console: Console | None = None,
         progress_callback: Callable[..., None] | None = None,
         user_id: str = "default",
         auto_resume: bool = False,
@@ -96,7 +98,7 @@ class _CoreMixin:
 
         handler = SessionFeedbackHandler(self.display, self.session_config)
         api.on_event(lambda event_type, data: handler.handle_event(
-            type('Event', (), {'event_type': event_type, 'data': data})()
+            StepEvent(event_type=event_type, step_number=0, data=data)
         ))
 
         api.set_approval_callback(self.display.request_plan_approval)
@@ -125,52 +127,44 @@ class _CoreMixin:
 
     def _get_bottom_toolbar(self):
         """Get the status bar text for the bottom toolbar as HTML."""
-        import html as html_module
-        import shutil
+        data = self.display._status_bar.get_toolbar_data()
 
-        status_bar = self.display._status_bar
-        status_line = status_bar.status_line
-
-        mode = status_line._mode
-        phase = status_line._phase
-        status_msg = status_line._status_message
+        mode = data["mode"]
+        phase = data["phase"]
 
         if mode == Mode.PROOF:
             mode_html = '<style bg="ansiyellow" fg="ansiblack"><b> PROOF </b></style>'
         else:
             mode_html = '<style bg="ansicyan" fg="ansiblack"><b> EXPLORE </b></style>'
 
-        if status_msg:
-            phase_text = html_module.escape(status_msg)
+        if data["status_message"]:
+            phase_text = html_module.escape(data["status_message"])
         elif phase.value == "idle":
             phase_text = 'ready'
         elif phase.value == "planning":
-            plan = status_line._plan_name or ""
+            plan = data["plan_name"] or ""
             if plan:
                 plan = plan[:40] + "..." if len(plan) > 40 else plan
                 phase_text = f'planning: {html_module.escape(plan)}'
             else:
                 phase_text = 'planning...'
         elif phase.value == "executing":
-            step = status_line._step_current
-            total = status_line._step_total
-            desc = status_line._step_description or ""
+            step = data["step_current"]
+            total = data["step_total"]
+            desc = data["step_description"] or ""
             if desc:
                 desc = desc[:30] + "..." if len(desc) > 30 else desc
                 phase_text = f'executing step {step}/{total}: {html_module.escape(desc)}'
             else:
                 phase_text = f'executing step {step}/{total}'
         elif phase.value == "failed":
-            err = status_line._error_message or "error"
+            err = data["error_message"] or "error"
             err = err[:40] + "..." if len(err) > 40 else err
             phase_text = f'failed: {html_module.escape(err)}'
         else:
             phase_text = phase.value
 
-        tables_count = status_bar._tables_count
-        facts_count = status_bar._facts_count
-
-        stats_html = f'<style fg="ansigray">tables:{tables_count} facts:{facts_count}</style>'
+        stats_html = f'<style fg="ansigray">tables:{data["tables_count"]} facts:{data["facts_count"]}</style>'
 
         terminal_width = shutil.get_terminal_size().columns
         rule_line = '─' * terminal_width
@@ -371,11 +365,11 @@ class _CoreMixin:
 
         return False
 
-    def _solve(self, problem: str) -> Optional[str]:
+    def _solve(self, problem: str) -> str | None:
         """Solve a problem.
 
         Returns:
-            Optional command string if user entered a slash command during approval,
+            Command string if user entered a slash command during approval,
             None otherwise.
         """
         overrides = self.api.detect_display_overrides(problem)
@@ -457,7 +451,7 @@ class _CoreMixin:
         except Exception as e:
             self.console.print(f"[red]Query error:[/red] {e}")
 
-    def run(self, initial_problem: Optional[str] = None) -> None:
+    def run(self, initial_problem: str | None = None) -> None:
         """Run the interactive REPL."""
         os.environ["CONSTAT_REPL_MODE"] = "1"
         try:
@@ -468,7 +462,7 @@ class _CoreMixin:
             if self.api.session and self.api.session.datastore:
                 self.api.session.datastore.close()
 
-    def _run_repl_body(self, initial_problem: Optional[str] = None) -> None:
+    def _run_repl_body(self, initial_problem: str | None = None) -> None:
         """Run the REPL body (banner + loop)."""
         sys.stdout.flush()
         sys.stderr.flush()

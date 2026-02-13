@@ -134,8 +134,6 @@ class _SessionCommandsMixin:
             self.console.print("[yellow]No datastore available.[/yellow]")
             return
 
-        from rich.panel import Panel as RichPanel
-
         if stats.is_critical:
             title_style = "bold red"
             status = "CRITICAL - Consider using /compact"
@@ -149,7 +147,7 @@ class _SessionCommandsMixin:
         content = stats.summary()
         content += f"\n\nStatus: {status}"
 
-        self.console.print(RichPanel(
+        self.console.print(Panel(
             content,
             title="[bold]Context Size[/bold]",
             title_align="left",

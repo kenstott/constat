@@ -503,9 +503,7 @@ class TestVerboseToggle:
         repl.display = Mock()
         repl.display.verbose = False
 
-        # Simulate the verbose toggle from run()
-        repl.verbose = not repl.verbose
-        repl.display.verbose = repl.verbose
+        repl._toggle_verbose()
 
         assert repl.verbose is True
         assert repl.display.verbose is True
@@ -516,12 +514,30 @@ class TestVerboseToggle:
         repl.display = Mock()
         repl.display.verbose = True
 
-        # Simulate the toggle
-        repl.verbose = not repl.verbose
-        repl.display.verbose = repl.verbose
+        repl._toggle_verbose()
 
         assert repl.verbose is False
         assert repl.display.verbose is False
+
+    def test_verbose_set_on(self, repl, mock_console):
+        """Test /verbose on explicitly sets verbose mode."""
+        repl.verbose = False
+        repl.display = Mock()
+        repl.display.verbose = False
+
+        repl._toggle_verbose("on")
+
+        assert repl.verbose is True
+
+    def test_verbose_set_off(self, repl, mock_console):
+        """Test /verbose off explicitly unsets verbose mode."""
+        repl.verbose = True
+        repl.display = Mock()
+        repl.display.verbose = True
+
+        repl._toggle_verbose("off")
+
+        assert repl.verbose is False
 
 
 class TestCommandParsing:
@@ -560,52 +576,41 @@ class TestCommandParsing:
 class TestUnknownCommand:
     """Tests for unknown command handling."""
 
-    def test_unknown_command_shows_help(self, repl, mock_console):
-        """Test that unknown commands show help message."""
-        # Simulate handling an unknown command (from the run() method logic)
-        unknown_cmd = "/unknowncmd"
+    def test_unknown_command_shows_warning(self, repl, mock_console):
+        """Test that unknown commands show warning message."""
+        repl._handle_command("/unknowncmd")
 
-        # The REPL would call console.print with yellow warning and show_help
-        with patch.object(repl, '_show_help') as mock_help:
-            # Simulate what run() does for unknown commands
-            mock_console.print(f"[yellow]Unknown command: {unknown_cmd}[/yellow]")
-            repl._show_help()
-
-            mock_help.assert_called_once()
-            call_args = str(mock_console.print.call_args)
-            assert "Unknown command" in call_args
+        calls = [str(call) for call in mock_console.print.call_args_list]
+        calls_str = " ".join(calls)
+        assert "Unknown" in calls_str
 
 
 class TestCommandsWithoutArguments:
     """Tests for commands that require arguments."""
 
-    def test_query_without_argument(self, repl, mock_console):
-        """Test /query without SQL shows usage."""
-        # Simulate the check from run()
-        arg = ""
-        if not arg:
-            mock_console.print("[yellow]Usage: /query <sql>[/yellow]")
+    def test_remember_without_argument(self, repl, mock_console):
+        """Test /remember without text shows usage."""
+        repl._remember_fact("")
 
-        call_args = str(mock_console.print.call_args)
-        assert "Usage: /query" in call_args
+        calls = [str(call) for call in mock_console.print.call_args_list]
+        calls_str = " ".join(calls)
+        assert "Usage: /remember" in calls_str
 
-    def test_resume_without_argument(self, repl, mock_console):
-        """Test /resume without session ID shows usage."""
-        arg = ""
-        if not arg:
-            mock_console.print("[yellow]Usage: /resume <session_id>[/yellow]")
+    def test_forget_without_argument(self, repl, mock_console):
+        """Test /forget without name shows usage."""
+        repl._forget_fact("")
 
-        call_args = str(mock_console.print.call_args)
-        assert "Usage: /resume" in call_args
+        calls = [str(call) for call in mock_console.print.call_args_list]
+        calls_str = " ".join(calls)
+        assert "Usage: /forget" in calls_str
 
-    def test_facts_without_argument(self, repl, mock_console):
-        """Test /facts without text shows usage."""
-        arg = ""
-        if not arg:
-            mock_console.print("[yellow]Usage: /facts <text with facts>[/yellow]")
+    def test_correct_without_argument(self, repl, mock_console):
+        """Test /correct without text shows usage."""
+        repl._handle_correct("")
 
-        call_args = str(mock_console.print.call_args)
-        assert "Usage: /facts" in call_args
+        calls = [str(call) for call in mock_console.print.call_args_list]
+        calls_str = " ".join(calls)
+        assert "Usage: /correct" in calls_str
 
 
 class TestSolveIntegration:
