@@ -685,6 +685,155 @@ interface GlossaryStore {
 }
 ```
 
+## Phase 2R: REPL Integration
+
+The REPL exposes the same glossary through slash commands, following existing patterns in `_commands.py`. All commands use the session's datastore for queries and the glossary API endpoints for mutations.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/glossary` | List all defined terms (default filter: defined only) |
+| `/glossary all` | List all terms including self-describing |
+| `/glossary deprecated` | Show deprecated terms (no matching entity) |
+| `/glossary <name>` | Term detail: definition, aliases, parent, status, physical resources |
+| `/define <name> <definition>` | Add or update a definition for a term |
+| `/undefine <name>` | Remove definition (term reverts to self-describing) |
+| `/refine <name>` | AI-assisted definition refinement |
+
+### Display Formats
+
+**`/glossary` — Defined terms list:**
+
+```
+Glossary (12 defined, 847 self-describing)
+
+  Name              Domain      Status     Resources
+  ─────────────────────────────────────────────────────
+  Customer          retail      approved   crm (DB), user-api (API)
+  Customer          enterprise  approved   erp (DB), contracts-api (API)
+  cust_status       —           draft      crm (DB)
+  Churn Rate        analytics   reviewed   warehouse (DB)
+  ...
+
+  /glossary all — include self-describing
+  /glossary deprecated — show deprecated terms
+  /glossary <name> — term detail
+```
+
+Rich `Table` with type-colored name column (reuses entity color scheme). Status column styled: draft=dim, reviewed=yellow, approved=green.
+
+**`/glossary <name>` — Term detail:**
+
+```
+Customer (retail)                                    approved
+
+  "An individual or organization with an active commercial
+   relationship, identified by account number and tracked
+   through the customer lifecycle."
+
+  Aliases:     client, account, buyer
+  Parent:      Stakeholder
+  Provenance:  llm → hybrid
+  Cardinality: many
+
+  Connected resources:
+    crm.public.customers                             DB
+    GET /api/v1/customers                            API: user-service
+    business_rules.md §3.1 Customer Policies         Document
+
+  /define customer <new definition>
+  /refine customer — AI-assisted refinement
+```
+
+When multiple domains define the same name, detail shows all domain definitions stacked with domain headers.
+
+**`/glossary deprecated` — Deprecation list:**
+
+```
+Deprecated Terms (3)
+
+  Name              Last Definition                  Domain
+  ────────────────────────────────────────────────────────────
+  legacy_score      "Risk score from retired model"  analytics
+  old_segment       "Customer segmentation v1"       retail
+  temp_flag         "Migration temporary flag"       —
+
+  ⚠ These terms have no matching entity — physical grounding lost.
+  /undefine <name> to remove, or reconnect the source.
+```
+
+### `/define` — Inline Definition
+
+```
+> /define cust_status Customer lifecycle state: 1=active, 2=suspended, 3=churned
+
+Defined: cust_status
+  "Customer lifecycle state: 1=active, 2=suspended, 3=churned"
+  Status: draft | Provenance: human
+```
+
+If the term already has a definition, the command updates it and sets `provenance` to `human` (or `hybrid` if previous was `llm`).
+
+### `/refine` — AI Refinement
+
+Runs in a background thread (same pattern as `_solve_in_thread`). Posts a `GlossaryRefineComplete` message on completion.
+
+```
+> /refine customer
+
+⠋ Refining definition for "customer"...
+
+Refined: Customer (retail)
+  Before: "A person or org that buys things"
+  After:  "An individual or organization with an active commercial
+           relationship, identified by account number and tracked
+           through the customer lifecycle."
+  [accept] Type /define customer to keep the original instead.
+```
+
+Acceptance is automatic — the refined definition is written immediately (like LLM generation, the editorial workflow handles quality). The before/after display lets the user `/define` back to the original if needed.
+
+### Implementation
+
+**CommandsMixin additions** (`_commands.py`):
+
+```python
+elif cmd == "/glossary":
+    await self._show_glossary(args)
+elif cmd == "/define":
+    await self._define_term(args)
+elif cmd == "/undefine":
+    await self._undefine_term(args)
+elif cmd == "/refine":
+    await self._refine_term(args)
+```
+
+**CommandSuggester** — Add `/glossary`, `/define`, `/refine`, `/undefine` to autocomplete suggestions.
+
+**New message type** (`_messages.py`):
+
+```python
+class GlossaryRefineComplete(Message):
+    def __init__(self, name: str, before: str, after: str, error: str | None = None):
+        self.name = name
+        self.before = before
+        self.after = after
+        self.error = error
+        super().__init__()
+```
+
+**Data access** — Commands call the same API endpoints defined in Phase 1g:
+- `/glossary` → `GET /sessions/{id}/glossary?scope=defined`
+- `/glossary all` → `GET /sessions/{id}/glossary?scope=all`
+- `/glossary deprecated` → `GET /sessions/{id}/glossary/deprecated`
+- `/glossary <name>` → `GET /sessions/{id}/glossary/{name}`
+- `/define` → `POST /sessions/{id}/glossary` or `PUT /sessions/{id}/glossary/{name}`
+- `/undefine` → `DELETE /sessions/{id}/glossary/{name}`
+- `/refine` → `POST /sessions/{id}/glossary/{name}/refine`
+
+For direct session access (no server mode), commands query the datastore directly using the unified glossary view.
+
 ## Phase 3: Semantic Model Bridge (Future)
 
 Once the glossary is curated, it becomes the basis for generating semantic model YAML (the book's format). Each approved glossary term maps to a `BusinessDefinition`:
@@ -720,6 +869,9 @@ This phase connects the glossary back to the book's vision: curated business def
 | 2b | `[+ Define]`, inline editing, status workflow, re-embedding | 2a |
 | 2c | Deprecation queue UI | 2a |
 | 2d | AI editing assistance (refine, suggest taxonomy, suggest aliases) | 2b |
+| 2Ra | REPL `/glossary` list + `/glossary <name>` detail + `/glossary deprecated` | 1g |
+| 2Rb | REPL `/define`, `/undefine` commands | 2Ra |
+| 2Rc | REPL `/refine` with background thread + `GlossaryRefineComplete` message | 2Rb |
 | 3  | Semantic model YAML export | 2b |
 
 ## The Grounding Constraint

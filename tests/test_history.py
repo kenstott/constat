@@ -211,9 +211,9 @@ class TestSessionHistory:
         """Test session ID format includes timestamp."""
         session_id = history.create_session(config_dict={}, databases=[])
 
-        # Format: YYYY-MM-DD_HHMMSS_uuuuuu (microseconds)
+        # Format: YYYY-MM-DD_HH-MM-SS_uuuuuu (microseconds)
         parts = session_id.split("_")
         assert len(parts) == 3
         assert len(parts[0]) == 10  # Date
-        assert len(parts[1]) == 6   # Time
+        assert len(parts[1]) == 8   # Time (HH-MM-SS)
         assert len(parts[2]) == 6   # Microseconds suffix
