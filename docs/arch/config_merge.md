@@ -41,6 +41,7 @@ Every tier includes the **core config** shape:
 - **Skills are directories** following the Anthropic model (`skill-name/SKILL.md`).
 - **Everything else uses `$ref`** for composition within YAML files.
 - **`$ref` resolves before merge.** Each tier's refs are fully resolved, then tiers merge in precedence order.
+- **Resolve once, consume flat.** Tiers are merged into a single `ResolvedConfig` at startup and on any tier mutation. All downstream code sees one flat config — no tiers, no `$ref`, no `null` sentinels. Tier machinery is internal to the loader.
 
 ## Key Design Decisions
 
@@ -799,15 +800,51 @@ class ConfigSource(Enum):
     SESSION = "session"
 ```
 
-### 9. Tier Loading
+### 9. Tier Loading and ResolvedConfig
+
+Tier loading produces a single `ResolvedConfig` — the only config object downstream code ever sees. The tier machinery is internal to `TieredConfigLoader`. No other module needs to understand tiers, `$ref`, `null`-deletion, or merge order.
+
+#### Load Order
 
 When a session selects a domain:
 
-1. Load system config
-2. Load system domain (if domain selected; sub-domains merge first, then parent overlays)
-3. Load user config
-4. Load user domain (same domain name, if exists under user)
-5. Load session config
+1. Load system config (resolve `$ref`)
+2. Load system domain (sub-domains merge first, then parent overlays; resolve `$ref`)
+3. Load user config (resolve `$ref`)
+4. Load user domain (same domain name under user; resolve `$ref`)
+5. Load session config (resolve `$ref`)
+6. Deep merge tiers in order (higher tier wins; `null` deletes key)
+7. Strip all `null` keys from merged result
+8. Produce `ResolvedConfig`
+
+#### ResolvedConfig
+
+```python
+@dataclass
+class ResolvedConfig:
+    """Single merged config. All tiers resolved. No $ref, no null, no tier awareness needed."""
+    sources: SourcesConfig          # databases + apis + documents (flat maps)
+    roles: dict[str, RoleConfig]
+    rights: dict[str, RightConfig]
+    facts: dict[str, str]
+    learnings: LearningsConfig      # corrections + rules
+    glossary: dict[str, GlossaryTermConfig]
+    relationships: dict[str, RelationshipConfig]
+    skills: dict[str, SkillConfig]
+    llm: LlmConfig
+    preferences: Optional[PreferencesConfig]  # user tier only
+
+    # Source attribution — for UI tier badges and promote/remove actions.
+    # Keyed by dotted path (e.g., "facts.company_name", "glossary.churn_rate").
+    # Only the UI tier management panel reads this. All other consumers ignore it.
+    _attribution: dict[str, ConfigSource] = field(default_factory=dict, repr=False)
+
+    def source_of(self, path: str) -> Optional[ConfigSource]:
+        """Which tier did this value come from? For UI tier badges only."""
+        return self._attribution.get(path)
+```
+
+#### TieredConfigLoader
 
 ```python
 class TieredConfigLoader:
@@ -817,7 +854,7 @@ class TieredConfigLoader:
         user_id: str,
         base_dir: Path,
         session_id: Optional[str],
-        domain_name: Optional[str] = None
+        domain_name: Optional[str] = None,
     ):
         self.tiers = [
             ("system", config_dir),
@@ -827,7 +864,54 @@ class TieredConfigLoader:
             ("session", base_dir / user_id / "sessions" / session_id) if session_id else None,
         ]
         self.tiers = [(name, path) for name, path in self.tiers if path]
+
+    def resolve(self) -> ResolvedConfig:
+        """Load all tiers, merge, return single flat config.
+
+        This is the only public method. Called at:
+        - Session start
+        - Domain add/remove
+        - Source add/remove/enable/disable
+        - Glossary/relationship term change
+        - Fact/learning/right/role change
+        - Tier promotion or removal
+
+        Downstream code holds a reference to the returned ResolvedConfig.
+        On any mutation, call resolve() again and replace the reference.
+        """
+        merged = {}
+        attribution = {}
+        for tier_name, tier_path in self.tiers:
+            raw = self._load_tier(tier_path)       # resolve $ref within tier
+            merged = self._deep_merge(merged, raw, tier_name, attribution)
+        merged = self._strip_nulls(merged)
+        return ResolvedConfig(**merged, _attribution=attribution)
 ```
+
+#### Downstream Contract
+
+All consumers receive `ResolvedConfig`. No exceptions.
+
+| Consumer | What it reads | Tier-aware? |
+|----------|--------------|-------------|
+| Session / solve pipeline | sources, glossary, relationships, facts, learnings, rights, roles, llm | No |
+| Entity extraction | glossary keys + aliases, relationship keys + aliases, source schemas | No |
+| Vector store / search | glossary chunks, relationship chunks | No |
+| REPL commands | facts, glossary, learnings, sources | No |
+| UI panels (data display) | All sections | No |
+| UI tier management panel | All sections + `_attribution` | Yes (only consumer) |
+
+#### Re-resolve Triggers
+
+Any mutation to any tier triggers `resolve()` → new `ResolvedConfig`. Config is small; re-merge is negligible. The session holds the reference and swaps it atomically.
+
+```
+tier mutation → loader.resolve() → new ResolvedConfig → session.config = new_config
+                                                      → trigger entity rebuild (if scope changed)
+                                                      → notify UI (WebSocket)
+```
+
+Scope-affecting mutations (sources, glossary, relationships) additionally trigger entity rebuild via the fingerprint mechanism (§10).
 
 ### 10. Entity Extraction Strategy
 
@@ -973,17 +1057,14 @@ churn_rate:
 3. Ensure all sections use maps (no arrays)
 4. Rename "project" to "domain" throughout codebase
 
-### Phase 2: 5-Tier Config Loader
+### Phase 2: 5-Tier Config Loader → ResolvedConfig
 **New file:** `constat/core/tiered_config.py`
 
-```python
-@dataclass
-class SourcedItem(Generic[T]):
-    """Wrapper tracking source of any config item."""
-    value: T
-    source: ConfigSource
-    source_path: Optional[str] = None
-```
+1. `TieredConfigLoader` — loads tiers, resolves `$ref` per tier, deep merges, strips `null`
+2. `ResolvedConfig` — single flat dataclass, the only config object downstream code sees
+3. `_attribution` dict for UI tier badges (dotted path → `ConfigSource`)
+4. `resolve()` as the single public method — called at startup and on any tier mutation
+5. All existing config consumers migrated to accept `ResolvedConfig`
 
 ### Phase 3: Domain Directory Structure
 1. `DomainConfig.from_directory(path: Path)` method
@@ -1030,7 +1111,7 @@ class SourcedItem(Generic[T]):
 | File | Changes |
 |------|---------|
 | `constat/core/config.py` | Add rights, facts, learnings, glossary, relationships to schema; domain directory loading; rename project → domain |
-| `constat/core/tiered_config.py` | **NEW** — 5-tier loader with $ref resolution per tier |
+| `constat/core/tiered_config.py` | **NEW** — `TieredConfigLoader` + `ResolvedConfig`; resolve once, flat config downstream |
 | `constat/core/skills.py` | Multi-tier skill discovery |
 | `constat/storage/facts.py` | Map-based facts |
 | `constat/storage/learnings.py` | Map-based learnings (keyed by id) |

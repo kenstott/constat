@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 from rich.syntax import Syntax
-from rich.table import Table
 
 
 class _DataCommandsMixin:

@@ -20,31 +20,27 @@ from typing import Optional
 
 from rich.rule import Rule
 from rich.text import Text
-
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
 from textual.widgets import Static, Input
 
-from constat.session import Session, SessionConfig, ClarificationRequest, ClarificationResponse
-from constat.execution.mode import Phase, PlanApprovalRequest, PlanApprovalResponse
 from constat.core.config import Config
+from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse
+from constat.messages import get_vera_adjectives, STARTER_SUGGESTIONS
+from constat.session import Session, SessionConfig, ClarificationRequest, ClarificationResponse
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
-from constat.messages import get_vera_adjectives, STARTER_SUGGESTIONS
-
+from constat.textual_repl._commands import CommandsMixin
+from constat.textual_repl._feedback import TextualFeedbackHandler
+from constat.textual_repl._messages import (
+    ShowApprovalUI, ShowClarificationUI, )
+from constat.textual_repl._operations import OperationsMixin
+from constat.textual_repl._role_screen import RoleSelectorScreen
 from constat.textual_repl._widgets import (
-    StatusBar, ConstatInput, OutputLog, SidePanel, SidePanelContent, ProofTreePanel,
+    StatusBar, ConstatInput, OutputLog, SidePanel, ProofTreePanel,
     markdown_to_rich_markup, linkify_artifact_references,
 )
-from constat.textual_repl._messages import (
-    ShowApprovalUI, ShowClarificationUI, SolveComplete, ProveComplete,
-    ConsolidateComplete, DocumentAddComplete, SessionEvent,
-)
-from constat.textual_repl._feedback import TextualFeedbackHandler
-from constat.textual_repl._role_screen import RoleSelectorScreen
-from constat.textual_repl._commands import CommandsMixin
-from constat.textual_repl._operations import OperationsMixin
 
 logger = logging.getLogger(__name__)
 

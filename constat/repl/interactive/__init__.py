@@ -14,9 +14,8 @@ from typing import Optional
 from constat.core.config import Config
 from constat.repl.interactive._core import _CoreMixin
 from constat.repl.interactive._data_commands import _DataCommandsMixin
-from constat.repl.interactive._session_commands import _SessionCommandsMixin
 from constat.repl.interactive._fact_commands import _FactCommandsMixin
-
+from constat.repl.interactive._session_commands import _SessionCommandsMixin
 
 # Commands available in the REPL
 REPL_COMMANDS = [

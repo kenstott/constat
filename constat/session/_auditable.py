@@ -9,18 +9,12 @@
 """Auditable mixin: _solve_auditable and steer handling."""
 from __future__ import annotations
 
-import json
 import logging
 import re
-import time
-from typing import Optional
 
-from constat.core.models import Plan, Step, StepResult, StepStatus, StepType, TaskType
-from constat.execution.fact_resolver import Fact, FactSource, format_source_attribution
-from constat.execution.mode import Mode, Phase
-from constat.storage.registry_datastore import RegistryAwareDataStore
+from constat.core.models import TaskType
+from constat.execution.mode import Mode
 from constat.session._types import StepEvent
-from constat.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
 

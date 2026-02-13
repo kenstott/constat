@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 
 from constat.execution.mode import Phase
-from constat.textual_repl._widgets import OutputLog, StatusBar, SidePanel, SidePanelContent
 from constat.textual_repl._messages import SessionEvent
+from constat.textual_repl._widgets import OutputLog, StatusBar, SidePanel, SidePanelContent
 
 if TYPE_CHECKING:
     from constat.textual_repl._app import ConstatREPLApp

@@ -14,7 +14,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-
 from fastapi import APIRouter, Request
 
 from constat.server.session_manager import SessionManager

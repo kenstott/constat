@@ -10,24 +10,11 @@
 """Access mixin for DocumentDiscoveryTools — list, get, search, load."""
 
 import logging
-from pathlib import Path
 
-from constat.core.config import DocumentConfig
-from constat.discovery.models import LoadedDocument
-
-from ._schema_inference import _expand_file_paths, _infer_structured_schema
 from ._file_extractors import (
-    _extract_pdf_text,
-    _extract_pdf_text_from_bytes,
-    _extract_docx_text,
-    _extract_docx_text_from_bytes,
-    _extract_xlsx_text,
-    _extract_xlsx_text_from_bytes,
-    _extract_pptx_text,
-    _extract_pptx_text_from_bytes,
     _detect_format,
-    _detect_format_from_content_type,
 )
+from ._schema_inference import _expand_file_paths
 
 logger = logging.getLogger(__name__)
 

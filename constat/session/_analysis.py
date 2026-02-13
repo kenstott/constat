@@ -11,14 +11,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Optional
 
 from constat.core.models import TaskType
-from constat.session._types import QuestionType, QuestionAnalysis, DetectedIntent, ClarificationQuestion, ClarificationRequest, is_meta_question
 from constat.prompts import load_prompt
+from constat.session._types import QuestionType, QuestionAnalysis, DetectedIntent, ClarificationQuestion, \
+    ClarificationRequest, is_meta_question
 
 logger = logging.getLogger(__name__)
 

@@ -13,10 +13,9 @@ These tools allow the LLM to discover and search reference documents
 on-demand rather than loading everything into the system prompt.
 """
 
+from ._access import _AccessMixin
 from ._core import _CoreMixin
 from ._entities import _EntityMixin
-from ._access import _AccessMixin
-from ._schemas import DOC_TOOL_SCHEMAS
 from ._schema_inference import (
     _is_glob_pattern,
     _expand_file_paths,
@@ -27,6 +26,7 @@ from ._schema_inference import (
     _infer_structured_schema,
     _infer_jsonl_schema,
 )
+from ._schemas import DOC_TOOL_SCHEMAS
 
 
 class DocumentDiscoveryTools(_CoreMixin, _EntityMixin, _AccessMixin):

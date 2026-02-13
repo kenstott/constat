@@ -9,20 +9,16 @@
 """Intents mixin: intent handling, slash commands."""
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Optional
 
+from constat.commands import get_help_markdown
 from constat.core.models import Plan, PlannerResponse, Step, StepType, TaskType
 from constat.execution.mode import (
-    Mode, PlanApproval, PlanApprovalRequest, PlanApprovalResponse,
-    Phase, PrimaryIntent, SubIntent, TurnIntent, ConversationState,
+    PlanApprovalRequest, PlanApprovalResponse,
+    Phase, SubIntent, TurnIntent, ConversationState,
 )
-from constat.commands import get_help_markdown
 from constat.execution.scratchpad import Scratchpad
-from constat.session._types import StepEvent
-from constat.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
 

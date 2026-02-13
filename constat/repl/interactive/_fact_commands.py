@@ -11,8 +11,7 @@
 
 from rich.table import Table
 
-from constat.storage.facts import FactStore
-from constat.storage.learnings import LearningStore, LearningCategory, LearningSource
+from constat.storage.learnings import LearningCategory, LearningSource
 
 
 class _FactCommandsMixin:

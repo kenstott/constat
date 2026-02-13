@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from constat.core.config import Config, DocumentConfig
-from constat.embedding_loader import EmbeddingModelLoader
+from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import (
     DocumentChunk,
     LoadedDocument,
@@ -25,9 +25,7 @@ from constat.discovery.vector_store import (
     VectorStoreBackend,
     create_vector_store,
 )
-from constat.discovery.entity_extractor import EntityExtractor
-
-from ._schema_inference import _expand_file_paths, _infer_structured_schema
+from constat.embedding_loader import EmbeddingModelLoader
 from ._file_extractors import (
     _extract_pdf_text,
     _extract_pdf_text_from_bytes,
@@ -40,6 +38,7 @@ from ._file_extractors import (
     _detect_format,
     _detect_format_from_content_type,
 )
+from ._schema_inference import _expand_file_paths, _infer_structured_schema
 
 logger = logging.getLogger(__name__)
 

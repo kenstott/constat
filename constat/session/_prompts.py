@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from constat.core.models import TaskType
 from constat.session._types import STEP_SYSTEM_PROMPT, STEP_PROMPT_TEMPLATE

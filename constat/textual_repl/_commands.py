@@ -21,11 +21,11 @@ from rich.table import Table
 from rich.text import Text
 
 from constat.execution.mode import Phase
+from constat.textual_repl._messages import ConsolidateComplete, DocumentAddComplete
 from constat.textual_repl._widgets import (
-    OutputLog, StatusBar, SidePanel, SidePanelContent, ProofTreePanel,
+    OutputLog, StatusBar, SidePanel, ProofTreePanel,
     make_file_link_markup,
 )
-from constat.textual_repl._messages import ConsolidateComplete, DocumentAddComplete
 
 if TYPE_CHECKING:
     from constat.textual_repl._app import ConstatREPLApp

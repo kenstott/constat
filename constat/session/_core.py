@@ -16,33 +16,33 @@ import time
 from pathlib import Path
 from typing import Callable, Optional, Any
 
+import constat.llm
+from constat.catalog.api_schema_manager import APISchemaManager
+from constat.catalog.preload_cache import MetadataPreloadCache
+from constat.catalog.schema_manager import SchemaManager
 from constat.core.config import Config
 from constat.core.models import Plan
 from constat.core.resources import SessionResources
+from constat.discovery.concept_detector import ConceptDetector
+from constat.discovery.doc_tools import DocumentDiscoveryTools
+from constat.embedding_loader import EmbeddingModelLoader
+from constat.execution.executor import PythonExecutor
+from constat.execution.fact_resolver import FactResolver
+from constat.execution.intent_classifier import IntentClassifier
+from constat.execution.mode import (
+    Phase, TurnIntent, ConversationState, PrimaryIntent,
+)
+from constat.execution.parallel_scheduler import ExecutionContext
+from constat.execution.planner import Planner
+from constat.execution.scratchpad import Scratchpad
+from constat.providers import TaskRouter
+from constat.session._types import (
+    SessionConfig, StepEvent, ApprovalCallback, ClarificationCallback,
+)
 from constat.storage.history import SessionHistory
 from constat.storage.learnings import LearningStore
 from constat.storage.registry import ConstatRegistry
 from constat.storage.registry_datastore import RegistryAwareDataStore
-from constat.execution.executor import PythonExecutor
-from constat.execution.planner import Planner
-from constat.execution.scratchpad import Scratchpad
-from constat.execution.fact_resolver import FactResolver
-from constat.execution.mode import (
-    Phase, TurnIntent, ConversationState, PrimaryIntent,
-)
-from constat.execution.intent_classifier import IntentClassifier
-from constat.execution.parallel_scheduler import ExecutionContext
-from constat.providers import TaskRouter
-import constat.llm
-from constat.catalog.schema_manager import SchemaManager
-from constat.catalog.api_schema_manager import APISchemaManager
-from constat.catalog.preload_cache import MetadataPreloadCache
-from constat.discovery.doc_tools import DocumentDiscoveryTools
-from constat.discovery.concept_detector import ConceptDetector
-from constat.embedding_loader import EmbeddingModelLoader
-from constat.session._types import (
-    SessionConfig, StepEvent, ApprovalCallback, ClarificationCallback,
-)
 
 logger = logging.getLogger(__name__)
 

@@ -23,13 +23,12 @@ from rich.text import Text
 
 from constat.execution.mode import Phase, PlanApprovalResponse
 from constat.session import ClarificationResponse
-from constat.textual_repl._widgets import (
-    OutputLog, StatusBar, SidePanel, SidePanelContent, ProofTreePanel,
-    markdown_to_rich_markup, linkify_artifact_references,
-)
 from constat.textual_repl._messages import (
     ShowApprovalUI, ShowClarificationUI, SolveComplete, ProveComplete,
     ConsolidateComplete, DocumentAddComplete, SessionEvent,
+)
+from constat.textual_repl._widgets import (
+    OutputLog, StatusBar, SidePanel, SidePanelContent, ProofTreePanel,
 )
 from constat.visualization.output import clear_pending_outputs, get_pending_outputs
 

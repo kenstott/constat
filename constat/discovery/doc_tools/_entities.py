@@ -11,8 +11,8 @@
 
 import logging
 
-from constat.discovery.models import DocumentChunk, ChunkEntity
 from constat.discovery.entity_extractor import EntityExtractor
+from constat.discovery.models import DocumentChunk, ChunkEntity
 
 logger = logging.getLogger(__name__)
 

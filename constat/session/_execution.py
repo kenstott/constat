@@ -11,22 +11,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
-from typing import Optional, Any
 
-from constat.core.models import Plan, PlannerResponse, PostValidation, Step, StepResult, StepStatus, StepType, TaskType, ValidationOnFail
-from constat.execution.executor import format_error_for_retry
-from constat.execution.fact_resolver import FactSource
-from constat.execution.mode import Mode
-from constat.execution import RETRY_PROMPT_TEMPLATE
-from constat.storage.learnings import LearningCategory, LearningSource
+from constat.core.models import PostValidation, Step, StepResult, TaskType, ValidationOnFail
 from constat.email import create_send_email
-from constat.visualization import create_viz_helper
+from constat.execution import RETRY_PROMPT_TEMPLATE
+from constat.execution.executor import format_error_for_retry
 from constat.session._types import StepEvent
-from constat.prompts import load_prompt
+from constat.storage.learnings import LearningCategory, LearningSource
+from constat.visualization import create_viz_helper
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +457,7 @@ class ExecutionMixin:
         Returns:
             StepResult with success/failure info
         """
-        from constat.session._types import STEP_SYSTEM_PROMPT, ClarificationRequest, ClarificationQuestion
+        from constat.session._types import STEP_SYSTEM_PROMPT
 
         start_time = time.time()
         last_code = ""

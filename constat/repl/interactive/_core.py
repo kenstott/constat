@@ -11,7 +11,6 @@
 
 import os
 import sys
-from pathlib import Path
 from typing import Optional
 
 from prompt_toolkit import prompt as pt_prompt
@@ -19,20 +18,18 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
-from rich.panel import Panel
 from rich.rule import Rule
-from rich.syntax import Syntax
 from rich.table import Table
 
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
 from constat.execution.mode import Mode
+from constat.messages import get_vera_adjectives
 from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.session import Session, SessionConfig
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
-from constat.visualization.output import clear_pending_outputs, get_pending_outputs
-from constat.messages import get_vera_adjectives
+from constat.visualization.output import clear_pending_outputs
 
 
 class _CoreMixin:

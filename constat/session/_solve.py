@@ -9,20 +9,14 @@
 """Solve mixin: solve(), resume()."""
 from __future__ import annotations
 
-import concurrent.futures
-import json
 import logging
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
 
-from constat.core.models import Plan, PlannerResponse, StepStatus, TaskType, StepResult
-from constat.execution.mode import Mode, Phase, PlanApproval, PrimaryIntent
+from constat.core.models import PlannerResponse, StepStatus, StepResult
+from constat.execution.mode import PlanApproval, PrimaryIntent
 from constat.execution.scratchpad import Scratchpad
+from constat.session._types import QuestionType, StepEvent, is_meta_question
 from constat.storage.datastore import DataStore
 from constat.storage.registry_datastore import RegistryAwareDataStore
-from constat.session._types import QuestionType, QuestionAnalysis, StepEvent, is_meta_question
-from constat.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,6 @@ from ._types import (
     FactSource,
     ARRAY_ROW_THRESHOLD,
     ARRAY_SIZE_THRESHOLD,
-    FactDependency,
     ProofNode,
     ResolutionSpec,
 )

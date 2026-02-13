@@ -26,6 +26,8 @@ Main classes:
 - Plan/Step: Multi-step execution plan
 """
 
+# LLM primitives
+import constat.llm
 from constat.catalog.api_catalog import APICatalog, OperationType
 # Catalog
 from constat.catalog.schema_manager import SchemaManager, TableMetadata
@@ -59,8 +61,6 @@ from constat.execution.executor import ExecutionResult, PythonExecutor
 # Execution
 from constat.execution.planner import Planner
 from constat.execution.scratchpad import Scratchpad
-# LLM primitives
-import constat.llm
 # Providers
 from constat.providers import (
     BaseLLMProvider,

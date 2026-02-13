@@ -12,11 +12,10 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-
-from constat.server.session_manager import SessionManager
+from fastapi import APIRouter, Depends, Query
 
 from constat.server.routes.data import get_session_manager
+from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 

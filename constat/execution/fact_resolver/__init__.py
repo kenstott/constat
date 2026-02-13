@@ -37,6 +37,17 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ._goals import GoalsMixin
+from ._rate_limiter import (
+    RateLimitError,
+    RateLimitExhaustedError,
+    RateLimiter,
+    RateLimiterConfig,
+    _DEFAULT_EXECUTOR,
+)
+from ._resolution import ResolutionMixin
+from ._session import SessionMixin
+from ._sources import SourcesMixin
 from ._types import (
     AuditContext,
     Fact,
@@ -55,17 +66,6 @@ from ._types import (
     ARRAY_ROW_THRESHOLD,
     ARRAY_SIZE_THRESHOLD,
 )
-from ._rate_limiter import (
-    RateLimitError,
-    RateLimitExhaustedError,
-    RateLimiter,
-    RateLimiterConfig,
-    _DEFAULT_EXECUTOR,
-)
-from ._goals import GoalsMixin
-from ._session import SessionMixin
-from ._sources import SourcesMixin
-from ._resolution import ResolutionMixin
 
 
 class FactResolver(GoalsMixin, SessionMixin, SourcesMixin, ResolutionMixin):

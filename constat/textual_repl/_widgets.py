@@ -19,16 +19,15 @@ from typing import Optional
 
 from rich.console import RenderableType
 from rich.text import Text
-
-from textual.containers import ScrollableContainer
-from textual.widgets import Static, Input, RichLog
-from textual.reactive import reactive
 from textual import events
+from textual.containers import ScrollableContainer
+from textual.reactive import reactive
 from textual.suggester import Suggester
+from textual.widgets import Static, Input, RichLog
 
 from constat.execution.mode import Phase
-from constat.repl.feedback import SPINNER_FRAMES
 from constat.proof_tree import ProofTree
+from constat.repl.feedback import SPINNER_FRAMES
 
 logger = logging.getLogger(__name__)
 

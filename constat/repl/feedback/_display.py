@@ -26,9 +26,9 @@ from constat.execution.mode import (
     PlanApprovalRequest,
     PlanApprovalResponse,
 )
-from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
-from constat.repl.feedback._models import _left_align_markdown, StepDisplay
 from constat.repl.feedback._display_core import FeedbackDisplayCore
+from constat.repl.feedback._models import _left_align_markdown, StepDisplay
+from constat.session import ClarificationRequest, ClarificationResponse, ClarificationQuestion
 
 
 class FeedbackDisplay(FeedbackDisplayCore):

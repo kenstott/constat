@@ -22,9 +22,8 @@ from constat.server.models import (
     TableVersionInfo,
     TableVersionsResponse,
 )
-from constat.server.session_manager import SessionManager
-
 from constat.server.routes.data import get_session_manager, _sanitize_df_for_json
+from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 

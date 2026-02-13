@@ -9,16 +9,16 @@
 
 """Feedback package — live terminal display for session execution."""
 
+from constat.repl.feedback._display import FeedbackDisplay
+from constat.repl.feedback._handler import SessionFeedbackHandler
 from constat.repl.feedback._models import (
     SPINNER_FRAMES,
     PlanItem,
     StepDisplay,
     _left_align_markdown,
 )
-from constat.repl.feedback._status import PersistentStatusBar, StatusLine
 from constat.repl.feedback._plan_display import LivePlanExecutionDisplay
-from constat.repl.feedback._display import FeedbackDisplay
-from constat.repl.feedback._handler import SessionFeedbackHandler
+from constat.repl.feedback._status import PersistentStatusBar, StatusLine
 
 __all__ = [
     "FeedbackDisplay",

@@ -16,19 +16,19 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
-from ._types import (
-    Fact,
-    FactSource,
-    ResolutionStrategy,
-)
+# Import FactResolver at module level - works because __init__.py defines
+# FactResolver before importing this module.
+from . import FactResolver
 from ._rate_limiter import (
     RateLimiter,
     RateLimiterConfig,
     _DEFAULT_EXECUTOR,
 )
-# Import FactResolver at module level - works because __init__.py defines
-# FactResolver before importing this module.
-from . import FactResolver
+from ._types import (
+    Fact,
+    FactSource,
+    ResolutionStrategy,
+)
 
 logger = logging.getLogger(__name__)
 

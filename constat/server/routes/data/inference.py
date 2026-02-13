@@ -15,9 +15,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from constat.server.auth import CurrentUserId
-from constat.server.session_manager import SessionManager
-
 from constat.server.routes.data import get_session_manager
+from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 

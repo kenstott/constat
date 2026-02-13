@@ -18,7 +18,6 @@ from constat.core.config import Config
 from constat.execution.mode import Mode, PlanApprovalRequest, PlanApprovalResponse
 from constat.prompts import load_prompt, load_yaml
 
-
 META_QUESTION_PATTERNS = load_yaml("meta_question_patterns.yaml")["patterns"]
 
 

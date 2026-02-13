@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ._types import (
     Fact,

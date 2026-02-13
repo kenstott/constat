@@ -17,7 +17,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
 
-
 # Shared thread pool for running sync operations in async context
 _DEFAULT_EXECUTOR = ThreadPoolExecutor(max_workers=10)
 

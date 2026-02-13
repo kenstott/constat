@@ -116,3 +116,59 @@ python_functions = ["test_*"]
 markers = [
     "slow: requires LLM API calls or external services (deselect with '-m \"not slow\"')",
 ]
+
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    "build",
+    ".venv",
+    ".idea",
+    ".mypy_cache",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+# Common useful rulesets: pyflakes/pycodestyle (E,F), isort (I), bugbear (B),
+# pyupgrade (UP), annotations (ANN), security (S), flake8-builtins (A),
+# comprehensions (C4), print (T20), pytest (PT), pathlib (PTH), simplify (SIM),
+# unnecessary args (ARG)
+select = [
+    "E", "F", "I", "B", "UP", "ANN", "S", "A", "C4", "T20", "PT", "PTH", "SIM", "ARG"
+]
+# Relax some noisy rules project-wide
+ignore = [
+    "ANN101",  # Missing type annotation for self in method
+    "ANN102",  # Missing type annotation for cls in classmethod
+    "S101",    # Use of assert (allowed in tests)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "ANN"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | build
+  | dist
+  | \.mypy_cache
+  | \.ruff_cache
+)/
+'''
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+show_error_codes = true
+exclude = '^(build|dist|\.venv|tests/fixtures)/'

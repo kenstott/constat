@@ -14,9 +14,9 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Static, OptionList
 from textual.widgets.option_list import Option
-from textual.screen import ModalScreen
 
 
 class RoleSelectorScreen(ModalScreen[str | None]):

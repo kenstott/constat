@@ -12,8 +12,7 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 
 from constat.context import ContextEstimator, ContextCompactor, ContextStats, CompactionResult
 from constat.execution.scratchpad import Scratchpad

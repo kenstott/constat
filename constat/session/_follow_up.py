@@ -13,16 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
-from typing import Optional
 
-from constat.core.models import Plan, PlannerResponse, StepResult, StepStatus, TaskType
-from constat.execution.mode import Mode, Phase
-from constat.execution.fact_resolver import FactSource
-from constat.storage.registry_datastore import RegistryAwareDataStore
-from constat.session._types import QuestionType, StepEvent
+from constat.core.models import StepResult, StepStatus, TaskType
 from constat.prompts import load_prompt
+from constat.session._types import StepEvent
 
 logger = logging.getLogger(__name__)
 
