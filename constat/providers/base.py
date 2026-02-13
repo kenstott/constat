@@ -253,6 +253,7 @@ class BaseLLMProvider(ABC):
         """
         loop = asyncio.get_event_loop()
         exec_pool = executor or _DEFAULT_EXECUTOR
+        # noinspection PyTypeChecker
         return await loop.run_in_executor(
             exec_pool,
             lambda: self.generate(

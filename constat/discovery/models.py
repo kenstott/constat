@@ -370,6 +370,8 @@ class ChunkEntity:
     chunk_id: str
     entity_id: str
     confidence: float = 1.0  # NER confidence
+    mention_count: int = 1
+    mention_text: str = ""
 
 
 @dataclass

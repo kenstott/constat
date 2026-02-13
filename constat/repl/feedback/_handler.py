@@ -330,7 +330,6 @@ class SessionFeedbackHandler:
         elif event_type == "premise_retry":
             # Show retry info inline with the current premise being resolved
             premise_id = data.get("premise_id", "?")
-            premise_name = data.get("premise_name", "?")
             attempt = data.get("attempt", 2)
             max_attempts = data.get("max_attempts", 3)
             error_brief = data.get("error_brief", "")
@@ -354,8 +353,6 @@ class SessionFeedbackHandler:
             fact_name = data.get("fact_name", "?")
             value = data.get("value")
             source = data.get("source", "")
-            step = data.get("step", 0)
-            total = data.get("total", 0)
             confidence = data.get("confidence", 1.0)
             resolution_summary = data.get("resolution_summary")
             query = data.get("query")
@@ -457,15 +454,6 @@ class SessionFeedbackHandler:
             inference_name = data.get("inference_name", "")
             result = data.get("result", "computed")
             output = data.get("output", "")
-            step = data.get("step", 0)
-            total = data.get("total", 0)
-
-            # Build result summary including output if present
-            result_summary = result
-            if output:
-                # Truncate long output
-                output_preview = output[:100] + "..." if len(output) > 100 else output
-                result_summary = f"{result} ({output_preview})"
 
             # Build display label with ID and name (like premises: "I1: recent_reviews")
             display_label = f"{inference_id}: {inference_name}" if inference_name else inference_id
@@ -501,8 +489,6 @@ class SessionFeedbackHandler:
             # Extract just the ID for live plan display
             id_only = fact_name.split(":")[0].strip() if ":" in fact_name else inference_id
             error = data.get("error", "unknown error")
-            step = data.get("step", 0)
-            total = data.get("total", 0)
 
             # Update live plan display if active
             if self.display._live_plan_display:
@@ -529,7 +515,6 @@ class SessionFeedbackHandler:
             name = data.get("name", "?")
             row_count = data.get("row_count", 0)
             threshold = data.get("threshold", 0)
-            data_type = data.get("type", "data")
             self.display.console.print(
                 f"  [yellow]Warning:[/yellow] {name} has {row_count:,} rows "
                 f"(threshold: {threshold:,})"

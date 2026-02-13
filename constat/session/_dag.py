@@ -91,10 +91,10 @@ class DagMixin:
         self,
         node: "FactNode",
         dag: "ExecutionDAG",
-        problem: str,
+        _problem: str,
         detailed_schema: str,
         premises: list[dict],
-        inferences: list[dict],
+        _inferences: list[dict],
         resolved_premises: dict,
         resolved_inferences: dict,
         inference_names: dict,
@@ -903,8 +903,11 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                                         f'COUNT("{_c}") as cnt, COUNT(*) as total '
                                         f'FROM "{table_name}"'
                                     )
+                                    # noinspection PyTypeChecker
                                     _mn, _mx = _stats.iloc[0]['mn'], _stats.iloc[0]['mx']
+                                    # noinspection PyTypeChecker
                                     _cnt = int(_stats.iloc[0]['cnt'])
+                                    # noinspection PyTypeChecker
                                     _tot = int(_stats.iloc[0]['total'])
                                     if isinstance(_mn, (int, float)) and isinstance(_mx, (int, float)):
                                         if _mn == _mx:
@@ -1065,6 +1068,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             confidence = 0.65 if used_llm else 0.9
             source = FactSource.LLM_KNOWLEDGE if used_llm else FactSource.DERIVED
 
+            # noinspection PyTypeChecker
             self.fact_resolver.add_user_fact(
                 fact_name=inf_name,
                 value=result_value,
@@ -1086,7 +1090,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 return scripts[0]
         return None
 
-    def _ensure_session_datastore(self, problem: str) -> None:
+    def _ensure_session_datastore(self, _problem: str) -> None:
         """Create history session_id and datastore if not yet initialized."""
         # session_id may be a server UUID (not a valid history directory) — check filesystem
         needs_history = not self.session_id
@@ -1116,7 +1120,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             )
             self.fact_resolver._datastore = self.datastore
 
-    def _execute_skill_script(self, script_path: Path, problem: str) -> dict | None:
+    def _execute_skill_script(self, script_path: Path, _problem: str) -> dict | None:
         """Execute a skill script directly, bypassing planning.
 
         Looks for a callable entry point (run_proof, run, main) in the script.
@@ -1305,7 +1309,9 @@ YOUR JSON RESPONSE:"""
                     f"SUM(CASE WHEN \"{col_name}\" IS NULL OR CAST(\"{col_name}\" AS VARCHAR) = '' THEN 1 ELSE 0 END) as null_count "
                     f"FROM {table_name}"
                 )
+                # noinspection PyTypeChecker
                 distinct = int(stats.iloc[0]['distinct_count'])
+                # noinspection PyTypeChecker
                 null_count = int(stats.iloc[0]['null_count'])
             except Exception:
                 distinct = 0

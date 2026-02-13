@@ -54,6 +54,7 @@ def _sanitize_df_for_json(df: pd.DataFrame) -> list[dict[str, Any]]:
 
     Handles NaN, NaT, numpy types, ndarray columns that break Pydantic JSON serialization.
     """
+    # noinspection PyTypeChecker
     df = df.where(df.notna(), None)
     records = df.to_dict(orient="records")
     for row in records:

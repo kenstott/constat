@@ -172,13 +172,13 @@ def create_send_email(
     """
     if config is None:
         def send_email_stub(
-            to: str,
-            subject: str,
-            body: str,
-            format: Literal["plain", "markdown", "html"] = "plain",
-            html: bool = False,
-            df: Optional[pd.DataFrame] = None,
-            attachment_name: str = "data.csv",
+            _to: str,
+            _subject: str,
+            _body: str,
+            _fmt: Literal["plain", "markdown", "html"] = "plain",
+            _html: bool = False,
+            _df: Optional[pd.DataFrame] = None,
+            _attachment_name: str = "data.csv",
             allow_sensitive: bool = False,
         ) -> bool:
             """Email not configured. Add email config to your constat.yaml."""
@@ -207,8 +207,8 @@ def create_send_email(
         to: str,
         subject: str,
         body: str,
-        format: Literal["plain", "markdown", "html"] = "plain",
-        html: bool = False,  # Deprecated, use format="html" instead
+        fmt: Literal["plain", "markdown", "html"] = "plain",
+        html: bool = False,  # Deprecated, use fmt="html" instead
         df: Optional[pd.DataFrame] = None,
         attachment_name: str = "data.csv",
         allow_sensitive: bool = False,
@@ -220,11 +220,11 @@ def create_send_email(
             to: Recipient email address (can be comma-separated for multiple)
             subject: Email subject line
             body: Email body text (plain text, Markdown, or HTML)
-            format: Body format - "plain" (default), "markdown", or "html"
+            fmt: Body format - "plain" (default), "markdown", or "html"
                 - "plain": Send as plain text
                 - "markdown": Convert Markdown to styled HTML
                 - "html": Send body as raw HTML
-            html: DEPRECATED - use format="html" instead
+            html: DEPRECATED - use fmt="html" instead
             df: Optional DataFrame to attach as CSV
             attachment_name: Filename for the DataFrame attachment
             allow_sensitive: If True, bypasses sensitivity check.
@@ -260,7 +260,7 @@ def create_send_email(
 1. Review pending orders
 2. Update forecasts
 \"\"\",
-                format="markdown",
+                fmt="markdown",
             )
         """
         # Check if current context involves sensitive data
@@ -289,10 +289,10 @@ def create_send_email(
         send_as_html = html  # Support deprecated html parameter
         final_body = body
 
-        if format == "markdown":
+        if fmt == "markdown":
             final_body = markdown_to_html(body)
             send_as_html = True
-        elif format == "html":
+        elif fmt == "html":
             send_as_html = True
 
         return sender.send(

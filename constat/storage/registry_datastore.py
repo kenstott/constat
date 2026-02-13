@@ -161,6 +161,7 @@ class RegistryAwareDataStore:
             is_published: Whether explicitly published for artifacts panel
             role_id: Role that created this table (provenance)
         """
+        _ = step_number  # accepted for API compatibility
         if df.empty or len(df.columns) == 0:
             return
 

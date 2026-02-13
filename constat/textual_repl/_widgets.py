@@ -220,7 +220,7 @@ def linkify_artifact_references(
         escaped_name = re.escape(table_name)
         bare_pattern = rf'\b({escaped_name})\b'
 
-        def replace_bare_name(match, tname=table_name, _rc=table.get('row_count')):
+        def replace_bare_name(_match, tname=table_name, _rc=table.get('row_count')):
             return make_artifact_link_markup(tname, "table", _rc)
 
         result = re.sub(bare_pattern, replace_bare_name, result)
@@ -657,6 +657,7 @@ class SidePanelContent(RichLog):
             except Exception:
                 pass
 
+    # noinspection PyMethodOverriding
     def stop_animation(self) -> None:
         """Stop the spinner animation."""
         if self._is_animating:

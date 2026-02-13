@@ -166,7 +166,7 @@ class TextualFeedbackHandler:
 
         elif event_type in ("proof_tree_start", "proof_start"):
             logger.debug(f"Handling proof_start event: {data}")
-            conclusion_fact = data.get("conclusion_fact", "")
+            _conclusion_fact = data.get("conclusion_fact", "")
             conclusion_desc = data.get("conclusion_description", "")
             status_bar.start_timer()
             status_bar.update_status(status_message="Resolving proof tree...", phase=Phase.EXECUTING)
@@ -308,7 +308,7 @@ class TextualFeedbackHandler:
 
         elif event_type == "sql_executing":
             fact_name = data.get("fact_name", "")
-            db = data.get("database", "")
+            _db = data.get("database", "")
             attempt = data.get("attempt", 1)
             max_attempts = data.get("max_attempts", 7)
 
@@ -447,7 +447,7 @@ class TextualFeedbackHandler:
             will_retry = data.get("will_retry", False)
 
             if will_retry:
-                next_attempt = data.get("next_attempt", attempt + 1)
+                _next_attempt = data.get("next_attempt", attempt + 1)
                 status_bar.update_status(
                     status_message=f"Step {step_num}: {error_type} on attempt {attempt}/{max_attempts}, retrying..."
                 )

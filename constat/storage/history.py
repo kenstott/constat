@@ -531,7 +531,7 @@ class SessionHistory:
                                 answer=q.get("answer"),
                                 error=q.get("error"),
                             ))
-                        except (json.JSONDecodeError, KeyError) as e:
+                        except (json.JSONDecodeError, KeyError):
                             # Skip corrupt query records
                             continue
 

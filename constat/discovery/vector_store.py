@@ -50,6 +50,8 @@ class VectorStoreBackend(ABC):
         chunks: list[DocumentChunk],
         embeddings: np.ndarray,
         source: str = "document",
+        session_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Add document chunks with their embeddings to the store.
 
@@ -57,6 +59,8 @@ class VectorStoreBackend(ABC):
             chunks: List of DocumentChunk objects to store
             embeddings: numpy array of shape (n_chunks, embedding_dim)
             source: Resource type - 'schema', 'api', or 'document'
+            session_id: Optional session ID for session-scoped chunks
+            project_id: Optional project ID for project-scoped chunks
         """
         pass
 
@@ -722,7 +726,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
 
         # Clear embeddings
-        result = self._conn.execute(
+        self._conn.execute(
             "DELETE FROM embeddings WHERE project_id = ?",
             [project_id]
         )
@@ -1261,7 +1265,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return enriched
 
-    def clear_entities(self, source: Optional[str] = None) -> None:
+    def clear_entities(self, _source: Optional[str] = None) -> None:
         """Clear all entities and chunk-entity links.
 
         DEPRECATED: Use clear_session_entities(session_id) for session-scoped cleanup.

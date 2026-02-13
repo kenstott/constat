@@ -109,7 +109,7 @@ class SourcesMixin:
 
         return None
 
-    def _resolve_from_config(self: "FactResolver", fact_name: str, params: dict) -> Optional[Fact]:
+    def _resolve_from_config(self: "FactResolver", _fact_name: str, _params: dict) -> Optional[Fact]:
         """Check if fact is defined in config/system prompt."""
         if not self.config:
             return None
@@ -126,7 +126,7 @@ class SourcesMixin:
 
         try:
             return rule(self, params)
-        except Exception as e:
+        except Exception:
             # Rule failed - log but don't crash
             return None
 
@@ -1146,6 +1146,7 @@ Original request:
                 # Execute the derive function
                 self._resolution_depth += 1
                 try:
+                    # noinspection PyTypeChecker
                     result = derive_func(self, params)
                     # Emit event: sub-plan expansion completed
                     if result and result.is_resolved:
@@ -1433,7 +1434,7 @@ Original request:
 
         return False
 
-    def _store_value_as_table(self: "FactResolver", fact_name: str, value: list, source_name: str = None) -> tuple[str, int]:
+    def _store_value_as_table(self: "FactResolver", fact_name: str, value: list, _source_name: str = None) -> tuple[str, int]:
         """
         Store a list value as a table in the datastore.
 

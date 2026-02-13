@@ -639,11 +639,13 @@ class ConstatRegistry:
 
         if title is not None:
             updates.append("title = ?")
+            # noinspection PyTypeChecker
             params.append(title)
 
+        # noinspection PyTypeChecker
         params.extend([user_id, session_id, name])
 
-        result = conn.execute(f"""
+        conn.execute(f"""
             UPDATE constat_tables
             SET {", ".join(updates)}
             WHERE user_id = ? AND session_id = ? AND name = ?
@@ -683,8 +685,10 @@ class ConstatRegistry:
 
         if title is not None:
             updates.append("title = ?")
+            # noinspection PyTypeChecker
             params.append(title)
 
+        # noinspection PyTypeChecker
         params.extend([user_id, session_id, name])
 
         conn.execute(f"""
@@ -762,7 +766,7 @@ class ConstatRegistry:
 
             if base_name and base_name != new_name:
                 # Unpublish the base table if it exists and is published
-                result = conn.execute("""
+                conn.execute("""
                     UPDATE constat_tables
                     SET is_published = FALSE
                     WHERE user_id = ? AND session_id = ? AND name = ?
@@ -955,6 +959,7 @@ class ConstatRegistry:
             params.append(user_id)
 
         sql += " ORDER BY created_at DESC LIMIT ?"
+        # noinspection PyTypeChecker
         params.append(limit)
 
         rows = conn.execute(sql, params).fetchall()
@@ -1004,6 +1009,7 @@ class ConstatRegistry:
             params.append(user_id)
 
         sql += " ORDER BY created_at DESC LIMIT ?"
+        # noinspection PyTypeChecker
         params.append(limit)
 
         rows = conn.execute(sql, params).fetchall()

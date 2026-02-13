@@ -303,7 +303,7 @@ class IntentsMixin:
         # Default: general answer using doc search + LLM fallback (KNOWLEDGE mode logic)
         return self._handle_general_query(user_input)
 
-    def _handle_provenance_query(self, target: Optional[str], user_input: str) -> dict:
+    def _handle_provenance_query(self, target: Optional[str], _user_input: str) -> dict:
         """Handle provenance/proof chain query."""
         # Check if we have resolved facts with provenance
         all_facts = self.fact_resolver.get_all_facts()
@@ -345,7 +345,7 @@ class IntentsMixin:
             "meta_response": True,
         }
 
-    def _handle_detail_query(self, target: Optional[str], user_input: str) -> dict:
+    def _handle_detail_query(self, _target: Optional[str], user_input: str) -> dict:
         """Handle detail/drill-down query."""
         # If we have a datastore with results, try to get details from there
         if self.datastore:
@@ -463,7 +463,7 @@ Provide a brief, high-level summary of the key findings."""
             "meta_response": True,
         }
 
-    def _handle_lookup_query(self, target: Optional[str], user_input: str) -> dict:
+    def _handle_lookup_query(self, _target: Optional[str], user_input: str) -> dict:
         """Handle simple fact lookup query.
 
         Checks all available sources: cached facts, APIs, databases, and documents.
@@ -589,9 +589,6 @@ Provide a brief, high-level summary of the key findings."""
             # No previous context - treat as a new plan
             return self._handle_plan_new_intent(turn_intent, user_input)
 
-        # Build enhanced problem with user's modification context (verbatim like clarifications)
-        enhanced_problem = f"{previous_problem}\n\nPlan Adjustments:\n{user_input}"
-
         # Delegate to existing follow_up() method which handles replanning
         result = self.follow_up(user_input, auto_classify=False)
 
@@ -627,7 +624,6 @@ Provide a brief, high-level summary of the key findings."""
             Result dict with output, success, and control signals.
         """
         sub_intent = turn_intent.sub
-        target = turn_intent.target
 
         # RESET: clear session state
         if sub_intent == SubIntent.RESET:
@@ -693,6 +689,7 @@ Provide a brief, high-level summary of the key findings."""
         cmd, args = parse_command(command_text)
 
         # Execute via registry
+        # noinspection PyTypeChecker
         result = execute_command(self, cmd, args)
 
         # Convert CommandResult to dict format expected by solve()
@@ -799,7 +796,6 @@ Provide a brief, high-level summary of the key findings."""
         self.scratchpad = Scratchpad()
 
         # Clear session_id to indicate fresh start
-        old_session_id = self.session_id
         self.session_id = None
         self.datastore = None
 
@@ -918,7 +914,7 @@ Provide a brief, high-level summary of the key findings."""
             "cancelled": True,
         }
 
-    def _handle_replan(self, user_input: str) -> dict:
+    def _handle_replan(self, _user_input: str) -> dict:
         """Handle replan control command - stop and revise the plan.
 
         Uses the Phase 4 cancel_execution() method to stop execution

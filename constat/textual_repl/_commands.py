@@ -753,7 +753,7 @@ class CommandsMixin:
 
             for s in sessions:
                 short_id = s.session_id[:20]
-                status_style = "green" if s.status == "completed" else "yellow" if s.status == "active" else "dim"
+                _status_style = "green" if s.status == "completed" else "yellow" if s.status == "active" else "dim"
 
                 log.write(Text(f"  {short_id}", style="cyan bold"))
 
@@ -970,15 +970,12 @@ class CommandsMixin:
             session_facts = self.session.fact_resolver.get_all_facts()
 
             matching_fact = None
-            matching_key = None
             for key, fact in session_facts.items():
                 if key == fact_name or key == f"{fact_name}()":
                     matching_fact = fact
-                    matching_key = key
                     break
                 if hasattr(fact, 'name') and fact.name == fact_name:
                     matching_fact = fact
-                    matching_key = key
                     break
 
             if matching_fact:

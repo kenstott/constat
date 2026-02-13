@@ -187,6 +187,7 @@ class OperationMetadata:
         }
         # Include response schema if available (for interpreting API results)
         if self.response_schema:
+            # noinspection PyTypeChecker
             result["response_schema"] = self.response_schema
         return result
 
@@ -829,16 +830,16 @@ def introspect_openapi_spec(
 
     # Get base URL
     if base_url:
-        api_base_url = base_url
+        _api_base_url = base_url
     elif is_openapi3:
         servers = spec.get("servers", [])
-        api_base_url = servers[0]["url"] if servers else ""
+        _api_base_url = servers[0]["url"] if servers else ""
     else:
         # Swagger 2.0
         host = spec.get("host", "")
         base_path = spec.get("basePath", "")
         schemes = spec.get("schemes", ["https"])
-        api_base_url = f"{schemes[0]}://{host}{base_path}"
+        _api_base_url = f"{schemes[0]}://{host}{base_path}"
 
     catalog = APICatalog()
     operations = []
@@ -1062,7 +1063,7 @@ def _openapi_type_to_string(schema: dict) -> str:
     return type_map.get(schema_type, schema_type)
 
 
-def _generate_openapi_tags(method: str, path: str, operation_id: str) -> list[str]:
+def _generate_openapi_tags(method: str, path: str, _operation_id: str) -> list[str]:
     """Generate tags for an OpenAPI operation."""
     tags = []
 

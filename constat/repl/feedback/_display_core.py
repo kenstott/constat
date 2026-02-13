@@ -198,7 +198,7 @@ class FeedbackDisplayCore:
     def update_status_line(self, phase: Phase = None,
                            plan_name: str = None, step_current: int = None,
                            step_total: int = None, step_description: str = None,
-                           error_message: str = None) -> None:
+                           error_message: str = None, mode=None) -> None:
         """Update the status line/bar with new values."""
         self._status_bar.update(
             phase=phase,
@@ -468,7 +468,7 @@ class FeedbackDisplayCore:
             # ~10 FPS for smooth animation
             time.sleep(0.1)
 
-    def _render_spinner_with_status(self, message: str) -> RenderableType:
+    def _render_spinner_with_status(self, _message: str) -> RenderableType:
         """Render just the status bar (spinner is now inside the status bar)."""
         # The spinner and message are now shown inside _build_status_bar_line()
         return self._build_status_bar_line()
@@ -705,8 +705,6 @@ class FeedbackDisplayCore:
 
         # Steps as checklist
         for step in self.plan_steps:
-            display_num = self._step_number_map.get(step.number, step.number)
-
             if step.status == "pending":
                 marker = "[dim]☐[/dim]"
                 goal_style = "dim"
@@ -769,7 +767,6 @@ class FeedbackDisplayCore:
             # Show summary
             summary = self._proof_tree.get_summary()
             resolved = summary["resolved"] + summary["cached"]
-            total = summary["total"]
             pending = summary["pending"]
             failed = summary["failed"]
 

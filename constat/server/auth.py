@@ -88,6 +88,7 @@ async def get_current_user_id(
     try:
         # Verify the Firebase ID token
         # This validates the token signature, expiration, and audience
+        # noinspection PyTypeChecker
         decoded_token = id_token.verify_firebase_token(
             credentials.credentials,
             google_requests.Request(),

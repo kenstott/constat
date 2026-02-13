@@ -159,7 +159,7 @@ class PythonExecutor:
         stderr_capture = io.StringIO()
 
         # Prevent exit()/quit() from killing the server
-        def _blocked_exit(*args, **kwargs):
+        def _blocked_exit(*_args, **_kwargs):
             raise RuntimeError("exit() is not allowed in generated code")
         exec_globals["exit"] = _blocked_exit
         exec_globals["quit"] = _blocked_exit
@@ -176,7 +176,7 @@ class PythonExecutor:
                 namespace=exec_globals,  # Return namespace for auto-saving
             )
 
-        except SystemExit as e:
+        except SystemExit:
             # LLM generated code that calls exit() - treat as error, don't crash server
             return ExecutionResult(
                 success=False,
@@ -237,7 +237,7 @@ def format_error_for_retry(result: ExecutionResult, code: str) -> str:
     return "\n".join(parts)
 
 
-def _get_prescriptive_fix(error_text: str, code: str) -> str:
+def _get_prescriptive_fix(error_text: str, _code: str) -> str:
     """Return specific fix instructions for common errors."""
     error_lower = error_text.lower()
 

@@ -237,7 +237,7 @@ class ConstatAPIImpl:
 
         # Get pre-compaction stats
         estimator = ContextEstimator(self._session.datastore)
-        pre_stats = estimator.estimate()
+        _pre_stats = estimator.estimate()
 
         # Run compaction
         compactor = ContextCompactor(self._session.datastore, self._session.llm)

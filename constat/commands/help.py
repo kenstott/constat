@@ -10,12 +10,14 @@ from constat.prompts import load_yaml
 # Help content loaded from YAML for i18n support
 _help = load_yaml("help_strings.yaml")
 
+# noinspection PyTypeChecker
 HELP_COMMANDS: list[tuple[str, str, str]] = [tuple(cmd) for cmd in _help["help_commands"]]
+# noinspection PyTypeChecker
 KEYBOARD_SHORTCUTS: list[tuple[str, str]] = [tuple(s) for s in _help["keyboard_shortcuts"]]
 HELP_TIPS: list[str] = _help["help_tips"]
 
 
-def help_command(ctx: CommandContext) -> HelpResult:
+def help_command(_ctx: CommandContext) -> HelpResult:
     """Return help information."""
     return HelpResult(
         success=True,

@@ -143,7 +143,7 @@ def files_command(ctx: CommandContext) -> ListResult:
     )
 
 
-def discover_command(ctx: CommandContext) -> TableResult:
+def discover_command(ctx: CommandContext) -> TableResult | ErrorResult:
     """Unified semantic search across all data sources (databases, APIs, documents).
 
     Usage:

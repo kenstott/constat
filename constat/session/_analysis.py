@@ -97,7 +97,7 @@ class AnalysisMixin:
 
         return None
 
-    def _quick_table_display(self, table_name: str) -> dict:
+    def _quick_table_display(self, table_name: str) -> dict | None:
         """Display a table quickly without going through planning.
 
         Args:
@@ -139,7 +139,7 @@ class AnalysisMixin:
                     "Ask a question about this data",
                 ],
             }
-        except Exception as e:
+        except Exception:
             # If table query fails, return None to fall through to normal processing
             return None
 

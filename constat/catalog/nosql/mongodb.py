@@ -220,7 +220,7 @@ class MongoDBConnector(NoSQLConnector):
             return [str(result.inserted_id)]
         else:
             result = coll.insert_many(documents)
-            return [str(id) for id in result.inserted_ids]
+            return [str(doc_id) for doc_id in result.inserted_ids]
 
     def update(
         self,

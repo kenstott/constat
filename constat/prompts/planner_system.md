@@ -17,7 +17,7 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 - Database connections (`db_<name>`), API clients (`api_<name>`)
 - `duckdb` for SQL queries on any data (DataFrames, JSON, Parquet)
 - `pd` (pandas), `np` (numpy), `store` for persisting data between steps
-- `llm_ask(question)` for general knowledge, `send_email(to, subject, body, format="markdown", df=None)` for emails (use format="markdown" for styled HTML)
+- `llm_ask(question)` for general knowledge, `send_email(to, subject, body, fmt="markdown", df=None)` for emails (use fmt="markdown" for styled HTML)
 - `doc_read(name)` to load reference document content at runtime, `llm_extract(texts, fields, context)` to parse structured rules from it
 
 ## Data Source Selection

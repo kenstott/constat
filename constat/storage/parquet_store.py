@@ -151,6 +151,7 @@ class ParquetDataStore:
             step_number: Which step created this table
             description: Human-readable description
         """
+        _ = step_number  # accepted for API compatibility
         if df.empty or len(df.columns) == 0:
             return
 

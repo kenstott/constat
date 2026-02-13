@@ -339,6 +339,7 @@ class DatabaseConfig(BaseModel):
 
         # Reconstruct URI
         new_parsed = parsed._replace(netloc=new_netloc)
+        # noinspection PyTypeChecker
         return urllib.parse.urlunparse(new_parsed)
 
     def is_nosql(self) -> bool:

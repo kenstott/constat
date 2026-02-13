@@ -51,8 +51,6 @@ async def list_step_codes(
     """
     # Try to get the session from memory first
     managed = session_manager.get_session_or_none(session_id)
-    history = None
-    history_session_id = None
 
     if managed:
         history = managed.session.history
@@ -92,8 +90,6 @@ async def list_inference_codes(
 ) -> dict[str, Any]:
     """List all inference codes for a session (auditable mode)."""
     managed = session_manager.get_session_or_none(session_id)
-    history = None
-    history_session_id = None
 
     if managed:
         history = managed.session.history
@@ -384,8 +380,6 @@ async def download_inference_code(
     from fastapi.responses import Response
 
     managed = session_manager.get_session_or_none(session_id)
-    history = None
-    history_session_id = None
 
     if managed:
         history = managed.session.history

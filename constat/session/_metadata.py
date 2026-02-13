@@ -147,7 +147,9 @@ class MetadataMixin:
 
         # Add API schema tools if APIs are configured
         if self.config.apis:
+            # noinspection PyTypeChecker
             handlers["get_api_schema_overview"] = self._get_api_schema_overview
+            # noinspection PyTypeChecker
             handlers["get_api_query_schema"] = self._get_api_query_schema
             handlers["find_relevant_apis"] = self._cached_find_relevant_apis
 

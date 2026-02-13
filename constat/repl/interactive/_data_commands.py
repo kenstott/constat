@@ -48,6 +48,7 @@ class _DataCommandsMixin:
 
             self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
             for t in tables:
+                # noinspection PyTypeChecker
                 self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{self._role_suffix(t)}")
                 file_path = Path(t.file_path)
                 if file_path.exists():
@@ -137,6 +138,7 @@ class _DataCommandsMixin:
                     has_artifacts = True
                     self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
                     for t in tables:
+                        # noinspection PyTypeChecker
                         self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{self._role_suffix(t)}")
                         if t.description:
                             self.console.print(f"    {t.description}")
@@ -154,6 +156,7 @@ class _DataCommandsMixin:
                         if file_path.exists():
                             file_uri = file_path.resolve().as_uri()
                             size_str = f"{a.size_bytes / 1024:.0f}KB" if a.size_bytes else ""
+                            # noinspection PyTypeChecker
                             self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]{self._role_suffix(a)}")
                             if a.description:
                                 self.console.print(f"    {a.description}")

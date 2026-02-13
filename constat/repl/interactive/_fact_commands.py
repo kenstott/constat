@@ -155,7 +155,6 @@ class _FactCommandsMixin:
 
         self.display.start_spinner("Extracting fact...")
         try:
-            extracted = []
             if self.api.session:
                 extracted = self.api.session.fact_resolver.add_user_facts_from_text(fact_text)
             else:

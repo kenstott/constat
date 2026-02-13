@@ -654,6 +654,7 @@ async def preview_database_table(
             df = pd.read_sql(query, db_connection)
             count_query = f'SELECT COUNT(*) as cnt FROM "{table_name}"'
             count_df = pd.read_sql(count_query, db_connection)
+            # noinspection PyTypeChecker
             total_rows = int(count_df.iloc[0]["cnt"])
 
         # Convert to response format
@@ -742,7 +743,6 @@ async def add_api(
     )
 
     # Introspect API and build chunks/embeddings for semantic search
-    endpoint_count = 0
     if managed.session.api_schema_manager:
         from constat.core.config import APIConfig
         api_config = APIConfig(
@@ -753,7 +753,6 @@ async def add_api(
         if body.auth_type and body.auth_header:
             api_config.headers = {body.auth_header: ""}  # Placeholder, actual token set at request time
         managed.session.api_schema_manager.add_api_dynamic(body.name, api_config)
-        endpoint_count = sum(1 for k, m in managed.session.api_schema_manager.metadata_cache.items() if m.api_name == body.name)
 
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)

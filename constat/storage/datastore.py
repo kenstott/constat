@@ -1028,7 +1028,7 @@ class DataStore:
         self,
         name: str,
         artifact_type: Union[ArtifactType, str],
-        content: str,
+        content: Union[str, bytes],
         step_number: int = 0,
         attempt: int = 1,
         title: Optional[str] = None,
@@ -1194,7 +1194,7 @@ class DataStore:
     def save_image(
         self,
         name: str,
-        image_data: str,
+        image_data: Union[str, bytes],
         image_format: str = "png",
         step_number: int = 0,
         title: Optional[str] = None,
@@ -1263,6 +1263,7 @@ class DataStore:
             ).fetchone()
 
         if result:
+            # noinspection PyTypeChecker
             return self._row_to_artifact(result)
         return None
 
@@ -1288,6 +1289,7 @@ class DataStore:
             ).fetchone()
 
         if result:
+            # noinspection PyTypeChecker
             return self._row_to_artifact(result)
         return None
 
@@ -1358,6 +1360,7 @@ class DataStore:
         with self.engine.connect() as conn:
             rows = conn.execute(text(query), params).fetchall()
 
+        # noinspection PyTypeChecker
         return [self._row_to_artifact(row) for row in rows]
 
     def list_artifacts(self, include_content: bool = False) -> list[dict]:
@@ -1387,6 +1390,7 @@ class DataStore:
                     ORDER BY step_number, attempt, id
                 """)).fetchall()
 
+            # noinspection PyTypeChecker
             return [self._row_to_artifact(row).to_dict() for row in rows]
         else:
             with self.engine.connect() as conn:

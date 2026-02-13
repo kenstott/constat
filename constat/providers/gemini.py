@@ -113,6 +113,7 @@ class GeminiProvider(BaseLLMProvider):
         chat = model_instance.start_chat(history=[])
 
         # Send initial message
+        # noinspection PyTypeChecker
         kwargs = {"content": user_message}
         if gemini_tools:
             kwargs["tools"] = gemini_tools

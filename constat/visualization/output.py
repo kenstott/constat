@@ -508,7 +508,7 @@ class VisualizationHelper:
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
-    def _convert_docx_to_html_fallback(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+    def _convert_docx_to_html_fallback(self, content: bytes, title: str, _file_uri: str, filename: str) -> str:
         """Fallback DOCX to HTML using python-docx for text extraction."""
         from io import BytesIO
         try:
@@ -542,7 +542,7 @@ class VisualizationHelper:
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
-    def _convert_pdf_to_html(self, content: bytes, title: str, file_uri: str, filename: str) -> str:
+    def _convert_pdf_to_html(self, content: bytes, title: str, _file_uri: str, filename: str) -> str:
         """Convert PDF to HTML with embedded viewer using PDF.js."""
         import base64
         # Base64 encode PDF for embedding
@@ -733,7 +733,7 @@ a:hover {{ text-decoration: underline; }}
         name: str,
         figure: Any,
         title: Optional[str] = None,
-        description: Optional[str] = None,
+        _description: Optional[str] = None,
         chart_type: str = "plotly",
     ) -> Path:
         """Save a Plotly or Altair chart to file and artifact store.
@@ -742,7 +742,7 @@ a:hover {{ text-decoration: underline; }}
             name: Name for the chart (used in filename and artifact)
             figure: Plotly Figure or Altair Chart object
             title: Human-readable title for the artifact
-            description: Description of the chart
+            _description: Description of the chart (unused, kept for API compat)
             chart_type: Type of chart ("plotly" or "altair")
 
         Returns:
@@ -754,7 +754,7 @@ a:hover {{ text-decoration: underline; }}
         if chart_type == "plotly" or hasattr(figure, "write_html"):
             # Plotly figure
             figure.write_html(str(filepath), include_plotlyjs=True, full_html=True)
-            html_content = filepath.read_text(encoding="utf-8")
+            _html_content = filepath.read_text(encoding="utf-8")
 
             # Also save chart spec as artifact
             if self.datastore:
@@ -774,7 +774,7 @@ a:hover {{ text-decoration: underline; }}
         elif chart_type == "altair" or hasattr(figure, "save"):
             # Altair chart
             figure.save(str(filepath))
-            html_content = filepath.read_text(encoding="utf-8")
+            _html_content = filepath.read_text(encoding="utf-8")
 
             # Also save chart spec as artifact
             if self.datastore:
@@ -803,47 +803,47 @@ a:hover {{ text-decoration: underline; }}
         self,
         name: str,
         figure: Any,
-        format: str = "png",
+        fmt: str = "png",
         title: Optional[str] = None,
-        description: Optional[str] = None,
+        _description: Optional[str] = None,
     ) -> Path:
         """Save a matplotlib figure or image to file.
 
         Args:
             name: Name for the image
             figure: Matplotlib figure or image data
-            format: Image format (png, svg, jpg)
+            fmt: Image format (png, svg, jpg)
             title: Human-readable title
-            description: Description of the image
+            _description: Description of the image (unused, kept for API compat)
 
         Returns:
             Path to the saved image file
         """
-        filepath = self._generate_filename(name, format)
+        filepath = self._generate_filename(name, fmt)
 
         # Handle matplotlib figures
         if hasattr(figure, "savefig"):
-            figure.savefig(str(filepath), format=format, bbox_inches="tight", dpi=150)
+            figure.savefig(str(filepath), format=fmt, bbox_inches="tight", dpi=150)
         else:
             # Assume raw bytes
             filepath.write_bytes(figure)
 
         # Register as artifact if datastore available
-        if self.datastore and format in ("png", "svg", "jpg", "jpeg"):
+        if self.datastore and fmt in ("png", "svg", "jpg", "jpeg"):
             try:
                 image_data = filepath.read_bytes()
                 from constat.core.models import ArtifactType
-                artifact_type = {
+                _artifact_type = {
                     "png": ArtifactType.PNG,
                     "svg": ArtifactType.SVG,
                     "jpg": ArtifactType.JPEG,
                     "jpeg": ArtifactType.JPEG,
-                }.get(format, ArtifactType.PNG)
+                }.get(fmt, ArtifactType.PNG)
 
                 self.datastore.save_image(
                     name=name,
                     image_data=image_data,
-                    image_format=format,
+                    image_format=fmt,
                     step_number=self.step_number,
                     title=title or name,
                 )

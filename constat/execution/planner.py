@@ -315,6 +315,7 @@ class Planner:
 
         # Add document discovery tools if available
         if self.doc_tools:
+            # noinspection PyTypeChecker
             handlers["list_documents"] = self.doc_tools.list_documents
             handlers["search_documents"] = lambda query, limit=5: self.doc_tools.search_documents(query, limit)
             handlers["get_document"] = lambda name: self.doc_tools.get_document(name)
@@ -323,7 +324,9 @@ class Planner:
         if self.config.apis:
             from constat.catalog.api_executor import APIExecutor
             api_executor = APIExecutor(self.config)
+            # noinspection PyTypeChecker
             handlers["get_api_schema_overview"] = lambda api_name: api_executor.get_schema_overview(api_name)
+            # noinspection PyTypeChecker
             handlers["get_api_query_schema"] = lambda api_name, query_name: api_executor.get_query_schema(api_name, query_name)
 
             # Add semantic search for APIs if api_schema_manager is available

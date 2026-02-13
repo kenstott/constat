@@ -52,7 +52,7 @@ class ExecutionMixin:
             return self._resolve_llm_knowledge(question)
         return llm_ask
 
-    def _handle_llm_call_event(self, event) -> None:
+    def _handle_llm_call_event(self, _event) -> None:
         """Callback from constat.llm primitives — flags LLM knowledge usage."""
         self._inference_used_llm_map = True
 
@@ -112,7 +112,7 @@ class ExecutionMixin:
         Published artifacts appear in the artifacts panel (consequential outputs).
         Unpublished artifacts are still accessible via inline links and /artifacts.
         """
-        def publish(name: str, title: str = None, description: str = None) -> bool:
+        def publish(name: str, title: str = None, _description: str = None) -> bool:
             """
             Mark an artifact as published for the artifacts panel.
 
@@ -804,7 +804,7 @@ class ExecutionMixin:
         request = ClarificationRequest(
             original_question=step.goal,
             ambiguity_reason=f"Post-validation failed: {validation.description}",
-            questions=[ClarificationQuestion(question=question)],
+            questions=[ClarificationQuestion(text=question)],
         )
 
         self._emit_event(StepEvent(
@@ -1052,7 +1052,7 @@ Return ONLY the JSON array."""
             logger.debug(f"Correction capture failed (non-fatal): {e}")
 
     def _generate_failure_suggestions(
-        self, step: "Step", error: str, code: str
+        self, step: "Step", error: str, _code: str
     ) -> list["FailureSuggestion"]:
         """Generate suggestions for alternative approaches when a step fails.
 

@@ -92,6 +92,7 @@ class MonitorTrigger:
     def from_dict(cls, data: dict) -> MonitorTrigger:
         """Create a MonitorTrigger from a dictionary."""
         return cls(
+            # noinspection PyTypeChecker
             type=data.get("type", "schedule_only"),
             fact_name=data.get("fact_name"),
             operator=data.get("operator"),
@@ -223,6 +224,7 @@ class MonitorRun:
             monitor_id=data["monitor_id"],
             started_at=data["started_at"],
             completed_at=data.get("completed_at"),
+            # noinspection PyTypeChecker
             status=data.get("status", "running"),
             result_snapshot=data.get("result_snapshot", {}),
             triggered=data.get("triggered", False),

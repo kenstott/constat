@@ -614,7 +614,7 @@ class APISchemaManager:
 
         return fields
 
-    def _extract_rest_return_type(self, operation: dict, schemas: dict) -> Optional[str]:
+    def _extract_rest_return_type(self, operation: dict, _schemas: dict) -> Optional[str]:
         """Extract the return type signature from a REST response schema."""
         responses = operation.get("responses", {})
 

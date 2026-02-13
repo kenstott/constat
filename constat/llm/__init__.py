@@ -70,6 +70,7 @@ class _DirectProvider:
         if self.provider == "anthropic":
             import anthropic
             client = anthropic.Anthropic(api_key=self.api_key)
+            # noinspection PyTypeChecker
             resp = client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
@@ -81,6 +82,7 @@ class _DirectProvider:
         if self.provider == "openai":
             import openai
             client = openai.OpenAI(api_key=self.api_key)
+            # noinspection PyTypeChecker
             resp = client.chat.completions.create(
                 model=self.model,
                 max_tokens=max_tokens,
@@ -109,6 +111,7 @@ class _DirectProvider:
         if self.provider in base_urls:
             import openai
             client = openai.OpenAI(api_key=self.api_key, base_url=base_urls[self.provider])
+            # noinspection PyTypeChecker
             resp = client.chat.completions.create(
                 model=self.model,
                 max_tokens=max_tokens,
@@ -199,7 +202,7 @@ def _execute(system: str, user_message: str) -> tuple[str, str, str]:
     # BaseLLMProvider fallback
     result = backend.generate(
         system=system,
-        messages=[{"role": "user", "content": user_message}],
+        user_message=user_message,
     )
     return (
         result.content.strip(),
@@ -396,6 +399,7 @@ YOUR JSON RESPONSE:"""
 
     # Single-text convenience: return dict directly instead of list[dict]
     if len(texts) == 1:
+        # noinspection PyTypeChecker
         return results[0]
 
     return results

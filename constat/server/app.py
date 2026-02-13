@@ -406,7 +406,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     session_manager = SessionManager(config, server_config)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(_app: FastAPI):
         """Manage application lifecycle."""
         try:
             # Startup: Pre-load embedding model (blocking - we need it for vectorization)
@@ -488,7 +488,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         )
 
     @app.exception_handler(RuntimeError)
-    async def runtime_error_handler(request, exc: RuntimeError) -> JSONResponse:
+    async def runtime_error_handler(_request, exc: RuntimeError) -> JSONResponse:
         """Handle RuntimeError (limit exceeded, etc.)."""
         return JSONResponse(
             status_code=400,
@@ -496,7 +496,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         )
 
     @app.exception_handler(ValueError)
-    async def value_error_handler(request, exc: ValueError) -> JSONResponse:
+    async def value_error_handler(_request, exc: ValueError) -> JSONResponse:
         """Handle ValueError (invalid input, etc.)."""
         return JSONResponse(
             status_code=400,

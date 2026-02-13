@@ -201,7 +201,7 @@ class ParallelStepScheduler:
                 # Process results
                 for i, result in enumerate(results):
                     step_num = wave_steps[i]
-                    step = plan.get_step(step_num)
+                    _step = plan.get_step(step_num)
 
                     if isinstance(result, Exception):
                         # Step raised an exception
@@ -264,6 +264,7 @@ class ParallelStepScheduler:
             try:
                 # Apply timeout
                 loop = asyncio.get_event_loop()
+                # noinspection PyTypeChecker
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
                         self._executor,
@@ -301,7 +302,7 @@ class ParallelStepScheduler:
             SchedulerResult with execution details
         """
         try:
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
         except RuntimeError:
             # No running loop - safe to use asyncio.run()
             return asyncio.run(self.execute_plan(plan, initial_namespace))

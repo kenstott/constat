@@ -148,7 +148,6 @@ class _CoreMixin:
 
         # Get document names that already have chunks in the vector store
         try:
-            indexed_docs = set()
             result = self._vector_store._conn.execute("""
                 SELECT DISTINCT document_name
                 FROM embeddings

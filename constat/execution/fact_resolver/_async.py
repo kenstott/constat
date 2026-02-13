@@ -126,6 +126,7 @@ class AsyncFactResolver(FactResolver):
                 )
             else:
                 loop = asyncio.get_event_loop()
+                # noinspection PyTypeChecker
                 return await loop.run_in_executor(
                     self._executor,
                     lambda: self.llm.generate(
@@ -305,7 +306,7 @@ class AsyncFactResolver(FactResolver):
         source: FactSource,
         fact_name: str,
         params: dict,
-        cache_key: str,
+        _cache_key: str,
     ) -> Optional[Fact]:
         """Async version of _try_resolve for I/O-bound sources."""
         if source == FactSource.DATABASE:
@@ -325,6 +326,7 @@ class AsyncFactResolver(FactResolver):
     ) -> Optional[Fact]:
         """Async document resolution - runs sync method in executor."""
         loop = asyncio.get_event_loop()
+        # noinspection PyTypeChecker
         return await loop.run_in_executor(
             self._executor,
             lambda: self._resolve_from_document(fact_name, params)
@@ -355,6 +357,7 @@ class AsyncFactResolver(FactResolver):
             loop = asyncio.get_event_loop()
             # Run the sync rule function in the thread pool executor
             # This allows multiple rules to execute truly in parallel
+            # noinspection PyTypeChecker
             result = await loop.run_in_executor(
                 self._executor,
                 lambda: rule(self, params)
@@ -448,6 +451,7 @@ NOT_POSSIBLE: <reason>
 
                     # Run SQL in executor (blocking I/O)
                     loop = asyncio.get_event_loop()
+                    # noinspection PyTypeChecker
                     result = await loop.run_in_executor(
                         self._executor,
                         lambda: pd.read_sql(sql, conn)
@@ -646,6 +650,7 @@ Generate the derivation function for {fact_name}:
                 try:
                     # Run sync derive function in executor
                     loop = asyncio.get_event_loop()
+                    # noinspection PyTypeChecker
                     result = await loop.run_in_executor(
                         self._executor,
                         lambda: derive_func(self, params)
@@ -704,13 +709,14 @@ Generate the derivation function for {fact_name}:
             ]
 
             # Results will be out of order as they complete
-            results = [None] * len(fact_requests)
+            results: list[Fact | None] = [None] * len(fact_requests)
             for coro in asyncio.as_completed(tasks):
                 idx, fact = await coro
                 results[idx] = fact
                 # Call callback as each fact completes
                 on_resolve(idx, fact)
 
+            # noinspection PyTypeChecker
             return results
 
     def resolve_many_sync(
@@ -735,7 +741,7 @@ Generate the derivation function for {fact_name}:
         """
         try:
             # Check if we're already in an async context
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
         except RuntimeError:
             # No running loop - we're in sync context, safe to use asyncio.run()
             return asyncio.run(self.resolve_many_async(fact_requests, on_resolve))

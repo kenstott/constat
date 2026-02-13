@@ -50,8 +50,6 @@ async def download_code(
 
     # Try to get the session from memory first
     managed = session_manager.get_session_or_none(session_id)
-    history = None
-    history_session_id = None
 
     if managed:
         history = managed.session.history
@@ -403,10 +401,10 @@ async def download_code(
             '            raise ValueError(f"Unknown figure type: {type(figure)}")',
             '        return self._save_and_print(filepath, title or name)',
             '',
-            '    def save_image(self, name: str, figure: any, format: str = "png", title: str = None, description: str = None) -> Path:',
+            '    def save_image(self, name: str, figure: any, fmt: str = "png", title: str = None, description: str = None) -> Path:',
             '        """Save a matplotlib figure as image."""',
-            '        filepath = self.output_dir / f"{name}.{format}"',
-            '        figure.savefig(str(filepath), format=format)',
+            '        filepath = self.output_dir / f"{name}.{fmt}"',
+            '        figure.savefig(str(filepath), format=fmt)',
             '        return self._save_and_print(filepath, title or name)',
             '',
             '    def save_map(self, name: str, folium_map: any, title: str = None, description: str = None) -> Path:',

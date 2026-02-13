@@ -290,13 +290,12 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                     question = enhanced_question
                     # Re-analyze with clarified question
                     logger.debug("[follow_up] Question clarified, re-analyzing...")
-                    analysis = self._analyze_question(question, previous_problem=previous_problem)
+                    _analysis = self._analyze_question(question, previous_problem=previous_problem)
 
         # All follow-ups use exploratory mode (planning + execution)
         # Use /prove command to generate auditable proofs when needed
         # Check for unresolved facts and try to extract facts from user message
         unresolved = self.fact_resolver.get_unresolved_facts()
-        extracted_facts = []
 
         if auto_classify and (unresolved or "=" in question or any(c.isdigit() for c in question)):
             # Try to extract facts from the message
@@ -307,7 +306,6 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 self.fact_resolver.clear_unresolved()
 
         # Get context from previous work
-        existing_tables = self.datastore.list_tables()
         existing_state = self.datastore.get_all_state()
         scratchpad_context = self.datastore.get_scratchpad_as_markdown()
 
@@ -855,7 +853,7 @@ If you don't have enough information, say so rather than guessing."""
             }
 
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
+            _duration_ms = int((time.time() - start_time) * 1000)
 
             self._emit_event(StepEvent(
                 event_type="knowledge_error",

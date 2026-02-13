@@ -274,6 +274,7 @@ def _render_help_rich(result: HelpResult) -> Any:
     # Shortcuts table if present
     if result.shortcuts:
         from rich.text import Text
+        # noinspection PyTypeChecker
         tables.append(Text(""))
 
         shortcut_table = Table(title="Keyboard Shortcuts", show_header=True, box=None)

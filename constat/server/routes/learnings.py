@@ -57,7 +57,7 @@ _learnings: list[dict[str, Any]] = []
 async def list_learnings(
     user_id: CurrentUserId,
     category: str | None = None,
-    config: Config = Depends(get_config),
+    _config: Config = Depends(get_config),
 ) -> LearningListResponse:
     """Get all captured learnings for the authenticated user.
 
@@ -134,7 +134,7 @@ async def list_learnings(
 async def add_learning(
     body: LearningCreateRequest,
     user_id: CurrentUserId,
-    config: Config = Depends(get_config),
+    _config: Config = Depends(get_config),
 ) -> LearningInfo:
     """Add a new learning for the authenticated user.
 
@@ -189,7 +189,7 @@ async def add_learning(
 async def delete_learning(
     learning_id: str,
     user_id: CurrentUserId,
-    config: Config = Depends(get_config),
+    _config: Config = Depends(get_config),
 ) -> dict:
     """Delete a learning for the authenticated user.
 
@@ -461,7 +461,7 @@ async def update_project_content(
 async def add_rule(
     body: RuleCreateRequest,
     user_id: CurrentUserId,
-    config: Config = Depends(get_config),
+    _config: Config = Depends(get_config),
 ) -> RuleInfo:
     """Add a new rule directly.
 
@@ -510,7 +510,7 @@ async def update_rule(
     rule_id: str,
     body: RuleUpdateRequest,
     user_id: CurrentUserId,
-    config: Config = Depends(get_config),
+    _config: Config = Depends(get_config),
 ) -> RuleInfo:
     """Update an existing rule.
 
@@ -571,7 +571,7 @@ async def update_rule(
 async def delete_rule(
     rule_id: str,
     user_id: CurrentUserId,
-    config: Config = Depends(get_config),
+    _config: Config = Depends(get_config),
 ) -> dict:
     """Delete a rule.
 

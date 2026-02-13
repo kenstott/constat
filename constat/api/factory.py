@@ -92,6 +92,7 @@ def create_api(
     fact_store.load_into_session(session)
 
     # Create and return API implementation
+    # noinspection PyTypeChecker
     return ConstatAPIImpl(
         session=session,
         fact_store=fact_store,

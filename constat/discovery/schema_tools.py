@@ -333,6 +333,7 @@ class SchemaDiscoveryTools:
                 pass  # Don't fail if doc search fails
 
         # Add summary counts
+        # noinspection PyTypeChecker
         results["summary"] = {
             "tables_found": sum(1 for s in results["schema"] if s["type"] == "table"),
             "columns_found": sum(1 for s in results["schema"] if s["type"] == "column"),
@@ -422,6 +423,7 @@ class SchemaDiscoveryTools:
                 pass  # Continue even if doc search fails
 
         # Add summary
+        # noinspection PyTypeChecker
         results["summary"] = {
             "tables_found": len(results["tables"]),
             "apis_found": len(results["apis"]),

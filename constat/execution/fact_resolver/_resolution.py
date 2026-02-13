@@ -315,7 +315,7 @@ class ResolutionMixin:
         self: "FactResolver",
         fact_name: str,
         fact_description: str,
-        params: dict,
+        _params: dict,
     ) -> Optional[Tier2AssessmentResult]:
         """
         Tier 2: LLM assessment of best resolution strategy.
@@ -422,7 +422,7 @@ class ResolutionMixin:
 
     def _execute_derivation(
         self: "FactResolver",
-        fact_name: str,
+        _fact_name: str,
         params: dict,
         cache_key: str,
         assessment: Tier2AssessmentResult,

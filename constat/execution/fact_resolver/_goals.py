@@ -162,7 +162,7 @@ Use uppercase for Variables that need binding, lowercase for constants.
         rule_deps = self._parse_rules(rules)
 
         # Resolve sub-goals in dependency order
-        resolved_subgoals = self._resolve_subgoals(
+        self._resolve_subgoals(
             goal_pred, goal_args, rule_deps, sources, bindings, resolved_facts, unresolved
         )
 
@@ -264,7 +264,6 @@ Use uppercase for Variables that need binding, lowercase for constants.
 
         # Resolve each subgoal
         # First, identify which can be resolved in parallel (no shared unbound vars)
-        independent = []
         dependent = []
 
         for subgoal in subgoals:

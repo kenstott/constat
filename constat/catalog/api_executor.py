@@ -60,7 +60,7 @@ class APIExecutionError(Exception):
         self.retry_hint = retry_hint
 
 
-def classify_http_error(status_code: int, response_body: str = "") -> tuple[bool, str]:
+def classify_http_error(status_code: int, _response_body: str = "") -> tuple[bool, str]:
     """
     Classify HTTP error by status code to determine retry strategy.
 
@@ -418,6 +418,7 @@ class APIExecutor:
             for http_method, operation_def in path_item.items():
                 if http_method in ("get", "post", "put", "patch", "delete"):
                     if operation_def.get("operationId") == operation:
+                        # noinspection PyTypeChecker
                         return path, method or http_method.upper()
 
         raise APIExecutionError(

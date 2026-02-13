@@ -1155,7 +1155,6 @@ If the original question had multiple goals or sub-questions, note whether all w
                 self.datastore.set_session_meta("resolved_facts", json.dumps(cached_facts))
 
             # Generate and save Data Flow Diagram (DFD) as published artifact
-            dfd_text = ""
             try:
                 from constat.visualization.box_dag import generate_proof_dfd
                 dfd_text = generate_proof_dfd(proof_steps, max_width=80, max_name_len=10)
@@ -1238,7 +1237,7 @@ If the original question had multiple goals or sub-questions, note whether all w
             }
 
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
+            _duration_ms = int((time.time() - start_time) * 1000)
 
             self._emit_event(StepEvent(
                 event_type="verification_error",

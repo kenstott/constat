@@ -306,6 +306,7 @@ class Fact:
         elif self.source == FactSource.CONFIG:
             return "from configuration"
         else:
+            # noinspection PyTypeChecker
             return self.source.value
 
     @property

@@ -442,6 +442,7 @@ async def set_active_projects(
     managed = session_manager.get_session(session_id)
     project_filenames = body.get("projects", [])
 
+    # noinspection PyTypeChecker
     if not isinstance(project_filenames, list):
         project_filenames = [project_filenames] if project_filenames else []
 
@@ -689,7 +690,6 @@ async def get_prompt_context(
 
     # Get active role
     active_role = None
-    role_prompt = ""
     if hasattr(session, "role_manager"):
         role_name = session.role_manager.active_role_name
         if role_name:
@@ -698,7 +698,6 @@ async def get_prompt_context(
                 "name": role_name,
                 "prompt": role.prompt if role else "",
             }
-            role_prompt = role.prompt if role else ""
 
     # Get active skills
     active_skills = []

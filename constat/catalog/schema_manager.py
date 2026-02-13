@@ -497,13 +497,15 @@ class SchemaManager:
 
         elif db_type == "elasticsearch":
             from constat.catalog.nosql.elasticsearch import ElasticsearchConnector
+            basic_auth = None
+            if db_config.username and db_config.password:
+                basic_auth = (db_config.username, db_config.password)
             return ElasticsearchConnector(
                 hosts=db_config.hosts or ["http://localhost:9200"],
                 name=db_name,
                 description=db_config.description,
                 api_key=db_config.api_key,
-                username=db_config.username,
-                password=db_config.password,
+                basic_auth=basic_auth,
                 sample_size=db_config.sample_size,
             )
 
@@ -527,7 +529,6 @@ class SchemaManager:
                 endpoint=db_config.endpoint or "",
                 key=db_config.key or "",
                 database=db_config.database or db_name,
-                container=db_config.container or "",
                 name=db_name,
                 description=db_config.description,
                 sample_size=db_config.sample_size,
@@ -537,7 +538,6 @@ class SchemaManager:
             from constat.catalog.nosql.firestore import FirestoreConnector
             return FirestoreConnector(
                 project=db_config.project or "",
-                collection=db_config.collection or "",
                 name=db_name,
                 description=db_config.description,
                 credentials_path=db_config.credentials_path,
@@ -589,7 +589,7 @@ class SchemaManager:
             table_meta = self._convert_file_metadata(db_name, connector, file_meta)
             self.metadata_cache[table_meta.full_name] = table_meta
 
-    def _convert_nosql_metadata(self, db_name: str, connector: NoSQLConnector, collection_meta) -> TableMetadata:
+    def _convert_nosql_metadata(self, db_name: str, _connector: NoSQLConnector, collection_meta) -> TableMetadata:
         """Convert NoSQL CollectionMetadata to TableMetadata for unified handling."""
         # collection_meta is already the schema from get_collection_schema()
 
@@ -624,7 +624,7 @@ class SchemaManager:
             database_type=db_type,
         )
 
-    def _convert_file_metadata(self, db_name: str, connector: FileConnector, file_meta) -> TableMetadata:
+    def _convert_file_metadata(self, db_name: str, _connector: FileConnector, file_meta) -> TableMetadata:
         """Convert FileMetadata to TableMetadata for unified handling."""
         # Convert columns
         columns = []
@@ -1190,7 +1190,7 @@ class SchemaManager:
             by_db.setdefault(table_meta.database, []).append(table_meta)
 
         for db_name, tables in sorted(by_db.items()):
-            total_rows = sum(t.row_count for t in tables)
+            _total_rows = sum(t.row_count for t in tables)
 
             # Include database description and connection variable
             desc = f" — {db_descriptions[db_name]}" if db_name in db_descriptions else ""
@@ -1383,6 +1383,7 @@ class SchemaManager:
             if doc_tools:
                 doc_context = doc_tools.explore_entity(table_meta.name, limit=doc_limit)
                 if doc_context:
+                    # noinspection PyTypeChecker
                     result["documentation"] = [
                         {
                             "document": d["document"],

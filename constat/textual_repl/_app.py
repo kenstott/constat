@@ -417,7 +417,7 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
         input_widget.value = ""
 
         log = self.query_one("#output-log", OutputLog)
-        status_bar = self.query_one("#status-bar", StatusBar)
+        _status_bar = self.query_one("#status-bar", StatusBar)
 
         logger.debug(f"Input received: '{user_input}', awaiting_approval={self._awaiting_approval}, awaiting_clarification={self._awaiting_clarification}")
 

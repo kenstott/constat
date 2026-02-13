@@ -135,13 +135,13 @@ class ResourcesMixin:
                     # Read file content based on type
                     if path.suffix.lower() == '.pdf':
                         from pypdf import PdfReader
-                        reader = PdfReader(path)
+                        reader = PdfReader(str(path))
                         content = "\n\n".join(
                             page.extract_text() for page in reader.pages if page.extract_text()
                         )
                     elif path.suffix.lower() == '.docx':
                         from docx import Document
-                        doc = Document(path)
+                        doc = Document(str(path))
                         content = "\n\n".join(para.text for para in doc.paragraphs if para.text)
                     elif path.suffix.lower() == '.pptx':
                         from pptx import Presentation
@@ -530,7 +530,6 @@ class ResourcesMixin:
                 logger.info(f"Skill '{match.skill.name}' specifies agent/role: {skill_specified_role}")
 
         if skill_matches:
-            skill_names = [m.skill.name for m in skill_matches]
             similarities = [f"{m.skill.name}({m.similarity:.2f})" for m in skill_matches]
             logger.info(f"[CONTEXT] Selected skills: {similarities}")
         else:

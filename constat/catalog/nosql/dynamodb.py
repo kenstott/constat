@@ -276,7 +276,7 @@ class DynamoDBConnector(NoSQLConnector):
 
         # Build key condition expression
         key_condition = None
-        filter_expression = None
+        _filter_expression = None
 
         for key, value in query.items():
             if isinstance(value, dict):

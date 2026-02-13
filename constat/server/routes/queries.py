@@ -417,6 +417,7 @@ async def _execute_query_async(
 
     try:
         # Run the synchronous solve() in thread pool
+        # noinspection PyTypeChecker
         result = await loop.run_in_executor(
             _executor,
             lambda: _run_query(managed, problem, loop, is_followup)

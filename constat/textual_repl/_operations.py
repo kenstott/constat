@@ -44,7 +44,7 @@ class OperationsMixin:
 
     async def _solve(self: "ConstatREPLApp", problem: str) -> None:
         """Solve a problem - starts worker thread, result comes via message."""
-        log = self.query_one("#output-log", OutputLog)
+        _log = self.query_one("#output-log", OutputLog)
         status_bar = self.query_one("#status-bar", StatusBar)
 
         clear_pending_outputs()
@@ -131,7 +131,7 @@ class OperationsMixin:
                 return
 
             success = result.get("success", False)
-            confidence = result.get("confidence", 0.0)
+            _confidence = result.get("confidence", 0.0)
 
             if success:
                 log.write(Rule("[bold green]PROOF RESULT[/bold green]", align="left"))
@@ -222,13 +222,11 @@ class OperationsMixin:
 
         table_file_paths = {}
         published_table_names = set()
-        all_table_count = 0
         try:
             from constat.storage.registry import ConstatRegistry
             registry = ConstatRegistry()
 
             all_tables = registry.list_tables(user_id=self.user_id, session_id=self.session.session_id)
-            all_table_count = len(all_tables)
             for t in all_tables:
                 file_path = Path(t.file_path)
                 if file_path.exists():
@@ -495,12 +493,12 @@ class OperationsMixin:
         else:
             log.write(Text(f"  {message.message}", style="red"))
 
-    def on_show_approval_ui(self: "ConstatREPLApp", message: ShowApprovalUI) -> None:
+    def on_show_approval_ui(self: "ConstatREPLApp", _message: ShowApprovalUI) -> None:
         """Handle ShowApprovalUI message - runs on main thread."""
         logger.debug("on_show_approval_ui message handler called")
         self._show_approval_ui()
 
-    def on_show_clarification_ui(self: "ConstatREPLApp", message: ShowClarificationUI) -> None:
+    def on_show_clarification_ui(self: "ConstatREPLApp", _message: ShowClarificationUI) -> None:
         """Handle ShowClarificationUI message - runs on main thread."""
         logger.debug("on_show_clarification_ui message handler called")
         self._show_clarification_ui()

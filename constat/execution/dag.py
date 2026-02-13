@@ -620,7 +620,7 @@ class DAGExecutor:
     def __init__(
         self,
         dag: ExecutionDAG,
-        node_executor: Callable[[FactNode], tuple[Any, float]],
+        node_executor: Callable[[FactNode], tuple[Any, ...]],
         max_workers: int = 10,
         event_callback: Optional[Callable] = None,
         fail_fast: bool = True,
@@ -803,7 +803,7 @@ class DAGExecutor:
             cancelled=cancelled,
         )
 
-    def _execute_node(self, node: FactNode) -> tuple[Any, float]:
+    def _execute_node(self, node: FactNode) -> tuple[Any, ...]:
         """Execute a single node using the configured executor.
 
         Args:

@@ -336,7 +336,7 @@ class CompactDAG:
         return '\n'.join(output)
 
 
-def render_dag(graph: nx.DiGraph, style: str = 'single',
+def render_dag(graph: nx.DiGraph, _style: str = 'single',
                snake: bool = True, max_width: int = 80) -> str:
     """Render a DAG compactly. Linear chains snake horizontally at max_width.
 

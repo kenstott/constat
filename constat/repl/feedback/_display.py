@@ -382,7 +382,7 @@ class FeedbackDisplay(FeedbackDisplayCore):
         self._ensure_live()
         self._update_live()
 
-    def step_executing(self, step_number: int, attempt: int, code: Optional[str] = None) -> None:
+    def step_executing(self, step_number: int, _attempt: int, code: Optional[str] = None) -> None:
         """Show code execution in progress."""
         step = self._get_step(step_number)
         if step:
@@ -520,7 +520,7 @@ class FeedbackDisplay(FeedbackDisplayCore):
         self.console.print()
         self.console.print("[dim]Enter a number to try that approach, or type your own suggestion[/dim]")
 
-    def show_summary(self, success: bool, total_steps: int, duration_ms: int) -> None:
+    def show_summary(self, success: bool, total_steps: int, _duration_ms: int) -> None:
         """Show final execution summary."""
         # Stop the Live display before printing summary
         self.stop()

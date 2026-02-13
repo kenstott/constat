@@ -315,7 +315,7 @@ async def create_skill_from_proof(
 
     # Create the skill directory and SKILL.md
     try:
-        skill = session.skill_manager.create_skill(
+        _skill = session.skill_manager.create_skill(
             name=skill_request.name,
             prompt="",
             description=description,

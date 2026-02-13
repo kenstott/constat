@@ -92,7 +92,7 @@ def get_session_manager(request: Request) -> SessionManager:
 
 @router.get("/roles")
 async def list_roles(
-    request: Request,
+    _request: Request,
     session_id: str,
     user_id: CurrentUserId,
     session_manager: SessionManager = Depends(get_session_manager),
