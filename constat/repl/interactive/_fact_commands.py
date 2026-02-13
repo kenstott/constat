@@ -75,8 +75,9 @@ class _FactCommandsMixin:
                 if not facts_df.empty:
                     self.api.session.datastore.save_dataframe("_facts", facts_df)
                     self.console.print("[dim]Facts synced to _facts table (queryable via SQL)[/dim]")
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug("Failed to sync facts to datastore: %s", e)
 
     def _remember_fact(self, fact_text: str) -> None:
         """Remember a fact persistently (survives across sessions).

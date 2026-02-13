@@ -114,8 +114,9 @@ class _CoreMixin:
         try:
             plans = Session.list_saved_plans(user_id=self.user_id)
             context["plans"] = [p["name"] for p in plans]
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Failed to list plans for suggestions: %s", e)
 
         return context
 
@@ -183,15 +184,17 @@ class _CoreMixin:
                 tables = self.api.session.datastore.list_tables()
                 for t in tables:
                     words.append(t["name"])
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug("Failed to list tables for completer: %s", e)
 
         try:
             plans = Session.list_saved_plans(user_id=self.user_id)
             for p in plans:
                 words.append(p["name"])
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Failed to list plans for completer: %s", e)
 
         return WordCompleter(words, ignore_case=True)
 

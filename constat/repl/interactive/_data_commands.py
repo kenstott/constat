@@ -43,7 +43,9 @@ class _DataCommandsMixin:
                     file_uri = file_path.resolve().as_uri()
                     self.console.print(f"    {file_uri}")
 
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Registry unavailable for tables, falling back to datastore: %s", e)
             if not self.api.session.datastore:
                 self.console.print("[yellow]No active session.[/yellow]")
                 return
@@ -92,7 +94,7 @@ class _DataCommandsMixin:
                     self.console.print(f"[dim]Available: {', '.join(table_names) or '(none)'}[/dim]")
                     return
 
-                df = self.api.session.datastore.query(f"SELECT * FROM {table_name}")
+                df = self.api.session.datastore.query(f'SELECT * FROM "{table_name}"')
 
             output_path = Path(filename).resolve()
             if ext == ".csv":
@@ -153,7 +155,9 @@ class _DataCommandsMixin:
 
             registry.close()
 
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Registry unavailable for artifacts, falling back to datastore: %s", e)
             if self.api.session.datastore:
                 tables = self.api.session.datastore.list_tables()
                 if tables:
