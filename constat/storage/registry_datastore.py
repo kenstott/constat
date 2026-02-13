@@ -264,6 +264,7 @@ class RegistryAwareDataStore:
         """Get all versions of a table, newest first."""
         versions = []
         conn = self._get_duckdb()
+        version_num = 0
 
         # Current version (highest number)
         parquet_path = self._parquet_path(name)

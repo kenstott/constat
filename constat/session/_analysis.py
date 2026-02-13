@@ -222,6 +222,9 @@ CRITICAL INTENT RULES (apply in order):
             followup_context=followup_context,
         )
 
+        import logging
+        _intent_logger = logging.getLogger(__name__)
+
         try:
             result = self.router.execute(
                 task_type=TaskType.INTENT_CLASSIFICATION,
@@ -231,10 +234,6 @@ CRITICAL INTENT RULES (apply in order):
             )
 
             response = result.content.strip()
-
-            # Debug logging for intent classification
-            import logging
-            _intent_logger = logging.getLogger(__name__)
             _intent_logger.debug(f"[INTENT CLASSIFICATION] Raw LLM response:\n{response}")
 
             # Parse response

@@ -273,6 +273,7 @@ class SolveMixin:
         current_problem = problem
         display_problem = problem  # What to show in UI (just feedback on replan)
         replan_attempt = 0
+        planner_response = None
 
         while replan_attempt <= self.session_config.max_replan_attempts:
             # Use speculative plan if available (from parallel execution), otherwise generate new plan

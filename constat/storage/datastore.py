@@ -1059,6 +1059,8 @@ class DataStore:
         if isinstance(artifact_type, str):
             try:
                 artifact_type = ArtifactType(artifact_type)
+                type_str = artifact_type.value
+                content_type = ARTIFACT_MIME_TYPES.get(artifact_type)
             except ValueError:
                 type_str = artifact_type
                 content_type = None

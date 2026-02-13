@@ -15,6 +15,8 @@ import sys
 # Suppress macOS MallocStackLogging warnings from DuckDB/multiprocessing
 # These are written directly to stderr by native code, so we suppress at fd level
 # during imports, then restore stderr for normal operation
+_original_stderr_fd = -1
+_devnull = -1
 if sys.platform == "darwin":
     _original_stderr_fd = os.dup(2)
     _devnull = os.open(os.devnull, os.O_WRONLY)

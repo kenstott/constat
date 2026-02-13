@@ -359,6 +359,7 @@ class ResolutionMixin:
 
         logger.debug(f"[TIER2] Assessment prompt:\n{prompt}")
 
+        response = ""
         try:
             response = self.llm.generate(
                 system="You assess fact resolution strategies. Respond only with valid JSON.",

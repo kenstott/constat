@@ -766,6 +766,8 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             if inference_learnings:
                 inference_prompt += f"\n\nLEARNINGS FROM PREVIOUS ERRORS:\n{inference_learnings}"
 
+            import io
+
             max_retries = 7
             last_error = None
             code = None
@@ -773,6 +775,9 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             first_code = None
             _val_passed = []  # True assertions (structural + user-specified)
             _val_profile = []  # Data profile stats for human review
+            attempt = 0
+            exec_globals: dict = {}
+            captured = io.StringIO()
 
             for attempt in range(max_retries):
                 prompt = inference_prompt
@@ -800,7 +805,6 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
                 node.code = code
 
-                import io
                 import sys
                 import numpy as np
 
