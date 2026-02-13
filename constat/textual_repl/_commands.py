@@ -1038,7 +1038,7 @@ class CommandsMixin:
     async def _handle_correct(self: "ConstatREPLApp", correction: str) -> None:
         """Handle /correct command - record user correction."""
         log = self.query_one("#output-log", OutputLog)
-        from constat.learning.store import LearningCategory, LearningSource
+        from constat.storage.learnings import LearningCategory, LearningSource
 
         if not correction.strip():
             log.write(Text("Usage: /correct <correction>", style="yellow"))

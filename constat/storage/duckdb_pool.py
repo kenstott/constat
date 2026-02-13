@@ -52,8 +52,8 @@ class DuckDBConnectionPool:
     are reused within the same thread for efficiency.
 
     Attributes:
-        db_path: Path to the DuckDB database file
-        read_only: Whether connections should be read-only
+        _db_path: Path to the DuckDB database file
+        _read_only: Whether connections should be read-only
     """
 
     def __init__(
