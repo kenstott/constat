@@ -121,6 +121,10 @@ class RateLimiter:
 
                     await asyncio.sleep(total_delay)
 
+            raise RateLimitExhaustedError(
+                f"Rate limit exceeded after {self.config.max_retries} retries"
+            )
+
     @property
     def stats(self) -> dict:
         """Get rate limiter statistics."""

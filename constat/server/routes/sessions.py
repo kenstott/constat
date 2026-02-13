@@ -303,7 +303,9 @@ async def list_sessions(
     When auth is disabled, can optionally filter by user ID.
 
     Args:
+        current_user_id: Authenticated user ID
         user_id: Optional user ID filter (only used when auth disabled)
+        session_manager: Injected session manager
 
     Returns:
         List of sessions, newest first
@@ -367,6 +369,7 @@ async def get_session(
 
     Args:
         session_id: Session ID to retrieve
+        session_manager: Injected session manager
 
     Returns:
         Session details
@@ -389,6 +392,7 @@ async def delete_session(
 
     Args:
         session_id: Session ID to delete
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation
@@ -425,6 +429,8 @@ async def set_active_projects(
     Args:
         session_id: Session ID
         body: Dict with 'projects' list of filenames (or empty to clear)
+        user_id: Authenticated user ID
+        session_manager: Injected session manager
 
     Returns:
         Updated session info with any conflicts detected
@@ -505,6 +511,7 @@ async def get_messages(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Dict with messages list
@@ -535,6 +542,7 @@ async def save_messages(
     Args:
         session_id: Session ID
         body: Dict with messages list
+        session_manager: Injected session manager
 
     Returns:
         Status confirmation
@@ -564,6 +572,7 @@ async def get_proof_facts(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Dict with facts list and optional summary
@@ -593,6 +602,7 @@ async def save_proof_facts(
     Args:
         session_id: Session ID
         body: Dict with facts list and optional summary
+        session_manager: Injected session manager
 
     Returns:
         Status confirmation
@@ -624,6 +634,7 @@ async def reset_context(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Status confirmation
@@ -656,6 +667,8 @@ async def get_prompt_context(
 
     Args:
         session_id: Session ID
+        user_id: Authenticated user ID
+        session_manager: Injected session manager
 
     Returns:
         Dict with system_prompt, active_role, active_skills
@@ -721,7 +734,11 @@ async def update_system_prompt(
 
     Args:
         session_id: Session ID
+        request: FastAPI request object
         body: Dict with system_prompt field
+        user_id: Authenticated user ID
+        email: Authenticated user email
+        session_manager: Injected session manager
 
     Returns:
         Status and updated system_prompt
@@ -770,6 +787,8 @@ async def match_dynamic_context(
     Args:
         session_id: Session ID
         body: Dict with 'query' field
+        user_id: Authenticated user ID
+        session_manager: Injected session manager
 
     Returns:
         Dict with:

@@ -123,6 +123,9 @@ class FactResolver(GoalsMixin, SessionMixin, SourcesMixin, ResolutionMixin):
         # Deadline for Tier 1 parallel resolution (None = no deadline)
         self._resolution_deadline: Optional[float] = None
 
+        # Resolution context (set via set_resolution_context)
+        self._resolution_context: dict = {}
+
         # All resolutions this session (for audit)
         self.resolution_log: list[Fact] = []
 

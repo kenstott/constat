@@ -503,9 +503,27 @@ Provide a brief, high-level summary of the key findings."""
         """
         Handle general query using document search + LLM fallback.
 
-        This uses document lookup and LLM synthesis for knowledge/explanation queries.
+        Checks for relevant data sources first — if databases or APIs match,
+        routes to planning instead of answering from knowledge alone.
         """
-        # Use the existing _solve_knowledge method which does doc search + LLM synthesis
+        # Check if any data sources (APIs, tables) can answer this query
+        sources = self.find_relevant_sources(
+            user_input,
+            table_limit=3,
+            doc_limit=3,
+            api_limit=3,
+            min_similarity=0.3,
+        )
+        has_data_sources = bool(sources.get("apis") or sources.get("tables"))
+        if has_data_sources:
+            logger.debug(
+                f"[GENERAL_QUERY] Found data sources, routing to planning: "
+                f"APIs={[a['name'] for a in sources.get('apis', [])]}, "
+                f"Tables={[t['name'] for t in sources.get('tables', [])]}"
+            )
+            return {"_route_to_planning": True}
+
+        # No data sources match — use doc search + LLM synthesis
         return self._solve_knowledge(user_input)
 
     def _handle_plan_new_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:

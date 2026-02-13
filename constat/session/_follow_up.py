@@ -16,6 +16,7 @@ import logging
 import time
 
 from constat.core.models import StepResult, StepStatus, TaskType
+from constat.execution.mode import PlanApproval
 from constat.prompts import load_prompt
 from constat.session._types import StepEvent
 
@@ -828,8 +829,8 @@ If you don't have enough information, say so rather than guessing."""
 
             final_output = "\n".join(output_parts)
 
-            # Record in history (only if session exists)
-            if self.session_id:
+            # Record in history (only if session datastore is initialized)
+            if self.datastore:
                 self.history.record_query(
                     session_id=self.session_id,
                     question=problem,

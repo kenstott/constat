@@ -695,7 +695,7 @@ Original request:
                     )
 
                 cache_key = self._cache_key(fact_name, params)
-                source_name = db_names[0] if db_names else None
+                source_name = next(iter(config_db_names), None)
 
                 # Handle DataFrame results
                 if isinstance(value, pd.DataFrame):

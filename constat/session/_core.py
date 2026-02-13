@@ -202,10 +202,14 @@ class CoreMixin:
         self._clarification_callback: Optional[ClarificationCallback] = None
 
         # Tool response cache for schema tools (cleared on refresh)
-        self._tool_cache: dict[str, any] = {}
+        self._tool_cache: dict[str, Any] = {}
 
         # Cached proof result (set after prove_conversation completes)
         self.last_proof_result: Optional[dict] = None
+
+        # Proof user validations and step hints (set during prove flow)
+        self._proof_user_validations: list[dict] = []
+        self._proof_step_hints: list = []
 
         # Concept detector for conditional prompt injection
         t0 = time.time()

@@ -64,8 +64,10 @@ class ProofNode:
     def to_trace(self, indent: int = 0) -> str:
         """Render as human-readable proof trace."""
         prefix = "  " * indent
-        lines = [f"{prefix}∴ {self.predicate} = {self._format_value()}"]
-        lines.append(f"{prefix}  [source: {self.source.value}, prob: {self.probability:.2f}]")
+        lines = [
+            f"{prefix}∴ {self.predicate} = {self._format_value()}",
+            f"{prefix}  [source: {self.source.value}, prob: {self.probability:.2f}]",
+        ]
         if self.evidence:
             ev = self.evidence[:100] + "..." if len(self.evidence) > 100 else self.evidence
             lines.append(f"{prefix}  [evidence: {ev}]")

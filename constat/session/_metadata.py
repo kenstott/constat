@@ -13,6 +13,8 @@ import logging
 import time
 from typing import Any
 
+from constat.prompts import load_yaml
+
 logger = logging.getLogger(__name__)
 
 

@@ -27,7 +27,7 @@ from rich.table import Table
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
 from constat.execution.mode import Mode
-from constat.messages import get_vera_adjectives
+from constat.messages import get_starter_suggestions, get_vera_adjectives, get_vera_tagline
 from constat.repl.feedback import FeedbackDisplay, SessionFeedbackHandler
 from constat.session import Session, SessionConfig
 from constat.session._types import StepEvent
@@ -480,7 +480,7 @@ class _CoreMixin:
             f"Hi, I'm [bold]Vera[/bold], your {reliable_adj} and {honest_adj} data analyst."
         )
         self.console.print(
-            "[dim]I make every effort to tell the truth and fully explain my reasoning.[/dim]"
+            f"[dim]{get_vera_tagline()}[/dim]"
         )
         self.console.print()
         self.console.print(
@@ -494,12 +494,7 @@ class _CoreMixin:
         if not initial_problem:
             self.console.print()
             self.console.print("[dim]Try asking:[/dim]")
-            starter_suggestions = [
-                "What data is available?",
-                "What can you help me with?",
-                "How do you reason about problems?",
-                "What makes you different, Vera?",
-            ]
+            starter_suggestions = get_starter_suggestions()
             for i, s in enumerate(starter_suggestions, 1):
                 self.console.print(f"  [dim]{i}.[/dim] [cyan]{s}[/cyan]")
             self.suggestions = starter_suggestions

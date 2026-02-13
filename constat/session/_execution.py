@@ -15,7 +15,9 @@ import logging
 import re
 import time
 
-from constat.core.models import PostValidation, Step, StepResult, TaskType, ValidationOnFail
+from typing import Callable
+
+from constat.core.models import FailureSuggestion, PostValidation, Step, StepResult, TaskType, ValidationOnFail
 from constat.email import create_send_email
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.execution.executor import format_error_for_retry
@@ -28,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 class ExecutionMixin:
 
-    def _create_llm_ask_helper(self) -> callable:
+    def _create_llm_ask_helper(self) -> Callable:
         """Create a helper function for step code to query LLM for general knowledge."""
         def llm_ask(question: str) -> int | float | str:
             """
@@ -53,7 +55,7 @@ class ExecutionMixin:
         """Callback from constat.llm primitives — flags LLM knowledge usage."""
         self._inference_used_llm_map = True
 
-    def _create_doc_read_helper(self) -> callable:
+    def _create_doc_read_helper(self) -> Callable:
         """Create a helper to read reference documents at execution time."""
         def doc_read(name: str) -> str:
             """Read a reference document by name. Returns the document text content.
@@ -103,7 +105,7 @@ class ExecutionMixin:
         """Check if the current plan involves sensitive data."""
         return self.plan is not None and self.plan.contains_sensitive_data
 
-    def _create_publish_helper(self) -> callable:
+    def _create_publish_helper(self) -> Callable:
         """Create a helper function for step code to publish artifacts.
 
         Published artifacts appear in the artifacts panel (consequential outputs).
@@ -239,7 +241,7 @@ class ExecutionMixin:
 
             # "up to X" → (0, X)
             if _re.match(r'up\s+to', str(val), _re.IGNORECASE) and len(numbers) == 1:
-                return (0.0, numbers[0])
+                return 0.0, numbers[0]
 
             return tuple(numbers)
 

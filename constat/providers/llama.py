@@ -50,20 +50,11 @@ class OllamaProvider(OpenAIProvider):
             model: Model to use (e.g., "llama3.2", "llama3.1", "codellama")
             base_url: Custom Ollama server URL (default: http://localhost:11434/v1)
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Ollama provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         url = base_url or self.DEFAULT_BASE_URL
         self._base_url = url.rstrip("/v1").rstrip("/")  # Store base for API calls
 
         # Ollama doesn't require an API key
-        self.client = OpenAI(base_url=url, api_key="ollama")
-        self.model = model
+        super().__init__(api_key="ollama", model=model, base_url=url)
         self._supports_tools_cache: Optional[bool] = None
 
     @property
@@ -129,24 +120,10 @@ class TogetherProvider(OpenAIProvider):
                 - meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
                 - codellama/CodeLlama-70b-Instruct-hf
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Together provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         import os
 
         resolved_key = api_key or os.environ.get("TOGETHER_API_KEY")
-
-        kwargs = {"base_url": self.TOGETHER_BASE_URL}
-        if resolved_key:
-            kwargs["api_key"] = resolved_key
-
-        self.client = OpenAI(**kwargs)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=self.TOGETHER_BASE_URL)
 
 
 class GroqProvider(OpenAIProvider):
@@ -174,24 +151,10 @@ class GroqProvider(OpenAIProvider):
                 - llama-3.1-8b-instant
                 - llama3-70b-8192
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Groq provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         import os
 
         resolved_key = api_key or os.environ.get("GROQ_API_KEY")
-
-        kwargs = {"base_url": self.GROQ_BASE_URL}
-        if resolved_key:
-            kwargs["api_key"] = resolved_key
-
-        self.client = OpenAI(**kwargs)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=self.GROQ_BASE_URL)
 
 
 # Convenience alias - default to Ollama for local use

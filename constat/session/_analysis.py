@@ -17,7 +17,7 @@ from typing import Optional
 from constat.core.models import TaskType
 from constat.prompts import load_prompt
 from constat.session._types import QuestionType, QuestionAnalysis, DetectedIntent, ClarificationQuestion, \
-    ClarificationRequest, is_meta_question
+    ClarificationRequest, StepEvent, is_meta_question
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +105,6 @@ class AnalysisMixin:
         Returns:
             Result dict with table data
         """
-        from constat.session._types import StepEvent
-
         try:
             # Query the table
             df = self.datastore.query(f"SELECT * FROM {table_name} LIMIT 50")
@@ -595,8 +593,6 @@ CRITICAL INTENT RULES (apply in order):
         Returns:
             Enhanced question with clarification, or None to skip
         """
-        from constat.session._types import StepEvent
-
         # Skip if disabled or no callback
         if self.session_config.skip_clarification:
             return None

@@ -187,10 +187,10 @@ def parse_command(text: str) -> tuple[str, str]:
     """
     text = text.strip()
     if not text.startswith("/"):
-        return ("", text)
+        return "", text
 
     parts = text.split(maxsplit=1)
     command = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
 
-    return (command, args)
+    return command, args

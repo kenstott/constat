@@ -105,6 +105,7 @@ async def upload_file_multipart(
     Args:
         session_id: Session ID
         file: The file to upload
+        session_manager: Injected session manager
 
     Returns:
         Information about the uploaded file including file:// URI
@@ -165,6 +166,7 @@ async def upload_file_data_uri(
     Args:
         session_id: Session ID
         body: File upload request with base64 data
+        session_manager: Injected session manager
 
     Returns:
         Information about the uploaded file including file:// URI
@@ -240,6 +242,7 @@ async def list_uploaded_files(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of uploaded files
@@ -276,6 +279,7 @@ async def download_file(
     Args:
         session_id: Session ID
         file_id: File ID
+        session_manager: Injected session manager
 
     Returns:
         File content
@@ -313,6 +317,7 @@ async def delete_file(
     Args:
         session_id: Session ID
         file_id: File ID
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation
@@ -366,6 +371,7 @@ async def add_file_reference(
     Args:
         session_id: Session ID
         body: File reference request
+        session_manager: Injected session manager
 
     Returns:
         File reference information
@@ -425,6 +431,7 @@ async def list_file_references(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of file references
@@ -461,6 +468,7 @@ async def delete_file_reference(
     Args:
         session_id: Session ID
         name: File reference name
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation with counts
@@ -529,6 +537,7 @@ async def upload_documents(
     Args:
         session_id: Session ID
         files: List of files to upload
+        session_manager: Injected session manager
 
     Returns:
         Upload results including indexed document names
@@ -727,6 +736,7 @@ async def get_document(
     Args:
         session_id: Session ID
         name: Document name (query parameter to handle names with slashes)
+        session_manager: Injected session manager
 
     Returns:
         Document content and metadata
@@ -761,6 +771,7 @@ async def serve_file(
     Args:
         session_id: Session ID (for authentication)
         path: Absolute path to the file
+        session_manager: Injected session manager
 
     Returns:
         FileResponse for the requested file

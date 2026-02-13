@@ -39,6 +39,7 @@ async def list_artifacts(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of artifacts with metadata
@@ -198,6 +199,7 @@ async def get_artifact(
     Args:
         session_id: Session ID
         artifact_id: Artifact ID (real artifact ID or virtual table ID)
+        session_manager: Injected session manager
 
     Returns:
         Artifact with content
@@ -265,6 +267,7 @@ async def get_artifact_versions(
     Args:
         session_id: Session ID
         artifact_id: Artifact ID (used to look up the artifact name)
+        session_manager: Injected session manager
 
     Returns:
         Version history (all versions of the same-named artifact)
@@ -312,6 +315,7 @@ async def download_artifact_file(
     Args:
         session_id: Session ID
         artifact_id: Artifact ID
+        session_manager: Injected session manager
 
     Returns:
         File response with appropriate content type
@@ -404,6 +408,7 @@ async def toggle_artifact_star(
     Args:
         session_id: Session ID
         artifact_id: Artifact ID
+        session_manager: Injected session manager
 
     Returns:
         New starred status

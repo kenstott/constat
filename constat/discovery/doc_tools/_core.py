@@ -18,6 +18,7 @@ from typing import Optional
 from constat.core.config import Config, DocumentConfig
 from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import (
+    ChunkEntity,
     DocumentChunk,
     LoadedDocument,
 )

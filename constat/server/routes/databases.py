@@ -52,6 +52,7 @@ async def add_database(
     Args:
         session_id: Session ID
         body: Database add request
+        session_manager: Injected session manager
 
     Returns:
         Database connection information
@@ -217,6 +218,7 @@ async def list_databases(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of databases
@@ -321,6 +323,7 @@ async def list_data_sources(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Combined list of all data sources
@@ -455,6 +458,7 @@ async def remove_database(
     Args:
         session_id: Session ID
         db_name: Database name
+        session_manager: Injected session manager
 
     Returns:
         Deletion confirmation
@@ -599,6 +603,7 @@ async def preview_database_table(
         table_name: Table name
         page: Page number (1-indexed)
         page_size: Number of rows per page
+        session_manager: Injected session manager
 
     Returns:
         Table data with columns, rows, and pagination info
@@ -687,6 +692,7 @@ async def add_api(
     Args:
         session_id: Session ID
         body: API add request
+        session_manager: Injected session manager
 
     Returns:
         Information about the added API
@@ -780,6 +786,7 @@ async def remove_api(
     Args:
         session_id: Session ID
         api_name: API name to remove
+        session_manager: Injected session manager
 
     Returns:
         Status message

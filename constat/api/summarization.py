@@ -59,7 +59,7 @@ Provide a 2-3 sentence summary covering:
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -76,10 +76,11 @@ def summarize_session(session: "Session", llm) -> SummarizeResult:
     Returns:
         SummarizeResult with session summary or error
     """
-    session_info = []
+    session_info = [
+        f"Session ID: {session.session_id or 'Not started'}",
+    ]
 
     # Session ID and mode
-    session_info.append(f"Session ID: {session.session_id or 'Not started'}")
     if hasattr(session, 'current_mode'):
         session_info.append(f"Mode: {session.current_mode}")
 
@@ -117,7 +118,7 @@ Provide a 2-3 sentence summary of what this session has accomplished and its cur
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -160,7 +161,7 @@ Provide a summary covering:
         result = llm.generate(
             system="You are a concise technical summarizer.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
     except Exception as e:
@@ -314,7 +315,7 @@ Provide a 2-3 sentence summary covering:
         result = llm.generate(
             system="You are a concise data analyst.",
             user_message=prompt,
-            max_tokens=self.llm.max_output_tokens,
+            max_tokens=llm.max_output_tokens,
         )
         return SummarizeResult(success=True, summary=result)
 

@@ -74,14 +74,6 @@ class MistralProvider(OpenAIProvider):
                 - ministral-3b-latest (edge 3B)
             base_url: Custom base URL (default: https://api.mistral.ai/v1)
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Mistral provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         resolved_key = api_key or os.environ.get("MISTRAL_API_KEY")
         if not resolved_key:
             raise ValueError(
@@ -90,9 +82,7 @@ class MistralProvider(OpenAIProvider):
             )
 
         url = base_url or self.MISTRAL_BASE_URL
-
-        self.client = OpenAI(base_url=url, api_key=resolved_key)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=url)
 
     @classmethod
     def list_models(cls) -> dict[str, str]:

@@ -14,9 +14,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+import constat.llm
 from constat.core.models import TaskType
 from constat.execution.fact_resolver import format_source_attribution
 from constat.prompts import load_prompt
+from constat.session._types import StepEvent
 from constat.storage.datastore import DataStore
 from constat.storage.registry_datastore import RegistryAwareDataStore
 
@@ -95,7 +97,7 @@ class DagMixin:
         resolved_premises: dict,
         resolved_inferences: dict,
         inference_names: dict,
-    ) -> tuple[any, float, str]:
+    ) -> tuple[Any, float, str]:
         """Execute a single DAG node (premise or inference).
 
         Called by DAGExecutor for each node. Handles both:
@@ -675,9 +677,10 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 """
 
             # Build dynamic data source descriptions
-            data_source_apis = []
-            data_source_apis.append("- store.query(sql) -> pd.DataFrame (for datastore tables)")
-            data_source_apis.append("- store.save_dataframe(name, df)")
+            data_source_apis = [
+                "- store.query(sql) -> pd.DataFrame (for datastore tables)",
+                "- store.save_dataframe(name, df)",
+            ]
 
             # SQL databases
             from constat.catalog.sql_transpiler import TranspilingConnection
@@ -1274,8 +1277,6 @@ YOUR JSON RESPONSE:"""
             label: Human-readable description (e.g., "No raise exceeds 15%")
             sql: DuckDB SQL that returns TRUE if valid. Use {table} placeholder.
         """
-        if not hasattr(self, '_proof_user_validations'):
-            self._proof_user_validations = []
         self._proof_user_validations.append({"label": label, "sql": sql})
         logger.info(f"[USER_VALIDATIONS] Added: {label}")
 

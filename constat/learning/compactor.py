@@ -336,7 +336,7 @@ Output ONLY valid JSON."""
             data = json.loads(content)
             idx = data.get("overlapping_rule_index", -1)
 
-            if idx >= 0 and idx < len(rules):
+            if 0 <= idx < len(rules):
                 logger.info(f"[find_overlap] Found overlapping rule at index {idx}: {rules[idx]['id']}")
                 return rules[idx]
             else:

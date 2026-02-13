@@ -423,7 +423,7 @@ class StatusBar(Static):
                 self.app.action_shrink_panel()
             elif relative_x >= len(panel_controls) - 3:
                 self.app.action_expand_panel()
-        elif event.x >= role_start and event.x < role_end:
+        elif role_start <= event.x < role_end:
             self.app.action_select_role()
 
 

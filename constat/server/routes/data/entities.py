@@ -35,6 +35,7 @@ async def list_entities(
     Args:
         session_id: Session ID
         entity_type: Optional filter by type (table, column, concept, etc.)
+        session_manager: Injected session manager
 
     Returns:
         List of entities with references
@@ -420,6 +421,7 @@ async def add_entity_to_glossary(
     Args:
         session_id: Session ID
         entity_id: Entity ID to add
+        session_manager: Injected session manager
 
     Returns:
         Confirmation

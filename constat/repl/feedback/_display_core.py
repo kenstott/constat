@@ -87,6 +87,13 @@ class FeedbackDisplayCore:
         # Stopped flag to prevent updates after interruption
         self._stopped: bool = False
 
+        # Spinner state (used by start_spinner/stop_spinner)
+        self._display_wrapper = None
+        self._current_spinner_message: str = ""
+        self._spinner_live = None
+        self._spinner_running: bool = False
+        self._spinner_thread = None
+
         # Persistent status bar pinned to bottom of terminal
         self._status_bar: PersistentStatusBar = PersistentStatusBar(self.console)
         self._status_bar_enabled: bool = False

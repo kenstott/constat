@@ -41,22 +41,8 @@ class GrokProvider(OpenAIProvider):
             api_key: xAI API key (or uses XAI_API_KEY env var)
             model: Model to use (e.g., "grok-2-latest", "grok-2", "grok-1")
         """
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "Grok provider requires the openai package. "
-                "Install with: pip install openai"
-            )
-
         import os
 
         # Use XAI_API_KEY env var if no key provided
         resolved_key = api_key or os.environ.get("XAI_API_KEY")
-
-        kwargs = {"base_url": self.XAI_BASE_URL}
-        if resolved_key:
-            kwargs["api_key"] = resolved_key
-
-        self.client = OpenAI(**kwargs)
-        self.model = model
+        super().__init__(api_key=resolved_key, model=model, base_url=self.XAI_BASE_URL)

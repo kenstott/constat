@@ -247,8 +247,10 @@ class Planner:
         # Build available roles section for role-based step assignment
         roles_text = ""
         if self._available_roles:
-            role_lines = ["\n## Available Roles - ASSIGN TO EACH STEP"]
-            role_lines.append("**You MUST assign one of these role_id values to each step based on what the step does:**")
+            role_lines = [
+                "\n## Available Roles - ASSIGN TO EACH STEP",
+                "**You MUST assign one of these role_id values to each step based on what the step does:**",
+            ]
             for role in self._available_roles:
                 name = role.get("name", "")
                 desc = role.get("description", "")

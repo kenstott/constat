@@ -10,7 +10,7 @@
 """Firebase authentication middleware and utilities."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, TypeAlias
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,6 +24,8 @@ try:
 
     FIREBASE_AVAILABLE = True
 except ImportError:
+    google_requests = None  # type: ignore[assignment]
+    id_token = None  # type: ignore[assignment]
     FIREBASE_AVAILABLE = False
     logger.warning(
         "google-auth not installed. Firebase authentication will not work. "
@@ -133,5 +135,5 @@ async def get_current_user_email(
 
 
 # Type aliases for dependency injection
-CurrentUserId = Annotated[str, Depends(get_current_user_id)]
-CurrentUserEmail = Annotated[str | None, Depends(get_current_user_email)]
+CurrentUserId: TypeAlias = Annotated[str, Depends(get_current_user_id)]
+CurrentUserEmail: TypeAlias = Annotated[str | None, Depends(get_current_user_email)]

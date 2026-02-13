@@ -62,7 +62,9 @@ async def list_learnings(
     """Get all captured learnings for the authenticated user.
 
     Args:
+        user_id: Authenticated user ID
         category: Optional category filter
+        config: Injected application config
 
     Returns:
         List of learnings
@@ -138,6 +140,8 @@ async def add_learning(
 
     Args:
         body: Learning content and category
+        user_id: Authenticated user ID
+        config: Injected application config
 
     Returns:
         Created learning
@@ -191,6 +195,8 @@ async def delete_learning(
 
     Args:
         learning_id: Learning ID to delete
+        user_id: Authenticated user ID
+        config: Injected application config
 
     Returns:
         Deletion confirmation
@@ -336,6 +342,7 @@ async def get_project(
 
     Args:
         filename: Project YAML filename (e.g., 'sales-analytics.yaml')
+        config: Injected application config
 
     Returns:
         Project details including data source names
@@ -366,6 +373,7 @@ async def get_project_content(
 
     Args:
         filename: Project YAML filename
+        config: Injected application config
 
     Returns:
         Dict with 'content' (YAML string) and 'path' (full file path)
@@ -403,6 +411,7 @@ async def update_project_content(
     Args:
         filename: Project YAML filename
         body: Dict with 'content' (new YAML string)
+        config: Injected application config
 
     Returns:
         Status confirmation
@@ -458,6 +467,8 @@ async def add_rule(
 
     Args:
         body: Rule content and metadata
+        user_id: Authenticated user ID
+        config: Injected application config
 
     Returns:
         Created rule
@@ -506,6 +517,8 @@ async def update_rule(
     Args:
         rule_id: Rule ID to update
         body: Fields to update
+        user_id: Authenticated user ID
+        config: Injected application config
 
     Returns:
         Updated rule
@@ -564,6 +577,8 @@ async def delete_rule(
 
     Args:
         rule_id: Rule ID to delete
+        user_id: Authenticated user ID
+        config: Injected application config
 
     Returns:
         Deletion confirmation

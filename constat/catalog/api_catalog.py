@@ -752,6 +752,7 @@ def introspect_openapi_spec(
         base_url: Override the base URL from the spec (optional)
         headers: Headers to use when downloading spec (e.g., for auth)
         timeout: Request timeout in seconds
+        api_name: Name for the API catalog
 
     Returns:
         APICatalog populated with operations from the spec

@@ -514,7 +514,7 @@ allowed-tools: []
         try:
             with open(skill_file, "r") as f:
                 content = f.read()
-            return (content, str(skill_file))
+            return content, str(skill_file)
         except OSError:
             return None
 
@@ -604,6 +604,12 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         """Distill a completed proof into SKILL.md content.
 
         Args:
+            name: Skill name
+            proof_nodes: List of proof node dicts from the proof tree
+            proof_summary: LLM-generated narrative summary of the proof
+            original_problem: The original problem/claim being proven
+            llm: LLM provider for generating skill content
+            description: Optional human-readable description
             script_params: List of dicts with 'name' and 'default' keys describing
                           run_proof() keyword arguments.
             result_schemas: Dict mapping dataset name to list of column dicts

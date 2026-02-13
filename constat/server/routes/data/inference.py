@@ -40,6 +40,8 @@ async def list_step_codes(
 
     Args:
         session_id: Session ID
+        user_id: Authenticated user ID
+        session_manager: Injected session manager
 
     Returns:
         List of step codes with step_number, goal, and code

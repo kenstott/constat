@@ -881,6 +881,7 @@ def create_viz_helper(
         session_id: Session ID for organizing outputs by session
         user_id: User ID for user-scoped storage (default: "default")
         registry: Central registry for artifact tracking
+        open_with_system_viewer: If True, open generated files with system viewer
 
     Returns:
         Configured VisualizationHelper instance

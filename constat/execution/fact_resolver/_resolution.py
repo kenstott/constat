@@ -255,13 +255,13 @@ class ResolutionMixin:
                     logger.info(f"[TIER1] {source.value} returned fact: resolved={fact.is_resolved}, value_type={type(fact.value).__name__}")
                 else:
                     logger.info(f"[TIER1] {source.value} returned None")
-                return (source, fact, elapsed)
+                return source, fact, elapsed
             except Exception as e:
                 elapsed = time.time() - start
                 import traceback
                 logger.warning(f"[TIER1] {source.value} raised {type(e).__name__}: {e}")
                 logger.debug(f"[TIER1] {source.value} traceback: {traceback.format_exc()}")
-                return (source, None, elapsed)
+                return source, None, elapsed
 
         results: list[tuple[FactSource, Fact, float]] = []
         sources_tried: list[str] = []
@@ -694,10 +694,10 @@ class ResolutionMixin:
         def try_source(source: FactSource) -> tuple[FactSource, Optional[Fact]]:
             try:
                 fact = self._try_resolve(source, fact_name, params, cache_key)
-                return (source, fact)
+                return source, fact
             except Exception as e:
                 logger.debug(f"[_resolve_io_parallel] {source.value} raised: {e}")
-                return (source, None)
+                return source, None
 
         # Run all I/O sources in parallel
         valid_results: list[tuple[int, float, Fact, FactSource]] = []

@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -320,6 +320,9 @@ class SessionHistory:
         session_file = session_dir / "session.json"
         queries_file = session_dir / "queries.jsonl"
 
+        if not session_file.exists():
+            return 0
+
         # Read current session metadata
         with open(session_file) as f:
             metadata = json.load(f)
@@ -392,6 +395,9 @@ class SessionHistory:
             status: Final status (completed, failed, interrupted)
         """
         session_file = self._session_dir(session_id) / "session.json"
+
+        if not session_file.exists():
+            return
 
         with open(session_file) as f:
             metadata = json.load(f)
@@ -738,7 +744,7 @@ class SessionHistory:
         session_id: str,
         premise_id: str,
         name: str,
-        value: any,
+        value: Any,
         source: str,
         description: str = "",
     ) -> None:

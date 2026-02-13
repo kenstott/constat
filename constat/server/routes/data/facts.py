@@ -37,6 +37,7 @@ async def list_facts(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of resolved facts
@@ -102,6 +103,7 @@ async def get_proof_tree(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Proof tree structure
@@ -146,6 +148,7 @@ async def get_output(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Final output with any suggestions
@@ -188,6 +191,7 @@ async def add_fact(
     Args:
         session_id: Session ID
         body: Request body with name, value, and optional persist flag
+        session_manager: Injected session manager
 
     Returns:
         Created fact
@@ -254,6 +258,7 @@ async def persist_fact(
     Args:
         session_id: Session ID
         fact_name: Name of the fact to persist
+        session_manager: Injected session manager
 
     Returns:
         Confirmation
@@ -292,6 +297,7 @@ async def forget_fact(
     Args:
         session_id: Session ID
         fact_name: Name of the fact to forget
+        session_manager: Injected session manager
 
     Returns:
         Confirmation with what was deleted
@@ -348,6 +354,7 @@ async def edit_fact(
         session_id: Session ID
         fact_name: Name of the fact to edit
         body: Request body with new value
+        session_manager: Injected session manager
 
     Returns:
         Updated fact

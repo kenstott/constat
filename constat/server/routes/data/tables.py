@@ -39,6 +39,7 @@ async def list_tables(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         List of tables with metadata
@@ -179,6 +180,7 @@ async def get_table_data(
         table_name: Table name to retrieve
         page: Page number (1-indexed)
         page_size: Number of rows per page
+        session_manager: Injected session manager
 
     Returns:
         Table data with pagination info
@@ -232,6 +234,7 @@ async def download_table(
     Args:
         session_id: Session ID
         table_name: Table name to download
+        session_manager: Injected session manager
 
     Returns:
         CSV file response
@@ -278,6 +281,7 @@ async def toggle_table_star(
     Args:
         session_id: Session ID
         table_name: Table name
+        session_manager: Injected session manager
 
     Returns:
         New starred status

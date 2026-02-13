@@ -27,7 +27,7 @@ from textual.widgets import Static, Input
 
 from constat.core.config import Config
 from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse
-from constat.messages import get_vera_adjectives, STARTER_SUGGESTIONS
+from constat.messages import get_starter_suggestions, get_vera_adjectives, get_vera_tagline
 from constat.session import Session, SessionConfig, ClarificationRequest, ClarificationResponse
 from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
@@ -383,7 +383,7 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
             f", your {reliable_adj} and {honest_adj} data analyst.",
         ))
         log.write(Text(
-            "I make every effort to tell the truth and fully explain my reasoning.",
+            get_vera_tagline(),
             style="dim",
         ))
         log.write("")
@@ -400,12 +400,13 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
         if not self.initial_problem:
             log.write("")
             log.write(Text("Try asking:", style="dim"))
-            for i, s in enumerate(STARTER_SUGGESTIONS, 1):
+            suggestions = get_starter_suggestions()
+            for i, s in enumerate(suggestions, 1):
                 log.write(Text.assemble(
                     (f"  {i}. ", "dim"),
                     (s, "cyan"),
                 ))
-            self.suggestions = list(STARTER_SUGGESTIONS)
+            self.suggestions = suggestions
             log.write("")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:

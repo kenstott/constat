@@ -37,6 +37,8 @@ async def download_code(
 
     Args:
         session_id: Session ID
+        user_id: Authenticated user ID
+        session_manager: Injected session manager
 
     Returns:
         Python script file download

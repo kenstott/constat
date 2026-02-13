@@ -25,6 +25,7 @@ _personality = load_yaml("vera_personality.yaml")
 RELIABLE_ADJECTIVES = _personality["reliable_adjectives"]
 HONEST_ADJECTIVES = _personality["honest_adjectives"]
 STARTER_SUGGESTIONS = _personality["starter_suggestions"]
+TAGLINES = _personality["taglines"]
 
 
 def get_vera_adjectives() -> tuple[str, str]:
@@ -33,6 +34,16 @@ def get_vera_adjectives() -> tuple[str, str]:
         random.choice(RELIABLE_ADJECTIVES),
         random.choice(HONEST_ADJECTIVES),
     )
+
+
+def get_vera_tagline() -> str:
+    """Return a random tagline for Vera's intro."""
+    return random.choice(TAGLINES)
+
+
+def get_starter_suggestions(count: int = 4) -> list[str]:
+    """Return a random sample of starter suggestions."""
+    return random.sample(STARTER_SUGGESTIONS, min(count, len(STARTER_SUGGESTIONS)))
 
 
 class MessageType(str, Enum):
@@ -53,14 +64,19 @@ class WelcomeMessage:
     """Welcome message from Vera."""
     reliable_adjective: str
     honest_adjective: str
-    tagline: str = "I make every effort to tell the truth and fully explain my reasoning."
-    suggestions: list[str] = field(default_factory=lambda: STARTER_SUGGESTIONS.copy())
+    tagline: str = ""
+    suggestions: list[str] = field(default_factory=list)
 
     @classmethod
     def create(cls) -> "WelcomeMessage":
-        """Create a welcome message with random adjectives."""
+        """Create a welcome message with random adjectives, tagline, and suggestions."""
         reliable, honest = get_vera_adjectives()
-        return cls(reliable_adjective=reliable, honest_adjective=honest)
+        return cls(
+            reliable_adjective=reliable,
+            honest_adjective=honest,
+            tagline=get_vera_tagline(),
+            suggestions=get_starter_suggestions(),
+        )
 
     def to_markdown(self) -> str:
         """Format for UI display (Markdown)."""

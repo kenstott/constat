@@ -493,6 +493,7 @@ async def submit_query(
     Args:
         session_id: Session ID
         body: Query request with problem text
+        session_manager: Injected session manager
 
     Returns:
         Query response with execution ID
@@ -549,6 +550,7 @@ async def cancel_execution(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Cancellation status
@@ -583,6 +585,7 @@ async def get_plan(
 
     Args:
         session_id: Session ID
+        session_manager: Injected session manager
 
     Returns:
         Current plan details
@@ -612,6 +615,7 @@ async def approve_plan(
     Args:
         session_id: Session ID
         body: Approval request with decision
+        session_manager: Injected session manager
 
     Returns:
         Approval status

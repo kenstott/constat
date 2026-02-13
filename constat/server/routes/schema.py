@@ -80,6 +80,7 @@ async def list_database_tables(
     Args:
         database_name: Name of the database
         session_id: Session ID for schema access
+        session_manager: Injected session manager
 
     Returns:
         List of tables in the database
@@ -126,6 +127,7 @@ async def get_table_schema(
         database_name: Name of the database
         table_name: Name of the table
         session_id: Session ID for schema access
+        session_manager: Injected session manager
 
     Returns:
         Detailed table schema including columns and relationships
@@ -188,6 +190,7 @@ async def search_schema(
         query: Natural language search query
         session_id: Session ID for schema access
         limit: Maximum number of results
+        session_manager: Injected session manager
 
     Returns:
         List of matching tables with relevance scores
@@ -231,6 +234,7 @@ async def get_api_schema(
     Args:
         api_name: Name of the API
         session_id: Session ID for schema access
+        session_manager: Injected session manager
 
     Returns:
         API schema overview including endpoints/queries
@@ -302,6 +306,7 @@ async def refresh_schema(
     Args:
         session_id: Session ID for schema refresh
         force_full: Whether to force full rebuild
+        session_manager: Injected session manager
 
     Returns:
         Refresh statistics

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1151,20 +1152,48 @@ class CommandsMixin:
             log.write(Text(f"Error resuming session: {e}", style="red"))
 
     async def _export_table(self: "ConstatREPLApp", arg: str) -> None:
-        """Export a table to CSV or XLSX file."""
+        """Export a table to CSV/XLSX or export inspection state to JSON file.
+
+        Usage:
+          /export <table> [filename]
+          /export inspection [filename]
+        """
         log = self.query_one("#output-log", OutputLog)
 
         if not arg.strip():
-            log.write(Text("Usage: /export <table> [filename]", style="yellow"))
-            log.write(Text("  /export orders           - Export to orders.csv", style="dim"))
-            log.write(Text("  /export orders data.xlsx - Export to data.xlsx", style="dim"))
+            log.write(Text("Usage:", style="yellow"))
+            log.write(Text("  /export <table> [filename]      - Export a table to CSV/XLSX", style="dim"))
+            log.write(Text("  /export inspection [filename]   - Export session inspection to JSON", style="dim"))
             return
 
-        if not self.session or not self.session.datastore:
+        if not self.session:
             log.write(Text("No active session.", style="yellow"))
             return
 
         parts = arg.strip().split(maxsplit=1)
+        target = parts[0].lower()
+
+        # Branch: export inspection/state to JSON
+        if target in ("inspection", "state"):
+            filename = parts[1] if len(parts) > 1 else "inspection.json"
+            try:
+                state = self.session.get_state() if hasattr(self.session, "get_state") else {}
+                output_path = Path(filename).resolve()
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                with output_path.open("w", encoding="utf-8") as f:
+                    json.dump(state, f, indent=2, ensure_ascii=False)
+                log.write(Text("Exported inspection to:", style="green"))
+                link_markup = make_file_link_markup(output_path.as_uri(), style="cyan underline", indent="  ")
+                log.write(link_markup)
+            except Exception as e:
+                log.write(Text(f"Export failed: {e}", style="red"))
+            return
+
+        # Default: export a table
+        if not self.session.datastore:
+            log.write(Text("No datastore available in this session.", style="yellow"))
+            return
+
         table_name = parts[0]
         filename = parts[1] if len(parts) > 1 else f"{table_name}.csv"
 
@@ -1177,6 +1206,7 @@ class CommandsMixin:
             df = self.session.datastore.query(f"SELECT * FROM {table_name}")
 
             output_path = Path(filename).resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             if ext == ".csv":
                 df.to_csv(output_path, index=False)
             else:

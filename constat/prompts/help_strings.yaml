@@ -8,6 +8,7 @@ help_commands:
   - ["/tables", "List available tables", "Data Exploration"]
   - ["/show <table>", "Show table contents", "Data Exploration"]
   - ["/export <table> [file]", "Export table to CSV or XLSX", "Data Exploration"]
+  - ["/export inspection [file]", "Export session inspection (state) to JSON", "Data Exploration"]
   - ["/query <sql>", "Run SQL query on datastore", "Data Exploration"]
   - ["/code [step]", "Show generated code (all or specific step)", "Data Exploration"]
   - ["/download-code [file]", "Download all code as Python script", "Data Exploration"]
