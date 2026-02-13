@@ -16,6 +16,16 @@ from unittest.mock import Mock, patch
 
 from constat.core.config import Config
 from constat.discovery.doc_tools import DocumentDiscoveryTools
+from constat.discovery.doc_tools._file_extractors import (
+    _extract_pdf_text,
+    _extract_pdf_text_from_bytes,
+    _extract_docx_text,
+    _extract_docx_text_from_bytes,
+    _extract_xlsx_text,
+    _extract_xlsx_text_from_bytes,
+    _extract_pptx_text,
+    _extract_pptx_text_from_bytes,
+)
 
 
 # =============================================================================
@@ -166,7 +176,7 @@ class TestPdfTextExtraction:
         mock_reader = mock_pdf_reader(["Page one content.", "Page two content."])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text(pdf_path)
+            result = _extract_pdf_text(pdf_path)
         
         assert "[Page 1]" in result
         assert "[Page 2]" in result
@@ -182,7 +192,7 @@ class TestPdfTextExtraction:
         mock_reader = mock_pdf_reader(["First page text.", "Second page text."])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         assert "[Page 1]" in result
         assert "[Page 2]" in result
@@ -198,7 +208,7 @@ class TestPdfTextExtraction:
         mock_reader = mock_pdf_reader(["A", "B", "C"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Check page marker format
         import re
@@ -217,7 +227,7 @@ class TestPdfTextExtraction:
         mock_reader = mock_pdf_reader(["Page 1", "Page 2"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Pages should be joined by double newlines
         assert "\n\n" in result
@@ -232,7 +242,7 @@ class TestPdfTextExtraction:
         mock_reader = mock_pdf_reader(["Content on page 1", "", "Content on page 3", ""])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Should have page 1 and page 3
         assert "[Page 1]" in result
@@ -251,7 +261,7 @@ class TestPdfTextExtraction:
         mock_reader = mock_pdf_reader(["Content", "   \n\t  ", "More content"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         assert "[Page 1]" in result
         assert "[Page 3]" in result
@@ -269,7 +279,7 @@ class TestPdfErrorHandling:
         corrupt_data = b"This is not a valid PDF file"
         
         with pytest.raises(Exception):  # pypdf raises various exceptions
-            tools._extract_pdf_text_from_bytes(corrupt_data)
+            _extract_pdf_text_from_bytes(corrupt_data)
 
     def test_corrupt_pdf_file_raises_error(self, tmp_path):
         """Test that corrupt PDF file raises an error."""
@@ -280,7 +290,7 @@ class TestPdfErrorHandling:
         corrupt_file.write_bytes(b"Not a PDF")
         
         with pytest.raises(Exception):
-            tools._extract_pdf_text(corrupt_file)
+            _extract_pdf_text(corrupt_file)
 
     def test_missing_pdf_file_raises_error(self):
         """Test that missing PDF file raises FileNotFoundError."""
@@ -419,7 +429,7 @@ class TestMultiPagePdf:
         ])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         for i in range(1, 6):
             assert f"[Page {i}]" in result
@@ -438,7 +448,7 @@ class TestMultiPagePdf:
         ])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Check that markers appear in correct order
         pos_alpha = result.find("MARKER_ALPHA")
@@ -465,7 +475,7 @@ class TestPdfEdgeCases:
         mock_reader = mock_pdf_reader(["Only page content"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         assert "[Page 1]" in result
         assert "Only page content" in result
@@ -481,7 +491,7 @@ class TestPdfEdgeCases:
         mock_reader = mock_pdf_reader(["Special: < > & \" ' $ % @"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         assert "Special:" in result
 
@@ -494,7 +504,7 @@ class TestPdfEdgeCases:
         mock_reader = mock_pdf_reader(["", "", ""])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Should return empty string
         assert result == ""
@@ -515,7 +525,7 @@ class TestPdfEdgeCases:
         mock_reader.pages = [mock_page1, mock_page2]
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Should only have page 2 (page 1 returned None)
         assert "[Page 1]" not in result
@@ -531,7 +541,7 @@ class TestPdfEdgeCases:
         mock_reader = mock_pdf_reader(["First page"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         assert "[Page 1]" in result
         assert "[Page 0]" not in result
@@ -546,7 +556,7 @@ class TestPdfEdgeCases:
         mock_reader = mock_pdf_reader([f"Page {i} content" for i in range(1, num_pages + 1)])
         
         with patch('pypdf.PdfReader', return_value=mock_reader):
-            result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+            result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Verify first, middle, and last pages
         assert "[Page 1]" in result
@@ -624,7 +634,7 @@ class TestRealPdfExtraction:
         pdf_bytes = create_minimal_pdf(2)
         
         # Blank pages should result in empty string
-        result = tools._extract_pdf_text_from_bytes(pdf_bytes)
+        result = _extract_pdf_text_from_bytes(pdf_bytes)
         
         # Should be empty or minimal
         assert isinstance(result, str)
@@ -640,7 +650,7 @@ class TestRealPdfExtraction:
         mock_reader = mock_pdf_reader(["test content"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader) as mock_class:
-            tools._extract_pdf_text_from_bytes(pdf_bytes)
+            _extract_pdf_text_from_bytes(pdf_bytes)
             
             # Verify PdfReader was called with a BytesIO object
             assert mock_class.call_count == 1
@@ -657,7 +667,7 @@ class TestRealPdfExtraction:
         mock_reader = mock_pdf_reader(["test content"])
         
         with patch('pypdf.PdfReader', return_value=mock_reader) as mock_class:
-            tools._extract_pdf_text(pdf_path)
+            _extract_pdf_text(pdf_path)
             
             # Verify PdfReader was called with the path
             assert mock_class.call_count == 1
@@ -898,7 +908,7 @@ class TestDocxTextExtraction:
         tools = DocumentDiscoveryTools(config)
         
         docx_bytes = create_docx_with_content(paragraphs=["Hello, World!", "This is a test."])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "Hello, World!" in result
         assert "This is a test." in result
@@ -909,7 +919,7 @@ class TestDocxTextExtraction:
         tools = DocumentDiscoveryTools(config)
         
         docx_bytes = create_docx_with_content(headings=[("Main Title", 1)])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "# Main Title" in result
 
@@ -919,7 +929,7 @@ class TestDocxTextExtraction:
         tools = DocumentDiscoveryTools(config)
         
         docx_bytes = create_docx_with_content(headings=[("Section Title", 2)])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "## Section Title" in result
 
@@ -929,7 +939,7 @@ class TestDocxTextExtraction:
         tools = DocumentDiscoveryTools(config)
         
         docx_bytes = create_docx_with_content(headings=[("Subsection", 3)])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "### Subsection" in result
 
@@ -943,7 +953,7 @@ class TestDocxTextExtraction:
             ("Section", 2),
             ("Subsection", 3),
         ])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "# Title" in result
         assert "## Section" in result
@@ -960,7 +970,7 @@ class TestDocxTextExtraction:
             ["Bob", "25", "LA"],
         ]
         docx_bytes = create_docx_with_content(tables=[table_data])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         # Tables should use pipe-separated format
         assert "Name | Age | City" in result
@@ -975,7 +985,7 @@ class TestDocxTextExtraction:
         table1 = [["A1", "B1"], ["A2", "B2"]]
         table2 = [["X1", "Y1"], ["X2", "Y2"]]
         docx_bytes = create_docx_with_content(tables=[table1, table2])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "A1 | B1" in result
         assert "X1 | Y1" in result
@@ -990,7 +1000,7 @@ class TestDocxTextExtraction:
             paragraphs=["Introduction text here."],
             tables=[[["Col1", "Col2"], ["Data1", "Data2"]]],
         )
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "# Document Title" in result
         assert "## Data Section" in result
@@ -1006,7 +1016,7 @@ class TestDocxTextExtraction:
         docx_path = tmp_path / "test.docx"
         docx_path.write_bytes(docx_bytes)
         
-        result = tools._extract_docx_text(docx_path)
+        result = _extract_docx_text(docx_path)
         
         assert "File content" in result
 
@@ -1016,7 +1026,7 @@ class TestDocxTextExtraction:
         tools = DocumentDiscoveryTools(config)
         
         docx_bytes = create_docx_with_content(paragraphs=["Para 1", "Para 2"])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "\n\n" in result
 
@@ -1189,7 +1199,7 @@ class TestDocxEdgeCases:
         output.seek(0)
         docx_bytes = output.read()
         
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         # Should return empty or whitespace-only string
         assert isinstance(result, str)
@@ -1202,7 +1212,7 @@ class TestDocxEdgeCases:
         docx_bytes = create_docx_with_content(
             paragraphs=["Special chars: < > & \" ' $ % @ \u00e9\u00e8\u00f1"]
         )
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         assert "Special chars" in result
 
@@ -1216,7 +1226,7 @@ class TestDocxEdgeCases:
             ["Data1", "Data2", ""],
         ]
         docx_bytes = create_docx_with_content(tables=[table_data])
-        result = tools._extract_docx_text_from_bytes(docx_bytes)
+        result = _extract_docx_text_from_bytes(docx_bytes)
         
         # Empty cells should still be represented
         assert "Header1" in result
@@ -1239,7 +1249,7 @@ class TestXlsxTextExtraction:
         xlsx_bytes = create_xlsx_with_content(
             sheets={"Sheet1": [["Hello", "World"], ["Data", "Here"]]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "Hello | World" in result
         assert "Data | Here" in result
@@ -1252,7 +1262,7 @@ class TestXlsxTextExtraction:
         xlsx_bytes = create_xlsx_with_content(
             sheets={"MySheet": [["Content"]]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "[Sheet: MySheet]" in result
 
@@ -1267,7 +1277,7 @@ class TestXlsxTextExtraction:
                 "Costs": [["Item", "Cost"], ["Materials", "500"]],
             }
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "[Sheet: Sales]" in result
         assert "[Sheet: Costs]" in result
@@ -1286,7 +1296,7 @@ class TestXlsxTextExtraction:
                 ["Data3", "Data4"],
             ]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "Data1 | Data2" in result
         assert "Data3 | Data4" in result
@@ -1300,7 +1310,7 @@ class TestXlsxTextExtraction:
         xlsx_bytes = create_xlsx_with_content(
             sheets={"Numbers": [[1, 2, 3], [4.5, 5.5, 6.5]]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "1 | 2 | 3" in result
         assert "4.5 | 5.5 | 6.5" in result
@@ -1316,7 +1326,7 @@ class TestXlsxTextExtraction:
         xlsx_path = tmp_path / "test.xlsx"
         xlsx_path.write_bytes(xlsx_bytes)
         
-        result = tools._extract_xlsx_text(xlsx_path)
+        result = _extract_xlsx_text(xlsx_path)
         
         assert "File | Content" in result
 
@@ -1498,7 +1508,7 @@ class TestXlsxEdgeCases:
         output.seek(0)
         xlsx_bytes = output.read()
         
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         # Empty spreadsheet should return empty string
         assert isinstance(result, str)
@@ -1511,7 +1521,7 @@ class TestXlsxEdgeCases:
         xlsx_bytes = create_xlsx_with_content(
             sheets={"Special": [["< > & \" '", "\u00e9\u00e8\u00f1"]]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "< > & \"" in result
 
@@ -1523,7 +1533,7 @@ class TestXlsxEdgeCases:
         xlsx_bytes = create_xlsx_with_content(
             sheets={"Data": [["Value", None, "Another"]]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         # None values should be represented as empty strings
         assert "Value" in result
@@ -1537,7 +1547,7 @@ class TestXlsxEdgeCases:
         xlsx_bytes = create_xlsx_with_content(
             sheets={"Single": [["Only cell"]]}
         )
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         assert "Only cell" in result
 
@@ -1548,7 +1558,7 @@ class TestXlsxEdgeCases:
         
         sheets = {f"Sheet{i}": [[f"Content {i}"]] for i in range(1, 11)}
         xlsx_bytes = create_xlsx_with_content(sheets=sheets)
-        result = tools._extract_xlsx_text_from_bytes(xlsx_bytes)
+        result = _extract_xlsx_text_from_bytes(xlsx_bytes)
         
         for i in range(1, 11):
             assert f"[Sheet: Sheet{i}]" in result
@@ -1571,7 +1581,7 @@ class TestPptxTextExtraction:
         pptx_bytes = create_pptx_with_content(
             slides=[{"texts": ["Hello, World!", "Slide content here"]}]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "Hello, World!" in result
         assert "Slide content here" in result
@@ -1584,7 +1594,7 @@ class TestPptxTextExtraction:
         pptx_bytes = create_pptx_with_content(
             slides=[{"texts": ["Content"]}]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "[Slide 1]" in result
 
@@ -1600,7 +1610,7 @@ class TestPptxTextExtraction:
                 {"texts": ["Slide 3 Title", "Slide 3 Content"]},
             ]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "[Slide 1]" in result
         assert "[Slide 2]" in result
@@ -1623,7 +1633,7 @@ class TestPptxTextExtraction:
                 ]
             }]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "Header1 | Header2 | Header3" in result
         assert "Data1 | Data2 | Data3" in result
@@ -1639,7 +1649,7 @@ class TestPptxTextExtraction:
         pptx_path = tmp_path / "test.pptx"
         pptx_path.write_bytes(pptx_bytes)
         
-        result = tools._extract_pptx_text(pptx_path)
+        result = _extract_pptx_text(pptx_path)
         
         assert "File content" in result
 
@@ -1821,7 +1831,7 @@ class TestPptxEdgeCases:
         output.seek(0)
         pptx_bytes = output.read()
         
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         # Empty presentation should return empty string
         assert isinstance(result, str)
@@ -1835,7 +1845,7 @@ class TestPptxEdgeCases:
         pptx_bytes = create_pptx_with_content(
             slides=[{"texts": ["Special: < > & \" ' \u00e9\u00e8\u00f1"]}]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "Special:" in result
 
@@ -1850,7 +1860,7 @@ class TestPptxEdgeCases:
                 "table": [["Table", "Only"], ["Row", "Data"]]
             }]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "[Slide 1]" in result
         assert "Table | Only" in result
@@ -1862,7 +1872,7 @@ class TestPptxEdgeCases:
         
         slides = [{"texts": [f"Slide {i} content"]} for i in range(1, 21)]
         pptx_bytes = create_pptx_with_content(slides=slides)
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         for i in range(1, 21):
             assert f"[Slide {i}]" in result
@@ -1876,7 +1886,7 @@ class TestPptxEdgeCases:
         pptx_bytes = create_pptx_with_content(
             slides=[{"texts": ["First slide"]}]
         )
-        result = tools._extract_pptx_text_from_bytes(pptx_bytes)
+        result = _extract_pptx_text_from_bytes(pptx_bytes)
         
         assert "[Slide 1]" in result
         assert "[Slide 0]" not in result
@@ -1993,7 +2003,7 @@ class TestOfficeDocumentErrorHandling:
         corrupt_data = b"This is not a valid DOCX file"
         
         with pytest.raises(Exception):
-            tools._extract_docx_text_from_bytes(corrupt_data)
+            _extract_docx_text_from_bytes(corrupt_data)
 
     def test_corrupt_xlsx_raises_error(self):
         """Test that corrupt XLSX data raises an error."""
@@ -2003,7 +2013,7 @@ class TestOfficeDocumentErrorHandling:
         corrupt_data = b"This is not a valid XLSX file"
         
         with pytest.raises(Exception):
-            tools._extract_xlsx_text_from_bytes(corrupt_data)
+            _extract_xlsx_text_from_bytes(corrupt_data)
 
     def test_corrupt_pptx_raises_error(self):
         """Test that corrupt PPTX data raises an error."""
@@ -2013,7 +2023,7 @@ class TestOfficeDocumentErrorHandling:
         corrupt_data = b"This is not a valid PPTX file"
         
         with pytest.raises(Exception):
-            tools._extract_pptx_text_from_bytes(corrupt_data)
+            _extract_pptx_text_from_bytes(corrupt_data)
 
     def test_http_office_fetch_error(self):
         """Test error handling when HTTP Office document fetch fails."""
