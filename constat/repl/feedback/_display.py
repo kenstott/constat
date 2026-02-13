@@ -520,8 +520,9 @@ class FeedbackDisplay(FeedbackDisplayCore):
         self.console.print()
         self.console.print("[dim]Enter a number to try that approach, or type your own suggestion[/dim]")
 
-    def show_summary(self, success: bool, total_steps: int, _duration_ms: int) -> None:
+    def show_summary(self, success: bool, total_steps: int, duration_ms: int) -> None:
         """Show final execution summary."""
+        _ = duration_ms
         # Stop the Live display before printing summary
         self.stop()
 

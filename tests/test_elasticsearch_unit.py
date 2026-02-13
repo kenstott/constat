@@ -121,7 +121,6 @@ class TestElasticsearchConnection:
 
         mock_es_class.assert_called_once_with(
             hosts=["http://localhost:9200"],
-            use_ssl=False,
             verify_certs=True,
         )
         mock_client.info.assert_called_once()
@@ -162,7 +161,6 @@ class TestElasticsearchConnection:
         mock_es_class.assert_called_once_with(
             hosts=["http://localhost:9200"],
             api_key="test_api_key",
-            use_ssl=False,
             verify_certs=True,
         )
 
@@ -182,7 +180,6 @@ class TestElasticsearchConnection:
         mock_es_class.assert_called_once_with(
             hosts=["http://localhost:9200"],
             basic_auth=("elastic", "password"),
-            use_ssl=False,
             verify_certs=True,
         )
 
