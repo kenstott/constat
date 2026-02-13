@@ -9,9 +9,13 @@
 
 """Fact commands mixin — facts, remember, forget, learnings, corrections."""
 
+import logging
+
 from rich.table import Table
 
 from constat.storage.learnings import LearningCategory, LearningSource
+
+logger = logging.getLogger(__name__)
 
 
 class _FactCommandsMixin:
@@ -76,8 +80,7 @@ class _FactCommandsMixin:
                     self.api.session.datastore.save_dataframe("_facts", facts_df)
                     self.console.print("[dim]Facts synced to _facts table (queryable via SQL)[/dim]")
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).debug("Failed to sync facts to datastore: %s", e)
+                logger.debug("Failed to sync facts to datastore: %s", e)
 
     def _remember_fact(self, fact_text: str) -> None:
         """Remember a fact persistently (survives across sessions).
@@ -161,14 +164,15 @@ class _FactCommandsMixin:
 
             if extracted:
                 for fact in extracted:
+                    if isinstance(fact, dict):
+                        name, value = fact['name'], fact['value']
+                        desc, ctx = fact.get('description', ''), fact.get('context', '')
+                    else:
+                        name, value = fact.name, fact.value
+                        desc, ctx = fact.description, fact.context
                     self.api.fact_store.save_fact(
-                        name=fact.name if hasattr(fact, 'name') else fact['name'],
-                        value=fact.value if hasattr(fact, 'value') else fact['value'],
-                        description=fact.description if hasattr(fact, 'description') else fact.get('description', ''),
-                        context=fact.context if hasattr(fact, 'context') else fact.get('context', ''),
+                        name=name, value=value, description=desc, context=ctx,
                     )
-                    name = fact.name if hasattr(fact, 'name') else fact['name']
-                    value = fact.value if hasattr(fact, 'value') else fact['value']
                     self.console.print(f"[green]Remembered:[/green] {name} = {value}")
                     self.console.print("[dim]This fact will persist across sessions.[/dim]")
             else:

@@ -9,14 +9,23 @@
 
 """Data commands mixin — tables, export, artifacts, databases, files, code, state."""
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 from rich.syntax import Syntax
 
+logger = logging.getLogger(__name__)
+
 
 class _DataCommandsMixin:
     """Data-related REPL commands: tables, export, artifacts, databases, files, code, state."""
+
+    @staticmethod
+    def _role_suffix(item) -> str:
+        """Format role suffix for display."""
+        role_id = item.get("role_id") if isinstance(item, dict) else getattr(item, "role_id", None)
+        return f" [blue]@{role_id}[/blue]" if role_id else ""
 
     def _show_tables(self) -> None:
         """Show tables in current session with file:// URIs for Parquet files."""
@@ -36,16 +45,15 @@ class _DataCommandsMixin:
 
             self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
             for t in tables:
-                role_suffix = f" [blue]@{t.role_id}[/blue]" if getattr(t, "role_id", None) else ""
-                self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{role_suffix}")
+                self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{self._role_suffix(t)}")
                 file_path = Path(t.file_path)
                 if file_path.exists():
                     file_uri = file_path.resolve().as_uri()
                     self.console.print(f"    {file_uri}")
 
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug("Registry unavailable for tables, falling back to datastore: %s", e)
+            logger.debug("Registry unavailable for tables: %s", e)
+            self.console.print("[yellow]Registry unavailable, showing datastore tables.[/yellow]")
             if not self.api.session.datastore:
                 self.console.print("[yellow]No active session.[/yellow]")
                 return
@@ -126,8 +134,7 @@ class _DataCommandsMixin:
                 has_artifacts = True
                 self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
                 for t in tables:
-                    role_suffix = f" [blue]@{t.role_id}[/blue]" if getattr(t, "role_id", None) else ""
-                    self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{role_suffix}")
+                    self.console.print(f"  [cyan]{t.name}[/cyan] [dim]({t.row_count} rows)[/dim]{self._role_suffix(t)}")
                     if t.description:
                         self.console.print(f"    {t.description}")
                     file_path = Path(t.file_path)
@@ -144,8 +151,7 @@ class _DataCommandsMixin:
                     if file_path.exists():
                         file_uri = file_path.resolve().as_uri()
                         size_str = f"{a.size_bytes / 1024:.1f}KB" if a.size_bytes else ""
-                        role_suffix = f" [blue]@{a.role_id}[/blue]" if getattr(a, "role_id", None) else ""
-                        self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]{role_suffix}")
+                        self.console.print(f"  [cyan]{a.name}[/cyan] [dim]({a.artifact_type}) {size_str}[/dim]{self._role_suffix(a)}")
                         if a.description:
                             self.console.print(f"    {a.description}")
                         self.console.print(f"    {file_uri}")
@@ -156,16 +162,15 @@ class _DataCommandsMixin:
             registry.close()
 
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug("Registry unavailable for artifacts, falling back to datastore: %s", e)
+            logger.debug("Registry unavailable for artifacts: %s", e)
+            self.console.print("[yellow]Registry unavailable, showing datastore tables.[/yellow]")
             if self.api.session.datastore:
                 tables = self.api.session.datastore.list_tables()
                 if tables:
                     has_artifacts = True
                     self.console.print(f"\n[bold]Tables[/bold] ({len(tables)})")
                     for t in tables:
-                        role_suffix = f" [blue]@{t.get('role_id')}[/blue]" if t.get("role_id") else ""
-                        self.console.print(f"  [cyan]{t['name']}[/cyan] [dim]({t['row_count']} rows)[/dim]{role_suffix}")
+                        self.console.print(f"  [cyan]{t['name']}[/cyan] [dim]({t['row_count']} rows)[/dim]{self._role_suffix(t)}")
 
         if not has_artifacts:
             self.console.print("[dim]No artifacts in this session.[/dim]")
@@ -323,32 +328,21 @@ class _DataCommandsMixin:
             self.console.print("[dim]No databases configured.[/dim]")
             return
 
-        if config_dbs:
-            self.console.print(f"\n[bold]Config Databases[/bold] ({len(config_dbs)})")
-            for name, db in config_dbs.items():
-                uri_display = self._mask_credentials(db["uri"])
-                self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
-                if db["description"]:
-                    self.console.print(f"    {db['description']}")
-                self.console.print(f"    [dim]{uri_display}[/dim]")
+        self._print_database_section("Config Databases", config_dbs)
+        self._print_database_section("Bookmarked Databases", bookmark_dbs)
+        self._print_database_section("Session Databases", session_dbs)
 
-        if bookmark_dbs:
-            self.console.print(f"\n[bold]Bookmarked Databases[/bold] ({len(bookmark_dbs)})")
-            for name, db in bookmark_dbs.items():
-                uri_display = self._mask_credentials(db["uri"])
-                self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
-                if db["description"]:
-                    self.console.print(f"    {db['description']}")
-                self.console.print(f"    [dim]{uri_display}[/dim]")
-
-        if session_dbs:
-            self.console.print(f"\n[bold]Session Databases[/bold] ({len(session_dbs)})")
-            for name, db in session_dbs.items():
-                uri_display = self._mask_credentials(db["uri"])
-                self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
-                if db["description"]:
-                    self.console.print(f"    {db['description']}")
-                self.console.print(f"    [dim]{uri_display}[/dim]")
+    def _print_database_section(self, title: str, dbs: dict) -> None:
+        """Print a section of databases with masked URIs."""
+        if not dbs:
+            return
+        self.console.print(f"\n[bold]{title}[/bold] ({len(dbs)})")
+        for name, db in dbs.items():
+            uri_display = self._mask_credentials(db["uri"])
+            self.console.print(f"  [cyan]{name}[/cyan] [dim]({db['type']})[/dim]")
+            if db["description"]:
+                self.console.print(f"    {db['description']}")
+            self.console.print(f"    [dim]{uri_display}[/dim]")
 
     def _show_files(self) -> None:
         """Show all files (config docs + file sources + bookmarks + session)."""

@@ -9,8 +9,10 @@
 
 """Core REPL mixin — __init__, prompt toolkit, dispatch, solve, run loop."""
 
+import logging
 import os
 import sys
+from collections.abc import Callable
 from typing import Optional
 
 from prompt_toolkit import prompt as pt_prompt
@@ -31,6 +33,8 @@ from constat.storage.facts import FactStore
 from constat.storage.learnings import LearningStore
 from constat.visualization.output import clear_pending_outputs
 
+logger = logging.getLogger(__name__)
+
 
 class _CoreMixin:
     """Core REPL mixin: __init__, prompt toolkit, dispatch, solve, run loop."""
@@ -40,7 +44,7 @@ class _CoreMixin:
         config: Config,
         verbose: bool = False,
         console: Optional[Console] = None,
-        progress_callback: Optional[callable] = None,
+        progress_callback: Callable[..., None] | None = None,
         user_id: str = "default",
         auto_resume: bool = False,
     ):
@@ -115,8 +119,7 @@ class _CoreMixin:
             plans = Session.list_saved_plans(user_id=self.user_id)
             context["plans"] = [p["name"] for p in plans]
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug("Failed to list plans for suggestions: %s", e)
+            logger.debug("Failed to list plans for suggestions: %s", e)
 
         return context
 
@@ -185,16 +188,14 @@ class _CoreMixin:
                 for t in tables:
                     words.append(t["name"])
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).debug("Failed to list tables for completer: %s", e)
+                logger.debug("Failed to list tables for completer: %s", e)
 
         try:
             plans = Session.list_saved_plans(user_id=self.user_id)
             for p in plans:
                 words.append(p["name"])
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug("Failed to list plans for completer: %s", e)
+            logger.debug("Failed to list plans for completer: %s", e)
 
         return WordCompleter(words, ignore_case=True)
 

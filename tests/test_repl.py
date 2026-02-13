@@ -18,14 +18,12 @@ Tests cover:
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock, patch, PropertyMock
-from io import StringIO
+from unittest.mock import Mock, patch
 
 from rich.console import Console
 
 from constat.repl import InteractiveREPL
 from constat.core.config import Config
-from constat.session import Session, SessionConfig
 from constat.storage.history import SessionSummary
 
 

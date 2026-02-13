@@ -61,16 +61,19 @@ class _SessionCommandsMixin:
         if "insights" in original:
             self.session_config.enable_insights = original["insights"]
 
-    def _toggle_verbose(self, arg: str = "") -> None:
-        """Toggle or set verbose mode on/off."""
+    @staticmethod
+    def _parse_toggle(arg: str, current: bool) -> bool:
+        """Parse on/off/toggle argument, returning new boolean value."""
         arg_lower = arg.lower().strip()
         if arg_lower == "on":
-            self.verbose = True
-        elif arg_lower == "off":
-            self.verbose = False
-        else:
-            self.verbose = not self.verbose
+            return True
+        if arg_lower == "off":
+            return False
+        return not current
 
+    def _toggle_verbose(self, arg: str = "") -> None:
+        """Toggle or set verbose mode on/off."""
+        self.verbose = self._parse_toggle(arg, self.verbose)
         self.display.verbose = self.verbose
         status = "on" if self.verbose else "off"
         self.console.print(f"Verbose: [bold]{status}[/bold]")
@@ -79,14 +82,7 @@ class _SessionCommandsMixin:
 
     def _toggle_raw(self, arg: str = "") -> None:
         """Toggle or set raw output display on/off."""
-        arg_lower = arg.lower().strip()
-        if arg_lower == "on":
-            self.session_config.show_raw_output = True
-        elif arg_lower == "off":
-            self.session_config.show_raw_output = False
-        else:
-            self.session_config.show_raw_output = not self.session_config.show_raw_output
-
+        self.session_config.show_raw_output = self._parse_toggle(arg, self.session_config.show_raw_output)
         status = "on" if self.session_config.show_raw_output else "off"
         self.console.print(f"Raw output: [bold]{status}[/bold]")
         if self.session_config.show_raw_output:
@@ -96,14 +92,7 @@ class _SessionCommandsMixin:
 
     def _toggle_insights(self, arg: str = "") -> None:
         """Toggle or set insight synthesis on/off."""
-        arg_lower = arg.lower().strip()
-        if arg_lower == "on":
-            self.session_config.enable_insights = True
-        elif arg_lower == "off":
-            self.session_config.enable_insights = False
-        else:
-            self.session_config.enable_insights = not self.session_config.enable_insights
-
+        self.session_config.enable_insights = self._parse_toggle(arg, self.session_config.enable_insights)
         status = "on" if self.session_config.enable_insights else "off"
         self.console.print(f"Insights: [bold]{status}[/bold]")
         if not self.session_config.enable_insights:
