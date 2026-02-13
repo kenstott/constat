@@ -201,9 +201,9 @@ def linkify_artifact_references(
         escaped_name = re.escape(table_name)
         bare_pattern = rf'\b({escaped_name})\s*\((\d+(?:,\d+)*)\s*rows?\)'
 
-        def replace_bare_match(match, tname=table_name, tdata=table):
+        def replace_bare_match(match, tname=table_name, _rc=table.get('row_count')):
             row_count_str = match.group(2)
-            row_count = int(row_count_str.replace(',', '')) if row_count_str else tdata.get('row_count')
+            row_count = int(row_count_str.replace(',', '')) if row_count_str else _rc
             return make_artifact_link_markup(tname, "table", row_count)
 
         result = re.sub(bare_pattern, replace_bare_match, result)
@@ -220,8 +220,8 @@ def linkify_artifact_references(
         escaped_name = re.escape(table_name)
         bare_pattern = rf'\b({escaped_name})\b'
 
-        def replace_bare_name(match, tname=table_name, tdata=table):
-            return make_artifact_link_markup(tname, "table", tdata.get('row_count'))
+        def replace_bare_name(match, tname=table_name, _rc=table.get('row_count')):
+            return make_artifact_link_markup(tname, "table", _rc)
 
         result = re.sub(bare_pattern, replace_bare_name, result)
 

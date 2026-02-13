@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ._types import (
     Fact,
@@ -1379,7 +1379,7 @@ Original request:
             # Execute to define the derive function
             exec(logic, local_ns)
 
-            derive_func = local_ns.get("derive")
+            derive_func: Callable = local_ns.get("derive")
             if not derive_func:
                 logger.error("[_execute_sandboxed_logic] No 'derive' function found")
                 return None, 0.0

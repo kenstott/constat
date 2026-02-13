@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 import constat.llm
 from constat.core.models import TaskType
@@ -1143,7 +1143,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             exec(compile(script_content, str(script_path), 'exec'), exec_globals)
 
             # Find entry point: try common names
-            entry_fn = None
+            entry_fn: Optional[Callable] = None
             for fn_name in ('run_proof', 'run', 'main'):
                 fn = exec_globals.get(fn_name)
                 if callable(fn):
