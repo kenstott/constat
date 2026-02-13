@@ -286,6 +286,17 @@ async def create_skill_from_proof(
                     default = repr(value)
                 script_params.append({"name": pname, "default": default})
 
+    # Gather actual output schemas from datastore tables
+    result_schemas = {}
+    if session.datastore:
+        table_list = proof_result.get("datastore_tables") or session.datastore.list_tables()
+        for table_info in table_list:
+            tname = table_info if isinstance(table_info, str) else table_info.get("name", "")
+            if tname:
+                schema = session.datastore.get_table_schema(tname)
+                if schema:
+                    result_schemas[tname] = schema
+
     # Generate SKILL.md content via LLM
     try:
         content, description = session.skill_manager.skill_from_proof(
@@ -296,6 +307,7 @@ async def create_skill_from_proof(
             llm=session.llm,
             description=skill_request.description or None,
             script_params=script_params or None,
+            result_schemas=result_schemas or None,
         )
     except Exception as e:
         logger.error(f"Failed to generate skill from proof: {e}")

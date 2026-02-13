@@ -69,12 +69,15 @@ CREATE TABLE glossary_terms (
     name VARCHAR NOT NULL,              -- Singular canonical form (matches entity.name)
     display_name VARCHAR NOT NULL,      -- Title case singular for UI
     definition TEXT NOT NULL,           -- Business meaning (the whole point)
+    domain VARCHAR,                     -- Owning domain (null = system-level)
     parent_id VARCHAR,                  -- Taxonomy parent (self-referential)
     aliases TEXT,                       -- JSON array of alternate names
     semantic_type VARCHAR,              -- CONCEPT, ATTRIBUTE, ACTION, TERM
     cardinality VARCHAR DEFAULT 'many', -- many | distinct | singular
     plural VARCHAR,                     -- Irregular plural form (person->people)
     list_of VARCHAR,                    -- Glossary term ID if collection
+    tags TEXT,                          -- JSON map of tags (no arrays rule)
+    owner VARCHAR,                      -- Term-level owner (domain has default owner)
     status VARCHAR DEFAULT 'draft',     -- draft | reviewed | approved
     provenance VARCHAR DEFAULT 'llm',   -- llm | human | hybrid
     session_id VARCHAR NOT NULL,
@@ -86,6 +89,7 @@ CREATE TABLE glossary_terms (
 );
 
 CREATE INDEX idx_glossary_name ON glossary_terms(name);
+CREATE INDEX idx_glossary_domain ON glossary_terms(domain);
 CREATE INDEX idx_glossary_parent ON glossary_terms(parent_id);
 CREATE INDEX idx_glossary_session ON glossary_terms(session_id);
 CREATE INDEX idx_glossary_status ON glossary_terms(status);
@@ -96,7 +100,10 @@ No junction table. The join key is `(name, session_id)` between `entities` and `
 ### Unified Glossary View
 
 ```sql
--- The main glossary: all entities, with definitions where they exist
+-- The main glossary: all entities, with definitions where they exist.
+-- A session may load multiple domains. An entity can have 0..N glossary
+-- entries (one per domain that defines it). Entities with no glossary
+-- entry in any loaded domain are self-describing.
 CREATE VIEW unified_glossary AS
 SELECT
     e.id AS entity_id,
@@ -106,6 +113,7 @@ SELECT
     e.ner_type,
     e.session_id,
     g.id AS glossary_id,
+    g.domain,
     g.definition,
     g.parent_id,
     g.aliases,
@@ -133,6 +141,15 @@ LEFT JOIN entities e
 WHERE e.id IS NULL;
 ```
 
+When two loaded domains both define the same term, the LEFT JOIN produces one row per domain definition. The UI groups them under the entity name and shows domain badges to distinguish:
+
+```
+▼ Customer                                    CONCEPT
+  retail: "Individual consumer purchasing for personal use"
+  enterprise: "Business entity under negotiated contracts"
+  [crm (DB)] [user-api (API)]                approved
+```
+
 ### Dataclass
 
 ```python
@@ -142,12 +159,15 @@ class GlossaryTerm:
     name: str                                       # Singular canonical form
     display_name: str                               # Title case singular
     definition: str
+    domain: Optional[str] = None                    # Owning domain (None = system-level)
     parent_id: Optional[str] = None
     aliases: list[str] = field(default_factory=list)
     semantic_type: Optional[str] = None
     cardinality: str = "many"                       # many | distinct | singular
     plural: Optional[str] = None                    # Irregular plural (person->people)
     list_of: Optional[str] = None                   # Glossary term ID if collection
+    tags: dict[str, dict] = field(default_factory=dict)  # Tags (map, no arrays)
+    owner: Optional[str] = None                     # Term-level owner
     status: str = "draft"                           # draft | reviewed | approved
     provenance: str = "llm"                         # llm | human | hybrid
     session_id: str = ""
@@ -763,6 +783,48 @@ def is_grounded(term_name: str, session_id: str) -> bool:
     return any(is_grounded(c.name, session_id) for c in children)
 ```
 
+## Domain Scoping
+
+A domain owns the glossary for its portion of the business. An entity, within a domain, can have a domain glossary entry. There is no conflict — two domains using the same term are scoping it differently, not competing over it.
+
+```
+Domain: retail                          Domain: enterprise
+├── sources: crm, pos_api              ├── sources: erp, contracts_api
+├── entities: customer, order, ...      ├── entities: customer, contract, ...
+└── glossary:                           └── glossary:
+    customer: "Individual consumer          customer: "Business entity under
+     purchasing for personal use"            negotiated contracts"
+```
+
+A session can load multiple domains. When it does, `glossary_terms` contains entries from each domain (tagged by `domain` column). The unified view joins entities to all matching glossary entries — one row per domain definition. The UI shows domain badges to disambiguate:
+
+```
+▼ Customer                                    CONCEPT
+  retail: "Individual consumer purchasing for personal use"
+  enterprise: "Business entity under negotiated contracts"
+  [crm (DB)] [erp (DB)] [user-api (API)]
+```
+
+No collision resolution needed. The definitions coexist because they describe different scopes of the same term. The domain badge tells you which perspective you're reading.
+
+**Presentation exclusion.** Admins can define exclusion rules in the domain's glossary config to hide technical fields from the glossary UI. Rules are patterns, not per-entity lists:
+
+```yaml
+# domains/retail/glossary.yaml
+exclude:
+  created_at: {}
+  updated_at: {}
+  updated_on: {}
+  "*_id": {}        # pattern: any field ending in _id
+  "is_deleted": {}
+```
+
+Excluded entities are hidden from the glossary presentation but remain in the DB for search. Exclusion rules deep-merge across tiers like everything else — a system-level rule hides `created_at` across all domains, a domain-level rule adds domain-specific exclusions. Setting a key to `null` re-includes it at a higher tier.
+
+Any remaining disambiguation should be handled through domain-scoped definitions and/or improvement to the physical metadata itself. No additional mechanisms.
+
+**Persistence flow:** LLM suggests → user confirms in UI → confirmed terms persist to the domain's glossary YAML at the appropriate tier (see `config_merge.md` §5). On next session start, tier merge reloads them into `glossary_terms`.
+
 ## Design Decisions
 
 **Why entity name as natural key?** Eliminates the junction table. The join is `(name, session_id)` — no synthetic FKs. Multiple entities with the same name from different sources (SCHEMA, API, CONCEPT) all share one glossary definition. Entity re-extraction can freely clear and rebuild without touching glossary terms. Glossary terms persist independently.
@@ -778,3 +840,188 @@ def is_grounded(term_name: str, session_id: str) -> bool:
 **Why batch LLM generation, not per-entity?** Context. A term's definition improves when the LLM sees related terms together. "Customer" is better defined when "Order", "Product", and "Account" are in the same prompt. Batches of ~20 balance context quality against token limits.
 
 **Why embed drafts?** The glossary is a pipeline output, not an editorial artifact that gates on approval. Search should surface all defined terms so the LLM can use them. Bad definitions get fixed through the editorial flow, not by hiding them from search.
+
+## Comparison with Existing Tools
+
+### The Industry Standard
+
+Enterprise data catalogs and governance platforms universally treat the **technical catalog** (physical metadata) and the **business glossary** (curated definitions) as separate worlds connected by manual linking:
+
+| Tool | Glossary Model | Physical Metadata | Linking |
+|------|---------------|-------------------|---------|
+| **Collibra** | Separate business glossary with stewardship workflows | Connectors crawl RDBs, warehouses | Manual N:M mapping between glossary terms and technical assets |
+| **Alation** | Glossary + behavioral analysis engine | Connectors crawl RDBs, BI tools | Semi-automated suggestions, manual confirmation |
+| **Atlan** | Glossary integrated into metadata workspace | Connectors crawl RDBs, warehouses, BI | Manual linking, tag-based association |
+| **DataHub** | Glossary with ownership and hierarchy | Pull/push metadata ingestion (Kafka) | Manual term-to-dataset association |
+| **OpenMetadata** | Glossary with tags and importance | Pull-based extraction (Airflow) | Manual term-to-asset association |
+| **Apache Atlas** | Glossary + classification taxonomy | JanusGraph-based metadata store | Manual classification assignment |
+
+Every tool requires someone to (a) create a glossary term, (b) find the technical asset, (c) draw the line between them. This is expensive, error-prone, and rarely complete.
+
+### Two Key Differentiators
+
+**1. Source types are peers, not afterthoughts.** Enterprise catalogs were built for relational databases and data warehouses. NoSQL support is a connector added later. Document support is bolted on as "unstructured data management." API metadata is a separate integration. Each source type has its own metadata model, its own UI surface, its own search path. They never fully unify.
+
+Here, relational databases, NoSQL stores, REST/GraphQL APIs, and documents are peers in one metadata layer from the start. An entity extracted from a MongoDB collection, a Postgres table, a REST endpoint, and a policy PDF all appear in the same glossary, searchable through the same vector space, grounded through the same resolution logic. This isn't a feature — it's the architecture. The agent reasons across source types because the metadata layer doesn't distinguish between them.
+
+No enterprise catalog achieves this. Collibra's connectors produce separate asset types with separate governance models. Alation's behavioral analysis is SQL-centric. Atlan's metadata graph has typed edges per source. The unification happens in the UI at best, never in the reasoning layer.
+
+**2. Physical metadata IS the catalog.** Enterprise catalogs treat "technical metadata" and "business glossary" as two separate things that someone must manually connect. The implicit assumption: metadata is raw material that humans must process into a catalog before it becomes useful.
+
+This design assumes the opposite: physical metadata is already a catalog. A table named `customers` with columns `email`, `status`, `created_at` is self-describing — it communicates meaning without anyone writing a definition. The glossary doesn't replace or duplicate physical metadata. It augments where physical metadata is insufficient. The starting state isn't an empty catalog waiting to be populated — it's a populated catalog (from physical metadata) waiting to be refined (where needed).
+
+This eliminates the cold-start problem that plagues every enterprise catalog deployment. Day one, every connected source is already in the glossary as self-describing terms. The curation work is surgical: define "customer" because it's contested across departments, define "ltv_score" because it's opaque. Leave "email_address" alone because it speaks for itself.
+
+### How This Design Differs
+
+| Aspect | Industry Standard | This Design |
+|--------|------------------|-------------|
+| **Starting point** | Empty glossary, manual population | Physical metadata IS the glossary (self-describing default) |
+| **Linking** | Manual N:M mapping between glossary terms and technical assets | Natural key join — entity name matches glossary name, no mapping step |
+| **Curation effort** | Define everything | Selective — only define where physical metadata is insufficient |
+| **Source types** | RDBs and warehouses first; documents and NoSQL bolted on later | RDB + NoSQL + API + documents as peer source types from day one |
+| **Scope** | One global glossary, stewardship assigns ownership | Domain-scoped definitions — each domain owns its portion |
+| **Bootstrapping** | Manual or basic auto-suggest | LLM generates draft definitions with selective elevation |
+| **Grounding** | Terms can float unlinked indefinitely | Grounding constraint — unlinked terms surface in deprecation queue |
+| **Schema changes** | Links break silently or require manual cleanup | Deprecation queue surfaces affected terms for handling |
+
+### Additional Advantages
+
+**Domain scoping.** Enterprise tools typically have one global glossary with ownership assigned per-term. When two departments define "customer" differently, it's a governance conflict requiring stewardship resolution. Here, each domain owns its glossary — retail's "customer" and enterprise's "customer" coexist with domain badges. No conflict, no stewardship overhead.
+
+**LLM-assisted bootstrapping.** Rather than starting from an empty glossary and hoping stewards populate it, the LLM generates draft definitions for terms that pass the elevation test. Users refine rather than create from scratch.
+
+**Grounding enforcement.** Enterprise glossaries accumulate orphaned terms — business definitions that no longer correspond to any physical asset. The deprecation queue makes this visible and actionable rather than letting terms drift silently.
+
+**Curated scope, not crawl-everything.** Enterprise catalogs crawl the entire data estate and then try to surface what matters — resulting in thousands of assets, most irrelevant to any given user. Here, only sources explicitly connected to a domain are indexed. The glossary naturally contains only the terms that matter to the domain's business context. Combined with admin exclusion rules for technical fields, this keeps the glossary focused without requiring post-hoc filtering or relevance scoring.
+
+**Agent integration.** In enterprise catalogs, the glossary is a passive reference — humans look things up. Here, the glossary feeds directly into a transparent multi-step reasoning agent with built-in validation gates, a prove mode, and the ability to extend itself by adding a proven agent as a skill. The glossary isn't a separate tool the user consults — it's part of how the agent reasons, validates, and acts. The agent retrieves glossary definitions alongside physical metadata, uses both for grounded reasoning, and can validate its conclusions against the glossary's grounding constraints. This is a fundamentally different category from a data catalog. The comparison above is scoped to the glossary feature specifically — the overall system has no direct analog in the catalog/governance tool space.
+
+### Limitations
+
+**Stewardship workflows.** Collibra's strength is deep governance: approval chains, policy modeling, compliance tracking, data quality scoring. This design has a simple draft/reviewed/approved flow. A workflow engine is the natural extension point for regulated industries — the glossary architecture doesn't block it.
+
+**Collaboration workflows.** Atlan's workspace model and Slack integration enable distributed teams to collaborate on metadata in real time. This is a bolt-on concern — adding a workflow engine to handle review/approval/notification chains. The glossary architecture (domain-scoped, tier-merged) provides the data model; workflow orchestration is a separate layer.
+
+**Name-based join is simpler but less flexible.** Collibra's N:M mapping between glossary terms and assets handles cases where a term maps to multiple assets with different meanings, or where one asset maps to multiple terms. The natural key join trades that flexibility for zero-mapping simplicity. Domain scoping recovers most of the lost flexibility.
+
+**No lineage.** Competitors bundle column-level lineage, impact analysis, and data flow visualization. Lineage is a separate concern here — not bundled, not blocked, just not in scope.
+
+## Market Positioning
+
+### The Adoption Problem with Enterprise Catalogs
+
+Enterprise data catalogs require massive upfront investment before delivering value. Populate the glossary, map terms to assets, configure stewardship workflows, train users, assign data stewards. Collibra deployments commonly take 1+ years. Many implementations stall or deliver questionable ROI. The fundamental issue: the catalog is overhead that must be completed before anyone benefits from it.
+
+### Inverted Value Curve
+
+This system inverts the adoption curve by delivering value first and accumulating governance as a side effect:
+
+```
+Enterprise Catalog          This System
+─────────────────           ───────────
+                            ┌─────────────────┐
+                            │ Agent reasons    │ ← Day 1: immediate utility
+                            │ over physical    │
+                            │ metadata         │
+┌──────────────┐            ├─────────────────┤
+│ Populate     │            │ LLM identifies   │ ← Governance emerges
+│ glossary     │            │ terms needing    │   from usage
+│ manually     │            │ definitions      │
+├──────────────┤            ├─────────────────┤
+│ Map terms    │            │ Users refine     │ ← Incremental curation
+│ to assets    │            │ where needed     │   driven by actual need
+├──────────────┤            ├─────────────────┤
+│ Configure    │            │ Domains, tags,   │ ← Governance features
+│ stewardship  │            │ owners accumulate│   accumulate naturally
+├──────────────┤            ├─────────────────┤
+│ Finally:     │            │ Prove mode       │ ← Auditable reasoning
+│ users can    │            │ validates        │   no catalog can match
+│ look things  │            │ conclusions      │
+│ up           │            │                  │
+└──────────────┘            └─────────────────┘
+ Value after months          Value from day one
+```
+
+### Why This Eats Into Their Space
+
+1. **Day-one utility.** The agent reasons over physical metadata immediately. No glossary population required. Users get answers, not a catalog to maintain.
+
+2. **Governance emerges from usage.** As the agent reasons, it identifies terms that need definitions (selective elevation). The glossary builds itself incrementally from actual need, not a top-down governance mandate.
+
+3. **The catalog is a byproduct, not the product.** Nobody wants a data catalog. They want to understand their data and act on it. The agent does that. The glossary, tags, domain scoping, validation gates — governance features that accumulate as a side effect of the agent doing useful work.
+
+4. **Prove mode is the killer governance feature.** Enterprise catalogs can tell you what a term means. They cannot prove that a conclusion derived from that term is correct. Prove mode with validation gates gives auditability that catalogs cannot match — built into the reasoning, not bolted on as a compliance report.
+
+5. **Unified source types from day one.** RDBs, NoSQL, APIs, and documents in one metadata layer. Enterprise catalogs were built for structured data and are retrofitting the rest. This handles all source types natively because the agent needs to reason over all of them.
+
+6. **Skill extensibility.** A proven agent becomes a reusable skill. Governance knowledge compounds — a validated reasoning pattern for one domain can be applied to another. Catalogs have no equivalent to this.
+
+### The Regulatory Moat
+
+The bulk of enterprise catalog revenue is compliance-driven. Organizations buy Collibra not because they want a catalog but because GDPR, SOX, HIPAA, CCPA, and industry regulators require them to document what data they have, where it lives, who owns it, and how it's used. The catalog is insurance — purchased reluctantly, resented for its cost, and measured by audit pass/fail rather than productivity gain.
+
+This means:
+
+- **The incumbent's moat is regulatory mandate, not product quality.** Customers are captive buyers. They'd switch if something delivered compliance AND utility, but switching costs are high and the compliance checkbox is non-negotiable.
+- **The compliance buyer is a different buyer than the productivity buyer.** The CISO/DPO buys Collibra. The data team wants to actually use their data. These are often different budget lines, different stakeholders, different evaluation criteria.
+- **Compliance artifacts are a subset of governance artifacts.** Everything a regulator needs — term definitions, data ownership, lineage, access documentation — is a byproduct of the glossary + domain model + prove mode. The compliance report is a view over the governance state the agent builds naturally.
+
+### Attack Vector
+
+Don't compete head-on for the compliance budget. That's the incumbent's stronghold and the buyer is risk-averse.
+
+Instead: land as a reasoning agent for a specific domain. Fast time-to-value, no catalog setup required. Connect sources, the agent reasons over them immediately. The data team gets utility on day one. As usage grows, governance features accumulate naturally — glossary definitions where needed, domain scoping, tags, owners, validation gates. Prove mode produces auditable reasoning trails.
+
+Eventually two things happen:
+1. The organization realizes the catalog they were budgeting for is already built — as a side effect of actually using their data.
+2. The compliance team discovers that prove mode + glossary + domain ownership produces better audit artifacts than the catalog they're paying $1M/year for — because the artifacts are generated from actual usage, not manual stewardship.
+
+The compliance budget follows the utility budget once the artifacts prove equivalent or superior.
+
+### Why Incumbents Can't Respond Easily
+
+Enterprise catalog architecture is fundamentally passive: metadata store + UI + manual workflows. Adding a reasoning agent would require rearchitecting their core, not adding a feature. Their glossary is designed for human lookup, not machine reasoning. Their data model assumes manual N:M mapping, not natural key joins with grounding constraints. Their value proposition depends on governance-first adoption — inverting that undermines their sales motion and implementation services revenue.
+
+Their regulatory moat also makes them slow. When your revenue comes from compliance-captive customers, there's less pressure to innovate. The product roadmap optimizes for audit features and connector coverage, not reasoning capability. By the time they recognize the threat, the reasoning-first approach has accumulated governance artifacts that satisfy the same auditors.
+
+### Integrate Then Subsume
+
+The data catalog is just another source type. Connect to Collibra the same way you connect to Postgres or MongoDB — ingest its glossary terms, asset metadata, ownership, lineage. The catalog's curated definitions become entities in the unified metadata layer, searchable through the same vector space, available to the reasoning agent.
+
+```
+Sources (peers):
+├── databases: postgres, mongodb, ...
+├── apis: rest, graphql, ...
+├── documents: policies, specs, ...
+└── catalogs: collibra, alation, ...    ← new source type
+```
+
+**Phase 1: Integrate.** "Keep your Collibra. We sit on top." Zero switching cost. The organization keeps its compliance tool, the data team gets agent-powered reasoning over the same metadata. The catalog connector ingests glossary terms as entities with `ner_type=TERM`, asset metadata as schema entities, ownership as domain config. Everything flows through the same pipeline.
+
+**Phase 2: Add value.** The agent reasons across the catalog's metadata AND physical sources simultaneously — something the catalog itself cannot do. Prove mode validates conclusions against both the catalog's definitions and the actual data. Users start doing discovery and analysis through the agent because it's faster and produces auditable reasoning, not just lookup results.
+
+**Phase 3: Duplicate features.** As the agent's glossary, domain scoping, tags, ownership, and governance features mature, users start doing governance work in the agent. Definitions get refined here. New terms get created here. The catalog becomes read-only reference — still ingested, but no longer the place where governance happens.
+
+**Phase 4: Subsume.** The agent's governance artifacts become the source of truth. The catalog is an expensive pass-through that adds latency but no value. The compliance team discovers prove mode produces better audit trails than the catalog's stewardship reports. The renewal conversation changes from "we need Collibra for compliance" to "what does Collibra give us that we don't already have?"
+
+**The triangle.** Ingesting a catalog creates a three-way relationship: the agent's glossary, the catalog's glossary, and the physical sources they both map to.
+
+```
+          Physical (DB, API, docs)
+             /              \
+            /                \
+  Agent's glossary ──── Catalog (Collibra)
+```
+
+The catalog's value isn't just definitions — it's the curated bindings from glossary terms to physical assets. Months of stewardship work that maps "Customer" to `crm.customers`, "Churn Rate" to `analytics.kpi_metrics.churn_pct`. When the catalog connector ingests these, they become glossary bindings (see `config_merge.md` §5) — physical grounding that the agent can reason over immediately.
+
+Three things happen when the triangle connects:
+
+1. **Validation.** The agent's entity extraction independently found `customer` in `crm.customers`. Collibra's mapping says the same thing. Agreement = high confidence. Disagreement = signal worth surfacing (catalog may be stale, or entity extraction may have missed context).
+
+2. **Enrichment.** The catalog has curated definitions and ownership that the agent's LLM-generated drafts may lack. The catalog has bindings the agent hasn't discovered yet. The agent has physical metadata (NoSQL, documents, APIs) the catalog may not cover. Each fills gaps in the other.
+
+3. **Grounding the catalog.** The catalog's glossary terms that map to connected physical sources get grounded through both paths — the catalog's bindings AND the agent's entity extraction. Terms that only exist in the catalog with no matching physical source are flagged as potentially stale. The grounding constraint works on catalog-sourced terms the same way it works on LLM-generated terms.
+
+The triangle makes the catalog connector more valuable than a simple glossary import. You're not just ingesting definitions — you're ingesting the organization's curated understanding of how business concepts map to physical reality, then validating and extending it with the agent's own discovery.

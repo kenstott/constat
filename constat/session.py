@@ -2247,6 +2247,36 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 return scripts[0]
         return None
 
+    def _ensure_session_datastore(self, problem: str) -> None:
+        """Create history session_id and datastore if not yet initialized."""
+        # session_id may be a server UUID (not a valid history directory) — check filesystem
+        needs_history = not self.session_id
+        if self.session_id:
+            history_dir = self.history._session_dir(self.session_id)
+            if not (history_dir / "session.json").exists():
+                needs_history = True
+        if needs_history:
+            self.session_id = self.history.create_session(
+                config_dict=self.config.model_dump(),
+                databases=self.resources.database_names,
+                apis=self.resources.api_names,
+                documents=self.resources.document_names,
+                server_session_id=self.server_session_id,
+            )
+        if not self.datastore:
+            session_dir = self.history._session_dir(self.session_id)
+            datastore_path = session_dir / "datastore.duckdb"
+            tables_dir = session_dir / "tables"
+            underlying_datastore = DataStore(db_path=datastore_path)
+            self.datastore = RegistryAwareDataStore(
+                datastore=underlying_datastore,
+                registry=self.registry,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                tables_dir=tables_dir,
+            )
+            self.fact_resolver._datastore = self.datastore
+
     def _execute_skill_script(self, script_path: Path, problem: str) -> dict | None:
         """Execute a skill script directly, bypassing planning.
 
@@ -2530,24 +2560,23 @@ YOUR JSON RESPONSE:"""
                         f"## Skill: {skill.name} — EXECUTE, DO NOT REWRITE\n"
                         f"Scripts: {', '.join(script_files)}\n\n"
                         f"**Load the script and call its `run_proof()` function.** Do NOT reimplement the logic.\n\n"
-                        f"Pattern:\n"
+                        f"Generate ONLY this exact pattern — no summary code, no column references, no extra logic:\n"
                         f"```python\n"
                         f"import pandas as pd\n\n"
                         f"# 1. Load script into its own namespace\n"
                         f"_ns = {{}}\n"
                         f"exec(open('{script_files[0]}').read(), _ns)\n\n"
-                        f"# 2. Call run_proof() with parameter overrides — returns dict[str, str] of Parquet file paths\n"
-                        f"file_paths = _ns['run_proof']()  # e.g. {{'_result': '/tmp/.../result.parquet', ...}}\n\n"
+                        f"# 2. Call run_proof() — returns dict[str, str] of Parquet file paths\n"
+                        f"file_paths = _ns['run_proof']()\n\n"
                         f"# 3. Load and save each dataset to the session store\n"
                         f"for name, path in file_paths.items():\n"
                         f"    store.save_dataframe(name, pd.read_parquet(path))\n"
                         f"_result = pd.read_parquet(file_paths['_result'])\n"
                         f"```\n\n"
-                        f"IMPORTANT:\n"
-                        f"- `run_proof()` accepts keyword arguments to override default parameters. Check the documentation for available parameters.\n"
-                        f"- It returns a dict mapping dataset names to Parquet file paths. `_result` is the final output.\n"
-                        f"- Load each Parquet file with `pd.read_parquet()` and save to `store`.\n\n"
-                        f"Skill documentation:\n\n"
+                        f"CRITICAL: Do NOT add print statements that reference specific column names.\n"
+                        f"The skill script's output columns may differ from the documentation below.\n"
+                        f"Just load, save, and assign `_result`. Nothing else.\n\n"
+                        f"Skill documentation (for context only — do NOT hardcode column names from this):\n\n"
                         f"{skill.prompt}"
                     )
                 else:
@@ -6257,20 +6286,6 @@ Provide a brief, high-level summary of the key findings."""
                     speculative_plan = None
                     logger.debug("[PARALLEL] Skills activated, discarding speculative plan")
 
-                # Direct skill execution: if top match has a script and high confidence, run it
-                top_skill = matched_skills[0]
-                if top_skill.get("similarity", 0) >= 0.85:
-                    skill_obj = self.skill_manager.get_skill(top_skill["name"])
-                    if skill_obj:
-                        scripts_dir = self.skill_manager.skills_dir / skill_obj.filename / "scripts"
-                        script_path = self._find_skill_script(scripts_dir)
-                        if script_path:
-                            logger.info(f"[SKILL_EXEC] Direct execution: {skill_obj.name} (similarity={top_skill['similarity']:.2f})")
-                            result = self._execute_skill_script(script_path, problem)
-                            if result is not None:
-                                return result
-                            logger.warning("[SKILL_EXEC] Direct execution failed, falling back to planning")
-
             event_data = {
                 "role": dynamic_context.get("role"),
                 "skills": matched_skills,
@@ -6362,37 +6377,11 @@ Provide a brief, high-level summary of the key findings."""
                 speculative_plan = None
                 analysis = self._analyze_question(problem)
 
-        # Create session using consolidated resources (single source of truth)
-        self.session_id = self.history.create_session(
-            config_dict=self.config.model_dump(),
-            databases=self.resources.database_names,
-            apis=self.resources.api_names,
-            documents=self.resources.document_names,
-            server_session_id=self.server_session_id,
-        )
+        # Create session + datastore (idempotent — may already exist from skill execution)
+        self._ensure_session_datastore(problem)
 
         # Initialize session state
         self.scratchpad = Scratchpad(initial_context=f"Problem: {problem}")
-
-        # Create persistent datastore for this session
-        session_dir = self.history._session_dir(self.session_id)
-        datastore_path = session_dir / "datastore.duckdb"
-        tables_dir = session_dir / "tables"
-
-        # Create the underlying datastore
-        underlying_datastore = DataStore(db_path=datastore_path)
-
-        # Wrap with registry-aware datastore for Parquet + registry integration
-        self.datastore = RegistryAwareDataStore(
-            datastore=underlying_datastore,
-            registry=self.registry,
-            user_id=self.user_id,
-            session_id=self.session_id,
-            tables_dir=tables_dir,
-        )
-
-        # Update fact resolver's datastore reference (for storing large facts as tables)
-        self.fact_resolver._datastore = self.datastore
 
         # Save problem statement to datastore (for UI restoration)
         self.datastore.set_session_meta("problem", problem)
@@ -6461,6 +6450,28 @@ Provide a brief, high-level summary of the key findings."""
                 data={"steps": len(self.plan.steps)}
             ))
 
+            # Record plan to plan directory
+            self.history.save_plan_data(
+                self.session_id,
+                raw_response=planner_response.raw_response or None,
+                parsed_plan={
+                    "steps": [
+                        {
+                            "number": s.number,
+                            "goal": s.goal,
+                            "inputs": s.expected_inputs,
+                            "outputs": s.expected_outputs,
+                            "depends_on": s.depends_on,
+                            "task_type": s.task_type.value if s.task_type else None,
+                            "role_id": s.role_id,
+                        }
+                        for s in self.plan.steps
+                    ],
+                },
+                reasoning=planner_response.reasoning or None,
+                iteration=replan_attempt,
+            )
+
             # Request approval if required
             if self.session_config.require_approval:
                 # Use display_problem for UI (just feedback on replan, full problem initially)
@@ -6468,6 +6479,12 @@ Provide a brief, high-level summary of the key findings."""
 
                 if approval.decision == PlanApproval.REJECT:
                     # User rejected the plan
+                    self.history.save_plan_data(
+                        self.session_id,
+                        approval_decision="rejected",
+                        user_feedback=approval.reason,
+                        iteration=replan_attempt,
+                    )
                     self.datastore.set_session_meta("status", "rejected")
                     self.history.complete_session(self.session_id, status="rejected")
                     return {
@@ -6491,6 +6508,15 @@ Provide a brief, high-level summary of the key findings."""
                     suggestion_text = (approval.suggestion or "").strip()
                     has_edited_steps = bool(approval.edited_steps)
                     has_meaningful_feedback = bool(suggestion_text) and suggestion_text not in ("", "Edited plan")
+
+                    # Record suggestion
+                    self.history.save_plan_data(
+                        self.session_id,
+                        approval_decision="suggest",
+                        user_feedback=suggestion_text or None,
+                        edited_steps=approval.edited_steps,
+                        iteration=replan_attempt,
+                    )
 
                     # If user edited steps but provided no additional feedback, use edited plan directly
                     if has_edited_steps and not has_meaningful_feedback:
@@ -6562,7 +6588,13 @@ Provide a brief, high-level summary of the key findings."""
                     display_problem = suggestion_text
                     continue  # Go back to planning
 
-                # APPROVE - apply any edits/deletions, then proceed
+                # APPROVE - record and apply any edits/deletions, then proceed
+                self.history.save_plan_data(
+                    self.session_id,
+                    approval_decision="approved",
+                    edited_steps=approval.edited_steps if approval.edited_steps else None,
+                    iteration=replan_attempt,
+                )
                 if approval.edited_steps:
                     self.plan = self._build_plan_from_edited_steps(problem, approval.edited_steps)
                 elif approval.deleted_steps:
@@ -6572,7 +6604,12 @@ Provide a brief, high-level summary of the key findings."""
                         step.number = i
                 break
             else:
-                # No approval required - proceed
+                # No approval required - auto-approved
+                self.history.save_plan_data(
+                    self.session_id,
+                    approval_decision="auto_approved",
+                    iteration=replan_attempt,
+                )
                 break
 
         # Save plan to datastore (for UI restoration)

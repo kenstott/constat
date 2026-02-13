@@ -274,10 +274,18 @@ class Planner:
                         script_files = sorted(
                             str(f) for f in scripts_dir.iterdir() if f.is_file()
                         )
-                    header = f"## Skill: {skill.name}"
                     if script_files:
-                        header += f" (scripts: {', '.join(script_files)})"
-                    parts.append(f"{header}\n{skill.prompt}")
+                        parts.append(
+                            f"## Skill: {skill.name} — EXECUTABLE SCRIPT\n"
+                            f"MANDATORY: Your plan MUST include a step with this exact goal:\n"
+                            f'  "Execute {skill.name} skill script (run_proof)"\n'
+                            f"  task_type: python_analysis\n"
+                            f"Do NOT rewrite or rephrase this step. Do NOT build from primitives.\n"
+                            f"Do NOT add post_validations to this step — the skill script is pre-validated.\n\n"
+                            f"{skill.prompt}"
+                        )
+                    else:
+                        parts.append(f"## Skill: {skill.name} (reference)\n{skill.prompt}")
                 active_skills_text = "\n\n".join(parts)
                 logger.info(f"[PLANNER] Including {len(active_skill_objects)} active skills in prompt")
 
@@ -330,7 +338,13 @@ class Planner:
         if match:
             json_str = match.group(1)
         else:
-            json_str = response.strip()
+            # Strip preamble text before first { and after last }
+            first_brace = response.find('{')
+            last_brace = response.rfind('}')
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                json_str = response[first_brace:last_brace + 1]
+            else:
+                json_str = response.strip()
 
         try:
             return json.loads(json_str)
@@ -515,6 +529,7 @@ class Planner:
                 user_message=f"Create a plan to answer this question:\n\n{problem}",
                 tools=schema_tools,
                 tool_handlers=self._get_tool_handlers(),
+                max_tokens=16384,
             )
             if not result.success:
                 raise ValueError(f"Planning failed: {result.content}")
@@ -578,6 +593,7 @@ class Planner:
         return PlannerResponse(
             plan=plan,
             reasoning=plan_data.get("reasoning", ""),
+            raw_response=response,
         )
 
     def replan(
@@ -659,6 +675,7 @@ Return the plan in JSON format."""
                 user_message=prompt,
                 tools=schema_tools,
                 tool_handlers=self._get_tool_handlers(),
+                max_tokens=16384,
             )
             if not result.success:
                 raise ValueError(f"Replanning failed: {result.content}")
@@ -715,4 +732,5 @@ Return the plan in JSON format."""
         return PlannerResponse(
             plan=revised_plan,
             reasoning=plan_data.get("reasoning", ""),
+            raw_response=response,
         )

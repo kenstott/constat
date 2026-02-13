@@ -395,6 +395,7 @@ class PlannerResponse:
     """Response from the planner."""
     plan: Plan
     reasoning: str = ""  # Why this plan was chosen
+    raw_response: str = ""  # Raw LLM output before parsing
 
 
 @dataclass

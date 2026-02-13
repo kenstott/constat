@@ -127,10 +127,10 @@ class SessionHistory:
         path.mkdir(parents=True, exist_ok=True)
 
     def _generate_session_id(self) -> str:
-        """Generate a unique session ID with full timestamp (sortable)."""
+        """Generate a unique session ID with full timestamp (sortable and human-readable)."""
         now = datetime.now(timezone.utc)
-        # Format: YYYY-MM-DD_HHMMSS_uuuuuu (microseconds for uniqueness and sortability)
-        timestamp = now.strftime("%Y-%m-%d_%H%M%S")
+        # Format: YYYY-MM-DD_HH-MM-SS_uuuuuu (microseconds for uniqueness)
+        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
         microseconds = f"{now.microsecond:06d}"
         return f"{timestamp}_{microseconds}"
 
@@ -200,7 +200,60 @@ class SessionHistory:
         # Create empty queries file
         (session_dir / "queries.jsonl").touch()
 
+        # Create plan directory for recording planning data
+        (session_dir / "plan").mkdir(exist_ok=True)
+
         return session_id
+
+    def save_plan_data(
+        self,
+        session_id: str,
+        *,
+        raw_response: str | None = None,
+        parsed_plan: dict | None = None,
+        reasoning: str | None = None,
+        approval_decision: str | None = None,
+        user_feedback: str | None = None,
+        edited_steps: list | None = None,
+        iteration: int = 0,
+    ) -> None:
+        """Save planning data to the session's plan directory.
+
+        Args:
+            session_id: Session to save plan data for
+            raw_response: Raw LLM response text
+            parsed_plan: Parsed plan as dict (steps, reasoning, etc.)
+            reasoning: Planner's reasoning
+            approval_decision: User's approval decision (approved/rejected/suggest)
+            user_feedback: User's feedback text (for replans)
+            edited_steps: User's edited steps (for direct edits)
+            iteration: Replan iteration number (0 = initial plan)
+        """
+        plan_dir = self._session_dir(session_id) / "plan"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+
+        prefix = f"v{iteration}"
+
+        if raw_response is not None:
+            with open(plan_dir / f"{prefix}_raw_response.txt", "w") as f:
+                f.write(raw_response)
+
+        if parsed_plan is not None:
+            with open(plan_dir / f"{prefix}_plan.json", "w") as f:
+                json.dump(parsed_plan, f, indent=2)
+
+        if reasoning is not None:
+            with open(plan_dir / f"{prefix}_reasoning.txt", "w") as f:
+                f.write(reasoning)
+
+        if approval_decision is not None:
+            with open(plan_dir / f"{prefix}_approval.json", "w") as f:
+                json.dump({
+                    "decision": approval_decision,
+                    "feedback": user_feedback,
+                    "edited_steps": edited_steps,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }, f, indent=2)
 
     def log_user_input(
         self,

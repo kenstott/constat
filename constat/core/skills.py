@@ -599,12 +599,16 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         llm,
         description: str | None = None,
         script_params: list[dict] | None = None,
+        result_schemas: dict[str, list[dict]] | None = None,
     ) -> tuple[str, str]:
         """Distill a completed proof into SKILL.md content.
 
         Args:
             script_params: List of dicts with 'name' and 'default' keys describing
                           run_proof() keyword arguments.
+            result_schemas: Dict mapping dataset name to list of column dicts
+                           (each with 'name', 'type', 'nullable' keys).
+                           These are the ACTUAL output columns from the script.
 
         Returns (content, description).
         """
@@ -655,6 +659,18 @@ Output the complete SKILL.md content (frontmatter + markdown body). No explanati
             }
             nodes_summary.append(entry)
 
+        # Build actual schema documentation
+        schema_docs = ""
+        if result_schemas:
+            schema_lines = ["\n## ACTUAL OUTPUT SCHEMAS (from executed script — use these EXACT column names):\n"]
+            for dataset_name, columns in result_schemas.items():
+                schema_lines.append(f"### Dataset: `{dataset_name}`")
+                for col in columns:
+                    col_type = col.get("type", "unknown")
+                    schema_lines.append(f"  - `{col['name']}` ({col_type})")
+                schema_lines.append("")
+            schema_docs = "\n".join(schema_lines)
+
         user_prompt = f"""Create a skill named "{name}" from this completed analysis.
 
 Original problem: {original_problem}
@@ -669,8 +685,8 @@ Generate a SKILL.md focused on capabilities, parameters, and return values. Do N
 The executable script is `scripts/proof.py` with a `run_proof()` function that returns `dict[str, DataFrame]` (all datasets plus `_result` key for the final output).
 
 {f"run_proof() parameters:{chr(10)}" + chr(10).join(f"- {p['name']}: default={p['default']}" for p in script_params) if script_params else "run_proof() takes no parameters."}
-
-The SKILL.md must clearly document: what it does, what parameters run_proof() accepts, and what columns/datasets it returns."""
+{schema_docs}
+CRITICAL: The "Returns" section MUST document the EXACT column names and types shown above. Do NOT invent, rename, or omit any columns. Copy them verbatim from the ACTUAL OUTPUT SCHEMAS."""
 
         result = llm.generate(
             system=system_prompt,
