@@ -23,6 +23,7 @@ from constat.execution.scratchpad import Scratchpad
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class IntentsMixin:
 
     def _request_approval(

@@ -21,6 +21,7 @@ from constat.session._types import StepEvent
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class PlansMixin:
 
     CONSTAT_BASE_DIR = Path(".constat")

@@ -24,6 +24,7 @@ import numpy as np
 from constat.discovery.models import EnrichedChunk
 
 if TYPE_CHECKING:
+    # noinspection PyUnresolvedReferences
     from constat.discovery.vector_store import VectorStore
     from constat.catalog.schema_manager import SchemaManager
     from constat.catalog.api_schema_manager import APISchemaManager

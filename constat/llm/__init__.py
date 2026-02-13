@@ -92,6 +92,7 @@ class _DirectProvider:
             return resp.choices[0].message.content
 
         if self.provider == "gemini":
+            # noinspection PyUnresolvedReferences
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
             model = genai.GenerativeModel(self.model, system_instruction=system)

@@ -19,6 +19,7 @@ from constat.storage.learnings import LearningCategory, LearningSource
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class _FactCommandsMixin:
     """Fact-related REPL commands: facts, remember, forget, learnings, corrections."""
 

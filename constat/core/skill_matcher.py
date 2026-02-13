@@ -149,7 +149,7 @@ class SkillMatcher:
         max_skills = max_skills if max_skills is not None else self._max_skills
 
         # Encode the query
-        query_embedding = self._model.encode(
+        query_embedding = self._model.encode(  # noinspection PyUnresolvedReferences
             query,
             normalize_embeddings=True,
         )

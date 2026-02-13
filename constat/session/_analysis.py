@@ -22,6 +22,7 @@ from constat.session._types import QuestionType, QuestionAnalysis, DetectedInten
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class AnalysisMixin:
 
     def _classify_question(self, problem: str) -> str:

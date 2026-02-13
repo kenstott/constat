@@ -15,6 +15,7 @@ from rich.table import Table
 from constat.session import Session
 
 
+# noinspection PyUnresolvedReferences
 class _SessionCommandsMixin:
     """Session-related REPL commands: toggles, context, reset, redo, history, plans, audit, prove, summarize."""
 

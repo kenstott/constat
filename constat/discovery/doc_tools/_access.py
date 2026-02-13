@@ -19,6 +19,7 @@ from ._schema_inference import _expand_file_paths
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class _AccessMixin:
     """Access, search, and load methods for DocumentDiscoveryTools."""
 

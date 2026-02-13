@@ -166,7 +166,7 @@ class EntityExtractor:
                     patterns.append({"label": "TERM", "pattern": token_pattern})
 
         if patterns:
-            ruler.add_patterns(patterns)
+            ruler.add_patterns(patterns)  # noinspection PyUnresolvedReferences
             logger.debug(f"EntityExtractor: added {len(patterns)} custom patterns")
 
         # Entity cache for deduplication

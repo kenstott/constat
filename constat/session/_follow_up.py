@@ -23,6 +23,7 @@ from constat.session._types import StepEvent
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class FollowUpMixin:
 
     def classify_follow_up_intent(self, user_text: str) -> dict:

@@ -80,6 +80,7 @@ class FirestoreConnector(NoSQLConnector):
     def connect(self) -> None:
         """Connect to Firestore."""
         try:
+            # noinspection PyUnresolvedReferences
             from google.cloud import firestore
         except ImportError:
             raise ImportError(
@@ -394,6 +395,7 @@ class FirestoreConnector(NoSQLConnector):
         if not self._client:
             raise RuntimeError("Not connected to Firestore")
 
+        # noinspection PyUnresolvedReferences
         from google.cloud.firestore import transactional
 
         @transactional

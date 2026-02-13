@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class SynthesisMixin:
 
     def _synthesize_answer(self, problem: str, step_outputs: str, artifacts: list[dict] | None = None) -> str:

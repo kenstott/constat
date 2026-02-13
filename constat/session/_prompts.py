@@ -19,6 +19,7 @@ from constat.session._types import STEP_SYSTEM_PROMPT, STEP_PROMPT_TEMPLATE
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class PromptsMixin:
 
     def _is_unclear_input(self, text: str) -> bool:

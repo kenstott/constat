@@ -38,6 +38,7 @@ from constat.visualization.output import clear_pending_outputs
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class _CoreMixin:
     """Core REPL mixin: __init__, prompt toolkit, dispatch, solve, run loop."""
 

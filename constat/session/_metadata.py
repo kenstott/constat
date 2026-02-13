@@ -18,6 +18,7 @@ from constat.prompts import load_yaml
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class MetadataMixin:
 
     def _cached_get_table_schema(self, table: str) -> dict:

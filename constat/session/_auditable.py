@@ -19,6 +19,7 @@ from constat.session._types import StepEvent
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class AuditableMixin:
 
     def _solve_auditable_with_steer_handling(

@@ -81,6 +81,7 @@ class CosmosDBConnector(NoSQLConnector):
     def connect(self) -> None:
         """Connect to Cosmos DB."""
         try:
+            # noinspection PyUnresolvedReferences
             from azure.cosmos import CosmosClient
         except ImportError:
             raise ImportError(
@@ -385,6 +386,7 @@ class CosmosDBConnector(NoSQLConnector):
         if not self._db:
             raise RuntimeError("Not connected to Cosmos DB")
 
+        # noinspection PyUnresolvedReferences
         from azure.cosmos import PartitionKey
 
         container_kwargs = {

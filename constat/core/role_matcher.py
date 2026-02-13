@@ -102,7 +102,7 @@ class RoleMatcher:
                 logger.warning(f"Role '{role_name}' has no description or prompt, skipping")
                 continue
 
-            embedding = self._model.encode(
+            embedding = self._model.encode(  # noinspection PyUnresolvedReferences
                 text_to_embed,
                 normalize_embeddings=True,
             )
@@ -140,7 +140,7 @@ class RoleMatcher:
         threshold = threshold if threshold is not None else self._threshold
 
         # Encode the query
-        query_embedding = self._model.encode(
+        query_embedding = self._model.encode(  # noinspection PyUnresolvedReferences
             query,
             normalize_embeddings=True,
         )
@@ -192,7 +192,7 @@ class RoleMatcher:
         threshold = threshold if threshold is not None else self._threshold
 
         # Encode the query
-        query_embedding = self._model.encode(
+        query_embedding = self._model.encode(  # noinspection PyUnresolvedReferences
             query,
             normalize_embeddings=True,
         )

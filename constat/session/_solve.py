@@ -21,6 +21,7 @@ from constat.storage.registry_datastore import RegistryAwareDataStore
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class SolveMixin:
 
     def solve(self, problem: str) -> dict:

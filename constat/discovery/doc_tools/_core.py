@@ -44,6 +44,7 @@ from ._schema_inference import _expand_file_paths, _infer_structured_schema
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class _CoreMixin:
     """Init, document management, indexing, and chunking for DocumentDiscoveryTools."""
 

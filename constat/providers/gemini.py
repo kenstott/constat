@@ -33,6 +33,7 @@ class GeminiProvider(BaseLLMProvider):
             model: Model to use (e.g., "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro")
         """
         try:
+            # noinspection PyUnresolvedReferences
             import google.generativeai as genai
         except ImportError:
             raise ImportError(
@@ -54,6 +55,7 @@ class GeminiProvider(BaseLLMProvider):
 
         Gemini format uses FunctionDeclaration objects.
         """
+        # noinspection PyUnresolvedReferences
         from google.generativeai.types import FunctionDeclaration
 
         function_declarations = []
@@ -84,6 +86,7 @@ class GeminiProvider(BaseLLMProvider):
 
         Converts Anthropic-style tool definitions to Gemini format.
         """
+        # noinspection PyUnresolvedReferences
         from google.generativeai.types import Tool
 
         tool_handlers = tool_handlers or {}
@@ -151,6 +154,7 @@ class GeminiProvider(BaseLLMProvider):
                 break
 
             # Send function responses back
+            # noinspection PyUnresolvedReferences
             from google.generativeai.types import Part
 
             response_parts = [

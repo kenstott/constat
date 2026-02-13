@@ -18,6 +18,7 @@ from rich.syntax import Syntax
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class _DataCommandsMixin:
     """Data-related REPL commands: tables, export, artifacts, databases, files, code, state."""
 

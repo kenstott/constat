@@ -17,6 +17,7 @@ from constat.discovery.models import DocumentChunk, ChunkEntity
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class _EntityMixin:
     """Entity extraction/linking methods for DocumentDiscoveryTools."""
 

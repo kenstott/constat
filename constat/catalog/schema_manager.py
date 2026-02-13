@@ -175,6 +175,7 @@ class SchemaManager:
         # Vector store for embeddings (shared DuckDB)
         from constat.discovery.vector_store import DuckDBVectorStore
         self._vector_store: Optional[DuckDBVectorStore] = None
+        # noinspection PyUnresolvedReferences
         self._model: Optional[SentenceTransformer] = None
 
         # Cached overview string

@@ -25,6 +25,7 @@ from constat.storage.registry_datastore import RegistryAwareDataStore
 logger = logging.getLogger(__name__)
 
 
+# noinspection PyUnresolvedReferences
 class DagMixin:
 
     def _resolve_llm_knowledge(self, question: str) -> int | float | str:

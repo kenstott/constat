@@ -101,6 +101,7 @@ class DynamoDBConnector(NoSQLConnector):
     def connect(self) -> None:
         """Connect to DynamoDB."""
         try:
+            # noinspection PyUnresolvedReferences
             import boto3
         except ImportError:
             raise ImportError(
@@ -268,6 +269,7 @@ class DynamoDBConnector(NoSQLConnector):
         if not self._resource:
             raise RuntimeError("Not connected to DynamoDB")
 
+        # noinspection PyUnresolvedReferences
         from boto3.dynamodb.conditions import Key, Attr
 
         table = self._resource.Table(collection)
@@ -338,6 +340,7 @@ class DynamoDBConnector(NoSQLConnector):
         if not self._resource:
             raise RuntimeError("Not connected to DynamoDB")
 
+        # noinspection PyUnresolvedReferences
         from boto3.dynamodb.conditions import Attr
 
         table = self._resource.Table(collection)
