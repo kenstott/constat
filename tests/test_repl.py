@@ -58,10 +58,10 @@ def mock_console():
 @pytest.fixture
 def repl(mock_config, mock_console):
     """Create an InteractiveREPL with mocked dependencies."""
-    with patch('constat.repl.interactive.FeedbackDisplay'), \
-         patch('constat.repl.interactive.FactStore') as mock_fact_store_class, \
-         patch('constat.repl.interactive.Session') as mock_session_class, \
-         patch('constat.repl.interactive.LearningStore') as mock_learning_store_class:
+    with patch('constat.repl.interactive._core.FeedbackDisplay'), \
+         patch('constat.repl.interactive._core.FactStore') as mock_fact_store_class, \
+         patch('constat.repl.interactive._core.Session') as mock_session_class, \
+         patch('constat.repl.interactive._core.LearningStore') as mock_learning_store_class:
         # Mock FactStore to return empty facts by default
         mock_fact_store = Mock()
         mock_fact_store.list_facts.return_value = {}
@@ -683,10 +683,10 @@ class TestCreateSession:
 
     def test_create_api_returns_session(self, repl, mock_config):
         """Test _create_api creates and returns a ConstatAPIImpl."""
-        with patch('constat.repl.interactive.Session') as mock_session_class:
-            with patch('constat.repl.interactive.SessionFeedbackHandler'):
-                with patch('constat.repl.interactive.FactStore'):
-                    with patch('constat.repl.interactive.LearningStore'):
+        with patch('constat.repl.interactive._core.Session') as mock_session_class:
+            with patch('constat.repl.interactive._core.SessionFeedbackHandler'):
+                with patch('constat.repl.interactive._core.FactStore'):
+                    with patch('constat.repl.interactive._core.LearningStore'):
                         mock_session = Mock()
                         mock_session_class.return_value = mock_session
 
@@ -699,10 +699,10 @@ class TestCreateSession:
 
     def test_create_api_wires_feedback_handler(self, repl, mock_config):
         """Test _create_api wires up feedback handler."""
-        with patch('constat.repl.interactive.Session') as mock_session_class:
-            with patch('constat.repl.interactive.SessionFeedbackHandler') as mock_handler_class:
-                with patch('constat.repl.interactive.FactStore'):
-                    with patch('constat.repl.interactive.LearningStore'):
+        with patch('constat.repl.interactive._core.Session') as mock_session_class:
+            with patch('constat.repl.interactive._core.SessionFeedbackHandler') as mock_handler_class:
+                with patch('constat.repl.interactive._core.FactStore'):
+                    with patch('constat.repl.interactive._core.LearningStore'):
                         mock_session = Mock()
                         mock_session_class.return_value = mock_session
                         mock_handler = Mock()
@@ -719,12 +719,12 @@ class TestReplInitialization:
 
     def test_repl_initializes_with_config(self, mock_config, mock_console):
         """Test REPL initializes correctly with config."""
-        with patch('constat.repl.interactive.FeedbackDisplay'):
-            with patch('constat.repl.interactive.Session') as mock_session_class:
+        with patch('constat.repl.interactive._core.FeedbackDisplay'):
+            with patch('constat.repl.interactive._core.Session') as mock_session_class:
                 mock_session = Mock()
                 mock_session_class.return_value = mock_session
-                with patch('constat.repl.interactive.FactStore'):
-                    with patch('constat.repl.interactive.LearningStore'):
+                with patch('constat.repl.interactive._core.FactStore'):
+                    with patch('constat.repl.interactive._core.LearningStore'):
                         repl = InteractiveREPL(
                             config=mock_config,
                             verbose=True,
@@ -738,10 +738,10 @@ class TestReplInitialization:
 
     def test_repl_creates_default_console(self, mock_config):
         """Test REPL creates default console if none provided."""
-        with patch('constat.repl.interactive.FeedbackDisplay'):
-            with patch('constat.repl.interactive.Session') as mock_session_class:
+        with patch('constat.repl.interactive._core.FeedbackDisplay'):
+            with patch('constat.repl.interactive._core.Session') as mock_session_class:
                 mock_session_class.return_value = Mock()
-                with patch('constat.repl.interactive.Console') as mock_console_class:
+                with patch('constat.repl.interactive._core.Console') as mock_console_class:
                     mock_console_instance = Mock()
                     mock_console_class.return_value = mock_console_instance
 
