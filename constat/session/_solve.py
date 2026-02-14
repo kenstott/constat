@@ -79,7 +79,7 @@ class SolveMixin:
             return self._analyze_question(problem)
 
         def run_ambiguity():
-            existing_tables = self.datastore.list_tables()
+            existing_tables = self.datastore.list_tables() if self.datastore else []
             return self._detect_ambiguity(problem, is_auditable_mode=True, session_tables=existing_tables)
 
         def run_dynamic_context():

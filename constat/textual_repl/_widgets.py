@@ -421,10 +421,11 @@ class StatusBar(Static):
 
         if event.x >= panel_start:
             relative_x = event.x - panel_start
-            # noinspection PyUnresolvedReferences
             if relative_x <= 3:
+                # noinspection PyUnresolvedReferences
                 self.app.action_shrink_panel()
             elif relative_x >= len(panel_controls) - 3:
+                # noinspection PyUnresolvedReferences
                 self.app.action_expand_panel()
         elif role_start <= event.x < role_end:
             # noinspection PyUnresolvedReferences

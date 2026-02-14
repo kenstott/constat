@@ -711,9 +711,9 @@ REMEMBER:
             derivation_lines = ["**Premise Resolution:**", ""]
 
             # Define node executor that calls back to Session
-            def execute_node(node):
+            def execute_node(local_node):
                 return self._execute_dag_node(
-                    node=node,
+                    node=local_node,
                     dag=dag,
                     problem=problem,
                     detailed_schema=detailed_schema,

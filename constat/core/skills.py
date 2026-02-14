@@ -26,6 +26,11 @@ SKILL.md format:
     agent: Explore
     model: sonnet
     argument-hint: [filename]
+    exports:
+      - script: proof.py
+        functions: [run_proof, helper_fn]
+    dependencies:
+      - other-skill-name
     ---
 
     Markdown instructions here...
@@ -114,6 +119,13 @@ class Skill:
     # UI hints
     argument_hint: str = ""  # Hint for autocomplete (e.g., "[issue-number]")
 
+    # Script exports — declares which functions to inject from which scripts
+    # Format: [{"script": "proof.py", "functions": ["run_proof", "parse_number"]}, ...]
+    exports: list[dict] = field(default_factory=list)
+
+    # Skill dependencies — names of other skills whose exports this skill calls
+    dependencies: list[str] = field(default_factory=list)
+
 
 class SkillManager:
     """Manages skills loaded from system, project, and user directories.
@@ -177,6 +189,8 @@ class SkillManager:
                 agent = frontmatter.get("agent", "")
                 model = frontmatter.get("model", "")
                 argument_hint = frontmatter.get("argument-hint", "")
+                exports = frontmatter.get("exports", [])
+                dependencies = frontmatter.get("dependencies", [])
 
                 if prompt:
                     self._skills[name] = Skill(
@@ -191,6 +205,8 @@ class SkillManager:
                         agent=agent,
                         model=model,
                         argument_hint=argument_hint,
+                        exports=exports if isinstance(exports, list) else [],
+                        dependencies=dependencies if isinstance(dependencies, list) else [],
                     )
                     logger.debug(f"Loaded skill: {name} from {skill_dir.name}/SKILL.md ({source})")
 
@@ -322,6 +338,22 @@ class SkillManager:
     def skills_dir(self) -> Path:
         """Get the path to the 'skills' directory."""
         return self._skills_dir
+
+    def get_skill_dir(self, name: str) -> Optional[Path]:
+        """Get the full directory path for a skill, searching all skill directories."""
+        skill = self._skills.get(name)
+        if not skill:
+            return None
+        # Search in reverse precedence: user > project > system (first match wins)
+        search_dirs = [self._skills_dir]
+        search_dirs.extend(reversed(self._project_skill_dirs))
+        if self._system_skills_dir:
+            search_dirs.append(self._system_skills_dir)
+        for search_dir in search_dirs:
+            candidate = search_dir / skill.filename
+            if candidate.exists():
+                return candidate
+        return None
 
     # CRUD operations for skills
 

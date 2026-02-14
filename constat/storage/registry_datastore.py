@@ -191,7 +191,7 @@ class RegistryAwareDataStore:
 
         # Build column info for central registry
         columns = [
-            {"name": col, "type": str(df[col].dtype)}
+            {"name": str(col), "type": str(df[col].dtype)}
             for col in df.columns
         ]
 

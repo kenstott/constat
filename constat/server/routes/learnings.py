@@ -343,7 +343,7 @@ async def get_project(
 
     Args:
         filename: Project YAML filename (e.g., 'sales-analytics.yaml')
-        _config: Injected application config
+        config: Injected application config
 
     Returns:
         Project details including data source names
@@ -374,7 +374,7 @@ async def get_project_content(
 
     Args:
         filename: Project YAML filename
-        _config: Injected application config
+        config: Injected application config
 
     Returns:
         Dict with 'content' (YAML string) and 'path' (full file path)
@@ -413,7 +413,7 @@ async def update_project_content(
     Args:
         filename: Project YAML filename
         body: Dict with 'content' (new YAML string)
-        _config: Injected application config
+        config: Injected application config
 
     Returns:
         Status confirmation

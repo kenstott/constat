@@ -109,8 +109,8 @@ async def download_code(
                 pass
 
         # Get data sources from config (if session is in memory)
-        databases = []
-        apis = []
+        db_list = []
+        api_list = []
         files = []
         llm_config = None
         email_config = None
@@ -126,7 +126,7 @@ async def download_code(
                             "description": db_config.description or "",
                         })
                     else:
-                        databases.append({
+                        db_list.append({
                             "name": name,
                             "type": db_config.type or "sql",
                             "uri": db_config.uri or "",
@@ -135,7 +135,7 @@ async def download_code(
 
             if config.apis:
                 for name, api_config in config.apis.items():
-                    apis.append({
+                    api_list.append({
                         "name": name,
                         "type": api_config.type,
                         "url": api_config.url or "",
@@ -195,8 +195,10 @@ async def download_code(
         ])
 
         # Add SQLAlchemy import if there are SQL databases
-        if any(db['type'] in ('sql', 'postgresql', 'mysql', 'sqlite') for db in databases):
+        if any(db['type'] in ('sql', 'postgresql', 'mysql', 'sqlite') for db in db_list):
             script_lines.append('from sqlalchemy import create_engine')
+
+        # Note: constat.llm imports are inside skill scripts (in skills/ directory)
 
         # Helper to format multi-line descriptions as comments
         def format_description_comment(description: str, prefix: str = "#   ") -> list[str]:
@@ -214,7 +216,7 @@ async def download_code(
             return comment_lines
 
         # Add data sources section if there are any
-        if databases or apis or files:
+        if db_list or api_list or files:
             script_lines.extend([
                 '',
                 '# ============================================================================',
@@ -225,9 +227,9 @@ async def download_code(
                 '',
             ])
 
-            if databases:
+            if db_list:
                 script_lines.append('# Databases')
-                for db in databases:
+                for db in db_list:
                     uri = db['uri']
                     # Mask passwords in URIs for safety, suggest env var
                     if '@' in uri and ':' in uri.split('@')[0]:
@@ -250,9 +252,9 @@ async def download_code(
                             script_lines.append(f"db_{db['name']} = create_engine('{uri}')")
                     script_lines.append('')
 
-            if apis:
+            if api_list:
                 script_lines.append('# APIs')
-                for api in apis:
+                for api in api_list:
                     script_lines.append(f"# api_{api['name']}: {api['type']} - {api['url']}")
                     # Add description as wrapped comment lines
                     if api['description']:
@@ -635,7 +637,7 @@ async def download_code(
         ])
 
         # Add API helper functions if there are APIs configured
-        if apis:
+        if api_list:
             script_lines.extend([
                 '',
                 '# ============================================================================',
@@ -646,7 +648,7 @@ async def download_code(
                 '',
             ])
 
-            for api in apis:
+            for api in api_list:
                 api_name = api['name']
                 api_type = api['type']
                 api_url_var = f"API_{api_name.upper()}_URL"
@@ -712,6 +714,71 @@ async def download_code(
                         '',
                         '',
                     ])
+
+        # Collect skill scripts to include in zip (if any skills with exports are active)
+        skill_script_files: dict[str, dict[str, str]] = {}  # pkg_name -> {script_name: source}
+        skill_imports: list[str] = []  # import lines for main.py
+        if managed and managed.session.skill_manager:
+            sm = managed.session.skill_manager
+
+            # Collect active skills + transitive dependencies
+            all_needed: dict[str, object] = {}
+
+            def _collect(skill):
+                if skill.name in all_needed:
+                    return
+                all_needed[skill.name] = skill
+                for dep_name in skill.dependencies:
+                    dep = sm.get_skill(dep_name)
+                    if dep:
+                        _collect(dep)
+
+            for skill in sm.active_skill_objects:
+                _collect(skill)
+
+            for skill in all_needed.values():
+                if not skill.exports:
+                    continue
+                skill_dir = sm.get_skill_dir(skill.name)
+                if not skill_dir:
+                    continue
+                scripts_dir = skill_dir / "scripts"
+                if not scripts_dir.exists():
+                    continue
+
+                pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+                skill_script_files[pkg_name] = {}
+
+                for export_entry in skill.exports:
+                    script_name = export_entry.get("script", "")
+                    fn_names = export_entry.get("functions", [])
+                    if not script_name or not fn_names:
+                        continue
+                    script_path = scripts_dir / script_name
+                    if not script_path.exists():
+                        continue
+                    skill_script_files[pkg_name][script_name] = script_path.read_text()
+
+                    # Build namespaced import lines
+                    module_stem = script_path.stem
+                    for fn in fn_names:
+                        skill_imports.append(
+                            f"from skills.{pkg_name}.{module_stem} import {fn} "
+                            f"as {pkg_name}_{fn}"
+                        )
+
+        # Add skill import lines to the script header
+        if skill_imports:
+            script_lines.extend([
+                '',
+                '# ============================================================================',
+                '# Skill Imports (from skills/ directory)',
+                '# ============================================================================',
+                '',
+            ])
+            for imp in skill_imports:
+                script_lines.append(imp)
+            script_lines.append('')
 
         script_lines.extend([
             '',
@@ -822,6 +889,33 @@ async def download_code(
         ])
 
         script_content = '\n'.join(script_lines)
+
+        if skill_script_files:
+            # Return a zip file with main.py + skills/ directory
+            import io
+            import zipfile
+
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr('main.py', script_content)
+
+                # Add skill script files under skills/{pkg_name}/
+                for pkg_name, scripts in skill_script_files.items():
+                    zf.writestr(f'skills/{pkg_name}/__init__.py', '')
+                    for script_name, source in scripts.items():
+                        zf.writestr(f'skills/{pkg_name}/{script_name}', source)
+
+                # Add skills/__init__.py
+                zf.writestr('skills/__init__.py', '')
+
+            zip_buffer.seek(0)
+            return Response(
+                content=zip_buffer.getvalue(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="session_{session_id[:8]}_code.zip"'
+                },
+            )
 
         return Response(
             content=script_content,

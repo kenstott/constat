@@ -8,6 +8,8 @@
 import logging
 from pathlib import Path
 
+import yaml
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -291,11 +293,11 @@ async def create_skill_from_proof(
     if session.datastore:
         table_list = proof_result.get("datastore_tables") or session.datastore.list_tables()
         for table_info in table_list:
-            tname = table_info if isinstance(table_info, str) else table_info.get("name", "")
-            if tname:
-                schema = session.datastore.get_table_schema(tname)
+            local_table_name = table_info if isinstance(table_info, str) else table_info.get("name", "")
+            if local_table_name:
+                schema = session.datastore.get_table_schema(local_table_name)
                 if schema:
-                    result_schemas[tname] = schema
+                    result_schemas[local_table_name] = schema
 
     # Generate SKILL.md content via LLM
     try:
@@ -326,6 +328,7 @@ async def create_skill_from_proof(
 
     # Generate and write scripts/proof.py
     has_script = False
+    script_content = None
     if session.history and session.session_id:
         try:
             from constat.server.routes.data import generate_inference_script, _gather_source_configs
@@ -352,6 +355,52 @@ async def create_skill_from_proof(
                 has_script = True
         except Exception as e:
             logger.warning(f"Failed to write proof script: {e}")
+
+    # Detect skill dependencies and add exports/dependencies to SKILL.md
+    if has_script and script_content:
+        import re as _re
+
+        # 1. Detect dependencies: check which active skill functions are referenced
+        dependencies: list[str] = []
+        active_skills = session.skill_manager.active_skill_objects
+        for skill in active_skills:
+            if not skill.exports or skill.name == skill_request.name:
+                continue
+            pkg = skill.name.replace("-", "_").replace(" ", "_")
+            for export_entry in skill.exports:
+                for fn_name in export_entry.get("functions", []):
+                    namespaced = f"{pkg}_{fn_name}"
+                    if namespaced in script_content:
+                        dependencies.append(skill.name)
+                        break
+                if skill.name in dependencies:
+                    break
+
+        # 2. Extract exported function names from generated script
+        exported_fns = _re.findall(r'^def (\w+)\(', script_content, _re.MULTILINE)
+        # Exclude private helpers (prefixed with _) and api/db helpers
+        exported_fns = [
+            fn for fn in exported_fns
+            if not fn.startswith('_') and not fn.startswith('api_') and not fn.startswith('db_')
+        ]
+
+        # 3. Post-process SKILL.md frontmatter to add exports and dependencies
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    frontmatter = yaml.safe_load(parts[1])
+                    if exported_fns:
+                        frontmatter["exports"] = [
+                            {"script": "proof.py", "functions": exported_fns}
+                        ]
+                    if dependencies:
+                        frontmatter["dependencies"] = dependencies
+                    new_fm = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+                    content = f"---\n{new_fm}---{parts[2]}"
+                    session.skill_manager.update_skill_content(skill_request.name, content)
+                except (yaml.YAMLError, AttributeError):
+                    logger.warning("Failed to post-process SKILL.md frontmatter")
 
     # Invalidate cached skill manager so list_skills sees the new skill
     server_config = get_server_config(request)

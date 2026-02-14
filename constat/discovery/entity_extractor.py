@@ -142,10 +142,10 @@ class EntityExtractor:
 
                 # 4. Single-token patterns for camelCase/PascalCase joined forms
                 if ' ' in singular:
-                    # Singular joined (matches "performancereview")
+                    # Singular joined (matches "performance review")
                     singular_joined = singular.replace(' ', '').lower()
                     patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": singular_joined}]})
-                    # Plural joined if different (matches "performancereviews")
+                    # Plural joined if different (matches "performance reviews")
                     if normalized != singular:
                         plural_joined = normalized.replace(' ', '').lower()
                         if plural_joined != singular_joined:

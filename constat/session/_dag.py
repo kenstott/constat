@@ -1123,9 +1123,11 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
     def _execute_skill_script(self, script_path: Path, _problem: str) -> dict | None:
         """Execute a skill script directly, bypassing planning.
 
-        Looks for a callable entry point (run_proof, run, main) in the script.
-        Returns solve()-compatible result dict on success, None on failure.
+        Loads the skill script via importlib.util (no sys.path/sys.modules)
+        and calls its entry point (run_proof, run, or main). Returns
+        solve()-compatible result dict on success, None on failure.
         """
+        import importlib.util
         import time
         start_time = time.time()
         skill_name = script_path.parent.parent.name
@@ -1137,31 +1139,52 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
         ))
 
         try:
-            script_content = script_path.read_text()
+            # Load the script directly — no sys.path or sys.modules needed
+            pkg_name = skill_name.replace("-", "_").replace(" ", "_")
+            module_name = f"_constat_skill_{pkg_name}_{script_path.stem}"
+            spec = importlib.util.spec_from_file_location(module_name, script_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
 
-            # Build execution globals with all session resources
-            exec_globals = self._get_execution_globals()
-            exec_globals['__file__'] = str(script_path)
-
-            # Execute the script to define entry point functions
-            exec(compile(script_content, str(script_path), 'exec'), exec_globals)
+            # Resolve dependencies: inject dependency functions into module namespace
+            skill = self.skill_manager.get_skill(skill_name)
+            if skill and skill.dependencies:
+                for dep_name in skill.dependencies:
+                    dep_skill = self.skill_manager.get_skill(dep_name)
+                    if not dep_skill or not dep_skill.exports:
+                        continue
+                    dep_dir = self.skill_manager.get_skill_dir(dep_name)
+                    if not dep_dir:
+                        continue
+                    dep_scripts_dir = dep_dir / "scripts"
+                    dep_pkg = dep_name.replace("-", "_").replace(" ", "_")
+                    for export_entry in dep_skill.exports:
+                        dep_script = dep_scripts_dir / export_entry.get("script", "")
+                        if not dep_script.exists():
+                            continue
+                        dep_mod_name = f"_constat_skill_{dep_pkg}_{dep_script.stem}"
+                        dep_spec = importlib.util.spec_from_file_location(dep_mod_name, dep_script)
+                        dep_module = importlib.util.module_from_spec(dep_spec)
+                        dep_spec.loader.exec_module(dep_module)
+                        for fn_name in export_entry.get("functions", []):
+                            fn = getattr(dep_module, fn_name, None)
+                            if fn and callable(fn):
+                                setattr(module, f"{dep_pkg}_{fn_name}", fn)
 
             # Find entry point: try common names
-            entry_fn: Optional[Callable] = None
+            entry_fn = None
             for fn_name in ('run_proof', 'run', 'main'):
-                fn = exec_globals.get(fn_name)
+                fn = getattr(module, fn_name, None)
                 if callable(fn):
                     entry_fn = fn
                     break
 
             if entry_fn is None:
-                logger.warning(f"[SKILL_EXEC] No entry point (run_proof/run/main) found in {script_path.name}")
+                logger.warning(f"[SKILL_EXEC] No entry point (run_proof/run/main) found in {pkg_name}")
                 return None
 
             # Run the entry point
-            if entry_fn is not None:
-                # noinspection PyCallingNonCallable
-                results = entry_fn()
+            results = entry_fn()
 
             if not isinstance(results, dict):
                 logger.warning(f"[SKILL_EXEC] Entry point returned {type(results)}, expected dict")

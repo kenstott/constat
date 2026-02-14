@@ -38,7 +38,7 @@ Do NOT ask about information already provided in Known User Facts.
 Do NOT ask about topics already resolved by Learned Rules - treat those as settled decisions.
 
 CRITICAL: Only suggest options that can be answered with the AVAILABLE DATA shown above.
-- Review the schema before suggesting options - don't suggest data that doesn't exist
+- Review the schema before suggesting options - don't suggest data that does not exist
 - If the user asks about data types not in the schema, clarify what IS available instead
 - Base suggestions on actual tables/columns shown above, not hypothetical data
 - Provide practical suggested answers grounded in the actual available data

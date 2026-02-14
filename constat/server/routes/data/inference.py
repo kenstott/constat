@@ -192,7 +192,7 @@ def generate_inference_script(
         '        out = self._ensure_output_dir() / f"{name}.parquet"',
         '        df.to_parquet(out, index=False)',
         '        self._files[name] = str(out)',
-        '        print(f"Saved: {name} ({len(df)} rows) -> {out}")',
+        '        print(f"Saved: {name} ({len(df)} rows)")',
         '',
         '    def query(self, sql: str) -> pd.DataFrame:',
         '        return self._conn.execute(sql).fetchdf()',

@@ -110,6 +110,9 @@ class SubIntent(Enum):
     EXIT = "exit"
     """End session (/exit, /quit)."""
 
+    MODE_SWITCH = "mode_switch"
+    """Switch between modes (e.g. auditable/conversational)."""
+
     # Control sub-intents (execution management)
     CANCEL = "cancel"
     """Stop execution entirely."""

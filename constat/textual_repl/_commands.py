@@ -325,13 +325,14 @@ class CommandsMixin:
         session_store = SessionStore(user_id=self.user_id)
         new_session_id = session_store.create_new()
 
-        # noinspection PyUnresolvedReferences
         if self.session:
+            # noinspection PyUnresolvedReferences
             old_config = self.session._config
+            old_session_config = self.session.session_config
             self.session = Session(
                 old_config,
                 session_id=new_session_id,
-                session_config=self.session._session_config,
+                session_config=old_session_config,
                 user_id=self.user_id,
             )
             if self._feedback_handler:

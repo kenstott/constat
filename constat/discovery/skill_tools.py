@@ -7,6 +7,9 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
+import urllib.request
+import urllib.error
+
 """Skill discovery and loading tools for LLM integration.
 
 This module provides tools for discovering and loading SKILL.md files
@@ -358,7 +361,7 @@ class SkillManager:
         links = []
         # Match Markdown links: [text](target)
         # Excludes images: ![alt](src)
-        link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+        link_pattern = re.compile(r'(?<!!)\[([^]]+)]\(([^)]+)\)')
 
         for line_num, line in enumerate(content.split('\n'), start=1):
             for match in link_pattern.finditer(line):
@@ -472,8 +475,6 @@ class SkillManager:
         except ImportError:
             # Fall back to urllib if httpx not available
             try:
-                import urllib.request
-                import urllib.error
                 with urllib.request.urlopen(url, timeout=timeout) as response:
                     return response.read().decode("utf-8")
             except (urllib.error.URLError, OSError, ValueError):

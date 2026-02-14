@@ -106,7 +106,7 @@ class _CoreMixin:
         api.set_clarification_callback(self.display.request_clarification)
 
         if self.session_config.default_mode:
-            self.display.update_status_line(mode=self.session_config.default_mode)
+            self.display.update_status_line(_mode=self.session_config.default_mode)
 
         return api
 

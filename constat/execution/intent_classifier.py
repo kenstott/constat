@@ -373,6 +373,7 @@ class IntentClassifier:
         if primary not in self._sub_embeddings:
             return None, 0.0
 
+        # noinspection PyUnresolvedReferences
         sub_dict = self._sub_embeddings[primary]
         if not sub_dict:
             return None, 0.0
@@ -384,6 +385,7 @@ class IntentClassifier:
         best_sub: Optional[SubIntent] = None
         best_score = 0.0
 
+        # noinspection PyUnresolvedReferences
         for sub, exemplar_embeddings in sub_dict.items():
             similarities = np.dot(exemplar_embeddings, input_embedding)
             max_similarity = float(np.max(similarities))

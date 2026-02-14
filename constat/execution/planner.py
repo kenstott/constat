@@ -262,35 +262,29 @@ class Planner:
         else:
             logger.debug("[PLANNER] No roles available for prompt")
 
-        # Build active skills section
+        # Build active skills section — names only, no prompt content.
+        # Full skill prompts are injected at step codegen time based on step goal relevance.
         active_skills_text = ""
         if self._skill_manager:
             active_skill_objects = self._skill_manager.active_skill_objects
             if active_skill_objects:
                 parts = []
                 for skill in active_skill_objects:
-                    # Discover scripts in the skill's scripts/ directory
                     skill_dir = self._skill_manager.skills_dir / skill.filename
                     scripts_dir = skill_dir / "scripts"
-                    script_files = []
-                    if scripts_dir.exists():
-                        script_files = sorted(
-                            str(f) for f in scripts_dir.iterdir() if f.is_file()
-                        )
-                    if script_files:
+                    has_scripts = scripts_dir.exists() and any(scripts_dir.iterdir())
+                    if has_scripts:
                         parts.append(
-                            f"## Skill: {skill.name} — EXECUTABLE SCRIPT\n"
-                            f"MANDATORY: Your plan MUST include a step with this exact goal:\n"
-                            f'  "Execute {skill.name} skill script (run_proof)"\n'
-                            f"  task_type: python_analysis\n"
-                            f"Do NOT rewrite or rephrase this step. Do NOT build from primitives.\n"
-                            f"Do NOT add post_validations to this step — the skill script is pre-validated.\n\n"
-                            f"{skill.prompt}"
+                            f"- **{skill.name}** (executable script): "
+                            f"Use step goal `\"Execute {skill.name} skill script (run_proof)\"` "
+                            f"with task_type: python_analysis"
                         )
                     else:
-                        parts.append(f"## Skill: {skill.name} (reference)\n{skill.prompt}")
-                active_skills_text = "\n\n".join(parts)
-                logger.info(f"[PLANNER] Including {len(active_skill_objects)} active skills in prompt")
+                        parts.append(
+                            f"- **{skill.name}** (reference): {skill.description or 'domain knowledge'}"
+                        )
+                active_skills_text = "## Available Skills\n" + "\n".join(parts)
+                logger.info(f"[PLANNER] Listing {len(active_skill_objects)} available skills")
 
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,

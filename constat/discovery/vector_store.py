@@ -1291,11 +1291,11 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not result:
             return None
 
-        entity_id, ename, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = result
+        entity_id, entity_name, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = result
 
         return Entity(
             id=entity_id,
-            name=ename,
+            name=entity_name,
             display_name=display_name,
             semantic_type=semantic_type,
             ner_type=ner_type,
@@ -1388,12 +1388,12 @@ class DuckDBVectorStore(VectorStoreBackend):
                 params,
             ).fetchall()
 
-            for eid, ename, etype in rows:
+            for eid, entity_name, entity_type in rows:
                 if eid not in entity_best or similarity > entity_best[eid]["similarity"]:
                     entity_best[eid] = {
                         "id": eid,
-                        "name": ename,
-                        "type": etype,
+                        "name": entity_name,
+                        "type": entity_type,
                         "similarity": similarity,
                     }
 
@@ -1401,14 +1401,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         sorted_entities = sorted(entity_best.values(), key=lambda x: x["similarity"], reverse=True)
         return sorted_entities[:limit]
 
-    def clear_entities(self, source: Optional[str] = None) -> None:  # noqa: ARG002
+    def clear_entities(self, _source: Optional[str] = None) -> None:  # noqa: ARG002
         """Clear all entities and chunk-entity links.
 
         DEPRECATED: Use clear_session_entities(session_id) for session-scoped cleanup.
         This method now clears ALL entities regardless of the source parameter.
 
         Args:
-            source: Ignored (kept for backwards compatibility)
+            _source: Ignored (kept for backwards compatibility)
         """
         self._conn.execute("DELETE FROM chunk_entities")
         self._conn.execute("DELETE FROM entities")

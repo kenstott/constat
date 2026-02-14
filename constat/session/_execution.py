@@ -326,6 +326,9 @@ class ExecutionMixin:
                 if hasattr(conn, 'path'):
                     globals_dict[f"file_{db_name}"] = conn.path
 
+        # Inject active skill functions into execution namespace
+        self._inject_skill_functions(globals_dict)
+
         # Provide API clients for GraphQL/REST APIs (config + project APIs)
         all_apis = self.get_all_apis()
         if all_apis:
@@ -343,6 +346,112 @@ class ExecutionMixin:
                         _exec.execute_rest(_name, operation, params or {})
 
         return globals_dict
+
+    def _inject_skill_functions(self, globals_dict: dict) -> None:
+        """Load active skill scripts and inject declared exports into globals_dict.
+
+        Only functions declared in the skill's frontmatter `exports` field are
+        injected. Each function is namespaced as `{pkg_name}_{function_name}`.
+
+        Resolves `dependencies` transitively: if skill A depends on B, B's
+        exports are loaded first and injected into A's module namespace so
+        A's functions can call B's namespaced functions at runtime.
+        """
+        import importlib.util
+
+        active_skills = self.skill_manager.active_skill_objects
+        if not active_skills:
+            return
+
+        # 1. Collect all skills needed (active + transitive dependencies)
+        all_needed: dict[str, object] = {}  # name -> Skill
+
+        def _collect(skill):
+            if skill.name in all_needed:
+                return
+            all_needed[skill.name] = skill
+            for dep_name in skill.dependencies:
+                dep = self.skill_manager.get_skill(dep_name)
+                if dep:
+                    _collect(dep)
+                else:
+                    logger.warning(f"[SKILL_INJECT] Dependency '{dep_name}' not found for '{skill.name}'")
+
+        for skill in active_skills:
+            _collect(skill)
+
+        # 2. Load all skill modules, extract exported functions
+        loaded_fns: dict[str, dict[str, object]] = {}   # pkg_name -> {fn_name: callable}
+        loaded_modules: dict[str, object] = {}           # pkg_name -> module object
+
+        for skill in all_needed.values():
+            if not skill.exports:
+                continue
+
+            skill_dir = self.skill_manager.get_skill_dir(skill.name)
+            if not skill_dir:
+                continue
+            scripts_dir = skill_dir / "scripts"
+            if not scripts_dir.exists():
+                continue
+
+            pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+            loaded_fns[pkg_name] = {}
+
+            for export_entry in skill.exports:
+                script_name = export_entry.get("script", "")
+                fn_names = export_entry.get("functions", [])
+                if not script_name or not fn_names:
+                    continue
+
+                script_path = scripts_dir / script_name
+                if not script_path.exists():
+                    logger.warning(f"[SKILL_INJECT] Script not found: {script_path}")
+                    continue
+
+                module_name = f"_constat_skill_{pkg_name}_{script_path.stem}"
+                try:
+                    spec = importlib.util.spec_from_file_location(module_name, script_path)
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    loaded_modules[pkg_name] = module
+                except Exception as e:
+                    logger.warning(f"[SKILL_INJECT] Failed to load {script_path}: {e}")
+                    continue
+
+                for fn_name in fn_names:
+                    obj = getattr(module, fn_name, None)
+                    if obj is None or not callable(obj):
+                        logger.warning(f"[SKILL_INJECT] Function '{fn_name}' not found in {script_name}")
+                        continue
+                    loaded_fns[pkg_name][fn_name] = obj
+
+        # 3. Inject dependency functions into each skill's module namespace
+        #    so that skill A's code can call skill_b_run_proof() as a global
+        for skill in all_needed.values():
+            if not skill.dependencies:
+                continue
+            pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+            module = loaded_modules.get(pkg_name)
+            if not module:
+                continue
+            for dep_name in skill.dependencies:
+                dep_pkg = dep_name.replace("-", "_").replace(" ", "_")
+                for fn_name, fn_obj in loaded_fns.get(dep_pkg, {}).items():
+                    setattr(module, f"{dep_pkg}_{fn_name}", fn_obj)
+
+        # 4. Extract all exports into globals_dict for step codegen
+        for skill in all_needed.values():
+            pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+            fns = loaded_fns.get(pkg_name, {})
+            if not fns:
+                continue
+            skill_fn_names = []
+            for fn_name, fn_obj in fns.items():
+                namespaced = f"{pkg_name}_{fn_name}"
+                globals_dict[namespaced] = fn_obj
+                skill_fn_names.append(namespaced)
+            logger.info(f"[SKILL_INJECT] Injected from '{skill.name}': {skill_fn_names}")
 
     def _get_facts_dict(self) -> dict:
         """Get resolved facts as a simple dict for use in generated code.

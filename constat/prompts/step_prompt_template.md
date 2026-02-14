@@ -1,5 +1,6 @@
 {system_prompt}
 {injected_sections}
+{skill_functions}
 ## Available Databases
 {schema_overview}
 {api_overview}

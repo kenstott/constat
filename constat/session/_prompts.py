@@ -113,6 +113,9 @@ class PromptsMixin:
             target="step",
         )
 
+        # Build skill functions available for this step
+        skill_functions_text = self._get_skill_functions_for_step(step.goal)
+
         # Build published artifacts context for name reuse
         published_artifacts_text = ""
         if self.datastore:
@@ -127,9 +130,10 @@ class PromptsMixin:
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
             injected_sections=injected_sections,
+            skill_functions=skill_functions_text,
             schema_overview=ctx["schema_overview"],
             api_overview=ctx["api_overview"],
-            domain_context=self._get_system_prompt() or "No additional context.",
+            domain_context=self._get_system_prompt(step_goal=step.goal) or "No additional context.",
             user_facts=ctx["user_facts"],
             learnings=learnings_text,
             datastore_tables=datastore_info,
@@ -239,11 +243,16 @@ class PromptsMixin:
         overlap = goal_keywords & learning_keywords
         return len(overlap) >= 1  # At least one meaningful keyword match
 
-    def _get_system_prompt(self) -> str:
-        """Get the system prompt with active role and skills appended.
+    def _get_system_prompt(self, step_goal: str = None) -> str:
+        """Get the system prompt with active role and step-relevant skills appended.
+
+        Args:
+            step_goal: When provided, only skills relevant to this step goal
+                are included. Script-bearing skills require explicit reference
+                in the goal; reference-only skills are matched by similarity.
 
         Returns:
-            The config system prompt + active role prompt + active skills prompts
+            The config system prompt + active role prompt + relevant skills prompts
         """
         parts = []
 
@@ -257,47 +266,81 @@ class PromptsMixin:
         if role_prompt:
             parts.append(role_prompt)
 
-        # Skills prompts (if any active)
+        # Skills prompts — filtered by step goal relevance
         active_skill_objects = self.skill_manager.active_skill_objects
         if active_skill_objects:
             skill_parts = []
             for skill in active_skill_objects:
                 skill_dir = self.skill_manager.skills_dir / skill.filename
                 scripts_dir = skill_dir / "scripts"
-                script_files = []
-                if scripts_dir.exists():
-                    script_files = sorted(
-                        str(f) for f in scripts_dir.iterdir() if f.is_file()
-                    )
-                if script_files:
+                has_scripts = scripts_dir.exists() and any(scripts_dir.glob("*.py"))
+                if has_scripts:
+                    # Script-bearing skills: only inject when step goal explicitly references them
+                    if step_goal and skill.name.lower() not in step_goal.lower():
+                        continue
+                    pkg_name = skill.name.replace("-", "_").replace(" ", "_")
                     skill_parts.append(
-                        f"## Skill: {skill.name} — EXECUTE, DO NOT REWRITE\n"
-                        f"Scripts: {', '.join(script_files)}\n\n"
-                        f"**Load the script and call its `run_proof()` function.** Do NOT reimplement the logic.\n\n"
-                        f"Generate ONLY this exact pattern — no summary code, no column references, no extra logic:\n"
-                        f"```python\n"
-                        f"import pandas as pd\n\n"
-                        f"# 1. Load script into its own namespace\n"
-                        f"_ns = {{}}\n"
-                        f"exec(open('{script_files[0]}').read(), _ns)\n\n"
-                        f"# 2. Call run_proof() — returns dict[str, str] of Parquet file paths\n"
-                        f"file_paths = _ns['run_proof']()\n\n"
-                        f"# 3. Load and save each dataset to the session store\n"
-                        f"for name, path in file_paths.items():\n"
-                        f"    store.save_dataframe(name, pd.read_parquet(path))\n"
-                        f"_result = pd.read_parquet(file_paths['_result'])\n"
-                        f"```\n\n"
-                        f"CRITICAL: Do NOT add print statements that reference specific column names.\n"
-                        f"The skill script's output columns may differ from the documentation below.\n"
-                        f"Just load, save, and assign `_result`. Nothing else.\n\n"
-                        f"Skill documentation (for context only — do NOT hardcode column names from this):\n\n"
+                        f"## Skill: {skill.name}\n"
+                        f"This skill's functions are already in scope, prefixed with `{pkg_name}_`. "
+                        f"Call them directly — no import needed.\n\n"
+                        f"Skill documentation:\n\n"
                         f"{skill.prompt}"
                     )
                 else:
+                    # Reference-only skills: match against step goal by similarity
+                    if step_goal and not self._is_skill_relevant_to_step(skill, step_goal):
+                        continue
                     skill_parts.append(f"## Skill: {skill.name} (reference)\n{skill.prompt}")
-            parts.append("# Active Skills\n\n" + "\n\n".join(skill_parts))
+            if skill_parts:
+                parts.append("# Active Skills\n\n" + "\n\n".join(skill_parts))
 
         return "\n\n".join(parts)
+
+    def _is_skill_relevant_to_step(self, skill, step_goal: str) -> bool:
+        """Check if a reference skill is relevant to a step goal using similarity matching."""
+        if not hasattr(self, 'skill_matcher') or not self.skill_matcher:
+            return True  # No matcher available, include by default
+        from constat.core.skill_matcher import SkillMatch
+        matches = self.skill_matcher.match(step_goal, threshold=0.80)
+        return any(m.skill.name == skill.name for m in matches)
+
+    def _get_skill_functions_for_step(self, step_goal: str) -> str:
+        """Build a list of available skill functions relevant to this step.
+
+        Uses the `exports` field from skill frontmatter to list declared functions.
+        Each function is namespaced as `{pkg_name}_{function_name}`.
+        """
+        active_skills = self.skill_manager.active_skill_objects
+        if not active_skills:
+            return ""
+
+        lines = []
+        for skill in active_skills:
+            if not skill.exports:
+                continue
+
+            # Only include if step goal references the skill or it's highly relevant
+            name_in_goal = skill.name.lower() in step_goal.lower()
+            if not name_in_goal and not self._is_skill_relevant_to_step(skill, step_goal):
+                continue
+
+            pkg_name = skill.name.replace("-", "_").replace(" ", "_")
+
+            fn_names = []
+            for export_entry in skill.exports:
+                for fn_name in export_entry.get("functions", []):
+                    fn_names.append(f"{pkg_name}_{fn_name}")
+
+            if fn_names:
+                lines.append(f"## Skill: {pkg_name}")
+                lines.append("These functions are already in scope (no import needed):")
+                for fn in fn_names:
+                    lines.append(f"- `{fn}()`")
+                lines.append("")
+
+        if not lines:
+            return ""
+        return "## Available Skill Functions\n" + "\n".join(lines)
 
     def _build_source_context(self, include_user_facts: bool = True, query: str = None) -> dict:
         """Build context about available data sources (schema, APIs, documents, facts).

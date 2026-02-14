@@ -886,7 +886,7 @@ class SchemaManager:
                             "nullable": c.nullable,
                             "primary_key": c.primary_key,
                             "comment": c.comment,
-                            "sample_values": c.sample_values,
+                            "sample_values": [str(v) for v in c.sample_values] if c.sample_values else None,
                         }
                         for c in meta.columns
                     ],

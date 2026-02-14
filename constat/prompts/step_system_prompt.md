@@ -59,14 +59,13 @@ When the goal is to "enhance", "add columns to", or "enrich" an existing table:
 - Creating a separate mapping/lookup table is NOT sufficient — the source table must be updated
 - Example: "add standard_country to breeds" → load breeds, add column, save as breeds
 
-## Executing Skill Scripts
-When a step goal references a skill's `run_proof()` function, exec the script into its own namespace:
+## Using Skill Functions
+Skill functions are pre-injected into the execution scope, namespaced by skill name. Call them directly — no import needed:
 ```python
-_ns = {}
-exec(open('path/to/proof.py').read(), _ns)
-file_paths = _ns['run_proof'](param=value)
+file_paths = skill_name_run_proof(param=value)
 ```
-Skill scripts import their own dependencies (including `from constat.llm import llm_map, ...`).
+Functions are prefixed with the skill's package name (hyphens → underscores), e.g. `cat_and_country_analysis_run_proof()`.
+Do NOT import skill modules. The functions are already available as globals, just like `store`, `llm_ask`, and `doc_read`.
 
 ## Common Pitfalls
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {{list(df.columns)}}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.

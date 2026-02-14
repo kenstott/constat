@@ -207,7 +207,7 @@ def _execute(system: str, user_message: str) -> tuple[str, str, str]:
         user_message=user_message,
     )
     return (
-        result.content.strip(),
+        result.strip(),
         getattr(backend, "model", "unknown"),
         type(backend).__name__,
     )

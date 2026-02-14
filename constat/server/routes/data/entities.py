@@ -136,7 +136,7 @@ async def list_entities(
 
     def add_entity(
         entity_name: str,
-        etype: str,
+        local_entity_type: str,
         entity_source: str,
         metadata: dict,
         entity_references: list[dict] | None = None,
@@ -151,22 +151,22 @@ async def list_entities(
         - GraphQL type/field types are consolidated to just "graphql"
         """
         # Consolidate type
-        etype = TYPE_CONSOLIDATION.get(etype, etype)
+        local_entity_type = TYPE_CONSOLIDATION.get(local_entity_type, local_entity_type)
 
         # Detect and correct type based on reference sources
         # If all references are from API sources but type is table/column, correct it
-        if etype in ("table", "column") and entity_references:
+        if local_entity_type in ("table", "column") and entity_references:
             api_refs = [r for r in entity_references if r.get("document", "").startswith("api:")]
             non_api_refs = [r for r in entity_references if not r.get("document", "").startswith("api:")]
             if api_refs and not non_api_refs:
                 # All references are API - infer type from section patterns
                 sections = [r.get("section", "") for r in api_refs]
                 if any("field" in s.lower() for s in sections):
-                    etype = "api_field"
+                    local_entity_type = "api_field"
                 elif any("schema" in s.lower() for s in sections):
-                    etype = "api_schema"
+                    local_entity_type = "api_schema"
                 else:
-                    etype = "api_endpoint"
+                    local_entity_type = "api_endpoint"
 
         normalized = normalize_entity_name(entity_name)
         display = display_entity_name(entity_name)
@@ -185,8 +185,8 @@ async def list_entities(
             entity_map[key] = {
                 "id": str(hash(f"{display}")),
                 "name": display,
-                "type": etype,
-                "types": [etype],
+                "type": local_entity_type,
+                "types": [local_entity_type],
                 "sources": [consolidated_source],
                 "metadata": metadata,
                 "references": entity_references or [],
@@ -197,11 +197,11 @@ async def list_entities(
         else:
             existing = entity_map[key]
             # Add type if new
-            if etype not in existing["types"]:
-                existing["types"].append(etype)
+            if local_entity_type not in existing["types"]:
+                existing["types"].append(local_entity_type)
                 # Update primary type if new type has higher priority
-                if TYPE_PRIORITY.get(etype, 0) > TYPE_PRIORITY.get(existing["type"], 0):
-                    existing["type"] = etype
+                if TYPE_PRIORITY.get(local_entity_type, 0) > TYPE_PRIORITY.get(existing["type"], 0):
+                    existing["type"] = local_entity_type
             # Merge: add consolidated source if new
             if consolidated_source not in existing["sources"]:
                 existing["sources"].append(consolidated_source)

@@ -64,7 +64,7 @@ def clear_document_embeddings():
             from constat.discovery.vector_store import DuckDBVectorStore
             vs = DuckDBVectorStore()
             # Clear document-sourced entities (preserves schema entities)
-            vs.clear_entities(source="document")
+            vs.clear_entities(_source="document")
             # Clear all document chunks from embeddings table
             vs._conn.execute("DELETE FROM embeddings")
             # Clear chunk_entities links

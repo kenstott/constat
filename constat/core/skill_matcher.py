@@ -27,8 +27,8 @@ from constat.embedding_loader import EmbeddingModelLoader
 logger = logging.getLogger(__name__)
 
 # Similarity threshold for skill matching
-# Skills can have more specific descriptions, so threshold is slightly higher
-SKILL_MATCH_THRESHOLD = 0.50
+# Must be high enough to avoid polluting the planner with irrelevant skills
+SKILL_MATCH_THRESHOLD = 0.75
 
 
 @dataclass
