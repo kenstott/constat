@@ -225,7 +225,8 @@ class EntityExtractor:
         self._entity_cache[normalized] = entity
         return entity
 
-    def _label_to_semantic_type(self, label: str) -> str:
+    @staticmethod
+    def _label_to_semantic_type(label: str) -> str:
         """Map spaCy/custom label to semantic type.
 
         Args:
@@ -294,7 +295,8 @@ class EntityExtractor:
 
         return results
 
-    def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
+    @staticmethod
+    def _generate_chunk_id(chunk: DocumentChunk) -> str:
         """Generate chunk ID matching vector store format."""
         content_hash = hashlib.sha256(
             f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()

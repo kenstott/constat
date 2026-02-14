@@ -478,7 +478,8 @@ class APICatalog:
             result.append(op.full_name)
         return sorted(result)
 
-    def get_tools(self) -> list[dict]:
+    @staticmethod
+    def get_tools() -> list[dict]:
         """
         Get tool definitions for LLM to discover API operations.
 

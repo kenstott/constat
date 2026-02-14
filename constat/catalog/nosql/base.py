@@ -198,7 +198,8 @@ class NoSQLConnector(ABC):
         """
         return self.query(collection, {}, limit=limit)
 
-    def infer_field_type(self, values: list[Any]) -> str:
+    @staticmethod
+    def infer_field_type(values: list[Any]) -> str:
         """Infer field type from sample values."""
         types_seen = set()
         for val in values:

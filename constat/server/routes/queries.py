@@ -60,7 +60,7 @@ async def shutdown_executor_async() -> None:
     for ws in websockets_to_close:
         try:
             await ws.close(code=1001, reason="Server shutting down")
-        except Exception:
+        except (RuntimeError, ConnectionError, OSError):
             pass
     _active_websockets.clear()
 
@@ -741,8 +741,8 @@ async def websocket_endpoint(
                     })
                 except asyncio.CancelledError:
                     break
-                except Exception as e:
-                    logger.error(f"Error sending event: {e}")
+                except Exception as send_err:
+                    logger.error(f"Error sending event: {send_err}")
                     break
 
         async def receive_commands():
@@ -848,8 +848,8 @@ async def websocket_endpoint(
                                                 "value": entity,
                                                 "description": "Table",
                                             })
-                        except Exception as e:
-                            logger.warning(f"Autocomplete error: {e}")
+                        except Exception as ac_err:
+                            logger.warning(f"Autocomplete error: {ac_err}")
 
                         # Send autocomplete response
                         await websocket.send_json({
@@ -875,8 +875,8 @@ async def websocket_endpoint(
                     break
                 except WebSocketDisconnect:
                     break
-                except Exception as e:
-                    logger.error(f"Error receiving command: {e}")
+                except Exception as recv_err:
+                    logger.error(f"Error receiving command: {recv_err}")
                     break
 
         # Run both tasks concurrently
@@ -899,5 +899,5 @@ async def websocket_endpoint(
         _active_websockets.discard(websocket)
         try:
             await websocket.close()
-        except Exception:
+        except (RuntimeError, ConnectionError, OSError):
             pass  # Already closed

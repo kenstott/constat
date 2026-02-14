@@ -240,7 +240,7 @@ async def list_databases(
                 tables = managed.session.schema_manager.get_tables_for_db(name)
                 table_count = len(tables)
                 connected = True
-        except Exception:
+        except (KeyError, ValueError):
             pass
 
         databases.append(SessionDatabaseInfo(
@@ -272,7 +272,7 @@ async def list_databases(
                     try:
                         tables = managed.session.schema_manager.get_tables_for_db(name)
                         table_count = len(tables)
-                    except Exception:
+                    except (KeyError, ValueError):
                         pass
 
                 databases.append(SessionDatabaseInfo(

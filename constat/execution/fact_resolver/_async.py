@@ -251,9 +251,6 @@ class AsyncFactResolver(FactResolver):
         2. Filter by min_confidence threshold
         3. Pick best based on: (priority_index, -confidence) for stable ordering
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         # Only parallelize cheap I/O sources - exclude LLM_KNOWLEDGE (expensive)
         io_sources = [
             s for s in self.strategy.source_priority
@@ -699,9 +696,9 @@ Generate the derivation function for {fact_name}:
             return await asyncio.gather(*tasks)
         else:
             # With callback - use as_completed to emit events as each resolves
-            async def resolve_with_index(idx: int, name: str, params: dict) -> tuple[int, Fact]:
-                fact = await self.resolve_async(name, **params)
-                return idx, fact
+            async def resolve_with_index(fact_idx: int, name: str, params: dict) -> tuple[int, Fact]:
+                resolved_fact = await self.resolve_async(name, **params)
+                return fact_idx, resolved_fact
 
             tasks = [
                 resolve_with_index(i, name, params)
@@ -711,10 +708,10 @@ Generate the derivation function for {fact_name}:
             # Results will be out of order as they complete
             results: list[Fact | None] = [None] * len(fact_requests)
             for coro in asyncio.as_completed(tasks):
-                idx, fact = await coro
-                results[idx] = fact
+                completed_idx, completed_fact = await coro
+                results[completed_idx] = completed_fact
                 # Call callback as each fact completes
-                on_resolve(idx, fact)
+                on_resolve(completed_idx, completed_fact)
 
             # noinspection PyTypeChecker
             return results

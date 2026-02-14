@@ -195,11 +195,13 @@ class VisualizationHelper:
         safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
         return self.output_dir / f"{safe_name}.{extension}"
 
-    def _file_uri(self, path: Path) -> str:
+    @staticmethod
+    def _file_uri(path: Path) -> str:
         """Convert a path to a file:// URI for clickable terminal links."""
         return path.resolve().as_uri()
 
-    def _open_in_system_viewer(self, filepath: Path) -> None:
+    @staticmethod
+    def _open_in_system_viewer(filepath: Path) -> None:
         """Open the file in the OS default application (non-blocking).
 
         Uses platform-appropriate methods:
@@ -542,7 +544,8 @@ class VisualizationHelper:
                 f'<p><small>Preview unavailable: {e}</small></p>'
             )
 
-    def _convert_pdf_to_html(self, content: bytes, title: str, _file_uri: str, filename: str) -> str:
+    @staticmethod
+    def _convert_pdf_to_html(content: bytes, title: str, _file_uri: str, filename: str) -> str:
         """Convert PDF to HTML with embedded viewer using PDF.js."""
         import base64
         # Base64 encode PDF for embedding
@@ -607,7 +610,8 @@ function nextPage() {{ if (pageNum < pdfDoc.numPages) {{ pageNum++; renderPage(p
 </body>
 </html>"""
 
-    def _wrap_html_preview(self, body_content: str) -> str:
+    @staticmethod
+    def _wrap_html_preview(body_content: str) -> str:
         """Wrap content in a styled HTML document for artifact preview."""
         return f"""<!DOCTYPE html>
 <html>

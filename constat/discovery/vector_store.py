@@ -115,7 +115,8 @@ class NumpyVectorStore(VectorStoreBackend):
         self._embeddings: Optional[np.ndarray] = None
         self._chunk_ids: list[str] = []
 
-    def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
+    @staticmethod
+    def _generate_chunk_id(chunk: DocumentChunk) -> str:
         """Generate a unique ID for a chunk."""
         content_hash = hashlib.sha256(
             f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()
@@ -484,7 +485,8 @@ class DuckDBVectorStore(VectorStoreBackend):
     # Resource-Level Hashing (Fine-Grained Cache Invalidation)
     # =========================================================================
 
-    def _make_resource_id(self, source_id: str, resource_type: str, resource_name: str) -> str:
+    @staticmethod
+    def _make_resource_id(source_id: str, resource_type: str, resource_name: str) -> str:
         """Create a unique resource ID.
 
         Args:
@@ -741,7 +743,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"clear_project_embeddings({project_id}): deleted {count} embeddings")
         return count
 
-    def _generate_chunk_id(self, chunk: DocumentChunk) -> str:
+    @staticmethod
+    def _generate_chunk_id(chunk: DocumentChunk) -> str:
         """Generate a unique ID for a chunk."""
         content_hash = hashlib.sha256(
             f"{chunk.document_name}:{chunk.section}:{chunk.chunk_index}:{chunk.content[:100]}".encode()

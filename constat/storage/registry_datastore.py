@@ -120,7 +120,7 @@ class RegistryAwareDataStore:
                     CREATE OR REPLACE VIEW {table_name} AS
                     SELECT * FROM read_parquet('{parquet_file}')
                 """)
-            except Exception:
+            except duckdb.Error:
                 pass  # Skip if view creation fails
 
     def _get_duckdb(self) -> duckdb.DuckDBPyConnection:
@@ -226,7 +226,7 @@ class RegistryAwareDataStore:
 
         try:
             conn.execute(f"DROP VIEW IF EXISTS {name}")
-        except Exception:
+        except duckdb.Error:
             pass
 
         # Remove Parquet file
@@ -254,7 +254,7 @@ class RegistryAwareDataStore:
         conn = self._get_duckdb()
         try:
             return conn.execute(f"SELECT * FROM {name}").fetchdf()
-        except Exception:
+        except duckdb.Error:
             return None
 
     def get_table_data(self, name: str) -> Optional[pd.DataFrame]:
@@ -274,7 +274,7 @@ class RegistryAwareDataStore:
                 row_count = conn.execute(
                     f"SELECT COUNT(*) FROM read_parquet('{parquet_path}')"
                 ).fetchone()[0]
-            except Exception:
+            except duckdb.Error:
                 row_count = 0
             # Find the version number for the current file
             version_num = 1
@@ -295,7 +295,7 @@ class RegistryAwareDataStore:
                     row_count = conn.execute(
                         f"SELECT COUNT(*) FROM read_parquet('{backup_path}')"
                     ).fetchone()[0]
-                except Exception:
+                except duckdb.Error:
                     row_count = 0
                 versions.append({
                     "version": v,
@@ -327,7 +327,7 @@ class RegistryAwareDataStore:
 
         try:
             return conn.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
-        except Exception:
+        except duckdb.Error:
             return None
 
     def query(self, sql: str) -> pd.DataFrame:
@@ -370,7 +370,7 @@ class RegistryAwareDataStore:
                 }
                 for row in rows
             ]
-        except Exception:
+        except duckdb.Error:
             return None
 
     def table_exists(self, name: str) -> bool:

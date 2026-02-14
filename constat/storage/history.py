@@ -122,11 +122,13 @@ class SessionHistory:
         # User-scoped storage directory
         self.storage_dir = self.base_dir / self.user_id / "sessions"
 
-    def _ensure_dir(self, path: Path) -> None:
+    @staticmethod
+    def _ensure_dir(path: Path) -> None:
         """Ensure directory exists."""
         path.mkdir(parents=True, exist_ok=True)
 
-    def _generate_session_id(self) -> str:
+    @staticmethod
+    def _generate_session_id() -> str:
         """Generate a unique session ID with full timestamp (sortable and human-readable)."""
         now = datetime.now(timezone.utc)
         # Format: YYYY-MM-DD_HH-MM-SS_uuuuuu (microseconds for uniqueness)
@@ -134,7 +136,8 @@ class SessionHistory:
         microseconds = f"{now.microsecond:06d}"
         return f"{timestamp}_{microseconds}"
 
-    def _hash_config(self, config_dict: dict) -> str:
+    @staticmethod
+    def _hash_config(config_dict: dict) -> str:
         """Generate hash of config for change detection."""
         config_str = json.dumps(config_dict, sort_keys=True)
         return f"sha256:{hashlib.sha256(config_str.encode()).hexdigest()[:16]}"

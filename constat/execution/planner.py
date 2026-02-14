@@ -241,7 +241,7 @@ class Planner:
 
                 if rules_count > 0:
                     learnings_text = "\n".join(rule_lines)
-            except Exception:
+            except (KeyError, ValueError, OSError):
                 pass  # Don't fail planning if learnings can't be loaded
 
         # Build available roles section for role-based step assignment
@@ -335,7 +335,8 @@ class Planner:
 
         return handlers
 
-    def _parse_plan_response(self, response: str) -> dict:
+    @staticmethod
+    def _parse_plan_response(response: str) -> dict:
         """Parse the LLM's plan response as JSON."""
         # Try to extract JSON from markdown code block
         json_pattern = r"```(?:json)?\s*(.*?)\s*```"

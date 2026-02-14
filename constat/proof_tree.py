@@ -231,7 +231,8 @@ class ProofTree:
             parent.add_child(child)
             self._nodes[depends_on] = child
 
-    def _format_value_summary(self, value: Any, max_len: int = 250) -> str:
+    @staticmethod
+    def _format_value_summary(value: Any, max_len: int = 250) -> str:
         """Format a value for brief display (truncated to max_len characters)."""
         if value is None:
             return ""
@@ -287,7 +288,8 @@ class ProofTree:
 
         return tree
 
-    def _build_node_label(self, node: ProofNode, is_root: bool = False, spinner_char: str = None) -> Text:
+    @staticmethod
+    def _build_node_label(node: ProofNode, is_root: bool = False, spinner_char: str = None) -> Text:
         """Build the label for a tree node."""
         text = Text()
 

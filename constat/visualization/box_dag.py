@@ -94,8 +94,8 @@ class CompactDAG:
         lines = []
 
         # Calculate row width
-        def row_width(row):
-            return sum(len(n) for n in row) + arrow_len * (len(row) - 1)
+        def row_width(r):
+            return sum(len(n) for n in r) + arrow_len * (len(r) - 1)
 
         # Pre-calculate positions for each row
         row_starts = [indent]  # Row 0 starts at indent

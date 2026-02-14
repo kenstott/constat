@@ -75,7 +75,8 @@ class BookmarkStore:
         with open(self.file_path, "w") as f:
             yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
 
-    def _expand_env(self, value: str) -> str:
+    @staticmethod
+    def _expand_env(value: str) -> str:
         """Expand environment variables in a string."""
         return os.path.expandvars(value)
 

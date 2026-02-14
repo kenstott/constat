@@ -128,8 +128,8 @@ class TaskRouter:
         module = importlib.import_module(module_path)
         return getattr(module, class_name)
 
+    @staticmethod
     def _get_cache_key(
-        self,
         provider_name: str,
         base_url: Optional[str] = None,
     ) -> str:
@@ -235,7 +235,7 @@ class TaskRouter:
                         response_time_ms=elapsed_ms,
                         success=True,
                     )
-                except Exception:
+                except (ImportError, OSError, ValueError):
                     pass  # Don't fail task execution due to logging
 
                 return TaskResult(
@@ -312,7 +312,8 @@ class TaskRouter:
 
         return result
 
-    def _extract_code(self, text: str) -> str:
+    @staticmethod
+    def _extract_code(text: str) -> str:
         """Extract code from markdown code blocks.
 
         Handles various cases:

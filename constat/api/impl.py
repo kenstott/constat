@@ -574,11 +574,13 @@ class ConstatAPIImpl:
     # Detection
     # -------------------------------------------------------------------------
 
-    def detect_display_overrides(self, text: str) -> DisplayOverrides:
+    @staticmethod
+    def detect_display_overrides(text: str) -> DisplayOverrides:
         """Detect display preference overrides in natural language."""
         return detect_display_overrides(text)
 
-    def detect_nl_correction(self, text: str) -> CorrectionDetection:
+    @staticmethod
+    def detect_nl_correction(text: str) -> CorrectionDetection:
         """Detect if text contains a correction pattern."""
         return detect_nl_correction(text)
 
@@ -668,7 +670,8 @@ class ConstatAPIImpl:
             raw_output=result.get("raw_output"),
         )
 
-    def _extract_steps(self, result: dict) -> tuple[StepInfo, ...]:
+    @staticmethod
+    def _extract_steps(result: dict) -> tuple[StepInfo, ...]:
         """Extract step information from result dict."""
         steps = []
         plan = result.get("plan", {})
@@ -689,7 +692,8 @@ class ConstatAPIImpl:
 
         return tuple(steps)
 
-    def _extract_artifacts(self, result: dict) -> tuple[ArtifactInfo, ...]:
+    @staticmethod
+    def _extract_artifacts(result: dict) -> tuple[ArtifactInfo, ...]:
         """Extract artifact information from result dict."""
         artifacts = []
         raw_artifacts = result.get("artifacts", [])

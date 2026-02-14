@@ -308,7 +308,7 @@ class UnifiedDiscovery:
                     results.append(r)
 
         # Sort by strength and limit
-        results.sort(key=lambda r: r.get("strength", 0), reverse=True)
+        results.sort(key=lambda item: item.get("strength", 0), reverse=True)
         return results[:limit]
 
     def _get_fk_relations(self, table_name: str) -> list[dict]:

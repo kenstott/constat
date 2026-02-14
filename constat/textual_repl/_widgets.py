@@ -25,6 +25,8 @@ from textual.reactive import reactive
 from textual.suggester import Suggester
 from textual.widgets import Static, Input, RichLog
 
+from textual.css.query import NoMatches
+
 from constat.execution.mode import Phase
 from constat.proof_tree import ProofTree
 from constat.repl.feedback import SPINNER_FRAMES
@@ -94,7 +96,7 @@ def make_file_link_markup(file_uri: str, style: str = "cyan underline", indent: 
     try:
         filepath = file_uri.replace("file://", "")
         filename = Path(filepath).name
-    except Exception:
+    except (ValueError, TypeError):
         filename = file_uri.split("/")[-1]
 
     escaped_uri = file_uri.replace("'", "\\'")
@@ -112,7 +114,7 @@ def make_file_text(file_uri: str, style: str = "cyan underline", indent: str = "
     try:
         filepath = file_uri.replace("file://", "")
         filename = Path(filepath).name
-    except Exception:
+    except (ValueError, TypeError):
         filename = file_uri.split("/")[-1]
 
     return Text(f"{indent}{filename}", style=style)
@@ -169,26 +171,26 @@ def linkify_artifact_references(
         explicit_count = match.group(2)
 
         if name in table_map:
-            table = table_map[name]
-            row_count = int(explicit_count.replace(',', '')) if explicit_count else table.get('row_count')
+            matched_table = table_map[name]
+            row_count = int(explicit_count.replace(',', '')) if explicit_count else matched_table.get('row_count')
             return make_artifact_link_markup(name, "table", row_count)
 
         if name in artifact_map:
-            artifact = artifact_map[name]
-            return make_artifact_link_markup(name, artifact.get('artifact_type', 'file'))
+            matched_artifact = artifact_map[name]
+            return make_artifact_link_markup(name, matched_artifact.get('artifact_type', 'file'))
 
-        for aname, artifact in artifact_map.items():
-            file_path = artifact.get('file_path', '') or artifact.get('file_uri', '')
+        for art_name, art_entry in artifact_map.items():
+            file_path = art_entry.get('file_path', '') or art_entry.get('file_uri', '')
             if file_path and Path(file_path).name == name:
                 return make_file_link_markup(file_path)
 
         name_lower = name.lower()
-        for desc, artifact in desc_to_artifact.items():
-            if desc == name_lower:
-                file_path = artifact.get('file_path', '') or artifact.get('file_uri', '')
+        for art_desc, art_entry in desc_to_artifact.items():
+            if art_desc == name_lower:
+                file_path = art_entry.get('file_path', '') or art_entry.get('file_uri', '')
                 if file_path:
                     return make_file_link_markup(file_path)
-                return make_artifact_link_markup(artifact.get('name', name), artifact.get('artifact_type', 'file'))
+                return make_artifact_link_markup(art_entry.get('name', name), art_entry.get('artifact_type', 'file'))
 
         return match.group(0)
 
@@ -654,7 +656,7 @@ class SidePanelContent(RichLog):
             try:
                 side_panel = self.app.query_one("#side-panel")
                 side_panel.add_class("executing")
-            except Exception:
+            except NoMatches:
                 pass
 
     # noinspection PyMethodOverriding
@@ -668,7 +670,7 @@ class SidePanelContent(RichLog):
             try:
                 side_panel = self.app.query_one("#side-panel")
                 side_panel.remove_class("executing")
-            except Exception:
+            except NoMatches:
                 pass
 
     def _animate_tick(self) -> None:
@@ -859,7 +861,7 @@ class SidePanelContent(RichLog):
         try:
             side_panel = self.app.query_one("#side-panel", SidePanel)
             side_panel.border_title = mode_titles.get(self._mode, "Panel")
-        except Exception:
+        except NoMatches:
             pass
 
         if self._mode == self.MODE_ARTIFACTS:
@@ -900,7 +902,7 @@ class SidePanelContent(RichLog):
                     app_width = app.size.width if app.size.width > 0 else 120
                     panel_width = (app_width * side_ratio) // total_ratio
                     content_width = panel_width - 6
-                except Exception:
+                except (AttributeError, IndexError, ZeroDivisionError, TypeError):
                     content_width = 40
             content_width = max(20, content_width)
             for line in self._dag_lines:
@@ -961,7 +963,7 @@ class SidePanelContent(RichLog):
                 app_width = app.size.width if app.size.width > 0 else 120
                 panel_width = (app_width * side_ratio) // total_ratio
                 content_width = panel_width - 6
-            except Exception:
+            except (AttributeError, IndexError, ZeroDivisionError, TypeError):
                 content_width = 40
         content_width = max(20, content_width)
 
@@ -1086,7 +1088,7 @@ class SidePanelContent(RichLog):
                     app_width = app.size.width if app.size.width > 0 else 120
                     panel_width = (app_width * side_ratio) // total_ratio
                     content_width = panel_width - 6
-                except Exception:
+                except (AttributeError, IndexError, ZeroDivisionError, TypeError):
                     content_width = 40
             content_width = max(20, content_width)
             prefix = f"{icon} Step {num}: "

@@ -285,7 +285,8 @@ class _DataCommandsMixin:
         else:
             self.console.print("[yellow]Usage: /file [save|delete] <name> [<uri>] [--auth \"...\"] [--desc \"...\"][/yellow]")
 
-    def _extract_flag(self, text: str, flag: str) -> str | None:
+    @staticmethod
+    def _extract_flag(text: str, flag: str) -> str | None:
         """Extract a flag value from command text."""
         pattern = rf'{flag}\s+"([^"]*)"'
         match = re.search(pattern, text)
@@ -419,7 +420,8 @@ class _DataCommandsMixin:
                 self.console.print(f"    {f['description']}")
             self.console.print(f"    [dim]{f['uri']}[/dim]")
 
-    def _mask_credentials(self, uri: str) -> str:
+    @staticmethod
+    def _mask_credentials(uri: str) -> str:
         """Mask credentials in a URI for display."""
         return re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', uri)
 

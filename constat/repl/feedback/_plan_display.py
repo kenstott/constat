@@ -173,7 +173,8 @@ class LivePlanExecutionDisplay:
             return "[yellow]⊘[/yellow]"
         return "[dim]?[/dim]"
 
-    def _format_value(self, item: PlanItem) -> str:
+    @staticmethod
+    def _format_value(item: PlanItem) -> str:
         """Format the value/result for display."""
         if item.status == "pending":
             return "[dim]pending[/dim]"

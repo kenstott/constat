@@ -518,7 +518,8 @@ allowed-tools: []
         except OSError:
             return None
 
-    def draft_skill(self, name: str, user_description: str, llm) -> tuple[str, str]:
+    @staticmethod
+    def draft_skill(name: str, user_description: str, llm) -> tuple[str, str]:
         """Draft a skill using LLM based on user description.
 
         Args:
@@ -585,13 +586,13 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
                 if len(parts) >= 3:
                     frontmatter = yaml.safe_load(parts[1])
                     description = frontmatter.get("description", "")
-            except Exception:
+            except (yaml.YAMLError, AttributeError):
                 pass
 
         return content, description
 
+    @staticmethod
     def skill_from_proof(
-        self,
         name: str,
         proof_nodes: list[dict],
         proof_summary: str | None,
@@ -714,7 +715,7 @@ CRITICAL: The "Returns" section MUST document the EXACT column names and types s
                 if len(parts) >= 3:
                     frontmatter = yaml.safe_load(parts[1])
                     extracted_description = frontmatter.get("description", extracted_description)
-            except Exception:
+            except (yaml.YAMLError, AttributeError):
                 pass
 
         return content, extracted_description

@@ -642,10 +642,10 @@ class CommandsMixin:
                 limit=20,
             )
 
-            def get_source_type(doc_name: str) -> str:
-                if doc_name.startswith("schema:"):
+            def get_source_type(document_name: str) -> str:
+                if document_name.startswith("schema:"):
                     return "schema"
-                elif doc_name.startswith("api:"):
+                elif document_name.startswith("api:"):
                     return "api"
                 return "document"
 
@@ -768,7 +768,7 @@ class CommandsMixin:
                         if detail and detail.queries:
                             first_q = detail.queries[0].question
                             summary = first_q[:80] + "..." if len(first_q) > 80 else first_q
-                    except Exception:
+                    except (OSError, ValueError, KeyError):
                         pass
 
                 if summary:

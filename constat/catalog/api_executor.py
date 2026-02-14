@@ -172,7 +172,8 @@ class APIExecutor:
             f"API '{api_name}' not found. Available APIs: {available}"
         )
 
-    def _build_headers(self, api_config: APIConfig) -> dict[str, str]:
+    @staticmethod
+    def _build_headers(api_config: APIConfig) -> dict[str, str]:
         """Build request headers including authentication."""
         headers = {"Content-Type": "application/json"}
 
@@ -451,7 +452,7 @@ class APIExecutor:
                         return yaml.safe_load(response.text)
                     else:
                         return response.json()
-            except Exception:
+            except (httpx.HTTPError, ValueError):
                 pass
 
         return None
@@ -612,7 +613,8 @@ class APIExecutor:
 
         return result
 
-    def _summarize_openapi_spec(self, spec: dict) -> dict[str, Any]:
+    @staticmethod
+    def _summarize_openapi_spec(spec: dict) -> dict[str, Any]:
         """Extract a summary of endpoints from OpenAPI spec."""
         result = {"endpoints": [], "schemas": {}}
 
@@ -782,7 +784,8 @@ class APIExecutor:
 
         return None
 
-    def _is_required(self, type_info: dict) -> bool:
+    @staticmethod
+    def _is_required(type_info: dict) -> bool:
         """Check if a type is non-nullable (required)."""
         return type_info.get("kind") == "NON_NULL"
 

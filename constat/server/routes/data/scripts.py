@@ -87,7 +87,7 @@ async def download_code(
                     try:
                         contents = list(steps_dir.iterdir())
                         detail += f" Steps dir exists with {len(contents)} files."
-                    except Exception:
+                    except OSError:
                         pass
             detail += " Run a query first to generate step code."
             raise HTTPException(status_code=404, detail=detail)
@@ -103,7 +103,7 @@ async def download_code(
                         "value": row.get("value", ""),
                         "description": row.get("description", ""),
                     })
-            except Exception:
+            except (KeyError, ValueError, OSError):
                 # No facts table - that's okay
                 pass
 
@@ -198,19 +198,19 @@ async def download_code(
             script_lines.append('from sqlalchemy import create_engine')
 
         # Helper to format multi-line descriptions as comments
-        def format_description_comment(desc: str, prefix: str = "#   ") -> list[str]:
+        def format_description_comment(description: str, prefix: str = "#   ") -> list[str]:
             """Format a description as properly wrapped comment lines."""
-            if not desc:
+            if not description:
                 return []
             # Split on newlines and wrap each line
-            lines = []
-            for line in desc.replace('\n', ' ').split('. '):
-                line = line.strip()
-                if line:
-                    if not line.endswith('.'):
-                        line += '.'
-                    lines.append(f"{prefix}{line}")
-            return lines
+            comment_lines = []
+            for sentence in description.replace('\n', ' ').split('. '):
+                sentence = sentence.strip()
+                if sentence:
+                    if not sentence.endswith('.'):
+                        sentence += '.'
+                    comment_lines.append(f"{prefix}{sentence}")
+            return comment_lines
 
         # Add data sources section if there are any
         if databases or apis or files:

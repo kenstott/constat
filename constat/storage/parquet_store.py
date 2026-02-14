@@ -180,7 +180,7 @@ class ParquetDataStore:
         if self._duckdb:
             try:
                 self._duckdb.execute(f"DROP VIEW IF EXISTS {name}")
-            except Exception:
+            except duckdb.Error:
                 pass
 
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
@@ -199,7 +199,7 @@ class ParquetDataStore:
 
         try:
             return pd.read_parquet(parquet_path)
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     def query(self, sql: str) -> pd.DataFrame:
@@ -225,7 +225,7 @@ class ParquetDataStore:
                     CREATE OR REPLACE VIEW {table_name} AS
                     SELECT * FROM read_parquet('{parquet_file}')
                 """)
-            except Exception:
+            except duckdb.Error:
                 pass
 
         # Execute query
@@ -282,7 +282,7 @@ class ParquetDataStore:
         if self._duckdb:
             try:
                 self._duckdb.execute(f"DROP VIEW IF EXISTS {name}")
-            except Exception:
+            except duckdb.Error:
                 pass
 
         return True

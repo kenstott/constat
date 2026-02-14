@@ -39,6 +39,7 @@ from sqlalchemy import (
     inspect,
     text,
 )
+from sqlalchemy.exc import OperationalError as SAOperationalError, ProgrammingError as SAProgrammingError
 
 from constat.core.models import Artifact, ArtifactType, ARTIFACT_MIME_TYPES
 
@@ -221,7 +222,7 @@ class DataStore:
                 conn.execute(text(
                     "ALTER TABLE _constat_artifacts ADD COLUMN version INTEGER DEFAULT 1"
                 ))
-            except Exception:
+            except (SAOperationalError, SAProgrammingError):
                 pass  # Column already exists
 
             # Add version column to table registry for existing databases
@@ -229,7 +230,7 @@ class DataStore:
                 conn.execute(text(
                     "ALTER TABLE _constat_table_registry ADD COLUMN version INTEGER DEFAULT 1"
                 ))
-            except Exception:
+            except (SAOperationalError, SAProgrammingError):
                 pass  # Column already exists
 
             # Session metadata
@@ -268,7 +269,8 @@ class DataStore:
                 result = conn.execute(text(sql))
             return result
 
-    def _to_named_params(self, sql: str, params: list) -> dict:
+    @staticmethod
+    def _to_named_params(sql: str, params: list) -> dict:
         """Convert positional params to named params."""
         # Replace ? with :p0, :p1, etc.
         named_sql = sql
@@ -321,7 +323,8 @@ class DataStore:
                     data
                 )
 
-    def _serialize_complex_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def _serialize_complex_columns(df: pd.DataFrame) -> pd.DataFrame:
         """Serialize dict/list columns to JSON strings for SQLite compatibility."""
         df = df.copy()
         for col in df.columns:
@@ -377,7 +380,7 @@ class DataStore:
                         f"CREATE TABLE {self._validate_table_name(backup_name)} AS SELECT * FROM {self._validate_table_name(name)}"
                     ))
                     conn.commit()
-                except Exception:
+                except (SAOperationalError, SAProgrammingError):
                     pass  # Table may not exist yet (first save after registry entry)
 
         # Use pandas to_sql for cross-database compatibility
@@ -586,7 +589,7 @@ class DataStore:
                             text(f"SELECT COUNT(*) FROM {validated}")
                         ).fetchone()
                     row_count = count_result[0] if count_result else 0
-                except Exception:
+                except (SAOperationalError, SAProgrammingError):
                     row_count = 0
                 versions.append({
                     "version": v,
@@ -853,7 +856,8 @@ class DataStore:
         Returns:
             DataFrame with execution history, or None if no history
         """
-        import pandas as pd
+        # Note: pandas is also imported at module level; this local import
+        # is intentionally removed to use the module-level `pd`.
 
         # Get scratchpad entries for step info (one per step)
         scratchpad_entries = self.get_scratchpad()
@@ -1293,7 +1297,8 @@ class DataStore:
             return self._row_to_artifact(result)
         return None
 
-    def _row_to_artifact(self, row: tuple) -> Artifact:
+    @staticmethod
+    def _row_to_artifact(row: tuple) -> Artifact:
         """Convert a database row to an Artifact object."""
         # Try to convert artifact_type string to enum
         type_str = row[4]

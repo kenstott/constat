@@ -192,7 +192,8 @@ Use uppercase for Variables that need binding, lowercase for constants.
             "facts": {k: v.to_dict() for k, v in resolved_facts.items()},
         }
 
-    def _parse_predicate(self: "FactResolver", pred_str: str) -> tuple[str, list[str]]:
+    @staticmethod
+    def _parse_predicate(pred_str: str) -> tuple[str, list[str]]:
         """Parse a predicate string like 'foo(X, Y, Z)' into name and args."""
         pred_str = pred_str.strip().rstrip(".")
         if "(" not in pred_str:
@@ -324,7 +325,8 @@ Use uppercase for Variables that need binding, lowercase for constants.
             })
             return False
 
-    def _substitute_bindings(self: "FactResolver", term: str, bindings: dict[str, Any]) -> str:
+    @staticmethod
+    def _substitute_bindings(term: str, bindings: dict[str, Any]) -> str:
         """Substitute variable bindings into a term."""
         result = term
         for var, value in bindings.items():
@@ -614,8 +616,8 @@ Example:
             "facts": {k: v.to_dict() for k, v in resolved.items()},
         }
 
+    @staticmethod
     def _build_derivation_trace(
-        self: "FactResolver",
         template: str,
         resolved: dict[str, Fact],
         unresolved: list[str],

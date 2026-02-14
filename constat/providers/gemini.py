@@ -47,7 +47,8 @@ class GeminiProvider(BaseLLMProvider):
         self.genai = genai
         self.model_name = model
 
-    def _convert_tools_to_gemini_format(self, tools: list[dict]) -> list:
+    @staticmethod
+    def _convert_tools_to_gemini_format(tools: list[dict]) -> list:
         """Convert Anthropic-style tools to Gemini function declarations.
 
         Anthropic format:

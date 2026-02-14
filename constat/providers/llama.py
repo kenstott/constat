@@ -77,20 +77,24 @@ class OllamaProvider(OpenAIProvider):
         # Try to verify via Ollama API
         try:
             import httpx
-            response = httpx.post(
-                f"{self._base_url}/api/show",
-                json={"name": self.model},
-                timeout=5.0,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                # Check model info for tool support indicators
-                template = data.get("template", "")
-                if "tools" in template.lower() or "function" in template.lower():
-                    self._supports_tools_cache = True
-                    return True
-        except Exception:
-            pass  # Fall through to default
+        except ImportError:
+            pass  # httpx not available, fall through to default
+        else:
+            try:
+                response = httpx.post(
+                    f"{self._base_url}/api/show",
+                    json={"name": self.model},
+                    timeout=5.0,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    # Check model info for tool support indicators
+                    template = data.get("template", "")
+                    if "tools" in template.lower() or "function" in template.lower():
+                        self._supports_tools_cache = True
+                        return True
+            except (httpx.HTTPError, ConnectionError, OSError, ValueError, KeyError):
+                pass  # Fall through to default
 
         self._supports_tools_cache = False
         return False

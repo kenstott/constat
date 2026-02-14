@@ -211,7 +211,8 @@ class IntentClassifier:
         # Single segment classification
         return self._classify_single(user_input.strip(), context)
 
-    def _split_message(self, user_input: str) -> list[str]:
+    @staticmethod
+    def _split_message(user_input: str) -> list[str]:
         """Split message on sentence delimiters for multi-intent handling.
 
         Splits on . and ; but preserves:
@@ -389,8 +390,8 @@ class IntentClassifier:
 
         return best_sub, best_score
 
+    @staticmethod
     def _extract_target(
-        self,
         primary: PrimaryIntent,
         user_input: str,
     ) -> Optional[str]:

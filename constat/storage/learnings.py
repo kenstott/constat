@@ -127,7 +127,8 @@ class LearningStore:
             with open(self.file_path, "w") as f:
                 yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
 
-    def _generate_id(self, prefix: str = "learn") -> str:
+    @staticmethod
+    def _generate_id(prefix: str = "learn") -> str:
         """Generate a unique ID."""
         return f"{prefix}_{uuid.uuid4().hex[:8]}"
 

@@ -406,7 +406,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     session_manager = SessionManager(config, server_config)
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(_fastapi_app: FastAPI):
         """Manage application lifecycle."""
         try:
             # Startup: Pre-load embedding model (blocking - we need it for vectorization)
@@ -444,7 +444,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             logger.error(f"Error during shutdown: {e}")
             logger.exception("Shutdown error traceback:")
 
-    app = FastAPI(
+    fastapi_app = FastAPI(
         title="Constat API",
         description="Multi-step AI reasoning engine API for data analysis",
         version="0.1.0",
@@ -452,12 +452,12 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     )
 
     # Store config and session manager on app state
-    app.state.config = config
-    app.state.server_config = server_config
-    app.state.session_manager = session_manager
+    fastapi_app.state.config = config
+    fastapi_app.state.server_config = server_config
+    fastapi_app.state.session_manager = session_manager
 
     # Add CORS middleware
-    app.add_middleware(
+    fastapi_app.add_middleware(
         CORSMiddleware,
         allow_origins=server_config.cors_origins,
         allow_credentials=True,
@@ -466,7 +466,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     )
 
     # Exception handlers
-    @app.exception_handler(RequestValidationError)
+    @fastapi_app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         """Handle request validation errors with detailed logging."""
         logger.error(f"[VALIDATION ERROR] Path: {request.url.path}, Method: {request.method}")
@@ -476,7 +476,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             content={"detail": exc.errors()},
         )
 
-    @app.exception_handler(KeyError)
+    @fastapi_app.exception_handler(KeyError)
     async def key_error_handler(request, exc: KeyError) -> JSONResponse:
         """Handle KeyError (session not found, etc.)."""
         import traceback
@@ -487,7 +487,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             content={"error": "not_found", "message": str(exc)},
         )
 
-    @app.exception_handler(RuntimeError)
+    @fastapi_app.exception_handler(RuntimeError)
     async def runtime_error_handler(_request, exc: RuntimeError) -> JSONResponse:
         """Handle RuntimeError (limit exceeded, etc.)."""
         return JSONResponse(
@@ -495,7 +495,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             content={"error": "runtime_error", "message": str(exc)},
         )
 
-    @app.exception_handler(ValueError)
+    @fastapi_app.exception_handler(ValueError)
     async def value_error_handler(_request, exc: ValueError) -> JSONResponse:
         """Handle ValueError (invalid input, etc.)."""
         return JSONResponse(
@@ -504,7 +504,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         )
 
     # Health check endpoint
-    @app.get("/health")
+    @fastapi_app.get("/health")
     async def health() -> dict[str, Any]:
         """Health check endpoint.
 
@@ -522,7 +522,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
     # Debug auth endpoint
     from fastapi import Request as FastAPIRequest
-    @app.get("/debug/auth")
+    @fastapi_app.get("/debug/auth")
     async def debug_auth(request: FastAPIRequest) -> dict[str, Any]:
         """Debug endpoint to check auth configuration."""
         from constat.server.auth import FIREBASE_AVAILABLE
@@ -558,58 +558,58 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /roles, /skills, etc.
-    app.include_router(
+    fastapi_app.include_router(
         roles_router,
         prefix="/api/sessions",
         tags=["roles"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         skills_router,
         prefix="/api",
         tags=["skills"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         sessions_router,
         prefix="/api/sessions",
         tags=["sessions"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         queries_router,
         prefix="/api/sessions",
         tags=["queries"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         data_router,
         prefix="/api/sessions",
         tags=["data"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         files_router,
         prefix="/api/sessions",
         tags=["files"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         databases_router,
         prefix="/api/sessions",
         tags=["databases"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         schema_router,
         prefix="/api/schema",
         tags=["schema"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         learnings_router,
         prefix="/api",
         tags=["learnings"],
     )
-    app.include_router(
+    fastapi_app.include_router(
         users_router,
         prefix="/api/users",
         tags=["users"],
     )
 
-    return app
+    return fastapi_app
 
 
 # Module-level app instance for uvicorn reload mode

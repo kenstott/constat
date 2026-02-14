@@ -52,9 +52,7 @@ class ResolutionMixin:
             - If Tier 1 succeeds: (resolved_fact, None)
             - If Tier 2 needed: (fact_or_unresolved, assessment_result)
         """
-        import logging
         import time
-        logger = logging.getLogger(__name__)
 
         cache_key = self._cache_key(fact_name, params)
         logger.info(f"[TIERED] Starting tiered resolution for: {cache_key}")
@@ -236,32 +234,30 @@ class ResolutionMixin:
         Sources: cache, config, rules, documents, database
         All run concurrently, first successful result wins.
         """
-        import logging
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
         import time
-        logger = logging.getLogger(__name__)
 
         timeout = self.strategy.tier1_timeout
         sources = self.strategy.tier1_sources
         logger.debug(f"[TIER1] Racing sources: {[s.value for s in sources]} with {timeout}s timeout")
 
-        def try_source(source: FactSource) -> tuple[FactSource, Optional[Fact], float]:
+        def try_source(src: FactSource) -> tuple[FactSource, Optional[Fact], float]:
             """Try a single source, return (source, fact, elapsed_time)."""
             start = time.time()
             try:
-                fact = self._try_resolve(source, fact_name, params, cache_key)
-                elapsed = time.time() - start
-                if fact:
-                    logger.info(f"[TIER1] {source.value} returned fact: resolved={fact.is_resolved}, value_type={type(fact.value).__name__}")
+                resolved = self._try_resolve(src, fact_name, params, cache_key)
+                src_elapsed = time.time() - start
+                if resolved:
+                    logger.info(f"[TIER1] {src.value} returned fact: resolved={resolved.is_resolved}, value_type={type(resolved.value).__name__}")
                 else:
-                    logger.info(f"[TIER1] {source.value} returned None")
-                return source, fact, elapsed
+                    logger.info(f"[TIER1] {src.value} returned None")
+                return src, resolved, src_elapsed
             except Exception as e:
-                elapsed = time.time() - start
+                src_elapsed = time.time() - start
                 import traceback
-                logger.warning(f"[TIER1] {source.value} raised {type(e).__name__}: {e}")
-                logger.debug(f"[TIER1] {source.value} traceback: {traceback.format_exc()}")
-                return source, None, elapsed
+                logger.warning(f"[TIER1] {src.value} raised {type(e).__name__}: {e}")
+                logger.debug(f"[TIER1] {src.value} traceback: {traceback.format_exc()}")
+                return src, None, src_elapsed
 
         results: list[tuple[FactSource, Fact, float]] = []
         sources_tried: list[str] = []
@@ -271,22 +267,22 @@ class ResolutionMixin:
 
             try:
                 for future in as_completed(futures, timeout=timeout):
-                    source, fact, elapsed = future.result()
+                    result_source, result_fact, result_elapsed = future.result()
 
-                    if fact is None:
-                        sources_tried.append(f"{source.value}:no_result({elapsed:.2f}s)")
-                        logger.debug(f"[TIER1] {source.value}: no result in {elapsed:.2f}s")
-                    elif not fact.is_resolved:
-                        sources_tried.append(f"{source.value}:unresolved({elapsed:.2f}s)")
-                        logger.debug(f"[TIER1] {source.value}: unresolved in {elapsed:.2f}s")
-                    elif fact.confidence < self.strategy.min_confidence:
-                        sources_tried.append(f"{source.value}:low_conf({fact.confidence:.2f})")
-                        logger.debug(f"[TIER1] {source.value}: low confidence {fact.confidence}")
+                    if result_fact is None:
+                        sources_tried.append(f"{result_source.value}:no_result({result_elapsed:.2f}s)")
+                        logger.debug(f"[TIER1] {result_source.value}: no result in {result_elapsed:.2f}s")
+                    elif not result_fact.is_resolved:
+                        sources_tried.append(f"{result_source.value}:unresolved({result_elapsed:.2f}s)")
+                        logger.debug(f"[TIER1] {result_source.value}: unresolved in {result_elapsed:.2f}s")
+                    elif result_fact.confidence < self.strategy.min_confidence:
+                        sources_tried.append(f"{result_source.value}:low_conf({result_fact.confidence:.2f})")
+                        logger.debug(f"[TIER1] {result_source.value}: low confidence {result_fact.confidence}")
                     else:
                         # Valid result
-                        sources_tried.append(f"{source.value}:SUCCESS({elapsed:.2f}s)")
-                        results.append((source, fact, elapsed))
-                        logger.debug(f"[TIER1] {source.value}: success in {elapsed:.2f}s, conf={fact.confidence}")
+                        sources_tried.append(f"{result_source.value}:SUCCESS({result_elapsed:.2f}s)")
+                        results.append((result_source, result_fact, result_elapsed))
+                        logger.debug(f"[TIER1] {result_source.value}: success in {result_elapsed:.2f}s, conf={result_fact.confidence}")
 
             except TimeoutError:
                 logger.warning(f"[TIER1] Timeout after {timeout}s, using available results")
@@ -322,9 +318,7 @@ class ResolutionMixin:
 
         Returns DERIVABLE (with formula), KNOWN (with value), or USER_REQUIRED.
         """
-        import logging
         import json
-        logger = logging.getLogger(__name__)
 
         if not self.llm:
             logger.warning("[TIER2] No LLM configured, cannot assess")
@@ -432,9 +426,6 @@ class ResolutionMixin:
 
         Resolves the input facts and applies the formula.
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         if not assessment.formula or not assessment.inputs:
             logger.warning("[DERIVATION] No formula or inputs provided")
             return None
@@ -552,9 +543,6 @@ class ResolutionMixin:
         Returns:
             Fact with value, confidence, and provenance
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         # Use tiered resolution if enabled
         if self.strategy.use_tiered_resolution:
             fact, assessment = self.resolve_tiered(fact_name, **params)
@@ -689,16 +677,14 @@ class ResolutionMixin:
         Selection: prioritizes by source order, uses confidence as tiebreaker.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import logging
-        logger = logging.getLogger(__name__)
 
-        def try_source(source: FactSource) -> tuple[FactSource, Optional[Fact]]:
+        def try_source(src: FactSource) -> tuple[FactSource, Optional[Fact]]:
             try:
-                fact = self._try_resolve(source, fact_name, params, cache_key)
-                return source, fact
+                resolved = self._try_resolve(src, fact_name, params, cache_key)
+                return src, resolved
             except Exception as e:
-                logger.debug(f"[_resolve_io_parallel] {source.value} raised: {e}")
-                return source, None
+                logger.debug(f"[_resolve_io_parallel] {src.value} raised: {e}")
+                return src, None
 
         # Run all I/O sources in parallel
         valid_results: list[tuple[int, float, Fact, FactSource]] = []
@@ -707,19 +693,19 @@ class ResolutionMixin:
             futures = {executor.submit(try_source, s): s for s in io_sources}
 
             for future in as_completed(futures):
-                source, fact = future.result()
-                if fact is None:
-                    sources_tried.append(f"{source.value}:no_result")
-                elif not fact.is_resolved:
-                    sources_tried.append(f"{source.value}:unresolved")
-                elif fact.confidence < self.strategy.min_confidence:
-                    sources_tried.append(f"{source.value}:low_conf({fact.confidence})")
+                result_source, result_fact = future.result()
+                if result_fact is None:
+                    sources_tried.append(f"{result_source.value}:no_result")
+                elif not result_fact.is_resolved:
+                    sources_tried.append(f"{result_source.value}:unresolved")
+                elif result_fact.confidence < self.strategy.min_confidence:
+                    sources_tried.append(f"{result_source.value}:low_conf({result_fact.confidence})")
                 else:
                     # Valid result - store with priority index
-                    priority_idx = io_sources.index(source)
-                    valid_results.append((priority_idx, fact.confidence, fact, source))
-                    sources_tried.append(f"{source.value}:conf={fact.confidence:.2f}")
-                    logger.debug(f"[_resolve_io_parallel] {source.value}: conf={fact.confidence:.2f}")
+                    priority_idx = io_sources.index(result_source)
+                    valid_results.append((priority_idx, result_fact.confidence, result_fact, result_source))
+                    sources_tried.append(f"{result_source.value}:conf={result_fact.confidence:.2f}")
+                    logger.debug(f"[_resolve_io_parallel] {result_source.value}: conf={result_fact.confidence:.2f}")
 
         if not valid_results:
             return None

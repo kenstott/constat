@@ -947,7 +947,8 @@ Return ONLY the JSON array."""
 
         logger.info(f"[LEARNINGS] Compacted {promoted_count} learnings into {len(rules)} rules")
 
-    def _categorize_error(self, context: dict) -> LearningCategory:
+    @staticmethod
+    def _categorize_error(context: dict) -> LearningCategory:
         """Categorize an error for learning storage.
 
         Categories:
@@ -1051,8 +1052,9 @@ Return ONLY the JSON array."""
         except Exception as e:
             logger.debug(f"Correction capture failed (non-fatal): {e}")
 
+    @staticmethod
     def _generate_failure_suggestions(
-        self, step: "Step", error: str, _code: str
+        step: "Step", error: str, _code: str
     ) -> list["FailureSuggestion"]:
         """Generate suggestions for alternative approaches when a step fails.
 

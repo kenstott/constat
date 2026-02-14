@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import duckdb
+
 from constat.storage.duckdb_pool import ThreadLocalDuckDB
 
 
@@ -139,7 +141,8 @@ class ConstatRegistry:
         # Migration: Add new columns to existing tables if they don't exist
         self._migrate_schema(conn)
 
-    def _migrate_schema(self, conn) -> None:
+    @staticmethod
+    def _migrate_schema(conn) -> None:
         """Add new columns to existing tables for backwards compatibility."""
         # Check and add columns to constat_tables
         # Note: PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
@@ -157,7 +160,7 @@ class ConstatRegistry:
             # Update existing NULL values to FALSE so filtering works correctly
             conn.execute("UPDATE constat_tables SET is_published = FALSE WHERE is_published IS NULL")
             conn.execute("UPDATE constat_tables SET is_final_step = FALSE WHERE is_final_step IS NULL")
-        except Exception:
+        except duckdb.Error:
             pass  # Table may not exist yet
 
         # Check and add columns to constat_artifacts
@@ -174,7 +177,7 @@ class ConstatRegistry:
             # Update existing NULL values to FALSE so filtering works correctly
             conn.execute("UPDATE constat_artifacts SET is_published = FALSE WHERE is_published IS NULL")
             conn.execute("UPDATE constat_artifacts SET is_final_step = FALSE WHERE is_final_step IS NULL")
-        except Exception:
+        except duckdb.Error:
             pass  # Table may not exist yet
 
     def _get_connection(self):
@@ -244,8 +247,8 @@ class ConstatRegistry:
 
         return table_id
 
+    @staticmethod
     def _generate_table_description(
-        self,
         name: str,
         row_count: int,
         columns: Optional[list[dict]]
@@ -381,10 +384,10 @@ class ConstatRegistry:
         rows = conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in conn.description]
 
-        def get_col(row, columns, name, default=None):
+        def get_col(row, cols, col_name, default=None):
             """Safely get column value with default for missing columns."""
             try:
-                return row[columns.index(name)]
+                return row[cols.index(col_name)]
             except (ValueError, IndexError):
                 return default
 
@@ -420,9 +423,9 @@ class ConstatRegistry:
 
         columns = [desc[0] for desc in conn.description]
 
-        def get_col(name, default=None):
+        def get_col(col_name, default=None):
             try:
-                return row[columns.index(name)]
+                return row[columns.index(col_name)]
             except (ValueError, IndexError):
                 return default
 
@@ -494,8 +497,8 @@ class ConstatRegistry:
 
         return artifact_id
 
+    @staticmethod
     def _generate_artifact_description(
-        self,
         name: str,
         artifact_type: str,
         size_bytes: int

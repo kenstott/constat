@@ -354,7 +354,8 @@ class IntentClassification:
 
         return suggestions
 
-    def _would_auto_execute_intent(self, intent: FollowUpIntent, expensive: bool) -> bool:
+    @staticmethod
+    def _would_auto_execute_intent(intent: FollowUpIntent, expensive: bool) -> bool:
         """Check if a specific intent would be auto-executed."""
         if intent in QUICK_INTENTS:
             return True

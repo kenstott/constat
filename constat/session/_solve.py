@@ -86,8 +86,8 @@ class SolveMixin:
             # Match skills and roles dynamically based on query
             try:
                 return self.get_dynamic_context(problem)
-            except Exception as e:
-                logger.debug(f"[PARALLEL] Dynamic context matching failed: {e}")
+            except Exception as exc:
+                logger.debug(f"[PARALLEL] Dynamic context matching failed: {exc}")
                 return None
 
         def run_planning():
@@ -96,8 +96,8 @@ class SolveMixin:
                 self._sync_user_facts_to_planner()
                 self._sync_available_roles_to_planner()
                 return self.planner.plan(problem)
-            except Exception as e:
-                logger.debug(f"[PARALLEL] Speculative planning failed: {e}")
+            except Exception as exc:
+                logger.debug(f"[PARALLEL] Speculative planning failed: {exc}")
                 return None
 
         # Determine which tasks to run

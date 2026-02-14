@@ -72,8 +72,8 @@ class IntentsMixin:
 
         return self._approval_callback(request)
 
+    @staticmethod
     def _ensure_enhance_updates_source(
-        self,
         question: str,
         plan: Plan,
         existing_tables: list[dict],
@@ -527,7 +527,8 @@ Provide a brief, high-level summary of the key findings."""
         # No data sources match — use doc search + LLM synthesis
         return self._solve_knowledge(user_input)
 
-    def _handle_plan_new_intent(self, turn_intent: TurnIntent, user_input: str) -> dict:
+    @staticmethod
+    def _handle_plan_new_intent(turn_intent: TurnIntent, user_input: str) -> dict:
         """
         Handle PLAN_NEW primary intent - enhance problem based on sub-intent.
 
@@ -837,7 +838,8 @@ Provide a brief, high-level summary of the key findings."""
                 "meta_response": True,
             }
 
-    def _handle_help(self) -> dict:
+    @staticmethod
+    def _handle_help() -> dict:
         """Handle help control command - show available commands."""
         # Use centralized help text from HELP_COMMANDS
         return {

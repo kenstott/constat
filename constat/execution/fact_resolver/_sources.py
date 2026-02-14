@@ -39,8 +39,6 @@ class SourcesMixin:
         cache_key: str
     ) -> Optional[Fact]:
         """Try to resolve from a specific source."""
-        import logging
-        logger = logging.getLogger(__name__)
 
         if source == FactSource.CACHE:
             cached = self._cache.get(cache_key)
@@ -145,9 +143,7 @@ class SourcesMixin:
         Returns:
             Fact with API binding (lazy) or actual data (eager)
         """
-        import logging
         import json
-        logger = logging.getLogger(__name__)
 
         if not self.config or not self.config.apis:
             logger.debug(f"[_resolve_from_api] No APIs configured")
@@ -355,7 +351,8 @@ NOT_POSSIBLE: <reason>
             logger.warning(f"[_resolve_from_api] Failed to resolve {fact_name} from API: {e}")
             return None
 
-    def _transform_sql_for_sqlite(self: "FactResolver", sql: str) -> str:
+    @staticmethod
+    def _transform_sql_for_sqlite(sql: str) -> str:
         """Transform MySQL/PostgreSQL SQL syntax to SQLite equivalents.
 
         Handles common incompatibilities:
@@ -431,10 +428,8 @@ NOT_POSSIBLE: <reason>
         Uses PythonExecutor for consistent execution and error handling.
         Participates in learning loop when syntax errors are fixed.
         """
-        import logging
         import pandas as pd
         from constat.execution.executor import PythonExecutor, format_error_for_retry
-        logger = logging.getLogger(__name__)
 
         logger.debug(f"DB: _resolve_from_database called for: {fact_name}")
         logger.debug(f"DB: llm={self.llm is not None}, schema_manager={self.schema_manager is not None}, config={self.config is not None}")
@@ -752,9 +747,6 @@ Original request:
         1. Semantic search to find potentially relevant document chunks
         2. If chunks have low relevance, load full document sections for better context
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         logger.debug(f"DOC: _resolve_from_document called for: {fact_name}")
 
         if not self.llm:
@@ -915,8 +907,6 @@ NOT_FOUND
 
     def _resolve_from_llm(self: "FactResolver", fact_name: str, params: dict) -> Optional[Fact]:
         """Ask LLM for world knowledge or heuristics."""
-        import logging
-        logger = logging.getLogger(__name__)
 
         if not self.llm:
             logger.debug(f"[_resolve_from_llm] No LLM configured")
@@ -1002,8 +992,6 @@ UNKNOWN
         IMPORTANT: This method enforces the 2+ inputs requirement.
         Derivation must compose multiple DISTINCT facts - not just try synonyms.
         """
-        import logging
-        logger = logging.getLogger(__name__)
 
         if not self.strategy.allow_sub_plans:
             logger.debug(f"[_resolve_from_sub_plan] Sub-plans disabled")
@@ -1186,9 +1174,7 @@ Original request:
         build_proof: bool = True,
     ) -> tuple[Fact, Optional[ProofNode]]:
         """Execute SQL for a leaf database fact."""
-        import logging
         import pandas as pd
-        logger = logging.getLogger(__name__)
 
         cache_key = self._cache_key(spec.fact_name, params)
 
@@ -1290,8 +1276,6 @@ Original request:
         build_proof: bool = True,
     ) -> tuple[Fact, Optional[ProofNode]]:
         """Execute document search for a leaf document fact."""
-        import logging
-        logger = logging.getLogger(__name__)
 
         cache_key = self._cache_key(spec.fact_name, params)
 
@@ -1340,8 +1324,8 @@ Original request:
                 reasoning=f"Document search error: {e}",
             ), None
 
+    @staticmethod
     def _execute_sandboxed_logic(
-        self: "FactResolver",
         logic: str,
         resolved_facts: dict[str, Any],
     ) -> tuple[Any, float]:
@@ -1359,10 +1343,8 @@ Original request:
         Returns:
             Tuple of (result, confidence)
         """
-        import logging
         import pandas as pd
         import numpy as np
-        logger = logging.getLogger(__name__)
 
         if not logic:
             return None, 0.0
@@ -1403,7 +1385,8 @@ Original request:
             logger.error(traceback.format_exc())
             return None, 0.0
 
-    def _should_store_as_table(self: "FactResolver", value: Any) -> bool:
+    @staticmethod
+    def _should_store_as_table(value: Any) -> bool:
         """
         Check if a value should be stored as a table instead of inline.
 

@@ -469,7 +469,8 @@ class APISchemaManager:
             # No spec available, use basic metadata
             self._add_basic_metadata(name, api_config)
 
-    def _fetch_openapi_spec(self, spec_url: str, headers: dict = None) -> Optional[dict]:
+    @staticmethod
+    def _fetch_openapi_spec(spec_url: str, headers: dict = None) -> Optional[dict]:
         """Fetch OpenAPI spec from URL."""
         try:
             req_headers = {"Accept": "application/json"}
@@ -483,7 +484,8 @@ class APISchemaManager:
             logger.warning(f"Failed to fetch OpenAPI spec from {spec_url}: {e}")
             return None
 
-    def _load_openapi_spec_file(self, spec_path: str) -> Optional[dict]:
+    @staticmethod
+    def _load_openapi_spec_file(spec_path: str) -> Optional[dict]:
         """Load OpenAPI spec from local file."""
         import yaml
         from pathlib import Path
@@ -577,7 +579,8 @@ class APISchemaManager:
 
         logger.info(f"Parsed OpenAPI spec '{name}': {len([k for k in self.metadata_cache if k.startswith(name)])} endpoints/schemas")
 
-    def _extract_response_fields(self, operation: dict, schemas: dict) -> list[APIFieldMetadata]:
+    @staticmethod
+    def _extract_response_fields(operation: dict, schemas: dict) -> list[APIFieldMetadata]:
         """Extract fields from the response schema."""
         fields = []
         responses = operation.get("responses", {})
@@ -614,7 +617,8 @@ class APISchemaManager:
 
         return fields
 
-    def _extract_rest_return_type(self, operation: dict, _schemas: dict) -> Optional[str]:
+    @staticmethod
+    def _extract_rest_return_type(operation: dict, _schemas: dict) -> Optional[str]:
         """Extract the return type signature from a REST response schema."""
         responses = operation.get("responses", {})
 
@@ -931,10 +935,10 @@ class APISchemaManager:
                 results.append((f"api:{key}:desc", meta.description))
 
             # Field names and descriptions
-            for field in meta.fields:
-                results.append((f"api:{key}.{field.name}", field.name))
-                if field.description:
-                    results.append((f"api:{key}.{field.name}:desc", field.description))
+            for api_field in meta.fields:
+                results.append((f"api:{key}.{api_field.name}", api_field.name))
+                if api_field.description:
+                    results.append((f"api:{key}.{api_field.name}:desc", api_field.description))
 
         return results
 
@@ -951,8 +955,8 @@ class APISchemaManager:
             entities.add(meta.endpoint_name)
 
             # Add field names
-            for field in meta.fields:
-                entities.add(field.name)
+            for api_field in meta.fields:
+                entities.add(api_field.name)
 
         return list(entities)
 

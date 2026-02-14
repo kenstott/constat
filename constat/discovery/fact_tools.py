@@ -204,7 +204,8 @@ class FactResolutionTools:
             "suggestions": self.fact_resolver.get_unresolved_summary(),
         }
 
-    def _question_to_fact_name(self, question: str) -> str:
+    @staticmethod
+    def _question_to_fact_name(question: str) -> str:
         """Convert a natural language question to a fact name."""
         # Simple heuristic - extract key terms
         question = question.lower()

@@ -283,7 +283,8 @@ class PromptBuilder:
 
         return prompt, use_tools
 
-    def _build_tool_prompt(self, custom_prompt: str) -> str:
+    @staticmethod
+    def _build_tool_prompt(custom_prompt: str) -> str:
         """Build minimal prompt for tool-based discovery."""
         parts = [DISCOVERY_SYSTEM_PROMPT]
         if custom_prompt:

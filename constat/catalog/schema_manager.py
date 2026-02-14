@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from constat.core.config import Config, DatabaseConfig
 from constat.embedding_loader import EmbeddingModelLoader
@@ -184,7 +185,8 @@ class SchemaManager:
         # Progress callback (set during initialize)
         self._progress_callback: Optional[Callable[[str, int, int, str], None]] = None
 
-    def _get_raw_engine(self, conn: Union[Engine, TranspilingConnection]) -> Engine:
+    @staticmethod
+    def _get_raw_engine(conn: Union[Engine, TranspilingConnection]) -> Engine:
         """Get the raw SQLAlchemy Engine from a connection.
 
         Handles both raw Engine and TranspilingConnection wrappers.
@@ -465,7 +467,8 @@ class SchemaManager:
             connector.connect()
             self.nosql_connections[db_name] = connector
 
-    def _create_nosql_connector(self, db_name: str, db_config: DatabaseConfig) -> Optional[NoSQLConnector]:
+    @staticmethod
+    def _create_nosql_connector(db_name: str, db_config: DatabaseConfig) -> Optional[NoSQLConnector]:
         """Create the appropriate NoSQL connector based on database type."""
         db_type = db_config.type
 
@@ -624,7 +627,8 @@ class SchemaManager:
             database_type=db_type,
         )
 
-    def _convert_file_metadata(self, db_name: str, _connector: FileConnector, file_meta) -> TableMetadata:
+    @staticmethod
+    def _convert_file_metadata(db_name: str, _connector: FileConnector, file_meta) -> TableMetadata:
         """Convert FileMetadata to TableMetadata for unified handling."""
         # Convert columns
         columns = []
@@ -710,7 +714,7 @@ class SchemaManager:
             with engine.connect() as conn:
                 result = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
                 row_count = result.scalar() or 0
-        except Exception:
+        except SQLAlchemyError:
             pass  # Skip if count fails
 
         # Get the database type from config
@@ -729,7 +733,8 @@ class SchemaManager:
             database_type=db_type,
         )
 
-    def _simplify_type(self, type_str: str) -> str:
+    @staticmethod
+    def _simplify_type(type_str: str) -> str:
         """Simplify verbose SQL types for token efficiency."""
         type_lower = type_str.lower()
 
@@ -866,7 +871,7 @@ class SchemaManager:
                 )
 
             return True
-        except Exception:
+        except (json.JSONDecodeError, KeyError, OSError):
             return False
 
     def _save_schema_cache(self, config_hash: str) -> None:
@@ -913,7 +918,7 @@ class SchemaManager:
 
             with open(cache_path, "w") as f:
                 json.dump(cache_data, f, indent=2)
-        except Exception:
+        except OSError:
             # Silently ignore cache save failures
             pass
 

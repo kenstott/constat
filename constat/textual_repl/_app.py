@@ -23,6 +23,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
+from textual.css.query import NoMatches
 from textual.widgets import Static, Input
 
 from constat.core.config import Config
@@ -242,7 +243,7 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
         try:
             input_widget = self.query_one("#user-input", ConstatInput)
             input_widget.save_history()
-        except Exception:
+        except (NoMatches, OSError):
             pass
 
     async def _create_session(self) -> None:
@@ -513,7 +514,7 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
         try:
             input_widget = self.query_one("#user-input", ConstatInput)
             input_widget.save_history()
-        except Exception:
+        except (NoMatches, OSError):
             pass
         self._approval_event.set()
         self._clarification_event.set()
@@ -644,11 +645,11 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
             if self.session and hasattr(self.session, "role_manager"):
                 self.session.role_manager.set_active_role(selected)
                 self._update_role_display()
-                log = self.query_one("#output-log", OutputLog)
+                output_log = self.query_one("#output-log", OutputLog)
                 if selected:
-                    log.write(Text(f"Role set to: {selected}", style="cyan"))
+                    output_log.write(Text(f"Role set to: {selected}", style="cyan"))
                 else:
-                    log.write(Text("Role cleared.", style="dim"))
+                    output_log.write(Text("Role cleared.", style="dim"))
 
         self.push_screen(
             RoleSelectorScreen(roles, role_manager.active_role_name),
@@ -679,7 +680,8 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
         except Exception as e:
             logger.debug(f"Copy panel failed: {e}")
 
-    def _extract_log_content(self, log_widget) -> str:
+    @staticmethod
+    def _extract_log_content(log_widget) -> str:
         """Extract plain text content from a RichLog widget."""
         import re
         from rich.text import Text as RichText

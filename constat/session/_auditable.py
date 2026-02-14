@@ -709,9 +709,9 @@ REMEMBER:
             derivation_lines = ["**Premise Resolution:**", ""]
 
             # Define node executor that calls back to Session
-            def execute_node(node):
+            def execute_node(dag_node):
                 return self._execute_dag_node(
-                    node=node,
+                    node=dag_node,
                     dag=dag,
                     problem=problem,
                     detailed_schema=detailed_schema,
@@ -730,7 +730,7 @@ REMEMBER:
 
                 if event_type == "node_running":
                     # Determine if premise or inference
-                    is_premise = fact_id.startswith("P") if fact_id else level == 0
+                    node_is_premise = fact_id.startswith("P") if fact_id else level == 0
 
                     # INVERTED TREE: Find what this node FEEDS INTO (not what it depends on)
                     # This shows derivation flow: premises -> inferences -> answer
@@ -751,7 +751,7 @@ REMEMBER:
                         }
                     ))
 
-                    if is_premise:
+                    if node_is_premise:
                         # Parent = what inference uses this premise
                         consumer = find_consumer(node_name)
                         logger.debug(f"[DAG] {fact_id} (premise) feeds into: {consumer}")
@@ -779,23 +779,23 @@ REMEMBER:
                         ))
 
                 elif event_type == "node_resolved":
-                    value = data.get("value")
-                    confidence = data.get("confidence", 0.9)
+                    resolved_value = data.get("value")
+                    resolved_confidence = data.get("confidence", 0.9)
                     source = data.get("source", "")
-                    is_premise = fact_id.startswith("P") if fact_id else level == 0
+                    node_is_premise = fact_id.startswith("P") if fact_id else level == 0
 
                     # Get dependencies for this node (dag.nodes keyed by name, not fact_id)
                     node_obj = dag.nodes.get(node_name)
-                    deps = [f"{dag.nodes[dep].fact_id}: {dep}" for dep in node_obj.dependencies if dep in dag.nodes] if node_obj and node_obj.dependencies else []
+                    node_deps = [f"{dag.nodes[dep].fact_id}: {dep}" for dep in node_obj.dependencies if dep in dag.nodes] if node_obj and node_obj.dependencies else []
 
                     # Emit fact_resolved for DAG visualization
                     fact_resolved_data = {
                         "fact_name": f"{fact_id}: {node_name}",
                         "fact_id": fact_id,
-                        "value": value,
-                        "confidence": confidence,
+                        "value": resolved_value,
+                        "confidence": resolved_confidence,
                         "source": source,
-                        "dependencies": deps,
+                        "dependencies": node_deps,
                     }
                     validations = data.get("validations")
                     if validations:
@@ -806,18 +806,18 @@ REMEMBER:
                         data=fact_resolved_data,
                     ))
 
-                    if is_premise:
-                        derivation_lines.append(f"- {fact_id}: {node_name} = {str(value)[:100]} (confidence: {confidence:.0%})")
+                    if node_is_premise:
+                        derivation_lines.append(f"- {fact_id}: {node_name} = {str(resolved_value)[:100]} (confidence: {resolved_confidence:.0%})")
                         self._emit_event(StepEvent(
                             event_type="premise_resolved",
                             step_number=level + 1,
-                            data={"fact_name": f"{fact_id}: {node_name}", "value": value, "confidence": confidence, "source": source}
+                            data={"fact_name": f"{fact_id}: {node_name}", "value": resolved_value, "confidence": resolved_confidence, "source": source}
                         ))
                     else:
                         self._emit_event(StepEvent(
                             event_type="inference_complete",
                             step_number=level + 1,
-                            data={"inference_id": fact_id, "inference_name": node_name, "result": value}
+                            data={"inference_id": fact_id, "inference_name": node_name, "result": resolved_value}
                         ))
 
                 elif event_type == "node_failed":
@@ -857,17 +857,17 @@ REMEMBER:
 
                 elif event_type == "node_started":
                     # Log actual thread start for parallelism diagnosis
-                    start_time = data.get("start_time_ms", 0)
-                    logger.debug(f"DAG node {fact_id} STARTED at {start_time}ms")
+                    node_start_time = data.get("start_time_ms", 0)
+                    logger.debug(f"DAG node {fact_id} STARTED at {node_start_time}ms")
 
                 elif event_type == "node_timing":
                     # Log timing for parallelism analysis
                     start_ms = data.get("start_ms", 0)
                     end_ms = data.get("end_ms", 0)
-                    duration_ms = data.get("duration_ms", 0)
-                    failed = data.get("failed", False)
-                    status = "FAILED" if failed else "COMPLETED"
-                    logger.info(f"DAG timing: {fact_id} {status} - start:{start_ms} end:{end_ms} duration:{duration_ms}ms")
+                    node_duration_ms = data.get("duration_ms", 0)
+                    node_failed = data.get("failed", False)
+                    status = "FAILED" if node_failed else "COMPLETED"
+                    logger.info(f"DAG timing: {fact_id} {status} - start:{start_ms} end:{end_ms} duration:{node_duration_ms}ms")
 
             # Phase 4: Extract user-specified validation constraints from the problem
             self._proof_user_validations = self._extract_user_validations(problem, inferences)
@@ -977,8 +977,8 @@ REMEMBER:
 
             # Build synthesis context - use English names for clarity
             # Truncate values to prevent token overflow
-            def truncate_value(val, max_chars=500):
-                s = str(val)
+            def truncate_value(v, max_chars=500):
+                s = str(v)
                 return s[:max_chars] + "..." if len(s) > max_chars else s
 
             resolved_context = "\n".join([

@@ -179,7 +179,8 @@ class BaseLLMProvider(ABC):
 
         return text, was_truncated
 
-    def _looks_truncated(self, code: str) -> bool:
+    @staticmethod
+    def _looks_truncated(code: str) -> bool:
         """Detect if code appears truncated based on common patterns."""
         if not code:
             return False

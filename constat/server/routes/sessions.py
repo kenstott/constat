@@ -49,19 +49,19 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
         try:
             tables = managed.session.datastore.list_tables()
             tables_count = len(tables)
-        except Exception:
+        except (KeyError, ValueError, OSError):
             pass
 
         try:
             artifacts = managed.session.datastore.list_artifacts()
             artifacts_count = len(artifacts)
-        except Exception:
+        except (KeyError, ValueError, OSError):
             pass
 
         # Get summary from datastore meta or history
         try:
             summary = managed.session.datastore.get_session_meta("summary")
-        except Exception:
+        except (KeyError, ValueError, OSError):
             pass
 
     # Try to get summary from history if not in datastore
@@ -73,7 +73,7 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
                 hist = managed.session.history.get_session(history_session_id)
                 if hist:
                     summary = hist.summary
-        except Exception:
+        except (KeyError, ValueError, OSError):
             pass
 
     return SessionResponse(

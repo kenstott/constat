@@ -103,7 +103,8 @@ class PythonExecutor:
 
         return None
 
-    def compile(self, code: str) -> tuple[Optional[Any], Optional[CompileError]]:
+    @staticmethod
+    def compile(code: str) -> tuple[Optional[Any], Optional[CompileError]]:
         """Compile code, returning (compiled, error)."""
         try:
             compiled = compile(code, "<generated>", "exec")

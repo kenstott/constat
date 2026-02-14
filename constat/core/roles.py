@@ -273,7 +273,8 @@ class RoleManager:
         self.update_role(name, prompt, description, skills=skills)
         return self._roles[name]
 
-    def draft_role(self, name: str, user_description: str, llm,
+    @staticmethod
+    def draft_role(name: str, user_description: str, llm,
                    available_skills: list[dict[str, str]] | None = None) -> Role:
         """Draft a role using LLM based on user description.
 

@@ -77,7 +77,7 @@ class ResourcesMixin:
                                 f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"
                             ).fetchall()
                             column_names.extend([c[0] for c in cols])
-                        except Exception:
+                        except duckdb.Error:
                             pass
 
                     # Update schema entities for NER to recognize in documents
@@ -86,6 +86,7 @@ class ResourcesMixin:
                     self.doc_tools._schema_entities = new_entities
 
                 conn.close()
+            # noinspection PyBroadException - duckdb import is conditional, can't narrow
             except Exception:
                 pass  # Non-fatal - database still added to session
 

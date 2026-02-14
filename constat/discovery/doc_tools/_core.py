@@ -514,7 +514,7 @@ class _CoreMixin:
         for doc_name in docs_to_reload:
             try:
                 self._load_document_with_mtime(doc_name)
-            except Exception:
+            except (OSError, ValueError):
                 pass  # Skip documents that fail to load
 
         # Rebuild index if anything changed

@@ -85,17 +85,17 @@ async def list_entities(
     # Cache for related entities queries (entity_id -> list of related)
     related_entities_cache: dict[str, list[dict]] = {}
 
-    def get_related_entities(vs, entity_id: str, session_id: str, limit: int = 5) -> list[dict]:
+    def get_related_entities(vector_store, ent_id_param: str, sess_id: str, limit: int = 5) -> list[dict]:
         """Find entities that co-occur in the same chunks as the given entity.
 
         Returns list of {"name": str, "type": str, "co_occurrences": int}
         """
-        if entity_id in related_entities_cache:
-            return related_entities_cache[entity_id]
+        if ent_id_param in related_entities_cache:
+            return related_entities_cache[ent_id_param]
 
         try:
             # Find chunks where this entity appears, then find other entities in those chunks
-            result = vs._conn.execute("""
+            co_occurrence_result = vector_store._conn.execute("""
                 SELECT e2.name, e2.semantic_type, COUNT(*) as co_occurrences
                 FROM chunk_entities ce1
                 JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
@@ -106,40 +106,40 @@ async def list_entities(
                 GROUP BY e2.id, e2.name, e2.semantic_type
                 ORDER BY co_occurrences DESC
                 LIMIT ?
-            """, [entity_id, session_id, limit]).fetchall()
+            """, [ent_id_param, sess_id, limit]).fetchall()
 
-            related = [
-                {"name": row[0], "type": row[1] or "concept", "co_occurrences": row[2]}
-                for row in result
+            related_list = [
+                {"name": co_row[0], "type": co_row[1] or "concept", "co_occurrences": co_row[2]}
+                for co_row in co_occurrence_result
             ]
-            related_entities_cache[entity_id] = related
-            return related
-        except Exception as e:
-            logger.debug(f"Could not get related entities for {entity_id}: {e}")
+            related_entities_cache[ent_id_param] = related_list
+            return related_list
+        except Exception as err:
+            logger.debug(f"Could not get related entities for {ent_id_param}: {err}")
             return []
 
-    def consolidate_source(source: str) -> str:
+    def consolidate_source(source_str: str) -> str:
         """Consolidate column-level schema sources to table level.
 
         schema:hr.performance_reviews.employee_id -> schema:hr.performance_reviews
         schema:hr.performance_reviews -> schema:hr.performance_reviews (unchanged)
         business_rules -> business_rules (unchanged)
         """
-        if source.startswith("schema:"):
-            parts = source.split(".")
+        if source_str.startswith("schema:"):
+            parts = source_str.split(".")
             # schema:db.table.column -> keep schema:db.table
             # schema:db.table -> keep as is
             if len(parts) >= 3:
                 # Has column part, consolidate to table
                 return ".".join(parts[:2])
-        return source
+        return source_str
 
     def add_entity(
-        name: str,
+        entity_name: str,
         etype: str,
-        source: str,
+        entity_source: str,
         metadata: dict,
-        references: list[dict] | None = None,
+        entity_references: list[dict] | None = None,
         related_entities: list[dict] | None = None,
     ):
         """Add or merge an entity into the map.
@@ -155,9 +155,9 @@ async def list_entities(
 
         # Detect and correct type based on reference sources
         # If all references are from API sources but type is table/column, correct it
-        if etype in ("table", "column") and references:
-            api_refs = [r for r in references if r.get("document", "").startswith("api:")]
-            non_api_refs = [r for r in references if not r.get("document", "").startswith("api:")]
+        if etype in ("table", "column") and entity_references:
+            api_refs = [r for r in entity_references if r.get("document", "").startswith("api:")]
+            non_api_refs = [r for r in entity_references if not r.get("document", "").startswith("api:")]
             if api_refs and not non_api_refs:
                 # All references are API - infer type from section patterns
                 sections = [r.get("section", "") for r in api_refs]
@@ -168,18 +168,18 @@ async def list_entities(
                 else:
                     etype = "api_endpoint"
 
-        normalized = normalize_entity_name(name)
-        display = display_entity_name(name)
+        normalized = normalize_entity_name(entity_name)
+        display = display_entity_name(entity_name)
         key = normalized.lower()
 
         # Get original_name from metadata, or use raw name if different from display
         original_name = metadata.get("original_name")
-        if not original_name and name != display and name != normalized:
-            original_name = name
+        if not original_name and entity_name != display and entity_name != normalized:
+            original_name = entity_name
             metadata = {**metadata, "original_name": original_name}
 
         # Consolidate source (e.g., schema:db.table.column -> schema:db.table)
-        consolidated_source = consolidate_source(source)
+        consolidated_source = consolidate_source(entity_source)
 
         if key not in entity_map:
             entity_map[key] = {
@@ -189,9 +189,9 @@ async def list_entities(
                 "types": [etype],
                 "sources": [consolidated_source],
                 "metadata": metadata,
-                "references": references or [],
+                "references": entity_references or [],
                 "related_entities": related_entities or [],
-                "mention_count": len(references) if references else 0,
+                "mention_count": len(entity_references) if entity_references else 0,
                 "original_name": original_name,
             }
         else:
@@ -206,9 +206,9 @@ async def list_entities(
             if consolidated_source not in existing["sources"]:
                 existing["sources"].append(consolidated_source)
             # Merge references with deduplication (by document + section)
-            if references:
+            if entity_references:
                 existing_refs = {(r["document"], r["section"]) for r in existing["references"]}
-                for ref in references:
+                for ref in entity_references:
                     ref_key = (ref["document"], ref["section"])
                     if ref_key not in existing_refs:
                         existing["references"].append(ref)

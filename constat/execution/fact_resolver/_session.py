@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 class SessionMixin:
 
-    def _cache_key(self: "FactResolver", fact_name: str, params: dict) -> str:
+    @staticmethod
+    def _cache_key(fact_name: str, params: dict) -> str:
         """Generate cache key from fact name and params.
 
         Note: Excludes metadata-only params (fact_description) from cache key
@@ -178,8 +179,6 @@ class SessionMixin:
         Returns:
             Tuple of (Fact, ProofNode) - proof is None if build_proof=False
         """
-        import logging
-        logger = logging.getLogger(__name__)
         params = params or {}
 
         cache_key = self._cache_key(fact_name, params)
@@ -223,9 +222,7 @@ class SessionMixin:
         - How to combine them (logic code)
         - Or, for leaf facts: direct SQL/doc query
         """
-        import logging
         import json
-        logger = logging.getLogger(__name__)
 
         if not self.llm:
             logger.debug("[_generate_resolution_spec] No LLM configured")
@@ -346,9 +343,6 @@ Respond with ONLY the JSON object, no explanation."""
         For leaf facts: execute SQL or doc query directly
         For derived facts: resolve dependencies, then execute logic
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         cache_key = self._cache_key(spec.fact_name, params)
 
         # Leaf fact - resolve directly
@@ -668,8 +662,6 @@ REASONING: User is focused on US region analysis
 
         This restores previously resolved facts so they don't need to be re-resolved.
         """
-        import logging
-        logger = logging.getLogger(__name__)
         logger.debug(f"[IMPORT_CACHE] Importing {len(facts)} facts")
         for fact_dict in facts:
             try:
@@ -716,7 +708,8 @@ REASONING: User is focused on US region analysis
                    "context", "query", "api_endpoint", "rule_name", "table_name", "row_count"]
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=columns)
 
-    def explain(self: "FactResolver", fact: Fact) -> str:
+    @staticmethod
+    def explain(fact: Fact) -> str:
         """Generate a human-readable explanation of how a fact was derived."""
         return fact.derivation_trace
 

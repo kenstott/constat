@@ -198,11 +198,12 @@ class PromptLogger:
             "by_task_type": self._stats_by_field(entries, "task_type"),
         }
 
-    def _stats_by_field(self, entries: list[dict], field: str) -> dict:
+    @staticmethod
+    def _stats_by_field(entries: list[dict], group_field: str) -> dict:
         """Get average chars by a grouping field."""
         groups: dict[str, list[int]] = {}
         for e in entries:
-            key = e.get(field, "unknown")
+            key = e.get(group_field, "unknown")
             if key not in groups:
                 groups[key] = []
             groups[key].append(e["total_chars"])

@@ -195,7 +195,7 @@ class ProbLogResolver:
         Returns:
             ResolvedFact with value, probability, and proof
         """
-        global _resolution_log, _sql_executor, _nosql_executor, _doc_searcher
+        global _resolution_log, _sql_executor, _nosql_executor, _doc_searcher, _fact_resolver, _config, _llm
 
         params = params or {}
         user_facts = user_facts or {}

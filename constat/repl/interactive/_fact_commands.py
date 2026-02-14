@@ -188,7 +188,8 @@ class _FactCommandsMixin:
             self.display.stop_spinner()
             self.console.print(f"[red]Error:[/red] {e}")
 
-    def _extract_fact_without_session(self, text: str) -> list[dict]:
+    @staticmethod
+    def _extract_fact_without_session(text: str) -> list[dict]:
         """Extract facts from text without an active session (lightweight)."""
         patterns = [
             (r"my\s+(\w+)\s+is\s+(.+)", lambda m: {"name": f"user_{m.group(1)}", "value": m.group(2).strip(), "description": f"User's {m.group(1)}"}),

@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 # noinspection PyUnresolvedReferences
 class PromptsMixin:
 
-    def _is_unclear_input(self, text: str) -> bool:
+    @staticmethod
+    def _is_unclear_input(text: str) -> bool:
         """Check if input appears to be unclear, garbage, or a copy-paste error.
 
         Detects:
@@ -221,7 +222,8 @@ class PromptsMixin:
 
         return "\n".join(lines) if lines else ""
 
-    def _is_learning_relevant(self, learning: dict, step_goal: str) -> bool:
+    @staticmethod
+    def _is_learning_relevant(learning: dict, step_goal: str) -> bool:
         """Check if a learning is relevant to the current step goal."""
         # Simple keyword overlap check
         goal_words = set(step_goal.lower().split())

@@ -216,7 +216,7 @@ class SkillManager:
                     skill = self._load_skill_file(skill_file)
                     if skill and skill.name not in self._skills:
                         self._skills[skill.name] = skill
-                except Exception:
+                except OSError:
                     # Skip invalid skill files
                     continue
 
@@ -284,7 +284,7 @@ class SkillManager:
                 content = file_path.read_text(encoding="utf-8")
                 skill.additional_files[filename] = content
                 return content
-            except Exception:
+            except OSError:
                 return None
 
         return None
@@ -341,7 +341,8 @@ class SkillManager:
             links=links,
         )
 
-    def _parse_links(self, content: str) -> list[SkillLink]:
+    @staticmethod
+    def _parse_links(content: str) -> list[SkillLink]:
         """
         Parse markdown links from content.
 
@@ -439,7 +440,7 @@ class SkillManager:
             if file_path.exists() and file_path.is_file():
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                except Exception:
+                except OSError:
                     content = None
             else:
                 content = None
@@ -450,7 +451,8 @@ class SkillManager:
 
         return content
 
-    def _fetch_url(self, url: str, timeout: int = 30) -> Optional[str]:
+    @staticmethod
+    def _fetch_url(url: str, timeout: int = 30) -> Optional[str]:
         """
         Fetch content from a URL.
 
@@ -471,14 +473,16 @@ class SkillManager:
             # Fall back to urllib if httpx not available
             try:
                 import urllib.request
+                import urllib.error
                 with urllib.request.urlopen(url, timeout=timeout) as response:
                     return response.read().decode("utf-8")
-            except Exception:
+            except (urllib.error.URLError, OSError, ValueError):
                 return None
         except Exception:
             return None
 
-    def _parse_frontmatter(self, content: str) -> tuple[Optional[dict], str]:
+    @staticmethod
+    def _parse_frontmatter(content: str) -> tuple[Optional[dict], str]:
         """
         Parse YAML frontmatter from markdown content.
 

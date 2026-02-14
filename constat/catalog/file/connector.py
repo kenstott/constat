@@ -192,7 +192,7 @@ class FileConnector:
                     row_count = sum(1 for _ in f) - 1  # Subtract header
             else:
                 row_count = len(df)  # Use sample size for remote
-        except Exception:
+        except OSError:
             row_count = len(df)
 
         return FileMetadata(
@@ -238,7 +238,7 @@ class FileConnector:
                     lines=(self.file_type == FileType.JSONL)
                 )
                 row_count = len(full_df)
-        except Exception:
+        except (OSError, ValueError):
             row_count = len(df)
 
         return FileMetadata(
@@ -283,9 +283,9 @@ class FileConnector:
                 df = table.to_pandas()
 
             columns = []
-            for i, field in enumerate(schema):
-                col_name = field.name
-                col_type = self._arrow_type_to_string(field.type)
+            for i, schema_field in enumerate(schema):
+                col_name = schema_field.name
+                col_type = self._arrow_type_to_string(schema_field.type)
 
                 # Get sample values from dataframe
                 sample_values = []
@@ -295,7 +295,7 @@ class FileConnector:
                 columns.append(ColumnInfo(
                     name=col_name,
                     data_type=col_type,
-                    nullable=field.nullable,
+                    nullable=schema_field.nullable,
                     sample_values=sample_values,
                 ))
 
@@ -361,7 +361,7 @@ class FileConnector:
             sample_values = col.dropna().head(5).tolist()
 
             # Check nullability
-            nullable = col.isna().any()
+            nullable = bool(col.isna().any())
 
             columns.append(ColumnInfo(
                 name=str(col_name),
@@ -372,7 +372,8 @@ class FileConnector:
 
         return columns
 
-    def _pandas_dtype_to_string(self, dtype) -> str:
+    @staticmethod
+    def _pandas_dtype_to_string(dtype) -> str:
         """Convert pandas dtype to string representation."""
         dtype_str = str(dtype)
 
@@ -393,7 +394,8 @@ class FileConnector:
         else:
             return dtype_str
 
-    def _arrow_type_to_string(self, arrow_type) -> str:
+    @staticmethod
+    def _arrow_type_to_string(arrow_type) -> str:
         """Convert PyArrow type to string representation."""
         import pyarrow as pa
 

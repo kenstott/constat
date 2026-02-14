@@ -62,7 +62,7 @@ async def list_artifacts(
         # Code types are explicitly excluded from key results (unless user-starred)
         code_types = {'code', 'python', 'sql', 'script', 'text', 'output', 'error'}
 
-        def get_starred_and_key_result(a: dict) -> tuple[bool, bool]:
+        def get_starred_and_key_result(artifact_dict: dict) -> tuple[bool, bool]:
             """Get is_starred and is_key_result for an artifact.
 
             Uses a unified flag: is_starred is the single source of truth.
@@ -72,53 +72,53 @@ async def list_artifacts(
             Returns:
                 (is_starred, is_key_result) tuple - both will have the same value
             """
-            artifact_obj = managed.session.datastore.get_artifact_by_id(a["id"])
-            metadata = artifact_obj.metadata if artifact_obj else {}
-            artifact_type = a.get("type", "").lower()
+            inner_artifact_obj = managed.session.datastore.get_artifact_by_id(artifact_dict["id"])
+            metadata = inner_artifact_obj.metadata if inner_artifact_obj else {}
+            artifact_type = artifact_dict.get("type", "").lower()
 
-            # is_starred: single source of truth for starred state
+            # starred: single source of truth for starred state
             if "is_starred" in metadata:
                 # User has explicitly set starred status - use that
-                is_starred = metadata["is_starred"]
-                logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred={is_starred} (from metadata)")
+                starred = metadata["is_starred"]
+                logger.debug(f"[artifact_key_result] {artifact_dict['name']} type={artifact_type}: is_starred={starred} (from metadata)")
             elif artifact_type in code_types:
                 # Code is NEVER starred by default
-                is_starred = False
+                starred = False
             elif artifact_type in visualization_types:
                 # Visualizations are starred by default
-                is_starred = True
-                logger.debug(f"[artifact_key_result] id={a['id']} {a['name']} type={artifact_type}: is_starred=True (visualization)")
+                starred = True
+                logger.debug(f"[artifact_key_result] id={artifact_dict['id']} {artifact_dict['name']} type={artifact_type}: is_starred=True (visualization)")
             else:
-                is_starred = False
-                logger.debug(f"[artifact_key_result] {a['name']} type={artifact_type}: is_starred=False (default)")
+                starred = False
+                logger.debug(f"[artifact_key_result] {artifact_dict['name']} type={artifact_type}: is_starred=False (default)")
 
-            # is_key_result matches is_starred (unified behavior)
-            is_key_result = is_starred
+            # key_result matches starred (unified behavior)
+            key_result = starred
 
-            return is_starred, is_key_result
+            return starred, key_result
 
         # Build artifact list
         artifact_list = []
-        for a in artifacts:
-            is_starred, is_key_result = get_starred_and_key_result(a)
+        for artifact_item in artifacts:
+            starred, key_result = get_starred_and_key_result(artifact_item)
             # Get full artifact to access metadata
-            artifact_obj = managed.session.datastore.get_artifact_by_id(a["id"])
-            artifact_metadata = artifact_obj.metadata if artifact_obj else None
+            full_artifact = managed.session.datastore.get_artifact_by_id(artifact_item["id"])
+            artifact_metadata = full_artifact.metadata if full_artifact else None
             artifact_list.append(
                 ArtifactInfo(
-                    id=a["id"],
-                    name=a["name"],
-                    artifact_type=a["type"],
-                    step_number=a.get("step_number", 0),
-                    title=a.get("title"),
-                    description=a.get("description"),
-                    mime_type=a.get("content_type") or "application/octet-stream",
-                    created_at=a.get("created_at"),
-                    is_key_result=is_key_result,
-                    is_starred=is_starred,
+                    id=artifact_item["id"],
+                    name=artifact_item["name"],
+                    artifact_type=artifact_item["type"],
+                    step_number=artifact_item.get("step_number", 0),
+                    title=artifact_item.get("title"),
+                    description=artifact_item.get("description"),
+                    mime_type=artifact_item.get("content_type") or "application/octet-stream",
+                    created_at=artifact_item.get("created_at"),
+                    is_key_result=key_result,
+                    is_starred=starred,
                     metadata=artifact_metadata,
-                    version=a.get("version", 1),
-                    version_count=a.get("version_count", 1),
+                    version=artifact_item.get("version", 1),
+                    version_count=artifact_item.get("version_count", 1),
                 )
             )
 
@@ -140,26 +140,26 @@ async def list_artifacts(
                 has_data = t.get("row_count", 0) > 0
 
                 # Unified starred logic:
-                # - If user explicitly starred it, is_starred=True
-                # - If user explicitly unstarred it, is_starred=False
+                # - If user explicitly starred it, table_starred=True
+                # - If user explicitly unstarred it, table_starred=False
                 # - Otherwise, auto-star if published or final step with data
                 if table_name in starred_tables:
-                    is_starred = True
+                    table_starred = True
                 elif table_name in unstarred_tables:
-                    is_starred = False
+                    table_starred = False
                 else:
                     # Auto-star tables that are published or from final step with data
-                    is_starred = is_published or (is_final_step and has_data)
+                    table_starred = is_published or (is_final_step and has_data)
 
                 # Determine if table should appear in artifacts list
                 # Tables appear if starred (including auto-starred) or explicitly starred
-                should_include = is_starred or table_name in starred_tables
+                should_include = table_starred or table_name in starred_tables
 
                 if should_include:
                     # Create a virtual artifact entry for this table
                     # Use negative IDs to distinguish from real artifacts
                     virtual_id = -hash(table_name) % 1000000
-                    # is_starred and is_key_result are unified (same value)
+                    # table_starred and is_key_result are unified (same value)
                     artifact_list.append(
                         ArtifactInfo(
                             id=virtual_id,
@@ -170,8 +170,8 @@ async def list_artifacts(
                             description=f"{t.get('row_count', 0)} rows",
                             mime_type="application/x-dataframe",
                             created_at=None,
-                            is_key_result=is_starred,
-                            is_starred=is_starred,
+                            is_key_result=table_starred,
+                            is_starred=table_starred,
                         )
                     )
 

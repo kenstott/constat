@@ -115,9 +115,9 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
 
 # Build lookup dict for fast access
 _COMMAND_MAP: dict[str, Callable[[CommandContext], CommandResult]] = {}
-for aliases, handler, _ in COMMANDS:
+for aliases, cmd_handler, _ in COMMANDS:
     for alias in aliases:
-        _COMMAND_MAP[alias] = handler
+        _COMMAND_MAP[alias] = cmd_handler
 
 
 def get_command(name: str) -> Optional[Callable[[CommandContext], CommandResult]]:

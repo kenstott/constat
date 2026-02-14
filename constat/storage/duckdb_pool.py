@@ -103,7 +103,7 @@ class DuckDBConnectionPool:
                 # Verify connection is still valid
                 conn.execute("SELECT 1")
                 return conn
-            except Exception:
+            except duckdb.Error:
                 # Connection is dead, remove it
                 logger.debug(f"Thread {thread_id}: connection dead, creating new one")
                 self._remove_connection(thread_id)
@@ -133,7 +133,7 @@ class DuckDBConnectionPool:
             if thread_id in self._connections:
                 try:
                     self._connections[thread_id].close()
-                except Exception:
+                except duckdb.Error:
                     pass
                 del self._connections[thread_id]
             if hasattr(self._local, 'connection'):

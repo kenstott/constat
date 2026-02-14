@@ -465,7 +465,7 @@ Output ONLY valid JSON."""
             data["tags"] = list(set(data.get("tags", [])) | all_tags)
             return data
 
-        except Exception:
+        except (json.JSONDecodeError, ValueError, KeyError):
             return None
 
     def _find_similar_groups(self, learnings: list[dict]) -> list[list[dict]]:
@@ -586,7 +586,7 @@ Output ONLY valid JSON, no explanation."""
             )
             # generate() returns string directly
             return "yes" in response.lower()
-        except Exception:
+        except (ValueError, KeyError):
             return False
 
     def _generate_rule_summary(self, group: list[dict]) -> Optional[dict]:

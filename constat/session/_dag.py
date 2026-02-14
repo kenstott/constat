@@ -652,7 +652,7 @@ REFERENCED TABLES (query with pd.read_sql(sql, db_<name>)):
                                                 else:
                                                     field_strs.append(f"{f['name']}: {ftype}")
                                             schema_lines.append(f"    fields: {', '.join(field_strs)}")
-                                    except Exception:
+                                    except (KeyError, ValueError, TypeError):
                                         pass
                             else:
                                 # REST API: include endpoint info if available
@@ -1062,7 +1062,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                                 used_llm = True
                                 logger.info(f"[INFERENCE_CODE] {inf_id}: detected hardcoded mapping dict ({str_keys} string keys) — flagging as LLM knowledge")
                                 break
-                except Exception:
+                except SyntaxError:
                     pass
 
             confidence = 0.65 if used_llm else 0.9

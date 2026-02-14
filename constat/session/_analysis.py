@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # noinspection PyUnresolvedReferences
 class AnalysisMixin:
 
-    def _classify_question(self, problem: str) -> str:
+    @staticmethod
+    def _classify_question(problem: str) -> str:
         """
         Classify whether a question requires code execution or is a meta-question.
 
@@ -113,7 +114,7 @@ class AnalysisMixin:
             # Format output
             try:
                 table_str = df.to_markdown(index=False)
-            except Exception:
+            except (ImportError, ValueError):
                 table_str = df.to_string(index=False)
 
             row_count = len(df)
@@ -473,7 +474,7 @@ CRITICAL INTENT RULES (apply in order):
                         rule_lines.append(f"- {rule['summary']}")
                 if rule_lines:
                     learnings_text = "\n## Learned Rules (respect these when suggesting options)\n" + "\n".join(rule_lines)
-            except Exception:
+            except (OSError, KeyError, ValueError):
                 pass
 
         personal_values_guidance = (
@@ -714,7 +715,8 @@ Examples:
 
         return None
 
-    def _explain_differentiators(self) -> dict:
+    @staticmethod
+    def _explain_differentiators() -> dict:
         """Explain what makes Constat different from other AI tools."""
         explanation = load_prompt("explain_differentiators.md")
 
@@ -729,7 +731,8 @@ Examples:
             "plan": None,
         }
 
-    def _explain_reasoning_methodology(self) -> dict:
+    @staticmethod
+    def _explain_reasoning_methodology() -> dict:
         """Explain Constat's reasoning methodology."""
         explanation = load_prompt("explain_reasoning_methodology.md")
 
@@ -744,7 +747,8 @@ Examples:
             "plan": None,
         }
 
-    def _answer_personal_question(self) -> dict:
+    @staticmethod
+    def _answer_personal_question() -> dict:
         """Answer personal questions about Vera."""
         explanation = load_prompt("answer_personal_question.md")
 
@@ -848,7 +852,8 @@ Keep it concise and actionable."""
             "plan": None,
         }
 
-    def _extract_example_questions(self, text: str) -> list[str]:
+    @staticmethod
+    def _extract_example_questions(text: str) -> list[str]:
         """
         Extract example questions from meta-response text.
 
@@ -869,7 +874,8 @@ Keep it concise and actionable."""
         # Limit to 6 suggestions
         return questions[:6]
 
-    def _strip_example_questions_section(self, text: str) -> str:
+    @staticmethod
+    def _strip_example_questions_section(text: str) -> str:
         """
         Strip the example questions section from meta-response output.
 

@@ -743,7 +743,8 @@ class OperationsMixin:
             self._approval_response = PlanApprovalResponse.suggest(suggestion=answer)
             self._approval_event.set()
 
-    def _show_data_flow_dag(self: "ConstatREPLApp", log: OutputLog, steps: list[dict]) -> None:
+    @staticmethod
+    def _show_data_flow_dag(log: OutputLog, steps: list[dict]) -> None:
         """Display an ASCII data flow DAG."""
         try:
             from constat.visualization.box_dag import generate_proof_dfd
@@ -775,7 +776,7 @@ class OperationsMixin:
                 output_ratio, side_ratio = self.PANEL_RATIOS[self._panel_ratio_index]
                 total_ratio = output_ratio + side_ratio
                 panel_width = max(20, (app_width * side_ratio // total_ratio) - 4)
-            except Exception:
+            except (AttributeError, IndexError, ZeroDivisionError, TypeError):
                 panel_width = 40
 
             max_name_len = max(6, min(12, panel_width // 4))
@@ -802,7 +803,7 @@ class OperationsMixin:
             output_ratio, side_ratio = self.PANEL_RATIOS[self._panel_ratio_index]
             total_ratio = output_ratio + side_ratio
             panel_width = max(20, (app_width * side_ratio // total_ratio) - 4)
-        except Exception:
+        except (AttributeError, IndexError, ZeroDivisionError, TypeError):
             panel_width = 40
 
         lines = []
