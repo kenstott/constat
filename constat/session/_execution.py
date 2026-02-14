@@ -123,7 +123,7 @@ class ExecutionMixin:
             Args:
                 name: The table or artifact name to publish
                 title: Optional human-friendly display title
-                description: Optional description
+                _description: Optional description (unused)
 
             Returns:
                 True if published successfully, False if artifact not found
