@@ -272,6 +272,7 @@ class MetadataMixin:
             api_terms=api_terms,
         )
 
+        # noinspection PyAttributeOutsideInit
         self._entities_extracted = True
         logger.debug(f"Entity extraction took {time.time() - t0:.2f}s ({entity_count} entities)")
         return entity_count
@@ -291,6 +292,7 @@ class MetadataMixin:
             logger.warning("rebuild_entities called without session_id")
             return 0
 
+        # noinspection PyAttributeOutsideInit
         self._entities_extracted = False
         return self.extract_entities(project_ids)
 

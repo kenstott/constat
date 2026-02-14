@@ -198,7 +198,7 @@ class FeedbackDisplayCore:
     def update_status_line(self, phase: Phase = None,
                            plan_name: str = None, step_current: int = None,
                            step_total: int = None, step_description: str = None,
-                           error_message: str = None, mode=None) -> None:
+                           error_message: str = None, _mode=None) -> None:
         """Update the status line/bar with new values."""
         self._status_bar.update(
             phase=phase,

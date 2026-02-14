@@ -234,7 +234,7 @@ class SessionManager:
         """Create or restore a Session instance.
 
         If session_id exists in history (on disk), restores it with all artifacts,
-        tables, and context. Otherwise creates a new session.
+        tables, and context. Otherwise, creates a new session.
 
         Args:
             session_id: Session ID provided by client

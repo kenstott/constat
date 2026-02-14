@@ -139,7 +139,7 @@ Rules:
 - Focus on semantic correctness: row counts, column existence, value ranges, data types
 
 ## User Revisions and Edited Plans
-If the input contains a "Requested plan structure", the user has edited the plan and you MUST follow that structure exactly:
+If the input contains a "Requested plan structure", the user has edited the plan, and you MUST follow that structure exactly:
 - Use the exact steps provided (same goals, same order)
 - Do NOT add or remove steps - the user has already decided what steps they want
 - Do NOT do additional schema discovery that might suggest different approaches

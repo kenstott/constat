@@ -597,7 +597,7 @@ async def upload_documents(
             now = datetime.now(timezone.utc)
 
             if is_data_file:
-                # For JSON files, validate structure (must be array of objects)
+                # For JSON files, validate structure (must be an array of objects)
                 if suffix == '.json':
                     import json as json_module
                     try:

@@ -314,7 +314,7 @@ class ResolutionMixin:
         _params: dict,
     ) -> Optional[Tier2AssessmentResult]:
         """
-        Tier 2: LLM assessment of best resolution strategy.
+        Tier 2: LLM assessment of the best resolution strategy.
 
         Returns DERIVABLE (with formula), KNOWN (with value), or USER_REQUIRED.
         """
@@ -362,7 +362,7 @@ class ResolutionMixin:
             )
 
             # Parse JSON response
-            # Handle markdown code blocks if present
+            # Handle Markdown code blocks if present
             response_text = response.strip()
             if response_text.startswith("```"):
                 response_text = response_text.split("```")[1]

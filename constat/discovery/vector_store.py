@@ -273,7 +273,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
-        # Create entities table for NER-extracted entities
+        # Create entities table for NER-extracted entities.
         # Entities are session-scoped (rebuilt when session starts or projects change)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS entities (
@@ -942,10 +942,81 @@ class DuckDBVectorStore(VectorStoreBackend):
             # Clear all links
             self._conn.execute("DELETE FROM chunk_entities")
 
-    def count(self) -> int:
-        """Return number of stored chunks."""
-        result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+    def count(self, source: str | None = None) -> int:
+        """Return number of stored chunks, optionally filtered by source.
+
+        Args:
+            source: If provided, count only chunks with this source ('schema', 'api', 'document').
+                    If None, count all chunks.
+        """
+        if source:
+            result = self._conn.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE source = ?", [source]
+            ).fetchone()
+        else:
+            result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
         return result[0] if result else 0
+
+    def search_by_source(
+        self,
+        query_embedding: np.ndarray,
+        source: str,
+        limit: int = 5,
+        min_similarity: float = 0.3,
+    ) -> list[tuple[str, float, "DocumentChunk"]]:
+        """Search chunks filtered by source type using cosine similarity.
+
+        Args:
+            query_embedding: Query embedding vector
+            source: Source type to filter by ('schema', 'api', 'document')
+            limit: Maximum number of results
+            min_similarity: Minimum cosine similarity threshold
+
+        Returns:
+            List of (chunk_id, similarity, DocumentChunk) tuples
+        """
+        from constat.discovery.models import ChunkType
+
+        query = query_embedding.flatten().tolist()
+
+        result = self._conn.execute(
+            f"""
+            SELECT
+                chunk_id,
+                document_name,
+                source,
+                chunk_type,
+                section,
+                chunk_index,
+                content,
+                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
+            FROM embeddings
+            WHERE source = ?
+              AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
+            ORDER BY similarity DESC
+            LIMIT ?
+            """,
+            [query, source, query, min_similarity, limit],
+        ).fetchall()
+
+        results = []
+        for row in result:
+            chunk_id, doc_name, src, chunk_type_str, section, chunk_idx, content, similarity = row
+            try:
+                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+            except ValueError:
+                chunk_type = ChunkType.DOCUMENT
+            chunk = DocumentChunk(
+                document_name=doc_name,
+                content=content,
+                section=section,
+                chunk_index=chunk_idx,
+                source=src or "document",
+                chunk_type=chunk_type,
+            )
+            results.append((chunk_id, float(similarity), chunk))
+
+        return results
 
     def get_chunks(self) -> list[DocumentChunk]:
         """Get all stored chunks."""
@@ -1268,7 +1339,69 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return enriched
 
-    def clear_entities(self, _source: Optional[str] = None) -> None:
+    def search_similar_entities(
+        self,
+        query_embedding: np.ndarray,
+        limit: int = 5,
+        min_similarity: float = 0.3,
+        project_ids: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[dict]:
+        """Find entities linked to chunks similar to the query embedding.
+
+        Searches chunks by cosine similarity, then returns distinct entities
+        linked to those chunks via chunk_entities.
+
+        Args:
+            query_embedding: Query embedding vector
+            limit: Maximum number of entity results
+            min_similarity: Minimum cosine similarity threshold
+            project_ids: Project IDs to include (None means no project filter)
+            session_id: Session ID to scope entities
+
+        Returns:
+            List of dicts with id, name, type, similarity
+        """
+        # Search chunks first (fetch more to get enough unique entities)
+        results = self.search(query_embedding, limit=limit * 3, project_ids=project_ids, session_id=session_id)
+
+        # Collect entities from matched chunks, tracking best similarity
+        entity_best: dict[str, dict] = {}
+        for chunk_id, similarity, _chunk in results:
+            if similarity < min_similarity:
+                continue
+            # Get entities linked to this chunk
+            entity_filter = ["ce.chunk_id = ?"]
+            params: list = [chunk_id]
+            if session_id:
+                entity_filter.append("e.session_id = ?")
+                params.append(session_id)
+            where = " AND ".join(entity_filter)
+
+            rows = self._conn.execute(
+                f"""
+                SELECT e.id, e.name, e.semantic_type
+                FROM chunk_entities ce
+                JOIN entities e ON ce.entity_id = e.id
+                WHERE {where}
+                """,
+                params,
+            ).fetchall()
+
+            for eid, ename, etype in rows:
+                if eid not in entity_best or similarity > entity_best[eid]["similarity"]:
+                    entity_best[eid] = {
+                        "id": eid,
+                        "name": ename,
+                        "type": etype,
+                        "similarity": similarity,
+                    }
+
+        # Sort by similarity and limit
+        sorted_entities = sorted(entity_best.values(), key=lambda x: x["similarity"], reverse=True)
+        return sorted_entities[:limit]
+
+    def clear_entities(self, source: Optional[str] = None) -> None:  # noqa: ARG002
         """Clear all entities and chunk-entity links.
 
         DEPRECATED: Use clear_session_entities(session_id) for session-scoped cleanup.

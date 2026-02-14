@@ -28,7 +28,7 @@ Architecture:
 - registry.db: Central registry for cross-session discovery
 
 Parquet files are the source of truth. DuckDB views are created dynamically
-on startup by scanning the tables directory.
+on startup by scanning the 'tables' directory.
 """
 
 from pathlib import Path

@@ -214,7 +214,7 @@ Use uppercase for Variables that need binding, lowercase for constants.
             head_pred, _ = self._parse_predicate(head)
 
             # Extract predicates from body
-            body_preds = []
+            body_predicates = []
             # Simple parsing - split by comma but handle nested parens
             depth = 0
             current = ""
@@ -229,7 +229,7 @@ Use uppercase for Variables that need binding, lowercase for constants.
                     if current.strip():
                         pred_name, _ = self._parse_predicate(current.strip())
                         if pred_name:
-                            body_preds.append(pred_name)
+                            body_predicates.append(pred_name)
                     current = ""
                 else:
                     current += char
@@ -237,9 +237,9 @@ Use uppercase for Variables that need binding, lowercase for constants.
             if current.strip():
                 pred_name, _ = self._parse_predicate(current.strip().rstrip("."))
                 if pred_name:
-                    body_preds.append(pred_name)
+                    body_predicates.append(pred_name)
 
-            deps[head_pred] = body_preds
+            deps[head_pred] = body_predicates
 
         return deps
 
@@ -553,7 +553,7 @@ Example:
                     if cached and cached.is_resolved:
                         fact = cached
                     else:
-                        # Try to resolve - pass dependencies for context but they won't
+                        # Try to resolve - pass dependencies for context, but they won't
                         # affect the cache key since we use just the var name
                         fact = self.resolve(var)
 

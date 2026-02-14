@@ -449,7 +449,7 @@ async def set_active_projects(
     # Verify all projects exist before loading
     config = managed.session.config
     for filename in project_filenames:
-        project = config.load_project(filename)
+        project = config.load_project(filename)  # type: ignore[arg-type]
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
 

@@ -7,7 +7,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Multi-step planner for problem decomposition."""
+"""Multistep planner for problem decomposition."""
 
 import json
 import logging
@@ -62,7 +62,7 @@ def _parse_post_validations(raw: list[dict]) -> list[PostValidation]:
 
 class Planner:
     """
-    Generates multi-step plans from natural language problems.
+    Generates multistep plans from natural language problems.
 
     The planner uses the LLM to break down complex questions into
     sequential steps that can be executed by the session.
@@ -339,7 +339,7 @@ class Planner:
     @staticmethod
     def _parse_plan_response(response: str) -> dict:
         """Parse the LLM's plan response as JSON."""
-        # Try to extract JSON from markdown code block
+        # Try to extract JSON from Markdown code block
         json_pattern = r"```(?:json)?\s*(.*?)\s*```"
         match = re.search(json_pattern, response, re.DOTALL)
         if match:
@@ -385,7 +385,7 @@ class Planner:
 
     def plan(self, problem: str) -> PlannerResponse:
         """
-        Generate a multi-step plan for a problem.
+        Generate a multistep plan for a problem.
 
         Args:
             problem: Natural language problem to solve

@@ -846,7 +846,7 @@ class DataStore:
         Get execution history as a queryable DataFrame.
 
         Returns a table with step_number, attempt, goal, code, output, error for each execution.
-        By default includes ALL attempts (both successful and failed) to show what didn't work
+        By default, includes ALL attempts (both successful and failed) to show what didn't work
         alongside what did work.
 
         Args:

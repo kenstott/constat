@@ -642,6 +642,7 @@ REASONING: User is focused on US region analysis
 
     def clear_unresolved(self: "FactResolver") -> None:
         """Remove unresolved facts from log, allowing re-resolution."""
+        # noinspection PyAttributeOutsideInit
         self.resolution_log = [f for f in self.resolution_log if f.source != FactSource.UNRESOLVED]
 
     def clear_session(self: "FactResolver") -> None:

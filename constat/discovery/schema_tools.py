@@ -305,6 +305,7 @@ class SchemaDiscoveryTools:
                 col_key = f"{table_meta.name}.{col.name}"
                 if name_lower in col.name.lower() and col_key not in seen_columns:
                     seen_columns.add(col_key)
+                    # noinspection PyUnresolvedReferences
                     results["schema"].append({
                         "type": "column",
                         "name": col.name,
@@ -312,7 +313,7 @@ class SchemaDiscoveryTools:
                         "database": table_meta.database,
                         "data_type": col.type,
                         "nullable": col.nullable,
-                        "is_primary_key": col.is_primary_key,
+                        "is_primary_key": col.primary_key,
                     })
 
         # 3. Find document mentions via explore_entity

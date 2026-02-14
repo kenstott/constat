@@ -400,6 +400,7 @@ class OperationsMixin:
                 else:
                     log.write(Text("No output returned.", style="dim"))
 
+            # noinspection PyAttributeOutsideInit
             self.suggestions = result.get("suggestions", [])
 
         if self.suggestions:
@@ -431,6 +432,7 @@ class OperationsMixin:
         status_bar.update_status(status_message=None, phase=Phase.IDLE)
         status_bar.refresh()
 
+        # noinspection PyAttributeOutsideInit
         self._is_solving = False
         if self._queued_input:
             next_input = self._queued_input.pop(0)

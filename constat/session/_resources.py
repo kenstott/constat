@@ -146,7 +146,7 @@ class ResourcesMixin:
                         content = "\n\n".join(para.text for para in doc.paragraphs if para.text)
                     elif path.suffix.lower() == '.pptx':
                         from pptx import Presentation
-                        prs = Presentation(path)
+                        prs = Presentation(str(path))
                         texts = []
                         for slide in prs.slides:
                             for shape in slide.shapes:
@@ -380,7 +380,9 @@ class ResourcesMixin:
         result = compactor.clear_all()
 
         # Also reset in-memory scratchpad
+        # noinspection PyAttributeOutsideInit
         self.scratchpad = Scratchpad()
+        # noinspection PyAttributeOutsideInit
         self.plan = None
 
         return result
@@ -470,10 +472,12 @@ class ResourcesMixin:
 
         match = self.role_matcher.match(query)
         if match:
+            # noinspection PyAttributeOutsideInit
             self._current_role_id = match.role.name
             logger.info(f"Matched role '{match.role.name}' for query (similarity: {match.similarity:.2f})")
             return match.role.name
 
+        # noinspection PyAttributeOutsideInit
         self._current_role_id = None
         return None
 
@@ -484,7 +488,7 @@ class ResourcesMixin:
             query: User's natural language query
 
         Returns:
-            List of matched skill names (may be empty)
+            List of matched skill names (maybe empty)
         """
         matches = self.skill_matcher.match(query)
         return [m.skill.name for m in matches]
@@ -571,6 +575,7 @@ class ResourcesMixin:
                 role_source = "query"
                 logger.info(f"[CONTEXT] Selected role: {role_match.role.name} (similarity: {role_match.similarity:.2f})")
             else:
+                # noinspection PyAttributeOutsideInit
                 self._current_role_id = None
                 logger.info("[CONTEXT] No role matched for query")
 
@@ -620,11 +625,13 @@ class ResourcesMixin:
             True if successful, False if role not found
         """
         if role_name is None:
+            # noinspection PyAttributeOutsideInit
             self._current_role_id = None
             self.role_manager.set_active_role(None)
             return True
 
         if self.role_manager.set_active_role(role_name):
+            # noinspection PyAttributeOutsideInit
             self._current_role_id = role_name
             return True
         return False

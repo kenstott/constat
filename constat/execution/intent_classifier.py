@@ -61,7 +61,7 @@ class IntentClassifier:
        If confidence < 0.65, sub-intent is None (default behavior for that primary).
 
     The classifier supports multi-intent messages by splitting on sentence
-    delimiters (. and ;) and classifying each segment. On conflict, the latest
+    delimiters '('. and ';)' and classifying each segment. On conflict, the latest
     intent wins (handles natural self-correction patterns).
     """
 
@@ -148,6 +148,7 @@ class IntentClassifier:
                 logger.warning(f"Unknown primary intent in exemplars: {intent_name}")
                 continue
 
+            # noinspection PyUnresolvedReferences
             embeddings = self._model.encode(exemplars, normalize_embeddings=True)
             self._primary_embeddings[intent] = embeddings
 
@@ -168,6 +169,7 @@ class IntentClassifier:
                     logger.warning(f"Unknown sub-intent in exemplars: {sub_name}")
                     continue
 
+                # noinspection PyUnresolvedReferences
                 embeddings = self._model.encode(exemplars, normalize_embeddings=True)
                 self._sub_embeddings[primary][sub] = embeddings
 
@@ -329,6 +331,7 @@ class IntentClassifier:
             raise RuntimeError("Embedding model not loaded")
 
         # Encode user input
+        # noinspection PyUnresolvedReferences
         input_embedding = self._model.encode(user_input, normalize_embeddings=True)
 
         best_intent = PrimaryIntent.QUERY
@@ -375,6 +378,7 @@ class IntentClassifier:
             return None, 0.0
 
         # Encode user input
+        # noinspection PyUnresolvedReferences
         input_embedding = self._model.encode(user_input, normalize_embeddings=True)
 
         best_sub: Optional[SubIntent] = None
@@ -523,6 +527,7 @@ Has active plan: {has_plan}
 Mode: {mode_str}"""
 
         try:
+            # noinspection PyUnresolvedReferences
             result = self._llm_provider.execute(
                 task_type=TaskType.INTENT_CLASSIFICATION,
                 system=system_prompt,

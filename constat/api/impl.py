@@ -289,6 +289,7 @@ class ConstatAPIImpl:
         def session_event_handler(event):
             callback(event.event_type, event.data)
 
+        # noinspection PyUnresolvedReferences
         self._session.add_event_handler(session_event_handler)
 
     def set_clarification_callback(self, callback: Callable) -> None:
@@ -370,6 +371,7 @@ class ConstatAPIImpl:
 
     def audit(self) -> dict:
         """Run an audit of the session."""
+        # noinspection PyUnresolvedReferences
         return self._session.audit()
 
     def prove_conversation(self) -> dict:

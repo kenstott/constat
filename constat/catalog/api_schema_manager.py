@@ -389,7 +389,7 @@ class APISchemaManager:
         logger.info(f"Introspected GraphQL API '{name}': {len([k for k in self.metadata_cache if k.startswith(name)])} types/endpoints")
 
     def _extract_return_type_fields(self, field_def: dict, all_types: list) -> list[APIFieldMetadata]:
-        """Extract fields from the return type of a query/mutation."""
+        """Extract fields from the return type of query/mutation."""
         type_info = field_def.get("type", {})
         type_name = self._get_type_name(type_info)
 
@@ -836,7 +836,8 @@ class APISchemaManager:
         Returns:
             List of dicts with api_name, endpoint, type, description, fields, similarity
         """
-        if self._vector_store is None or self._vector_store.count_catalog_entities(source='api') == 0:
+        # noinspection PyUnresolvedReferences
+        if self._vector_store is None or self._vector_store.count(source='api') == 0:
             return []
 
         # Lazy load model if needed
@@ -846,23 +847,28 @@ class APISchemaManager:
         # Encode query
         query_embedding = self._model.encode([query], convert_to_numpy=True)
 
-        # Search unified catalog entities for API endpoints
-        results = self._vector_store.search_catalog_entities(
+        # Search API chunks by source
+        # noinspection PyUnresolvedReferences
+        results = self._vector_store.search_by_source(
             query_embedding, source='api', limit=limit, min_similarity=min_similarity
         )
 
-        # Transform results to match expected format
-        return [
-            {
-                "api_name": r["metadata"].get("api_name", ""),
-                "endpoint": r["name"],
-                "type": r["metadata"].get("api_type", ""),
-                "description": r["metadata"].get("description"),
-                "fields": r["metadata"].get("fields", []),
-                "similarity": r["similarity"],
-            }
-            for r in results
-        ]
+        # Transform results to match expected format using metadata cache
+        output = []
+        for _chunk_id, similarity, chunk in results:
+            # document_name is "api:{full_name}", extract full_name
+            full_name = chunk.document_name.removeprefix("api:")
+            meta = self.metadata_cache.get(full_name)
+            if meta:
+                output.append({
+                    "api_name": meta.api_name,
+                    "endpoint": meta.endpoint_name,
+                    "type": meta.api_type,
+                    "description": meta.description,
+                    "fields": [f.name for f in meta.fields],
+                    "similarity": similarity,
+                })
+        return output
 
     def get_api_schema(self, api_name: str) -> list[APIEndpointMetadata]:
         """Get all endpoints for a specific API."""

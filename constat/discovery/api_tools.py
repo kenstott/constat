@@ -16,7 +16,7 @@ These tools allow the LLM to:
 
 from typing import Any, Optional
 
-from constat.catalog.api_catalog import APICatalog, OperationType
+from constat.catalog.api_catalog import APICatalog, ArgumentType, OperationType
 from constat.catalog.api_executor import APIExecutor, APIExecutionError
 from constat.core.config import Config
 
@@ -159,21 +159,24 @@ class APIDiscoveryTools:
         if not op:
             return {"error": f"Operation not found: {operation}"}
 
+        # noinspection PyUnresolvedReferences
+        arguments = [
+            {
+                "name": arg.name,
+                "type": arg.type,
+                "required": arg.requirement == ArgumentType.REQUIRED,
+                "description": arg.description or "",
+                **({"default": arg.default_value} if arg.default_value is not None else {}),
+            }
+            for arg in op.arguments
+        ]
+
         return {
             "name": op.name,
             "full_name": op.full_name,
             "type": op.operation_type.value,
             "description": op.description,
-            "arguments": [
-                {
-                    "name": arg.name,
-                    "type": arg.type,
-                    "required": arg.required,
-                    "description": arg.description or "",
-                    **({"default": arg.default} if arg.default is not None else {}),
-                }
-                for arg in op.arguments
-            ],
+            "arguments": arguments,
             "return_type": op.return_type,
             "return_fields": op.return_fields,
             "response_schema": op.response_schema,

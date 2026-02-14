@@ -473,7 +473,7 @@ REMEMBER:
                 max_tokens=self.router.max_output_tokens,
             )
 
-            # Re-parse the retried plan
+            # Reparse the retried plan
             # noinspection DuplicatedCode
             fact_plan_text = retry_result.content
             claim = ""
@@ -711,9 +711,9 @@ REMEMBER:
             derivation_lines = ["**Premise Resolution:**", ""]
 
             # Define node executor that calls back to Session
-            def execute_node(dag_node):
+            def execute_node(node):
                 return self._execute_dag_node(
-                    node=dag_node,
+                    node=node,
                     dag=dag,
                     problem=problem,
                     detailed_schema=detailed_schema,

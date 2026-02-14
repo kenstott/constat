@@ -470,13 +470,13 @@ NOT_POSSIBLE: <reason>
                             context=f"SQL Query:\n{sql}",
                         )
                     else:
-                        # Multi-row result - check if should store as table
+                        # Multi-row result - check if you should store as table
                         value = result.to_dict('records')
 
                         if self._datastore and self._should_store_as_table(value):
                             # Store as table and return reference
                             table_name, row_count = self._store_value_as_table(
-                                fact_name, value, source_name=db_name
+                                fact_name, value, _source_name=db_name
                             )
                             return Fact(
                                 name=cache_key,

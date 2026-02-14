@@ -10,7 +10,7 @@
 """Prompt logging for tracking LLM prompt sizes and costs.
 
 This module provides instrumentation for analyzing prompt design efficiency.
-It logs prompt characteristics to help identify bloated or sub-optimal prompts.
+It logs prompt characteristics to help identify bloated or suboptimal prompts.
 """
 
 import json

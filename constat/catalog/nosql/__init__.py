@@ -25,7 +25,7 @@ On-Premise / Self-Hosted:
 
 Cloud-Native:
 - DynamoDB: AWS key-value/document store
-- Cosmos DB: Azure multi-model database (SQL/Core API)
+- Cosmos DB: Azure multimodel database (SQL/Core API)
 - Firestore: Google Cloud document database
 
 Usage:
@@ -34,10 +34,10 @@ Usage:
     connector = MongoDBConnector(uri="mongodb://localhost:27017", database="mydb")
     connector.connect()
 
-    # Get schema overview
+    # Get schema overview.
     overview = connector.get_overview()
 
-    # Get collection schema
+    # Get collection schema.
     schema = connector.get_collection_schema("users")
 
     # Query

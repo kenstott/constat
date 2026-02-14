@@ -63,7 +63,7 @@ class ConceptDetector:
         concepts = detector.detect("create a sales dashboard", target="step")
         # Returns: [DetectedConcept(concept_id='dashboard_layout', similarity=0.82, ...)]
 
-        # Get injectable content
+        # Get injectable content.
         content = detector.get_sections_for_prompt("create a dashboard", "step")
     """
 
@@ -78,7 +78,7 @@ class ConceptDetector:
         """Initialize the concept detector.
 
         Args:
-            model: Optional pre-loaded SentenceTransformer model.
+            model: Optional preloaded SentenceTransformer model.
                    If None, loads the model on first use.
             threshold: Minimum cosine similarity to consider a concept detected.
                       Default 0.55 balances precision and recall.

@@ -108,6 +108,7 @@ class SkillMatcher:
                 logger.warning(f"Skill '{skill.name}' has no description, skipping")
                 continue
 
+            # noinspection PyUnresolvedReferences
             embedding = self._model.encode(
                 text_to_embed,
                 normalize_embeddings=True,
@@ -149,7 +150,8 @@ class SkillMatcher:
         max_skills = max_skills if max_skills is not None else self._max_skills
 
         # Encode the query
-        query_embedding = self._model.encode(  # noinspection PyUnresolvedReferences
+        # noinspection PyUnresolvedReferences
+        query_embedding = self._model.encode(
             query,
             normalize_embeddings=True,
         )

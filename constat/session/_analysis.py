@@ -549,7 +549,7 @@ CRITICAL INTENT RULES (apply in order):
                             # Format: 1. question or 1) question or 1: question
                             question_text = line[2:].strip()
                         elif len(line) > 3 and line[:2].isdigit() and line[2] in ".):":
-                            # Format: 10. question (two digit number)
+                            # Format: 10. question (two-digit number)
                             question_text = line[3:].strip()
                         # NOTE: We intentionally do NOT capture arbitrary text as questions
                         # The LLM sometimes adds explanatory text that shouldn't be treated as questions

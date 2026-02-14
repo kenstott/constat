@@ -192,7 +192,7 @@ class ArtifactInfo:
 
 @dataclass(frozen=True)
 class SolveResult:
-    """Result of a solve() operation."""
+    """Result of a 'solve()' operation."""
     success: bool
     answer: Optional[str] = None
     plan_goal: Optional[str] = None

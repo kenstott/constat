@@ -24,7 +24,7 @@ Usage:
     result = api.solve("What tables are available?")
     print(result.answer)
 
-    # Follow up
+    # Followup
     result = api.follow_up("Show me the first 10 rows")
     print(result.answer)
 

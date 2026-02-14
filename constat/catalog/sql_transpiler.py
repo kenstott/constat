@@ -221,7 +221,7 @@ class TranspilingConnection:
     to the target database's dialect before execution.
 
     Usage:
-        # Wrap an existing engine
+        # Wrap an existing engine.
         engine = create_engine("sqlite:///mydb.db")
         db = TranspilingConnection(engine)
 

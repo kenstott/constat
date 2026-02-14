@@ -134,7 +134,7 @@ def format_source_attribution(
                     clean = clean[1:]
                 if clean.endswith("}"):
                     clean = clean[:-1]
-                # Extract field names (words before { or at leaf level)
+                # Extract field names (words before '{' or at leaf level)
                 fields = re.findall(r'(\w+)\s*(?:\{|$)', clean)
                 if fields:
                     query_path = ".".join(fields)
@@ -591,7 +591,7 @@ class ResolutionStrategy:
 
     # Confidence thresholds
     min_confidence: float = 0.0  # Accept any confidence
-    prefer_database: bool = True  # Prefer DB over LLM when both possible
+    prefer_database: bool = True  # Prefer DB to LLM when both possible
 
     # Sub-plan / Derivation settings
     allow_sub_plans: bool = True

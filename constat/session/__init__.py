@@ -7,7 +7,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Session orchestration for multi-step plan execution."""
+"""Session orchestration for multistep plan execution."""
 
 from constat.execution.mode import PlanApprovalRequest, PlanApprovalResponse
 from constat.session._analysis import AnalysisMixin
@@ -54,7 +54,7 @@ class Session(
     MetadataMixin,
     CoreMixin,
 ):
-    """Orchestrates multi-step analytical plan execution."""
+    """Orchestrates multistep analytical plan execution."""
 
 
 __all__ = [

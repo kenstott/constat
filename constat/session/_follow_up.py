@@ -1015,6 +1015,7 @@ Prove all of the above claims and provide a complete audit trail."""
             else:
                 logger.warning(f"[prove_conversation] Skipping summary: success={result.get('success')}, has_nodes={bool(proof_nodes)}")
 
+            # noinspection PyAttributeOutsideInit
             self.last_proof_result = result
             return result
 
@@ -1024,6 +1025,7 @@ Prove all of the above claims and provide a complete audit trail."""
 
         finally:
             self.session_config.auto_approve = original_auto_approve
+            # noinspection PyAttributeOutsideInit
             self._proof_step_hints = []
 
     def replay(self, problem: str) -> dict:

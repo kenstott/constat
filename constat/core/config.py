@@ -843,7 +843,7 @@ class ProjectConfig(BaseModel):
 
     name: str
     description: str = ""
-    filename: str = ""  # Source filename, auto-populated from _source_file
+    filename: str = ""  # Source filename, autopopulated from _source_file
     source_path: str = ""  # Full path to source file, for editing
 
     # Data sources (same structure as main config)

@@ -81,6 +81,7 @@ class _EntityMixin:
 
         logger.info(f"set_schema_entities: updating from {len(self._schema_entities or [])} to {len(new_entities)} entities")
         logger.debug(f"set_schema_entities: new entities include: {list(new_entities)[:10]}...")
+        # noinspection PyAttributeOutsideInit
         self._schema_entities = new_entities
 
         # Re-extract entities from existing documents if we have indexed chunks
@@ -124,9 +125,12 @@ class _EntityMixin:
             return 0
 
         # Update internal entity lists for extraction
+        # noinspection PyAttributeOutsideInit
         self._schema_entities = schema_entities or []
         if api_entities:
+            # noinspection PyAttributeOutsideInit
             self._openapi_operations = api_entities
+            # noinspection PyAttributeOutsideInit
             self._openapi_schemas = api_entities
 
         # Get chunks visible to this session (base + projects)
@@ -227,7 +231,7 @@ class _EntityMixin:
         """Process schema/API metadata through NER for cross-datasource entity linking.
 
         Creates pseudo-chunks from metadata text (names, descriptions) and runs
-        entity extraction to find entities that appear across datasources.
+        entity extraction to find entities that appear across 'datasources'.
 
         Args:
             metadata_texts: List of (source_name, text) tuples
@@ -287,7 +291,9 @@ class _EntityMixin:
             operations: List of operation/endpoint names
             schemas: List of schema definition names
         """
+        # noinspection PyAttributeOutsideInit
         self._openapi_operations = operations
+        # noinspection PyAttributeOutsideInit
         self._openapi_schemas = schemas
 
     def set_graphql_entities(
@@ -301,7 +307,9 @@ class _EntityMixin:
             types: List of type names
             fields: List of field/operation names
         """
+        # noinspection PyAttributeOutsideInit
         self._graphql_types = types
+        # noinspection PyAttributeOutsideInit
         self._graphql_fields = fields
 
     def _extract_and_store_entities_session(

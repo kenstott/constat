@@ -315,7 +315,7 @@ NOT_POSSIBLE: <reason>
                 else:
                     value = result
 
-                # Check if should store as table
+                # Check if you should store as table
                 row_count = None
                 table_name = None
                 if self._datastore and isinstance(value, list) and len(value) > 10:
@@ -701,10 +701,10 @@ Original request:
                     else:
                         value = value.to_dict(orient='records')
 
-                # Check if should store as table
+                # Check if you should store as table
                 if isinstance(value, list) and self._datastore and self._should_store_as_table(value):
                     table_name, row_count = self._store_value_as_table(
-                        fact_name, value, source_name=source_name
+                        fact_name, value, _source_name=source_name
                     )
                     return Fact(
                         name=cache_key,
@@ -1339,7 +1339,7 @@ Original request:
         - pd: pandas for DataFrame operations
 
         Args:
-            logic: Python code with a derive(facts) function
+            logic: Python code with a 'derive(facts)' function
             resolved_facts: Dict mapping fact names to their values
 
         Returns:
@@ -1364,7 +1364,7 @@ Original request:
             # Execute to define the derive function
             exec(logic, local_ns)
 
-            derive_func: Callable = local_ns.get("derive")
+            derive_func: Callable = local_ns.get("derive")  # type: ignore[assignment]
             if not derive_func:
                 logger.error("[_execute_sandboxed_logic] No 'derive' function found")
                 return None, 0.0
@@ -1426,7 +1426,7 @@ Original request:
         Args:
             fact_name: Name of the fact (used to generate table name)
             value: List of dicts to store as table
-            source_name: Optional source name for table naming
+            _source_name: Optional source name for table naming
 
         Returns:
             Tuple of (table_name, row_count)

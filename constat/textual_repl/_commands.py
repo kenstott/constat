@@ -325,6 +325,7 @@ class CommandsMixin:
         session_store = SessionStore(user_id=self.user_id)
         new_session_id = session_store.create_new()
 
+        # noinspection PyUnresolvedReferences
         if self.session:
             old_config = self.session._config
             self.session = Session(
@@ -1276,6 +1277,7 @@ class CommandsMixin:
 
         status_bar.update_status(status_message="Re-deriving with audit trail...")
         try:
+            # noinspection PyUnresolvedReferences
             result = self.session.audit()
 
             if result.get("success"):

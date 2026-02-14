@@ -187,6 +187,7 @@ def _execute(system: str, user_message: str) -> tuple[str, str, str]:
     # TaskRouter path (constat session) — has .execute() with task_type
     if hasattr(backend, "execute"):
         from constat.core.models import TaskType
+        # noinspection PyUnresolvedReferences
         result = backend.execute(
             task_type=TaskType.SYNTHESIS,
             system=system,
@@ -200,6 +201,7 @@ def _execute(system: str, user_message: str) -> tuple[str, str, str]:
         )
 
     # BaseLLMProvider fallback
+    # noinspection PyUnresolvedReferences
     result = backend.generate(
         system=system,
         user_message=user_message,

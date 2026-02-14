@@ -38,7 +38,7 @@ class CompactDAG:
         self.node_center: Dict[str, int] = {}
 
     def _find_linear_tail(self) -> List[str]:
-        """Find longest linear tail ending at a sink."""
+        """Find the longest linear tail ending at a sink."""
         sinks = [n for n in self.graph.nodes() if self.graph.out_degree(n) == 0]
 
         best_chain = []
@@ -342,7 +342,7 @@ def render_dag(graph: nx.DiGraph, _style: str = 'single',
 
     Args:
         graph: NetworkX DiGraph (must be a DAG)
-        style: Ignored (kept for backward compatibility)
+        _style: Ignored (kept for backward compatibility)
         snake: Whether to snake linear chains horizontally
         max_width: Maximum width before snaking to next line
 

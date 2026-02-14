@@ -117,7 +117,7 @@ class GeminiProvider(BaseLLMProvider):
         # noinspection PyTypeChecker
         kwargs = {"content": user_message}
         if gemini_tools:
-            kwargs["tools"] = gemini_tools
+            kwargs["tools"] = gemini_tools  # type: ignore[assignment]
 
         response = chat.send_message(**kwargs)
 

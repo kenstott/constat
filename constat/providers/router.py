@@ -314,7 +314,7 @@ class TaskRouter:
 
     @staticmethod
     def _extract_code(text: str) -> str:
-        """Extract code from markdown code blocks.
+        """Extract code from Markdown code blocks.
 
         Handles various cases:
         - Complete markdown blocks: ```python ... ```
@@ -323,7 +323,7 @@ class TaskRouter:
         """
         text = text.strip()
 
-        # Case 1: Complete markdown code block
+        # Case 1: Complete Markdown code block
         pattern = r"```(?:python|sql)?\s*(.*?)\s*```"
         match = re.search(pattern, text, re.DOTALL)
         if match:

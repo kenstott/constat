@@ -103,7 +103,7 @@ class BaseLLMProvider(ABC):
         model: Optional[str] = None,
     ) -> str:
         """
-        Generate code, extracting from markdown code blocks if present.
+        Generate code, extracting from Markdown code blocks if present.
 
         Returns just the code string, stripped of markdown fencing.
         Uses high token limit (16k) since there's no cost penalty for unused headroom.
@@ -122,7 +122,7 @@ class BaseLLMProvider(ABC):
         return code
 
     def _extract_code(self, text: str) -> str:
-        """Extract Python code from markdown code blocks.
+        """Extract Python code from Markdown code blocks.
 
         Handles various cases:
         - Complete markdown blocks: ```python ... ```

@@ -98,7 +98,7 @@ class DagMixin:
         resolved_premises: dict,
         resolved_inferences: dict,
         inference_names: dict,
-    ) -> tuple[Any, float, str]:
+    ) -> tuple[Any, float, str] | tuple[Any, float, str, list, list]:
         """Execute a single DAG node (premise or inference).
 
         Called by DAGExecutor for each node. Handles both:
@@ -1159,7 +1159,9 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 return None
 
             # Run the entry point
-            results = entry_fn()
+            if entry_fn is not None:
+                # noinspection PyCallingNonCallable
+                results = entry_fn()
 
             if not isinstance(results, dict):
                 logger.warning(f"[SKILL_EXEC] Entry point returned {type(results)}, expected dict")

@@ -25,7 +25,7 @@ class MongoDBConnector(NoSQLConnector):
         )
         connector.connect()
 
-        # List collections
+        # List collections.
         collections = connector.get_collections()
 
         # Get schema (inferred from samples)

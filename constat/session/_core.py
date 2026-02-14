@@ -87,6 +87,7 @@ class CoreMixin:
         t0 = time.time()
         self.preload_cache = MetadataPreloadCache(config)
         self._preloaded_context: Optional[str] = None
+        # noinspection PyUnresolvedReferences
         self._load_preloaded_context()
         logger.debug(f"Session init: MetadataPreloadCache took {time.time() - t0:.2f}s")
 
@@ -103,6 +104,7 @@ class CoreMixin:
         self.router = TaskRouter(config.llm)
 
         constat.llm.set_backend(self.router)
+        # noinspection PyUnresolvedReferences
         constat.llm.on_call(self._handle_llm_call_event)
 
         # Default provider (for backward compatibility - e.g., fact resolver)
@@ -522,10 +524,13 @@ class CoreMixin:
         for intent, user_input in queued:
             try:
                 if intent.primary == PrimaryIntent.PLAN_NEW:
+                    # noinspection PyUnresolvedReferences
                     result = self._handle_plan_new_intent(intent, user_input)
                 elif intent.primary == PrimaryIntent.PLAN_CONTINUE:
+                    # noinspection PyUnresolvedReferences
                     result = self._handle_plan_continue_intent(intent, user_input)
                 elif intent.primary == PrimaryIntent.CONTROL:
+                    # noinspection PyUnresolvedReferences
                     result = self._handle_control_intent(intent, user_input)
                 else:
                     result = {

@@ -35,7 +35,7 @@ class IntentsMixin:
         Request approval for a plan.
 
         If auto_approve is set or no callback is registered, auto-approves.
-        Otherwise calls the registered callback.
+        Otherwise, calls the registered callback.
 
         Args:
             problem: The original problem

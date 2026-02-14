@@ -99,11 +99,11 @@ def cli():
     help="Write output to file instead of stdout.",
 )
 def solve(problem: str, config: str, verbose: bool, output: Optional[str]):
-    """Solve a problem with multi-step planning.
+    """Solve a problem with multistep planning.
 
     \b
     Examples:
-        constat solve "What are the top selling products?" -c config.yaml
+        constat solve "What are the top-selling products?" -c config.yaml
         constat solve "Compare Q1 vs Q2 revenue" -c config.yaml -v
     """
     try:
@@ -325,6 +325,7 @@ def resume(session_id: str, config: str, verbose: bool):
 
     # Resume the session
     if not interactive.session:
+        # noinspection PyUnresolvedReferences
         interactive.session = interactive._create_session()
 
     if interactive.session.resume(session_id):
@@ -381,6 +382,7 @@ def validate(config: str):
 
     for db in cfg.databases:
         try:
+            # noinspection PyUnresolvedReferences
             schema_manager._connect_database(db)
             table_count = len(schema_manager.get_tables_for_db(db.name))
             console.print(f"  [green]OK[/green] {db.name}: {table_count} tables")

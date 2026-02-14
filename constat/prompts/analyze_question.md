@@ -32,7 +32,7 @@ Perform these analyses:
    Possible intents:
    - REDO: Re-run analysis. Triggered by re-execution language ANYWHERE in message:
      "redo", "again", "retry", "rerun", "try again", "this time", "instead", etc.
-     Also implicit when user requests changes to a previous analysis.
+     Also, implicit when user requests changes to a previous analysis.
    - MODIFY_FACT: Change a LITERAL VALUE ("change age to 50", "use $100k", "set to 10")
    - STEER_PLAN: Change METHODOLOGY/COMPUTATION ("use average of last 2", "compute X differently",
      "skip step", "different approach", "don't use that table", "change how X is calculated")
@@ -64,7 +64,7 @@ Perform these analyses:
    CRITICAL PRIORITY:
    1. EXPLICIT MODE REQUEST: If user says "audit mode", "auditable", "proof", "with provenance" -> PROOF
    2. EXPLICIT MODE REQUEST: If user says "exploratory mode" -> EXPLORATORY
-   3. Otherwise infer from task type
+   3. Otherwise, infer from task type
 
 Respond in this exact format:
 ---

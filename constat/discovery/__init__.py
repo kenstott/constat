@@ -20,7 +20,7 @@ Usage:
         schema_manager=schema_manager,
         api_catalog=api_catalog,
         config=config,
-        fact_resolver=fact_resolver,
+        fact_resolver=fact_resolver
     )
 
     # Get tool schemas for LLM

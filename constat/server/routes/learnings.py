@@ -163,10 +163,11 @@ async def add_learning(
     try:
         from constat.storage.learnings import LearningStore
         store = LearningStore(user_id=user_id)
-        store.add_learning(
-            content=body.content,
-            category=body.category,
-            source=LearningSource.EXPLICIT_COMMAND.value,
+        store.save_learning(
+            correction=body.content,
+            category=LearningCategory(body.category),
+            context={},
+            source=LearningSource.EXPLICIT_COMMAND,
         )
     except Exception as e:
         logger.warning(f"Could not persist to LearningStore: {e}")

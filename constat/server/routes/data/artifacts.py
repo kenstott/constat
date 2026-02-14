@@ -56,7 +56,7 @@ async def list_artifacts(
         artifacts = managed.session.datastore.list_artifacts()
         tables = managed.session.datastore.list_tables()
 
-        # Determine which artifacts are key results
+        # Determine which artifacts are key results.
         # Key results: visualizations (unless explicitly unstarred) OR user-starred
         visualization_types = {'chart', 'plotly', 'svg', 'png', 'jpeg', 'html', 'image', 'vega', 'markdown', 'md'}
         # Code types are explicitly excluded from key results (unless user-starred)
@@ -100,7 +100,7 @@ async def list_artifacts(
         # Build artifact list
         artifact_list = []
         for artifact_item in artifacts:
-            starred, key_result = get_starred_and_key_result(artifact_item)
+            is_starred, is_key_result = get_starred_and_key_result(artifact_item)
             # Get full artifact to access metadata
             full_artifact = managed.session.datastore.get_artifact_by_id(artifact_item["id"])
             artifact_metadata = full_artifact.metadata if full_artifact else None
@@ -114,8 +114,8 @@ async def list_artifacts(
                     description=artifact_item.get("description"),
                     mime_type=artifact_item.get("content_type") or "application/octet-stream",
                     created_at=artifact_item.get("created_at"),
-                    is_key_result=key_result,
-                    is_starred=starred,
+                    is_key_result=is_key_result,
+                    is_starred=is_starred,
                     metadata=artifact_metadata,
                     version=artifact_item.get("version", 1),
                     version_count=artifact_item.get("version_count", 1),

@@ -66,7 +66,7 @@ class MistralProvider(OpenAIProvider):
         Args:
             api_key: Mistral API key (or uses MISTRAL_API_KEY env var)
             model: Model to use. Options:
-                - mistral-large-latest (flagship, best quality)
+                - mistral-large-latest (flagship, the best quality)
                 - mistral-small-latest (fast, cost-effective)
                 - codestral-latest (code generation)
                 - mistral-nemo (open-weight 12B)

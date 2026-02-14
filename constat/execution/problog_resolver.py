@@ -351,7 +351,7 @@ Generate the rules (just the Prolog code, no markdown):"""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            # Clean up response - remove markdown code blocks if present
+            # Clean up response - remove Markdown code blocks if present
             rules = response.strip()
             if rules.startswith("```"):
                 lines = rules.split("\n")

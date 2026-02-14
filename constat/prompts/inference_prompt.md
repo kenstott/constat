@@ -34,7 +34,7 @@ CRITICAL Rules:
                break
    df = pd.DataFrame(response)
    ```
-7. If data isn't in store and you query the database or API instead, that's normal — NOT an error. But NEVER wrap calls in try/except with hardcoded fallback data. Let errors propagate for the retry mechanism to fix.
+7. If data isn't in store, and you query the database or API instead, that's normal — NOT an error. But NEVER wrap calls in try/except with hardcoded fallback data. Let errors propagate for the retry mechanism to fix.
 8. For ANY VALUE MAPPING, CLASSIFICATION, or DATA EXTRACTION requiring world knowledge:
    NEVER hardcode a mapping dictionary, classification table, or extracted constants.
    Use the appropriate LLM primitive:

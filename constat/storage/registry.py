@@ -773,7 +773,7 @@ class ConstatRegistry:
     ) -> int:
         """Mark tables/artifacts as created in final step (auto-publishes them).
 
-        Also automatically unpublishes any superseded tables (e.g., if "corrected_X"
+        Also, automatically unpublishes any superseded tables (e.g., if "corrected_X"
         is being published, "X" will be unpublished).
 
         Args:

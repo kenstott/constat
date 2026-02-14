@@ -7,7 +7,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Core data structures for multi-step planning and execution."""
+"""Core data structures for multistep planning and execution."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,7 +27,7 @@ class TaskType(Enum):
     The router will try each model in order until success.
     """
     # Planning and orchestration
-    PLANNING = "planning"              # Multi-step plan generation
+    PLANNING = "planning"              # Multistep plan generation
     REPLANNING = "replanning"          # Plan revision with feedback
 
     # Code generation
@@ -140,7 +140,7 @@ ARTIFACT_MIME_TYPES = {
 @dataclass
 class Step:
     """
-    A single step in a multi-step plan.
+    A single step in a multistep plan.
 
     Each step has a goal described in natural language,
     and will be translated into executable code.
@@ -229,7 +229,7 @@ class StepResult:
 @dataclass
 class Plan:
     """
-    A multi-step plan for solving a problem.
+    A multistep plan for solving a problem.
 
     The plan is generated from natural language and contains
     steps to be executed sequentially.
@@ -409,7 +409,7 @@ class Artifact:
     id: int
     name: str
     artifact_type: ArtifactType
-    content: str  # The artifact content (may be base64 for binary)
+    content: str  # The artifact content (maybe base64 for binary)
     step_number: int = 0
     attempt: int = 1
 

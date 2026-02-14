@@ -282,7 +282,7 @@ class UnifiedDiscovery:
             if isinstance(query_embedding, list):
                 query_embedding = np.array(query_embedding)
 
-            similar = self._vector_store.search_catalog_entities(
+            similar = self._vector_store.search_similar_entities(
                 query_embedding=query_embedding,
                 limit=limit + 1,  # +1 to exclude self
                 min_similarity=0.6,

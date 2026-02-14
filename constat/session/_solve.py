@@ -26,7 +26,7 @@ class SolveMixin:
 
     def solve(self, problem: str) -> dict:
         """
-        Solve a problem with intent-based routing and multi-step execution.
+        Solve a problem with intent-based routing and multistep execution.
 
         Workflow:
         1. Classify intent (QUERY, PLAN_NEW, PLAN_CONTINUE, CONTROL)
@@ -34,7 +34,7 @@ class SolveMixin:
         3. For PLAN_NEW/PLAN_CONTINUE:
            a. Determine execution mode (exploratory vs proof)
            b. Generate plan
-           c. Request user approval (if require_approval is True)
+           c. Request user approval (if you require_approval is True)
            d. Execute steps in parallel waves
            e. Synthesize answer and generate follow-up suggestions
 
@@ -241,6 +241,7 @@ class SolveMixin:
         self._ensure_session_datastore(problem)
 
         # Initialize session state
+        # noinspection PyAttributeOutsideInit
         self.scratchpad = Scratchpad(initial_context=f"Problem: {problem}")
 
         # Save problem statement to datastore (for UI restoration)
@@ -457,6 +458,7 @@ class SolveMixin:
                     iteration=replan_attempt,
                 )
                 if approval.edited_steps:
+                    # noinspection PyAttributeOutsideInit
                     self.plan = self._build_plan_from_edited_steps(problem, approval.edited_steps)
                 elif approval.deleted_steps:
                     deleted_set = set(approval.deleted_steps)
@@ -862,6 +864,7 @@ class SolveMixin:
         if not session_detail:
             return False
 
+        # noinspection PyAttributeOutsideInit
         self.session_id = session_id
 
         # Load the datastore (contains tables, state, scratchpad, artifacts)
@@ -877,6 +880,7 @@ class SolveMixin:
             underlying_datastore = DataStore(db_path=datastore_path)
 
         # Wrap with registry-aware datastore
+        # noinspection PyAttributeOutsideInit
         self.datastore = RegistryAwareDataStore(
             datastore=underlying_datastore,
             registry=self.registry,
@@ -894,6 +898,7 @@ class SolveMixin:
                     initial_context = f"Problem: {session_detail.queries[0].question}"
                 else:
                     initial_context = ""
+                # noinspection PyAttributeOutsideInit
                 self.scratchpad = Scratchpad(initial_context=initial_context)
 
                 # Add each step result

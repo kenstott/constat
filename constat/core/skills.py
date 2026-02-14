@@ -320,7 +320,7 @@ class SkillManager:
 
     @property
     def skills_dir(self) -> Path:
-        """Get the path to the skills directory."""
+        """Get the path to the 'skills' directory."""
         return self._skills_dir
 
     # CRUD operations for skills
@@ -573,7 +573,7 @@ Generate a complete SKILL.md file with YAML frontmatter and markdown body contai
         )
 
         content = result.strip()
-        # Remove markdown code block wrapper if present
+        # Remove Markdown code block wrapper if present
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
@@ -703,7 +703,7 @@ CRITICAL: The "Returns" section MUST document the EXACT column names and types s
         )
 
         content = result.strip()
-        # Remove markdown code block wrapper if present
+        # Remove Markdown code block wrapper if present
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])

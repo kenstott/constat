@@ -9,7 +9,7 @@
 
 """Constat - Conversational Statistics with LLM-powered data analysis.
 
-This package provides multi-step planning and execution for data analysis
+This package provides multistep planning and execution for data analysis
 across multiple databases using natural language queries.
 
 Submodules:

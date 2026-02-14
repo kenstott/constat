@@ -452,8 +452,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     )
 
     # Store config and session manager on app state
+    # noinspection PyUnresolvedReferences
     fastapi_app.state.config = config
+    # noinspection PyUnresolvedReferences
     fastapi_app.state.server_config = server_config
+    # noinspection PyUnresolvedReferences
     fastapi_app.state.session_manager = session_manager
 
     # Add CORS middleware

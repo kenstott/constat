@@ -37,7 +37,7 @@ Skill Locations (searched in order):
     3. Config-specified paths
 
 Link Following:
-    Skills can reference additional files via markdown links:
+    Skills can reference additional files via Markdown links:
     - Relative links: [indicators](references/indicators.md)
     - URLs: [docs](https://example.com/docs.md)
 
@@ -344,7 +344,7 @@ class SkillManager:
     @staticmethod
     def _parse_links(content: str) -> list[SkillLink]:
         """
-        Parse markdown links from content.
+        Parse Markdown links from content.
 
         Extracts both relative file links and URLs for lazy loading.
         Excludes anchor-only links (#section) and image links.
@@ -356,7 +356,7 @@ class SkillManager:
             List of discovered links
         """
         links = []
-        # Match markdown links: [text](target)
+        # Match Markdown links: [text](target)
         # Excludes images: ![alt](src)
         link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
 

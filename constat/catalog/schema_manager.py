@@ -316,22 +316,14 @@ class SchemaManager:
                 # Introspect NoSQL
                 connector = self.nosql_connections.get(db_name)
                 if connector:
-                    collections = connector.list_collections()
+                    # noinspection PyUnresolvedReferences
+                    collections = connector.get_collections()
                     logger.info(f"  NoSQL has {len(collections)} collections")
                     for coll_name in collections:
-                        schema = connector.infer_schema(coll_name)
-                        table_meta = TableMetadata(
-                            database=db_name,
-                            name=coll_name,
-                            comment=db_config.description,
-                            database_type=source_type,
-                        )
-                        if schema:
-                            table_meta.columns = [
-                                ColumnMetadata(name=f["name"], type=f.get("type", "unknown"))
-                                for f in schema.get("fields", [])
-                            ]
-                        self.metadata_cache[f"{db_name}.{coll_name}"] = table_meta
+                        # noinspection PyUnresolvedReferences
+                        collection_meta = connector.get_collection_schema(coll_name)
+                        table_meta = self._convert_nosql_metadata(db_name, connector, collection_meta)
+                        self.metadata_cache[table_meta.full_name] = table_meta
             else:
                 # SQL database
                 logger.info(f"  Connecting as SQL database")
@@ -389,7 +381,8 @@ class SchemaManager:
 
         # Clear schema entities from vector store
         if self._vector_store:
-            self._vector_store.clear_catalog_entities('schema')
+            # noinspection PyUnresolvedReferences
+            self._vector_store.clear_chunks('schema')
 
         # Delete disk caches to force fresh introspection
         schema_cache = self._get_schema_cache_path()
@@ -402,7 +395,7 @@ class SchemaManager:
         self._resolve_reverse_references()
         config_hash = self._compute_config_hash()
         self._save_schema_cache(config_hash)
-        self._build_vector_index()
+        self._extract_entities_from_descriptions()
         self._generate_overview()
         self._progress_callback = None
 
@@ -773,7 +766,7 @@ class SchemaManager:
                         ref_table.referenced_by.append(ref_str)
 
     def _compute_config_hash(self) -> str:
-        """Compute a deterministic hash of the databases config.
+        """Compute a deterministic hash of the 'databases' config.
 
         The hash changes when databases are added, removed, or their
         connection parameters change. This triggers re-introspection
