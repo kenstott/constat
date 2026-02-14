@@ -14,6 +14,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable, Optional, Union, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
@@ -922,21 +923,22 @@ class SchemaManager:
             # Silently ignore cache save failures
             pass
 
-    def _extract_entities_from_descriptions(self) -> None:
-        """Create chunks for table and column metadata.
+    @staticmethod
+    def _build_table_column_chunks(
+        tables: Iterable[tuple[str, "TableMetadata"]],
+    ) -> list:
+        """Build DocumentChunks for table and column metadata.
 
-        Creates chunks for ALL tables and columns (not just those with descriptions)
-        so that session-time entity extraction can find and link table/column names.
+        Args:
+            tables: Iterable of (full_name, table_meta) pairs to process.
 
-        Entity extraction is done at session-time by extract_entities_for_session(),
-        not here. This keeps init-time fast and avoids duplicate extraction.
+        Returns:
+            List of DocumentChunk for tables and their columns.
         """
-        # Lazy import
         from constat.discovery.models import DocumentChunk, ChunkType
 
-        # Collect chunks for ALL tables and columns
         chunks: list[DocumentChunk] = []
-        for full_name, table_meta in self.metadata_cache.items():
+        for full_name, table_meta in tables:
             db_name = table_meta.database
             table_name = table_meta.name
             col_names = [c.name for c in table_meta.columns]
@@ -973,6 +975,19 @@ class SchemaManager:
                     chunk_type=ChunkType.DB_COLUMN,
                 ))
 
+        return chunks
+
+    def _extract_entities_from_descriptions(self) -> None:
+        """Create chunks for table and column metadata.
+
+        Creates chunks for ALL tables and columns (not just those with descriptions)
+        so that session-time entity extraction can find and link table/column names.
+
+        Entity extraction is done at session-time by extract_entities_for_session(),
+        not here. This keeps init-time fast and avoids duplicate extraction.
+        """
+        chunks = self._build_table_column_chunks(self.metadata_cache.items())
+
         if not chunks:
             logger.debug("No schema metadata to create chunks from")
             return
@@ -995,48 +1010,12 @@ class SchemaManager:
         Args:
             db_name: Name of the database to add chunks for
         """
-        from constat.discovery.models import DocumentChunk, ChunkType
-
-        chunks: list[DocumentChunk] = []
-        for full_name, table_meta in self.metadata_cache.items():
-            # Only process tables from the specified database
-            if table_meta.database != db_name:
-                continue
-
-            table_name = table_meta.name
-            col_names = [c.name for c in table_meta.columns]
-
-            # Table chunk
-            if table_meta.comment:
-                table_content = f"{table_name} table: {table_meta.comment}"
-            else:
-                table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
-
-            chunks.append(DocumentChunk(
-                document_name=f"schema:{full_name}",
-                content=table_content,
-                section="table_description",
-                chunk_index=0,
-                source="schema",
-                chunk_type=ChunkType.DB_TABLE,
-            ))
-
-            # Column chunks
-            for i, col in enumerate(table_meta.columns):
-                if col.comment:
-                    col_content = f"{col.name} column in {table_name}: {col.comment}"
-                else:
-                    col_type = col.type if col.type else "unknown type"
-                    col_content = f"{col.name} column ({col_type}) in {table_name} table"
-
-                chunks.append(DocumentChunk(
-                    document_name=f"schema:{full_name}.{col.name}",
-                    content=col_content,
-                    section="column_description",
-                    chunk_index=i,
-                    source="schema",
-                    chunk_type=ChunkType.DB_COLUMN,
-                ))
+        filtered_tables = (
+            (full_name, table_meta)
+            for full_name, table_meta in self.metadata_cache.items()
+            if table_meta.database == db_name
+        )
+        chunks = self._build_table_column_chunks(filtered_tables)
 
         if not chunks:
             logger.debug(f"No tables found for database {db_name}")
@@ -1168,6 +1147,14 @@ class SchemaManager:
             logger.exception(f"Failed to remove database {db_name}: {e}")
             return False
 
+    def _get_db_descriptions(self) -> dict[str, str]:
+        """Build a lookup of database name to description from config."""
+        return {
+            db_name: db_config.description
+            for db_name, db_config in self.config.databases.items()
+            if db_config.description
+        }
+
     def _generate_overview(self) -> None:
         """Generate token-optimized overview for system prompt.
 
@@ -1183,11 +1170,7 @@ class SchemaManager:
         lines.append("Available databases and tables:")
 
         # Build a lookup for database descriptions
-        db_descriptions = {
-            db_name: db_config.description
-            for db_name, db_config in self.config.databases.items()
-            if db_config.description
-        }
+        db_descriptions = self._get_db_descriptions()
 
         # Group tables by database
         by_db: dict[str, list[TableMetadata]] = {}
@@ -1250,11 +1233,7 @@ class SchemaManager:
         lines = ["Available databases:"]
 
         # Build a lookup for database descriptions
-        db_descriptions = {
-            db_name: db_config.description
-            for db_name, db_config in self.config.databases.items()
-            if db_config.description
-        }
+        db_descriptions = self._get_db_descriptions()
 
         # Group tables by database
         by_db: dict[str, list[TableMetadata]] = {}

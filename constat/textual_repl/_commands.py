@@ -781,36 +781,31 @@ class CommandsMixin:
             log.write(Text(f"Error: {e}", style="red"))
             logger.debug(f"_show_history error: {e}", exc_info=True)
 
+    @staticmethod
+    def _parse_bool_toggle(value: str, current: bool) -> bool:
+        """Parse a boolean value string, or toggle current if empty/unrecognized."""
+        lower = value.lower()
+        if lower in ("on", "true", "1"):
+            return True
+        elif lower in ("off", "false", "0"):
+            return False
+        return not current
+
     async def _toggle_setting(self: "ConstatREPLApp", setting: str, value: str = "") -> None:
         """Toggle or set a boolean setting."""
         log = self.query_one("#output-log", OutputLog)
 
         if setting == "verbose":
-            if value.lower() in ("on", "true", "1"):
-                self.verbose = True
-            elif value.lower() in ("off", "false", "0"):
-                self.verbose = False
-            else:
-                self.verbose = not self.verbose
+            self.verbose = self._parse_bool_toggle(value, self.verbose)
             self.session_config.verbose = self.verbose
             log.write(Text(f"Verbose: {'on' if self.verbose else 'off'}", style="dim"))
         elif setting == "raw":
-            if value.lower() in ("on", "true", "1"):
-                self.session_config.show_raw_output = True
-            elif value.lower() in ("off", "false", "0"):
-                self.session_config.show_raw_output = False
-            else:
-                self.session_config.show_raw_output = not self.session_config.show_raw_output
+            self.session_config.show_raw_output = self._parse_bool_toggle(value, self.session_config.show_raw_output)
             status = "on" if self.session_config.show_raw_output else "off"
             log.write(Text(f"Raw output: {status}", style="dim"))
             self._update_settings_display()
         elif setting == "insights":
-            if value.lower() in ("on", "true", "1"):
-                self.session_config.enable_insights = True
-            elif value.lower() in ("off", "false", "0"):
-                self.session_config.enable_insights = False
-            else:
-                self.session_config.enable_insights = not self.session_config.enable_insights
+            self.session_config.enable_insights = self._parse_bool_toggle(value, self.session_config.enable_insights)
             status = "on" if self.session_config.enable_insights else "off"
             log.write(Text(f"Insights: {status}", style="dim"))
             self._update_settings_display()

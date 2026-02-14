@@ -445,6 +445,7 @@ NOT_POSSIBLE: <reason>
         fact_name_lower = fact_name.lower().strip()
         cache_tables = list(self.schema_manager.metadata_cache.keys())
         logger.debug(f"[_resolve_from_database] Checking table match for '{fact_name_lower}', metadata_cache has {len(cache_tables)} tables: {cache_tables[:5]}")
+        # noinspection DuplicatedCode
         for full_name, table_meta in self.schema_manager.metadata_cache.items():
             # Match by table name (case-insensitive)
             if table_meta.name.lower() == fact_name_lower:
@@ -486,6 +487,7 @@ NOT_POSSIBLE: <reason>
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
                 exec_globals[f"db_{db_name}"] = self.schema_manager.connections[db_name]
+        # noinspection DuplicatedCode
         # NoSQL connections
         for db_name in self.schema_manager.nosql_connections.keys():
             if db_name not in config_db_names:

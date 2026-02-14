@@ -183,6 +183,7 @@ class Planner:
         )
 
         # Build API overview if configured (filtered by permissions)
+        # noinspection DuplicatedCode
         api_overview = ""
         if self.config.apis:
             api_lines = ["\n## Available APIs"]
@@ -356,6 +357,31 @@ class Planner:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse plan response as JSON: {e}\nResponse: {response[:500]}")
+
+    @staticmethod
+    def _build_steps_from_plan_data(plan_data: dict) -> list[Step]:
+        """Build Step objects from parsed plan data."""
+        steps = []
+        for step_data in plan_data.get("steps", []):
+            task_type_str = step_data.get("task_type", "python_analysis")
+            try:
+                task_type = TaskType(task_type_str)
+            except ValueError:
+                task_type = TaskType.PYTHON_ANALYSIS
+
+            steps.append(Step(
+                number=step_data.get("number", len(steps) + 1),
+                goal=step_data.get("goal", ""),
+                expected_inputs=step_data.get("inputs", []),
+                expected_outputs=step_data.get("outputs", []),
+                depends_on=step_data.get("depends_on", []),
+                step_type=StepType.PYTHON,
+                task_type=task_type,
+                complexity=step_data.get("complexity", "medium"),
+                role_id=step_data.get("role_id"),
+                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
+            ))
+        return steps
 
     def plan(self, problem: str) -> PlannerResponse:
         """
@@ -551,29 +577,7 @@ class Planner:
 
         # Parse the response
         plan_data = self._parse_plan_response(response)
-
-        # Build Step objects
-        steps = []
-        for step_data in plan_data.get("steps", []):
-            # Parse task_type from response
-            task_type_str = step_data.get("task_type", "python_analysis")
-            try:
-                task_type = TaskType(task_type_str)
-            except ValueError:
-                task_type = TaskType.PYTHON_ANALYSIS
-
-            steps.append(Step(
-                number=step_data.get("number", len(steps) + 1),
-                goal=step_data.get("goal", ""),
-                expected_inputs=step_data.get("inputs", []),
-                expected_outputs=step_data.get("outputs", []),
-                depends_on=step_data.get("depends_on", []),
-                step_type=StepType.PYTHON,  # Phase 1: Python only
-                task_type=task_type,
-                complexity=step_data.get("complexity", "medium"),
-                role_id=step_data.get("role_id"),  # Role context for this step
-                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
-            ))
+        steps = self._build_steps_from_plan_data(plan_data)
 
         plan = Plan(
             problem=problem,
@@ -696,28 +700,7 @@ Return the plan in JSON format."""
             )
 
         plan_data = self._parse_plan_response(response)
-
-        steps = []
-        for step_data in plan_data.get("steps", []):
-            # Parse task_type from response
-            task_type_str = step_data.get("task_type", "python_analysis")
-            try:
-                task_type = TaskType(task_type_str)
-            except ValueError:
-                task_type = TaskType.PYTHON_ANALYSIS
-
-            steps.append(Step(
-                number=step_data.get("number", len(steps) + 1),
-                goal=step_data.get("goal", ""),
-                expected_inputs=step_data.get("inputs", []),
-                expected_outputs=step_data.get("outputs", []),
-                depends_on=step_data.get("depends_on", []),
-                step_type=StepType.PYTHON,
-                task_type=task_type,
-                complexity=step_data.get("complexity", "medium"),
-                role_id=step_data.get("role_id"),  # Role context for this step
-                post_validations=_parse_post_validations(step_data.get("post_validations", [])),
-            ))
+        steps = self._build_steps_from_plan_data(plan_data)
 
         # Mark completed steps
         revised_plan = Plan(

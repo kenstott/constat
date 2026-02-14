@@ -287,6 +287,7 @@ async def download_file(
     Raises:
         404: Session or file not found
     """
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     files = _get_uploaded_files_for_session(managed)
 
@@ -325,6 +326,7 @@ async def delete_file(
     Raises:
         404: Session or file not found
     """
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     files = _get_uploaded_files_for_session(managed)
 

@@ -50,6 +50,7 @@ async def list_step_codes(
         404: Session not found
     """
     # Try to get the session from memory first
+    # noinspection DuplicatedCode
     managed = session_manager.get_session_or_none(session_id)
 
     if managed:

@@ -695,6 +695,7 @@ The executable script is `scripts/proof.py` with a `run_proof()` function that r
 {schema_docs}
 CRITICAL: The "Returns" section MUST document the EXACT column names and types shown above. Do NOT invent, rename, or omit any columns. Copy them verbatim from the ACTUAL OUTPUT SCHEMAS."""
 
+        # noinspection DuplicatedCode
         result = llm.generate(
             system=system_prompt,
             user_message=user_prompt,

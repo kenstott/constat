@@ -382,6 +382,7 @@ class AsyncFactResolver(FactResolver):
 
         # Check if fact_name matches a table name - return "referenced" instead of loading data
         # This allows inferences to query the table directly from the original database
+        # noinspection DuplicatedCode
         fact_name_lower = fact_name.lower().strip()
         for full_name, table_meta in self.schema_manager.metadata_cache.items():
             # Match by table name (case-insensitive)

@@ -1473,6 +1473,27 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return len(entities)
 
+    @staticmethod
+    def _rows_to_chunks(rows: list) -> list[DocumentChunk]:
+        """Convert raw SQL rows to DocumentChunk objects."""
+        from constat.discovery.models import ChunkType
+        chunks = []
+        for row in rows:
+            doc_name, content, section, chunk_idx, source, chunk_type_str = row
+            try:
+                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+            except ValueError:
+                chunk_type = ChunkType.DOCUMENT
+            chunks.append(DocumentChunk(
+                document_name=doc_name,
+                content=content,
+                section=section,
+                chunk_index=chunk_idx,
+                source=source or "document",
+                chunk_type=chunk_type,
+            ))
+        return chunks
+
     def get_project_chunks(self, project_id: str) -> list[DocumentChunk]:
         """Get all chunks for a specific project.
 
@@ -1492,24 +1513,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             [project_id],
         ).fetchall()
 
-        from constat.discovery.models import ChunkType
-        chunks = []
-        for row in result:
-            doc_name, content, section, chunk_idx, source, chunk_type_str = row
-            try:
-                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
-            except ValueError:
-                chunk_type = ChunkType.DOCUMENT
-            chunks.append(DocumentChunk(
-                document_name=doc_name,
-                content=content,
-                section=section,
-                chunk_index=chunk_idx,
-                source=source or "document",
-                chunk_type=chunk_type,
-            ))
-
-        return chunks
+        return self._rows_to_chunks(result)
 
     def get_all_chunks(self, project_ids: list[str] | None = None) -> list[DocumentChunk]:
         """Get all chunks for base + specified projects.
@@ -1541,25 +1545,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             params,
         ).fetchall()
 
-        from constat.discovery.models import ChunkType
-        chunks = []
-        for row in result:
-            doc_name, content, section, chunk_idx, source, chunk_type_str = row
-            # Convert string to ChunkType enum
-            try:
-                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
-            except ValueError:
-                chunk_type = ChunkType.DOCUMENT
-            chunks.append(DocumentChunk(
-                document_name=doc_name,
-                content=content,
-                section=section,
-                chunk_index=chunk_idx,
-                source=source or "document",
-                chunk_type=chunk_type,
-            ))
-
-        return chunks
+        return self._rows_to_chunks(result)
 
     def close(self) -> None:
         """Close the database connection."""

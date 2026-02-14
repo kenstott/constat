@@ -108,6 +108,7 @@ def summarize_session(session: "Session", llm) -> SummarizeResult:
     if not session_info:
         return SummarizeResult(success=False, error="No session state to summarize")
 
+    # noinspection DuplicatedCode
     prompt = f"""Summarize this session state concisely:
 
 {chr(10).join(session_info)}
@@ -148,6 +149,7 @@ def summarize_facts(session: "Session", llm) -> SummarizeResult:
         value_str = str(fact.value)[:100] if fact.value else "None"
         facts_text.append(f"- {name}: {value_str} (source: {source})")
 
+    # noinspection DuplicatedCode
     prompt = f"""Summarize these cached facts concisely:
 
 {chr(10).join(facts_text)}

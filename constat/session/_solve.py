@@ -702,6 +702,7 @@ class SolveMixin:
         # Find the last step that actually created tables (may not be the last step if it's just a summary)
         if all_results and self.registry:
             # Collect tables from last 2 steps that created tables (final outputs often span multiple steps)
+            # noinspection DuplicatedCode
             final_tables = []
             steps_with_tables = 0
             for result in reversed(all_results):
@@ -763,6 +764,7 @@ class SolveMixin:
 
         # Check if insights are enabled (config or per-query brief detection via LLM)
         skip_insights = not self.session_config.enable_insights or analysis.wants_brief
+        # noinspection DuplicatedCode
         suggestions = []  # Initialize for brief mode (no suggestions)
 
         if skip_insights:

@@ -359,6 +359,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         ))
 
         # Renumber steps to continue from where we left off
+        # noinspection DuplicatedCode
         for i, step in enumerate(follow_up_plan.steps):
             step.number = next_step_number + i
 
@@ -445,6 +446,7 @@ User feedback: {suggestion_text}
                     )
 
                     # Renumber steps to continue from where we left off
+                    # noinspection DuplicatedCode
                     for i, step in enumerate(follow_up_plan.steps):
                         step.number = next_step_number + i
 
@@ -589,6 +591,7 @@ User feedback: {suggestion_text}
         # Find the last step that actually created tables (may not be the last step if it's just a summary)
         if all_results and self.registry:
             # Collect tables from last 2 steps that created tables
+            # noinspection DuplicatedCode
             final_tables = []
             steps_with_tables = 0
             for result in reversed(all_results):
@@ -637,6 +640,7 @@ User feedback: {suggestion_text}
             not self.session_config.enable_insights
             or follow_up_analysis.wants_brief
         )
+        # noinspection DuplicatedCode
         suggestions = []  # Initialize for brief mode (no suggestions)
 
         if skip_insights:
@@ -1059,6 +1063,7 @@ Prove all of the above claims and provide a complete audit trail."""
             }
         ))
 
+        # noinspection DuplicatedCode
         all_results = []
         for entry in entries:
             step_number = entry["step_number"]

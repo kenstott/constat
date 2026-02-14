@@ -381,6 +381,7 @@ async def get_project_content(
     Raises:
         404: Project not found
     """
+    # noinspection DuplicatedCode
     project = config.load_project(filename)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
@@ -420,6 +421,7 @@ async def update_project_content(
         404: Project not found
         400: Invalid YAML
     """
+    # noinspection DuplicatedCode
     project = config.load_project(filename)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {filename}")

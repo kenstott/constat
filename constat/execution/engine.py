@@ -142,6 +142,7 @@ class QueryEngine:
         )
 
         # Build API overview if configured (filtered by permissions)
+        # noinspection DuplicatedCode
         api_overview = ""
         if self.config.apis:
             api_lines = ["\n## Available APIs"]
@@ -291,6 +292,7 @@ class QueryEngine:
                 globals_dict[f"db_{db_name}"] = conn
                 if first_sql_db is None:
                     first_sql_db = conn
+        # noinspection DuplicatedCode
         # NoSQL connections
         for db_name in self.schema_manager.nosql_connections.keys():
             if db_name not in config_db_names:

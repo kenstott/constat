@@ -69,6 +69,7 @@ async def list_tables(
                 continue
 
             # Unified starred logic (same as list_artifacts)
+            # noinspection DuplicatedCode
             is_published = t.get("is_published", False)
             is_final_step = t.get("is_final_step", False)
             has_data = t.get("row_count", 0) > 0
@@ -302,6 +303,7 @@ async def toggle_table_star(
             raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
 
         # Get current state
+        # noinspection DuplicatedCode
         starred_tables = set(managed.session.datastore.get_starred_tables())
         unstarred_tables = set(managed.session.datastore.get_state("_unstarred_tables") or [])
 

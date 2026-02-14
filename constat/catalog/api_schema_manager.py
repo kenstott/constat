@@ -17,6 +17,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable, Optional
 
 import requests
@@ -682,113 +683,22 @@ class APISchemaManager:
             logger.exception(f"Failed to dynamically add API {name}: {e}")
             return False
 
-    def _add_chunks_for_api(self, api_name: str) -> None:
-        """Build and store chunks for a single API's endpoints.
+    @staticmethod
+    def _build_endpoint_field_chunks(
+        endpoints: Iterable[tuple[str, "APIEndpointMetadata"]],
+    ) -> list:
+        """Build DocumentChunks for API endpoint and field metadata.
 
         Args:
-            api_name: Name of the API to build chunks for
+            endpoints: Iterable of (full_name, endpoint_meta) pairs to process.
+
+        Returns:
+            List of DocumentChunk for endpoints and their fields.
         """
         from constat.discovery.models import DocumentChunk, ChunkType
 
         chunks: list[DocumentChunk] = []
-        for full_name, meta in self.metadata_cache.items():
-            if meta.api_name != api_name:
-                continue
-
-            field_names = [f.name for f in meta.fields]
-
-            # Determine chunk_type based on api_type
-            if meta.api_type == "graphql_query":
-                endpoint_chunk_type = ChunkType.GRAPHQL_QUERY
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
-            elif meta.api_type == "graphql_mutation":
-                endpoint_chunk_type = ChunkType.GRAPHQL_MUTATION
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
-            elif meta.api_type == "graphql_type":
-                endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
-                field_chunk_type = ChunkType.GRAPHQL_FIELD
-            elif meta.api_type == "rest/schema":
-                endpoint_chunk_type = ChunkType.API_SCHEMA
-                field_chunk_type = ChunkType.API_SCHEMA
-            else:
-                endpoint_chunk_type = ChunkType.API_ENDPOINT
-                field_chunk_type = ChunkType.API_ENDPOINT
-
-            # Endpoint chunk
-            if meta.description:
-                endpoint_content = f"{meta.endpoint_name} endpoint: {meta.description}"
-            else:
-                endpoint_content = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
-                if meta.http_method and meta.http_path:
-                    endpoint_content += f" ({meta.http_method} {meta.http_path})"
-                if field_names:
-                    endpoint_content += f" with fields: {', '.join(field_names)}"
-
-            chunks.append(DocumentChunk(
-                document_name=f"api:{full_name}",
-                content=endpoint_content,
-                section=meta.api_type,
-                chunk_index=0,
-                source="api",
-                chunk_type=endpoint_chunk_type,
-            ))
-
-            # Field chunks
-            for i, field_meta in enumerate(meta.fields):
-                if field_meta.description:
-                    field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
-                else:
-                    field_type = field_meta.type if field_meta.type else "unknown type"
-                    field_content = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint"
-
-                chunks.append(DocumentChunk(
-                    document_name=f"api:{full_name}.{field_meta.name}",
-                    content=field_content,
-                    section=meta.api_type,
-                    chunk_index=i,
-                    source="api",
-                    chunk_type=field_chunk_type,
-                ))
-
-        if not chunks:
-            logger.debug(f"No metadata to create chunks for API: {api_name}")
-            return
-
-        if self._model is not None:
-            try:
-                texts = [c.content for c in chunks]
-                embeddings = self._model.encode(texts, convert_to_numpy=True)
-                self._vector_store.add_chunks(chunks, embeddings, source="api")
-                logger.info(f"Stored {len(chunks)} chunks for API: {api_name}")
-            except Exception as e:
-                logger.warning(f"Failed to store chunks for API {api_name}: {e}")
-
-    def _add_basic_metadata(self, name: str, api_config: APIConfig) -> None:
-        """Add basic metadata from config when introspection fails."""
-        meta = APIEndpointMetadata(
-            api_name=name,
-            endpoint_name="api",
-            api_type=api_config.type,
-            description=api_config.description,
-            fields=[],
-        )
-        self.metadata_cache[meta.full_name] = meta
-
-    def _extract_entities_from_descriptions(self) -> None:
-        """Create chunks for API endpoint metadata.
-
-        Creates chunks for ALL endpoints and fields (not just those with descriptions)
-        so that session-time entity extraction can find and link endpoint/field names.
-
-        Entity extraction is done at session-time by extract_entities_for_session(),
-        not here. This keeps init-time fast and avoids duplicate extraction.
-        """
-        # Lazy import
-        from constat.discovery.models import DocumentChunk, ChunkType
-
-        # Collect chunks for ALL endpoints and fields
-        chunks: list[DocumentChunk] = []
-        for full_name, meta in self.metadata_cache.items():
+        for full_name, meta in endpoints:
             field_names = [f.name for f in meta.fields]
 
             # Determine chunk_type based on api_type
@@ -843,6 +753,56 @@ class APISchemaManager:
                     source="api",
                     chunk_type=field_chunk_type,
                 ))
+
+        return chunks
+
+    def _add_chunks_for_api(self, api_name: str) -> None:
+        """Build and store chunks for a single API's endpoints.
+
+        Args:
+            api_name: Name of the API to build chunks for
+        """
+        filtered_endpoints = (
+            (full_name, meta)
+            for full_name, meta in self.metadata_cache.items()
+            if meta.api_name == api_name
+        )
+        chunks = self._build_endpoint_field_chunks(filtered_endpoints)
+
+        if not chunks:
+            logger.debug(f"No metadata to create chunks for API: {api_name}")
+            return
+
+        if self._model is not None:
+            try:
+                texts = [c.content for c in chunks]
+                embeddings = self._model.encode(texts, convert_to_numpy=True)
+                self._vector_store.add_chunks(chunks, embeddings, source="api")
+                logger.info(f"Stored {len(chunks)} chunks for API: {api_name}")
+            except Exception as e:
+                logger.warning(f"Failed to store chunks for API {api_name}: {e}")
+
+    def _add_basic_metadata(self, name: str, api_config: APIConfig) -> None:
+        """Add basic metadata from config when introspection fails."""
+        meta = APIEndpointMetadata(
+            api_name=name,
+            endpoint_name="api",
+            api_type=api_config.type,
+            description=api_config.description,
+            fields=[],
+        )
+        self.metadata_cache[meta.full_name] = meta
+
+    def _extract_entities_from_descriptions(self) -> None:
+        """Create chunks for API endpoint metadata.
+
+        Creates chunks for ALL endpoints and fields (not just those with descriptions)
+        so that session-time entity extraction can find and link endpoint/field names.
+
+        Entity extraction is done at session-time by extract_entities_for_session(),
+        not here. This keeps init-time fast and avoids duplicate extraction.
+        """
+        chunks = self._build_endpoint_field_chunks(self.metadata_cache.items())
 
         if not chunks:
             logger.debug("No API metadata to create chunks from")

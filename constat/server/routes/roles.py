@@ -143,6 +143,7 @@ async def set_current_role(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> SetRoleResponse:
     """Set the active role for the session."""
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -186,6 +187,7 @@ async def get_role_content(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> RoleContentResponse:
     """Get the full content of a role."""
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -216,6 +218,7 @@ async def create_role(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> RoleInfo:
     """Create a new role."""
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -253,6 +256,7 @@ async def update_role(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
     """Update a role."""
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -284,6 +288,7 @@ async def delete_role(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
     """Delete a role."""
+    # noinspection DuplicatedCode
     managed = session_manager.get_session(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")

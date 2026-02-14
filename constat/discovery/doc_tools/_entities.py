@@ -17,9 +17,51 @@ from constat.discovery.models import DocumentChunk, ChunkEntity
 logger = logging.getLogger(__name__)
 
 
+def _deduplicate_chunk_links(all_links: list[ChunkEntity]) -> list[ChunkEntity]:
+    """Deduplicate chunk-entity links by (chunk_id, entity_id), merging counts and confidence."""
+    unique_links: dict[tuple, ChunkEntity] = {}
+    for link in all_links:
+        key = (link.chunk_id, link.entity_id)
+        if key not in unique_links:
+            unique_links[key] = link
+        else:
+            existing = unique_links[key]
+            unique_links[key] = ChunkEntity(
+                chunk_id=link.chunk_id,
+                entity_id=link.entity_id,
+                mention_count=existing.mention_count + link.mention_count,
+                confidence=max(existing.confidence, link.confidence),
+                mention_text=existing.mention_text or link.mention_text,
+            )
+    return list(unique_links.values())
+
+
+def _extract_links_from_chunks(
+    extractor: EntityExtractor,
+    chunks: list[DocumentChunk],
+) -> list[ChunkEntity]:
+    """Extract entity links from chunks using the given extractor."""
+    all_links: list[ChunkEntity] = []
+    for chunk in chunks:
+        extractions = extractor.extract(chunk)
+        for entity, link in extractions:
+            all_links.append(link)
+    return all_links
+
+
 # noinspection PyUnresolvedReferences
 class _EntityMixin:
     """Entity extraction/linking methods for DocumentDiscoveryTools."""
+
+    def _collect_api_terms(self) -> list[str] | None:
+        """Combine API terms from all sources (OpenAPI + GraphQL)."""
+        terms = list(set(
+            (self._openapi_operations or []) +
+            (self._openapi_schemas or []) +
+            (self._graphql_types or []) +
+            (self._graphql_fields or [])
+        ))
+        return terms if terms else None
 
     def set_schema_entities(self, entities: set[str] | list[str]) -> None:
         """Set database schema entities (table names, column names) for pattern matching.
@@ -106,26 +148,14 @@ class _EntityMixin:
 
         logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")
 
-        # Combine API terms from all sources
-        api_terms = list(set(
-            (self._openapi_operations or []) +
-            (self._openapi_schemas or []) +
-            (self._graphql_types or []) +
-            (self._graphql_fields or [])
-        ))
-
         # Create extractor with session's entity catalog
         extractor = EntityExtractor(
             session_id=session_id,
             schema_terms=self._schema_entities,
-            api_terms=api_terms if api_terms else None,
+            api_terms=self._collect_api_terms(),
         )
 
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
+        all_links = _extract_links_from_chunks(extractor, chunks)
 
         # Store entities - Entity model now has semantic_type instead of metadata
         entities = extractor.get_all_entities()
@@ -135,24 +165,10 @@ class _EntityMixin:
 
         # Store links WITH session_id
         if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
-            logger.info(f"extract_entities_for_session({session_id}): created {len(unique_links)} links")
-            return len(unique_links)
+            deduped = _deduplicate_chunk_links(all_links)
+            self._vector_store.link_chunk_entities(deduped)
+            logger.info(f"extract_entities_for_session({session_id}): created {len(deduped)} links")
+            return len(deduped)
 
         return 0
 
@@ -240,27 +256,15 @@ class _EntityMixin:
         if not chunks:
             return
 
-        # Combine API terms
-        api_terms = list(set(
-            (self._openapi_operations or []) +
-            (self._openapi_schemas or []) +
-            (self._graphql_types or []) +
-            (self._graphql_fields or [])
-        ))
-
         # Run entity extraction on metadata chunks
         # Use "__metadata__" as session_id for metadata processing
         extractor = EntityExtractor(
             session_id="__metadata__",
             schema_terms=self._schema_entities,
-            api_terms=api_terms if api_terms else None,
+            api_terms=self._collect_api_terms(),
         )
 
-        all_links: list[ChunkEntity] = []
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
+        all_links = _extract_links_from_chunks(extractor, chunks)
 
         entities = extractor.get_all_entities()
         logger.debug(f"Metadata NER: {len(entities)} entities, {len(all_links)} links from {len(chunks)} metadata items")
@@ -270,22 +274,7 @@ class _EntityMixin:
             self._vector_store.add_entities(entities, session_id="__metadata__")
 
         if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+            self._vector_store.link_chunk_entities(_deduplicate_chunk_links(all_links))
 
     def set_openapi_entities(
         self,
@@ -329,58 +318,7 @@ class _EntityMixin:
             chunks: Document chunks to extract entities from
             session_id: Session ID for session-scoped entities
         """
-        if not hasattr(self._vector_store, 'add_entities'):
-            return
-
-        logger.debug(f"Extracting entities from {len(chunks)} chunks for session {session_id}")
-
-        # Combine API terms
-        api_terms = list(set(
-            (self._openapi_operations or []) +
-            (self._openapi_schemas or []) +
-            (self._graphql_types or []) +
-            (self._graphql_fields or [])
-        ))
-
-        # Create extractor with all known schema entities
-        extractor = EntityExtractor(
-            session_id=session_id,
-            schema_terms=self._schema_entities,
-            api_terms=api_terms if api_terms else None,
-        )
-
-        all_links: list[ChunkEntity] = []
-
-        # Extract entities from all chunks using spaCy NER
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
-
-            for entity, link in extractions:
-                all_links.append(link)
-
-        entities = extractor.get_all_entities()
-        logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
-        if entities:
-            self._vector_store.add_entities(entities, session_id=session_id)
-
-        if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+        self._extract_and_store_entities_scoped(chunks, session_id=session_id)
 
     def _extract_and_store_entities_project(
         self,
@@ -396,27 +334,36 @@ class _EntityMixin:
             chunks: Document chunks to extract entities from
             project_id: Project ID for project-scoped entities
         """
+        self._extract_and_store_entities_scoped(chunks, session_id=project_id, project_id=project_id)
+
+    def _extract_and_store_entities_scoped(
+        self,
+        chunks: list[DocumentChunk],
+        session_id: str,
+        project_id: str | None = None,
+    ) -> None:
+        """Extract entities from chunks and store them with the given scope.
+
+        Args:
+            chunks: Document chunks to extract entities from
+            session_id: Session or project ID for scoped storage
+            project_id: Optional project ID passed to EntityExtractor
+        """
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
-        logger.debug(f"Extracting entities from {len(chunks)} chunks for project {project_id}")
-
-        # Combine API terms
-        api_terms = list(set(
-            (self._openapi_operations or []) +
-            (self._openapi_schemas or []) +
-            (self._graphql_types or []) +
-            (self._graphql_fields or [])
-        ))
+        scope_label = f"project {project_id}" if project_id else f"session {session_id}"
+        logger.debug(f"Extracting entities from {len(chunks)} chunks for {scope_label}")
 
         # Create extractor with all known schema entities
-        # Use project_id as session_id for project-scoped extraction
-        extractor = EntityExtractor(
-            session_id=project_id,
-            project_id=project_id,
+        extractor_kwargs = dict(
+            session_id=session_id,
             schema_terms=self._schema_entities,
-            api_terms=api_terms if api_terms else None,
+            api_terms=self._collect_api_terms(),
         )
+        if project_id:
+            extractor_kwargs["project_id"] = project_id
+        extractor = EntityExtractor(**extractor_kwargs)
 
         all_links: list[ChunkEntity] = []
 
@@ -424,29 +371,13 @@ class _EntityMixin:
         for chunk in chunks:
             extractions = extractor.extract(chunk)
             logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
-
             for entity, link in extractions:
                 all_links.append(link)
 
         entities = extractor.get_all_entities()
         logger.debug(f"Extracted {len(entities)} entities, {len(all_links)} links")
         if entities:
-            self._vector_store.add_entities(entities, session_id=project_id)
+            self._vector_store.add_entities(entities, session_id=session_id)
 
         if all_links:
-            # Deduplicate links by (chunk_id, entity_id)
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+            self._vector_store.link_chunk_entities(_deduplicate_chunk_links(all_links))

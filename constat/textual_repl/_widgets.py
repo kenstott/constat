@@ -685,6 +685,23 @@ class SidePanelContent(RichLog):
         """Get current spinner character."""
         return self.SPINNER_FRAMES[self._spinner_frame]
 
+    def _get_content_width(self) -> int:
+        """Calculate usable content width for rendering, with fallback for zero-size panels."""
+        content_width = self.content_size.width - 3
+        if content_width <= 0:
+            try:
+                app = self.app
+                ratio_index = getattr(app, '_panel_ratio_index', 1)
+                ratios = getattr(app, 'PANEL_RATIOS', [(3, 1), (2, 1), (1, 1), (1, 2)])
+                output_ratio, side_ratio = ratios[ratio_index]
+                total_ratio = output_ratio + side_ratio
+                app_width = app.size.width if app.size.width > 0 else 120
+                panel_width = (app_width * side_ratio) // total_ratio
+                content_width = panel_width - 6
+            except (AttributeError, IndexError, ZeroDivisionError, TypeError):
+                content_width = 40
+        return max(20, content_width)
+
     def get_progress_bar(self, progress: float, width: int = 10) -> str:
         """Generate an animated progress bar."""
         filled = int(progress * width)
@@ -891,20 +908,7 @@ class SidePanelContent(RichLog):
         if is_step_list:
             import textwrap
             import re
-            content_width = self.content_size.width - 3
-            if content_width <= 0:
-                try:
-                    app = self.app
-                    ratio_index = getattr(app, '_panel_ratio_index', 1)
-                    ratios = getattr(app, 'PANEL_RATIOS', [(3, 1), (2, 1), (1, 1), (1, 2)])
-                    output_ratio, side_ratio = ratios[ratio_index]
-                    total_ratio = output_ratio + side_ratio
-                    app_width = app.size.width if app.size.width > 0 else 120
-                    panel_width = (app_width * side_ratio) // total_ratio
-                    content_width = panel_width - 6
-                except (AttributeError, IndexError, ZeroDivisionError, TypeError):
-                    content_width = 40
-            content_width = max(20, content_width)
+            content_width = self._get_content_width()
             for line in self._dag_lines:
                 if line.strip():
                     prefix_match = re.match(r'^([PI]\s+[PI]\d+:\s*|→\s*\d*:?\s*|\d+\.\s*)', line)
@@ -952,20 +956,7 @@ class SidePanelContent(RichLog):
         import textwrap
         import re
 
-        content_width = self.content_size.width - 3
-        if content_width <= 0:
-            try:
-                app = self.app
-                ratio_index = getattr(app, '_panel_ratio_index', 1)
-                ratios = getattr(app, 'PANEL_RATIOS', [(3, 1), (2, 1), (1, 1), (1, 2)])
-                output_ratio, side_ratio = ratios[ratio_index]
-                total_ratio = output_ratio + side_ratio
-                app_width = app.size.width if app.size.width > 0 else 120
-                panel_width = (app_width * side_ratio) // total_ratio
-                content_width = panel_width - 6
-            except (AttributeError, IndexError, ZeroDivisionError, TypeError):
-                content_width = 40
-        content_width = max(20, content_width)
+        content_width = self._get_content_width()
 
         for line in self._dag_lines:
             if line.strip():
@@ -1077,20 +1068,7 @@ class SidePanelContent(RichLog):
                 style = "dim"
 
             import textwrap
-            content_width = self.content_size.width - 3
-            if content_width <= 0:
-                try:
-                    app = self.app
-                    ratio_index = getattr(app, '_panel_ratio_index', 1)
-                    ratios = getattr(app, 'PANEL_RATIOS', [(3, 1), (2, 1), (1, 1), (1, 2)])
-                    output_ratio, side_ratio = ratios[ratio_index]
-                    total_ratio = output_ratio + side_ratio
-                    app_width = app.size.width if app.size.width > 0 else 120
-                    panel_width = (app_width * side_ratio) // total_ratio
-                    content_width = panel_width - 6
-                except (AttributeError, IndexError, ZeroDivisionError, TypeError):
-                    content_width = 40
-            content_width = max(20, content_width)
+            content_width = self._get_content_width()
             prefix = f"{icon} Step {num}: "
             first_line_width = content_width - len(prefix)
             continuation_width = content_width - 2

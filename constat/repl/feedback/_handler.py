@@ -182,6 +182,7 @@ class SessionFeedbackHandler:
             logger = logging.getLogger(__name__)
             logger.debug(f"[DAG_EXECUTION_START] _proof_tree={self.display._proof_tree is not None}")
 
+            # noinspection DuplicatedCode
             premises = data.get("premises", [])
             inferences = data.get("inferences", [])
 
@@ -328,6 +329,7 @@ class SessionFeedbackHandler:
                 self.display.update_spinner(f"Resolving {fact_name} ({step}/{total})...")
 
         elif event_type == "premise_retry":
+            # noinspection DuplicatedCode
             # Show retry info inline with the current premise being resolved
             premise_id = data.get("premise_id", "?")
             attempt = data.get("attempt", 2)
@@ -428,6 +430,7 @@ class SessionFeedbackHandler:
                 self.display.update_spinner(f"Executing {inference_id} ({step}/{total})...")
 
         elif event_type == "inference_retry":
+            # noinspection DuplicatedCode
             # Show retry info inline with the spinner (single line)
             inference_id = data.get("inference_id", "?")
             attempt = data.get("attempt", 2)

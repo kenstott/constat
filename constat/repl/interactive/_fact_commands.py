@@ -124,6 +124,7 @@ class _FactCommandsMixin:
             if matching_fact:
                 persist_name = new_name if new_name else matching_fact.name
 
+                # noinspection DuplicatedCode
                 context_parts = [f"Source: {matching_fact.source.value}"]
                 if matching_fact.source_name:
                     context_parts.append(f"From: {matching_fact.source_name}")

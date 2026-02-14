@@ -473,6 +473,7 @@ class IntentClassifier:
                 "LLM fallback requested but no provider configured, "
                 "using best embedding match despite low confidence"
             )
+            # noinspection DuplicatedCode
             primary, _ = self._classify_primary(user_input)
             sub, sub_confidence = self._classify_sub(primary, user_input)
             if sub is not None and sub_confidence < SUB_THRESHOLD:
@@ -534,6 +535,7 @@ Mode: {mode_str}"""
         except Exception as e:
             logger.error(f"LLM fallback failed: {e}")
             # Fall back to embedding match
+            # noinspection DuplicatedCode
             primary, _ = self._classify_primary(user_input)
             sub, sub_confidence = self._classify_sub(primary, user_input)
             if sub is not None and sub_confidence < SUB_THRESHOLD:

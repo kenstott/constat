@@ -228,6 +228,16 @@ class LearningCompactor:
 
         return merged_count
 
+    @staticmethod
+    def _extract_content(response) -> str:
+        """Extract text content from an LLM response, stripping markdown fences."""
+        content = response.strip() if isinstance(response, str) else response.content.strip()
+        if "```" in content:
+            match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+            if match:
+                content = match.group(1)
+        return content
+
     def _find_duplicate_rules(self, rules: list[dict]) -> list[list[dict]]:
         """Find groups of duplicate/overlapping rules.
 
@@ -266,11 +276,7 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             duplicate_indices = data.get("duplicates", [])
@@ -327,11 +333,7 @@ Output ONLY valid JSON."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             idx = data.get("overlapping_rule_index", -1)
@@ -394,11 +396,7 @@ Output ONLY valid JSON."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             new_summary = data.get("strengthened_summary")
@@ -454,11 +452,7 @@ Output ONLY valid JSON."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             # Combine tags from LLM with existing tags
@@ -510,13 +504,7 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            # Parse response (generate returns string, not object)
-            content = response.strip() if isinstance(response, str) else response.content.strip()
-            # Extract JSON if wrapped in markdown
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             data = json.loads(content)
             groups_indices = data.get("groups", [])
@@ -630,13 +618,7 @@ Output ONLY valid JSON, no explanation."""
                 max_tokens=self.llm.max_output_tokens,
             )
 
-            # generate() returns string directly
-            content = response.strip()
-            # Extract JSON if wrapped in markdown
-            if "```" in content:
-                match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                if match:
-                    content = match.group(1)
+            content = self._extract_content(response)
 
             result = json.loads(content)
             logger.debug(f"[generate_rule] Generated: {result}")

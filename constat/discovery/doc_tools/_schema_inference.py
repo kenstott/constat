@@ -143,7 +143,17 @@ def _infer_json_schema(filepath: Path, sample_docs: int = 100) -> StructuredFile
             columns=[],
         )
 
-    # Collect all keys and their values
+    return StructuredFileSchema(
+        filename=filepath.name,
+        filepath=str(filepath),
+        file_format="json",
+        row_count=row_count,
+        columns=_build_columns_from_docs(docs),
+    )
+
+
+def _build_columns_from_docs(docs: list[dict]) -> list[dict]:
+    """Collect keys/values from dicts and build column info with inferred types."""
     key_values: dict[str, list] = {}
     for doc in docs:
         if isinstance(doc, dict):
@@ -152,11 +162,9 @@ def _infer_json_schema(filepath: Path, sample_docs: int = 100) -> StructuredFile
                     key_values[key] = []
                 key_values[key].append(val)
 
-    # Build column info
     columns = []
     for key, values in key_values.items():
         col_type = _infer_json_value_type(values)
-        # Get sample values (only for simple types)
         sample_values = []
         for v in values[:10]:
             if isinstance(v, (str, int, float, bool)) and v is not None:
@@ -168,14 +176,7 @@ def _infer_json_schema(filepath: Path, sample_docs: int = 100) -> StructuredFile
             'type': col_type,
             'sample_values': unique_samples,
         })
-
-    return StructuredFileSchema(
-        filename=filepath.name,
-        filepath=str(filepath),
-        file_format="json",
-        row_count=row_count,
-        columns=columns,
-    )
+    return columns
 
 
 def _infer_column_type(values: list[str]) -> str:
@@ -285,35 +286,10 @@ def _infer_jsonl_schema(filepath: Path, sample_lines: int = 100) -> StructuredFi
                 except json.JSONDecodeError:
                     pass
 
-    # Collect all keys and their values
-    key_values: dict[str, list] = {}
-    for doc in docs:
-        if isinstance(doc, dict):
-            for key, val in doc.items():
-                if key not in key_values:
-                    key_values[key] = []
-                key_values[key].append(val)
-
-    # Build column info
-    columns = []
-    for key, values in key_values.items():
-        col_type = _infer_json_value_type(values)
-        sample_values = []
-        for v in values[:10]:
-            if isinstance(v, (str, int, float, bool)) and v is not None:
-                sample_values.append(str(v) if not isinstance(v, str) else v)
-        unique_samples = list(set(sample_values))[:10]
-
-        columns.append({
-            'name': key,
-            'type': col_type,
-            'sample_values': unique_samples,
-        })
-
     return StructuredFileSchema(
         filename=filepath.name,
         filepath=str(filepath),
         file_format="jsonl",
         row_count=row_count,
-        columns=columns,
+        columns=_build_columns_from_docs(docs),
     )

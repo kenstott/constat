@@ -49,6 +49,7 @@ async def download_code(
     from fastapi.responses import Response
 
     # Try to get the session from memory first
+    # noinspection DuplicatedCode
     managed = session_manager.get_session_or_none(session_id)
 
     if managed:

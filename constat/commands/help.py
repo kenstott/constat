@@ -35,6 +35,7 @@ def get_help_markdown() -> str:
             categories[cat] = []
         categories[cat].append((cmd, desc))
 
+    # noinspection DuplicatedCode
     lines = ["**Available Commands:**", ""]
     for category, commands in categories.items():
         lines.append(f"**{category}:**")

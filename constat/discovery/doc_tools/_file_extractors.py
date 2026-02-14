@@ -62,18 +62,15 @@ def _extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
     return "\n\n".join(pages)
 
 
-def _extract_docx_text(path) -> str:
-    """Extract text content from a Word document.
+def _extract_docx_content(doc) -> str:
+    """Extract text content from a python-docx Document object.
 
     Args:
-        path: Path to the .docx file
+        doc: python-docx Document instance
 
     Returns:
         Extracted text content with paragraph separation
     """
-    from docx import Document
-
-    doc = Document(path)
     paragraphs = []
 
     for para in doc.paragraphs:
@@ -102,6 +99,20 @@ def _extract_docx_text(path) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _extract_docx_text(path) -> str:
+    """Extract text content from a Word document.
+
+    Args:
+        path: Path to the .docx file
+
+    Returns:
+        Extracted text content with paragraph separation
+    """
+    from docx import Document
+
+    return _extract_docx_content(Document(path))
+
+
 def _extract_docx_text_from_bytes(docx_bytes: bytes) -> str:
     """Extract text content from Word document bytes.
 
@@ -114,45 +125,18 @@ def _extract_docx_text_from_bytes(docx_bytes: bytes) -> str:
     from io import BytesIO
     from docx import Document
 
-    doc = Document(BytesIO(docx_bytes))
-    paragraphs = []
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            if para.style and para.style.name.startswith("Heading"):
-                level = para.style.name.replace("Heading ", "")
-                try:
-                    level_num = int(level)
-                    paragraphs.append(f"{'#' * level_num} {text}")
-                except ValueError:
-                    paragraphs.append(text)
-            else:
-                paragraphs.append(text)
-
-    for table in doc.tables:
-        table_rows = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            table_rows.append(" | ".join(cells))
-        if table_rows:
-            paragraphs.append("\n".join(table_rows))
-
-    return "\n\n".join(paragraphs)
+    return _extract_docx_content(Document(BytesIO(docx_bytes)))
 
 
-def _extract_xlsx_text(path) -> str:
-    """Extract text content from an Excel spreadsheet.
+def _extract_xlsx_content(wb) -> str:
+    """Extract text content from an openpyxl Workbook object.
 
     Args:
-        path: Path to the .xlsx file
+        wb: openpyxl Workbook instance
 
     Returns:
         Extracted text content with sheet and cell markers
     """
-    from openpyxl import load_workbook
-
-    wb = load_workbook(path, data_only=True)
     sheets = []
 
     for sheet_name in wb.sheetnames:
@@ -176,6 +160,20 @@ def _extract_xlsx_text(path) -> str:
     return "\n\n".join(sheets)
 
 
+def _extract_xlsx_text(path) -> str:
+    """Extract text content from an Excel spreadsheet.
+
+    Args:
+        path: Path to the .xlsx file
+
+    Returns:
+        Extracted text content with sheet and cell markers
+    """
+    from openpyxl import load_workbook
+
+    return _extract_xlsx_content(load_workbook(path, data_only=True))
+
+
 def _extract_xlsx_text_from_bytes(xlsx_bytes: bytes) -> str:
     """Extract text content from Excel spreadsheet bytes.
 
@@ -188,41 +186,18 @@ def _extract_xlsx_text_from_bytes(xlsx_bytes: bytes) -> str:
     from io import BytesIO
     from openpyxl import load_workbook
 
-    wb = load_workbook(BytesIO(xlsx_bytes), data_only=True)
-    sheets = []
-
-    for sheet_name in wb.sheetnames:
-        sheet = wb[sheet_name]
-        rows = []
-
-        for row in sheet.iter_rows():
-            cells = []
-            for cell in row:
-                if cell.value is not None:
-                    cells.append(str(cell.value))
-                else:
-                    cells.append("")
-            if any(c.strip() for c in cells):
-                rows.append(" | ".join(cells))
-
-        if rows:
-            sheets.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
-
-    return "\n\n".join(sheets)
+    return _extract_xlsx_content(load_workbook(BytesIO(xlsx_bytes), data_only=True))
 
 
-def _extract_pptx_text(path) -> str:
-    """Extract text content from a PowerPoint presentation.
+def _extract_pptx_content(prs) -> str:
+    """Extract text content from a python-pptx Presentation object.
 
     Args:
-        path: Path to the .pptx file
+        prs: python-pptx Presentation instance
 
     Returns:
         Extracted text content with slide markers
     """
-    from pptx import Presentation
-
-    prs = Presentation(path)
     slides = []
 
     for i, slide in enumerate(prs.slides, 1):
@@ -247,6 +222,20 @@ def _extract_pptx_text(path) -> str:
     return "\n\n".join(slides)
 
 
+def _extract_pptx_text(path) -> str:
+    """Extract text content from a PowerPoint presentation.
+
+    Args:
+        path: Path to the .pptx file
+
+    Returns:
+        Extracted text content with slide markers
+    """
+    from pptx import Presentation
+
+    return _extract_pptx_content(Presentation(path))
+
+
 def _extract_pptx_text_from_bytes(pptx_bytes: bytes) -> str:
     """Extract text content from PowerPoint presentation bytes.
 
@@ -259,28 +248,7 @@ def _extract_pptx_text_from_bytes(pptx_bytes: bytes) -> str:
     from io import BytesIO
     from pptx import Presentation
 
-    prs = Presentation(BytesIO(pptx_bytes))
-    slides = []
-
-    for i, slide in enumerate(prs.slides, 1):
-        slide_text = []
-
-        for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text.strip():
-                slide_text.append(shape.text.strip())
-
-            if shape.has_table:
-                table_rows = []
-                for row in shape.table.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
-                    table_rows.append(" | ".join(cells))
-                if table_rows:
-                    slide_text.append("\n".join(table_rows))
-
-        if slide_text:
-            slides.append(f"[Slide {i}]\n" + "\n".join(slide_text))
-
-    return "\n\n".join(slides)
+    return _extract_pptx_content(Presentation(BytesIO(pptx_bytes)))
 
 
 def _detect_format(suffix: str) -> str:

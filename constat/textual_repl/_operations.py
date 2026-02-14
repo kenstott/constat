@@ -553,6 +553,7 @@ class OperationsMixin:
             premises = [s for s in request.steps if s.get("type") == "premise"]
             inferences = [s for s in request.steps if s.get("type") == "inference"]
 
+            # noinspection DuplicatedCode
             if premises:
                 log.write(Text(f"  Premises ({len(premises)}):", style="cyan"))
                 for s in premises:

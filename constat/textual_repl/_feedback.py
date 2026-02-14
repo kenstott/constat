@@ -178,6 +178,7 @@ class TextualFeedbackHandler:
             side_panel.add_class("visible")
 
         elif event_type == "dag_execution_start":
+            # noinspection DuplicatedCode
             premises = data.get("premises", [])
             inferences = data.get("inferences", [])
             logger.debug(f"dag_execution_start: {len(premises)} premises, {len(inferences)} inferences")

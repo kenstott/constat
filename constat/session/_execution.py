@@ -316,6 +316,7 @@ class ExecutionMixin:
                     if first_db is None:
                         globals_dict["db"] = conn
                         first_db = conn
+        # noinspection DuplicatedCode
         for db_name in self.schema_manager.nosql_connections.keys():
             if db_name not in config_db_names:
                 globals_dict[f"db_{db_name}"] = self.schema_manager.nosql_connections[db_name]

@@ -19,6 +19,20 @@ from ._schema_inference import _expand_file_paths
 logger = logging.getLogger(__name__)
 
 
+def _loaded_doc_to_result(doc) -> dict:
+    """Build a result dict from a LoadedDocument."""
+    result = {
+        "name": doc.name,
+        "content": doc.content,
+        "format": doc.format,
+        "sections": doc.sections,
+        "loaded_at": doc.loaded_at,
+    }
+    if hasattr(doc.config, 'path') and doc.config.path:
+        result["path"] = doc.config.path
+    return result
+
+
 # noinspection PyUnresolvedReferences
 class _AccessMixin:
     """Access, search, and load methods for DocumentDiscoveryTools."""

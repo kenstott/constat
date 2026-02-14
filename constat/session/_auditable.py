@@ -259,6 +259,7 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
             user_message=fact_plan_prompt,
             max_tokens=self.router.max_output_tokens,
         )
+        # noinspection DuplicatedCode
         fact_plan_text = result.content
 
         # Parse the proof structure
@@ -473,6 +474,7 @@ REMEMBER:
             )
 
             # Re-parse the retried plan
+            # noinspection DuplicatedCode
             fact_plan_text = retry_result.content
             claim = ""
             premises = []

@@ -134,6 +134,7 @@ async def list_artifacts(
                 if table_name.startswith("_"):
                     continue
                 # Check if table is published or from final step (from registry metadata)
+                # noinspection DuplicatedCode
                 is_published = t.get("is_published", False)
                 is_final_step = t.get("is_final_step", False)
                 # Tables with substantial data are consequential

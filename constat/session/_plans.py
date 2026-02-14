@@ -264,6 +264,7 @@ class PlansMixin:
             }
         ))
 
+        # noinspection DuplicatedCode
         all_results = []
         for step_data in steps:
             step_number = step_data["step_number"]

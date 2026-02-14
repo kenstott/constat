@@ -520,24 +520,29 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
         self._clarification_event.set()
         self.exit()
 
-    def action_open_file(self, file_path: str) -> None:
-        """Open a file with the system's default application."""
+    @staticmethod
+    def _open_with_system(file_path: str) -> None:
+        """Open a file path with the system's default application."""
         import subprocess
         import platform
 
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.run(["open", file_path], check=True)
+        elif system == "Windows":
+            subprocess.run(["start", "", file_path], shell=True, check=True)
+        else:
+            subprocess.run(["xdg-open", file_path], check=True)
+
+    def action_open_file(self, file_path: str) -> None:
+        """Open a file with the system's default application."""
         status_bar = self.query_one("#status-bar", StatusBar)
 
         try:
             if file_path.startswith("file://"):
                 file_path = file_path[7:]
 
-            system = platform.system()
-            if system == "Darwin":
-                subprocess.run(["open", file_path], check=True)
-            elif system == "Windows":
-                subprocess.run(["start", "", file_path], shell=True, check=True)
-            else:
-                subprocess.run(["xdg-open", file_path], check=True)
+            self._open_with_system(file_path)
 
             status_bar.update_status(status_message=f"Opened: {Path(file_path).name}")
         except Exception as e:
@@ -545,9 +550,6 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
 
     def action_open_artifact(self, artifact_type: str, artifact_name: str) -> None:
         """Open an artifact by name (table, file, chart, etc.)."""
-        import subprocess
-        import platform
-
         status_bar = self.query_one("#status-bar", StatusBar)
         log = self.query_one("#output-log", OutputLog)
 
@@ -564,14 +566,7 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
                 table = next((t for t in tables if t.name == artifact_name), None)
 
                 if table and Path(table.file_path).exists():
-                    file_path = table.file_path
-                    system = platform.system()
-                    if system == "Darwin":
-                        subprocess.run(["open", file_path], check=True)
-                    elif system == "Windows":
-                        subprocess.run(["start", "", file_path], shell=True, check=True)
-                    else:
-                        subprocess.run(["xdg-open", file_path], check=True)
+                    self._open_with_system(table.file_path)
                     status_bar.update_status(status_message=f"Opened table: {artifact_name}")
                 else:
                     if self.session and self.session.datastore:
@@ -595,14 +590,7 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
                 artifact = next((a for a in artifacts if a.name == artifact_name), None)
 
                 if artifact and Path(artifact.file_path).exists():
-                    file_path = artifact.file_path
-                    system = platform.system()
-                    if system == "Darwin":
-                        subprocess.run(["open", file_path], check=True)
-                    elif system == "Windows":
-                        subprocess.run(["start", "", file_path], shell=True, check=True)
-                    else:
-                        subprocess.run(["xdg-open", file_path], check=True)
+                    self._open_with_system(artifact.file_path)
                     status_bar.update_status(status_message=f"Opened: {artifact_name}")
                 else:
                     status_bar.update_status(status_message=f"Artifact not found: {artifact_name}")

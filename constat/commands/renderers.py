@@ -137,6 +137,7 @@ def _render_help_markdown(result: HelpResult) -> str:
             categories[cat] = []
         categories[cat].append((cmd, desc))
 
+    # noinspection DuplicatedCode
     lines = ["**Available Commands:**", ""]
 
     for category, commands in categories.items():

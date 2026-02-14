@@ -318,6 +318,7 @@ class Fact:
             source_str = f"{self.source.value}:{self.source_name}"
         # Use display_value for concise table references
         lines = [f"{self.name} = {self.display_value} (confidence: {self.confidence:.2f}, source: {source_str})"]
+        # noinspection DuplicatedCode
         if self.query:
             lines.append(f"  via SQL: {self.query}")
         if self.api_endpoint:

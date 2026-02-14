@@ -162,6 +162,7 @@ class NoSQLConnector(ABC):
         """
         pass
 
+    # noinspection DuplicatedCode
     def get_overview(self) -> str:
         """Generate token-optimized overview for system prompt."""
         collections = self.get_collections()

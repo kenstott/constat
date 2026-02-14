@@ -18,10 +18,17 @@ from typing import Optional
 from constat.core.config import Config, DocumentConfig
 from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import (
-    ChunkEntity,
     DocumentChunk,
     LoadedDocument,
 )
+from ._entities import _deduplicate_chunk_links, _extract_links_from_chunks
+
+
+def _extract_markdown_sections(content: str, doc_format: str) -> list[str]:
+    """Extract section headers from markdown content."""
+    if doc_format not in ("markdown", "md"):
+        return []
+    return [line.lstrip("#").strip() for line in content.split("\n") if line.startswith("#")]
 from constat.discovery.vector_store import (
     VectorStoreBackend,
     create_vector_store,
@@ -249,20 +256,13 @@ class _CoreMixin:
             format=doc_format,
         )
 
-        # Extract sections for markdown
-        sections = []
-        if doc_format in ("markdown", "md"):
-            for line in content.split("\n"):
-                if line.startswith("#"):
-                    sections.append(line.lstrip("#").strip())
-
         # Store the loaded document
         self._loaded_documents[name] = LoadedDocument(
             name=name,
             config=doc_config,
             content=content,
             format=doc_format,
-            sections=sections,
+            sections=_extract_markdown_sections(content, doc_format),
             loaded_at=datetime.now().isoformat(),
         )
 
@@ -625,29 +625,16 @@ class _CoreMixin:
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
-        # Combine API terms
-        api_terms = list(set(
-            (self._openapi_operations or []) +
-            (self._openapi_schemas or []) +
-            (self._graphql_types or []) +
-            (self._graphql_fields or [])
-        ))
-
         # Create extractor with schema entities and spaCy NER
         # Use "__document__" as session_id for general document extraction
         extractor = EntityExtractor(
             session_id="__document__",
             schema_terms=schema_entities,
-            api_terms=api_terms if api_terms else None,
+            api_terms=self._collect_api_terms(),
         )
 
         # Extract entities from each chunk
-        all_links: list[ChunkEntity] = []
-
-        for chunk in chunks:
-            extractions = extractor.extract(chunk)
-            for entity, link in extractions:
-                all_links.append(link)
+        all_links = _extract_links_from_chunks(extractor, chunks)
 
         # Store all unique entities
         entities = extractor.get_all_entities()
@@ -657,23 +644,7 @@ class _CoreMixin:
 
         # Store all chunk-entity links (deduplicated by chunk_id + entity_id)
         if all_links:
-            # Deduplicate links - same entity in same chunk should only have one link
-            unique_links = {}
-            for link in all_links:
-                key = (link.chunk_id, link.entity_id)
-                if key not in unique_links:
-                    unique_links[key] = link
-                else:
-                    # Merge mention counts if duplicate
-                    existing = unique_links[key]
-                    unique_links[key] = ChunkEntity(
-                        chunk_id=link.chunk_id,
-                        entity_id=link.entity_id,
-                        mention_count=existing.mention_count + link.mention_count,
-                        confidence=max(existing.confidence, link.confidence),
-                        mention_text=existing.mention_text or link.mention_text,
-                    )
-            self._vector_store.link_chunk_entities(list(unique_links.values()))
+            self._vector_store.link_chunk_entities(_deduplicate_chunk_links(all_links))
 
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.
@@ -908,19 +879,12 @@ class _CoreMixin:
         else:
             raise NotImplementedError(f"Document type not yet implemented: {doc_config.type}")
 
-        # Extract sections for markdown
-        sections = []
-        if doc_format in ("markdown", "md"):
-            for line in content.split("\n"):
-                if line.startswith("#"):
-                    sections.append(line.lstrip("#").strip())
-
         self._loaded_documents[name] = LoadedDocument(
             name=name,
             config=doc_config,
             content=content,
             format=doc_format,
-            sections=sections,
+            sections=_extract_markdown_sections(content, doc_format),
             loaded_at=datetime.now().isoformat(),
         )
 
@@ -976,13 +940,6 @@ class _CoreMixin:
             if doc_format == "auto" or not doc_format:
                 doc_format = _detect_format(suffix)
 
-        # Extract sections for markdown
-        sections = []
-        if doc_format in ("markdown", "md"):
-            for line in content.split("\n"):
-                if line.startswith("#"):
-                    sections.append(line.lstrip("#").strip())
-
         # Create a modified config with the actual path
         file_config = DocumentConfig(
             type="file",
@@ -997,6 +954,6 @@ class _CoreMixin:
             config=file_config,
             content=content,
             format=doc_format,
-            sections=sections,
+            sections=_extract_markdown_sections(content, doc_format),
             loaded_at=datetime.now().isoformat(),
         )

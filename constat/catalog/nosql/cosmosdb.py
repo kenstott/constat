@@ -410,6 +410,7 @@ class CosmosDBConnector(NoSQLConnector):
 
         self._db.delete_container(collection)
 
+    # noinspection DuplicatedCode
     def get_overview(self) -> str:
         """Generate token-optimized overview for system prompt."""
         collections = self.get_collections()

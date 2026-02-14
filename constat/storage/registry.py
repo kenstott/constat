@@ -130,6 +130,54 @@ class ConstatRegistry:
         self._db = ThreadLocalDuckDB(str(self.db_path))
         self._ensure_schema()
 
+    @staticmethod
+    def _get_col(row, columns: list[str], col_name: str, default=None):
+        """Safely get column value with default for missing columns."""
+        try:
+            return row[columns.index(col_name)]
+        except (ValueError, IndexError):
+            return default
+
+    @staticmethod
+    def _row_to_table_record(row, columns: list[str]) -> 'TableRecord':
+        """Convert a database row to a TableRecord."""
+        get = lambda name, default=None: ConstatRegistry._get_col(row, columns, name, default)
+        return TableRecord(
+            id=row[columns.index("id")],
+            user_id=row[columns.index("user_id")],
+            session_id=row[columns.index("session_id")],
+            name=row[columns.index("name")],
+            file_path=row[columns.index("file_path")],
+            description=row[columns.index("description")],
+            row_count=row[columns.index("row_count")],
+            columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
+            created_at=row[columns.index("created_at")],
+            is_published=bool(get("is_published", False)),
+            is_final_step=bool(get("is_final_step", False)),
+            title=get("title"),
+            role_id=get("role_id"),
+        )
+
+    @staticmethod
+    def _row_to_artifact_record(row, columns: list[str]) -> 'ArtifactRecord':
+        """Convert a database row to an ArtifactRecord."""
+        get = lambda name, default=None: ConstatRegistry._get_col(row, columns, name, default)
+        return ArtifactRecord(
+            id=row[columns.index("id")],
+            user_id=row[columns.index("user_id")],
+            session_id=row[columns.index("session_id")],
+            name=row[columns.index("name")],
+            file_path=row[columns.index("file_path")],
+            artifact_type=row[columns.index("artifact_type")],
+            description=row[columns.index("description")],
+            size_bytes=row[columns.index("size_bytes")],
+            created_at=row[columns.index("created_at")],
+            is_published=bool(get("is_published", False)),
+            is_final_step=bool(get("is_final_step", False)),
+            title=get("title"),
+            role_id=get("role_id"),
+        )
+
     def _ensure_schema(self) -> None:
         """Ensure database and schema exist."""
         conn = self._get_connection()
@@ -383,32 +431,7 @@ class ConstatRegistry:
 
         rows = conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in conn.description]
-
-        def get_col(row, cols, col_name, default=None):
-            """Safely get column value with default for missing columns."""
-            try:
-                return row[cols.index(col_name)]
-            except (ValueError, IndexError):
-                return default
-
-        return [
-            TableRecord(
-                id=row[columns.index("id")],
-                user_id=row[columns.index("user_id")],
-                session_id=row[columns.index("session_id")],
-                name=row[columns.index("name")],
-                file_path=row[columns.index("file_path")],
-                description=row[columns.index("description")],
-                row_count=row[columns.index("row_count")],
-                columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
-                created_at=row[columns.index("created_at")],
-                is_published=bool(get_col(row, columns, "is_published", False)),
-                is_final_step=bool(get_col(row, columns, "is_final_step", False)),
-                title=get_col(row, columns, "title"),
-                role_id=get_col(row, columns, "role_id"),
-            )
-            for row in rows
-        ]
+        return [self._row_to_table_record(row, columns) for row in rows]
 
     def get_table(self, user_id: str, session_id: str, name: str) -> Optional[TableRecord]:
         """Get a specific table by user/session/name."""
@@ -422,28 +445,7 @@ class ConstatRegistry:
             return None
 
         columns = [desc[0] for desc in conn.description]
-
-        def get_col(col_name, default=None):
-            try:
-                return row[columns.index(col_name)]
-            except (ValueError, IndexError):
-                return default
-
-        return TableRecord(
-            id=row[columns.index("id")],
-            user_id=row[columns.index("user_id")],
-            session_id=row[columns.index("session_id")],
-            name=row[columns.index("name")],
-            file_path=row[columns.index("file_path")],
-            description=row[columns.index("description")],
-            row_count=row[columns.index("row_count")],
-            columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
-            created_at=row[columns.index("created_at")],
-            is_published=bool(get_col("is_published", False)),
-            is_final_step=bool(get_col("is_final_step", False)),
-            title=get_col("title"),
-            role_id=get_col("role_id"),
-        )
+        return self._row_to_table_record(row, columns)
 
     # --- Artifact Registration ---
 
@@ -545,32 +547,7 @@ class ConstatRegistry:
 
         rows = conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in conn.description]
-
-        def get_col(row, name, default=None):
-            """Safely get column value with default for missing columns."""
-            try:
-                return row[columns.index(name)]
-            except (ValueError, IndexError):
-                return default
-
-        return [
-            ArtifactRecord(
-                id=row[columns.index("id")],
-                user_id=row[columns.index("user_id")],
-                session_id=row[columns.index("session_id")],
-                name=row[columns.index("name")],
-                file_path=row[columns.index("file_path")],
-                artifact_type=row[columns.index("artifact_type")],
-                description=row[columns.index("description")],
-                size_bytes=row[columns.index("size_bytes")],
-                created_at=row[columns.index("created_at")],
-                is_published=bool(get_col(row, "is_published", False)),
-                is_final_step=bool(get_col(row, "is_final_step", False)),
-                title=get_col(row, "title"),
-                role_id=get_col(row, "role_id"),
-            )
-            for row in rows
-        ]
+        return [self._row_to_artifact_record(row, columns) for row in rows]
 
     def delete_artifact(self, artifact_id: str) -> bool:
         """Delete an artifact from the registry by ID.
@@ -859,30 +836,7 @@ class ConstatRegistry:
         """, [user_id, session_id, limit]).fetchall()
 
         columns = [desc[0] for desc in conn.description]
-
-        def get_col(row, name, default=None):
-            try:
-                return row[columns.index(name)]
-            except (ValueError, IndexError):
-                return default
-
-        return [
-            TableRecord(
-                id=row[columns.index("id")],
-                user_id=row[columns.index("user_id")],
-                session_id=row[columns.index("session_id")],
-                name=row[columns.index("name")],
-                file_path=row[columns.index("file_path")],
-                description=row[columns.index("description")],
-                row_count=row[columns.index("row_count")],
-                columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
-                created_at=row[columns.index("created_at")],
-                is_published=bool(get_col(row, "is_published", False)),
-                is_final_step=bool(get_col(row, "is_final_step", False)),
-                title=get_col(row, "title"),
-            )
-            for row in rows
-        ]
+        return [self._row_to_table_record(row, columns) for row in rows]
 
     def list_published_artifacts(
         self,
@@ -905,33 +859,32 @@ class ConstatRegistry:
         """, [user_id, session_id, limit]).fetchall()
 
         columns = [desc[0] for desc in conn.description]
-
-        def get_col(row, name, default=None):
-            try:
-                return row[columns.index(name)]
-            except (ValueError, IndexError):
-                return default
-
-        return [
-            ArtifactRecord(
-                id=row[columns.index("id")],
-                user_id=row[columns.index("user_id")],
-                session_id=row[columns.index("session_id")],
-                name=row[columns.index("name")],
-                file_path=row[columns.index("file_path")],
-                artifact_type=row[columns.index("artifact_type")],
-                description=row[columns.index("description")],
-                size_bytes=row[columns.index("size_bytes")],
-                created_at=row[columns.index("created_at")],
-                is_published=bool(get_col(row, "is_published", False)),
-                is_final_step=bool(get_col(row, "is_final_step", False)),
-                title=get_col(row, "title"),
-                role_id=get_col(row, "role_id"),
-            )
-            for row in rows
-        ]
+        return [self._row_to_artifact_record(row, columns) for row in rows]
 
     # --- Search ---
+
+    def _search_rows(
+        self,
+        table: str,
+        query: str,
+        user_id: Optional[str],
+        limit: int,
+    ) -> tuple[list, list[str]]:
+        """Execute a search query against a table, returning rows and column names."""
+        conn = self._get_connection()
+        sql = f"""
+            SELECT * FROM {table}
+            WHERE (name ILIKE ? OR description ILIKE ?)
+        """
+        params: list = [f"%{query}%", f"%{query}%"]
+        if user_id:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return rows, columns
 
     def search_tables(
         self,
@@ -949,39 +902,8 @@ class ConstatRegistry:
         Returns:
             List of matching TableRecord objects
         """
-        conn = self._get_connection()
-
-        sql = """
-            SELECT * FROM constat_tables
-            WHERE (name ILIKE ? OR description ILIKE ?)
-        """
-        params = [f"%{query}%", f"%{query}%"]
-
-        if user_id:
-            sql += " AND user_id = ?"
-            params.append(user_id)
-
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        # noinspection PyTypeChecker
-        params.append(limit)
-
-        rows = conn.execute(sql, params).fetchall()
-        columns = [desc[0] for desc in conn.description]
-
-        return [
-            TableRecord(
-                id=row[columns.index("id")],
-                user_id=row[columns.index("user_id")],
-                session_id=row[columns.index("session_id")],
-                name=row[columns.index("name")],
-                file_path=row[columns.index("file_path")],
-                description=row[columns.index("description")],
-                row_count=row[columns.index("row_count")],
-                columns=json.loads(row[columns.index("columns")]) if row[columns.index("columns")] else [],
-                created_at=row[columns.index("created_at")],
-            )
-            for row in rows
-        ]
+        rows, columns = self._search_rows("constat_tables", query, user_id, limit)
+        return [self._row_to_table_record(row, columns) for row in rows]
 
     def search_artifacts(
         self,
@@ -999,36 +921,5 @@ class ConstatRegistry:
         Returns:
             List of matching ArtifactRecord objects
         """
-        conn = self._get_connection()
-
-        sql = """
-            SELECT * FROM constat_artifacts
-            WHERE (name ILIKE ? OR description ILIKE ?)
-        """
-        params = [f"%{query}%", f"%{query}%"]
-
-        if user_id:
-            sql += " AND user_id = ?"
-            params.append(user_id)
-
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        # noinspection PyTypeChecker
-        params.append(limit)
-
-        rows = conn.execute(sql, params).fetchall()
-        columns = [desc[0] for desc in conn.description]
-
-        return [
-            ArtifactRecord(
-                id=row[columns.index("id")],
-                user_id=row[columns.index("user_id")],
-                session_id=row[columns.index("session_id")],
-                name=row[columns.index("name")],
-                file_path=row[columns.index("file_path")],
-                artifact_type=row[columns.index("artifact_type")],
-                description=row[columns.index("description")],
-                size_bytes=row[columns.index("size_bytes")],
-                created_at=row[columns.index("created_at")],
-            )
-            for row in rows
-        ]
+        rows, columns = self._search_rows("constat_artifacts", query, user_id, limit)
+        return [self._row_to_artifact_record(row, columns) for row in rows]
