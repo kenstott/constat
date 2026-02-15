@@ -55,7 +55,7 @@ class TestEntityModels:
             session_id="test-session",
         )
 
-        assert entity.project_id is None
+        assert entity.domain_id is None
         assert entity.ner_type is None
         assert entity.created_at is not None
         # Backwards compatibility: type property returns semantic_type
@@ -348,11 +348,11 @@ class TestEntityExtractor:
         for entity in custom_entities:
             assert entity.ner_type == NerType.SCHEMA
 
-    def test_entity_project_id_from_extractor(self):
-        """Test that project_id is set from extractor initialization."""
+    def test_entity_domain_id_from_extractor(self):
+        """Test that domain_id is set from extractor initialization."""
         extractor = EntityExtractor(
             session_id="test-session",
-            project_id="my-project",
+            domain_id="my-domain",
             schema_terms=["test_table"],
         )
 
@@ -365,9 +365,9 @@ class TestEntityExtractor:
 
         results = extractor.extract(chunk)
 
-        # Entities should have project_id set
+        # Entities should have domain_id set
         for entity, _ in results:
-            assert entity.project_id == "my-project"
+            assert entity.domain_id == "my-domain"
             assert entity.session_id == "test-session"
 
 
@@ -396,7 +396,7 @@ def vector_store(temp_db):
     return DuckDBVectorStore(db_path=temp_db)
 
 
-def _make_entity(name, session_id="sess-1", project_id=None):
+def _make_entity(name, session_id="sess-1", domain_id=None):
     """Helper to create an Entity with a deterministic ID."""
     import hashlib
     eid = hashlib.sha256(f"{name}:{session_id}".encode()).hexdigest()[:12]
@@ -406,7 +406,7 @@ def _make_entity(name, session_id="sess-1", project_id=None):
         display_name=name.replace("_", " ").title(),
         semantic_type=SemanticType.CONCEPT,
         session_id=session_id,
-        project_id=project_id,
+        domain_id=domain_id,
     )
 
 
@@ -414,7 +414,7 @@ class TestFindEntityByName:
     """Test DuckDBVectorStore.find_entity_by_name with all argument combinations."""
 
     def test_find_by_name_only(self, vector_store):
-        """Find entity by name without session or project filter."""
+        """Find entity by name without session or domain filter."""
         entity = _make_entity("customers", session_id="s1")
         vector_store.add_entities([entity], session_id="s1")
 
@@ -447,44 +447,44 @@ class TestFindEntityByName:
 
         assert vector_store.find_entity_by_name("orders", session_id="s3") is None
 
-    def test_find_by_name_and_project_ids(self, vector_store):
-        """Filter by project_ids."""
-        e1 = _make_entity("revenue", session_id="s1", project_id="proj-a")
-        e2 = _make_entity("revenue", session_id="s1", project_id="proj-b")
+    def test_find_by_name_and_domain_ids(self, vector_store):
+        """Filter by domain_ids."""
+        e1 = _make_entity("revenue", session_id="s1", domain_id="dom-a")
+        e2 = _make_entity("revenue", session_id="s1", domain_id="dom-b")
         # Different id needed for second entity in same session
         e2.id = e2.id + "_b"
         vector_store.add_entities([e1, e2], session_id="s1")
 
-        found = vector_store.find_entity_by_name("revenue", project_ids=["proj-a"])
+        found = vector_store.find_entity_by_name("revenue", domain_ids=["dom-a"])
         assert found is not None
-        assert found.project_id == "proj-a"
+        assert found.domain_id == "dom-a"
 
-        found_b = vector_store.find_entity_by_name("revenue", project_ids=["proj-b"])
+        found_b = vector_store.find_entity_by_name("revenue", domain_ids=["dom-b"])
         assert found_b is not None
-        assert found_b.project_id == "proj-b"
+        assert found_b.domain_id == "dom-b"
 
-        found_both = vector_store.find_entity_by_name("revenue", project_ids=["proj-a", "proj-b"])
+        found_both = vector_store.find_entity_by_name("revenue", domain_ids=["dom-a", "dom-b"])
         assert found_both is not None
 
-        assert vector_store.find_entity_by_name("revenue", project_ids=["proj-z"]) is None
+        assert vector_store.find_entity_by_name("revenue", domain_ids=["dom-z"]) is None
 
-    def test_find_by_name_session_and_project(self, vector_store):
-        """Filter by both session_id and project_ids together."""
-        e1 = _make_entity("users", session_id="s1", project_id="p1")
-        e2 = _make_entity("users", session_id="s2", project_id="p1")
+    def test_find_by_name_session_and_domain(self, vector_store):
+        """Filter by both session_id and domain_ids together."""
+        e1 = _make_entity("users", session_id="s1", domain_id="d1")
+        e2 = _make_entity("users", session_id="s2", domain_id="d1")
         e2.id = e2.id + "_s2"
         vector_store.add_entities([e1], session_id="s1")
         vector_store.add_entities([e2], session_id="s2")
 
-        # Both match project, but only one matches session
-        found = vector_store.find_entity_by_name("users", project_ids=["p1"], session_id="s1")
+        # Both match domain, but only one matches session
+        found = vector_store.find_entity_by_name("users", domain_ids=["d1"], session_id="s1")
         assert found is not None
         assert found.session_id == "s1"
 
         # Wrong session
-        assert vector_store.find_entity_by_name("users", project_ids=["p1"], session_id="s3") is None
-        # Wrong project
-        assert vector_store.find_entity_by_name("users", project_ids=["p9"], session_id="s1") is None
+        assert vector_store.find_entity_by_name("users", domain_ids=["d1"], session_id="s3") is None
+        # Wrong domain
+        assert vector_store.find_entity_by_name("users", domain_ids=["d9"], session_id="s1") is None
 
     def test_find_nonexistent_returns_none(self, vector_store):
         """Returns None when entity does not exist."""
@@ -492,7 +492,7 @@ class TestFindEntityByName:
 
     def test_returned_entity_has_all_fields(self, vector_store):
         """Returned Entity has all expected fields populated."""
-        entity = _make_entity("invoices", session_id="s1", project_id="p1")
+        entity = _make_entity("invoices", session_id="s1", domain_id="d1")
         vector_store.add_entities([entity], session_id="s1")
 
         found = vector_store.find_entity_by_name("invoices", session_id="s1")
@@ -501,5 +501,5 @@ class TestFindEntityByName:
         assert found.display_name == "Invoices"
         assert found.semantic_type == SemanticType.CONCEPT
         assert found.session_id == "s1"
-        assert found.project_id == "p1"
+        assert found.domain_id == "d1"
         assert found.created_at is not None

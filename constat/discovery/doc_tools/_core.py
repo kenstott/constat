@@ -115,11 +115,11 @@ class _CoreMixin:
         else:
             self._vector_store = self._create_vector_store()
 
-        # Active project IDs for automatic search filtering
-        # Set this when projects are loaded so searches automatically include project docs
-        self._active_project_ids: list[str] = []
+        # Active domain IDs for automatic search filtering
+        # Set this when domains are loaded so searches automatically include domain docs
+        self._active_domain_ids: list[str] = []
 
-        # Note: No cleanup needed - data is scoped by project_id/session_id
+        # Note: No cleanup needed - data is scoped by domain_id/session_id
 
         # Index documents that aren't already indexed (incremental)
         # Skip if caller will handle indexing (e.g., warmup with hash-based invalidation)
@@ -137,6 +137,29 @@ class _CoreMixin:
                 # Incrementally add new documents (don't clear existing chunks)
                 self._index_loaded_documents(self._schema_entities)
                 logger.info(f"[DOC_INIT] Indexing complete, count={self._vector_store.count()}")
+
+        # Index glossary and relationship chunks from config if present
+        self._index_glossary_and_relationships()
+
+    def _index_glossary_and_relationships(self) -> None:
+        """Index glossary and relationship chunks from config into vector store."""
+        from constat.catalog.glossary_builder import build_glossary_chunks, build_relationship_chunks
+
+        chunks: list[DocumentChunk] = []
+        if self.config.glossary:
+            chunks.extend(build_glossary_chunks(self.config.glossary))
+        if self.config.relationships:
+            chunks.extend(build_relationship_chunks(self.config.relationships))
+
+        if not chunks:
+            return
+
+        with self._model_lock:
+            texts = [c.content for c in chunks]
+            embeddings = self._model.encode(texts, normalize_embeddings=True)
+
+        self._vector_store.add_chunks(chunks, embeddings, source="document")
+        logger.info(f"Indexed {len(chunks)} glossary/relationship chunks")
 
     def _is_document_allowed(self, doc_name: str) -> bool:
         """Check if a document is allowed based on permissions."""
@@ -221,7 +244,7 @@ class _CoreMixin:
         content: str,
         doc_format: str = "text",
         description: str = "",
-        project_id: str | None = None,
+        domain_id: str | None = None,
         session_id: str | None = None,
         skip_entity_extraction: bool = False,
     ) -> bool:
@@ -232,7 +255,7 @@ class _CoreMixin:
             content: Document content
             doc_format: Format (text, markdown, etc.)
             description: Optional description
-            project_id: Project this document belongs to (for project filtering)
+            domain_id: Domain this document belongs to (for domain filtering)
             session_id: Session this document was added in (for session filtering)
             skip_entity_extraction: If True, skip NER (done later at session creation)
 
@@ -276,14 +299,14 @@ class _CoreMixin:
         texts = [chunk.content for chunk in chunks]
         embeddings = self._model.encode(texts, convert_to_numpy=True)
 
-        # Add to vector store with project_id/session_id for filtering
+        # Add to vector store with domain_id/session_id for filtering
         if hasattr(self._vector_store, 'add_chunks'):
             self._vector_store.add_chunks(
                 chunks,
                 embeddings,
                 source="document",
                 session_id=session_id,
-                project_id=project_id,
+                domain_id=domain_id,
             )
 
         # Extract entities with appropriate scope (unless skipped for later session-level extraction)
@@ -291,11 +314,11 @@ class _CoreMixin:
             if session_id:
                 # Session-added documents get session_id for session filtering
                 self._extract_and_store_entities_session(chunks, session_id)
-            elif project_id:
-                # Project documents get project_id for project filtering
-                self._extract_and_store_entities_project(chunks, project_id)
+            elif domain_id:
+                # Domain documents get domain_id for domain filtering
+                self._extract_and_store_entities_domain(chunks, domain_id)
             else:
-                # Base documents (no project_id, no session_id) - permanent
+                # Base documents (no domain_id, no session_id) - permanent
                 self._extract_and_store_entities(chunks, self._schema_entities)
 
         return True
@@ -305,7 +328,7 @@ class _CoreMixin:
         file_path: str,
         name: str | None = None,
         description: str = "",
-        project_id: str | None = None,
+        domain_id: str | None = None,
         session_id: str | None = None,
         skip_entity_extraction: bool = False,
     ) -> tuple[bool, str]:
@@ -315,7 +338,7 @@ class _CoreMixin:
             file_path: Path to the document file
             name: Optional name (defaults to filename without extension)
             description: Optional description
-            project_id: Optional project ID for project-scoped documents
+            domain_id: Optional domain ID for domain-scoped documents
             session_id: Optional session ID for session-scoped documents
             skip_entity_extraction: If True, skip NER (done later at session creation)
 
@@ -369,7 +392,7 @@ class _CoreMixin:
             content=content,
             doc_format=doc_format,
             description=description or f"Document from {path.name}",
-            project_id=project_id,
+            domain_id=domain_id,
             session_id=session_id,
             skip_entity_extraction=skip_entity_extraction,
         )
@@ -720,11 +743,11 @@ class _CoreMixin:
         # Check base config first
         doc_config = self.config.documents.get(name)
 
-        # Check project documents if not in base
+        # Check domain documents if not in base
         if not doc_config:
-            for project in self.config.projects.values():
-                if project.documents and name in project.documents:
-                    doc_config = project.documents[name]
+            for domain in self.config.domains.values():
+                if domain.documents and name in domain.documents:
+                    doc_config = domain.documents[name]
                     break
 
         if not doc_config:

@@ -130,9 +130,9 @@ class SessionResponse(BaseModel):
         default=None,
         description="Brief summary/description of the session",
     )
-    active_projects: list[str] = Field(
+    active_domains: list[str] = Field(
         default_factory=list,
-        description="Active project filenames (e.g., ['sales-analytics.yaml'])",
+        description="Active domain filenames (e.g., ['sales-analytics.yaml'])",
     )
     tables_count: int = Field(
         default=0,
@@ -597,7 +597,7 @@ class SessionDatabaseInfo(BaseModel):
     added_at: datetime = Field(description="When the database was added")
     is_dynamic: bool = Field(description="Whether dynamically added (vs config)")
     file_id: Optional[str] = Field(default=None, description="Uploaded file ID if any")
-    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
 
 
 class SessionDatabaseListResponse(BaseModel):
@@ -615,7 +615,7 @@ class SessionApiInfo(BaseModel):
     base_url: Optional[str] = Field(default=None, description="Base URL")
     connected: bool = Field(description="Whether API is reachable")
     from_config: bool = Field(description="Whether from config (vs session-added)")
-    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
     is_dynamic: bool = Field(default=False, description="Whether dynamically added (vs config)")
 
 
@@ -628,7 +628,7 @@ class SessionDocumentInfo(BaseModel):
     path: Optional[str] = Field(default=None, description="File path")
     indexed: bool = Field(description="Whether document is indexed")
     from_config: bool = Field(description="Whether from config (vs session-added)")
-    source: str = Field(default="config", description="Source: 'config', project filename, or 'session'")
+    source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
 
 
 class SessionDataSourcesResponse(BaseModel):
@@ -755,33 +755,45 @@ class ConfigResponse(BaseModel):
 
 
 # ============================================================================
-# Project Models
+# Domain Models
 # ============================================================================
 
 
-class ProjectInfo(BaseModel):
-    """Summary info for a project."""
+class DomainInfo(BaseModel):
+    """Summary info for a domain."""
 
-    filename: str = Field(description="Project YAML filename")
-    name: str = Field(description="Project display name")
-    description: str = Field(default="", description="Project description")
-
-
-class ProjectListResponse(BaseModel):
-    """List of available projects."""
-
-    projects: list[ProjectInfo] = Field(description="Available projects")
+    filename: str = Field(description="Domain YAML filename")
+    name: str = Field(description="Domain display name")
+    description: str = Field(default="", description="Domain description")
 
 
-class ProjectDetailResponse(BaseModel):
-    """Full project details."""
+# Backward compatibility alias
+ProjectInfo = DomainInfo
 
-    filename: str = Field(description="Project YAML filename")
-    name: str = Field(description="Project display name")
-    description: str = Field(default="", description="Project description")
-    databases: list[str] = Field(description="Database names in project")
-    apis: list[str] = Field(description="API names in project")
-    documents: list[str] = Field(description="Document names in project")
+
+class DomainListResponse(BaseModel):
+    """List of available domains."""
+
+    domains: list[DomainInfo] = Field(description="Available domains")
+
+
+# Backward compatibility alias
+ProjectListResponse = DomainListResponse
+
+
+class DomainDetailResponse(BaseModel):
+    """Full domain details."""
+
+    filename: str = Field(description="Domain YAML filename")
+    name: str = Field(description="Domain display name")
+    description: str = Field(default="", description="Domain description")
+    databases: list[str] = Field(description="Database names in domain")
+    apis: list[str] = Field(description="API names in domain")
+    documents: list[str] = Field(description="Document names in domain")
+
+
+# Backward compatibility alias
+ProjectDetailResponse = DomainDetailResponse
 
 
 # ============================================================================

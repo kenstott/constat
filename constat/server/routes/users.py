@@ -24,7 +24,7 @@ class PermissionsResponse(BaseModel):
     user_id: str
     email: str | None
     admin: bool
-    projects: list[str]
+    domains: list[str]
     databases: list[str]
     documents: list[str]
     apis: list[str]
@@ -48,7 +48,7 @@ async def get_my_permissions(
         user_id=perms.user_id,
         email=perms.email,
         admin=perms.admin,
-        projects=perms.projects,
+        domains=perms.domains,
         databases=perms.databases,
         documents=perms.documents,
         apis=perms.apis,

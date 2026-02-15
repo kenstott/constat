@@ -482,7 +482,7 @@ NOT_POSSIBLE: <reason>
                     conn = self.schema_manager.get_connection(db_name)
                     exec_globals[f"db_{db_name}"] = conn
 
-        # Also include dynamically added databases (from projects) not in config
+        # Also include dynamically added databases (from domains) not in config
         # SQL connections
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
@@ -522,7 +522,7 @@ NOT_POSSIBLE: <reason>
                         dialect = "duckdb"
                 source_hints.append(f"- {db_name} ({dialect}): use pd.read_sql(query, db_{db_name})")
 
-        # Add hints for dynamically added databases
+        # Add hints for dynamically added databases (from domains)
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
                 source_hints.append(f"- {db_name} (sql): use pd.read_sql(query, db_{db_name})")

@@ -11,6 +11,8 @@
 
 Provides storage for learnings (raw corrections) and rules (compacted patterns)
 that persist across sessions, stored in .constat/<user_id>/learnings.yaml.
+
+Storage uses map-based format (keyed by id) for O(1) lookups.
 """
 
 import re
@@ -51,12 +53,12 @@ class LearningSource(Enum):
 
 
 class LearningStore:
-    """Two-tier learning storage: raw learnings + compacted rules.
+    """Two-tier learning storage: raw corrections + compacted rules.
 
-    Storage structure:
+    Storage structure (map-based, keyed by id):
     ```yaml
-    raw_learnings:
-      - id: "learn_001"
+    corrections:
+      learn_001:
         category: "codegen_error"
         created: "2024-01-15T10:30:00Z"
         context: {...}
@@ -66,7 +68,7 @@ class LearningStore:
         promoted_to: null
 
     rules:
-      - id: "rule_001"
+      rule_001:
         category: "api_error"
         summary: "GraphQL APIs return data directly"
         confidence: 0.85
@@ -76,7 +78,7 @@ class LearningStore:
         created: "2024-01-20T14:00:00Z"
 
     archive:
-      - {...}  # Full learning records preserved after promotion
+      learn_001: {...}  # Full learning records preserved after promotion
     ```
     """
 
@@ -91,7 +93,18 @@ class LearningStore:
         self.user_id = user_id
         self.file_path = self.base_dir / user_id / "learnings.yaml"
         self._data: Optional[dict] = None
-        self._lock = threading.Lock()  # Thread-safe file access
+        self._lock = threading.RLock()  # Thread-safe file access (reentrant for _load -> _save)
+
+    @staticmethod
+    def _migrate_list_to_map(items: list) -> dict:
+        """Convert old list-based format to map-based format."""
+        result = {}
+        for item in items:
+            item_id = item.get("id")
+            if item_id:
+                entry = {k: v for k, v in item.items() if k != "id"}
+                result[item_id] = entry
+        return result
 
     def _load(self) -> dict:
         """Load learnings from YAML file (thread-safe)."""
@@ -104,19 +117,36 @@ class LearningStore:
                 return self._data
 
             if not self.file_path.exists():
-                self._data = {"raw_learnings": [], "rules": [], "archive": []}
+                self._data = {"corrections": {}, "rules": {}, "archive": {}}
                 return self._data
 
             with open(self.file_path, "r") as f:
                 self._data = yaml.safe_load(f) or {}
 
-            # Ensure all sections exist
-            if "raw_learnings" not in self._data:
-                self._data["raw_learnings"] = []
+            # Migrate old list-based format to map-based
+            migrated = False
+            if "raw_learnings" in self._data:
+                old_list = self._data.pop("raw_learnings")
+                if isinstance(old_list, list):
+                    self._data["corrections"] = self._migrate_list_to_map(old_list)
+                    migrated = True
+            if "rules" in self._data and isinstance(self._data["rules"], list):
+                self._data["rules"] = self._migrate_list_to_map(self._data["rules"])
+                migrated = True
+            if "archive" in self._data and isinstance(self._data["archive"], list):
+                self._data["archive"] = self._migrate_list_to_map(self._data["archive"])
+                migrated = True
+
+            # Ensure all sections exist as dicts
+            if "corrections" not in self._data:
+                self._data["corrections"] = {}
             if "rules" not in self._data:
-                self._data["rules"] = []
+                self._data["rules"] = {}
             if "archive" not in self._data:
-                self._data["archive"] = []
+                self._data["archive"] = {}
+
+            if migrated:
+                self._save()
 
             return self._data
 
@@ -133,7 +163,7 @@ class LearningStore:
         return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
     # -------------------------------------------------------------------------
-    # Raw Learnings (Tier 1)
+    # Raw Learnings / Corrections (Tier 1)
     # -------------------------------------------------------------------------
 
     def save_learning(
@@ -157,8 +187,7 @@ class LearningStore:
         data = self._load()
         learning_id = self._generate_id("learn")
 
-        learning = {
-            "id": learning_id,
+        data["corrections"][learning_id] = {
             "category": category.value,
             "created": datetime.now(timezone.utc).isoformat(),
             "context": context,
@@ -168,7 +197,6 @@ class LearningStore:
             "promoted_to": None,
         }
 
-        data["raw_learnings"].append(learning)
         self._save()
         return learning_id
 
@@ -179,16 +207,18 @@ class LearningStore:
             learning_id: Learning ID
 
         Returns:
-            Learning dict or None if not found
+            Learning dict (with 'id' included) or None if not found
         """
         data = self._load()
-        for learning in data["raw_learnings"]:
-            if learning["id"] == learning_id:
-                return learning.copy()
+        if learning_id in data["corrections"]:
+            result = data["corrections"][learning_id].copy()
+            result["id"] = learning_id
+            return result
         # Check archive too
-        for learning in data["archive"]:
-            if learning["id"] == learning_id:
-                return learning.copy()
+        if learning_id in data["archive"]:
+            result = data["archive"][learning_id].copy()
+            result["id"] = learning_id
+            return result
         return None
 
     def list_raw_learnings(
@@ -205,10 +235,14 @@ class LearningStore:
             include_promoted: Include learnings that have been promoted to rules
 
         Returns:
-            List of learning dicts, newest first
+            List of learning dicts (with 'id'), newest first
         """
         data = self._load()
-        learnings = data["raw_learnings"]
+        learnings = []
+        for lid, entry in data["corrections"].items():
+            item = entry.copy()
+            item["id"] = lid
+            learnings.append(item)
 
         # Filter by category
         if category:
@@ -220,7 +254,7 @@ class LearningStore:
 
         # Sort by created (newest first) and limit
         learnings = sorted(learnings, key=lambda l: l["created"], reverse=True)
-        return [l.copy() for l in learnings[:limit]]
+        return learnings[:limit]
 
     def delete_learning(self, learning_id: str) -> bool:
         """Delete a learning.
@@ -232,21 +266,19 @@ class LearningStore:
             True if deleted, False if not found
         """
         data = self._load()
-        for i, learning in enumerate(data["raw_learnings"]):
-            if learning["id"] == learning_id:
-                del data["raw_learnings"][i]
-                self._save()
-                return True
+        if learning_id in data["corrections"]:
+            del data["corrections"][learning_id]
+            self._save()
+            return True
         return False
 
     def increment_applied(self, learning_id: str) -> None:
         """Increment the applied count for a learning."""
         data = self._load()
-        for learning in data["raw_learnings"]:
-            if learning["id"] == learning_id:
-                learning["applied_count"] = learning.get("applied_count", 0) + 1
-                self._save()
-                return
+        if learning_id in data["corrections"]:
+            entry = data["corrections"][learning_id]
+            entry["applied_count"] = entry.get("applied_count", 0) + 1
+            self._save()
 
     # -------------------------------------------------------------------------
     # Rules (Tier 2)
@@ -275,8 +307,7 @@ class LearningStore:
         data = self._load()
         rule_id = self._generate_id("rule")
 
-        rule = {
-            "id": rule_id,
+        data["rules"][rule_id] = {
             "category": category.value,
             "summary": summary,
             "confidence": confidence,
@@ -286,7 +317,6 @@ class LearningStore:
             "created": datetime.now(timezone.utc).isoformat(),
         }
 
-        data["rules"].append(rule)
         self._save()
         return rule_id
 
@@ -304,10 +334,14 @@ class LearningStore:
             limit: Maximum number of rules to return (None for all)
 
         Returns:
-            List of rule dicts, highest confidence first
+            List of rule dicts (with 'id'), highest confidence first
         """
         data = self._load()
-        rules = data["rules"]
+        rules = []
+        for rid, entry in data["rules"].items():
+            item = entry.copy()
+            item["id"] = rid
+            rules.append(item)
 
         # Filter by category
         if category:
@@ -323,7 +357,7 @@ class LearningStore:
         if limit is not None:
             rules = rules[:limit]
 
-        return [r.copy() for r in rules]
+        return rules
 
     def get_relevant_rules(
         self,
@@ -371,11 +405,9 @@ class LearningStore:
     def increment_rule_applied(self, rule_id: str) -> None:
         """Increment the applied count for a rule."""
         data = self._load()
-        for rule in data["rules"]:
-            if rule["id"] == rule_id:
-                rule["applied_count"] = rule.get("applied_count", 0) + 1
-                self._save()
-                return
+        if rule_id in data["rules"]:
+            data["rules"][rule_id]["applied_count"] = data["rules"][rule_id].get("applied_count", 0) + 1
+            self._save()
 
     def update_rule(
         self,
@@ -396,18 +428,18 @@ class LearningStore:
             True if updated, False if rule not found
         """
         data = self._load()
-        for rule in data["rules"]:
-            if rule["id"] == rule_id:
-                if summary is not None:
-                    rule["summary"] = summary
-                if tags is not None:
-                    rule["tags"] = tags
-                if confidence is not None:
-                    rule["confidence"] = confidence
-                rule["updated_at"] = datetime.now(timezone.utc).isoformat()
-                self._save()
-                return True
-        return False
+        if rule_id not in data["rules"]:
+            return False
+        rule = data["rules"][rule_id]
+        if summary is not None:
+            rule["summary"] = summary
+        if tags is not None:
+            rule["tags"] = tags
+        if confidence is not None:
+            rule["confidence"] = confidence
+        rule["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._save()
+        return True
 
     def delete_rule(self, rule_id: str) -> bool:
         """Delete a rule.
@@ -419,11 +451,10 @@ class LearningStore:
             True if deleted, False if not found
         """
         data = self._load()
-        for i, rule in enumerate(data["rules"]):
-            if rule["id"] == rule_id:
-                del data["rules"][i]
-                self._save()
-                return True
+        if rule_id in data["rules"]:
+            del data["rules"][rule_id]
+            self._save()
+            return True
         return False
 
     # -------------------------------------------------------------------------
@@ -441,17 +472,14 @@ class LearningStore:
             True if archived, False if learning not found
         """
         data = self._load()
-        for i, learning in enumerate(data["raw_learnings"]):
-            if learning["id"] == learning_id:
-                # Mark as promoted
-                learning["promoted_to"] = rule_id
-                learning["archived_at"] = datetime.now(timezone.utc).isoformat()
-                # Move to archive
-                data["archive"].append(learning)
-                del data["raw_learnings"][i]
-                self._save()
-                return True
-        return False
+        if learning_id not in data["corrections"]:
+            return False
+        learning = data["corrections"].pop(learning_id)
+        learning["promoted_to"] = rule_id
+        learning["archived_at"] = datetime.now(timezone.utc).isoformat()
+        data["archive"][learning_id] = learning
+        self._save()
+        return True
 
     def list_archive(self, limit: int = 50) -> list[dict]:
         """List archived learnings.
@@ -460,15 +488,20 @@ class LearningStore:
             limit: Maximum number to return
 
         Returns:
-            List of archived learning dicts
+            List of archived learning dicts (with 'id')
         """
         data = self._load()
+        items = []
+        for aid, entry in data["archive"].items():
+            item = entry.copy()
+            item["id"] = aid
+            items.append(item)
         archive = sorted(
-            data["archive"],
+            items,
             key=lambda l: l.get("archived_at", l["created"]),
             reverse=True
         )
-        return [l.copy() for l in archive[:limit]]
+        return archive[:limit]
 
     # -------------------------------------------------------------------------
     # Stats
@@ -482,26 +515,26 @@ class LearningStore:
         """
         data = self._load()
 
-        raw = data["raw_learnings"]
+        corrections = data["corrections"]
         rules = data["rules"]
         archive = data["archive"]
 
         # Count by category
         raw_by_category = {}
-        for learning in raw:
-            cat = learning.get("category", "unknown")
+        for entry in corrections.values():
+            cat = entry.get("category", "unknown")
             raw_by_category[cat] = raw_by_category.get(cat, 0) + 1
 
         rules_by_category = {}
-        for rule in rules:
-            cat = rule.get("category", "unknown")
+        for entry in rules.values():
+            cat = entry.get("category", "unknown")
             rules_by_category[cat] = rules_by_category.get(cat, 0) + 1
 
         # Count unpromoted
-        unpromoted = len([l for l in raw if not l.get("promoted_to")])
+        unpromoted = sum(1 for entry in corrections.values() if not entry.get("promoted_to"))
 
         return {
-            "total_raw": len(raw),
+            "total_raw": len(corrections),
             "total_rules": len(rules),
             "total_archived": len(archive),
             "unpromoted": unpromoted,
@@ -517,10 +550,10 @@ class LearningStore:
         """
         data = self._load()
         counts = {
-            "raw_learnings": len(data["raw_learnings"]),
+            "corrections": len(data["corrections"]),
             "rules": len(data["rules"]),
             "archive": len(data["archive"]),
         }
-        self._data = {"raw_learnings": [], "rules": [], "archive": []}
+        self._data = {"corrections": {}, "rules": {}, "archive": {}}
         self._save()
         return counts

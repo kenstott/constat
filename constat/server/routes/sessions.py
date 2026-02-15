@@ -26,7 +26,7 @@ from constat.server.models import (
 )
 from constat.server.permissions import get_user_permissions
 from constat.server.session_manager import SessionManager, ManagedSession
-from constat.server.user_preferences import get_selected_projects, set_selected_projects
+from constat.server.user_preferences import get_selected_domains, set_selected_domains
 from constat.storage.history import SessionHistory
 
 logger = logging.getLogger(__name__)
@@ -84,56 +84,56 @@ def _session_to_response(managed: ManagedSession) -> SessionResponse:
         last_activity=managed.last_activity,
         current_query=managed.current_query,
         summary=summary,
-        active_projects=managed.active_projects,
+        active_domains=managed.active_domains,
         tables_count=tables_count,
         artifacts_count=artifacts_count,
     )
 
 
-def _load_projects_into_session(
+def _load_domains_into_session(
     managed: ManagedSession,
-    project_filenames: list[str],
+    domain_filenames: list[str],
 ) -> tuple[list[str], list[str]]:
-    """Load projects into a session (helper for create_session and set_active_projects).
+    """Load domains into a session (helper for create_session and set_active_domains).
 
     Args:
         managed: The managed session
-        project_filenames: List of project filenames to load
+        domain_filenames: List of domain filenames to load
 
     Returns:
         Tuple of (successfully_loaded, conflicts)
     """
-    if not project_filenames:
+    if not domain_filenames:
         return [], []
 
     config = managed.session.config
     conflicts = []
 
-    # Load all projects and check they exist
-    loaded_projects = []
-    logger.debug(f"[_load_projects] Loading projects: {project_filenames}")
-    logger.debug(f"[_load_projects] Available projects in config: {list(config.projects.keys())}")
-    for filename in project_filenames:
-        project = config.load_project(filename)
-        if not project:
-            logger.warning(f"Project not found when loading preferences: {filename} (available: {list(config.projects.keys())})")
+    # Load all domains and check they exist
+    loaded_domains = []
+    logger.debug(f"[_load_domains] Loading domains: {domain_filenames}")
+    logger.debug(f"[_load_domains] Available domains in config: {list(config.domains.keys())}")
+    for filename in domain_filenames:
+        domain = config.load_domain(filename)
+        if not domain:
+            logger.warning(f"Domain not found when loading preferences: {filename} (available: {list(config.domains.keys())})")
             continue
-        loaded_projects.append((filename, project))
-        logger.debug(f"[_load_projects] Loaded project: {filename} -> {project.name}")
+        loaded_domains.append((filename, domain))
+        logger.debug(f"[_load_domains] Loaded domain: {filename} -> {domain.name}")
 
-    if not loaded_projects:
+    if not loaded_domains:
         return [], []
 
-    # Check for conflicts: collect all names from config and projects
+    # Check for conflicts: collect all names from config and domains
     all_databases = {name: "config" for name in config.databases.keys()}
     all_apis = {name: "config" for name in config.apis.keys()}
     all_documents = {name: "config" for name in config.documents.keys()}
 
-    valid_projects = []
-    for filename, project in loaded_projects:
+    valid_domains = []
+    for filename, domain in loaded_domains:
         has_conflict = False
         # Check database conflicts
-        for name in project.databases.keys():
+        for name in domain.databases.keys():
             if name in all_databases:
                 conflicts.append(f"Database '{name}' conflicts: defined in {all_databases[name]} and {filename}")
                 has_conflict = True
@@ -141,7 +141,7 @@ def _load_projects_into_session(
                 all_databases[name] = filename
 
         # Check API conflicts
-        for name in project.apis.keys():
+        for name in domain.apis.keys():
             if name in all_apis:
                 conflicts.append(f"API '{name}' conflicts: defined in {all_apis[name]} and {filename}")
                 has_conflict = True
@@ -149,7 +149,7 @@ def _load_projects_into_session(
                 all_apis[name] = filename
 
         # Check document conflicts
-        for name in project.documents.keys():
+        for name in domain.documents.keys():
             if name in all_documents:
                 conflicts.append(f"Document '{name}' conflicts: defined in {all_documents[name]} and {filename}")
                 has_conflict = True
@@ -157,32 +157,32 @@ def _load_projects_into_session(
                 all_documents[name] = filename
 
         if not has_conflict:
-            valid_projects.append((filename, project))
+            valid_domains.append((filename, domain))
 
-    # Load valid project databases into the session
-    previously_loaded = getattr(managed, "_project_databases", set())
+    # Load valid domain databases into the session
+    previously_loaded = getattr(managed, "_domain_databases", set())
     newly_loaded = set()
 
-    # Phase 1: Load all databases from all projects
-    for filename, project in valid_projects:
-        for name, db_config in project.databases.items():
+    # Phase 1: Load all databases from all domains
+    for filename, domain in valid_domains:
+        for name, db_config in domain.databases.items():
             if name not in previously_loaded:
                 try:
                     if managed.session.schema_manager:
                         success = managed.session.schema_manager.add_database_dynamic(name, db_config)
                         if success:
                             newly_loaded.add(name)
-                            logger.info(f"Loaded project database: {name} from {filename}")
+                            logger.info(f"Loaded domain database: {name} from {filename}")
                 except Exception as e:
-                    logger.exception(f"Exception loading project database {name}: {e}")
+                    logger.exception(f"Exception loading domain database {name}: {e}")
             else:
                 newly_loaded.add(name)
 
-    # Phase 2: Documents are already indexed during server warmup with project_id
+    # Phase 2: Documents are already indexed during server warmup with domain_id
     # No need to re-index here - just log what's available
-    for filename, project in valid_projects:
-        if project.documents:
-            logger.info(f"Project {filename}: {len(project.documents)} documents available (pre-indexed during warmup)")
+    for filename, domain in valid_domains:
+        if domain.documents:
+            logger.info(f"Domain {filename}: {len(domain.documents)} documents available (pre-indexed during warmup)")
 
     # Phase 3: Update schema entities and process metadata through NER (once, with all entities)
     if managed.session.schema_manager and newly_loaded:
@@ -198,41 +198,41 @@ def _load_projects_into_session(
 
         logger.info(f"Updated doc_tools schema entities: {len(schema_entities)} entities")
 
-    # Register project APIs
-    for filename, project in valid_projects:
-        for api_name, api_config in project.apis.items():
-            managed.session.add_project_api(api_name, api_config)
-            logger.info(f"Registered project API: {api_name} from {filename}")
+    # Register domain APIs
+    for filename, domain in valid_domains:
+        for api_name, api_config in domain.apis.items():
+            managed.session.add_domain_api(api_name, api_config)
+            logger.info(f"Registered domain API: {api_name} from {filename}")
 
     # Register resources in consolidated SessionResources
-    for filename, project in valid_projects:
-        managed.session.add_project_resources(
-            project_filename=filename,
-            databases=project.databases,
-            apis=project.apis,
-            documents=project.documents,
+    for filename, domain in valid_domains:
+        managed.session.add_domain_resources(
+            domain_filename=filename,
+            databases=domain.databases,
+            apis=domain.apis,
+            documents=domain.documents,
         )
-        logger.info(f"Registered project resources from {filename}")
+        logger.info(f"Registered domain resources from {filename}")
 
-    # Register project skills directories
-    for filename, project in valid_projects:
-        if project.source_path:
-            project_skills_dir = Path(project.source_path).parent / "skills"
-            managed.session.skill_manager.add_project_skills(project_skills_dir)
+    # Register domain skills directories
+    for filename, domain in valid_domains:
+        if domain.source_path:
+            domain_skills_dir = Path(domain.source_path).parent / "skills"
+            managed.session.skill_manager.add_domain_skills(domain_skills_dir)
 
     # Sync resources to session history (session.json)
     managed.session.sync_resources_to_history()
 
     # Store state
-    managed._project_databases = newly_loaded
-    managed.active_projects = [fn for fn, _ in valid_projects]
+    managed._domain_databases = newly_loaded
+    managed.active_domains = [fn for fn, _ in valid_domains]
 
-    # Update doc_tools with active project IDs for automatic search filtering
+    # Update doc_tools with active domain IDs for automatic search filtering
     if managed.session.doc_tools:
-        managed.session.doc_tools._active_project_ids = managed.active_projects
-        logger.debug(f"Set doc_tools._active_project_ids: {managed.active_projects}")
+        managed.session.doc_tools._active_domain_ids = managed.active_domains
+        logger.debug(f"Set doc_tools._active_domain_ids: {managed.active_domains}")
 
-    return managed.active_projects, conflicts
+    return managed.active_domains, conflicts
 
 
 @router.post("", response_model=SessionResponse)
@@ -247,7 +247,7 @@ async def create_session(
     to that session. Otherwise, creates a new session with that ID.
 
     When auth is disabled, uses "default" user or the user_id from request body.
-    Automatically loads projects from user preferences if creating a new session.
+    Automatically loads domains from user preferences if creating a new session.
 
     Returns:
         Session details including the session ID
@@ -272,21 +272,21 @@ async def create_session(
     managed = session_manager.get_session(session_id)
     logger.debug(f"[create_session] got managed session")
 
-    # Load preferred projects from user preferences (only for new sessions)
-    preferred_projects = get_selected_projects(effective_user_id)
-    logger.info(f"[create_session] preferred_projects from preferences: {preferred_projects}")
-    if preferred_projects:
-        logger.info(f"Loading {len(preferred_projects)} preferred projects for user {effective_user_id}")
-        loaded, conflicts = _load_projects_into_session(managed, preferred_projects)
-        logger.info(f"[create_session] after _load_projects_into_session: loaded={loaded}, conflicts={conflicts}, active_projects={managed.active_projects}")
+    # Load preferred domains from user preferences (only for new sessions)
+    preferred_domains = get_selected_domains(effective_user_id)
+    logger.info(f"[create_session] preferred_domains from preferences: {preferred_domains}")
+    if preferred_domains:
+        logger.info(f"Loading {len(preferred_domains)} preferred domains for user {effective_user_id}")
+        loaded, conflicts = _load_domains_into_session(managed, preferred_domains)
+        logger.info(f"[create_session] after _load_domains_into_session: loaded={loaded}, conflicts={conflicts}, active_domains={managed.active_domains}")
         if conflicts:
-            logger.warning(f"Project conflicts when loading preferences: {conflicts}")
+            logger.warning(f"Domain conflicts when loading preferences: {conflicts}")
         if loaded:
-            logger.info(f"Loaded preferred projects: {loaded}")
-            # Run NER for newly loaded project documents
+            logger.info(f"Loaded preferred domains: {loaded}")
+            # Run NER for newly loaded domain documents
             session_manager._run_entity_extraction(session_id, managed.session)
     else:
-        logger.info(f"[create_session] No preferred projects found for user {effective_user_id}")
+        logger.info(f"[create_session] No preferred domains found for user {effective_user_id}")
 
     return _session_to_response(managed)
 
@@ -409,26 +409,26 @@ async def delete_session(
     }
 
 
-@router.post("/{session_id}/projects")
-async def set_active_projects(
+@router.post("/{session_id}/domains")
+async def set_active_domains(
     session_id: str,
     body: dict,
     user_id: CurrentUserId,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
-    """Set the active projects for a session.
+    """Set the active domains for a session.
 
-    Projects define collections of databases, APIs, and documents.
-    Setting projects merges those sources with the session's data sources.
+    Domains define collections of databases, APIs, and documents.
+    Setting domains merges those sources with the session's data sources.
     Also saves the selection to user preferences for future sessions.
 
     Incrementally manages entities:
-    - Removed projects: Clear their entities from the session
-    - Added projects: Extract entities for their chunks
+    - Removed domains: Clear their entities from the session
+    - Added domains: Extract entities for their chunks
 
     Args:
         session_id: Session ID
-        body: Dict with 'projects' list of filenames (or empty to clear)
+        body: Dict with 'domains' list of filenames (or empty to clear)
         user_id: Authenticated user ID
         session_manager: Injected session manager
 
@@ -436,28 +436,28 @@ async def set_active_projects(
         Updated session info with any conflicts detected
 
     Raises:
-        404: Session or project not found
-        409: Conflict detected between projects or config
+        404: Session or domain not found
+        409: Conflict detected between domains or config
     """
     managed = session_manager.get_session(session_id)
-    project_filenames = body.get("projects", [])
+    domain_filenames = body.get("domains", body.get("projects", []))
 
     # noinspection PyTypeChecker
-    if not isinstance(project_filenames, list):
-        project_filenames = [project_filenames] if project_filenames else []
+    if not isinstance(domain_filenames, list):
+        domain_filenames = [domain_filenames] if domain_filenames else []
 
-    # Verify all projects exist before loading
+    # Verify all domains exist before loading
     config = managed.session.config
-    for filename in project_filenames:
-        project = config.load_project(filename)  # type: ignore[arg-type]
-        if not project:
-            raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+    for filename in domain_filenames:
+        domain = config.load_domain(filename)  # type: ignore[arg-type]
+        if not domain:
+            raise HTTPException(status_code=404, detail=f"Domain not found: {filename}")
 
-    # Determine which projects are being added vs removed
-    old_projects = set(managed.active_projects or [])
-    new_projects = set(project_filenames)
+    # Determine which domains are being added vs removed
+    old_domains = set(managed.active_domains or [])
+    new_domains = set(domain_filenames)
 
-    logger.info(f"Session {session_id}: projects changing - removed={old_projects - new_projects}, added={new_projects - old_projects}")
+    logger.info(f"Session {session_id}: domains changing - removed={old_domains - new_domains}, added={new_domains - old_domains}")
 
     # Use EntityManager for incremental entity updates
     vector_store = managed.session.doc_tools._vector_store if managed.session.doc_tools else None
@@ -467,18 +467,18 @@ async def set_active_projects(
             schema_terms_provider=lambda: managed.session.schema_manager.get_entity_names() if managed.session.schema_manager else [],
             api_terms_provider=lambda: managed.session._get_api_entity_names() if hasattr(managed.session, '_get_api_entity_names') else [],
         )
-        result = entity_manager.update_projects(session_id, old_projects, new_projects)
+        result = entity_manager.update_domains(session_id, old_domains, new_domains)
         if result.error:
             logger.warning(f"Entity update errors: {result.error}")
         logger.info(f"Session {session_id}: entity update - added={result.entities_added}, removed={result.entities_removed}")
 
-    # Clear existing project state before loading new projects
-    managed.session.clear_project_apis()
-    managed._project_databases = set()
-    managed.active_projects = []
+    # Clear existing domain state before loading new domains
+    managed.session.clear_domain_apis()
+    managed._domain_databases = set()
+    managed.active_domains = []
 
-    # Load projects using helper
-    loaded, conflicts = _load_projects_into_session(managed, project_filenames)
+    # Load domains using helper
+    loaded, conflicts = _load_domains_into_session(managed, domain_filenames)
 
     if conflicts:
         raise HTTPException(
@@ -491,13 +491,13 @@ async def set_active_projects(
 
     # Save to user preferences for future sessions
     effective_user_id = user_id if user_id != "default" else managed.user_id
-    set_selected_projects(effective_user_id, project_filenames)
-    logger.info(f"Saved project preferences for user {effective_user_id}: {project_filenames}")
+    set_selected_domains(effective_user_id, domain_filenames)
+    logger.info(f"Saved domain preferences for user {effective_user_id}: {domain_filenames}")
 
     return {
         "status": "ok",
         "session_id": session_id,
-        "active_projects": managed.active_projects,
+        "active_domains": managed.active_domains,
     }
 
 
@@ -631,7 +631,7 @@ async def reset_context(
 
     Clears session-level state while preserving user-level settings:
     - Clears: session facts, conversation history, plan context
-    - Keeps: data sources, projects, learnings, permanent facts
+    - Keeps: data sources, domains, learnings, permanent facts
 
     Args:
         session_id: Session ID

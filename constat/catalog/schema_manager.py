@@ -267,7 +267,7 @@ class SchemaManager:
     def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig) -> bool:
         """Dynamically add and introspect a database after initialization.
 
-        This allows adding project databases at runtime without reinitializing
+        This allows adding domain databases at runtime without reinitializing
         the entire schema manager.
 
         Args:

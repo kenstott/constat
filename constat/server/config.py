@@ -31,10 +31,21 @@ class UserPermissions(BaseModel):
         default=False,
         description="Whether user has admin access (full access to everything)",
     )
-    projects: list[str] = Field(
+    domains: list[str] = Field(
         default_factory=list,
-        description="Project filenames user can access (empty = none, unless admin)",
+        description="Domain filenames user can access (empty = none, unless admin)",
     )
+
+    @property
+    def projects(self) -> list[str]:
+        """Backwards compatibility alias for domains."""
+        return self.domains
+
+    @projects.setter
+    def projects(self, value: list[str]) -> None:
+        """Backwards compatibility alias for domains."""
+        self.domains = value
+
     databases: list[str] = Field(
         default_factory=list,
         description="Database names user can query (empty = none, unless admin)",

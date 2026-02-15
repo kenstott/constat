@@ -127,7 +127,7 @@ def _gather_source_configs(managed) -> tuple[list[dict], list[dict]]:
                 databases.append({"name": name, "uri": db_config.uri or ""})
                 seen_db_names.add(name)
 
-    # Include dynamically added databases (from projects) not in base config
+    # Include dynamically added databases (from domains) not in base config
     if managed and hasattr(managed.session, 'schema_manager'):
         from constat.catalog.sql_transpiler import TranspilingConnection
         for name, conn in managed.session.schema_manager.connections.items():

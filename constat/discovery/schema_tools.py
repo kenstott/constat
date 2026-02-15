@@ -367,6 +367,8 @@ class SchemaDiscoveryTools:
             "tables": [],
             "apis": [],
             "documents": [],
+            "glossary": [],
+            "relationships": [],
         }
 
         # Calculate per-source limits (distribute evenly, favor tables)
@@ -423,13 +425,53 @@ class SchemaDiscoveryTools:
             except Exception:
                 pass  # Continue even if doc search fails
 
+        # 4. Search glossary chunks via vector store if available
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.doc_tools._vector_store:
+            try:
+                from constat.discovery.models import ChunkType
+                glossary_results = self.doc_tools._vector_store.search(
+                    query, top_k=per_source_limit,
+                    chunk_types=[ChunkType.GLOSSARY_TERM],
+                )
+                for r in glossary_results:
+                    results["glossary"].append({
+                        "type": "glossary_term",
+                        "name": r.get("document_name", ""),
+                        "definition": r.get("content", "")[:300],
+                        "relevance": round(r.get("similarity", 0), 3),
+                    })
+            except Exception:
+                pass
+
+        # 5. Search relationship chunks via vector store if available
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.doc_tools._vector_store:
+            try:
+                from constat.discovery.models import ChunkType
+                rel_results = self.doc_tools._vector_store.search(
+                    query, top_k=per_source_limit,
+                    chunk_types=[ChunkType.RELATIONSHIP],
+                )
+                for r in rel_results:
+                    results["relationships"].append({
+                        "type": "relationship",
+                        "name": r.get("document_name", ""),
+                        "definition": r.get("content", "")[:300],
+                        "relevance": round(r.get("similarity", 0), 3),
+                    })
+            except Exception:
+                pass
+
         # Add summary
         # noinspection PyTypeChecker
         results["summary"] = {
             "tables_found": len(results["tables"]),
             "apis_found": len(results["apis"]),
             "documents_found": len(results["documents"]),
-            "total": len(results["tables"]) + len(results["apis"]) + len(results["documents"]),
+            "glossary_found": len(results["glossary"]),
+            "relationships_found": len(results["relationships"]),
+            "total": (len(results["tables"]) + len(results["apis"]) +
+                      len(results["documents"]) + len(results["glossary"]) +
+                      len(results["relationships"])),
         }
 
         return results

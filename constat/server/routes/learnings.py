@@ -22,12 +22,12 @@ from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
 from constat.server.models import (
     ConfigResponse,
+    DomainDetailResponse,
+    DomainInfo,
+    DomainListResponse,
     LearningCreateRequest,
     LearningInfo,
     LearningListResponse,
-    ProjectDetailResponse,
-    ProjectInfo,
-    ProjectListResponse,
     RuleCreateRequest,
     RuleInfo,
     RuleUpdateRequest,
@@ -311,107 +311,107 @@ async def get_config_sanitized(
 
 
 # ============================================================================
-# Project Endpoints
+# Domain Endpoints
 # ============================================================================
 
 
-@router.get("/projects", response_model=ProjectListResponse)
-async def list_projects(
+@router.get("/domains", response_model=DomainListResponse)
+async def list_domains(
     config: Config = Depends(get_config),
-) -> ProjectListResponse:
-    """List available projects from the projects directory.
+) -> DomainListResponse:
+    """List available domains from the domains directory.
 
-    Projects are YAML files defining reusable collections of databases,
-    APIs, and documents. The projects_path in config determines where
-    to look for project files.
+    Domains are YAML files defining reusable collections of databases,
+    APIs, and documents. The domains_path in config determines where
+    to look for domain files.
 
     Returns:
-        List of available projects
+        List of available domains
     """
-    project_infos = config.list_projects()
-    return ProjectListResponse(
-        projects=[ProjectInfo(**p) for p in project_infos]
+    domain_infos = config.list_domains()
+    return DomainListResponse(
+        domains=[DomainInfo(**p) for p in domain_infos]
     )
 
 
-@router.get("/projects/{filename}", response_model=ProjectDetailResponse)
-async def get_project(
+@router.get("/domains/{filename}", response_model=DomainDetailResponse)
+async def get_domain(
     filename: str,
     config: Config = Depends(get_config),
-) -> ProjectDetailResponse:
-    """Get details for a specific project.
+) -> DomainDetailResponse:
+    """Get details for a specific domain.
 
     Args:
-        filename: Project YAML filename (e.g., 'sales-analytics.yaml')
+        filename: Domain YAML filename (e.g., 'sales-analytics.yaml')
         config: Injected application config
 
     Returns:
-        Project details including data source names
+        Domain details including data source names
 
     Raises:
-        404: Project not found
+        404: Domain not found
     """
-    project = config.load_project(filename)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+    domain = config.load_domain(filename)
+    if not domain:
+        raise HTTPException(status_code=404, detail=f"Domain not found: {filename}")
 
-    return ProjectDetailResponse(
+    return DomainDetailResponse(
         filename=filename,
-        name=project.name,
-        description=project.description,
-        databases=list(project.databases.keys()),
-        apis=list(project.apis.keys()),
-        documents=list(project.documents.keys()),
+        name=domain.name,
+        description=domain.description,
+        databases=list(domain.databases.keys()),
+        apis=list(domain.apis.keys()),
+        documents=list(domain.documents.keys()),
     )
 
 
-@router.get("/projects/{filename}/content")
-async def get_project_content(
+@router.get("/domains/{filename}/content")
+async def get_domain_content(
     filename: str,
     config: Config = Depends(get_config),
 ) -> dict:
-    """Get the raw YAML content of a project file.
+    """Get the raw YAML content of a domain file.
 
     Args:
-        filename: Project YAML filename
+        filename: Domain YAML filename
         config: Injected application config
 
     Returns:
         Dict with 'content' (YAML string) and 'path' (full file path)
 
     Raises:
-        404: Project not found
+        404: Domain not found
     """
     # noinspection DuplicatedCode
-    project = config.load_project(filename)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+    domain = config.load_domain(filename)
+    if not domain:
+        raise HTTPException(status_code=404, detail=f"Domain not found: {filename}")
 
-    if not project.source_path:
-        raise HTTPException(status_code=400, detail="Project has no source path (inline config)")
+    if not domain.source_path:
+        raise HTTPException(status_code=400, detail="Domain has no source path (inline config)")
 
-    project_path = Path(project.source_path)
-    if not project_path.exists():
-        raise HTTPException(status_code=404, detail=f"Project file not found: {project_path}")
+    domain_path = Path(domain.source_path)
+    if not domain_path.exists():
+        raise HTTPException(status_code=404, detail=f"Domain file not found: {domain_path}")
 
-    content = project_path.read_text()
+    content = domain_path.read_text()
     return {
         "content": content,
-        "path": str(project_path),
+        "path": str(domain_path),
         "filename": filename,
     }
 
 
-@router.put("/projects/{filename}/content")
-async def update_project_content(
+@router.put("/domains/{filename}/content")
+async def update_domain_content(
     filename: str,
     body: dict,
     config: Config = Depends(get_config),
 ) -> dict:
-    """Update the YAML content of a project file.
+    """Update the YAML content of a domain file.
 
     Args:
-        filename: Project YAML filename
+        filename: Domain YAML filename
         body: Dict with 'content' (new YAML string)
         config: Injected application config
 
@@ -419,20 +419,20 @@ async def update_project_content(
         Status confirmation
 
     Raises:
-        404: Project not found
+        404: Domain not found
         400: Invalid YAML
     """
     # noinspection DuplicatedCode
-    project = config.load_project(filename)
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project not found: {filename}")
+    domain = config.load_domain(filename)
+    if not domain:
+        raise HTTPException(status_code=404, detail=f"Domain not found: {filename}")
 
-    if not project.source_path:
-        raise HTTPException(status_code=400, detail="Project has no source path (inline config)")
+    if not domain.source_path:
+        raise HTTPException(status_code=400, detail="Domain has no source path (inline config)")
 
-    project_path = Path(project.source_path)
-    if not project_path.exists():
-        raise HTTPException(status_code=404, detail=f"Project file not found: {project_path}")
+    domain_path = Path(domain.source_path)
+    if not domain_path.exists():
+        raise HTTPException(status_code=404, detail=f"Domain file not found: {domain_path}")
 
     content = body.get("content")
     if not content:
@@ -446,12 +446,12 @@ async def update_project_content(
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
     # Write the file
-    project_path.write_text(content)
+    domain_path.write_text(content)
 
     return {
         "status": "saved",
         "filename": filename,
-        "path": str(project_path),
+        "path": str(domain_path),
     }
 
 

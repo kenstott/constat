@@ -41,6 +41,10 @@ class ChunkType(str, Enum):
     # Documents
     DOCUMENT = "document"
 
+    # Glossary & Relationships
+    GLOSSARY_TERM = "glossary_term"
+    RELATIONSHIP = "relationship"
+
 
 def singularize(word: str) -> str:
     """Convert a word to its singular form.
@@ -343,7 +347,7 @@ class Entity:
         semantic_type: Linguistic role (CONCEPT, ATTRIBUTE, ACTION, TERM)
         ner_type: spaCy NER type (ORG, PERSON, etc.) or None for schema/API patterns
         session_id: Session that owns this entity (required)
-        project_id: Project this entity came from
+        domain_id: Domain this entity came from
     """
     id: str
     name: str  # Normalized: lowercase, singular
@@ -351,7 +355,7 @@ class Entity:
     semantic_type: str  # SemanticType value
     session_id: str
     ner_type: Optional[str] = None  # NerType value or None
-    project_id: Optional[str] = None
+    domain_id: Optional[str] = None
     created_at: Optional[datetime] = None
 
     # Backwards compatibility: expose 'type' as alias for semantic_type

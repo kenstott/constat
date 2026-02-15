@@ -284,7 +284,7 @@ class QueryEngine:
                 if first_sql_db is None:
                     first_sql_db = conn
 
-        # Also include dynamically added databases (from projects) not in config
+        # Also include dynamically added databases (from domains) not in config
         # SQL connections
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:

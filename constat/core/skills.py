@@ -128,11 +128,11 @@ class Skill:
 
 
 class SkillManager:
-    """Manages skills loaded from system, project, and user directories.
+    """Manages skills loaded from system, domain, and user directories.
 
     Precedence order (later overrides earlier by name):
         1. System:  {config_dir}/skills/  (alongside config.yaml)
-        2. Project: {project_dir}/skills/ (for each active project)
+        2. Domain: {domain_dir}/skills/ (for each active domain)
         3. User:    {base_dir}/{user_id}/skills/
     """
 
@@ -149,7 +149,7 @@ class SkillManager:
         self._base_dir = base_dir or Path(".constat")
         self._skills_dir = get_skills_dir(user_id, self._base_dir)
         self._system_skills_dir = system_skills_dir
-        self._project_skill_dirs: list[Path] = []
+        self._domain_skill_dirs: list[Path] = []
         self._skills: dict[str, Skill] = {}
         self._active_skills: set[str] = set()
         self._ensure_skills_dir()
@@ -216,7 +216,7 @@ class SkillManager:
     def _load_skills(self) -> None:
         """Load skills from all directories in precedence order.
 
-        System < project < user (last wins).
+        System < domain < user (last wins).
         """
         self._skills.clear()
 
@@ -224,29 +224,29 @@ class SkillManager:
         if self._system_skills_dir:
             self._load_skills_from_dir(self._system_skills_dir, "system")
 
-        # 2. Active project skill dirs
-        for project_dir in self._project_skill_dirs:
-            self._load_skills_from_dir(project_dir, "project")
+        # 2. Active domain skill dirs
+        for domain_dir in self._domain_skill_dirs:
+            self._load_skills_from_dir(domain_dir, "domain")
 
         # 3. User skills (highest precedence)
         self._load_skills_from_dir(self._skills_dir, "user")
 
-        logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, projects={len(self._project_skill_dirs)}, user={self._skills_dir})")
+        logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, domains={len(self._domain_skill_dirs)}, user={self._skills_dir})")
 
-    def add_project_skills(self, project_dir: Path) -> None:
-        """Add a project skills directory and reload.
+    def add_domain_skills(self, domain_dir: Path) -> None:
+        """Add a domain skills directory and reload.
 
         Args:
-            project_dir: Path to the project's skills/ directory.
+            domain_dir: Path to the domain's skills/ directory.
         """
-        if project_dir not in self._project_skill_dirs:
-            self._project_skill_dirs.append(project_dir)
+        if domain_dir not in self._domain_skill_dirs:
+            self._domain_skill_dirs.append(domain_dir)
             self._load_skills()
 
-    def remove_project_skills(self, project_dir: Path) -> None:
-        """Remove a project skills directory and reload."""
-        if project_dir in self._project_skill_dirs:
-            self._project_skill_dirs.remove(project_dir)
+    def remove_domain_skills(self, domain_dir: Path) -> None:
+        """Remove a domain skills directory and reload."""
+        if domain_dir in self._domain_skill_dirs:
+            self._domain_skill_dirs.remove(domain_dir)
             self._load_skills()
 
     def reload(self) -> None:
@@ -344,9 +344,9 @@ class SkillManager:
         skill = self._skills.get(name)
         if not skill:
             return None
-        # Search in reverse precedence: user > project > system (first match wins)
+        # Search in reverse precedence: user > domain > system (first match wins)
         search_dirs = [self._skills_dir]
-        search_dirs.extend(reversed(self._project_skill_dirs))
+        search_dirs.extend(reversed(self._domain_skill_dirs))
         if self._system_skills_dir:
             search_dirs.append(self._system_skills_dir)
         for search_dir in search_dirs:

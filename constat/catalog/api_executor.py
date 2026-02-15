@@ -123,7 +123,7 @@ class APIExecutor:
         self,
         config: Config,
         timeout: float = 30.0,
-        project_apis: Optional[dict[str, APIConfig]] = None,
+        domain_apis: Optional[dict[str, APIConfig]] = None,
     ):
         """
         Initialize the API executor.
@@ -131,11 +131,11 @@ class APIExecutor:
         Args:
             config: Configuration containing API definitions
             timeout: Request timeout in seconds
-            project_apis: Additional APIs from active projects
+            domain_apis: Additional APIs from active domains
         """
         self.config = config
         self.timeout = timeout
-        self._project_apis = project_apis or {}
+        self._domain_apis = domain_apis or {}
         self._client: Optional[httpx.Client] = None
 
     @property
@@ -158,16 +158,16 @@ class APIExecutor:
         self.close()
 
     def _get_api_config(self, api_name: str) -> APIConfig:
-        """Get API config by name (checks config.apis and project_apis)."""
+        """Get API config by name (checks config.apis and domain_apis)."""
         # Check config.apis first
         if self.config.apis and api_name in self.config.apis:
             return self.config.apis[api_name]
-        # Check project APIs
-        if api_name in self._project_apis:
-            return self._project_apis[api_name]
+        # Check domain APIs
+        if api_name in self._domain_apis:
+            return self._domain_apis[api_name]
         # Not found
         available = list(self.config.apis.keys()) if self.config.apis else []
-        available.extend(self._project_apis.keys())
+        available.extend(self._domain_apis.keys())
         raise APIExecutionError(
             f"API '{api_name}' not found. Available APIs: {available}"
         )

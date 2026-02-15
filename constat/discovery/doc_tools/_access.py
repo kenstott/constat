@@ -152,11 +152,11 @@ class _AccessMixin:
             # Try base config documents first
             doc_config = self.config.documents.get(parent_name)
 
-            # Try project documents if not in base
+            # Try domain documents if not in base
             if not doc_config:
-                for project in self.config.projects.values():
-                    if project.documents and parent_name in project.documents:
-                        doc_config = project.documents[parent_name]
+                for domain in self.config.domains.values():
+                    if domain.documents and parent_name in domain.documents:
+                        doc_config = domain.documents[parent_name]
                         break
 
             if not doc_config:
@@ -193,11 +193,11 @@ class _AccessMixin:
             # Try base config documents
             doc_config = self.config.documents.get(name)
 
-            # Try project documents if not in base
+            # Try domain documents if not in base
             if not doc_config:
-                for proj_name, project in self.config.projects.items():
-                    if project.documents and name in project.documents:
-                        doc_config = project.documents[name]
+                for domain_name, domain in self.config.domains.items():
+                    if domain.documents and name in domain.documents:
+                        doc_config = domain.documents[name]
                         break
 
             # Fallback: reconstruct from vector store chunks
@@ -288,7 +288,7 @@ class _AccessMixin:
         """
         Search across all documents for relevant content using semantic search.
 
-        Uses this instance's active_project_ids (set when projects are loaded into the session).
+        Uses this instance's active_domain_ids (set when domains are loaded into the session).
 
         Args:
             query: Natural language query
@@ -312,7 +312,7 @@ class _AccessMixin:
             search_results = self._vector_store.search(
                 query_embedding,
                 limit=limit,
-                project_ids=self._active_project_ids,
+                domain_ids=self._active_domain_ids,
                 session_id=session_id,
             )
 
@@ -343,7 +343,7 @@ class _AccessMixin:
         Like search_documents, but includes entities mentioned in each chunk.
         Useful for understanding what concepts are discussed in relevant chunks.
 
-        Uses this instance's active_project_ids (set when projects are loaded into the session).
+        Uses this instance's active_domain_ids (set when domains are loaded into the session).
 
         Args:
             query: Natural language query
@@ -364,7 +364,7 @@ class _AccessMixin:
                 enriched_results = self._vector_store.search_enriched(
                     query_embedding,
                     limit=limit,
-                    project_ids=self._active_project_ids,
+                    domain_ids=self._active_domain_ids,
                     session_id=session_id,
                 )
 
@@ -396,7 +396,7 @@ class _AccessMixin:
         Use when the LLM notices a relevant entity and wants more context.
         Returns chunks ordered by relevance (mention count, recency).
 
-        Uses this instance's active_project_ids (set when projects are loaded into the session).
+        Uses this instance's active_domain_ids (set when domains are loaded into the session).
 
         This is designed to be exposed as an LLM tool:
         {
@@ -424,14 +424,14 @@ class _AccessMixin:
         if not hasattr(self._vector_store, 'find_entity_by_name'):
             return []
 
-        entity = self._vector_store.find_entity_by_name(entity_name, project_ids=self._active_project_ids, session_id=session_id)
+        entity = self._vector_store.find_entity_by_name(entity_name, domain_ids=self._active_domain_ids, session_id=session_id)
         if not entity:
             return []
 
         chunks = self._vector_store.get_chunks_for_entity(
             entity.id,
             limit=limit,
-            project_ids=self._active_project_ids,
+            domain_ids=self._active_domain_ids,
             session_id=session_id,
         )
 

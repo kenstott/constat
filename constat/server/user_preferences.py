@@ -6,7 +6,7 @@
 """User preferences management.
 
 Stores user preferences in .constat/{user_id}/preferences.yaml including:
-- selected_projects: List of project IDs to auto-select on session create
+- selected_domains: List of domain IDs to auto-select on session create
 - Other preferences can be added here in the future
 """
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Default preferences for new users
 DEFAULT_PREFERENCES = {
-    "selected_projects": [],
+    "selected_domains": [],
 }
 
 
@@ -83,32 +83,40 @@ def save_user_preferences(user_id: str, preferences: dict[str, Any]) -> bool:
         return False
 
 
-def get_selected_projects(user_id: str) -> list[str]:
-    """Get the user's selected projects.
+def get_selected_domains(user_id: str) -> list[str]:
+    """Get the user's selected domains.
 
     Args:
         user_id: The user's ID
 
     Returns:
-        List of project IDs that should be pre-selected
+        List of domain IDs that should be pre-selected
     """
     prefs = load_user_preferences(user_id)
-    return prefs.get("selected_projects", [])
+    return prefs.get("selected_domains", [])
 
 
-def set_selected_projects(user_id: str, project_ids: list[str]) -> bool:
-    """Set the user's selected projects.
+# Backwards compatibility alias
+get_selected_projects = get_selected_domains
+
+
+def set_selected_domains(user_id: str, domain_ids: list[str]) -> bool:
+    """Set the user's selected domains.
 
     Args:
         user_id: The user's ID
-        project_ids: List of project IDs to save as selected
+        domain_ids: List of domain IDs to save as selected
 
     Returns:
         True if saved successfully, False otherwise
     """
     prefs = load_user_preferences(user_id)
-    prefs["selected_projects"] = project_ids
+    prefs["selected_domains"] = domain_ids
     return save_user_preferences(user_id, prefs)
+
+
+# Backwards compatibility alias
+set_selected_projects = set_selected_domains
 
 
 def update_preference(user_id: str, key: str, value: Any) -> bool:

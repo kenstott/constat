@@ -103,9 +103,10 @@ class _EntityMixin:
     def extract_entities_for_session(
         self,
         session_id: str,
-        project_ids: list[str],
+        domain_ids: list[str],
         schema_entities: list[str],
         api_entities: list[str] | None = None,
+        business_terms: list[str] | None = None,
     ) -> int:
         """Run entity extraction for a session's visible documents.
 
@@ -114,9 +115,10 @@ class _EntityMixin:
 
         Args:
             session_id: Session ID for storing links
-            project_ids: List of loaded project IDs
+            domain_ids: List of loaded domain IDs
             schema_entities: Schema entity names (tables, columns)
             api_entities: API entity names (endpoints, schemas)
+            business_terms: Glossary/relationship terms for NER
 
         Returns:
             Number of chunk-entity links created
@@ -133,19 +135,19 @@ class _EntityMixin:
             # noinspection PyAttributeOutsideInit
             self._openapi_schemas = api_entities
 
-        # Get chunks visible to this session (base + projects)
-        # Base chunks have project_id='__base__' or NULL
-        # Project chunks have project_id in project_ids
-        logger.info(f"extract_entities_for_session({session_id}): looking for chunks with project_ids={project_ids}")
-        chunks = self._get_session_visible_chunks(project_ids)
+        # Get chunks visible to this session (base + domains)
+        # Base chunks have domain_id='__base__' or NULL
+        # Domain chunks have domain_id in domain_ids
+        logger.info(f"extract_entities_for_session({session_id}): looking for chunks with domain_ids={domain_ids}")
+        chunks = self._get_session_visible_chunks(domain_ids)
         if not chunks:
             logger.warning(f"extract_entities_for_session({session_id}): no visible chunks found!")
             # Debug: check what's in the database
             if hasattr(self._vector_store, '_conn'):
                 try:
                     count = self._vector_store._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
-                    by_proj = self._vector_store._conn.execute("SELECT project_id, COUNT(*) FROM embeddings GROUP BY project_id").fetchall()
-                    logger.warning(f"extract_entities_for_session: total embeddings={count}, by_project={by_proj}")
+                    by_domain = self._vector_store._conn.execute("SELECT domain_id, COUNT(*) FROM embeddings GROUP BY domain_id").fetchall()
+                    logger.warning(f"extract_entities_for_session: total embeddings={count}, by_domain={by_domain}")
                 except Exception as e:
                     logger.warning(f"extract_entities_for_session: failed to check embeddings: {e}")
             return 0
@@ -157,6 +159,7 @@ class _EntityMixin:
             session_id=session_id,
             schema_terms=self._schema_entities,
             api_terms=self._collect_api_terms(),
+            business_terms=business_terms,
         )
 
         all_links = _extract_links_from_chunks(extractor, chunks)
@@ -176,11 +179,11 @@ class _EntityMixin:
 
         return 0
 
-    def _get_session_visible_chunks(self, project_ids: list[str]) -> list[DocumentChunk]:
-        """Get chunks visible to a session (base + loaded projects).
+    def _get_session_visible_chunks(self, domain_ids: list[str]) -> list[DocumentChunk]:
+        """Get chunks visible to a session (base + loaded domains).
 
         Args:
-            project_ids: List of loaded project IDs
+            domain_ids: List of loaded domain IDs
 
         Returns:
             List of DocumentChunk objects
@@ -188,14 +191,14 @@ class _EntityMixin:
         if not hasattr(self._vector_store, '_conn'):
             return self._vector_store.get_chunks()
 
-        # Query chunks where project_id is NULL, '__base__', or in project_ids
-        conditions = ["project_id IS NULL", "project_id = '__base__'"]
+        # Query chunks where domain_id is NULL, '__base__', or in domain_ids
+        conditions = ["domain_id IS NULL", "domain_id = '__base__'"]
         params = []
 
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if domain_ids:
+            placeholders = ",".join(["?" for _ in domain_ids])
+            conditions.append(f"domain_id IN ({placeholders})")
+            params.extend(domain_ids)
 
         where_clause = " OR ".join(conditions)
 
@@ -328,39 +331,39 @@ class _EntityMixin:
         """
         self._extract_and_store_entities_scoped(chunks, session_id=session_id)
 
-    def _extract_and_store_entities_project(
+    def _extract_and_store_entities_domain(
         self,
         chunks: list[DocumentChunk],
-        project_id: str,
+        domain_id: str,
     ) -> None:
-        """Extract entities from chunks and store them with project_id.
+        """Extract entities from chunks and store them with domain_id.
 
         Uses spaCy NER for named entity extraction plus pattern matching
         for database, OpenAPI, and GraphQL schemas.
 
         Args:
             chunks: Document chunks to extract entities from
-            project_id: Project ID for project-scoped entities
+            domain_id: Domain ID for domain-scoped entities
         """
-        self._extract_and_store_entities_scoped(chunks, session_id=project_id, project_id=project_id)
+        self._extract_and_store_entities_scoped(chunks, session_id=domain_id, domain_id=domain_id)
 
     def _extract_and_store_entities_scoped(
         self,
         chunks: list[DocumentChunk],
         session_id: str,
-        project_id: str | None = None,
+        domain_id: str | None = None,
     ) -> None:
         """Extract entities from chunks and store them with the given scope.
 
         Args:
             chunks: Document chunks to extract entities from
-            session_id: Session or project ID for scoped storage
-            project_id: Optional project ID passed to EntityExtractor
+            session_id: Session or domain ID for scoped storage
+            domain_id: Optional domain ID passed to EntityExtractor
         """
         if not hasattr(self._vector_store, 'add_entities'):
             return
 
-        scope_label = f"project {project_id}" if project_id else f"session {session_id}"
+        scope_label = f"domain {domain_id}" if domain_id else f"session {session_id}"
         logger.debug(f"Extracting entities from {len(chunks)} chunks for {scope_label}")
 
         # Create extractor with all known schema entities
@@ -369,8 +372,8 @@ class _EntityMixin:
             schema_terms=self._schema_entities,
             api_terms=self._collect_api_terms(),
         )
-        if project_id:
-            extractor_kwargs["project_id"] = project_id
+        if domain_id:
+            extractor_kwargs["domain_id"] = domain_id
         extractor = EntityExtractor(**extractor_kwargs)
 
         all_links: list[ChunkEntity] = []

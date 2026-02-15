@@ -245,13 +245,13 @@ async def get_api_schema(
     managed = session_manager.get_session(session_id)
 
     try:
-        # Check config APIs and project APIs
+        # Check config APIs and domain APIs
         api_config = managed.session.config.apis.get(api_name)
         if not api_config:
-            for project_filename in managed.active_projects:
-                project = managed.session.config.load_project(project_filename)
-                if project and api_name in project.apis:
-                    api_config = project.apis[api_name]
+            for domain_filename in managed.active_domains:
+                domain = managed.session.config.load_domain(domain_filename)
+                if domain and api_name in domain.apis:
+                    api_config = domain.apis[api_name]
                     break
         if not api_config:
             raise HTTPException(status_code=404, detail=f"API not found: {api_name}")

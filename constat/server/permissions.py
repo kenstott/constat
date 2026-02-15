@@ -12,14 +12,14 @@ permissions:
   users:
     kennethstott@gmail.com:
       admin: true
-      projects: []
+      domains: []
       databases: []
       documents: []
       apis: []
 
     analyst@company.com:
       admin: false
-      projects:
+      domains:
         - sales-analytics.yaml
       databases:
         - sales
@@ -29,7 +29,7 @@ permissions:
 
   default:
     admin: false
-    projects: []
+    domains: []
     databases: []
     documents: []
     apis: []
@@ -52,24 +52,39 @@ class UserPermissions:
         user_id: str,
         email: Optional[str] = None,
         admin: bool = False,
-        projects: Optional[list[str]] = None,
+        domains: Optional[list[str]] = None,
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
         apis: Optional[list[str]] = None,
+        # Backwards compatibility
+        projects: Optional[list[str]] = None,
     ):
         self.user_id = user_id
         self.email = email
         self.admin = admin
-        self.projects = projects or []
+        self.domains = domains or projects or []
         self.databases = databases or []
         self.documents = documents or []
         self.apis = apis or []
 
-    def can_access_project(self, project_filename: str) -> bool:
-        """Check if user can access a specific project."""
+    @property
+    def projects(self) -> list[str]:
+        """Backwards compatibility alias for domains."""
+        return self.domains
+
+    @projects.setter
+    def projects(self, value: list[str]) -> None:
+        """Backwards compatibility alias for domains."""
+        self.domains = value
+
+    def can_access_domain(self, domain_filename: str) -> bool:
+        """Check if user can access a specific domain."""
         if self.admin:
             return True
-        return project_filename in self.projects
+        return domain_filename in self.domains
+
+    # Backwards compatibility alias
+    can_access_project = can_access_domain
 
     def can_access_database(self, db_name: str) -> bool:
         """Check if user can access a specific database."""
@@ -95,7 +110,7 @@ class UserPermissions:
             "user_id": self.user_id,
             "email": self.email,
             "admin": self.admin,
-            "projects": self.projects,
+            "domains": self.domains,
             "databases": self.databases,
             "documents": self.documents,
             "apis": self.apis,
@@ -113,7 +128,7 @@ class UserPermissions:
             user_id=user_id,
             email=email,
             admin=config_perms.admin,
-            projects=config_perms.projects,
+            domains=config_perms.domains,
             databases=config_perms.databases,
             documents=config_perms.documents,
             apis=config_perms.apis,
@@ -153,7 +168,7 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
         result.append({
             "email": email,
             "admin": perms.admin,
-            "projects": perms.projects,
+            "domains": perms.domains,
             "databases": perms.databases,
             "documents": perms.documents,
             "apis": perms.apis,
@@ -164,20 +179,20 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
 def compute_effective_permissions(
     user_perms: Optional[UserPermissions],
     config: "Config",
-    active_projects: Optional[list[str]] = None,
+    active_domains: Optional[list[str]] = None,
     permissions_configured: bool = True,
 ) -> dict[str, Optional[set[str]]]:
-    """Compute effective allowed resources by merging permissions and active projects.
+    """Compute effective allowed resources by merging permissions and active domains.
 
     Rules:
     - If no permissions configured (permissions_configured=False) → no filtering
     - If user is admin → no filtering
-    - Otherwise, merge explicit permissions + active project resources
+    - Otherwise, merge explicit permissions + active domain resources
 
     Args:
         user_perms: User's base permissions (None if no permissions configured)
-        config: Config with project definitions
-        active_projects: Currently active project IDs (if any)
+        config: Config with domain definitions
+        active_domains: Currently active domain IDs (if any)
         permissions_configured: Whether permissions are configured at all
 
     Returns:
@@ -206,19 +221,19 @@ def compute_effective_permissions(
     allowed_apis = set(user_perms.apis)
     allowed_documents = set(user_perms.documents)
 
-    # Add resources from active projects the user has access to
-    active_projects = active_projects or []
-    for project_id in active_projects:
-        # Check user has access to this project
-        if not user_perms.can_access_project(project_id):
+    # Add resources from active domains the user has access to
+    active_domains = active_domains or []
+    for domain_id in active_domains:
+        # Check user has access to this domain
+        if not user_perms.can_access_domain(domain_id):
             continue
 
-        # Load project and add all its resources
-        project = config.load_project(project_id)
-        if project:
-            allowed_databases.update(project.databases.keys())
-            allowed_apis.update(project.apis.keys())
-            allowed_documents.update(project.documents.keys())
+        # Load domain and add all its resources
+        domain = config.load_domain(domain_id)
+        if domain:
+            allowed_databases.update(domain.databases.keys())
+            allowed_apis.update(domain.apis.keys())
+            allowed_documents.update(domain.documents.keys())
 
     return {
         "allowed_databases": allowed_databases,

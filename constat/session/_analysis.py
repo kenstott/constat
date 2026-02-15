@@ -181,7 +181,7 @@ class AnalysisMixin:
             )
 
         # Build data source context from SessionResources (single source of truth)
-        # This includes all databases/APIs/documents from config + active projects
+        # This includes all databases/APIs/documents from config + active domains
         data_sources = []
         for name, desc in self.resources.get_database_descriptions():
             desc_line = desc.split('\n')[0] if desc else f"database '{name}'"

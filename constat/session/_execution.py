@@ -300,7 +300,7 @@ class ExecutionMixin:
                     globals_dict["db"] = conn
                     first_db = conn
 
-        # Also include dynamically added databases (from projects) not in config
+        # Also include dynamically added databases (from domains) not in config
         for db_name in self.schema_manager.connections.keys():
             if db_name not in config_db_names:
                 conn = self.schema_manager.connections[db_name]
@@ -329,12 +329,12 @@ class ExecutionMixin:
         # Inject active skill functions into execution namespace
         self._inject_skill_functions(globals_dict)
 
-        # Provide API clients for GraphQL/REST APIs (config + project APIs)
+        # Provide API clients for GraphQL/REST APIs (config + domain APIs)
         all_apis = self.get_all_apis()
         if all_apis:
             from constat.catalog.api_executor import APIExecutor
-            # Create executor with merged config (config APIs + project APIs)
-            api_executor = APIExecutor(self.config, project_apis=self._project_apis)
+            # Create executor with merged config (config APIs + domain APIs)
+            api_executor = APIExecutor(self.config, project_apis=self._domain_apis)
             for api_name, api_config in all_apis.items():
                 if api_config.type == "graphql":
                     # Create a GraphQL query function

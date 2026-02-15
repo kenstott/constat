@@ -214,7 +214,7 @@ async def list_databases(
 ) -> SessionDatabaseListResponse:
     """List all databases available to the session.
 
-    Includes config-defined, project-defined, and dynamically added databases.
+    Includes config-defined, domain-defined, and dynamically added databases.
 
     Args:
         session_id: Session ID
@@ -257,16 +257,16 @@ async def list_databases(
         ))
         seen_names.add(name)
 
-    # Add project databases (from all active projects)
-    for project_filename in managed.active_projects:
-        project = managed.session.config.load_project(project_filename)
-        if project:
-            for name, db_config in project.databases.items():
+    # Add domain databases (from all active domains)
+    for domain_filename in managed.active_domains:
+        domain = managed.session.config.load_domain(domain_filename)
+        if domain:
+            for name, db_config in domain.databases.items():
                 if name in seen_names:
-                    continue  # Skip duplicates (conflicts checked at project selection)
+                    continue  # Skip duplicates (conflicts checked at domain selection)
 
                 # Check if this database was loaded into the session
-                connected = name in getattr(managed, "_project_databases", set())
+                connected = name in getattr(managed, "_domain_databases", set())
                 table_count = 0
                 if connected and managed.session.schema_manager:
                     try:
@@ -285,7 +285,7 @@ async def list_databases(
                     added_at=managed.created_at,
                     is_dynamic=False,
                     file_id=None,
-                    source=project_filename,
+                    source=domain_filename,
                 ))
                 seen_names.add(name)
 
@@ -318,7 +318,7 @@ async def list_data_sources(
 ) -> SessionDataSourcesResponse:
     """List all data sources available to the session.
 
-    Returns databases, APIs, and documents from config, active projects,
+    Returns databases, APIs, and documents from config, active domains,
     and session-added sources.
 
     Args:
@@ -355,11 +355,11 @@ async def list_data_sources(
         ))
         seen_apis.add(name)
 
-    # Project APIs
-    for project_filename in managed.active_projects:
-        project = config.load_project(project_filename)
-        if project:
-            for name, api_config in project.apis.items():
+    # Domain APIs
+    for domain_filename in managed.active_domains:
+        domain = config.load_domain(domain_filename)
+        if domain:
+            for name, api_config in domain.apis.items():
                 if name in seen_apis:
                     continue  # Skip duplicates (conflicts checked at selection)
                 apis.append(SessionApiInfo(
@@ -369,7 +369,7 @@ async def list_data_sources(
                     base_url=api_config.url,
                     connected=True,
                     from_config=False,
-                    source=project_filename,
+                    source=domain_filename,
                 ))
                 seen_apis.add(name)
 
@@ -406,11 +406,11 @@ async def list_data_sources(
         ))
         seen_docs.add(name)
 
-    # Project documents
-    for project_filename in managed.active_projects:
-        project = config.load_project(project_filename)
-        if project:
-            for name, doc_config in project.documents.items():
+    # Domain documents
+    for domain_filename in managed.active_domains:
+        domain = config.load_domain(domain_filename)
+        if domain:
+            for name, doc_config in domain.documents.items():
                 if name in seen_docs:
                     continue  # Skip duplicates
                 documents.append(SessionDocumentInfo(
@@ -420,7 +420,7 @@ async def list_data_sources(
                     path=doc_config.path,
                     indexed=True,
                     from_config=False,
-                    source=project_filename,
+                    source=domain_filename,
                 ))
                 seen_docs.add(name)
 
@@ -476,13 +476,13 @@ async def remove_database(
             detail="Cannot remove config-defined database"
         )
 
-    # Check if it's a project database
-    for project_filename in managed.active_projects:
-        project = managed.session.config.load_project(project_filename)
-        if project and db_name in project.databases:
+    # Check if it's a domain database
+    for domain_filename in managed.active_domains:
+        domain = managed.session.config.load_domain(domain_filename)
+        if domain and db_name in domain.databases:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot remove project-defined database (from {project_filename})"
+                detail=f"Cannot remove domain-defined database (from {domain_filename})"
             )
 
     # Find the database to get its file path before removing

@@ -815,13 +815,13 @@ class ContextPreloadConfig(BaseModel):
     max_columns_per_table: int = 30
 
 
-class ProjectConfig(BaseModel):
-    """Project configuration - a reusable collection of data sources.
+class DomainConfig(BaseModel):
+    """Domain configuration - a reusable collection of data sources.
 
-    Projects are defined in YAML files and can be shared across sessions.
-    A session can select a project to load its databases, APIs, and documents.
+    Domains are defined in YAML files and can be shared across sessions.
+    A session can select domains to load their databases, APIs, and documents.
 
-    Example project file (projects/sales-analytics.yaml):
+    Example domain file (domains/sales-analytics.yaml):
         name: Sales Analytics
         description: Sales data from warehouse and CRM
 
@@ -843,6 +843,8 @@ class ProjectConfig(BaseModel):
 
     name: str
     description: str = ""
+    owner: str = ""
+    definition: str = ""
     filename: str = ""  # Source filename, autopopulated from _source_file
     source_path: str = ""  # Full path to source file, for editing
 
@@ -851,16 +853,23 @@ class ProjectConfig(BaseModel):
     apis: dict[str, APIConfig] = Field(default_factory=dict)
     documents: dict[str, DocumentConfig] = Field(default_factory=dict)
 
-    # Optional project-specific settings
+    # Domain-specific config sections
+    glossary: dict[str, Any] = Field(default_factory=dict)
+    relationships: dict[str, Any] = Field(default_factory=dict)
+    rights: dict[str, Any] = Field(default_factory=dict)
+    facts: dict[str, Any] = Field(default_factory=dict)
+    learnings: dict[str, Any] = Field(default_factory=dict)
+
+    # Optional domain-specific settings
     databases_description: str = ""
     system_prompt: str = ""
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ProjectConfig":
-        """Load project config from YAML file."""
+    def from_yaml(cls, path: str | Path) -> "DomainConfig":
+        """Load domain config from YAML file."""
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Project file not found: {path}")
+            raise FileNotFoundError(f"Domain file not found: {path}")
 
         with open(path) as f:
             raw_content = f.read()
@@ -874,8 +883,8 @@ class ProjectConfig(BaseModel):
         return cls.model_validate(data)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ProjectConfig":
-        """Create ProjectConfig from dict, handling _source_file/_source_path."""
+    def from_dict(cls, data: dict) -> "DomainConfig":
+        """Create DomainConfig from dict, handling _source_file/_source_path."""
         # Map _source_file to filename if present
         if "_source_file" in data and not data.get("filename"):
             data["filename"] = data["_source_file"]
@@ -883,6 +892,64 @@ class ProjectConfig(BaseModel):
         if "_source_path" in data and not data.get("source_path"):
             data["source_path"] = data["_source_path"]
         return cls.model_validate(data)
+
+    @classmethod
+    def from_directory(cls, path: str | Path) -> "DomainConfig":
+        """Load domain config from a directory structure.
+
+        Expected structure:
+            <path>/config.yaml          — domain config
+            <path>/skills/              — domain-specific skills
+            <path>/domains/<sub>/       — nested sub-domains
+
+        Sub-domains are merged alphabetically, then parent config overlays.
+
+        Args:
+            path: Path to domain directory
+
+        Returns:
+            DomainConfig with sub-domains merged in
+        """
+        path = Path(path)
+        config_file = path / "config.yaml"
+        if not config_file.exists():
+            raise FileNotFoundError(f"Domain config not found: {config_file}")
+
+        # Load parent config
+        parent = cls.from_yaml(config_file)
+
+        # Load and merge sub-domains (alphabetically)
+        sub_domains_dir = path / "domains"
+        if sub_domains_dir.is_dir():
+            merged_data: dict = {}
+            for sub_dir in sorted(sub_domains_dir.iterdir()):
+                if sub_dir.is_dir() and (sub_dir / "config.yaml").exists():
+                    sub_domain = cls.from_directory(sub_dir)
+                    sub_data = sub_domain.model_dump(exclude_defaults=True)
+                    # Merge sub-domain data additively
+                    for key, value in sub_data.items():
+                        if isinstance(value, dict) and isinstance(merged_data.get(key), dict):
+                            merged_data[key] = {**merged_data[key], **value}
+                        elif value:
+                            merged_data[key] = value
+
+            # Parent overlays sub-domain merge
+            parent_data = parent.model_dump(exclude_defaults=True)
+            for key, value in parent_data.items():
+                if isinstance(value, dict) and isinstance(merged_data.get(key), dict):
+                    merged_data[key] = {**merged_data[key], **value}
+                else:
+                    merged_data[key] = value
+
+            # Ensure required fields
+            merged_data.setdefault("name", parent.name)
+            return cls.model_validate(merged_data)
+
+        return parent
+
+
+# Backwards compatibility alias
+ProjectConfig = DomainConfig
 
 
 class Config(BaseModel):
@@ -894,14 +961,14 @@ class Config(BaseModel):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
-    # Projects keyed by filename
-    # YAML format: projects: { sales.yaml: { $ref: ./projects/sales.yaml } }
-    projects: dict[str, ProjectConfig] = Field(default_factory=dict)
+    # Domains keyed by filename
+    # YAML format: domains: { sales.yaml: { $ref: ./domains/sales.yaml } }
+    domains: dict[str, DomainConfig] = Field(default_factory=dict)
 
-    @field_validator("projects", mode="before")
+    @field_validator("domains", mode="before")
     @classmethod
-    def _convert_projects(cls, v):
-        """Convert raw project dicts, mapping _source_file/_source_path."""
+    def _convert_domains(cls, v):
+        """Convert raw domain dicts, mapping _source_file/_source_path."""
         if not v:
             return {}
         result = {}
@@ -944,31 +1011,45 @@ class Config(BaseModel):
     # YAML format: facts: {company_name: "Acme Corp", fiscal_year_start: "April 1"}
     facts: dict[str, Any] = Field(default_factory=dict)
 
-    def list_projects(self) -> list[dict]:
-        """List available projects.
+    # New first-class config sections
+    rights: dict[str, Any] = Field(default_factory=dict)
+    glossary: dict[str, Any] = Field(default_factory=dict)
+    relationships: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def projects(self) -> dict[str, DomainConfig]:
+        """Backwards compatibility: access domains as projects."""
+        return self.domains
+
+    def list_domains(self) -> list[dict]:
+        """List available domains.
 
         Returns:
-            List of project info dicts with 'filename', 'name', 'description'
+            List of domain info dicts with 'filename', 'name', 'description'
         """
         return [
             {
                 "filename": filename,
-                "name": project.name,
-                "description": project.description,
+                "name": domain.name,
+                "description": domain.description,
             }
-            for filename, project in self.projects.items()
+            for filename, domain in self.domains.items()
         ]
 
-    def load_project(self, filename: str) -> Optional["ProjectConfig"]:
-        """Load a project by filename.
+    def load_domain(self, filename: str) -> Optional["DomainConfig"]:
+        """Load a domain by filename.
 
         Args:
-            filename: Project YAML filename (e.g., 'sales-analytics.yaml')
+            filename: Domain YAML filename (e.g., 'sales-analytics.yaml')
 
         Returns:
-            ProjectConfig or None if not found
+            DomainConfig or None if not found
         """
-        return self.projects.get(filename)
+        return self.domains.get(filename)
+
+    # Backwards compatibility aliases
+    list_projects = list_domains
+    load_project = load_domain
 
     @classmethod
     def from_yaml(
@@ -1040,6 +1121,12 @@ class Config(BaseModel):
         data = yaml.safe_load(substituted)
         data = _resolve_refs(data, config_dir)
 
+        # Backwards compat: map 'projects' key to 'domains'
+        if "projects" in data and "domains" not in data:
+            data["domains"] = data.pop("projects")
+        elif "projects" in data:
+            data.pop("projects")
+
         # Load user config from file if provided
         user_data = None
         if user_config_path:
@@ -1083,7 +1170,7 @@ class Config(BaseModel):
         merged = dict(engine)
 
         # Dict-keyed sections to deep merge
-        dict_sections = ["databases", "apis", "documents"]
+        dict_sections = ["databases", "apis", "documents", "glossary", "relationships", "rights"]
 
         # Fields that user config cannot override (security protection)
         protected_fields = {"uri", "hosts", "endpoint", "endpoint_url"}

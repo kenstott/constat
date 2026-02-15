@@ -418,7 +418,7 @@ class SessionHistory:
         apis: list[str],
         documents: list[str],
     ) -> None:
-        """Update session resources (called when projects are loaded/unloaded).
+        """Update session resources (called when domains are loaded/unloaded).
 
         Args:
             session_id: Session to update

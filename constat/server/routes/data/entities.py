@@ -230,19 +230,19 @@ async def list_entities(
         if hasattr(managed.session, "doc_tools") and managed.session.doc_tools:
             vs = managed.session.doc_tools._vector_store
         if vs:
-            # Build filter for base + project + session
-            # Base: project_id IS NULL AND session_id IS NULL
-            # Project: project_id IN (active_projects)
+            # Build filter for base + domain + session
+            # Base: domain_id IS NULL AND session_id IS NULL
+            # Domain: domain_id IN (active_domains)
             # Session: session_id = server_session_id
-            active_projects = getattr(managed, "active_projects", []) or []
+            active_domains = getattr(managed, "active_domains", []) or []
 
-            filter_conditions = ["(e.project_id IS NULL AND e.session_id IS NULL)"]
+            filter_conditions = ["(e.domain_id IS NULL AND e.session_id IS NULL)"]
             params: list = []
 
-            if active_projects:
-                placeholders = ",".join(["?" for _ in active_projects])
-                filter_conditions.append(f"e.project_id IN ({placeholders})")
-                params.extend(active_projects)
+            if active_domains:
+                placeholders = ",".join(["?" for _ in active_domains])
+                filter_conditions.append(f"e.domain_id IN ({placeholders})")
+                params.extend(active_domains)
 
             filter_conditions.append("e.session_id = ?")
             params.append(session_id)
@@ -377,32 +377,32 @@ async def list_entities(
     except Exception as e:
         logger.warning(f"Could not get document entities: {e}")
 
-    # 5. Get entities from active projects - always add to ensure proper type merging
+    # 5. Get entities from active domains - always add to ensure proper type merging
     try:
-        active_projects = getattr(managed, "active_projects", [])
-        if active_projects and managed.session.config:
-            for project_filename in active_projects:
-                project = managed.session.config.load_project(project_filename)
-                if project:
-                    # Add project API entities
+        active_domains = getattr(managed, "active_domains", [])
+        if active_domains and managed.session.config:
+            for domain_filename in active_domains:
+                domain = managed.session.config.load_domain(domain_filename)
+                if domain:
+                    # Add domain API entities
                     if not entity_type or entity_type in ("api", "api_endpoint"):
-                        for api_name, api_config in project.apis.items():
+                        for api_name, api_config in domain.apis.items():
                             add_entity(
                                 api_name, "api", "api",
-                                {"base_url": getattr(api_config, "base_url", None), "project": project_filename},
-                                [{"document": f"API: {api_name}", "section": f"Project: {project_filename}", "mentions": 1}]
+                                {"base_url": getattr(api_config, "base_url", None), "domain": domain_filename},
+                                [{"document": f"API: {api_name}", "section": f"Domain: {domain_filename}", "mentions": 1}]
                             )
 
-                    # Add project document entities
+                    # Add domain document entities
                     if not entity_type or entity_type == "concept":
-                        for doc_name in project.documents.keys():
+                        for doc_name in domain.documents.keys():
                             add_entity(
                                 doc_name, "concept", "document",
-                                {"source": "project", "project": project_filename},
-                                [{"document": doc_name, "section": f"Project: {project_filename}", "mentions": 1}]
+                                {"source": "domain", "domain": domain_filename},
+                                [{"document": doc_name, "section": f"Domain: {domain_filename}", "mentions": 1}]
                             )
     except Exception as e:
-        logger.warning(f"Could not get entities from active projects: {e}")
+        logger.warning(f"Could not get entities from active domains: {e}")
 
     entities = list(entity_map.values())
 

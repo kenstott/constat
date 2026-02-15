@@ -10,9 +10,9 @@
 """Entity management for sessions.
 
 Handles entity extraction lifecycle events:
-- New session: Extract entities for base + active projects
-- Project add: Incrementally add entities for project's chunks
-- Project delete: Incrementally delete entities for that project
+- New session: Extract entities for base + active domains
+- Domain add: Incrementally add entities for domain's chunks
+- Domain delete: Incrementally delete entities for that domain
 - Source add: Incrementally add entities for new source's chunks
 - Source delete: Incrementally delete entities for that source
 
@@ -34,14 +34,14 @@ class VectorStoreProtocol(Protocol):
         """Clear all entities for a session."""
         ...
 
-    def clear_project_session_entities(self, session_id: str, project_id: str) -> int:
-        """Clear entities for a specific project in a session."""
+    def clear_domain_session_entities(self, session_id: str, domain_id: str) -> int:
+        """Clear entities for a specific domain in a session."""
         ...
 
     def extract_entities_for_session(
         self,
         session_id: str,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
@@ -49,15 +49,15 @@ class VectorStoreProtocol(Protocol):
         """Extract entities for all visible chunks in a session."""
         ...
 
-    def extract_entities_for_project(
+    def extract_entities_for_domain(
         self,
         session_id: str,
-        project_id: str,
+        domain_id: str,
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
     ) -> int:
-        """Extract entities for a specific project's chunks."""
+        """Extract entities for a specific domain's chunks."""
         ...
 
 
@@ -68,7 +68,7 @@ class EntityExtractionResult:
     session_id: str
     entities_added: int = 0
     entities_removed: int = 0
-    projects_processed: list[str] | None = None
+    domains_processed: list[str] | None = None
     error: str | None = None
 
 
@@ -111,16 +111,16 @@ class EntityManager:
     def extract_for_session(
         self,
         session_id: str,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
     ) -> EntityExtractionResult:
         """Extract entities for a new session or full refresh.
 
         Clears existing entities and re-extracts from all visible chunks
-        (base config + active projects).
+        (base config + active domains).
 
         Args:
             session_id: Session ID
-            project_ids: Active project IDs to include
+            domain_ids: Active domain IDs to include
 
         Returns:
             EntityExtractionResult with extraction stats
@@ -128,7 +128,7 @@ class EntityManager:
         try:
             count = self._vector_store.extract_entities_for_session(
                 session_id=session_id,
-                project_ids=project_ids,
+                domain_ids=domain_ids,
                 schema_terms=self._get_schema_terms(),
                 api_terms=self._get_api_terms(),
             )
@@ -136,7 +136,7 @@ class EntityManager:
             return EntityExtractionResult(
                 session_id=session_id,
                 entities_added=count,
-                projects_processed=project_ids,
+                domains_processed=domain_ids,
             )
         except Exception as e:
             logger.exception(f"Error extracting entities for session {session_id}")
@@ -145,116 +145,116 @@ class EntityManager:
                 error=str(e),
             )
 
-    def add_project(
+    def add_domain(
         self,
         session_id: str,
-        project_id: str,
+        domain_id: str,
     ) -> EntityExtractionResult:
-        """Incrementally add entities for a newly activated project.
+        """Incrementally add entities for a newly activated domain.
 
-        Extracts entities from the project's chunks without clearing
+        Extracts entities from the domain's chunks without clearing
         existing session entities.
 
         Args:
             session_id: Session ID
-            project_id: Project ID being activated
+            domain_id: Domain ID being activated
 
         Returns:
             EntityExtractionResult with extraction stats
         """
         try:
-            count = self._vector_store.extract_entities_for_project(
+            count = self._vector_store.extract_entities_for_domain(
                 session_id=session_id,
-                project_id=project_id,
+                domain_id=domain_id,
                 schema_terms=self._get_schema_terms(),
                 api_terms=self._get_api_terms(),
             )
-            logger.info(f"Session {session_id}: added {count} entities for project {project_id}")
+            logger.info(f"Session {session_id}: added {count} entities for domain {domain_id}")
             return EntityExtractionResult(
                 session_id=session_id,
                 entities_added=count,
-                projects_processed=[project_id],
+                domains_processed=[domain_id],
             )
         except Exception as e:
-            logger.exception(f"Error adding entities for project {project_id}")
+            logger.exception(f"Error adding entities for domain {domain_id}")
             return EntityExtractionResult(
                 session_id=session_id,
                 error=str(e),
             )
 
-    def remove_project(
+    def remove_domain(
         self,
         session_id: str,
-        project_id: str,
+        domain_id: str,
     ) -> EntityExtractionResult:
-        """Incrementally remove entities for a deactivated project.
+        """Incrementally remove entities for a deactivated domain.
 
-        Clears entities associated with the project's chunks.
+        Clears entities associated with the domain's chunks.
 
         Args:
             session_id: Session ID
-            project_id: Project ID being deactivated
+            domain_id: Domain ID being deactivated
 
         Returns:
             EntityExtractionResult with removal stats
         """
         try:
-            count = self._vector_store.clear_project_session_entities(
+            count = self._vector_store.clear_domain_session_entities(
                 session_id=session_id,
-                project_id=project_id,
+                domain_id=domain_id,
             )
-            logger.info(f"Session {session_id}: removed {count} entities for project {project_id}")
+            logger.info(f"Session {session_id}: removed {count} entities for domain {domain_id}")
             return EntityExtractionResult(
                 session_id=session_id,
                 entities_removed=count,
-                projects_processed=[project_id],
+                domains_processed=[domain_id],
             )
         except Exception as e:
-            logger.exception(f"Error removing entities for project {project_id}")
+            logger.exception(f"Error removing entities for domain {domain_id}")
             return EntityExtractionResult(
                 session_id=session_id,
                 error=str(e),
             )
 
-    def update_projects(
+    def update_domains(
         self,
         session_id: str,
-        old_projects: set[str],
-        new_projects: set[str],
+        old_domains: set[str],
+        new_domains: set[str],
     ) -> EntityExtractionResult:
-        """Handle project changes - add/remove entities incrementally.
+        """Handle domain changes - add/remove entities incrementally.
 
-        Computes the diff between old and new project sets and
+        Computes the diff between old and new domain sets and
         incrementally updates entities.
 
         Args:
             session_id: Session ID
-            old_projects: Previously active project IDs
-            new_projects: Newly active project IDs
+            old_domains: Previously active domain IDs
+            new_domains: Newly active domain IDs
 
         Returns:
             EntityExtractionResult with combined stats
         """
-        removed_projects = old_projects - new_projects
-        added_projects = new_projects - old_projects
+        removed_domains = old_domains - new_domains
+        added_domains = new_domains - old_domains
 
         total_removed = 0
         total_added = 0
         errors = []
 
-        # Remove entities for deactivated projects
-        for project_id in removed_projects:
-            result = self.remove_project(session_id, project_id)
+        # Remove entities for deactivated domains
+        for domain_id in removed_domains:
+            result = self.remove_domain(session_id, domain_id)
             if result.error:
-                errors.append(f"{project_id}: {result.error}")
+                errors.append(f"{domain_id}: {result.error}")
             else:
                 total_removed += result.entities_removed
 
-        # Add entities for newly activated projects
-        for project_id in added_projects:
-            result = self.add_project(session_id, project_id)
+        # Add entities for newly activated domains
+        for domain_id in added_domains:
+            result = self.add_domain(session_id, domain_id)
             if result.error:
-                errors.append(f"{project_id}: {result.error}")
+                errors.append(f"{domain_id}: {result.error}")
             else:
                 total_added += result.entities_added
 
@@ -262,7 +262,7 @@ class EntityManager:
             session_id=session_id,
             entities_added=total_added,
             entities_removed=total_removed,
-            projects_processed=list(removed_projects | added_projects),
+            domains_processed=list(removed_domains | added_domains),
             error="; ".join(errors) if errors else None,
         )
 

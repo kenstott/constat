@@ -255,7 +255,7 @@ class ConstatAPIImpl:
         """Reset session context for a new query.
 
         Clears: plan, scratchpad, datastore tables, artifacts, state, session facts
-        Keeps: data sources, projects, learnings
+        Keeps: data sources, domains, learnings
         """
         self._session.plan = None
         # Clear in-memory scratchpad sections

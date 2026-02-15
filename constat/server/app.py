@@ -166,7 +166,7 @@ def _compute_doc_resource_hash(doc_name: str, doc_config, config_dir: str | None
 def _warmup_vector_store(config: Config) -> None:
     """Pre-index all resources (schemas, APIs, documents) at server startup.
 
-    Uses hash-based invalidation per source (base + projects) with three hash types:
+    Uses hash-based invalidation per source (base + domains) with three hash types:
     - db_hash: database schema configuration
     - api_hash: API configuration
     - doc_hash: document configuration
@@ -211,45 +211,45 @@ def _warmup_vector_store(config: Config) -> None:
             vector_store.set_source_hash(source_id, 'api', api_hash)
             logger.info(f"  Base APIs: {len(config.apis)} indexed")
 
-    # === PROJECT CONFIGS ===
-    for project_name, project in config.projects.items():
-        source_id = project_name
+    # === DOMAIN CONFIGS ===
+    for domain_name, domain in config.projects.items():
+        source_id = domain_name
 
-        # Project databases
-        if project.databases:
-            db_hash = _compute_db_config_hash(project.databases)
+        # Domain databases
+        if domain.databases:
+            db_hash = _compute_db_config_hash(domain.databases)
             cached_hash = vector_store.get_source_hash(source_id, 'db')
 
             if cached_hash == db_hash:
-                logger.info(f"  Project {project_name} databases: unchanged, skipping")
+                logger.info(f"  Domain {domain_name} databases: unchanged, skipping")
             else:
-                logger.info(f"  Project {project_name} databases: building chunks...")
-                project_config = Config(
+                logger.info(f"  Domain {domain_name} databases: building chunks...")
+                domain_config = Config(
                     config_dir=config.config_dir,
-                    databases=project.databases,
+                    databases=domain.databases,
                 )
-                project_schema_manager = SchemaManager(project_config)
-                project_schema_manager.build_chunks()
+                domain_schema_manager = SchemaManager(domain_config)
+                domain_schema_manager.build_chunks()
                 vector_store.set_source_hash(source_id, 'db', db_hash)
-                logger.info(f"  Project {project_name} databases: {len(project.databases)} indexed")
+                logger.info(f"  Domain {domain_name} databases: {len(domain.databases)} indexed")
 
-        # Project APIs
-        if project.apis:
-            api_hash = _compute_api_config_hash(project.apis)
+        # Domain APIs
+        if domain.apis:
+            api_hash = _compute_api_config_hash(domain.apis)
             cached_hash = vector_store.get_source_hash(source_id, 'api')
 
             if cached_hash == api_hash:
-                logger.info(f"  Project {project_name} APIs: unchanged, skipping")
+                logger.info(f"  Domain {domain_name} APIs: unchanged, skipping")
             else:
-                logger.info(f"  Project {project_name} APIs: building chunks...")
-                project_api_config = Config(
+                logger.info(f"  Domain {domain_name} APIs: building chunks...")
+                domain_api_config = Config(
                     config_dir=config.config_dir,
-                    apis=project.apis,
+                    apis=domain.apis,
                 )
-                project_api_manager = APISchemaManager(project_api_config)
-                project_api_manager.build_chunks()
+                domain_api_manager = APISchemaManager(domain_api_config)
+                domain_api_manager.build_chunks()
                 vector_store.set_source_hash(source_id, 'api', api_hash)
-                logger.info(f"  Project {project_name} APIs: {len(project.apis)} indexed")
+                logger.info(f"  Domain {domain_name} APIs: {len(domain.apis)} indexed")
 
     # === BASE DOCUMENTS (two-level hashing) ===
     if config.documents:
@@ -293,7 +293,7 @@ def _warmup_vector_store(config: Config) -> None:
                                 str(doc_path),
                                 name=doc_name,
                                 description=doc_config.description or "",
-                                project_id="__base__",
+                                domain_id="__base__",
                                 skip_entity_extraction=True,  # NER done at session creation
                             )
                             if success:
@@ -319,27 +319,27 @@ def _warmup_vector_store(config: Config) -> None:
     else:
         logger.info(f"  Base documents: 0 configured")
 
-    # === PROJECT DOCUMENTS (two-level hashing) ===
-    for filename, project in config.projects.items():
-        if not project.documents:
+    # === DOMAIN DOCUMENTS (two-level hashing) ===
+    for filename, domain in config.projects.items():
+        if not domain.documents:
             continue
 
-        doc_hash = _compute_doc_config_hash(project.documents)
+        doc_hash = _compute_doc_config_hash(domain.documents)
         cached_hash = vector_store.get_source_hash(filename, 'doc')
 
         if cached_hash == doc_hash:
             # Fast path: source-level hash unchanged, skip all documents
-            logger.info(f"  Project {filename} documents: unchanged, skipping")
+            logger.info(f"  Domain {filename} documents: unchanged, skipping")
             continue
 
         # Slow path: source changed, check each document individually
-        logger.info(f"  Project {filename} documents: checking {len(project.documents)} documents...")
+        logger.info(f"  Domain {filename} documents: checking {len(domain.documents)} documents...")
         cached_resource_hashes = vector_store.get_resource_hashes_for_source(filename, "document")
         config_dir = Path(config.config_dir) if config.config_dir else Path.cwd()
         indexed_count = 0
         skipped_count = 0
 
-        for doc_name, doc_config in project.documents.items():
+        for doc_name, doc_config in domain.documents.items():
             try:
                 # Compute resource-level hash
                 resource_hash = _compute_doc_resource_hash(doc_name, doc_config, config.config_dir)
@@ -353,7 +353,7 @@ def _warmup_vector_store(config: Config) -> None:
                 # Document changed or new - delete old chunks and re-index
                 if cached_resource_hash:
                     vector_store.delete_resource_chunks(filename, "document", doc_name)
-                    logger.debug(f"  Project {filename}: deleted old chunks for {doc_name}")
+                    logger.debug(f"  Domain {filename}: deleted old chunks for {doc_name}")
 
                 if doc_config.path:
                     doc_path = Path(doc_config.path)
@@ -365,29 +365,29 @@ def _warmup_vector_store(config: Config) -> None:
                             str(doc_path),
                             name=doc_name,
                             description=doc_config.description or "",
-                            project_id=filename,
+                            domain_id=filename,
                             skip_entity_extraction=True,  # NER done at session creation
                         )
                         if success:
                             vector_store.set_resource_hash(filename, "document", doc_name, resource_hash)
                             indexed_count += 1
-                            logger.info(f"  Project {filename}: vectorized {doc_name}")
+                            logger.info(f"  Domain {filename}: vectorized {doc_name}")
                         else:
-                            logger.warning(f"  Project {filename}: failed to vectorize {doc_name}: {msg}")
+                            logger.warning(f"  Domain {filename}: failed to vectorize {doc_name}: {msg}")
                     else:
-                        logger.warning(f"  Project {filename}: file not found: {doc_path}")
+                        logger.warning(f"  Domain {filename}: file not found: {doc_path}")
             except Exception as e:
-                logger.warning(f"  Project {filename}: error indexing {doc_name}: {e}")
+                logger.warning(f"  Domain {filename}: error indexing {doc_name}: {e}")
 
         # Handle removed documents (in cache but not in config)
         for old_doc_name in cached_resource_hashes.keys():
-            if old_doc_name not in project.documents:
+            if old_doc_name not in domain.documents:
                 vector_store.delete_resource_chunks(filename, "document", old_doc_name)
                 vector_store.delete_resource_hash(filename, "document", old_doc_name)
-                logger.info(f"  Project {filename}: removed deleted document {old_doc_name}")
+                logger.info(f"  Domain {filename}: removed deleted document {old_doc_name}")
 
         vector_store.set_source_hash(filename, 'doc', doc_hash)
-        logger.info(f"  Project {filename} documents: {indexed_count} indexed, {skipped_count} unchanged")
+        logger.info(f"  Domain {filename} documents: {indexed_count} indexed, {skipped_count} unchanged")
 
     logger.info("  Pre-indexing complete")
 
@@ -416,9 +416,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             EmbeddingModelLoader.get_instance().get_model()  # Wait for completion
             logger.info("Embedding model loaded")
 
-            # Startup: Pre-index all documents from config and projects
+            # Startup: Pre-index all documents from config and domains
             # This warms up the vector store so first session doesn't pay the cost
-            logger.info("Pre-indexing documents from config and projects...")
+            logger.info("Pre-indexing documents from config and domains...")
             _warmup_vector_store(config)
             logger.info("Document pre-indexing complete")
 

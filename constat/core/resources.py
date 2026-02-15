@@ -10,7 +10,7 @@
 """Consolidated session resources.
 
 Provides a single source of truth for all available resources in a session.
-Computed once at session start and updated on project changes.
+Computed once at session start and updated on domain changes.
 """
 
 from dataclasses import dataclass, field
@@ -21,7 +21,7 @@ class ResourceInfo:
     """Basic info about a resource."""
     name: str
     description: str = ""
-    source: str = "config"  # "config" | "project:<filename>" | "session"
+    source: str = "config"  # "config" | "domain:<filename>" | "session"
 
 
 @dataclass
@@ -47,12 +47,12 @@ class SessionResources:
     """Consolidated view of all available session resources.
 
     Single source of truth for databases, APIs, and documents.
-    Computed at session creation, updated on project load/unload.
+    Computed at session creation, updated on domain load/unload.
 
     Usage:
         resources = SessionResources()
         resources.add_database("sales", "Sales database", source="config")
-        resources.add_document("policy", "HR Policy", source="project:hr.yaml")
+        resources.add_document("policy", "HR Policy", source="domain:hr.yaml")
 
         # Get lists for prompts/tools
         db_names = resources.database_names
@@ -121,7 +121,7 @@ class SessionResources:
         self.documents.pop(name, None)
 
     def remove_by_source(self, source: str) -> None:
-        """Remove all resources from a specific source (e.g., a project)."""
+        """Remove all resources from a specific source (e.g., a domain)."""
         self.databases = {k: v for k, v in self.databases.items() if v.source != source}
         self.apis = {k: v for k, v in self.apis.items() if v.source != source}
         self.documents = {k: v for k, v in self.documents.items() if v.source != source}

@@ -141,8 +141,8 @@ class CoreMixin:
         self.session_databases: dict[str, dict] = {}  # name -> {type, uri, description}
         self.session_files: dict[str, dict] = {}  # name -> {uri, auth, description}
 
-        # Project APIs (added when projects are activated)
-        self._project_apis: dict[str, Any] = {}  # name -> ApiConfig
+        # Domain APIs (added when domains are activated)
+        self._domain_apis: dict[str, Any] = {}  # name -> ApiConfig
 
         # Consolidated view of all available resources (single source of truth)
         self.resources = SessionResources()
@@ -175,7 +175,7 @@ class CoreMixin:
         self.role_matcher = RoleMatcher(self.role_manager)
         # Initialize lazily on first use to avoid blocking startup
 
-        # Skill manager: loads system, project, and user skills in precedence order
+        # Skill manager: loads system, domain, and user skills in precedence order
         from constat.core.skills import SkillManager
         system_skills_dir = Path(config.config_dir) / "skills" if config.config_dir else None
         self.skill_manager = SkillManager(
@@ -277,22 +277,22 @@ class CoreMixin:
                     source="config",
                 )
 
-    def add_project_resources(
+    def add_domain_resources(
         self,
-        project_filename: str,
+        domain_filename: str,
         databases: dict = None,
         apis: dict = None,
         documents: dict = None,
     ) -> None:
-        """Add resources from a project.
+        """Add resources from a domain.
 
         Args:
-            project_filename: Project filename for source tracking
+            domain_filename: Domain filename for source tracking
             databases: Dict of database configs
             apis: Dict of API configs
             documents: Dict of document configs
         """
-        source = f"project:{project_filename}"
+        source = f"domain:{domain_filename}"
 
         if databases:
             for name, db_config in databases.items():
@@ -321,19 +321,19 @@ class CoreMixin:
                     source=source,
                 )
 
-    def remove_project_resources(self, project_filename: str) -> None:
-        """Remove all resources from a project.
+    def remove_domain_resources(self, domain_filename: str) -> None:
+        """Remove all resources from a domain.
 
         Args:
-            project_filename: Project filename
+            domain_filename: Domain filename
         """
-        source = f"project:{project_filename}"
+        source = f"domain:{domain_filename}"
         self.resources.remove_by_source(source)
 
     def sync_resources_to_history(self) -> None:
         """Sync current resources to session history (session.json).
 
-        Call this after loading/unloading projects to keep history in sync.
+        Call this after loading/unloading domains to keep history in sync.
         """
         if self.session_id and self.history:
             self.history.update_resources(

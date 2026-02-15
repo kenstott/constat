@@ -241,14 +241,14 @@ class MetadataMixin:
                 entities.add(field.name)
         return entities
 
-    def extract_entities(self, project_ids: list[str] | None = None) -> int:
+    def extract_entities(self, domain_ids: list[str] | None = None) -> int:
         """Extract NER entities from all chunks for this session.
 
         Should be called after session_id is set. Extracts entities from
-        base + specified project chunks.
+        base + specified domain chunks.
 
         Args:
-            project_ids: Project IDs to include (in addition to base)
+            domain_ids: Domain IDs to include (in addition to base)
 
         Returns:
             Number of entities extracted
@@ -267,7 +267,7 @@ class MetadataMixin:
 
         entity_count = self.doc_tools._vector_store.extract_entities_for_session(
             session_id=self.session_id,
-            project_ids=project_ids,
+            domain_ids=domain_ids,
             schema_terms=schema_terms,
             api_terms=api_terms,
         )
@@ -277,13 +277,13 @@ class MetadataMixin:
         logger.debug(f"Entity extraction took {time.time() - t0:.2f}s ({entity_count} entities)")
         return entity_count
 
-    def rebuild_entities(self, project_ids: list[str] | None = None) -> int:
-        """Rebuild entity catalog (e.g., when projects change).
+    def rebuild_entities(self, domain_ids: list[str] | None = None) -> int:
+        """Rebuild entity catalog (e.g., when domains change).
 
         Clears existing entities for this session and re-extracts.
 
         Args:
-            project_ids: Project IDs to include (in addition to base)
+            domain_ids: Domain IDs to include (in addition to base)
 
         Returns:
             Number of entities extracted
@@ -294,30 +294,30 @@ class MetadataMixin:
 
         # noinspection PyAttributeOutsideInit
         self._entities_extracted = False
-        return self.extract_entities(project_ids)
+        return self.extract_entities(domain_ids)
 
-    def add_project_api(self, name: str, api_config: Any) -> None:
-        """Register an API from an active project.
+    def add_domain_api(self, name: str, api_config: Any) -> None:
+        """Register an API from an active domain.
 
         Args:
             name: API name
             api_config: API configuration (ApiConfig object)
         """
-        self._project_apis[name] = api_config
-        logger.info(f"Registered project API: {name}")
+        self._domain_apis[name] = api_config
+        logger.info(f"Registered domain API: {name}")
 
-    def clear_project_apis(self) -> None:
-        """Clear all registered project APIs."""
-        self._project_apis.clear()
+    def clear_domain_apis(self) -> None:
+        """Clear all registered domain APIs."""
+        self._domain_apis.clear()
 
     def get_all_apis(self) -> dict[str, Any]:
-        """Get all APIs (config + project).
+        """Get all APIs (config + domain).
 
         Returns:
-            Dict of API name to config, combining config.apis and project APIs
+            Dict of API name to config, combining config.apis and domain APIs
         """
         all_apis = dict(self.config.apis) if self.config.apis else {}
-        all_apis.update(self._project_apis)
+        all_apis.update(self._domain_apis)
         return all_apis
 
     def _load_preloaded_context(self) -> None:

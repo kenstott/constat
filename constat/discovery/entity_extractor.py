@@ -75,7 +75,7 @@ class EntityExtractor:
     def __init__(
         self,
         session_id: str,
-        project_id: Optional[str] = None,
+        domain_id: Optional[str] = None,
         schema_terms: Optional[list[str]] = None,
         api_terms: Optional[list[str]] = None,
         business_terms: Optional[list[str]] = None,
@@ -84,13 +84,13 @@ class EntityExtractor:
 
         Args:
             session_id: Session ID (required - entities are session-scoped)
-            project_id: Optional project ID
+            domain_id: Optional domain ID
             schema_terms: Database table/column names to recognize
             api_terms: API endpoint names to recognize
             business_terms: Business glossary terms to recognize
         """
         self.session_id = session_id
-        self.project_id = project_id
+        self.domain_id = domain_id
 
         # Build custom NLP pipeline with EntityRuler
         self._nlp = get_nlp()
@@ -221,7 +221,7 @@ class EntityExtractor:
             semantic_type=semantic_type,
             ner_type=ner_type,
             session_id=self.session_id,
-            project_id=self.project_id,
+            domain_id=self.domain_id,
         )
         self._entity_cache[normalized] = entity
         return entity

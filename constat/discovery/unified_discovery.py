@@ -45,7 +45,7 @@ class UnifiedDiscovery:
         schema_manager: Optional["SchemaManager"] = None,
         api_schema_manager: Optional["APISchemaManager"] = None,
         embed_fn: Optional[callable] = None,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ):
         """Initialize unified discovery.
@@ -55,23 +55,23 @@ class UnifiedDiscovery:
             schema_manager: Schema manager for table details
             api_schema_manager: API schema manager for endpoint details
             embed_fn: Function to embed text queries
-            project_ids: Active project IDs for scoping
+            domain_ids: Active domain IDs for scoping
             session_id: Current session ID for scoping
         """
         self._vector_store = vector_store
         self._schema_manager = schema_manager
         self._api_schema_manager = api_schema_manager
         self._embed_fn = embed_fn
-        self._project_ids = project_ids
+        self._domain_ids = domain_ids
         self._session_id = session_id
 
     def set_scope(
         self,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> None:
         """Update the discovery scope."""
-        self._project_ids = project_ids
+        self._domain_ids = domain_ids
         self._session_id = session_id
 
     def discover(
@@ -106,7 +106,7 @@ class UnifiedDiscovery:
         enriched_chunks = self._vector_store.search_enriched(
             query_embedding=query_embedding,
             limit=limit,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -132,7 +132,7 @@ class UnifiedDiscovery:
         # Find the entity using find_entity_by_name
         entity = self._vector_store.find_entity_by_name(
             name=entity_name,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -145,7 +145,7 @@ class UnifiedDiscovery:
                     entity_name = results[0].entities[0].name
                     entity = self._vector_store.find_entity_by_name(
                         name=entity_name,
-                        project_ids=self._project_ids,
+                        domain_ids=self._domain_ids,
                         session_id=self._session_id,
                     )
 
@@ -162,7 +162,7 @@ class UnifiedDiscovery:
         chunk_results = self._vector_store.get_chunks_for_entity(
             entity_id=entity.id,
             limit=limit,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -252,7 +252,7 @@ class UnifiedDiscovery:
         # Find the source entity
         entity = self._vector_store.find_entity_by_name(
             name=entity_name,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
 
@@ -263,7 +263,7 @@ class UnifiedDiscovery:
         chunk_results = self._vector_store.get_chunks_for_entity(
             entity_id=entity.id,
             limit=10,
-            project_ids=self._project_ids,
+            domain_ids=self._domain_ids,
             session_id=self._session_id,
         )
         chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _, _ in chunk_results]
@@ -286,7 +286,7 @@ class UnifiedDiscovery:
                 query_embedding=query_embedding,
                 limit=limit + 1,  # +1 to exclude self
                 min_similarity=0.6,
-                project_ids=self._project_ids,
+                domain_ids=self._domain_ids,
                 session_id=self._session_id,
             )
             for s in similar:

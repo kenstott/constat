@@ -206,19 +206,19 @@ def discover_command(ctx: CommandContext) -> TableResult | ErrorResult:
     if isinstance(query_embedding, list):
         query_embedding = np.array(query_embedding)
 
-    # Get active project IDs for filtering
-    project_ids = None
+    # Get active domain IDs for filtering
+    domain_ids = None
     if hasattr(session, 'doc_tools') and session.doc_tools:
-        project_ids = getattr(session.doc_tools, '_active_project_ids', None)
+        domain_ids = getattr(session.doc_tools, '_active_domain_ids', None)
 
     # Get session_id for entity lookup
     session_id = getattr(ctx, 'session_id', None) or getattr(session, 'session_id', None)
 
-    # Search chunks - base + active projects, with entities
+    # Search chunks - base + active domains, with entities
     enriched_results = vector_store.search_enriched(
         query_embedding=query_embedding,
         limit=15,
-        project_ids=project_ids,
+        domain_ids=domain_ids,
         session_id=session_id,
     )
 

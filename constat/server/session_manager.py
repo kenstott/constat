@@ -48,8 +48,8 @@ class ManagedSession:
     # This is different from session_id which is the server/client UUID
     _history_session_id: Optional[str] = None
 
-    # Active project filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
-    active_projects: list[str] = field(default_factory=list)
+    # Active domain filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
+    active_domains: list[str] = field(default_factory=list)
 
     # Dynamic resources (databases, APIs, file refs) added during the session
     _dynamic_dbs: list[dict[str, Any]] = field(default_factory=list)
@@ -81,15 +81,25 @@ class ManagedSession:
         expiry = self.last_activity + timedelta(minutes=timeout_minutes)
         return datetime.now(timezone.utc) > expiry
 
+    @property
+    def active_projects(self) -> list[str]:
+        """Backwards compatibility alias for active_domains."""
+        return self.active_domains
+
+    @active_projects.setter
+    def active_projects(self, value: list[str]) -> None:
+        """Backwards compatibility alias for active_domains."""
+        self.active_domains = value
+
     def has_database(self, db_name: str) -> bool:
-        """Check if a database exists in any source (config, project, dynamic, schema_manager)."""
+        """Check if a database exists in any source (config, domain, dynamic, schema_manager)."""
         # Config databases
         if db_name in self.session.config.databases:
             return True
-        # Project databases
-        for project_filename in self.active_projects:
-            project = self.session.config.load_project(project_filename)
-            if project and db_name in project.databases:
+        # Domain databases
+        for domain_filename in self.active_domains:
+            domain = self.session.config.load_domain(domain_filename)
+            if domain and db_name in domain.databases:
                 return True
         # Dynamic databases
         if any(db["name"] == db_name for db in self._dynamic_dbs):
@@ -115,10 +125,10 @@ class ManagedSession:
         """Return union of all database names from every source."""
         names: set[str] = set()
         names.update(self.session.config.databases.keys())
-        for project_filename in self.active_projects:
-            project = self.session.config.load_project(project_filename)
-            if project:
-                names.update(project.databases.keys())
+        for domain_filename in self.active_domains:
+            domain = self.session.config.load_domain(domain_filename)
+            if domain:
+                names.update(domain.databases.keys())
         names.update(db["name"] for db in self._dynamic_dbs)
         sm = self.session.schema_manager
         if sm:
@@ -128,7 +138,7 @@ class ManagedSession:
         return names
 
     def save_resources(self) -> None:
-        """Save dynamic resources (dbs, file_refs, projects) to disk."""
+        """Save dynamic resources (dbs, file_refs, domains) to disk."""
         from constat.storage.history import SessionHistory
 
         history_id = self.history_session_id
@@ -142,7 +152,7 @@ class ManagedSession:
             "dynamic_dbs": self._dynamic_dbs,
             "dynamic_apis": self._dynamic_apis,
             "file_refs": self._file_refs,
-            "active_projects": self.active_projects or [],
+            "active_domains": self.active_domains or [],
         }
 
         # Save to state file
@@ -170,9 +180,9 @@ class ManagedSession:
         self._dynamic_dbs = resources.get("dynamic_dbs", [])
         self._dynamic_apis = resources.get("dynamic_apis", [])
         self._file_refs = resources.get("file_refs", [])
-        self.active_projects = resources.get("active_projects", [])
+        self.active_domains = resources.get("active_domains", [])
 
-        logger.info(f"Restored session resources: {len(self._dynamic_dbs)} dbs, {len(self._dynamic_apis)} apis, {len(self._file_refs)} refs, {len(self.active_projects)} projects")
+        logger.info(f"Restored session resources: {len(self._dynamic_dbs)} dbs, {len(self._dynamic_apis)} apis, {len(self._file_refs)} refs, {len(self.active_domains)} domains")
 
         # Re-add databases to schema_manager
         if self._dynamic_dbs and self.session.schema_manager:
@@ -328,7 +338,7 @@ class SessionManager:
 
             self._sessions[session_id] = managed
 
-            # Restore dynamic resources (dbs, file_refs, projects) if this is a restore
+            # Restore dynamic resources (dbs, file_refs, domains) if this is a restore
             if is_restore:
                 managed.restore_resources()
 
@@ -354,15 +364,15 @@ class SessionManager:
             logger.debug(f"Session {session_id}: no doc_tools, skipping entity extraction")
             return
 
-        # Get project IDs (config + active) and session database names
-        project_ids = list(session.config.projects.keys()) if session.config.projects else []
+        # Get domain IDs (config + active) and session database names
+        domain_ids = list(session.config.domains.keys()) if session.config.domains else []
         session_db_names = []
         if hasattr(self, '_sessions') and session_id in self._sessions:
             managed = self._sessions[session_id]
-            # Merge active projects (may include dynamically activated ones)
-            for p in (managed.active_projects or []):
-                if p not in project_ids:
-                    project_ids.append(p)
+            # Merge active domains (may include dynamically activated ones)
+            for p in (managed.active_domains or []):
+                if p not in domain_ids:
+                    domain_ids.append(p)
             # Get names of dynamically added databases (include their columns in entities)
             session_db_names = [db["name"] for db in managed._dynamic_dbs]
 
@@ -373,8 +383,28 @@ class SessionManager:
             include_columns_for_dbs=session_db_names
         ))
         api_entities = list(session._get_api_entity_names())
-        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema entities, {len(api_entities)} API entities")
-        logger.debug(f"Session {session_id}: schema_entities={schema_entities[:20]}, session_dbs={session_db_names}")
+
+        # Collect glossary + relationship terms for NER business_terms
+        from constat.catalog.glossary_builder import get_glossary_terms_for_ner, get_relationship_terms_for_ner
+        business_terms: list[str] = []
+        if session.config.glossary:
+            business_terms.extend(get_glossary_terms_for_ner(session.config.glossary))
+        if session.config.relationships:
+            business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
+
+        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities")
+
+        # Fingerprint caching — skip NER if scope unchanged
+        from constat.discovery.ner_fingerprint import compute_ner_fingerprint, should_skip_ner, update_ner_fingerprint
+        chunk_ids = []
+        if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+            try:
+                chunk_ids = session.doc_tools._vector_store.get_all_chunk_ids(session_id=session_id)
+            except Exception:
+                pass
+        fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms)
+        if should_skip_ner(session_id, fingerprint):
+            return
 
         # Run entity extraction
         try:
@@ -386,19 +416,22 @@ class SessionManager:
             else:
                 logger.warning(f"Session {session_id}: no vector_store to clear entities from")
 
-            logger.info(f"Session {session_id}: running extract_entities_for_session with project_ids={project_ids}, {len(schema_entities)} schema entities")
+            logger.info(f"Session {session_id}: running extract_entities_for_session with domain_ids={domain_ids}, {len(schema_entities)} schema entities")
             if schema_entities:
                 logger.debug(f"Session {session_id}: sample schema_entities: {schema_entities[:10]}")
             link_count = session.doc_tools.extract_entities_for_session(
                 session_id=session_id,
-                project_ids=project_ids,
+                domain_ids=domain_ids,
                 schema_entities=schema_entities,
                 api_entities=api_entities,
+                business_terms=business_terms or None,
             )
             if link_count and link_count > 0:
                 logger.info(f"Session {session_id}: created {link_count} entity links")
             else:
                 logger.warning(f"Session {session_id}: NO entity links created (link_count={link_count})")
+            # Cache fingerprint on successful extraction
+            update_ner_fingerprint(session_id, fingerprint)
         except Exception as e:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
 

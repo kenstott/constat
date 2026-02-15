@@ -51,7 +51,7 @@ class VectorStoreBackend(ABC):
         embeddings: np.ndarray,
         source: str = "document",
         session_id: str | None = None,
-        project_id: str | None = None,
+        domain_id: str | None = None,
     ) -> None:
         """Add document chunks with their embeddings to the store.
 
@@ -60,7 +60,7 @@ class VectorStoreBackend(ABC):
             embeddings: numpy array of shape (n_chunks, embedding_dim)
             source: Resource type - 'schema', 'api', or 'document'
             session_id: Optional session ID for session-scoped chunks
-            project_id: Optional project ID for project-scoped chunks
+            domain_id: Optional domain ID for domain-scoped chunks
         """
         pass
 
@@ -129,7 +129,7 @@ class NumpyVectorStore(VectorStoreBackend):
         embeddings: np.ndarray,
         source: str = "document",
         session_id: str | None = None,
-        project_id: str | None = None,
+        domain_id: str | None = None,
     ) -> None:
         """Add chunks with embeddings to in-memory storage."""
         if len(chunks) == 0:
@@ -154,7 +154,7 @@ class NumpyVectorStore(VectorStoreBackend):
         self,
         query_embedding: np.ndarray,
         limit: int = 5,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Search using cosine similarity."""
@@ -198,6 +198,10 @@ class NumpyVectorStore(VectorStoreBackend):
     def get_chunks(self) -> list[DocumentChunk]:
         """Get all stored chunks."""
         return self._chunks.copy()
+
+    def get_all_chunk_ids(self, session_id: str | None = None) -> list[str]:
+        """Get all chunk IDs, optionally filtered by session."""
+        return list(self._chunk_ids)
 
 
 class DuckDBVectorStore(VectorStoreBackend):
@@ -257,7 +261,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Create embeddings table with FLOAT array for vectors
         # source: resource type ('schema', 'api', 'document')
         # chunk_type: granular type ('db_table', 'db_column', 'api_endpoint', 'document', etc.)
-        # project_id: source identifier ('__base__' for config, project filename for projects)
+        # domain_id: source identifier ('__base__' for config, domain filename for domains)
         self._conn.execute(f"""
             CREATE TABLE IF NOT EXISTS embeddings (
                 chunk_id VARCHAR PRIMARY KEY,
@@ -269,12 +273,12 @@ class DuckDBVectorStore(VectorStoreBackend):
                 content TEXT NOT NULL,
                 embedding FLOAT[{self.EMBEDDING_DIM}] NOT NULL,
                 session_id VARCHAR,
-                project_id VARCHAR
+                domain_id VARCHAR
             )
         """)
 
         # Create entities table for NER-extracted entities.
-        # Entities are session-scoped (rebuilt when session starts or projects change)
+        # Entities are session-scoped (rebuilt when session starts or domains change)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS entities (
                 id VARCHAR PRIMARY KEY,
@@ -283,7 +287,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 semantic_type VARCHAR NOT NULL,
                 ner_type VARCHAR,
                 session_id VARCHAR NOT NULL,
-                project_id VARCHAR,
+                domain_id VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -431,7 +435,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Get a config hash for a source.
 
         Args:
-            source_id: Source ID (project filename or "__base__")
+            source_id: Source ID (domain filename or "__base__")
             hash_type: One of 'db', 'api', 'doc'
 
         Returns:
@@ -453,7 +457,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Set a config hash for a source.
 
         Args:
-            source_id: Source ID (project filename or "__base__")
+            source_id: Source ID (domain filename or "__base__")
             hash_type: One of 'db', 'api', 'doc'
             config_hash: Hash of the source configuration
         """
@@ -473,13 +477,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"set_source_hash({source_id}, {hash_type}): {config_hash}")
 
     # Backwards compatibility aliases
-    def get_project_config_hash(self, project_id: str) -> str | None:
+    def get_domain_config_hash(self, domain_id: str) -> str | None:
         """Get the document config hash for a source (backwards compatibility)."""
-        return self.get_source_hash(project_id, 'doc')
+        return self.get_source_hash(domain_id, 'doc')
 
-    def set_project_config_hash(self, project_id: str, config_hash: str) -> None:
+    def set_domain_config_hash(self, domain_id: str, config_hash: str) -> None:
         """Set the document config hash for a source (backwards compatibility)."""
-        self.set_source_hash(project_id, 'doc', config_hash)
+        self.set_source_hash(domain_id, 'doc', config_hash)
 
     # =========================================================================
     # Resource-Level Hashing (Fine-Grained Cache Invalidation)
@@ -490,7 +494,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Create a unique resource ID.
 
         Args:
-            source_id: Source ID ('__base__' or project filename)
+            source_id: Source ID ('__base__' or domain filename)
             resource_type: Type of resource ('database', 'api', 'document')
             resource_name: Name of the resource
 
@@ -508,7 +512,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Get the content hash for a specific resource.
 
         Args:
-            source_id: Source ID ('__base__' or project filename)
+            source_id: Source ID ('__base__' or domain filename)
             resource_type: Type of resource ('database', 'api', 'document')
             resource_name: Name of the resource
 
@@ -534,7 +538,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Set the content hash for a specific resource.
 
         Args:
-            source_id: Source ID ('__base__' or project filename)
+            source_id: Source ID ('__base__' or domain filename)
             resource_type: Type of resource ('database', 'api', 'document')
             resource_name: Name of the resource
             content_hash: Hash of the resource's content
@@ -562,7 +566,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Delete the hash for a specific resource.
 
         Args:
-            source_id: Source ID ('__base__' or project filename)
+            source_id: Source ID ('__base__' or domain filename)
             resource_type: Type of resource ('database', 'api', 'document')
             resource_name: Name of the resource
 
@@ -586,7 +590,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Get all resource hashes for a source.
 
         Args:
-            source_id: Source ID ('__base__' or project filename)
+            source_id: Source ID ('__base__' or domain filename)
             resource_type: Optional filter by resource type
 
         Returns:
@@ -615,7 +619,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         Used for incremental updates when a single resource changes.
 
         Args:
-            source_id: Source ID ('__base__' or project filename)
+            source_id: Source ID ('__base__' or domain filename)
             resource_type: Type of resource ('database', 'api', 'document')
             resource_name: Name of the resource (used as document_name in embeddings)
 
@@ -632,21 +636,21 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         # Get chunk IDs for this resource
         if source_id == '__base__':
-            # Base config: project_id is NULL or '__base__'
+            # Base config: domain_id is NULL or '__base__'
             chunk_ids = self._conn.execute(
                 """
                 SELECT chunk_id FROM embeddings
                 WHERE document_name = ? AND source = ?
-                AND (project_id IS NULL OR project_id = '__base__')
+                AND (domain_id IS NULL OR domain_id = '__base__')
                 """,
                 [resource_name, source_type],
             ).fetchall()
         else:
-            # Project: match project_id
+            # Domain: match domain_id
             chunk_ids = self._conn.execute(
                 """
                 SELECT chunk_id FROM embeddings
-                WHERE document_name = ? AND source = ? AND project_id = ?
+                WHERE document_name = ? AND source = ? AND domain_id = ?
                 """,
                 [resource_name, source_type, source_id],
             ).fetchall()
@@ -670,7 +674,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 """
                 DELETE FROM embeddings
                 WHERE document_name = ? AND source = ?
-                AND (project_id IS NULL OR project_id = '__base__')
+                AND (domain_id IS NULL OR domain_id = '__base__')
                 """,
                 [resource_name, source_type],
             )
@@ -678,7 +682,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._conn.execute(
                 """
                 DELETE FROM embeddings
-                WHERE document_name = ? AND source = ? AND project_id = ?
+                WHERE document_name = ? AND source = ? AND domain_id = ?
                 """,
                 [resource_name, source_type, source_id],
             )
@@ -703,19 +707,19 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"clear_resource_hashes_for_source({source_id}): deleted {count} hashes")
         return count
 
-    def clear_project_embeddings(self, project_id: str) -> int:
-        """Clear all embeddings for a project.
+    def clear_domain_embeddings(self, domain_id: str) -> int:
+        """Clear all embeddings for a domain.
 
         Args:
-            project_id: Project ID to clear
+            domain_id: Domain ID to clear
 
         Returns:
             Number of embeddings deleted
         """
         # Get chunk IDs first for clearing related entities
         chunk_ids = self._conn.execute(
-            "SELECT chunk_id FROM embeddings WHERE project_id = ?",
-            [project_id]
+            "SELECT chunk_id FROM embeddings WHERE domain_id = ?",
+            [domain_id]
         ).fetchall()
         chunk_ids = [row[0] for row in chunk_ids]
 
@@ -729,18 +733,18 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         # Clear embeddings
         self._conn.execute(
-            "DELETE FROM embeddings WHERE project_id = ?",
-            [project_id]
+            "DELETE FROM embeddings WHERE domain_id = ?",
+            [domain_id]
         )
 
-        # Clear project entities
+        # Clear domain entities
         self._conn.execute(
-            "DELETE FROM entities WHERE project_id = ?",
-            [project_id]
+            "DELETE FROM entities WHERE domain_id = ?",
+            [domain_id]
         )
 
         count = len(chunk_ids)
-        logger.debug(f"clear_project_embeddings({project_id}): deleted {count} embeddings")
+        logger.debug(f"clear_domain_embeddings({domain_id}): deleted {count} embeddings")
         return count
 
     @staticmethod
@@ -757,7 +761,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         embeddings: np.ndarray,
         source: str = "document",
         session_id: str | None = None,
-        project_id: str | None = None,
+        domain_id: str | None = None,
     ) -> None:
         """Add chunks with embeddings to DuckDB.
 
@@ -766,7 +770,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             embeddings: numpy array of embeddings
             source: Resource type - 'schema', 'api', or 'document'
             session_id: Optional session ID for documents added during a session
-            project_id: Optional project ID for documents belonging to a project
+            domain_id: Optional domain ID for documents belonging to a domain
         """
         if source not in ("schema", "api", "document"):
             raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
@@ -774,9 +778,9 @@ class DuckDBVectorStore(VectorStoreBackend):
             return
 
         doc_names = set(c.document_name for c in chunks)
-        print(f"[ADD_CHUNKS] docs={doc_names}, session_id={session_id}, project_id={project_id}")
+        print(f"[ADD_CHUNKS] docs={doc_names}, session_id={session_id}, domain_id={domain_id}")
 
-        # Check which documents already exist - skip re-indexing to preserve project_id
+        # Check which documents already exist - skip re-indexing to preserve domain_id
         existing_docs = set()
         for doc_name in doc_names:
             count = self._conn.execute(
@@ -813,14 +817,14 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk.content,
                 embedding,
                 session_id,
-                project_id,
+                domain_id,
             ))
 
         # Simple INSERT for new documents only
         self._conn.executemany(
             """
             INSERT INTO embeddings
-            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, project_id)
+            (chunk_id, document_name, source, chunk_type, section, chunk_index, content, embedding, session_id, domain_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             records,
@@ -830,7 +834,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         query_embedding: np.ndarray,
         limit: int = 5,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Search using DuckDB's array_cosine_similarity.
@@ -838,7 +842,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         Args:
             query_embedding: Query embedding vector
             limit: Maximum number of results
-            project_ids: List of project IDs to include (None means no project filter)
+            domain_ids: List of domain IDs to include (None means no domain filter)
             session_id: Session ID to include (None means no session filter)
 
         Returns:
@@ -847,14 +851,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Ensure query is 1D list
         query = query_embedding.flatten().tolist()
 
-        # Build filter: base (NULL or '__base__') + active projects
-        filter_conditions = ["(project_id IS NULL)", "(project_id = '__base__')"]
+        # Build filter: base (NULL or '__base__') + active domains
+        filter_conditions = ["(domain_id IS NULL)", "(domain_id = '__base__')"]
         params: list = [query]
 
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            filter_conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if domain_ids:
+            placeholders = ",".join(["?" for _ in domain_ids])
+            filter_conditions.append(f"domain_id IN ({placeholders})")
+            params.extend(domain_ids)
 
         where_clause = " OR ".join(filter_conditions)
         params.append(limit)
@@ -1034,6 +1038,25 @@ class DuckDBVectorStore(VectorStoreBackend):
             for row in result
         ]
 
+    def get_all_chunk_ids(self, session_id: str | None = None) -> list[str]:
+        """Get all chunk IDs, optionally filtered by session.
+
+        Args:
+            session_id: If provided, only return chunk IDs visible to this session
+                       (base + domain chunks). If None, return all chunk IDs.
+
+        Returns:
+            List of chunk ID strings
+        """
+        if session_id:
+            result = self._conn.execute(
+                "SELECT chunk_id FROM embeddings WHERE session_id IS NULL OR session_id = ?",
+                [session_id],
+            ).fetchall()
+        else:
+            result = self._conn.execute("SELECT chunk_id FROM embeddings").fetchall()
+        return [row[0] for row in result]
+
     def delete_by_document(self, document_name: str) -> int:
         """Delete all chunks for a specific document.
 
@@ -1087,7 +1110,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                     entity.semantic_type,
                     entity.ner_type,
                     session_id,
-                    entity.project_id,
+                    entity.domain_id,
                     entity.created_at,
                 ))
 
@@ -1097,7 +1120,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             try:
                 conn.execute(
                     """
-                    INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, project_id, created_at)
+                    INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     record,
@@ -1161,7 +1184,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         result = self._conn.execute(
             """
             SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-                   e.session_id, e.project_id, e.created_at
+                   e.session_id, e.domain_id, e.created_at
             FROM entities e
             JOIN chunk_entities ce ON e.id = ce.entity_id
             WHERE ce.chunk_id = ? AND e.session_id = ?
@@ -1172,7 +1195,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         entities = []
         for row in result:
-            entity_id, name, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = row
+            entity_id, name, display_name, semantic_type, ner_type, sess_id, dom_id, created_at = row
             entities.append(Entity(
                 id=entity_id,
                 name=name,
@@ -1180,7 +1203,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 semantic_type=semantic_type,
                 ner_type=ner_type,
                 session_id=sess_id,
-                project_id=proj_id,
+                domain_id=dom_id,
                 created_at=created_at,
             ))
 
@@ -1190,27 +1213,27 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         entity_id: str,
         limit: int = 10,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
     ) -> list[tuple[str, DocumentChunk, float]]:
         """Get chunks that mention an entity.
 
         Args:
             entity_id: The entity identifier
             limit: Maximum number of chunks to return
-            project_ids: List of project IDs to include (filters embeddings)
+            domain_ids: List of domain IDs to include (filters embeddings)
 
         Returns:
             List of (chunk_id, DocumentChunk, confidence) tuples
             ordered by confidence
         """
-        # Embeddings can come from base + projects
-        emb_filter = ["em.project_id IS NULL"]
+        # Embeddings can come from base + domains
+        emb_filter = ["em.domain_id IS NULL"]
         params: list = [entity_id]
 
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            emb_filter.append(f"em.project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if domain_ids:
+            placeholders = ",".join(["?" for _ in domain_ids])
+            emb_filter.append(f"em.domain_id IN ({placeholders})")
+            params.extend(domain_ids)
 
         emb_where = " OR ".join(emb_filter)
         params.append(limit)
@@ -1251,14 +1274,14 @@ class DuckDBVectorStore(VectorStoreBackend):
     def find_entity_by_name(
         self,
         name: str,
-        project_ids: Optional[list[str]] = None,
+        domain_ids: Optional[list[str]] = None,
         session_id: Optional[str] = None,
     ) -> Optional[Entity]:
         """Find an entity by its name (case-insensitive).
 
         Args:
             name: Entity name to search for
-            project_ids: Optional project IDs to scope the search
+            domain_ids: Optional domain IDs to scope the search
             session_id: Optional session ID to scope the search
 
         Returns:
@@ -1271,16 +1294,16 @@ class DuckDBVectorStore(VectorStoreBackend):
             conditions.append("session_id = ?")
             params.append(session_id)
 
-        if project_ids:
-            placeholders = ", ".join("?" for _ in project_ids)
-            conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if domain_ids:
+            placeholders = ", ".join("?" for _ in domain_ids)
+            conditions.append(f"domain_id IN ({placeholders})")
+            params.extend(domain_ids)
 
         where = " AND ".join(conditions)
         result = self._conn.execute(
             f"""
             SELECT id, name, display_name, semantic_type, ner_type,
-                   session_id, project_id, created_at
+                   session_id, domain_id, created_at
             FROM entities
             WHERE {where}
             LIMIT 1
@@ -1291,7 +1314,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         if not result:
             return None
 
-        entity_id, entity_name, display_name, semantic_type, ner_type, sess_id, proj_id, created_at = result
+        entity_id, entity_name, display_name, semantic_type, ner_type, sess_id, dom_id, created_at = result
 
         return Entity(
             id=entity_id,
@@ -1300,7 +1323,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             semantic_type=semantic_type,
             ner_type=ner_type,
             session_id=sess_id,
-            project_id=proj_id,
+            domain_id=dom_id,
             created_at=created_at,
         )
 
@@ -1308,7 +1331,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         query_embedding: np.ndarray,
         limit: int = 5,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[EnrichedChunk]:
         """Search for chunks and include associated entities.
@@ -1316,14 +1339,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         Args:
             query_embedding: Query embedding vector
             limit: Maximum number of results
-            project_ids: List of project IDs to include (None means no project filter)
+            domain_ids: List of domain IDs to include (None means no domain filter)
             session_id: Session ID to include entities (None means no entities)
 
         Returns:
             List of EnrichedChunk objects with entities
         """
         # First do the regular search with filtering
-        results = self.search(query_embedding, limit, project_ids, session_id)
+        results = self.search(query_embedding, limit, domain_ids, session_id)
 
         # Enrich with entities if session_id provided
         enriched = []
@@ -1344,7 +1367,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         query_embedding: np.ndarray,
         limit: int = 5,
         min_similarity: float = 0.3,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         session_id: str | None = None,
     ) -> list[dict]:
         """Find entities linked to chunks similar to the query embedding.
@@ -1356,14 +1379,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             query_embedding: Query embedding vector
             limit: Maximum number of entity results
             min_similarity: Minimum cosine similarity threshold
-            project_ids: Project IDs to include (None means no project filter)
+            domain_ids: Domain IDs to include (None means no domain filter)
             session_id: Session ID to scope entities
 
         Returns:
             List of dicts with id, name, type, similarity
         """
         # Search chunks first (fetch more to get enough unique entities)
-        results = self.search(query_embedding, limit=limit * 3, project_ids=project_ids, session_id=session_id)
+        results = self.search(query_embedding, limit=limit * 3, domain_ids=domain_ids, session_id=session_id)
 
         # Collect entities from matched chunks, tracking best similarity
         entity_best: dict[str, dict] = {}
@@ -1443,20 +1466,20 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.info(f"clear_session_entities({session_id[:8]}): deleted {link_count} links, {entity_count} entities")
         return link_count, entity_count
 
-    def clear_project_session_entities(self, session_id: str, project_id: str) -> int:
-        """Clear entities for a specific project in a session.
+    def clear_domain_session_entities(self, session_id: str, domain_id: str) -> int:
+        """Clear entities for a specific domain in a session.
 
         Args:
             session_id: Session ID
-            project_id: Project ID to clear entities for
+            domain_id: Domain ID to clear entities for
 
         Returns:
             Number of entities deleted
         """
         # Get entity IDs to delete
         result = self._conn.execute(
-            "SELECT id FROM entities WHERE session_id = ? AND project_id = ?",
-            [session_id, project_id]
+            "SELECT id FROM entities WHERE session_id = ? AND domain_id = ?",
+            [session_id, domain_id]
         ).fetchall()
         entity_ids = [row[0] for row in result]
 
@@ -1472,11 +1495,11 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         # Delete the entities
         self._conn.execute(
-            "DELETE FROM entities WHERE session_id = ? AND project_id = ?",
-            [session_id, project_id]
+            "DELETE FROM entities WHERE session_id = ? AND domain_id = ?",
+            [session_id, domain_id]
         )
 
-        logger.debug(f"clear_project_session_entities({session_id}, {project_id}): deleted {len(entity_ids)} entities")
+        logger.debug(f"clear_domain_session_entities({session_id}, {domain_id}): deleted {len(entity_ids)} entities")
         return len(entity_ids)
 
     def get_entity_names(self, session_id: str) -> list[str]:
@@ -1497,7 +1520,7 @@ class DuckDBVectorStore(VectorStoreBackend):
     def extract_entities_for_session(
         self,
         session_id: str,
-        project_ids: list[str] | None = None,
+        domain_ids: list[str] | None = None,
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
@@ -1506,7 +1529,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         Args:
             session_id: Session ID
-            project_ids: Project IDs to include (chunks from these + base)
+            domain_ids: Domain IDs to include (chunks from these + base)
             schema_terms: Database table/column names for custom patterns
             api_terms: API endpoint names for custom patterns
             business_terms: Business glossary terms for custom patterns
@@ -1519,8 +1542,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Clear any existing entities for this session
         self.clear_session_entities(session_id)
 
-        # Get all chunks for base + active projects
-        chunks = self.get_all_chunks(project_ids)
+        # Get all chunks for base + active domains
+        chunks = self.get_all_chunks(domain_ids)
         if not chunks:
             logger.debug(f"No chunks found for session {session_id}")
             return 0
@@ -1551,19 +1574,19 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return len(entities)
 
-    def extract_entities_for_project(
+    def extract_entities_for_domain(
         self,
         session_id: str,
-        project_id: str,
+        domain_id: str,
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
     ) -> int:
-        """Extract entities for a specific project's chunks (incremental add).
+        """Extract entities for a specific domain's chunks (incremental add).
 
         Args:
             session_id: Session ID
-            project_id: Project ID to extract entities for
+            domain_id: Domain ID to extract entities for
             schema_terms: Database table/column names for custom patterns
             api_terms: API endpoint names for custom patterns
             business_terms: Business glossary terms for custom patterns
@@ -1573,18 +1596,18 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         from constat.discovery.entity_extractor import EntityExtractor
 
-        # Get chunks for this specific project
-        chunks = self.get_project_chunks(project_id)
+        # Get chunks for this specific domain
+        chunks = self.get_domain_chunks(domain_id)
         if not chunks:
-            logger.debug(f"No chunks found for project {project_id}")
+            logger.debug(f"No chunks found for domain {domain_id}")
             return 0
 
-        logger.info(f"Extracting entities from {len(chunks)} chunks for project {project_id} in session {session_id}")
+        logger.info(f"Extracting entities from {len(chunks)} chunks for domain {domain_id} in session {session_id}")
 
         # Create extractor with custom patterns
         extractor = EntityExtractor(
             session_id=session_id,
-            project_id=project_id,
+            domain_id=domain_id,
             schema_terms=schema_terms,
             api_terms=api_terms,
             business_terms=business_terms,
@@ -1602,7 +1625,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         if entities:
             self.add_entities(entities, session_id)
             self.link_chunk_entities(all_links)
-            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks for project {project_id}")
+            logger.info(f"Extracted {len(entities)} entities from {len(chunks)} chunks for domain {domain_id}")
 
         return len(entities)
 
@@ -1627,11 +1650,11 @@ class DuckDBVectorStore(VectorStoreBackend):
             ))
         return chunks
 
-    def get_project_chunks(self, project_id: str) -> list[DocumentChunk]:
-        """Get all chunks for a specific project.
+    def get_domain_chunks(self, domain_id: str) -> list[DocumentChunk]:
+        """Get all chunks for a specific domain.
 
         Args:
-            project_id: Project ID
+            domain_id: Domain ID
 
         Returns:
             List of DocumentChunk objects
@@ -1640,31 +1663,31 @@ class DuckDBVectorStore(VectorStoreBackend):
             """
             SELECT document_name, content, section, chunk_index, source, chunk_type
             FROM embeddings
-            WHERE project_id = ?
+            WHERE domain_id = ?
             ORDER BY document_name, chunk_index
             """,
-            [project_id],
+            [domain_id],
         ).fetchall()
 
         return self._rows_to_chunks(result)
 
-    def get_all_chunks(self, project_ids: list[str] | None = None) -> list[DocumentChunk]:
-        """Get all chunks for base + specified projects.
+    def get_all_chunks(self, domain_ids: list[str] | None = None) -> list[DocumentChunk]:
+        """Get all chunks for base + specified domains.
 
         Args:
-            project_ids: Project IDs to include
+            domain_ids: Domain IDs to include
 
         Returns:
             List of DocumentChunk objects
         """
-        # Build filter for base + projects
-        conditions = ["project_id IS NULL"]
+        # Build filter for base + domains
+        conditions = ["domain_id IS NULL"]
         params: list = []
 
-        if project_ids:
-            placeholders = ",".join(["?" for _ in project_ids])
-            conditions.append(f"project_id IN ({placeholders})")
-            params.extend(project_ids)
+        if domain_ids:
+            placeholders = ",".join(["?" for _ in domain_ids])
+            conditions.append(f"domain_id IN ({placeholders})")
+            params.extend(domain_ids)
 
         where_clause = " OR ".join(conditions)
 
