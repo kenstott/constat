@@ -2234,6 +2234,45 @@ ${skill.body}`
                         <PencilIcon className="w-3 h-3" />
                       </button>
                       <button
+                        onClick={async () => {
+                          try {
+                            const headers: Record<string, string> = {}
+                            const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+                            if (!isAuthDisabled) {
+                              const token = await useAuthStore.getState().getToken()
+                              if (token) {
+                                headers['Authorization'] = `Bearer ${token}`
+                              }
+                            }
+                            const response = await fetch(
+                              `/api/skills/${encodeURIComponent(skill.name)}/download`,
+                              { headers, credentials: 'include' }
+                            )
+                            if (!response.ok) {
+                              const errorData = await response.json().catch(() => ({}))
+                              alert(errorData.detail || 'Failed to download skill')
+                              return
+                            }
+                            const blob = await response.blob()
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a')
+                            a.href = url
+                            a.download = `${skill.name}.zip`
+                            document.body.appendChild(a)
+                            a.click()
+                            document.body.removeChild(a)
+                            URL.revokeObjectURL(url)
+                          } catch (err) {
+                            console.error('Skill download failed:', err)
+                            alert('Failed to download skill.')
+                          }
+                        }}
+                        className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                        title="Download skill as zip"
+                      >
+                        <ArrowDownTrayIcon className="w-3 h-3" />
+                      </button>
+                      <button
                         onClick={() => handleDeleteSkill(skill.name)}
                         className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
                         title="Delete skill"

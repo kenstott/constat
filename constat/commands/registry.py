@@ -49,6 +49,7 @@ from constat.commands.session_cmds import (
     skill_delete_command,
     skill_deactivate_command,
     skill_draft_command,
+    skill_download_command,
     prove_command,
 )
 from constat.commands.sources import (
@@ -109,6 +110,7 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/skill-delete",), skill_delete_command, _cmd_desc["skill-delete"]),
     (("/skill-deactivate",), skill_deactivate_command, _cmd_desc["skill-deactivate"]),
     (("/skill-draft",), skill_draft_command, _cmd_desc["skill-draft"]),
+    (("/skill-download",), skill_download_command, _cmd_desc["skill-download"]),
     # Proof/verification
     (("/prove",), prove_command, _cmd_desc["prove"]),
 ]

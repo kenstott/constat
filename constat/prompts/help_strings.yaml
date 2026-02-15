@@ -69,6 +69,7 @@ help_commands:
   - ["/skill-delete <name>", "Delete a skill", "Roles & Skills"]
   - ["/skill-deactivate <name>", "Deactivate a skill", "Roles & Skills"]
   - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Roles & Skills"]
+  - ["/skill-download <name> [file]", "Download skill as Claude Desktop zip", "Roles & Skills"]
   # Exit
   - ["/quit, /q", "Exit the session", "Exit"]
 
@@ -122,4 +123,5 @@ command_descriptions:
   skill-delete: "Delete a skill"
   skill-deactivate: "Deactivate a skill"
   skill-draft: "Draft a skill using AI"
+  skill-download: "Download skill as Claude Desktop zip"
   prove: "Verify conversation with auditable proof"

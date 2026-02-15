@@ -11,9 +11,11 @@ from pathlib import Path
 import yaml
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from constat.core.skills import SkillManager
+from constat.core.skill_packager import package_skill
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
 from constat.server.session_manager import SessionManager
@@ -413,6 +415,28 @@ async def create_skill_from_proof(
         content=content,
         description=description,
         has_script=has_script,
+    )
+
+
+@router.get("/skills/{skill_name}/download")
+async def download_skill(
+    request: Request,
+    skill_name: str,
+    user_id: CurrentUserId,
+) -> Response:
+    """Download a skill as a Claude Desktop compatible zip."""
+    server_config = get_server_config(request)
+    manager = get_skill_manager(user_id, server_config.data_dir)
+
+    try:
+        zip_bytes = package_skill(skill_name, manager)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{skill_name}.zip"'},
     )
 
 

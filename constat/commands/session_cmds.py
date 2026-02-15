@@ -772,6 +772,43 @@ def skill_draft_command(ctx: CommandContext) -> CommandResult:
         return ErrorResult(error=f"Failed to draft skill: {e}")
 
 
+def skill_download_command(ctx: CommandContext) -> CommandResult:
+    """Download a skill as a Claude Desktop compatible zip.
+
+    Usage: /skill-download <name> [filename]
+    """
+    from constat.core.skill_packager import package_skill
+
+    session = ctx.session
+    if not hasattr(session, "skill_manager"):
+        return ErrorResult(error="Skill manager not available.")
+
+    args = ctx.args.strip()
+    if not args:
+        return ErrorResult(error="Usage: /skill-download <name> [filename]")
+
+    parts = args.split(maxsplit=1)
+    name = parts[0]
+    filename = parts[1] if len(parts) > 1 else f"{name}.zip"
+    if not filename.endswith(".zip"):
+        filename += ".zip"
+
+    try:
+        zip_bytes = package_skill(name, session.skill_manager)
+    except ValueError as e:
+        return ErrorResult(error=str(e))
+
+    from pathlib import Path
+    out_path = Path(filename).resolve()
+    out_path.write_bytes(zip_bytes)
+
+    size_kb = len(zip_bytes) / 1024
+    return TextResult(
+        success=True,
+        content=f"Saved **{out_path}** ({size_kb:.1f} KB)",
+    )
+
+
 def prove_command(ctx: CommandContext) -> CommandResult:
     """Run proof verification on the current conversation.
 
