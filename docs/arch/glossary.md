@@ -565,6 +565,85 @@ To act on results, follow the resource type:
 
 This replaces `search_documents`, `search_glossary`, and `search_all` with a single tool. The vector space is unified; the resolution logic handles the rest.
 
+### 1h: Relationship Suggestions
+
+> Moved from `config_merge.md` Phase 8. Relationships describe how glossary terms connect to each other beyond taxonomy (parent/child). They surface join paths, business rules, and domain constraints.
+
+Three suggestion sources, in order of confidence:
+
+**1. FK-derived relationships (high confidence, no LLM needed)**
+
+Foreign keys are explicit declarations of how tables relate. Walk the schema's FK graph and generate relationship suggestions between the glossary terms that ground to those tables.
+
+```python
+def suggest_fk_relationships(
+    session_id: str,
+    glossary_terms: list[GlossaryTerm],
+) -> list[dict]:
+    """Generate relationship suggestions from foreign key constraints.
+
+    For each FK: source_table.column -> target_table.column,
+    find glossary terms grounded to source_table and target_table.
+    Suggest a relationship between those terms.
+    """
+    suggestions = []
+    for fk in get_all_foreign_keys(session_id):
+        source_terms = terms_grounded_to_table(fk.source_table, glossary_terms)
+        target_terms = terms_grounded_to_table(fk.target_table, glossary_terms)
+        for s in source_terms:
+            for t in target_terms:
+                suggestions.append({
+                    "source": s.name,
+                    "target": t.name,
+                    "relationship": f"{s.display_name} has {t.display_name}",
+                    "evidence": f"FK: {fk.source_table}.{fk.source_column} -> {fk.target_table}.{fk.target_column}",
+                    "confidence": "high",
+                    "provenance": "fk",
+                })
+    return suggestions
+```
+
+**2. Co-occurrence relationships (medium confidence)**
+
+Terms that consistently appear together in chunks likely have a business relationship. Count co-occurrence frequency across chunks and suggest relationships for pairs above a threshold.
+
+```python
+def suggest_cooccurrence_relationships(
+    session_id: str,
+    glossary_terms: list[GlossaryTerm],
+    min_cooccurrence: int = 3,
+) -> list[dict]:
+    """Suggest relationships from entity co-occurrence in chunks.
+
+    Two terms appearing in 3+ chunks together likely have a business relationship.
+    The LLM refines the relationship type in a follow-up step.
+    """
+    pairs = count_entity_cooccurrences(session_id)
+    suggestions = []
+    for (name_a, name_b), count in pairs.items():
+        if count >= min_cooccurrence:
+            term_a = find_term(name_a, glossary_terms)
+            term_b = find_term(name_b, glossary_terms)
+            if term_a and term_b:
+                suggestions.append({
+                    "source": term_a.name,
+                    "target": term_b.name,
+                    "relationship": None,  # LLM refines this
+                    "evidence": f"Co-occur in {count} chunks",
+                    "confidence": "medium",
+                    "provenance": "cooccurrence",
+                })
+    return suggestions
+```
+
+**3. SVO (Subject-Verb-Object) relationship suggestions (medium confidence)**
+
+Extract SVO triples from document chunks where both subject and object match glossary terms. The verb becomes the relationship label. See `rel_ex.md` for extraction details.
+
+**Persistence:** Confirmed relationships persist to the domain's config YAML at the chosen tier (see `config_merge.md` §5 tier merge). On next session start, tier merge reloads them. Relationships are stored as a map keyed by id, same as glossary terms.
+
+**UI:** Relationship suggestions appear in the GlossaryPanel (Phase 2a) as a "Suggested Relationships" section when viewing a term's detail. Confirm/edit/discard per suggestion.
+
 ## Phase 2: Unified Glossary UI
 
 ### 2a: Glossary Browser (replaces EntityAccordion)
@@ -865,6 +944,7 @@ This phase connects the glossary back to the book's vision: curated business def
 | 1e | Physical resource resolution (multi-hop walk, ungrounded pruning) | 1d |
 | 1f | Unified search tool (single tool, chunk-type-based resolution) | 1e |
 | 1g | API endpoints (unified glossary, CRUD, deprecation) | 1b |
+| 1h | Relationship suggestions (FK-derived, co-occurrence, SVO) | 1a, 1c |
 | 2a | Unified GlossaryPanel (replaces EntityAccordion) | 1g |
 | 2b | `[+ Define]`, inline editing, status workflow, re-embedding | 2a |
 | 2c | Deprecation queue UI | 2a |

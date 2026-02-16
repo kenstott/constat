@@ -21,6 +21,7 @@ from typing import Optional, Any
 
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
+from constat.core.tiered_config import ResolvedConfig, TieredConfigLoader
 from constat.server.config import ServerConfig
 from constat.server.models import EventType, SessionStatus
 from constat.session import Session, SessionConfig
@@ -51,6 +52,9 @@ class ManagedSession:
     # Active domain filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
     active_domains: list[str] = field(default_factory=list)
 
+    # Resolved tiered config (rebuilt on domain/source changes)
+    resolved_config: Optional[ResolvedConfig] = None
+
     # Dynamic resources (databases, APIs, file refs) added during the session
     _dynamic_dbs: list[dict[str, Any]] = field(default_factory=list)
     _dynamic_apis: list[dict[str, Any]] = field(default_factory=list)
@@ -80,16 +84,6 @@ class ManagedSession:
         """Check if session has exceeded timeout."""
         expiry = self.last_activity + timedelta(minutes=timeout_minutes)
         return datetime.now(timezone.utc) > expiry
-
-    @property
-    def active_projects(self) -> list[str]:
-        """Backwards compatibility alias for active_domains."""
-        return self.active_domains
-
-    @active_projects.setter
-    def active_projects(self, value: list[str]) -> None:
-        """Backwards compatibility alias for active_domains."""
-        self.active_domains = value
 
     def has_database(self, db_name: str) -> bool:
         """Check if a database exists in any source (config, domain, dynamic, schema_manager)."""
@@ -344,12 +338,84 @@ class SessionManager:
 
             logger.info(f"Created session {session_id} for user {user_id}")
 
+        # Build initial resolved config (tier 1 + user tier; domains added later)
+        self.resolve_config(session_id)
+
         # Run NER in background (non-blocking session creation)
         # Entity links populate progressively; queries work via vector search until done
         # MUST be outside `with self._lock:` — refresh_entities_async acquires the same lock
         self.refresh_entities_async(session_id)
 
         return session_id
+
+    @staticmethod
+    def _build_session_overrides(managed: ManagedSession) -> dict:
+        """Build session-tier overrides from dynamic resources."""
+        overrides: dict = {}
+        if managed._dynamic_dbs:
+            overrides["databases"] = {
+                db["name"]: {
+                    "type": db.get("type", "sql"),
+                    "uri": db.get("uri", ""),
+                    "description": db.get("description", ""),
+                }
+                for db in managed._dynamic_dbs
+            }
+        if managed._dynamic_apis:
+            overrides["apis"] = {
+                api["name"]: {
+                    "type": api.get("type", "rest"),
+                    "url": api.get("base_url", ""),
+                    "description": api.get("description", ""),
+                }
+                for api in managed._dynamic_apis
+            }
+        if managed._file_refs:
+            overrides["documents"] = {
+                ref["name"]: {
+                    "type": "file",
+                    "path": ref.get("uri", ""),
+                    "description": ref.get("description", ""),
+                }
+                for ref in managed._file_refs
+            }
+        return overrides
+
+    def resolve_config(self, session_id: str) -> Optional[ResolvedConfig]:
+        """Build or rebuild the tiered ResolvedConfig for a session.
+
+        Merges system, system-domain, user, user-domain, and session tiers.
+        Stores result on both ManagedSession and Session.
+
+        Args:
+            session_id: Session ID to resolve config for
+
+        Returns:
+            ResolvedConfig or None if session not found
+        """
+        with self._lock:
+            if session_id not in self._sessions:
+                logger.warning(f"Cannot resolve config: session {session_id} not found")
+                return None
+            managed = self._sessions[session_id]
+
+        session_overrides = self._build_session_overrides(managed)
+        loader = TieredConfigLoader(
+            config=self._config,
+            user_id=managed.user_id,
+            base_dir=self._server_config.data_dir,
+            domain_names=managed.active_domains or [],
+            session_overrides=session_overrides,
+        )
+        resolved = loader.resolve()
+        managed.resolved_config = resolved
+        managed.session.resolved_config = resolved
+        logger.info(f"Resolved tiered config for session {session_id}: "
+                     f"{len(resolved.sources.databases)} dbs, "
+                     f"{len(resolved.sources.apis)} apis, "
+                     f"{len(resolved.glossary)} glossary, "
+                     f"domains={resolved.active_domains}")
+        return resolved
 
     def _run_entity_extraction(self, session_id: str, session: Session) -> None:
         """Run NER for session's visible documents.

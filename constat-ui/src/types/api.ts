@@ -68,7 +68,7 @@ export interface Session {
   last_activity: string
   current_query?: string
   summary?: string // LLM-generated session summary
-  active_projects?: string[] // Active project filenames
+  active_domains?: string[] // Active domain filenames
   tables_count: number
   artifacts_count: number
 }

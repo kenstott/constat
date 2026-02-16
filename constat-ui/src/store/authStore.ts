@@ -19,7 +19,7 @@ import {
 
 interface Permissions {
   admin: boolean
-  projects: string[]
+  domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]
@@ -86,7 +86,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         loading: false,
         initialized: true,
-        permissions: { admin: true, projects: [], databases: [], documents: [], apis: [] },
+        permissions: { admin: true, domains: [], databases: [], documents: [], apis: [] },
       })
       return
     }
@@ -99,11 +99,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (user) {
         try {
           const perms = await usersApi.getMyPermissions()
-          set({ permissions: { admin: perms.admin, projects: perms.projects, databases: perms.databases, documents: perms.documents, apis: perms.apis } })
+          set({ permissions: { admin: perms.admin, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis } })
         } catch (err) {
           console.error('Failed to fetch permissions:', err)
           // Default to no permissions on error
-          set({ permissions: { admin: false, projects: [], databases: [], documents: [], apis: [] } })
+          set({ permissions: { admin: false, domains: [], databases: [], documents: [], apis: [] } })
         }
       } else {
         set({ permissions: null })
@@ -113,13 +113,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   fetchPermissions: async () => {
     if (isAuthDisabled) {
-      set({ permissions: { admin: true, projects: [], databases: [], documents: [], apis: [] } })
+      set({ permissions: { admin: true, domains: [], databases: [], documents: [], apis: [] } })
       return
     }
 
     try {
       const perms = await usersApi.getMyPermissions()
-      set({ permissions: { admin: perms.admin, projects: perms.projects, databases: perms.databases, documents: perms.documents, apis: perms.apis } })
+      set({ permissions: { admin: perms.admin, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis } })
     } catch (err) {
       console.error('Failed to fetch permissions:', err)
     }

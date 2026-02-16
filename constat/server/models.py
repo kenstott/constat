@@ -598,6 +598,7 @@ class SessionDatabaseInfo(BaseModel):
     is_dynamic: bool = Field(description="Whether dynamically added (vs config)")
     file_id: Optional[str] = Field(default=None, description="Uploaded file ID if any")
     source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
+    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDatabaseListResponse(BaseModel):
@@ -617,6 +618,7 @@ class SessionApiInfo(BaseModel):
     from_config: bool = Field(description="Whether from config (vs session-added)")
     source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
     is_dynamic: bool = Field(default=False, description="Whether dynamically added (vs config)")
+    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDocumentInfo(BaseModel):
@@ -629,6 +631,7 @@ class SessionDocumentInfo(BaseModel):
     indexed: bool = Field(description="Whether document is indexed")
     from_config: bool = Field(description="Whether from config (vs session-added)")
     source: str = Field(default="config", description="Source: 'config', domain filename, or 'session'")
+    tier: Optional[str] = Field(default=None, description="Config tier: system, system_domain, user, user_domain, session")
 
 
 class SessionDataSourcesResponse(BaseModel):
@@ -767,18 +770,10 @@ class DomainInfo(BaseModel):
     description: str = Field(default="", description="Domain description")
 
 
-# Backward compatibility alias
-ProjectInfo = DomainInfo
-
-
 class DomainListResponse(BaseModel):
     """List of available domains."""
 
     domains: list[DomainInfo] = Field(description="Available domains")
-
-
-# Backward compatibility alias
-ProjectListResponse = DomainListResponse
 
 
 class DomainDetailResponse(BaseModel):
@@ -790,10 +785,6 @@ class DomainDetailResponse(BaseModel):
     databases: list[str] = Field(description="Database names in domain")
     apis: list[str] = Field(description="API names in domain")
     documents: list[str] = Field(description="Document names in domain")
-
-
-# Backward compatibility alias
-ProjectDetailResponse = DomainDetailResponse
 
 
 # ============================================================================

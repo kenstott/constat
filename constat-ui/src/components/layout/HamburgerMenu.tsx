@@ -17,7 +17,7 @@ import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Session } from '@/types/api'
-import type { ProjectInfo } from '@/api/sessions'
+import type { DomainInfo } from '@/api/sessions'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
@@ -78,19 +78,19 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   const { session: currentSession, setSession, updateSession, createSession } = useSessionStore()
   const [sessions, setSessions] = useState<Session[]>([])
   const [loadingSessions, setLoadingSessions] = useState(false)
-  const [projects, setProjects] = useState<ProjectInfo[]>([])
-  const [loadingProjects, setLoadingProjects] = useState(false)
+  const [domains, setDomains] = useState<DomainInfo[]>([])
+  const [loadingDomains, setLoadingDomains] = useState(false)
 
   // Loading state for session operations
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null)
   const [creatingSession, setCreatingSession] = useState(false)
 
-  // Project editor modal state
-  const [editingProject, setEditingProject] = useState<string | null>(null)
-  const [projectContent, setProjectContent] = useState('')
-  const [projectPath, setProjectPath] = useState('')
-  const [savingProject, setSavingProject] = useState(false)
-  const [projectSaveError, setProjectSaveError] = useState<string | null>(null)
+  // Domain editor modal state
+  const [editingDomain, setEditingDomain] = useState<string | null>(null)
+  const [domainContent, setDomainContent] = useState('')
+  const [domainPath, setDomainPath] = useState('')
+  const [savingDomain, setSavingDomain] = useState(false)
+  const [domainSaveError, setDomainSaveError] = useState<string | null>(null)
 
   // Fetch sessions, projects, and skills when menu opens
   useEffect(() => {
@@ -113,14 +113,14 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         .catch(console.error)
         .finally(() => setLoadingSessions(false))
 
-      // Fetch projects
-      setLoadingProjects(true)
-      sessionsApi.listProjects()
+      // Fetch domains
+      setLoadingDomains(true)
+      sessionsApi.listDomains()
         .then((response) => {
-          setProjects(response.projects)
+          setDomains(response.domains)
         })
         .catch(console.error)
-        .finally(() => setLoadingProjects(false))
+        .finally(() => setLoadingDomains(false))
     }
   }, [menuOpen, currentSession?.session_id])
 
@@ -206,77 +206,77 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
     }
   }
 
-  const [projectError, setProjectError] = useState<string | null>(null)
+  const [domainError, setDomainError] = useState<string | null>(null)
 
-  const handleToggleProject = async (projectFilename: string) => {
+  const handleToggleDomain = async (domainFilename: string) => {
     if (!currentSession) return
 
-    setProjectError(null)
-    const currentProjects = currentSession.active_projects || []
-    const isSelected = currentProjects.includes(projectFilename)
+    setDomainError(null)
+    const currentDomains = currentSession.active_domains || []
+    const isSelected = currentDomains.includes(domainFilename)
 
     // Toggle: remove if selected, add if not
-    const newProjects = isSelected
-      ? currentProjects.filter(p => p !== projectFilename)
-      : [...currentProjects, projectFilename]
+    const newDomains = isSelected
+      ? currentDomains.filter(d => d !== domainFilename)
+      : [...currentDomains, domainFilename]
 
     try {
-      await sessionsApi.setActiveProjects(currentSession.session_id, newProjects)
+      await sessionsApi.setActiveDomains(currentSession.session_id, newDomains)
       // Update local session state without clearing messages or reconnecting WebSocket
-      updateSession({ active_projects: newProjects })
+      updateSession({ active_domains: newDomains })
       // Refresh data sources and entities to show merged sources
       const artifactStore = useArtifactStore.getState()
       await artifactStore.fetchDataSources(currentSession.session_id)
       // Entities refresh via entity_rebuild_complete WS event
     } catch (error: unknown) {
-      console.error('Failed to set projects:', error)
+      console.error('Failed to set domains:', error)
       // Handle conflict errors
       if (error && typeof error === 'object' && 'message' in error) {
         const errObj = error as { message?: string; response?: { data?: { detail?: { message?: string; conflicts?: string[] } } } }
         const detail = errObj.response?.data?.detail
         if (detail && typeof detail === 'object' && detail.conflicts) {
-          setProjectError(detail.conflicts.join('\n'))
+          setDomainError(detail.conflicts.join('\n'))
         } else {
-          setProjectError(errObj.message || 'Failed to update projects')
+          setDomainError(errObj.message || 'Failed to update domains')
         }
       }
     }
   }
 
-  // Open project editor
-  const handleEditProject = async (filename: string) => {
+  // Open domain editor
+  const handleEditDomain = async (filename: string) => {
     try {
-      setProjectSaveError(null)
-      const result = await sessionsApi.getProjectContent(filename)
-      setProjectContent(result.content)
-      setProjectPath(result.path)
-      setEditingProject(filename)
+      setDomainSaveError(null)
+      const result = await sessionsApi.getDomainContent(filename)
+      setDomainContent(result.content)
+      setDomainPath(result.path)
+      setEditingDomain(filename)
     } catch (error) {
-      console.error('Failed to load project:', error)
+      console.error('Failed to load domain:', error)
     }
   }
 
-  // Save project content
-  const handleSaveProject = async () => {
-    if (!editingProject) return
+  // Save domain content
+  const handleSaveDomain = async () => {
+    if (!editingDomain) return
 
-    setSavingProject(true)
-    setProjectSaveError(null)
+    setSavingDomain(true)
+    setDomainSaveError(null)
     try {
-      await sessionsApi.updateProjectContent(editingProject, projectContent)
-      // Refresh projects list
-      const response = await sessionsApi.listProjects()
-      setProjects(response.projects)
-      setEditingProject(null)
+      await sessionsApi.updateDomainContent(editingDomain, domainContent)
+      // Refresh domains list
+      const response = await sessionsApi.listDomains()
+      setDomains(response.domains)
+      setEditingDomain(null)
     } catch (error: unknown) {
-      console.error('Failed to save project:', error)
+      console.error('Failed to save domain:', error)
       if (error && typeof error === 'object' && 'message' in error) {
-        setProjectSaveError((error as { message: string }).message)
+        setDomainSaveError((error as { message: string }).message)
       } else {
-        setProjectSaveError('Failed to save project')
+        setDomainSaveError('Failed to save domain')
       }
     } finally {
-      setSavingProject(false)
+      setSavingDomain(false)
     }
   }
 
@@ -434,28 +434,28 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                       </div>
                     </div>
 
-                    {/* Projects section */}
-                    {projects.length > 0 && (
+                    {/* Domains section */}
+                    {domains.length > 0 && (
                       <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                          Projects
+                          Domains
                         </h3>
-                        {projectError && (
+                        {domainError && (
                           <div className="mb-2 p-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-md">
-                            {projectError}
+                            {domainError}
                           </div>
                         )}
                         <div className="space-y-1">
-                          {loadingProjects ? (
-                            <p className="text-xs text-gray-400 py-2">Loading projects...</p>
+                          {loadingDomains ? (
+                            <p className="text-xs text-gray-400 py-2">Loading domains...</p>
                           ) : (
                             <>
-                              {/* Project options with checkboxes */}
-                              {projects.map((project) => {
-                                const isSelected = currentSession?.active_projects?.includes(project.filename) ?? false
+                              {/* Domain options with checkboxes */}
+                              {domains.map((domain) => {
+                                const isSelected = currentSession?.active_domains?.includes(domain.filename) ?? false
                                 return (
                                   <div
-                                    key={project.filename}
+                                    key={domain.filename}
                                     className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${
                                       isSelected
                                         ? 'bg-primary-100 dark:bg-primary-900/30'
@@ -465,11 +465,11 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                                     <input
                                       type="checkbox"
                                       checked={isSelected}
-                                      onChange={() => handleToggleProject(project.filename)}
+                                      onChange={() => handleToggleDomain(domain.filename)}
                                       className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 dark:bg-gray-700"
                                     />
                                     <button
-                                      onClick={() => handleToggleProject(project.filename)}
+                                      onClick={() => handleToggleDomain(domain.filename)}
                                       className="flex-1 min-w-0 text-left"
                                     >
                                       <p className={`text-sm font-medium truncate ${
@@ -477,21 +477,21 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                                           ? 'text-primary-700 dark:text-primary-300'
                                           : 'text-gray-900 dark:text-gray-100'
                                       }`}>
-                                        {project.name}
+                                        {domain.name}
                                       </p>
-                                      {project.description && (
+                                      {domain.description && (
                                         <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                          {project.description}
+                                          {domain.description}
                                         </p>
                                       )}
                                     </button>
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        handleEditProject(project.filename)
+                                        handleEditDomain(domain.filename)
                                       }}
                                       className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600"
-                                      title="Edit project YAML"
+                                      title="Edit domain YAML"
                                     >
                                       <PencilIcon className="w-4 h-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" />
                                     </button>
@@ -538,9 +538,9 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       </Dialog>
     </Transition.Root>
 
-      {/* Project Editor Modal */}
-      <Transition.Root show={editingProject !== null} as={Fragment}>
-        <Dialog as="div" className="relative z-[60]" onClose={() => setEditingProject(null)}>
+      {/* Domain Editor Modal */}
+      <Transition.Root show={editingDomain !== null} as={Fragment}>
+        <Dialog as="div" className="relative z-[60]" onClose={() => setEditingDomain(null)}>
           <Transition.Child
             as={Fragment}
             enter="ease-out duration-300"
@@ -567,10 +567,10 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                 <Dialog.Panel className="w-full max-w-3xl transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow-xl transition-all">
                   <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                     <Dialog.Title className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      Edit Project: {editingProject}
+                      Edit Domain: {editingDomain}
                     </Dialog.Title>
                     <button
-                      onClick={() => setEditingProject(null)}
+                      onClick={() => setEditingDomain(null)}
                       className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"
                     >
                       <XMarkIcon className="w-5 h-5 text-gray-500" />
@@ -579,34 +579,34 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
 
                   <div className="p-4">
                     <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                      {projectPath}
+                      {domainPath}
                     </p>
                     <textarea
-                      value={projectContent}
-                      onChange={(e) => setProjectContent(e.target.value)}
+                      value={domainContent}
+                      onChange={(e) => setDomainContent(e.target.value)}
                       className="w-full h-96 font-mono text-sm p-3 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                       spellCheck={false}
                     />
-                    {projectSaveError && (
+                    {domainSaveError && (
                       <p className="mt-2 text-sm text-red-600 dark:text-red-400">
-                        {projectSaveError}
+                        {domainSaveError}
                       </p>
                     )}
                   </div>
 
                   <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
                     <button
-                      onClick={() => setEditingProject(null)}
+                      onClick={() => setEditingDomain(null)}
                       className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors"
                     >
                       Cancel
                     </button>
                     <button
-                      onClick={handleSaveProject}
-                      disabled={savingProject}
+                      onClick={handleSaveDomain}
+                      disabled={savingDomain}
                       className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors"
                     >
-                      {savingProject ? 'Saving...' : 'Save'}
+                      {savingDomain ? 'Saving...' : 'Save'}
                     </button>
                   </div>
                 </Dialog.Panel>

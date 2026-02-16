@@ -6,7 +6,7 @@ export interface UserPermissions {
   user_id: string
   email: string | null
   admin: boolean
-  projects: string[]
+  domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]

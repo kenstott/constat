@@ -79,7 +79,7 @@ def session(temp_history_dir) -> Session:
     session_config = SessionConfig(max_retries_per_step=3)
     session_id = str(uuid.uuid4())
 
-    return Session(config, session_id=session_id, session_config=session_config, history=history)
+    return Session(config, session_id=session_id, session_config=session_config, history=history, data_dir=temp_history_dir.parent)
 
 
 class TestMultiStepSession:
@@ -258,7 +258,7 @@ class TestSessionResumption:
 
         history = SessionHistory(storage_dir=fresh_history_dir)
         session1_id = str(uuid.uuid4())
-        session1 = Session(config, session_id=session1_id, session_config=SessionConfig(max_retries_per_step=3), history=history)
+        session1 = Session(config, session_id=session1_id, session_config=SessionConfig(max_retries_per_step=3), history=history, data_dir=fresh_history_dir.parent)
 
         # Step 1: Initial query - get top genres and save to table
         print("\n--- Step 1: Initial Query ---")
@@ -280,7 +280,7 @@ class TestSessionResumption:
         # Step 2: Create a NEW session instance (simulating app restart)
         print("\n--- Step 2: Resume Session ---")
         session2_id = str(uuid.uuid4())
-        session2 = Session(config, session_id=session2_id, session_config=SessionConfig(max_retries_per_step=3), history=history)
+        session2 = Session(config, session_id=session2_id, session_config=SessionConfig(max_retries_per_step=3), history=history, data_dir=fresh_history_dir.parent)
 
         # Resume the previous session
         resumed = session2.resume(session_id)
@@ -329,7 +329,7 @@ class TestSessionResumption:
         )
         history = SessionHistory(storage_dir=fresh_history_dir)
         session_id = str(uuid.uuid4())
-        session = Session(config, session_id=session_id, history=history)
+        session = Session(config, session_id=session_id, history=history, data_dir=fresh_history_dir.parent)
 
         resumed = session.resume("nonexistent-session-id")
         assert not resumed
@@ -341,7 +341,7 @@ class TestSessionResumption:
         )
         history = SessionHistory(storage_dir=fresh_history_dir)
         session_id = str(uuid.uuid4())
-        session = Session(config, session_id=session_id, history=history)
+        session = Session(config, session_id=session_id, history=history, data_dir=fresh_history_dir.parent)
 
         with pytest.raises(ValueError, match="No datastore available"):
             session.follow_up("Some follow-up question")

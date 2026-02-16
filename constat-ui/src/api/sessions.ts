@@ -594,18 +594,18 @@ export async function saveMessages(
   return post<{ status: string; count: number }>(`/sessions/${sessionId}/messages`, { messages })
 }
 
-// Projects
-export interface ProjectInfo {
+// Domains
+export interface DomainInfo {
   filename: string
   name: string
   description: string
 }
 
-export async function listProjects(): Promise<{ projects: ProjectInfo[] }> {
-  return get<{ projects: ProjectInfo[] }>('/projects')
+export async function listDomains(): Promise<{ domains: DomainInfo[] }> {
+  return get<{ domains: DomainInfo[] }>('/domains')
 }
 
-export async function getProject(filename: string): Promise<{
+export async function getDomain(filename: string): Promise<{
   filename: string
   name: string
   description: string
@@ -613,27 +613,27 @@ export async function getProject(filename: string): Promise<{
   apis: string[]
   documents: string[]
 }> {
-  return get(`/projects/${encodeURIComponent(filename)}`)
+  return get(`/domains/${encodeURIComponent(filename)}`)
 }
 
-export async function setActiveProjects(
+export async function setActiveDomains(
   sessionId: string,
-  projects: string[]
-): Promise<{ status: string; session_id: string; active_projects: string[] }> {
-  return post(`/sessions/${sessionId}/projects`, { projects })
+  domains: string[]
+): Promise<{ status: string; session_id: string; active_domains: string[] }> {
+  return post(`/sessions/${sessionId}/domains`, { domains })
 }
 
-export async function getProjectContent(
+export async function getDomainContent(
   filename: string
 ): Promise<{ content: string; path: string; filename: string }> {
-  return get(`/projects/${encodeURIComponent(filename)}/content`)
+  return get(`/domains/${encodeURIComponent(filename)}/content`)
 }
 
-export async function updateProjectContent(
+export async function updateDomainContent(
   filename: string,
   content: string
 ): Promise<{ status: string; filename: string; path: string }> {
-  return put(`/projects/${encodeURIComponent(filename)}/content`, { content })
+  return put(`/domains/${encodeURIComponent(filename)}/content`, { content })
 }
 
 // Prompt Context
@@ -673,7 +673,7 @@ export interface UserPermissions {
   user_id: string
   email: string | null
   admin: boolean
-  projects: string[]
+  domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]

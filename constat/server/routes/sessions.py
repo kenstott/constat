@@ -283,6 +283,8 @@ async def create_session(
             logger.warning(f"Domain conflicts when loading preferences: {conflicts}")
         if loaded:
             logger.info(f"Loaded preferred domains: {loaded}")
+            # Re-resolve config with active domains
+            session_manager.resolve_config(session_id)
             # Run NER for newly loaded domain documents
             session_manager._run_entity_extraction(session_id, managed.session)
     else:
@@ -488,6 +490,9 @@ async def set_active_domains(
                 "conflicts": conflicts,
             }
         )
+
+    # Re-resolve tiered config with new domains
+    session_manager.resolve_config(session_id)
 
     # Save to user preferences for future sessions
     effective_user_id = user_id if user_id != "default" else managed.user_id

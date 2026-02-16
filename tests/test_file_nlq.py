@@ -117,7 +117,7 @@ Use pandas to load and analyze the files (file_<name> variables contain paths).
         session_config = SessionConfig(max_retries_per_step=3)
         session_id = str(uuid.uuid4())
 
-        session = Session(config, session_id=session_id, session_config=session_config, history=history)
+        session = Session(config, session_id=session_id, session_config=session_config, history=history, data_dir=Path(tmpdir))
         yield session
 
 

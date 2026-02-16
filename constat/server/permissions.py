@@ -56,35 +56,20 @@ class UserPermissions:
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
         apis: Optional[list[str]] = None,
-        # Backwards compatibility
-        projects: Optional[list[str]] = None,
     ):
         self.user_id = user_id
         self.email = email
         self.admin = admin
-        self.domains = domains or projects or []
+        self.domains = domains or []
         self.databases = databases or []
         self.documents = documents or []
         self.apis = apis or []
-
-    @property
-    def projects(self) -> list[str]:
-        """Backwards compatibility alias for domains."""
-        return self.domains
-
-    @projects.setter
-    def projects(self, value: list[str]) -> None:
-        """Backwards compatibility alias for domains."""
-        self.domains = value
 
     def can_access_domain(self, domain_filename: str) -> bool:
         """Check if user can access a specific domain."""
         if self.admin:
             return True
         return domain_filename in self.domains
-
-    # Backwards compatibility alias
-    can_access_project = can_access_domain
 
     def can_access_database(self, db_name: str) -> bool:
         """Check if user can access a specific database."""

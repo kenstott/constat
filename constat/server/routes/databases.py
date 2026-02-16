@@ -37,6 +37,15 @@ def get_session_manager(request: Request) -> SessionManager:
     return request.app.state.session_manager
 
 
+def _get_tier(managed: "SessionManager", resource_type: str, name: str) -> str | None:
+    """Look up the config tier for a resource from resolved_config attribution."""
+    rc = getattr(managed, "resolved_config", None)
+    if not rc or not rc._attribution:
+        return None
+    source = rc._attribution.get(f"{resource_type}.{name}")
+    return source.value if source else None
+
+
 
 @router.post("/{session_id}/databases", response_model=SessionDatabaseInfo)
 async def add_database(
@@ -187,6 +196,9 @@ async def add_database(
     }
     dynamic_dbs.append(db_info)
 
+    # Re-resolve tiered config with new database
+    session_manager.resolve_config(session_id)
+
     # Refresh entities in background (non-blocking)
     if connected:
         session_manager.refresh_entities_async(session_id)
@@ -254,6 +266,7 @@ async def list_databases(
             is_dynamic=False,
             file_id=None,
             source="config",
+            tier=_get_tier(managed, "databases", name),
         ))
         seen_names.add(name)
 
@@ -286,6 +299,7 @@ async def list_databases(
                     is_dynamic=False,
                     file_id=None,
                     source=domain_filename,
+                    tier=_get_tier(managed, "databases", name),
                 ))
                 seen_names.add(name)
 
@@ -306,6 +320,7 @@ async def list_databases(
             is_dynamic=True,
             file_id=db.get("file_id"),
             source="session",
+            tier=_get_tier(managed, "databases", db["name"]),
         ))
 
     return SessionDatabaseListResponse(databases=databases)
@@ -352,6 +367,7 @@ async def list_data_sources(
             connected=True,  # Assume connected if in config
             from_config=True,
             source="config",
+            tier=_get_tier(managed, "apis", name),
         ))
         seen_apis.add(name)
 
@@ -370,6 +386,7 @@ async def list_data_sources(
                     connected=True,
                     from_config=False,
                     source=domain_filename,
+                    tier=_get_tier(managed, "apis", name),
                 ))
                 seen_apis.add(name)
 
@@ -387,6 +404,7 @@ async def list_data_sources(
             from_config=False,
             source="session",
             is_dynamic=True,
+            tier=_get_tier(managed, "apis", api["name"]),
         ))
 
     # Collect Documents
@@ -403,6 +421,7 @@ async def list_data_sources(
             indexed=True,  # Assume indexed if in config
             from_config=True,
             source="config",
+            tier=_get_tier(managed, "documents", name),
         ))
         seen_docs.add(name)
 
@@ -421,6 +440,7 @@ async def list_data_sources(
                     indexed=True,
                     from_config=False,
                     source=domain_filename,
+                    tier=_get_tier(managed, "documents", name),
                 ))
                 seen_docs.add(name)
 
@@ -436,6 +456,7 @@ async def list_data_sources(
             indexed=True,
             source="session",
             from_config=False,
+            tier=_get_tier(managed, "documents", ref["name"]),
         ))
 
     return SessionDataSourcesResponse(
@@ -527,6 +548,9 @@ async def remove_database(
                 logger.info(f"Deleted file: {file_path}")
             except Exception as e:
                 logger.warning(f"Failed to delete file {file_path}: {e}")
+
+    # Re-resolve tiered config after removal
+    session_manager.resolve_config(session_id)
 
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)
@@ -754,6 +778,9 @@ async def add_api(
             api_config.headers = {body.auth_header: ""}  # Placeholder, actual token set at request time
         managed.session.api_schema_manager.add_api_dynamic(body.name, api_config)
 
+    # Re-resolve tiered config with new API
+    session_manager.resolve_config(session_id)
+
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)
 
@@ -816,6 +843,9 @@ async def remove_api(
 
     # Remove from session resources
     managed.session.resources.remove_api(api_name)
+
+    # Re-resolve tiered config after removal
+    session_manager.resolve_config(session_id)
 
     # Refresh entities in background (non-blocking)
     session_manager.refresh_entities_async(session_id)

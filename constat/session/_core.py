@@ -21,6 +21,7 @@ from constat.catalog.api_schema_manager import APISchemaManager
 from constat.catalog.preload_cache import MetadataPreloadCache
 from constat.catalog.schema_manager import SchemaManager
 from constat.core.config import Config
+from constat.core.tiered_config import ResolvedConfig
 from constat.core.models import Plan
 from constat.core.resources import SessionResources
 from constat.discovery.concept_detector import ConceptDetector
@@ -62,6 +63,7 @@ class CoreMixin:
         self.session_id = session_id  # Always provided by client
 
         self.config = config
+        self.resolved_config: Optional[ResolvedConfig] = None
         self.session_config = session_config or SessionConfig()
         self.user_id = user_id or "default"
         self.data_dir = data_dir or Path(".constat")
@@ -135,7 +137,7 @@ class CoreMixin:
         self.datastore: Optional[RegistryAwareDataStore] = None  # Persistent storage (only shared state between steps)
 
         # Central registry for tables and artifacts (shared across sessions)
-        self.registry = ConstatRegistry(base_dir=Path(".constat"))
+        self.registry = ConstatRegistry(base_dir=self.data_dir)
 
         # Session-scoped data sources (added via /database and /file commands)
         self.session_databases: dict[str, dict] = {}  # name -> {type, uri, description}

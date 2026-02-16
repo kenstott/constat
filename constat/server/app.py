@@ -558,6 +558,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.users import router as users_router
     from constat.server.routes.roles import router as roles_router
     from constat.server.routes.skills import router as skills_router
+    from constat.server.routes.tier_management import router as tier_management_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /roles, /skills, etc.
@@ -570,6 +571,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         skills_router,
         prefix="/api",
         tags=["skills"],
+    )
+    fastapi_app.include_router(
+        tier_management_router,
+        prefix="/api/sessions",
+        tags=["tier-management"],
     )
     fastapi_app.include_router(
         sessions_router,

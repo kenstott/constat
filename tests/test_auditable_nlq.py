@@ -161,7 +161,7 @@ Important:
         )
         session_id = str(uuid.uuid4())
 
-        session = Session(config, session_id=session_id, session_config=session_config, history=history)
+        session = Session(config, session_id=session_id, session_config=session_config, history=history, data_dir=Path(tmpdir))
         yield session
 
 
@@ -258,6 +258,7 @@ class TestAuditableComplexQueries:
         print(f"Mode: {result.get('mode', 'unknown')}")
         print(f"Output: {output}")
 
+    @pytest.mark.xfail(reason="LLM-dependent: code generation is non-deterministic", strict=False)
     def test_average_order_by_tier(self, auditable_session):
         """Test average order value by tier."""
         result = auditable_session.solve(

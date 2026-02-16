@@ -1098,13 +1098,9 @@ churn_rate:
 - Admin gate for user → system promotion
 - Domain owner gate for domain promotion
 
-### Phase 8: Auto-suggest Glossary & Relationships
-1. Per-source LLM prompt: source metadata + existing glossary + sample values → candidate glossary entries + relationship candidates
-2. FK-derived relationship suggestions (high confidence, no LLM needed)
-3. Co-occurrence + SVO relationship suggestions (medium confidence, see `rel_ex.md`)
-4. Suggestion UI in right-hand panel: confirm / edit / discard per candidate
-5. Confirmed entries persist to glossary/relationships config at chosen tier
-6. Auto-suggest bindings for existing glossary terms via semantic search + `get_sample_values`
+### ~~Phase 8: Auto-suggest Glossary & Relationships~~ → Moved to `glossary.md`
+
+Glossary auto-suggestion (LLM-based definitions, bindings, suggestion UI) is now specified in `glossary.md` Phases 1c, 2b, and 2d. Relationship suggestions (FK-derived, co-occurrence/SVO) are in `glossary.md` Phase 1h.
 
 ## Critical Files
 
@@ -1120,4 +1116,4 @@ churn_rate:
 | `constat/catalog/schema_manager.py` | Build glossary + relationship chunks for vector store |
 | `constat/server/session_manager.py` | 5-tier merge on domain selection; background entity rebuild |
 | `constat/server/websocket.py` | Add `ENTITY_REBUILD_*` event types |
-| `constat/discovery/glossary_suggest.py` | **NEW** — per-source LLM prompt for glossary + relationship auto-suggest |
+| `constat/discovery/glossary_suggest.py` | **NEW** — see `glossary.md` Phase 1c, 1h |
