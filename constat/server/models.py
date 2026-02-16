@@ -92,6 +92,10 @@ class EventType(str, Enum):
     ENTITY_REBUILD_START = "entity_rebuild_start"
     ENTITY_REBUILD_COMPLETE = "entity_rebuild_complete"
 
+    # Glossary generation events
+    GLOSSARY_REBUILD_START = "glossary_rebuild_start"
+    GLOSSARY_REBUILD_COMPLETE = "glossary_rebuild_complete"
+
 
 # ============================================================================
 # Session Models
@@ -739,6 +743,60 @@ class EntityListResponse(BaseModel):
     """Response containing list of entities."""
 
     entities: list[EntityInfo] = Field(description="List of entities")
+
+
+# ============================================================================
+# Glossary Models
+# ============================================================================
+
+
+class GlossaryTermResponse(BaseModel):
+    """Information about a glossary term."""
+
+    name: str = Field(description="Canonical term name")
+    display_name: str = Field(description="Display name")
+    definition: Optional[str] = Field(default=None, description="Business definition")
+    domain: Optional[str] = Field(default=None, description="Owning domain")
+    parent_id: Optional[str] = Field(default=None, description="Parent term ID")
+    aliases: list[str] = Field(default_factory=list, description="Alternate names")
+    semantic_type: Optional[str] = Field(default=None, description="Semantic type")
+    cardinality: str = Field(default="many", description="Cardinality")
+    status: Optional[str] = Field(default=None, description="Editorial status")
+    provenance: Optional[str] = Field(default=None, description="Source of definition")
+    glossary_status: str = Field(default="self_describing", description="defined or self_describing")
+    entity_id: Optional[str] = Field(default=None, description="Matching entity ID")
+    ner_type: Optional[str] = Field(default=None, description="NER type")
+    connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
+
+
+class GlossaryListResponse(BaseModel):
+    """Response containing glossary terms."""
+
+    terms: list[GlossaryTermResponse] = Field(description="Glossary terms")
+    total_defined: int = Field(default=0, description="Count of defined terms")
+    total_self_describing: int = Field(default=0, description="Count of self-describing terms")
+
+
+class GlossaryCreateRequest(BaseModel):
+    """Request to add a glossary definition."""
+
+    name: str = Field(description="Term name")
+    definition: str = Field(description="Business definition")
+    domain: Optional[str] = Field(default=None, description="Owning domain")
+    aliases: list[str] = Field(default_factory=list, description="Alternate names")
+    parent_id: Optional[str] = Field(default=None, description="Parent term ID")
+    semantic_type: Optional[str] = Field(default=None, description="Semantic type")
+
+
+class GlossaryUpdateRequest(BaseModel):
+    """Request to update a glossary term."""
+
+    definition: Optional[str] = Field(default=None, description="New definition")
+    aliases: Optional[list[str]] = Field(default=None, description="New aliases")
+    parent_id: Optional[str] = Field(default=None, description="New parent")
+    status: Optional[str] = Field(default=None, description="New status")
+    domain: Optional[str] = Field(default=None, description="New domain")
+    semantic_type: Optional[str] = Field(default=None, description="New semantic type")
 
 
 # ============================================================================

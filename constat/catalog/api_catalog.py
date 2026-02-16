@@ -23,7 +23,8 @@ from typing import Any, Optional
 
 import httpx
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+from constat.embedding_loader import EmbeddingModelLoader
 
 # Standard GraphQL introspection query
 INTROSPECTION_QUERY = """
@@ -268,16 +269,13 @@ class APICatalog:
     4. Provide tools for LLM to discover operations
     """
 
-    # Same embedding model as SchemaManager for consistency
-    EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
-
     def __init__(self):
         self.operations: dict[str, OperationMetadata] = {}  # key: "type.name"
 
         # Vector index components
         self._embeddings: Optional[np.ndarray] = None
         self._embedding_keys: list[str] = []
-        self._model: Optional[SentenceTransformer] = None
+        self._model = None
 
         # Cached overview
         self._overview: Optional[str] = None
@@ -302,9 +300,9 @@ class APICatalog:
         if not self.operations:
             return
 
-        # Load embedding model (lazy, shared with SchemaManager)
+        # Load embedding model (shared singleton)
         if self._model is None:
-            self._model = SentenceTransformer(self.EMBEDDING_MODEL)
+            self._model = EmbeddingModelLoader.get_instance().get_model()
 
         # Generate texts for embedding
         texts = []

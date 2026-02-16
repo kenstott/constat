@@ -50,6 +50,9 @@ class TaskType(Enum):
     ERROR_ANALYSIS = "error_analysis"  # Analyzing execution errors for retry
     SYNTHESIS = "synthesis"  # Generate final response from resolved facts
 
+    # Glossary generation
+    GLOSSARY_GENERATION = "glossary_generation"
+
     # Default fallback
     GENERAL = "general"
 

@@ -53,6 +53,13 @@ class DocumentAddComplete(Message):
         super().__init__()
 
 
+class GlossaryRefineComplete(Message):
+    """Message posted when glossary refine operation completes."""
+    def __init__(self, result: dict) -> None:
+        self.result = result
+        super().__init__()
+
+
 class SessionEvent(Message):
     """Message posted when a session event occurs (proof tree, steps, etc.)."""
     def __init__(self, event) -> None:

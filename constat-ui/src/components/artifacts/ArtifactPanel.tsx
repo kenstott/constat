@@ -37,6 +37,7 @@ import { TableAccordion } from './TableAccordion'
 import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import { EntityAccordion } from './EntityAccordion'
+import GlossaryPanel from './GlossaryPanel'
 import * as sessionsApi from '@/api/sessions'
 import * as rolesApi from '@/api/roles'
 
@@ -2794,17 +2795,17 @@ ${skill.body}`
         )}
       </AccordionSection>
 
-      {/* Entities - only show when there are entities */}
-      {entities.length > 0 && (
+      {/* Glossary (replaces Entities) */}
+      {session && (
         <AccordionSection
-          id="entities"
-          title="Entities"
+          id="glossary"
+          title="Glossary"
           count={entities.length}
           icon={<TagIcon className="w-4 h-4" />}
-          command="/entities"
+          command="/glossary"
           action={<div className="w-6 h-6" />}
         >
-          <EntityAccordion entities={entities} />
+          <GlossaryPanel sessionId={session.session_id} />
         </AccordionSection>
       )}
       </>

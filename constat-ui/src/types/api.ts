@@ -235,6 +235,45 @@ export interface Entity {
   original_name?: string  // Original name before normalization (if different)
 }
 
+// Glossary
+export type GlossaryStatus = 'defined' | 'self_describing'
+export type GlossaryEditorialStatus = 'draft' | 'reviewed' | 'approved'
+export type GlossaryProvenance = 'llm' | 'human' | 'hybrid'
+
+export interface GlossaryTerm {
+  name: string
+  display_name: string
+  definition?: string | null
+  domain?: string | null
+  parent_id?: string | null
+  aliases: string[]
+  semantic_type?: string | null
+  cardinality: string
+  status?: GlossaryEditorialStatus | null
+  provenance?: GlossaryProvenance | null
+  glossary_status: GlossaryStatus
+  entity_id?: string | null
+  ner_type?: string | null
+  connected_resources: Array<{
+    entity_name: string
+    entity_type: string
+    sources: Array<{ document_name: string; source: string; section?: string }>
+  }>
+}
+
+export interface GlossaryListResponse {
+  terms: GlossaryTerm[]
+  total_defined: number
+  total_self_describing: number
+}
+
+export interface GlossaryFilter {
+  scope?: 'all' | 'defined' | 'self_describing'
+  status?: GlossaryEditorialStatus
+  type?: string
+  search?: string
+}
+
 // Proof Tree
 export interface ProofNode {
   name: string
@@ -389,6 +428,8 @@ export type EventType =
   | 'generating_insights'
   | 'entity_rebuild_start'
   | 'entity_rebuild_complete'
+  | 'glossary_rebuild_start'
+  | 'glossary_rebuild_complete'
 
 export interface WSEvent {
   event_type: EventType

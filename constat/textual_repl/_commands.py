@@ -22,7 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from constat.execution.mode import Phase
-from constat.textual_repl._messages import ConsolidateComplete, DocumentAddComplete
+from constat.textual_repl._messages import ConsolidateComplete, DocumentAddComplete, GlossaryRefineComplete
 from constat.textual_repl._widgets import (
     OutputLog, StatusBar, SidePanel, ProofTreePanel,
     make_file_link_markup,
@@ -130,6 +130,14 @@ class CommandsMixin:
             log.write(Text(f"Current user: {self.user_id}", style="dim"))
         elif cmd == "/discover":
             await self._discover(args)
+        elif cmd == "/glossary":
+            await self._show_glossary(args)
+        elif cmd == "/define" and args:
+            await self._define_term(args)
+        elif cmd == "/undefine" and args:
+            await self._undefine_term(args)
+        elif cmd == "/refine" and args:
+            await self._refine_term(args)
         else:
             log.write(Text(f"Unknown command: {cmd}", style="yellow"))
             log.write(Text("Type /help for available commands.", style="dim"))
@@ -1396,6 +1404,246 @@ class CommandsMixin:
 
         except Exception as e:
             self.post_message(DocumentAddComplete(False, f"Error: {e}"))
+
+    async def _show_glossary(self: "ConstatREPLApp", args: str = "") -> None:
+        """Show glossary terms. /glossary [all|defined|deprecated]"""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        try:
+            vector_store = None
+            if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
+                vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+            if not vector_store and hasattr(self.session, 'doc_tools') and self.session.doc_tools:
+                vector_store = getattr(self.session.doc_tools, '_vector_store', None)
+
+            if not vector_store:
+                log.write(Text("No vector store available.", style="yellow"))
+                return
+
+            scope = args.strip().lower() if args.strip() else "all"
+
+            if scope == "deprecated":
+                terms = vector_store.get_deprecated_glossary(self.session.session_id)
+                if not terms:
+                    log.write(Text("No deprecated glossary terms.", style="dim"))
+                    return
+                log.write(Text(f"Deprecated Glossary Terms ({len(terms)})", style="bold"))
+                for t in terms:
+                    name = t.display_name if hasattr(t, 'display_name') else t.name
+                    defn = t.definition[:60] + "..." if t.definition and len(t.definition) > 60 else (t.definition or "")
+                    log.write(Text(f"  {name}: {defn}", style="dim"))
+                return
+
+            unified = vector_store.get_unified_glossary(self.session.session_id)
+
+            if scope == "defined":
+                unified = [t for t in unified if t.get("glossary_status") == "defined"]
+            elif scope != "all":
+                log.write(Text(f"Unknown scope: {scope}. Use all|defined|deprecated", style="yellow"))
+                return
+
+            if not unified:
+                log.write(Text("No glossary terms.", style="dim"))
+                return
+
+            defined = [t for t in unified if t.get("glossary_status") == "defined"]
+            self_desc = [t for t in unified if t.get("glossary_status") == "self_describing"]
+
+            log.write(Text(f"Glossary ({len(defined)} defined, {len(self_desc)} self-describing)", style="bold"))
+
+            table = Table(show_header=True, box=None, padding=(0, 1))
+            table.add_column("Name", style="cyan", width=25)
+            table.add_column("Type", style="dim", width=10)
+            table.add_column("Status", width=8)
+            table.add_column("Definition", style="dim")
+
+            for t in unified[:30]:
+                name = t.get("display_name", t.get("name", ""))
+                sem_type = t.get("semantic_type", "") or ""
+                glossary_status = t.get("glossary_status", "")
+                defn = t.get("definition", "") or ""
+                if len(defn) > 50:
+                    defn = defn[:50] + "..."
+
+                if glossary_status == "defined":
+                    status_style = "green"
+                else:
+                    status_style = "dim"
+
+                table.add_row(
+                    name,
+                    sem_type,
+                    Text(glossary_status, style=status_style),
+                    defn,
+                )
+
+            log.write(table)
+
+            if len(unified) > 30:
+                log.write(Text(f"  ... and {len(unified) - 30} more", style="dim"))
+
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+            logger.debug(f"_show_glossary error: {e}", exc_info=True)
+
+    async def _define_term(self: "ConstatREPLApp", args: str) -> None:
+        """Add a glossary definition. /define <name> <definition>"""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        parts = args.split(maxsplit=1)
+        if len(parts) < 2:
+            log.write(Text("Usage: /define <name> <definition>", style="yellow"))
+            return
+
+        name = parts[0]
+        definition = parts[1]
+
+        try:
+            vector_store = None
+            if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
+                vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+            if not vector_store and hasattr(self.session, 'doc_tools') and self.session.doc_tools:
+                vector_store = getattr(self.session.doc_tools, '_vector_store', None)
+
+            if not vector_store:
+                log.write(Text("No vector store available.", style="yellow"))
+                return
+
+            existing = vector_store.get_glossary_term(name, self.session.session_id)
+            if existing:
+                vector_store.update_glossary_term(name, self.session.session_id, {
+                    "definition": definition,
+                    "provenance": "human",
+                })
+                log.write(Text(f"Updated definition for: {name}", style="green"))
+            else:
+                from constat.discovery.models import GlossaryTerm
+                import uuid
+                term = GlossaryTerm(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    display_name=name.replace("_", " ").title(),
+                    definition=definition,
+                    status="draft",
+                    provenance="human",
+                    session_id=self.session.session_id,
+                )
+                vector_store.add_glossary_term(term)
+                log.write(Text(f"Defined: {name}", style="green"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _undefine_term(self: "ConstatREPLApp", args: str) -> None:
+        """Remove a glossary definition. /undefine <name>"""
+        log = self.query_one("#output-log", OutputLog)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        name = args.strip()
+        if not name:
+            log.write(Text("Usage: /undefine <name>", style="yellow"))
+            return
+
+        try:
+            vector_store = None
+            if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
+                vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+            if not vector_store and hasattr(self.session, 'doc_tools') and self.session.doc_tools:
+                vector_store = getattr(self.session.doc_tools, '_vector_store', None)
+
+            if not vector_store:
+                log.write(Text("No vector store available.", style="yellow"))
+                return
+
+            vector_store.delete_glossary_term(name, self.session.session_id)
+            log.write(Text(f"Removed definition: {name}", style="green"))
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    async def _refine_term(self: "ConstatREPLApp", args: str) -> None:
+        """AI-refine a glossary definition. /refine <name>"""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+
+        if not self.session:
+            log.write(Text("No active session.", style="yellow"))
+            return
+
+        name = args.strip()
+        if not name:
+            log.write(Text("Usage: /refine <name>", style="yellow"))
+            return
+
+        try:
+            vector_store = None
+            if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
+                vector_store = getattr(self.session.schema_manager, '_vector_store', None)
+            if not vector_store and hasattr(self.session, 'doc_tools') and self.session.doc_tools:
+                vector_store = getattr(self.session.doc_tools, '_vector_store', None)
+
+            if not vector_store:
+                log.write(Text("No vector store available.", style="yellow"))
+                return
+
+            term = vector_store.get_glossary_term(name, self.session.session_id)
+            if not term or not term.definition:
+                log.write(Text(f"No defined term found: {name}", style="yellow"))
+                return
+
+            status_bar.update_status(status_message=f"Refining: {name}...")
+            log.write(Text(f"Refining definition for: {name}...", style="dim"))
+
+            refine_thread = threading.Thread(
+                target=self._refine_in_thread,
+                args=(name, term.definition, vector_store),
+                daemon=True,
+            )
+            refine_thread.start()
+        except Exception as e:
+            log.write(Text(f"Error: {e}", style="red"))
+
+    def _refine_in_thread(self: "ConstatREPLApp", name: str, current_def: str, vector_store) -> None:
+        """Run glossary refinement in a background thread."""
+        try:
+            llm = self.session.router._get_provider(self.session.router.models["planning"])
+
+            prompt = (
+                f"Refine this business glossary definition. Keep it concise and precise.\n\n"
+                f"Term: {name}\n"
+                f"Current definition: {current_def}\n\n"
+                f"Return ONLY the improved definition text, nothing else."
+            )
+            response = llm.complete(prompt, max_tokens=200)
+            refined = response.content if hasattr(response, 'content') else str(response)
+            refined = refined.strip().strip('"').strip("'")
+
+            vector_store.update_glossary_term(name, self.session.session_id, {
+                "definition": refined,
+                "provenance": "hybrid",
+            })
+
+            self.post_message(GlossaryRefineComplete({
+                "success": True,
+                "name": name,
+                "before": current_def,
+                "after": refined,
+            }))
+        except Exception as e:
+            self.post_message(GlossaryRefineComplete({
+                "success": False,
+                "name": name,
+                "error": str(e),
+            }))
 
     async def _add_database(self: "ConstatREPLApp", args: str) -> None:
         """Add a temporary database connection to the current session."""

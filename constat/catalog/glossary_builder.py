@@ -14,9 +14,12 @@ objects for embedding and semantic search.
 """
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from constat.discovery.models import ChunkType, DocumentChunk
+
+if TYPE_CHECKING:
+    from constat.discovery.models import GlossaryTerm
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +140,42 @@ def build_relationship_chunks(relationships: dict[str, Any]) -> list[DocumentChu
 
     logger.debug(f"Built {len(chunks)} relationship chunks")
     return chunks
+
+
+def glossary_term_to_chunk(
+    term: "GlossaryTerm",
+    entity_sources: list[str],
+) -> DocumentChunk:
+    """Build an embeddable chunk from a GlossaryTerm with its physical resources.
+
+    Args:
+        term: GlossaryTerm dataclass instance
+        entity_sources: Resolved physical resource strings (e.g., "crm.customers (schema)")
+
+    Returns:
+        DocumentChunk with chunk_type=GLOSSARY_TERM
+    """
+    parts = [f"{term.display_name}: {term.definition}"]
+
+    if term.aliases:
+        parts.append(f"Also known as: {', '.join(term.aliases)}")
+
+    if term.parent_id:
+        parts.append(f"Parent: {term.parent_id}")
+
+    if entity_sources:
+        parts.append("Connected resources:")
+        for source in entity_sources:
+            parts.append(f"  - {source}")
+
+    return DocumentChunk(
+        document_name=f"glossary:{term.id}",
+        content="\n".join(parts),
+        section="glossary",
+        chunk_index=0,
+        source="document",
+        chunk_type=ChunkType.GLOSSARY_TERM,
+    )
 
 
 def get_glossary_terms_for_ner(glossary: dict[str, Any]) -> list[str]:

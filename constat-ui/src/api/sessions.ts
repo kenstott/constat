@@ -12,6 +12,8 @@ import type {
   ArtifactVersionsResponse,
   Fact,
   Entity,
+  GlossaryTerm,
+  GlossaryListResponse,
   UploadedFile,
   FileReference,
   SessionDatabase,
@@ -279,6 +281,67 @@ export async function addEntityToGlossary(
   entityId: string
 ): Promise<{ status: string }> {
   return post<{ status: string }>(`/sessions/${sessionId}/entities/${entityId}/glossary`)
+}
+
+// Glossary
+export async function getGlossary(
+  sessionId: string,
+  scope: string = 'all',
+  domain?: string
+): Promise<GlossaryListResponse> {
+  const params = new URLSearchParams({ scope })
+  if (domain) params.set('domain', domain)
+  return get<GlossaryListResponse>(`/sessions/${sessionId}/glossary?${params}`)
+}
+
+export async function getGlossaryTerm(
+  sessionId: string,
+  name: string
+): Promise<GlossaryTerm & { grounded: boolean; connected_resources: unknown[] }> {
+  return get(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`)
+}
+
+export async function addDefinition(
+  sessionId: string,
+  name: string,
+  definition: string,
+  domain?: string,
+  aliases?: string[]
+): Promise<{ status: string; name: string }> {
+  return post(`/sessions/${sessionId}/glossary`, {
+    name,
+    definition,
+    domain,
+    aliases: aliases || [],
+  })
+}
+
+export async function updateGlossaryTerm(
+  sessionId: string,
+  name: string,
+  updates: Record<string, unknown>
+): Promise<{ status: string }> {
+  return put(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`, updates)
+}
+
+export async function deleteGlossaryTerm(
+  sessionId: string,
+  name: string
+): Promise<{ status: string }> {
+  return del(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`)
+}
+
+export async function refineGlossaryTerm(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; before: string; after: string }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/refine`)
+}
+
+export async function generateGlossary(
+  sessionId: string
+): Promise<{ status: string }> {
+  return post(`/sessions/${sessionId}/glossary/generate`)
 }
 
 // Proof Tree

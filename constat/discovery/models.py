@@ -337,6 +337,55 @@ class EntityType:
 
 
 @dataclass
+class GlossaryTerm:
+    """A curated glossary term with business definition.
+
+    Attributes:
+        id: Primary key
+        name: Singular canonical form (matches entity.name)
+        display_name: Title case singular for UI
+        definition: Business meaning
+        domain: Owning domain (None = system-level)
+        parent_id: Taxonomy parent (self-referential)
+        aliases: Alternate names
+        semantic_type: CONCEPT, ATTRIBUTE, ACTION, TERM
+        cardinality: many | distinct | singular
+        plural: Irregular plural form
+        list_of: Glossary term ID if collection
+        tags: Map of tags
+        owner: Term-level owner
+        status: draft | reviewed | approved
+        provenance: llm | human | hybrid
+        session_id: Session that owns this term
+    """
+    id: str
+    name: str
+    display_name: str
+    definition: str
+    domain: Optional[str] = None
+    parent_id: Optional[str] = None
+    aliases: list[str] = field(default_factory=list)
+    semantic_type: Optional[str] = None
+    cardinality: str = "many"
+    plural: Optional[str] = None
+    list_of: Optional[str] = None
+    tags: dict[str, dict] = field(default_factory=dict)
+    owner: Optional[str] = None
+    status: str = "draft"
+    provenance: str = "llm"
+    session_id: str = ""
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        now = datetime.now()
+        if self.created_at is None:
+            self.created_at = now
+        if self.updated_at is None:
+            self.updated_at = now
+
+
+@dataclass
 class Entity:
     """An NER-extracted entity from document chunks.
 

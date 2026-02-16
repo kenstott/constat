@@ -25,7 +25,7 @@ from typing import Optional
 
 import numpy as np
 
-from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk
+from constat.discovery.models import DocumentChunk, Entity, ChunkEntity, EnrichedChunk, GlossaryTerm
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +331,71 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
+        # Create glossary_terms table for curated business definitions
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS glossary_terms (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR NOT NULL,
+                display_name VARCHAR NOT NULL,
+                definition TEXT NOT NULL,
+                domain VARCHAR,
+                parent_id VARCHAR,
+                aliases TEXT,
+                semantic_type VARCHAR,
+                cardinality VARCHAR DEFAULT 'many',
+                plural VARCHAR,
+                list_of VARCHAR,
+                tags TEXT,
+                owner VARCHAR,
+                status VARCHAR DEFAULT 'draft',
+                provenance VARCHAR DEFAULT 'llm',
+                session_id VARCHAR NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create unified_glossary view
+        self._conn.execute("""
+            CREATE VIEW IF NOT EXISTS unified_glossary AS
+            SELECT
+                e.id AS entity_id,
+                e.name,
+                COALESCE(g.display_name, e.display_name) AS display_name,
+                e.semantic_type,
+                e.ner_type,
+                e.session_id,
+                g.id AS glossary_id,
+                g.domain,
+                g.definition,
+                g.parent_id,
+                g.aliases,
+                g.cardinality,
+                g.plural,
+                g.list_of,
+                g.status,
+                g.provenance,
+                CASE
+                    WHEN g.id IS NOT NULL THEN 'defined'
+                    ELSE 'self_describing'
+                END AS glossary_status
+            FROM entities e
+            LEFT JOIN glossary_terms g
+                ON e.name = g.name
+                AND e.session_id = g.session_id
+        """)
+
+        # Create deprecated_glossary view
+        self._conn.execute("""
+            CREATE VIEW IF NOT EXISTS deprecated_glossary AS
+            SELECT g.*
+            FROM glossary_terms g
+            LEFT JOIN entities e
+                ON g.name = e.name
+                AND g.session_id = e.session_id
+            WHERE e.id IS NULL
+        """)
+
         # Create indexes for efficient lookups
         try:
             self._conn.execute(
@@ -344,6 +409,21 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_name ON glossary_terms(name)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_domain ON glossary_terms(domain)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_parent ON glossary_terms(parent_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_session ON glossary_terms(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_glossary_status ON glossary_terms(status)"
             )
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
@@ -370,6 +450,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._conn.execute("DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id])
         self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
         self._conn.execute("DELETE FROM embeddings WHERE session_id = ?", [session_id])
+        self._conn.execute("DELETE FROM glossary_terms WHERE session_id = ?", [session_id])
 
         logger.debug(f"clear_session_data({session_id}): deleted session data")
 
@@ -1702,6 +1783,254 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
 
         return self._rows_to_chunks(result)
+
+    # =========================================================================
+    # Glossary Term Methods
+    # =========================================================================
+
+    @staticmethod
+    def _term_from_row(row) -> GlossaryTerm:
+        """Convert a database row to a GlossaryTerm."""
+        import json
+        (term_id, name, display_name, definition, domain, parent_id,
+         aliases_json, semantic_type, cardinality, plural, list_of,
+         tags_json, owner, status, provenance, session_id,
+         created_at, updated_at) = row
+        aliases = json.loads(aliases_json) if aliases_json else []
+        tags = json.loads(tags_json) if tags_json else {}
+        return GlossaryTerm(
+            id=term_id,
+            name=name,
+            display_name=display_name,
+            definition=definition,
+            domain=domain,
+            parent_id=parent_id,
+            aliases=aliases,
+            semantic_type=semantic_type,
+            cardinality=cardinality or "many",
+            plural=plural,
+            list_of=list_of,
+            tags=tags,
+            owner=owner,
+            status=status or "draft",
+            provenance=provenance or "llm",
+            session_id=session_id,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    _GLOSSARY_COLUMNS = (
+        "id, name, display_name, definition, domain, parent_id, "
+        "aliases, semantic_type, cardinality, plural, list_of, "
+        "tags, owner, status, provenance, session_id, created_at, updated_at"
+    )
+
+    def add_glossary_term(self, term: GlossaryTerm) -> None:
+        """Insert a glossary term."""
+        import json
+        self._conn.execute(
+            """
+            INSERT INTO glossary_terms
+            (id, name, display_name, definition, domain, parent_id,
+             aliases, semantic_type, cardinality, plural, list_of,
+             tags, owner, status, provenance, session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                term.id, term.name, term.display_name, term.definition,
+                term.domain, term.parent_id,
+                json.dumps(term.aliases), term.semantic_type,
+                term.cardinality, term.plural, term.list_of,
+                json.dumps(term.tags), term.owner,
+                term.status, term.provenance, term.session_id,
+                term.created_at, term.updated_at,
+            ],
+        )
+
+    def update_glossary_term(self, name: str, session_id: str, updates: dict) -> bool:
+        """Update a glossary term by name and session_id.
+
+        Args:
+            name: Term name
+            session_id: Session ID
+            updates: Dict of field -> value to update
+
+        Returns:
+            True if a row was updated
+        """
+        import json
+        allowed = {
+            "definition", "display_name", "domain", "parent_id",
+            "aliases", "semantic_type", "cardinality", "plural",
+            "list_of", "tags", "owner", "status", "provenance",
+        }
+        sets = []
+        params: list = []
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            if key == "aliases":
+                value = json.dumps(value) if isinstance(value, list) else value
+            elif key == "tags":
+                value = json.dumps(value) if isinstance(value, dict) else value
+            sets.append(f"{key} = ?")
+            params.append(value)
+
+        if not sets:
+            return False
+
+        sets.append("updated_at = CURRENT_TIMESTAMP")
+        params.extend([name, session_id])
+        result = self._conn.execute(
+            f"UPDATE glossary_terms SET {', '.join(sets)} WHERE name = ? AND session_id = ? RETURNING id",
+            params,
+        ).fetchone()
+        return result is not None
+
+    def delete_glossary_term(self, name: str, session_id: str) -> bool:
+        """Delete a glossary term by name and session_id.
+
+        Returns:
+            True if a row was deleted
+        """
+        result = self._conn.execute(
+            "DELETE FROM glossary_terms WHERE name = ? AND session_id = ? RETURNING id",
+            [name, session_id],
+        ).fetchone()
+        return result is not None
+
+    def get_glossary_term(self, name: str, session_id: str) -> GlossaryTerm | None:
+        """Get a single glossary term by name and session_id."""
+        row = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE name = ? AND session_id = ?",
+            [name, session_id],
+        ).fetchone()
+        return self._term_from_row(row) if row else None
+
+    def get_glossary_term_by_id(self, term_id: str) -> GlossaryTerm | None:
+        """Get a glossary term by its ID."""
+        row = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE id = ?",
+            [term_id],
+        ).fetchone()
+        return self._term_from_row(row) if row else None
+
+    def list_glossary_terms(
+        self,
+        session_id: str,
+        scope: str = "all",
+        domain: str | None = None,
+    ) -> list[GlossaryTerm]:
+        """List glossary terms for a session.
+
+        Args:
+            session_id: Session ID
+            scope: 'all', 'defined' (has definition), or status filter
+            domain: Optional domain filter
+        """
+        conditions = ["session_id = ?"]
+        params: list = [session_id]
+        if domain:
+            conditions.append("domain = ?")
+            params.append(domain)
+        where = " AND ".join(conditions)
+        rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE {where} ORDER BY name",
+            params,
+        ).fetchall()
+        return [self._term_from_row(r) for r in rows]
+
+    def get_unified_glossary(
+        self,
+        session_id: str,
+        scope: str = "all",
+    ) -> list[dict]:
+        """Get the unified glossary view for a session.
+
+        Args:
+            session_id: Session ID
+            scope: 'all' | 'defined' | 'self_describing'
+
+        Returns:
+            List of dicts from the unified_glossary view
+        """
+        conditions = ["session_id = ?"]
+        params: list = [session_id]
+        if scope == "defined":
+            conditions.append("glossary_id IS NOT NULL")
+        elif scope == "self_describing":
+            conditions.append("glossary_id IS NULL")
+        where = " AND ".join(conditions)
+        rows = self._conn.execute(
+            f"""
+            SELECT entity_id, name, display_name, semantic_type, ner_type,
+                   session_id, glossary_id, domain, definition, parent_id,
+                   aliases, cardinality, plural, list_of, status, provenance,
+                   glossary_status
+            FROM unified_glossary
+            WHERE {where}
+            ORDER BY name
+            """,
+            params,
+        ).fetchall()
+        import json
+        results = []
+        for row in rows:
+            (entity_id, name, display_name, semantic_type, ner_type,
+             sess_id, glossary_id, domain, definition, parent_id,
+             aliases_json, cardinality, plural, list_of, status,
+             provenance, glossary_status) = row
+            aliases = json.loads(aliases_json) if aliases_json else []
+            results.append({
+                "entity_id": entity_id,
+                "name": name,
+                "display_name": display_name,
+                "semantic_type": semantic_type,
+                "ner_type": ner_type,
+                "session_id": sess_id,
+                "glossary_id": glossary_id,
+                "domain": domain,
+                "definition": definition,
+                "parent_id": parent_id,
+                "aliases": aliases,
+                "cardinality": cardinality,
+                "plural": plural,
+                "list_of": list_of,
+                "status": status,
+                "provenance": provenance,
+                "glossary_status": glossary_status,
+            })
+        return results
+
+    def get_deprecated_glossary(self, session_id: str) -> list[GlossaryTerm]:
+        """Get glossary terms with no matching entity (deprecated)."""
+        rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM deprecated_glossary WHERE session_id = ?",
+            [session_id],
+        ).fetchall()
+        return [self._term_from_row(r) for r in rows]
+
+    def clear_session_glossary(self, session_id: str) -> int:
+        """Clear all glossary terms for a session.
+
+        Returns:
+            Number of terms deleted
+        """
+        result = self._conn.execute(
+            "DELETE FROM glossary_terms WHERE session_id = ? RETURNING id",
+            [session_id],
+        ).fetchall()
+        count = len(result)
+        logger.debug(f"clear_session_glossary({session_id}): deleted {count} terms")
+        return count
+
+    def get_child_terms(self, parent_id: str) -> list[GlossaryTerm]:
+        """Get child glossary terms of a parent."""
+        rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE parent_id = ?",
+            [parent_id],
+        ).fetchall()
+        return [self._term_from_row(r) for r in rows]
 
     def close(self) -> None:
         """Close the database connection."""

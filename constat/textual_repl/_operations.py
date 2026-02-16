@@ -25,7 +25,7 @@ from constat.execution.mode import Phase, PlanApprovalResponse
 from constat.session import ClarificationResponse
 from constat.textual_repl._messages import (
     ShowApprovalUI, ShowClarificationUI, SolveComplete, ProveComplete,
-    ConsolidateComplete, DocumentAddComplete, SessionEvent,
+    ConsolidateComplete, DocumentAddComplete, GlossaryRefineComplete, SessionEvent,
 )
 from constat.textual_repl._widgets import (
     OutputLog, StatusBar, SidePanel, SidePanelContent, ProofTreePanel,
@@ -494,6 +494,21 @@ class OperationsMixin:
             log.write(Text(f"  {message.message}", style="green"))
         else:
             log.write(Text(f"  {message.message}", style="red"))
+
+    async def on_glossary_refine_complete(self: "ConstatREPLApp", message: "GlossaryRefineComplete") -> None:
+        """Handle GlossaryRefineComplete message - display before/after."""
+        log = self.query_one("#output-log", OutputLog)
+        status_bar = self.query_one("#status-bar", StatusBar)
+        status_bar.update_status(status_message=None)
+
+        result = message.result
+        if result.get("success"):
+            name = result["name"]
+            log.write(Text(f"Refined: {name}", style="green"))
+            log.write(Text(f"  Before: {result['before']}", style="dim"))
+            log.write(Text(f"  After:  {result['after']}", style="cyan"))
+        else:
+            log.write(Text(f"Refine failed for {result.get('name', '?')}: {result.get('error', 'unknown')}", style="red"))
 
     def on_show_approval_ui(self: "ConstatREPLApp", _message: ShowApprovalUI) -> None:
         """Handle ShowApprovalUI message - runs on main thread."""

@@ -70,6 +70,11 @@ help_commands:
   - ["/skill-deactivate <name>", "Deactivate a skill", "Roles & Skills"]
   - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Roles & Skills"]
   - ["/skill-download <name> [file]", "Download skill as Claude Desktop zip", "Roles & Skills"]
+  # Glossary
+  - ["/glossary [scope]", "Show glossary (all|defined|deprecated)", "Glossary"]
+  - ["/define <name> <def>", "Add a glossary definition", "Glossary"]
+  - ["/undefine <name>", "Remove a glossary definition", "Glossary"]
+  - ["/refine <name>", "AI-refine a glossary definition", "Glossary"]
   # Exit
   - ["/quit, /q", "Exit the session", "Exit"]
 
@@ -125,3 +130,7 @@ command_descriptions:
   skill-draft: "Draft a skill using AI"
   skill-download: "Download skill as Claude Desktop zip"
   prove: "Verify conversation with auditable proof"
+  glossary: "Show glossary terms"
+  define: "Add a glossary definition"
+  undefine: "Remove a glossary definition"
+  refine: "AI-refine a glossary definition"

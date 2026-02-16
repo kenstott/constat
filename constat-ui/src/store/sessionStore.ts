@@ -1076,6 +1076,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'entity_rebuild_start':
         // Could show a loading indicator if desired
         break
+
+      case 'glossary_rebuild_complete': {
+        const { session: s } = get()
+        if (s) {
+          const { useGlossaryStore } = await import('@/store/glossaryStore')
+          useGlossaryStore.getState().fetchTerms(s.session_id)
+        }
+        break
+      }
+
+      case 'glossary_rebuild_start':
+        break
     }
   },
 

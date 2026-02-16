@@ -549,12 +549,97 @@ class SessionManager:
                     "duration_ms": duration_ms,
                 })
                 logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
+
+                # Run glossary generation after entity extraction
+                self._run_glossary_generation(session_id, managed)
             except Exception as e:
                 logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
 
         import threading
         thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
         thread.start()
+
+    def _run_glossary_generation(self, session_id: str, managed: "ManagedSession") -> None:
+        """Run LLM glossary generation after entity extraction.
+
+        Args:
+            session_id: Server session ID
+            managed: ManagedSession instance
+        """
+        import time
+
+        session = managed.session
+        if not session.doc_tools or not hasattr(session.doc_tools, '_vector_store'):
+            return
+
+        vector_store = session.doc_tools._vector_store
+        if not vector_store:
+            return
+
+        # Need a router for LLM calls
+        if not hasattr(session, '_router') or not session._router:
+            logger.debug(f"Session {session_id}: no router available, skipping glossary generation")
+            return
+
+        try:
+            t0 = time.time()
+            self._push_event(managed, EventType.GLOSSARY_REBUILD_START, {
+                "session_id": session_id,
+            })
+
+            from constat.discovery.glossary_generator import generate_glossary
+            terms = generate_glossary(
+                session_id=session_id,
+                vector_store=vector_store,
+                router=session._router,
+            )
+
+            # Embed generated terms as glossary chunks
+            if terms:
+                self._embed_glossary_terms(terms, session_id, vector_store, session)
+
+            duration_ms = int((time.time() - t0) * 1000)
+            self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
+                "session_id": session_id,
+                "terms_count": len(terms),
+                "duration_ms": duration_ms,
+            })
+            logger.info(f"Glossary generation for {session_id}: {len(terms)} terms in {duration_ms}ms")
+        except Exception as e:
+            logger.exception(f"Glossary generation for {session_id} failed: {e}")
+
+    @staticmethod
+    def _embed_glossary_terms(
+        terms: list,
+        session_id: str,
+        vector_store,
+        session,
+    ) -> None:
+        """Embed glossary terms as searchable chunks."""
+        from constat.catalog.glossary_builder import glossary_term_to_chunk
+        from constat.discovery.glossary_generator import resolve_physical_resources
+
+        chunks = []
+        for term in terms:
+            resources = resolve_physical_resources(term.name, session_id, vector_store)
+            entity_sources = []
+            for r in resources:
+                for s in r.get("sources", []):
+                    entity_sources.append(f"{s.get('document_name', '')} ({s.get('source', '')})")
+            chunk = glossary_term_to_chunk(term, entity_sources)
+            chunks.append(chunk)
+
+        if chunks and session.doc_tools:
+            try:
+                # Use the doc_tools model to encode and vector store to add
+                doc_tools = session.doc_tools
+                if hasattr(doc_tools, '_model') and doc_tools._model:
+                    texts = [c.content for c in chunks]
+                    embeddings = doc_tools._model.encode(texts, normalize_embeddings=True)
+                    vector_store.add_chunks(chunks, embeddings, source="document")
+                    logger.info(f"Embedded {len(chunks)} glossary term chunks")
+            except Exception as e:
+                logger.warning(f"Failed to embed glossary chunks: {e}")
 
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:
