@@ -337,6 +337,25 @@ class EntityType:
 
 
 @dataclass
+class EntityRelationship:
+    """An SVO relationship triple between two entities."""
+    id: str
+    subject_entity_id: str
+    verb: str
+    object_entity_id: str
+    chunk_id: str
+    sentence: str
+    confidence: float = 1.0
+    verb_category: str = "other"
+    session_id: str = ""
+    created_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+
+
+@dataclass
 class GlossaryTerm:
     """A curated glossary term with business definition.
 

@@ -56,30 +56,203 @@ async def list_glossary(
     domain: str | None = Query(default=None, description="Filter by domain"),
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> GlossaryListResponse:
-    """Get the unified glossary for a session."""
+    """Get the unified glossary for a session.
+
+    Aggregates entities from all sources (NER-extracted, schema, API, config,
+    domains) and joins each with glossary_terms to produce the unified view.
+    """
+    from constat.discovery.models import normalize_entity_name, display_entity_name as make_display_name
+
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    rows = vs.get_unified_glossary(session_id, scope=scope)
+    active_domains = getattr(managed, "active_domains", []) or []
+
+    # 1. NER-extracted entities joined with glossary_terms (from DB)
+    rows = vs.get_unified_glossary(session_id, scope=scope, active_domains=active_domains)
+
+    # Build lookup by normalized name to deduplicate across sources
+    seen: dict[str, dict] = {}
+    for row in rows:
+        key = row["name"].lower()
+        seen[key] = row
+
+    # 2. Schema entities (tables from schema_manager)
+    session = managed.session
+    if session.schema_manager:
+        for _full_name, table_meta in session.schema_manager.metadata_cache.items():
+            norm = normalize_entity_name(table_meta.name)
+            key = norm.lower()
+            if key not in seen:
+                seen[key] = {
+                    "entity_id": None,
+                    "name": norm,
+                    "display_name": make_display_name(table_meta.name),
+                    "semantic_type": "table",
+                    "ner_type": "SCHEMA",
+                    "session_id": session_id,
+                    "glossary_id": None,
+                    "domain": None,
+                    "definition": None,
+                    "parent_id": None,
+                    "aliases": [],
+                    "cardinality": "many",
+                    "plural": None,
+                    "list_of": None,
+                    "status": None,
+                    "provenance": None,
+                    "glossary_status": "self_describing",
+                }
+
+    # 3. API entities from config
+    if session.config and session.config.apis:
+        for api_name in session.config.apis:
+            norm = normalize_entity_name(api_name)
+            key = norm.lower()
+            if key not in seen:
+                seen[key] = {
+                    "entity_id": None,
+                    "name": norm,
+                    "display_name": make_display_name(api_name),
+                    "semantic_type": "api",
+                    "ner_type": "API",
+                    "session_id": session_id,
+                    "glossary_id": None,
+                    "domain": None,
+                    "definition": None,
+                    "parent_id": None,
+                    "aliases": [],
+                    "cardinality": "many",
+                    "plural": None,
+                    "list_of": None,
+                    "status": None,
+                    "provenance": None,
+                    "glossary_status": "self_describing",
+                }
+
+    # 4. Document entities from config
+    if session.config and session.config.documents:
+        for doc_name in session.config.documents:
+            norm = normalize_entity_name(doc_name)
+            key = norm.lower()
+            if key not in seen:
+                seen[key] = {
+                    "entity_id": None,
+                    "name": norm,
+                    "display_name": make_display_name(doc_name),
+                    "semantic_type": "concept",
+                    "ner_type": None,
+                    "session_id": session_id,
+                    "glossary_id": None,
+                    "domain": None,
+                    "definition": None,
+                    "parent_id": None,
+                    "aliases": [],
+                    "cardinality": "many",
+                    "plural": None,
+                    "list_of": None,
+                    "status": None,
+                    "provenance": None,
+                    "glossary_status": "self_describing",
+                }
+
+    # 5. Domain entities (APIs + documents from active domains)
+    if active_domains and session.config:
+        for domain_filename in active_domains:
+            domain_cfg = session.config.load_domain(domain_filename)
+            if not domain_cfg:
+                continue
+            for api_name in domain_cfg.apis:
+                norm = normalize_entity_name(api_name)
+                key = norm.lower()
+                if key not in seen:
+                    seen[key] = {
+                        "entity_id": None,
+                        "name": norm,
+                        "display_name": make_display_name(api_name),
+                        "semantic_type": "api",
+                        "ner_type": "API",
+                        "session_id": session_id,
+                        "glossary_id": None,
+                        "domain": domain_filename,
+                        "definition": None,
+                        "parent_id": None,
+                        "aliases": [],
+                        "cardinality": "many",
+                        "plural": None,
+                        "list_of": None,
+                        "status": None,
+                        "provenance": None,
+                        "glossary_status": "self_describing",
+                    }
+            for doc_name in domain_cfg.documents:
+                norm = normalize_entity_name(doc_name)
+                key = norm.lower()
+                if key not in seen:
+                    seen[key] = {
+                        "entity_id": None,
+                        "name": norm,
+                        "display_name": make_display_name(doc_name),
+                        "semantic_type": "concept",
+                        "ner_type": None,
+                        "session_id": session_id,
+                        "glossary_id": None,
+                        "domain": domain_filename,
+                        "definition": None,
+                        "parent_id": None,
+                        "aliases": [],
+                        "cardinality": "many",
+                        "plural": None,
+                        "list_of": None,
+                        "status": None,
+                        "provenance": None,
+                        "glossary_status": "self_describing",
+                    }
+
+    # Check supplemental entities against glossary_terms table
+    glossary_terms_by_name = {}
+    supp_names = [k for k, v in seen.items() if v.get("glossary_id") is None and v.get("entity_id") is None]
+    if supp_names:
+        gt_rows = vs.get_glossary_terms_by_names(supp_names, session_id)
+        for gt in gt_rows:
+            glossary_terms_by_name[gt.name.lower()] = gt
+        for key, gt in glossary_terms_by_name.items():
+            if key in seen:
+                row = seen[key]
+                row["glossary_id"] = gt.id
+                row["definition"] = gt.definition
+                row["domain"] = gt.domain
+                row["parent_id"] = gt.parent_id
+                row["aliases"] = gt.aliases or []
+                row["status"] = gt.status
+                row["provenance"] = gt.provenance
+                row["glossary_status"] = "defined"
+
+    # Apply scope filter to supplemental entries
+    if scope == "defined":
+        seen = {k: v for k, v in seen.items() if v.get("glossary_id") is not None}
+    elif scope == "self_describing":
+        seen = {k: v for k, v in seen.items() if v.get("glossary_id") is None}
 
     # Optionally filter by domain
+    all_rows = list(seen.values())
     if domain:
-        rows = [r for r in rows if r.get("domain") == domain]
+        all_rows = [r for r in all_rows if r.get("domain") == domain]
 
     terms = []
-    for row in rows:
+    for row in sorted(all_rows, key=lambda r: r["name"]):
         terms.append(GlossaryTermResponse(
             name=row["name"],
             display_name=row["display_name"],
             definition=row.get("definition"),
             domain=row.get("domain"),
             parent_id=row.get("parent_id"),
-            aliases=row.get("aliases", []),
+            aliases=row.get("aliases") or [],
             semantic_type=row.get("semantic_type"),
-            cardinality=row.get("cardinality", "many"),
+            cardinality=row.get("cardinality") or "many",
             status=row.get("status"),
             provenance=row.get("provenance"),
-            glossary_status=row.get("glossary_status", "self_describing"),
+            glossary_status=row.get("glossary_status") or "self_describing",
             entity_id=row.get("entity_id"),
             ner_type=row.get("ner_type"),
         ))
@@ -176,6 +349,40 @@ async def get_glossary_term(
     raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
 
+@router.get("/{session_id}/glossary/{name}/relationships")
+async def get_term_relationships(
+    session_id: str,
+    name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Get SVO relationships for a glossary term."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+
+    # Find entity by name
+    entity = vs.find_entity_by_name(name, session_id=session_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail=f"Entity '{name}' not found")
+
+    svo_rels = vs.get_relationships_for_entity(entity.id, session_id)
+
+    # Also get co-occurrence suggestions
+    from constat.discovery.glossary_generator import suggest_cooccurrence_relationships
+    terms = vs.list_glossary_terms(session_id)
+    cooccurrence = suggest_cooccurrence_relationships(session_id, terms, vs, min_cooccurrence=2)
+    # Filter to this entity
+    cooccurrence = [
+        c for c in cooccurrence
+        if c["source"].lower() == name.lower() or c["target"].lower() == name.lower()
+    ]
+
+    return {
+        "name": name,
+        "svo_relationships": svo_rels,
+        "cooccurrence_suggestions": cooccurrence,
+    }
+
+
 @router.post("/{session_id}/glossary/generate")
 async def generate_glossary(
     session_id: str,
@@ -188,8 +395,14 @@ async def generate_glossary(
     # Clear existing LLM-generated terms
     vs.clear_session_glossary(session_id)
 
-    # Trigger async generation
-    session_manager.refresh_entities_async(session_id)
+    # Run LLM glossary generation in background
+    import threading
+
+    def _run():
+        session_manager._run_glossary_generation(session_id, managed)
+
+    thread = threading.Thread(target=_run, name=f"glossary-gen-{session_id}", daemon=True)
+    thread.start()
 
     return {"status": "generating", "message": "Glossary generation started"}
 

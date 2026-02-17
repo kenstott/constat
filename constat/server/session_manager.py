@@ -549,9 +549,6 @@ class SessionManager:
                     "duration_ms": duration_ms,
                 })
                 logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
-
-                # Run glossary generation after entity extraction
-                self._run_glossary_generation(session_id, managed)
             except Exception as e:
                 logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
 
@@ -588,15 +585,38 @@ class SessionManager:
             })
 
             from constat.discovery.glossary_generator import generate_glossary
+
+            def on_batch(batch_terms):
+                term_dicts = []
+                for t in batch_terms:
+                    term_dicts.append({
+                        "name": t.name,
+                        "display_name": t.display_name,
+                        "definition": t.definition,
+                        "domain": t.domain,
+                        "parent_id": t.parent_id,
+                        "aliases": t.aliases or [],
+                        "semantic_type": t.semantic_type,
+                        "status": t.status,
+                        "provenance": t.provenance,
+                        "glossary_status": "defined",
+                        "connected_resources": [],
+                    })
+                self._push_event(managed, EventType.GLOSSARY_TERMS_ADDED, {"terms": term_dicts})
+
             terms = generate_glossary(
                 session_id=session_id,
                 vector_store=vector_store,
                 router=session._router,
+                on_batch_complete=on_batch,
             )
 
             # Embed generated terms as glossary chunks
             if terms:
                 self._embed_glossary_terms(terms, session_id, vector_store, session)
+
+            # SVO relationship extraction
+            self._run_svo_extraction(session_id, managed, vector_store)
 
             duration_ms = int((time.time() - t0) * 1000)
             self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
@@ -640,6 +660,51 @@ class SessionManager:
                     logger.info(f"Embedded {len(chunks)} glossary term chunks")
             except Exception as e:
                 logger.warning(f"Failed to embed glossary chunks: {e}")
+
+    def _run_svo_extraction(
+        self,
+        session_id: str,
+        managed: "ManagedSession",
+        vector_store,
+    ) -> None:
+        """Run SVO relationship extraction after glossary generation."""
+        try:
+            session = managed.session
+            # Need spaCy model — reuse the one from doc_tools
+            nlp = None
+            if hasattr(session, 'doc_tools') and session.doc_tools:
+                nlp = getattr(session.doc_tools, '_nlp', None)
+            if not nlp:
+                logger.debug(f"Session {session_id}: no spaCy model available, skipping SVO extraction")
+                return
+
+            from constat.discovery.relationship_extractor import extract_svo_relationships
+
+            def on_batch(batch_rels):
+                rel_dicts = [
+                    {
+                        "subject_entity_id": r.subject_entity_id,
+                        "verb": r.verb,
+                        "object_entity_id": r.object_entity_id,
+                        "sentence": r.sentence,
+                        "confidence": r.confidence,
+                        "verb_category": r.verb_category,
+                    }
+                    for r in batch_rels
+                ]
+                self._push_event(managed, EventType.RELATIONSHIPS_EXTRACTED, {
+                    "relationships": rel_dicts,
+                })
+
+            rels = extract_svo_relationships(
+                session_id=session_id,
+                vector_store=vector_store,
+                nlp=nlp,
+                on_batch=on_batch,
+            )
+            logger.info(f"SVO extraction for {session_id}: {len(rels)} relationships")
+        except Exception as e:
+            logger.exception(f"SVO extraction for {session_id} failed: {e}")
 
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:

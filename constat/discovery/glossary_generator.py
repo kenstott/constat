@@ -16,8 +16,7 @@ metadata is insufficient (ambiguous, contested, cross-referenced, opaque).
 import hashlib
 import json
 import logging
-from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from constat.core.models import TaskType
 from constat.discovery.models import GlossaryTerm, display_entity_name
@@ -47,6 +46,10 @@ relationship, identified by account number and tracked through the customer
 lifecycle."
 
 Bad definition: "Customer data stored in the CRM PostgreSQL database."
+
+Build multi-level hierarchies where appropriate. A term's parent can itself
+have a parent. For example: "Base Salary" → "Compensation" → "Employee".
+Go as deep as the domain warrants — do not flatten to a single level.
 
 For each entity, also suggest:
 - A parent category (if one exists among the other entities)
@@ -170,14 +173,21 @@ def generate_glossary(
     vector_store,
     router,
     domain: str | None = None,
+    on_batch_complete: Callable[[list[GlossaryTerm]], None] | None = None,
 ) -> list[GlossaryTerm]:
     """Generate glossary definitions for entities that need them.
+
+    Uses LLM to selectively write business definitions for candidate entities
+    where physical metadata is insufficient. The unified glossary view already
+    shows all entities; this adds curated definitions to the glossary_terms table
+    for candidates that pass the elevation test.
 
     Args:
         session_id: Session ID
         vector_store: DuckDBVectorStore instance
         router: TaskRouter for LLM calls
         domain: Optional domain scope
+        on_batch_complete: Optional callback invoked per batch of stored terms
 
     Returns:
         List of generated GlossaryTerm objects
@@ -199,7 +209,7 @@ def generate_glossary(
         logger.info(f"No entities found for session {session_id}, skipping glossary generation")
         return []
 
-    # Build candidate list
+    # Build candidate list (pre-filter obvious non-candidates)
     candidates = []
     for row in rows:
         entity_id, name, display_name, semantic_type, ner_type, ref_count, source_count = row
@@ -251,6 +261,7 @@ def generate_glossary(
             logger.info(f"Batch {batch_idx}: LLM returned {len(parsed)} definitions")
 
             # Convert to GlossaryTerm objects
+            batch_terms: list[GlossaryTerm] = []
             for item in parsed:
                 name = item.get("name", "").strip()
                 definition = item.get("definition", "").strip()
@@ -282,17 +293,22 @@ def generate_glossary(
                 if parent_name:
                     term.tags = {"_suggested_parent": {"name": parent_name}}
 
-                generated_terms.append(term)
+                batch_terms.append(term)
+
+            # Store batch terms immediately
+            for term in batch_terms:
+                try:
+                    vector_store.add_glossary_term(term)
+                except Exception as e:
+                    logger.warning(f"Failed to store glossary term '{term.name}': {e}")
+
+            generated_terms.extend(batch_terms)
+
+            if on_batch_complete and batch_terms:
+                on_batch_complete(batch_terms)
 
         except Exception as e:
             logger.exception(f"Glossary generation batch {batch_idx} error: {e}")
-
-    # Store terms in glossary_terms table
-    for term in generated_terms:
-        try:
-            vector_store.add_glossary_term(term)
-        except Exception as e:
-            logger.warning(f"Failed to store glossary term '{term.name}': {e}")
 
     # Link parents (second pass)
     _link_parents(generated_terms, session_id, vector_store)

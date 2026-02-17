@@ -355,6 +355,23 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
+        # Create entity_relationships table for SVO triples
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_relationships (
+                id VARCHAR PRIMARY KEY,
+                subject_entity_id VARCHAR NOT NULL,
+                verb VARCHAR NOT NULL,
+                object_entity_id VARCHAR NOT NULL,
+                chunk_id VARCHAR NOT NULL,
+                sentence TEXT,
+                confidence FLOAT DEFAULT 1.0,
+                verb_category VARCHAR DEFAULT 'other',
+                session_id VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(subject_entity_id, verb, object_entity_id, chunk_id)
+            )
+        """)
+
         # Create unified_glossary view
         self._conn.execute("""
             CREATE VIEW IF NOT EXISTS unified_glossary AS
@@ -425,6 +442,18 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_glossary_status ON glossary_terms(status)"
             )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_subject ON entity_relationships(subject_entity_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_object ON entity_relationships(object_entity_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_verb ON entity_relationships(verb)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rel_session ON entity_relationships(session_id)"
+            )
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
 
@@ -451,6 +480,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
         self._conn.execute("DELETE FROM embeddings WHERE session_id = ?", [session_id])
         self._conn.execute("DELETE FROM glossary_terms WHERE session_id = ?", [session_id])
+        self._conn.execute("DELETE FROM entity_relationships WHERE session_id = ?", [session_id])
 
         logger.debug(f"clear_session_data({session_id}): deleted session data")
 
@@ -1955,32 +1985,74 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         session_id: str,
         scope: str = "all",
+        active_domains: list[str] | None = None,
     ) -> list[dict]:
-        """Get the unified glossary view for a session.
+        """Get the unified glossary for a session.
+
+        Uses the same 3-part visibility filter as the entities endpoint:
+        base entities (no domain/session) + domain-scoped + session-scoped.
 
         Args:
             session_id: Session ID
             scope: 'all' | 'defined' | 'self_describing'
+            active_domains: Active domain IDs for visibility filter
 
         Returns:
-            List of dicts from the unified_glossary view
+            List of unified glossary dicts
         """
-        conditions = ["session_id = ?"]
-        params: list = [session_id]
+        # Build 3-part entity visibility filter (matches entities endpoint)
+        # g.session_id = ? appears FIRST in the SQL (LEFT JOIN ON clause),
+        # so its param must come first.
+        entity_conditions = ["(e.domain_id IS NULL AND e.session_id IS NULL)"]
+        params: list = [session_id]  # for g.session_id = ? in JOIN
+
+        if active_domains:
+            placeholders = ",".join(["?" for _ in active_domains])
+            entity_conditions.append(f"e.domain_id IN ({placeholders})")
+            params.extend(active_domains)
+
+        entity_conditions.append("e.session_id = ?")
+        params.append(session_id)
+
+        entity_where = " OR ".join(entity_conditions)
+
+        # Scope filter
+        scope_filter = ""
         if scope == "defined":
-            conditions.append("glossary_id IS NOT NULL")
+            scope_filter = "HAVING g.id IS NOT NULL"
         elif scope == "self_describing":
-            conditions.append("glossary_id IS NULL")
-        where = " AND ".join(conditions)
+            scope_filter = "HAVING g.id IS NULL"
+
         rows = self._conn.execute(
             f"""
-            SELECT entity_id, name, display_name, semantic_type, ner_type,
-                   session_id, glossary_id, domain, definition, parent_id,
-                   aliases, cardinality, plural, list_of, status, provenance,
-                   glossary_status
-            FROM unified_glossary
-            WHERE {where}
-            ORDER BY name
+            SELECT
+                e.id AS entity_id,
+                e.name,
+                COALESCE(g.display_name, e.display_name) AS display_name,
+                e.semantic_type,
+                e.ner_type,
+                e.session_id,
+                g.id AS glossary_id,
+                g.domain,
+                g.definition,
+                g.parent_id,
+                g.aliases,
+                g.cardinality,
+                g.plural,
+                g.list_of,
+                g.status,
+                g.provenance,
+                CASE
+                    WHEN g.id IS NOT NULL THEN 'defined'
+                    ELSE 'self_describing'
+                END AS glossary_status
+            FROM entities e
+            LEFT JOIN glossary_terms g
+                ON e.name = g.name
+                AND g.session_id = ?
+            WHERE ({entity_where})
+            {scope_filter}
+            ORDER BY e.name
             """,
             params,
         ).fetchall()
@@ -2034,6 +2106,69 @@ class DuckDBVectorStore(VectorStoreBackend):
         count = len(result)
         logger.debug(f"clear_session_glossary({session_id}): deleted {count} terms")
         return count
+
+    # ------------------------------------------------------------------
+    # Entity Relationship CRUD
+    # ------------------------------------------------------------------
+
+    def add_entity_relationship(self, rel) -> None:
+        """Insert an EntityRelationship, ignoring duplicates."""
+        self._conn.execute(
+            """
+            INSERT INTO entity_relationships
+                (id, subject_entity_id, verb, object_entity_id, chunk_id,
+                 sentence, confidence, verb_category, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            [
+                rel.id, rel.subject_entity_id, rel.verb,
+                rel.object_entity_id, rel.chunk_id, rel.sentence,
+                rel.confidence, rel.verb_category, rel.session_id,
+            ],
+        )
+
+    def get_relationships_for_entity(
+        self, entity_id: str, session_id: str,
+    ) -> list[dict]:
+        """Get SVO relationships where entity is subject or object."""
+        rows = self._conn.execute(
+            """
+            SELECT r.id, r.subject_entity_id, r.verb, r.object_entity_id,
+                   r.chunk_id, r.sentence, r.confidence, r.verb_category,
+                   se.name AS subject_name, oe.name AS object_name
+            FROM entity_relationships r
+            LEFT JOIN entities se ON r.subject_entity_id = se.id
+            LEFT JOIN entities oe ON r.object_entity_id = oe.id
+            WHERE (r.subject_entity_id = ? OR r.object_entity_id = ?)
+              AND r.session_id = ?
+            ORDER BY r.confidence DESC
+            """,
+            [entity_id, entity_id, session_id],
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "subject_entity_id": r[1],
+                "verb": r[2],
+                "object_entity_id": r[3],
+                "chunk_id": r[4],
+                "sentence": r[5],
+                "confidence": r[6],
+                "verb_category": r[7],
+                "subject_name": r[8],
+                "object_name": r[9],
+            }
+            for r in rows
+        ]
+
+    def clear_session_relationships(self, session_id: str) -> int:
+        """Delete all entity relationships for a session."""
+        result = self._conn.execute(
+            "DELETE FROM entity_relationships WHERE session_id = ? RETURNING id",
+            [session_id],
+        ).fetchall()
+        return len(result)
 
     def get_glossary_terms_by_names(self, names: list[str], session_id: str) -> list[GlossaryTerm]:
         """Batch lookup glossary terms by name.
