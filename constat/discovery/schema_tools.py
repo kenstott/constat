@@ -425,38 +425,44 @@ class SchemaDiscoveryTools:
             except Exception:
                 pass  # Continue even if doc search fails
 
-        # 4. Search glossary chunks via vector store if available
+        # 4. Search glossary + relationship chunks via vector store
         if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.doc_tools._vector_store:
             try:
                 from constat.discovery.models import ChunkType
-                glossary_results = self.doc_tools._vector_store.search(
-                    query, top_k=per_source_limit,
+                import threading
+
+                vs = self.doc_tools._vector_store
+                model = self.doc_tools._model
+                model_lock = self.doc_tools._model_lock if hasattr(self.doc_tools, '_model_lock') else threading.Lock()
+
+                # Encode query to embedding
+                with model_lock:
+                    query_embedding = model.encode([query], normalize_embeddings=True)
+
+                # Search glossary term chunks
+                glossary_hits = vs.search(
+                    query_embedding, limit=per_source_limit,
                     chunk_types=[ChunkType.GLOSSARY_TERM],
                 )
-                for r in glossary_results:
+                for chunk_id, similarity, chunk in glossary_hits:
                     results["glossary"].append({
                         "type": "glossary_term",
-                        "name": r.get("document_name", ""),
-                        "definition": r.get("content", "")[:300],
-                        "relevance": round(r.get("similarity", 0), 3),
+                        "name": chunk.document_name.replace("glossary:", ""),
+                        "definition": chunk.content[:300],
+                        "relevance": round(similarity, 3),
                     })
-            except Exception:
-                pass
 
-        # 5. Search relationship chunks via vector store if available
-        if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.doc_tools._vector_store:
-            try:
-                from constat.discovery.models import ChunkType
-                rel_results = self.doc_tools._vector_store.search(
-                    query, top_k=per_source_limit,
+                # Search relationship chunks
+                rel_hits = vs.search(
+                    query_embedding, limit=per_source_limit,
                     chunk_types=[ChunkType.RELATIONSHIP],
                 )
-                for r in rel_results:
+                for chunk_id, similarity, chunk in rel_hits:
                     results["relationships"].append({
                         "type": "relationship",
-                        "name": r.get("document_name", ""),
-                        "definition": r.get("content", "")[:300],
-                        "relevance": round(r.get("similarity", 0), 3),
+                        "name": chunk.document_name,
+                        "definition": chunk.content[:300],
+                        "relevance": round(similarity, 3),
                     })
             except Exception:
                 pass
@@ -605,7 +611,7 @@ SCHEMA_TOOL_SCHEMAS = [
     },
     {
         "name": "search_all",
-        "description": "Universal semantic search across ALL data sources: tables, APIs, and documents. Uses vector embeddings to find relevant resources. This is the PRIMARY discovery tool - use it FIRST to find what's relevant to your question before exploring specific resources.",
+        "description": "Universal semantic search across ALL data sources: tables, APIs, documents, and the business glossary. Uses vector embeddings to find relevant resources. Glossary results include curated business definitions with connected physical resources. This is the PRIMARY discovery tool - use it FIRST to find what's relevant to your question before exploring specific resources.",
         "input_schema": {
             "type": "object",
             "properties": {

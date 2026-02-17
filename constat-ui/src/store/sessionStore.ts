@@ -1080,8 +1080,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'glossary_rebuild_complete': {
         const { session: s } = get()
         if (s) {
-          const { useGlossaryStore } = await import('@/store/glossaryStore')
-          useGlossaryStore.getState().fetchTerms(s.session_id)
+          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+            useGlossaryStore.getState().fetchTerms(s.session_id)
+          })
         }
         break
       }

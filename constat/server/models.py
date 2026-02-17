@@ -799,6 +799,22 @@ class GlossaryUpdateRequest(BaseModel):
     semantic_type: Optional[str] = Field(default=None, description="New semantic type")
 
 
+class GlossaryBulkStatusRequest(BaseModel):
+    """Request to update status for multiple glossary terms."""
+
+    names: list[str] = Field(description="Term names to update")
+    status: str = Field(description="New status value")
+
+
+class TaxonomySuggestion(BaseModel):
+    """A suggested parent-child relationship between terms."""
+
+    child: str = Field(description="Child term name")
+    parent: str = Field(description="Suggested parent term name")
+    confidence: str = Field(description="Confidence level: high, medium, low")
+    reason: str = Field(default="", description="Why this relationship is suggested")
+
+
 # ============================================================================
 # Config Models
 # ============================================================================

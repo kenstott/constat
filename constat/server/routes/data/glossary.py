@@ -12,16 +12,19 @@
 import hashlib
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from constat.discovery.models import GlossaryTerm, display_entity_name
 from constat.server.models import (
+    GlossaryBulkStatusRequest,
     GlossaryCreateRequest,
     GlossaryListResponse,
     GlossaryTermResponse,
     GlossaryUpdateRequest,
+    TaxonomySuggestion,
 )
 from constat.server.routes.data import get_session_manager
 from constat.server.session_manager import SessionManager
@@ -345,4 +348,159 @@ async def refine_definition(
         "name": name,
         "before": before,
         "after": refined,
+    }
+
+
+@router.post("/{session_id}/glossary/suggest-taxonomy")
+async def suggest_taxonomy(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """LLM-assisted taxonomy suggestions for glossary terms."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+    session = managed.session
+
+    if not hasattr(session, '_router') or not session._router:
+        raise HTTPException(status_code=503, detail="LLM router not available")
+
+    terms = vs.list_glossary_terms(session_id)
+    if len(terms) < 2:
+        return {"suggestions": [], "message": "Need at least 2 defined terms"}
+
+    term_descriptions = "\n".join(
+        f"- {t.display_name}: {t.definition}" for t in terms if t.definition
+    )
+
+    system = (
+        "You are organizing business glossary terms into a taxonomy. "
+        "Suggest parent-child relationships between terms. "
+        "Only suggest relationships where a clear is-a or belongs-to relationship exists. "
+        "Respond as a JSON array: [{\"child\": \"...\", \"parent\": \"...\", \"confidence\": \"high|medium|low\", \"reason\": \"...\"}]"
+    )
+    user_msg = f"Terms:\n{term_descriptions}"
+
+    from constat.core.models import TaskType
+    result = session._router.execute(
+        task_type=TaskType.GLOSSARY_GENERATION,
+        system=system,
+        user_message=user_msg,
+        max_tokens=2048,
+        complexity="medium",
+    )
+
+    if not result.success:
+        raise HTTPException(status_code=500, detail="Taxonomy suggestion failed")
+
+    from constat.discovery.glossary_generator import _parse_llm_response
+    parsed = _parse_llm_response(result.content)
+
+    suggestions = []
+    for item in parsed:
+        child = item.get("child", "")
+        parent = item.get("parent", "")
+        if child and parent:
+            suggestions.append({
+                "child": child,
+                "parent": parent,
+                "confidence": item.get("confidence", "medium"),
+                "reason": item.get("reason", ""),
+            })
+
+    return {"suggestions": suggestions}
+
+
+@router.patch("/{session_id}/glossary/bulk-status")
+async def bulk_update_status(
+    session_id: str,
+    request: GlossaryBulkStatusRequest,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Update status for multiple glossary terms."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+
+    updated = []
+    failed = []
+    for name in request.names:
+        ok = vs.update_glossary_term(name, session_id, {"status": request.status})
+        if ok:
+            updated.append(name)
+        else:
+            failed.append(name)
+
+    return {
+        "status": "updated",
+        "updated": updated,
+        "failed": failed,
+        "count": len(updated),
+    }
+
+
+@router.post("/{session_id}/glossary/persist")
+async def persist_glossary(
+    session_id: str,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Write approved glossary terms to domain YAML."""
+    import yaml
+
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+    config = request.app.state.config
+
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    domain_filter = body.get("domain")
+
+    # Get approved terms
+    terms = vs.list_glossary_terms(session_id)
+    approved = [t for t in terms if t.status == "approved"]
+    if domain_filter:
+        approved = [t for t in approved if t.domain == domain_filter]
+
+    if not approved:
+        return {"status": "no_terms", "message": "No approved terms to persist"}
+
+    # Group by domain
+    by_domain: dict[str, list[GlossaryTerm]] = {}
+    for t in approved:
+        key = t.domain or "__base__"
+        by_domain.setdefault(key, []).append(t)
+
+    persisted_count = 0
+    for domain_key, domain_terms in by_domain.items():
+        if domain_key == "__base__":
+            continue  # Skip base config — only persist to domain files
+
+        domain_cfg = config.load_domain(domain_key)
+        if not domain_cfg or not domain_cfg.source_path:
+            continue
+
+        domain_path = Path(domain_cfg.source_path)
+        if not domain_path.exists():
+            continue
+
+        # Load existing YAML
+        existing_yaml = yaml.safe_load(domain_path.read_text()) or {}
+
+        # Build glossary dict
+        glossary_dict = existing_yaml.get("glossary", {})
+        for t in domain_terms:
+            entry: dict[str, Any] = {"definition": t.definition}
+            if t.aliases:
+                entry["aliases"] = t.aliases
+            if t.semantic_type and t.semantic_type != "concept":
+                entry["category"] = t.semantic_type
+            glossary_dict[t.name] = entry
+
+        existing_yaml["glossary"] = glossary_dict
+
+        # Write back
+        domain_path.write_text(yaml.dump(existing_yaml, default_flow_style=False, sort_keys=False))
+        persisted_count += len(domain_terms)
+
+    return {
+        "status": "persisted",
+        "count": persisted_count,
     }

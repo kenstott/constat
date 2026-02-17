@@ -2,6 +2,13 @@ import { create } from 'zustand'
 import type { GlossaryTerm, GlossaryFilter } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
 
+interface TaxonomySuggestion {
+  child: string
+  parent: string
+  confidence: string
+  reason: string
+}
+
 interface GlossaryState {
   terms: GlossaryTerm[]
   deprecatedTerms: Array<{
@@ -12,6 +19,7 @@ interface GlossaryState {
     status: string
     provenance: string
   }>
+  taxonomySuggestions: TaxonomySuggestion[]
   selectedName: string | null
   viewMode: 'tree' | 'list'
   filters: GlossaryFilter
@@ -27,6 +35,10 @@ interface GlossaryState {
   deleteTerm: (sessionId: string, name: string) => Promise<void>
   refineTerm: (sessionId: string, name: string) => Promise<{ before: string; after: string } | null>
   generateGlossary: (sessionId: string) => Promise<void>
+  suggestTaxonomy: (sessionId: string) => Promise<void>
+  acceptTaxonomySuggestion: (sessionId: string, suggestion: TaxonomySuggestion) => Promise<void>
+  dismissTaxonomySuggestion: (suggestion: TaxonomySuggestion) => void
+  bulkUpdateStatus: (sessionId: string, names: string[], status: string) => Promise<void>
   selectTerm: (name: string | null) => void
   setFilter: (filter: Partial<GlossaryFilter>) => void
   setViewMode: (mode: 'tree' | 'list') => void
@@ -35,6 +47,7 @@ interface GlossaryState {
 export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   terms: [],
   deprecatedTerms: [],
+  taxonomySuggestions: [],
   selectedName: null,
   viewMode: 'list',
   filters: { scope: 'all' },
@@ -96,6 +109,47 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
 
   generateGlossary: async (sessionId) => {
     await sessionsApi.generateGlossary(sessionId)
+  },
+
+  suggestTaxonomy: async (sessionId) => {
+    try {
+      const result = await sessionsApi.suggestTaxonomy(sessionId)
+      set({ taxonomySuggestions: result.suggestions })
+    } catch {
+      set({ taxonomySuggestions: [] })
+    }
+  },
+
+  acceptTaxonomySuggestion: async (sessionId, suggestion) => {
+    // Find parent term to get its ID
+    const { terms } = get()
+    const parentTerm = terms.find(t => t.name.toLowerCase() === suggestion.parent.toLowerCase())
+    if (!parentTerm) return
+
+    // Get the parent's entity_id or glossary ID to use as parent_id
+    const parentId = parentTerm.entity_id || suggestion.parent
+    await sessionsApi.updateGlossaryTerm(sessionId, suggestion.child, { parent_id: parentId })
+
+    // Remove from suggestions
+    set((state) => ({
+      taxonomySuggestions: state.taxonomySuggestions.filter(
+        s => !(s.child === suggestion.child && s.parent === suggestion.parent)
+      ),
+    }))
+    await get().fetchTerms(sessionId)
+  },
+
+  dismissTaxonomySuggestion: (suggestion) => {
+    set((state) => ({
+      taxonomySuggestions: state.taxonomySuggestions.filter(
+        s => !(s.child === suggestion.child && s.parent === suggestion.parent)
+      ),
+    }))
+  },
+
+  bulkUpdateStatus: async (sessionId, names, status) => {
+    await sessionsApi.bulkUpdateStatus(sessionId, names, status)
+    await get().fetchTerms(sessionId)
   },
 
   selectTerm: (name) => set({ selectedName: name }),

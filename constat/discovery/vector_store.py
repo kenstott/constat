@@ -917,6 +917,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         limit: int = 5,
         domain_ids: list[str] | None = None,
         session_id: str | None = None,
+        chunk_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Search using DuckDB's array_cosine_similarity.
 
@@ -925,6 +926,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             limit: Maximum number of results
             domain_ids: List of domain IDs to include (None means no domain filter)
             session_id: Session ID to include (None means no session filter)
+            chunk_types: Optional list of chunk_type values to filter by
 
         Returns:
             List of (chunk_id, similarity, DocumentChunk) tuples
@@ -942,6 +944,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             params.extend(domain_ids)
 
         where_clause = " OR ".join(filter_conditions)
+
+        # Optional chunk_type filter
+        chunk_type_clause = ""
+        if chunk_types:
+            ct_values = [ct.value if hasattr(ct, 'value') else str(ct) for ct in chunk_types]
+            ct_placeholders = ",".join(["?" for _ in ct_values])
+            chunk_type_clause = f" AND chunk_type IN ({ct_placeholders})"
+            params.extend(ct_values)
+
         params.append(limit)
 
         # Query with cosine similarity
@@ -957,7 +968,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 content,
                 array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
             FROM embeddings
-            WHERE ({where_clause})
+            WHERE ({where_clause}){chunk_type_clause}
             ORDER BY similarity DESC
             LIMIT ?
             """,
@@ -2023,6 +2034,27 @@ class DuckDBVectorStore(VectorStoreBackend):
         count = len(result)
         logger.debug(f"clear_session_glossary({session_id}): deleted {count} terms")
         return count
+
+    def get_glossary_terms_by_names(self, names: list[str], session_id: str) -> list[GlossaryTerm]:
+        """Batch lookup glossary terms by name.
+
+        Args:
+            names: List of term names (case-insensitive)
+            session_id: Session ID
+
+        Returns:
+            List of matching GlossaryTerm objects
+        """
+        if not names:
+            return []
+        lower_names = [n.lower() for n in names]
+        placeholders = ",".join(["?" for _ in lower_names])
+        params: list = lower_names + [session_id]
+        rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) IN ({placeholders}) AND session_id = ?",
+            params,
+        ).fetchall()
+        return [self._term_from_row(r) for r in rows]
 
     def get_child_terms(self, parent_id: str) -> list[GlossaryTerm]:
         """Get child glossary terms of a parent."""

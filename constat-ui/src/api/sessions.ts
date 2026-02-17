@@ -344,6 +344,31 @@ export async function generateGlossary(
   return post(`/sessions/${sessionId}/glossary/generate`)
 }
 
+export async function suggestTaxonomy(
+  sessionId: string
+): Promise<{ suggestions: Array<{ child: string; parent: string; confidence: string; reason: string }> }> {
+  return post(`/sessions/${sessionId}/glossary/suggest-taxonomy`)
+}
+
+export async function bulkUpdateStatus(
+  sessionId: string,
+  names: string[],
+  status: string
+): Promise<{ status: string; updated: string[]; failed: string[]; count: number }> {
+  return fetch(`/api/sessions/${sessionId}/glossary/bulk-status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names, status }),
+  }).then(r => r.json())
+}
+
+export async function persistGlossary(
+  sessionId: string,
+  domain?: string
+): Promise<{ status: string; count: number }> {
+  return post(`/sessions/${sessionId}/glossary/persist`, { domain })
+}
+
 // Proof Tree
 export async function getProofTree(
   sessionId: string
