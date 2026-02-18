@@ -432,7 +432,6 @@ class _AccessMixin:
             entity.id,
             limit=limit,
             domain_ids=self._active_domain_ids,
-            session_id=session_id,
         )
 
         results = []

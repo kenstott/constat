@@ -53,6 +53,9 @@ class TaskType(Enum):
     # Glossary generation
     GLOSSARY_GENERATION = "glossary_generation"
 
+    # Relationship extraction
+    RELATIONSHIP_EXTRACTION = "relationship_extraction"
+
     # Default fallback
     GENERAL = "general"
 

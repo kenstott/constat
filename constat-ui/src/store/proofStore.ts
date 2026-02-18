@@ -134,8 +134,6 @@ export const useProofStore = create<ProofState>((set, get) => ({
             strategy: data.strategy as string | undefined,
             dependencies: (data.dependencies as string[]) || existing.dependencies,
             elapsed_ms: data.elapsed_ms as number | undefined,
-            validations: data.validations as string[] | undefined,
-            profile: data.profile as string[] | undefined,
           })
           return { facts: next }
 

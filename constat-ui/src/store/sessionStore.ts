@@ -2,7 +2,7 @@
 console.log('[sessionStore] MODULE LOADED - v2025-02-05-debug')
 
 import { create } from 'zustand'
-import type { Session, SessionStatus, Plan, WSEvent, TableInfo, Artifact, Fact } from '@/types/api'
+import type { Session, SessionStatus, Plan, WSEvent, TableInfo, Artifact, Fact, GlossaryTerm } from '@/types/api'
 import { wsManager } from '@/api/websocket'
 import * as sessionsApi from '@/api/sessions'
 import { getOrCreateSessionId, createNewSessionId } from '@/api/sessions'
@@ -1077,17 +1077,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Could show a loading indicator if desired
         break
 
+      case 'glossary_terms_added': {
+        const termsData = event.data as { terms?: GlossaryTerm[] }
+        if (termsData.terms && termsData.terms.length > 0) {
+          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+            useGlossaryStore.getState().addTerms(termsData.terms!)
+          })
+        }
+        break
+      }
+
       case 'glossary_rebuild_complete': {
         const { session: s } = get()
         if (s) {
           import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-            useGlossaryStore.getState().fetchTerms(s.session_id)
+            const store = useGlossaryStore.getState()
+            store.setGenerating(false)
+            store.fetchTerms(s.session_id)
           })
         }
         break
       }
 
       case 'glossary_rebuild_start':
+        break
+
+      case 'relationships_extracted':
         break
     }
   },

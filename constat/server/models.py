@@ -769,6 +769,7 @@ class GlossaryTermResponse(BaseModel):
     provenance: Optional[str] = Field(default=None, description="Source of definition")
     glossary_status: str = Field(default="self_describing", description="defined or self_describing")
     entity_id: Optional[str] = Field(default=None, description="Matching entity ID")
+    glossary_id: Optional[str] = Field(default=None, description="Glossary term ID (for parent_id linking)")
     ner_type: Optional[str] = Field(default=None, description="NER type")
     connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
 

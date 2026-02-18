@@ -134,7 +134,9 @@ class MetadataMixin:
     def _find_entity(self, name: str, limit: int = 3) -> dict:
         """Find all occurrences of an entity across schema and documents."""
         from constat.discovery.schema_tools import SchemaDiscoveryTools
-        tools = SchemaDiscoveryTools(self.schema_manager, self.doc_tools)
+        tools = SchemaDiscoveryTools(
+            self.schema_manager, self.doc_tools, session_id=self.session_id,
+        )
         return tools.find_entity(name, limit)
 
     def _get_tool_handlers(self) -> dict:

@@ -469,22 +469,23 @@ class TestFindEntityByName:
         assert vector_store.find_entity_by_name("revenue", domain_ids=["dom-z"]) is None
 
     def test_find_by_name_session_and_domain(self, vector_store):
-        """Filter by both session_id and domain_ids together."""
+        """Visibility: session_id + domain_ids uses OR (base + domain + session)."""
         e1 = _make_entity("users", session_id="s1", domain_id="d1")
         e2 = _make_entity("users", session_id="s2", domain_id="d1")
         e2.id = e2.id + "_s2"
         vector_store.add_entities([e1], session_id="s1")
         vector_store.add_entities([e2], session_id="s2")
 
-        # Both match domain, but only one matches session
+        # s1 sees d1 entities (domain match via OR)
         found = vector_store.find_entity_by_name("users", domain_ids=["d1"], session_id="s1")
         assert found is not None
-        assert found.session_id == "s1"
 
-        # Wrong session
-        assert vector_store.find_entity_by_name("users", domain_ids=["d1"], session_id="s3") is None
-        # Wrong domain
-        assert vector_store.find_entity_by_name("users", domain_ids=["d9"], session_id="s1") is None
+        # s3 also sees d1 entities — domain_ids is an OR clause, not AND
+        found2 = vector_store.find_entity_by_name("users", domain_ids=["d1"], session_id="s3")
+        assert found2 is not None
+
+        # Wrong domain AND wrong session → not visible
+        assert vector_store.find_entity_by_name("users", domain_ids=["d9"], session_id="s99") is None
 
     def test_find_nonexistent_returns_none(self, vector_store):
         """Returns None when entity does not exist."""

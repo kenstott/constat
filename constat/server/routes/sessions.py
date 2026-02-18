@@ -285,10 +285,12 @@ async def create_session(
             logger.info(f"Loaded preferred domains: {loaded}")
             # Re-resolve config with active domains
             session_manager.resolve_config(session_id)
-            # Run NER for newly loaded domain documents
-            session_manager._run_entity_extraction(session_id, managed.session)
     else:
         logger.info(f"[create_session] No preferred domains found for user {effective_user_id}")
+
+    # Run NER after domain loading (or even with no domains) so schema
+    # entities are available for pattern matching in entity extraction.
+    session_manager.refresh_entities_async(session_id)
 
     return _session_to_response(managed)
 

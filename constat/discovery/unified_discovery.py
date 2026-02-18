@@ -158,16 +158,15 @@ class UnifiedDiscovery:
             }
 
         # Get chunks mentioning this entity
-        # Returns: list of (chunk_id, DocumentChunk, mention_count, confidence)
+        # Returns: list of (chunk_id, DocumentChunk, confidence)
         chunk_results = self._vector_store.get_chunks_for_entity(
             entity_id=entity.id,
             limit=limit,
             domain_ids=self._domain_ids,
-            session_id=self._session_id,
         )
 
         # Convert to dict format for _get_cooccurring_entities
-        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _, _ in chunk_results]
+        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _ in chunk_results]
 
         # Get related entities (co-occurring in same chunks)
         related = self._get_cooccurring_entities(entity.id, chunks_for_related)
@@ -184,9 +183,9 @@ class UnifiedDiscovery:
                     "content": chunk.content,
                     "document": chunk.document_name,
                     "section": chunk.section,
-                    "relevance": mention_count,
+                    "relevance": confidence,
                 }
-                for chunk_id, chunk, mention_count, confidence in chunk_results
+                for chunk_id, chunk, confidence in chunk_results
             ],
             "related_entities": related,
         }
@@ -264,9 +263,8 @@ class UnifiedDiscovery:
             entity_id=entity.id,
             limit=10,
             domain_ids=self._domain_ids,
-            session_id=self._session_id,
         )
-        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _, _ in chunk_results]
+        chunks_for_related = [{"chunk_id": chunk_id} for chunk_id, _, _ in chunk_results]
         cooccurring = self._get_cooccurring_entities(entity.id, chunks_for_related)
         for r in cooccurring:
             results.append({

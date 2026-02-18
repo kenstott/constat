@@ -63,6 +63,7 @@ class DiscoveryTools:
         api_catalog: Optional[APICatalog] = None,
         config: Optional[Config] = None,
         fact_resolver: Optional[FactResolver] = None,
+        session_id: Optional[str] = None,
     ):
         self.config = config
 
@@ -73,6 +74,7 @@ class DiscoveryTools:
             schema_manager,
             doc_tools=self.doc_tools,
             api_tools=self.api_tools,
+            session_id=session_id,
         ) if schema_manager else None
         self.fact_tools = FactResolutionTools(fact_resolver, self.doc_tools)
 
@@ -100,6 +102,7 @@ class DiscoveryTools:
                 "get_sample_values": self.schema_tools.get_sample_values,
                 "find_entity": self.schema_tools.find_entity,
                 "search_all": self.schema_tools.search_all,
+                "lookup_glossary_term": self.schema_tools.lookup_glossary_term,
             })
 
         # API tools

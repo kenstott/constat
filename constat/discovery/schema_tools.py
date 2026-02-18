@@ -31,6 +31,7 @@ class SchemaDiscoveryTools:
         doc_tools: Optional["DocumentDiscoveryTools"] = None,
         api_tools: Optional["APIDiscoveryTools"] = None,
         allowed_databases: Optional[set[str]] = None,
+        session_id: Optional[str] = None,
     ):
         """Initialize schema discovery tools.
 
@@ -40,11 +41,13 @@ class SchemaDiscoveryTools:
             api_tools: Optional API discovery tools
             allowed_databases: Set of allowed database names. If None, all databases
                 are visible. If empty set, no databases are visible.
+            session_id: Session ID for glossary enrichment
         """
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools
         self.api_tools = api_tools
         self.allowed_databases = allowed_databases
+        self.session_id = session_id
 
     def _is_database_allowed(self, db_name: str) -> bool:
         """Check if a database is allowed based on permissions."""
@@ -444,13 +447,56 @@ class SchemaDiscoveryTools:
                     query_embedding, limit=per_source_limit,
                     chunk_types=[ChunkType.GLOSSARY_TERM],
                 )
+
+                # Batch-fetch full glossary terms for enrichment
+                hit_names = [
+                    chunk.document_name.replace("glossary:", "")
+                    for _, _, chunk in glossary_hits
+                ]
+                terms_by_name = {}
+                if hit_names and self.session_id:
+                    fetched = vs.get_glossary_terms_by_names(hit_names, self.session_id)
+                    terms_by_name = {t.name.lower(): t for t in fetched}
+
                 for chunk_id, similarity, chunk in glossary_hits:
-                    results["glossary"].append({
+                    name = chunk.document_name.replace("glossary:", "")
+                    term = terms_by_name.get(name.lower())
+
+                    entry = {
                         "type": "glossary_term",
-                        "name": chunk.document_name.replace("glossary:", ""),
-                        "definition": chunk.content[:300],
+                        "name": name,
                         "relevance": round(similarity, 3),
-                    })
+                    }
+
+                    if term:
+                        entry["definition"] = term.definition
+                        entry["aliases"] = term.aliases or []
+                        entry["status"] = term.status
+
+                        # Parent name
+                        if term.parent_id:
+                            parent = vs.get_glossary_term_by_id(term.parent_id)
+                            entry["parent"] = parent.display_name if parent else None
+
+                        # 1st-order SVO relationships
+                        entity = vs.find_entity_by_name(name, session_id=self.session_id)
+                        if entity:
+                            rels = vs.get_relationships_for_entity(entity.id, self.session_id)
+                            entry["relationships"] = [
+                                f"{r['subject_name']} {r['verb']} {r['object_name']}"
+                                for r in rels[:5]
+                            ]
+                            # Physical source count (exclude glossary/relationship chunks)
+                            chunks_for = vs.get_chunks_for_entity(entity.id, limit=50)
+                            sources = set(
+                                c.document_name for _, c, _ in chunks_for
+                                if not c.document_name.startswith("glossary:") and not c.document_name.startswith("relationship:")
+                            )
+                            entry["source_count"] = len(sources)
+                    else:
+                        entry["definition"] = chunk.content[:300]
+
+                    results["glossary"].append(entry)
 
                 # Search relationship chunks
                 rel_hits = vs.search(
@@ -481,6 +527,70 @@ class SchemaDiscoveryTools:
         }
 
         return results
+
+    def lookup_glossary_term(self, name: str) -> dict:
+        """Look up a glossary term by name or alias with full details.
+
+        Args:
+            name: Term name or alias
+
+        Returns:
+            Full term details including hierarchy, relationships, physical resources
+        """
+        if not self.doc_tools or not hasattr(self.doc_tools, '_vector_store') or not self.doc_tools._vector_store:
+            return {"error": "Glossary not available"}
+        if not self.session_id:
+            return {"error": "No session context"}
+
+        vs = self.doc_tools._vector_store
+        term = vs.get_glossary_term_by_name_or_alias(name, self.session_id)
+        if not term:
+            return {"error": f"Term '{name}' not found"}
+
+        result: dict = {
+            "name": term.name,
+            "display_name": term.display_name,
+            "definition": term.definition,
+            "aliases": term.aliases or [],
+            "semantic_type": term.semantic_type,
+            "status": term.status,
+            "cardinality": term.cardinality,
+        }
+
+        # Parent
+        if term.parent_id:
+            parent = vs.get_glossary_term_by_id(term.parent_id)
+            result["parent"] = parent.display_name if parent else None
+
+        # Children
+        children = vs.get_child_terms(term.id)
+        if children:
+            result["children"] = [
+                {"name": c.name, "display_name": c.display_name}
+                for c in children
+            ]
+
+        # SVO relationships
+        entity = vs.find_entity_by_name(term.name, session_id=self.session_id)
+        if entity:
+            rels = vs.get_relationships_for_entity(entity.id, self.session_id)
+            result["relationships"] = [
+                {
+                    "subject": r["subject_name"],
+                    "verb": r["verb"],
+                    "object": r["object_name"],
+                    "confidence": r["confidence"],
+                }
+                for r in rels
+            ]
+
+        # Physical resources
+        from constat.discovery.glossary_generator import resolve_physical_resources
+        resources = resolve_physical_resources(term.name, self.session_id, vs)
+        if resources:
+            result["physical_resources"] = resources
+
+        return result
 
 
 # Tool schemas for LLM
@@ -626,6 +736,20 @@ SCHEMA_TOOL_SCHEMAS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "lookup_glossary_term",
+        "description": "Look up a glossary term by name or alias. Returns full definition, aliases, parent/child hierarchy, SVO relationships, and physical resource connections. Use after search_all finds a relevant glossary term.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Term name or alias (e.g., 'compensation', 'MRR')",
+                },
+            },
+            "required": ["name"],
         },
     },
 ]

@@ -26,6 +26,8 @@ interface GlossaryState {
   totalDefined: number
   totalSelfDescribing: number
   loading: boolean
+  generating: boolean
+  refreshKey: number
   error: string | null
 
   fetchTerms: (sessionId: string) => Promise<void>
@@ -38,10 +40,12 @@ interface GlossaryState {
   suggestTaxonomy: (sessionId: string) => Promise<void>
   acceptTaxonomySuggestion: (sessionId: string, suggestion: TaxonomySuggestion) => Promise<void>
   dismissTaxonomySuggestion: (suggestion: TaxonomySuggestion) => void
+  addTerms: (terms: GlossaryTerm[]) => void
   bulkUpdateStatus: (sessionId: string, names: string[], status: string) => Promise<void>
   selectTerm: (name: string | null) => void
   setFilter: (filter: Partial<GlossaryFilter>) => void
   setViewMode: (mode: 'tree' | 'list') => void
+  setGenerating: (generating: boolean) => void
 }
 
 export const useGlossaryStore = create<GlossaryState>((set, get) => ({
@@ -54,6 +58,8 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   totalDefined: 0,
   totalSelfDescribing: 0,
   loading: false,
+  generating: false,
+  refreshKey: 0,
   error: null,
 
   fetchTerms: async (sessionId) => {
@@ -108,7 +114,26 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   },
 
   generateGlossary: async (sessionId) => {
+    set({ generating: true })
     await sessionsApi.generateGlossary(sessionId)
+    // generating stays true until glossary_rebuild_complete WS event
+  },
+
+  addTerms: (terms) => {
+    set((state) => {
+      const byName = new Map(state.terms.map(t => [t.name, t]))
+      let newCount = 0
+      for (const term of terms) {
+        if (!byName.has(term.name)) {
+          newCount++
+        }
+        byName.set(term.name, term)
+      }
+      return {
+        terms: Array.from(byName.values()),
+        totalDefined: state.totalDefined + newCount,
+      }
+    })
   },
 
   suggestTaxonomy: async (sessionId) => {
@@ -126,8 +151,8 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
     const parentTerm = terms.find(t => t.name.toLowerCase() === suggestion.parent.toLowerCase())
     if (!parentTerm) return
 
-    // Get the parent's entity_id or glossary ID to use as parent_id
-    const parentId = parentTerm.entity_id || suggestion.parent
+    // parent_id should match glossary_id (preferred) or entity_id
+    const parentId = parentTerm.glossary_id || parentTerm.entity_id || suggestion.parent
     await sessionsApi.updateGlossaryTerm(sessionId, suggestion.child, { parent_id: parentId })
 
     // Remove from suggestions
@@ -158,4 +183,10 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
     set((state) => ({ filters: { ...state.filters, ...filter } })),
 
   setViewMode: (mode) => set({ viewMode: mode }),
+
+  setGenerating: (generating) => set((state) => ({
+    generating,
+    // Increment refreshKey when generation completes so ConnectedResources re-fetches
+    refreshKey: !generating ? state.refreshKey + 1 : state.refreshKey,
+  })),
 }))

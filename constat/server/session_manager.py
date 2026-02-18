@@ -341,10 +341,11 @@ class SessionManager:
         # Build initial resolved config (tier 1 + user tier; domains added later)
         self.resolve_config(session_id)
 
-        # Run NER in background (non-blocking session creation)
-        # Entity links populate progressively; queries work via vector search until done
-        # MUST be outside `with self._lock:` — refresh_entities_async acquires the same lock
-        self.refresh_entities_async(session_id)
+        # NER is NOT started here — the route handler calls _run_entity_extraction
+        # after domain loading completes, so schema entities are available for
+        # pattern matching. Starting async NER here caused a race condition where
+        # set_schema_entities (during domain loading) cleared all chunk_entity
+        # links and the background thread's extraction was lost.
 
         return session_id
 
@@ -574,7 +575,7 @@ class SessionManager:
             return
 
         # Need a router for LLM calls
-        if not hasattr(session, '_router') or not session._router:
+        if not hasattr(session, 'router') or not session.router:
             logger.debug(f"Session {session_id}: no router available, skipping glossary generation")
             return
 
@@ -604,16 +605,23 @@ class SessionManager:
                     })
                 self._push_event(managed, EventType.GLOSSARY_TERMS_ADDED, {"terms": term_dicts})
 
+            active_domains = getattr(managed, "active_domains", []) or []
             terms = generate_glossary(
                 session_id=session_id,
                 vector_store=vector_store,
-                router=session._router,
+                router=session.router,
+                active_domains=active_domains,
                 on_batch_complete=on_batch,
             )
 
+            # Reconcile alias entities (rename "platinum" → "platinum tier")
+            from constat.discovery.glossary_generator import reconcile_alias_entities
+            reconcile_alias_entities(session_id, vector_store)
+
             # Embed generated terms as glossary chunks
             if terms:
-                self._embed_glossary_terms(terms, session_id, vector_store, session)
+                active_domains = getattr(managed, "active_domains", []) or []
+                self._embed_glossary_terms(terms, session_id, vector_store, session, active_domains)
 
             # SVO relationship extraction
             self._run_svo_extraction(session_id, managed, vector_store)
@@ -634,6 +642,7 @@ class SessionManager:
         session_id: str,
         vector_store,
         session,
+        domain_ids: list[str] | None = None,
     ) -> None:
         """Embed glossary terms as searchable chunks."""
         from constat.catalog.glossary_builder import glossary_term_to_chunk
@@ -641,7 +650,7 @@ class SessionManager:
 
         chunks = []
         for term in terms:
-            resources = resolve_physical_resources(term.name, session_id, vector_store)
+            resources = resolve_physical_resources(term.name, session_id, vector_store, domain_ids=domain_ids)
             entity_sources = []
             for r in resources:
                 for s in r.get("sources", []):
@@ -667,44 +676,72 @@ class SessionManager:
         managed: "ManagedSession",
         vector_store,
     ) -> None:
-        """Run SVO relationship extraction after glossary generation."""
+        """Run two-phase relationship extraction after glossary generation.
+
+        Phase 1: SpaCy SVO (optional — graceful skip if no spaCy)
+        Phase 2: LLM refinement (if router available)
+        """
+        def on_batch(batch_rels):
+            rel_dicts = [
+                {
+                    "subject_name": r.subject_name,
+                    "verb": r.verb,
+                    "object_name": r.object_name,
+                    "sentence": r.sentence,
+                    "confidence": r.confidence,
+                    "verb_category": r.verb_category,
+                }
+                for r in batch_rels
+            ]
+            self._push_event(managed, EventType.RELATIONSHIPS_EXTRACTED, {
+                "relationships": rel_dicts,
+            })
+
+        # Phase 1: spaCy SVO (optional)
+        svo_rels = []
         try:
-            session = managed.session
-            # Need spaCy model — reuse the one from doc_tools
-            nlp = None
-            if hasattr(session, 'doc_tools') and session.doc_tools:
-                nlp = getattr(session.doc_tools, '_nlp', None)
-            if not nlp:
-                logger.debug(f"Session {session_id}: no spaCy model available, skipping SVO extraction")
-                return
-
+            from constat.discovery.entity_extractor import get_nlp
             from constat.discovery.relationship_extractor import extract_svo_relationships
+            try:
+                nlp = get_nlp()
+            except Exception as e:
+                logger.debug(f"Session {session_id}: spaCy model not available ({e}), skipping Phase 1 SVO extraction")
+                nlp = None
 
-            def on_batch(batch_rels):
-                rel_dicts = [
-                    {
-                        "subject_entity_id": r.subject_entity_id,
-                        "verb": r.verb,
-                        "object_entity_id": r.object_entity_id,
-                        "sentence": r.sentence,
-                        "confidence": r.confidence,
-                        "verb_category": r.verb_category,
-                    }
-                    for r in batch_rels
-                ]
-                self._push_event(managed, EventType.RELATIONSHIPS_EXTRACTED, {
-                    "relationships": rel_dicts,
-                })
-
-            rels = extract_svo_relationships(
-                session_id=session_id,
-                vector_store=vector_store,
-                nlp=nlp,
-                on_batch=on_batch,
-            )
-            logger.info(f"SVO extraction for {session_id}: {len(rels)} relationships")
+            if nlp:
+                svo_rels = extract_svo_relationships(
+                    session_id=session_id,
+                    vector_store=vector_store,
+                    nlp=nlp,
+                    on_batch=on_batch,
+                )
+                logger.info(f"Phase 1 SVO extraction for {session_id}: {len(svo_rels)} relationships")
         except Exception as e:
-            logger.exception(f"SVO extraction for {session_id} failed: {e}")
+            logger.exception(f"Phase 1 SVO extraction for {session_id} failed: {e}")
+
+        # Phase 2: LLM refinement (if router available)
+        session = managed.session
+        if hasattr(session, 'router') and session.router:
+            try:
+                from constat.discovery.relationship_extractor import (
+                    get_co_occurring_pairs,
+                    refine_relationships_with_llm,
+                )
+                co_pairs = get_co_occurring_pairs(session_id, vector_store)
+                if co_pairs:
+                    llm_rels = refine_relationships_with_llm(
+                        session_id=session_id,
+                        vector_store=vector_store,
+                        router=session.router,
+                        svo_candidates=svo_rels,
+                        co_occurring_pairs=co_pairs,
+                        on_batch=on_batch,
+                    )
+                    logger.info(f"Phase 2 LLM refinement for {session_id}: {len(llm_rels)} relationships")
+            except Exception as e:
+                logger.exception(f"Phase 2 LLM refinement for {session_id} failed: {e}")
+        else:
+            logger.debug(f"Session {session_id}: no router available, skipping Phase 2 LLM refinement")
 
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:

@@ -37,24 +37,20 @@ This approach avoids expensive full-text parsing by using co-occurrence as a fil
 ```sql
 CREATE TABLE entity_relationships (
     id VARCHAR PRIMARY KEY,
-    subject_entity_id VARCHAR NOT NULL,
+    subject_name VARCHAR NOT NULL,   -- Entity/term name (natural key)
     verb VARCHAR NOT NULL,           -- Lemmatized verb (e.g., "receive", "determine")
-    object_entity_id VARCHAR NOT NULL,
-    chunk_id VARCHAR NOT NULL,       -- Source chunk for provenance
+    object_name VARCHAR NOT NULL,    -- Entity/term name (natural key)
     sentence TEXT,                   -- Original sentence (for UI display)
     confidence FLOAT DEFAULT 1.0,
+    verb_category VARCHAR DEFAULT 'other',
     session_id VARCHAR,              -- NULL = base, else session-scoped
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (subject_entity_id) REFERENCES entities(id),
-    FOREIGN KEY (object_entity_id) REFERENCES entities(id),
-    FOREIGN KEY (chunk_id) REFERENCES embeddings(chunk_id),
-
-    UNIQUE(subject_entity_id, verb, object_entity_id, chunk_id)
+    UNIQUE(subject_name, verb, object_name, session_id)
 );
 
-CREATE INDEX idx_rel_subject ON entity_relationships(subject_entity_id);
-CREATE INDEX idx_rel_object ON entity_relationships(object_entity_id);
+CREATE INDEX idx_rel_subject ON entity_relationships(subject_name);
+CREATE INDEX idx_rel_object ON entity_relationships(object_name);
 CREATE INDEX idx_rel_verb ON entity_relationships(verb);
 ```
 
@@ -117,9 +113,9 @@ def extract_relationships_for_pair(
                 subject, obj = determine_svo_direction(sent, a_span, b_span, verb)
 
                 relationships.append(Relationship(
-                    subject_entity_id=subject.id,
+                    subject_name=subject.name,
                     verb=verb.lemma_,
-                    object_entity_id=obj.id,
+                    object_name=obj.name,
                     chunk_id=chunk_id,
                     sentence=sent.text,
                     confidence=compute_confidence(verb, a_span, b_span),

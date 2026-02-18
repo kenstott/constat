@@ -355,20 +355,19 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
-        # Create entity_relationships table for SVO triples
+        # Create entity_relationships table for SVO triples (keyed by name)
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS entity_relationships (
                 id VARCHAR PRIMARY KEY,
-                subject_entity_id VARCHAR NOT NULL,
+                subject_name VARCHAR NOT NULL,
                 verb VARCHAR NOT NULL,
-                object_entity_id VARCHAR NOT NULL,
-                chunk_id VARCHAR NOT NULL,
+                object_name VARCHAR NOT NULL,
                 sentence TEXT,
                 confidence FLOAT DEFAULT 1.0,
                 verb_category VARCHAR DEFAULT 'other',
                 session_id VARCHAR,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(subject_entity_id, verb, object_entity_id, chunk_id)
+                UNIQUE(subject_name, verb, object_name, session_id)
             )
         """)
 
@@ -443,10 +442,10 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "CREATE INDEX IF NOT EXISTS idx_glossary_status ON glossary_terms(status)"
             )
             self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_rel_subject ON entity_relationships(subject_entity_id)"
+                "CREATE INDEX IF NOT EXISTS idx_rel_subject ON entity_relationships(subject_name)"
             )
             self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_rel_object ON entity_relationships(object_entity_id)"
+                "CREATE INDEX IF NOT EXISTS idx_rel_object ON entity_relationships(object_name)"
             )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_rel_verb ON entity_relationships(verb)"
@@ -456,6 +455,74 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
+
+    # =========================================================================
+    # Visibility filters — single source of truth for scoping queries
+    # =========================================================================
+
+    @staticmethod
+    def entity_visibility_filter(
+        session_id: str,
+        active_domains: list[str] | None = None,
+        alias: str = "e",
+    ) -> tuple[str, list]:
+        """Build the 3-part entity visibility WHERE clause.
+
+        Entities are visible if they are:
+        - Base-level (domain_id IS NULL AND session_id IS NULL)
+        - Domain-scoped (domain_id IN active_domains)
+        - Session-scoped (session_id = ?)
+
+        Args:
+            session_id: Current session ID
+            active_domains: Active domain IDs
+            alias: Table alias (e.g. 'e', 'e2', or '' for no alias)
+
+        Returns:
+            (sql_fragment, params) — fragment is parenthesized OR clause
+        """
+        pfx = f"{alias}." if alias else ""
+        parts = [f"({pfx}domain_id IS NULL AND {pfx}session_id IS NULL)"]
+        params: list = []
+
+        if active_domains:
+            placeholders = ",".join(["?" for _ in active_domains])
+            parts.append(f"{pfx}domain_id IN ({placeholders})")
+            params.extend(active_domains)
+
+        parts.append(f"{pfx}session_id = ?")
+        params.append(session_id)
+
+        return f"({' OR '.join(parts)})", params
+
+    @staticmethod
+    def chunk_visibility_filter(
+        domain_ids: list[str] | None = None,
+        alias: str = "",
+    ) -> tuple[str, list]:
+        """Build the chunk/embedding visibility WHERE clause.
+
+        Chunks are visible if they are:
+        - Base-level (domain_id IS NULL or '__base__')
+        - Domain-scoped (domain_id IN domain_ids)
+
+        Args:
+            domain_ids: Active domain IDs
+            alias: Table alias (e.g. 'em', or '' for no alias)
+
+        Returns:
+            (sql_fragment, params) — fragment is parenthesized OR clause
+        """
+        pfx = f"{alias}." if alias else ""
+        parts = [f"{pfx}domain_id IS NULL", f"{pfx}domain_id = '__base__'"]
+        params: list = []
+
+        if domain_ids:
+            placeholders = ",".join(["?" for _ in domain_ids])
+            parts.append(f"{pfx}domain_id IN ({placeholders})")
+            params.extend(domain_ids)
+
+        return f"({' OR '.join(parts)})", params
 
     def clear_session_data(self, session_id: str) -> None:
         """Remove all data for a specific session.
@@ -964,16 +1031,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Ensure query is 1D list
         query = query_embedding.flatten().tolist()
 
-        # Build filter: base (NULL or '__base__') + active domains
-        filter_conditions = ["(domain_id IS NULL)", "(domain_id = '__base__')"]
-        params: list = [query]
-
-        if domain_ids:
-            placeholders = ",".join(["?" for _ in domain_ids])
-            filter_conditions.append(f"domain_id IN ({placeholders})")
-            params.extend(domain_ids)
-
-        where_clause = " OR ".join(filter_conditions)
+        chunk_filter, filter_params = self.chunk_visibility_filter(domain_ids)
+        params: list = [query] + filter_params
 
         # Optional chunk_type filter
         chunk_type_clause = ""
@@ -998,7 +1057,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 content,
                 array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
             FROM embeddings
-            WHERE ({where_clause}){chunk_type_clause}
+            WHERE {chunk_filter}{chunk_type_clause}
             ORDER BY similarity DESC
             LIMIT ?
             """,
@@ -1334,31 +1393,27 @@ class DuckDBVectorStore(VectorStoreBackend):
     def get_chunks_for_entity(
         self,
         entity_id: str,
-        limit: int = 10,
+        limit: int | None = None,
         domain_ids: list[str] | None = None,
     ) -> list[tuple[str, DocumentChunk, float]]:
         """Get chunks that mention an entity.
 
         Args:
             entity_id: The entity identifier
-            limit: Maximum number of chunks to return
+            limit: Maximum number of chunks to return (None = all)
             domain_ids: List of domain IDs to include (filters embeddings)
 
         Returns:
             List of (chunk_id, DocumentChunk, confidence) tuples
             ordered by confidence
         """
-        # Embeddings can come from base + domains
-        emb_filter = ["em.domain_id IS NULL"]
-        params: list = [entity_id]
+        emb_where, filter_params = self.chunk_visibility_filter(domain_ids, alias="em")
+        params: list = [entity_id] + filter_params
 
-        if domain_ids:
-            placeholders = ",".join(["?" for _ in domain_ids])
-            emb_filter.append(f"em.domain_id IN ({placeholders})")
-            params.extend(domain_ids)
-
-        emb_where = " OR ".join(emb_filter)
-        params.append(limit)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(limit)
 
         result = self._conn.execute(
             f"""
@@ -1372,9 +1427,9 @@ class DuckDBVectorStore(VectorStoreBackend):
                 ce.confidence
             FROM chunk_entities ce
             JOIN embeddings em ON ce.chunk_id = em.chunk_id
-            WHERE ce.entity_id = ? AND ({emb_where})
+            WHERE ce.entity_id = ? AND {emb_where}
             ORDER BY ce.confidence DESC
-            LIMIT ?
+            {limit_clause}
             """,
             params,
         ).fetchall()
@@ -1401,27 +1456,32 @@ class DuckDBVectorStore(VectorStoreBackend):
     ) -> Optional[Entity]:
         """Find an entity by its name (case-insensitive).
 
+        When session_id is provided, uses the full 3-part visibility filter
+        (base + domain + session) so all visible entities are found.
+
         Args:
             name: Entity name to search for
-            domain_ids: Optional domain IDs to scope the search
-            session_id: Optional session ID to scope the search
+            domain_ids: Optional domain IDs for visibility
+            session_id: Optional session ID for visibility
 
         Returns:
             Entity if found, None otherwise
         """
-        conditions = ["LOWER(name) = LOWER(?)"]
         params: list = [name]
 
         if session_id:
-            conditions.append("session_id = ?")
-            params.append(session_id)
+            vis_filter, vis_params = self.entity_visibility_filter(
+                session_id, domain_ids, alias="",
+            )
+            where = f"LOWER(name) = LOWER(?) AND {vis_filter}"
+            params.extend(vis_params)
+        elif domain_ids:
+            chunk_filter, vis_params = self.chunk_visibility_filter(domain_ids)
+            where = f"LOWER(name) = LOWER(?) AND {chunk_filter}"
+            params.extend(vis_params)
+        else:
+            where = "LOWER(name) = LOWER(?)"
 
-        if domain_ids:
-            placeholders = ", ".join("?" for _ in domain_ids)
-            conditions.append(f"domain_id IN ({placeholders})")
-            params.extend(domain_ids)
-
-        where = " AND ".join(conditions)
         result = self._conn.execute(
             f"""
             SELECT id, name, display_name, semantic_type, ner_type,
@@ -1447,6 +1507,21 @@ class DuckDBVectorStore(VectorStoreBackend):
             session_id=sess_id,
             domain_id=dom_id,
             created_at=created_at,
+        )
+
+    def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
+        """Get an entity by its ID."""
+        row = self._conn.execute(
+            "SELECT id, name, display_name, semantic_type, ner_type, "
+            "session_id, domain_id, created_at FROM entities WHERE id = ? LIMIT 1",
+            [entity_id],
+        ).fetchone()
+        if not row:
+            return None
+        return Entity(
+            id=row[0], name=row[1], display_name=row[2],
+            semantic_type=row[3], ner_type=row[4], session_id=row[5],
+            domain_id=row[6], created_at=row[7],
         )
 
     def search_enriched(
@@ -1802,22 +1877,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             List of DocumentChunk objects
         """
-        # Build filter for base + domains
-        conditions = ["domain_id IS NULL"]
-        params: list = []
-
-        if domain_ids:
-            placeholders = ",".join(["?" for _ in domain_ids])
-            conditions.append(f"domain_id IN ({placeholders})")
-            params.extend(domain_ids)
-
-        where_clause = " OR ".join(conditions)
+        chunk_filter, params = self.chunk_visibility_filter(domain_ids)
 
         result = self._conn.execute(
             f"""
             SELECT document_name, content, section, chunk_index, source, chunk_type
             FROM embeddings
-            WHERE {where_clause}
+            WHERE {chunk_filter}
             ORDER BY document_name, chunk_index
             """,
             params,
@@ -2000,31 +2066,33 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             List of unified glossary dicts
         """
-        # Build 3-part entity visibility filter (matches entities endpoint)
-        # g.session_id = ? appears FIRST in the SQL (LEFT JOIN ON clause),
-        # so its param must come first.
-        entity_conditions = ["(e.domain_id IS NULL AND e.session_id IS NULL)"]
-        params: list = [session_id]  # for g.session_id = ? in JOIN
+        entity_where, entity_params = self.entity_visibility_filter(
+            session_id, active_domains, alias="e",
+        )
+        entity_where2, entity_params2 = self.entity_visibility_filter(
+            session_id, active_domains, alias="e2",
+        )
 
-        if active_domains:
-            placeholders = ",".join(["?" for _ in active_domains])
-            entity_conditions.append(f"e.domain_id IN ({placeholders})")
-            params.extend(active_domains)
-
-        entity_conditions.append("e.session_id = ?")
-        params.append(session_id)
-
-        entity_where = " OR ".join(entity_conditions)
+        # Part 1 params: g.session_id, entity_params, session_id (parent subquery)
+        # Part 2 params: session_id (glossary_terms), entity_params2 (NOT EXISTS)
+        params: list = (
+            [session_id] + entity_params + [session_id]
+            + [session_id] + entity_params2
+        )
 
         # Scope filter
-        scope_filter = ""
+        scope_filter_1 = ""
+        scope_filter_2 = ""
         if scope == "defined":
-            scope_filter = "HAVING g.id IS NOT NULL"
+            scope_filter_1 = "AND g.id IS NOT NULL"
+            scope_filter_2 = ""  # Part 2 terms are always defined
         elif scope == "self_describing":
-            scope_filter = "HAVING g.id IS NULL"
+            scope_filter_1 = "AND g.id IS NULL"
+            scope_filter_2 = "AND 1=0"  # Part 2 terms are never self_describing
 
         rows = self._conn.execute(
             f"""
+            -- Part 1: Entities with optional glossary terms
             SELECT
                 e.id AS entity_id,
                 e.name,
@@ -2048,22 +2116,81 @@ class DuckDBVectorStore(VectorStoreBackend):
                 END AS glossary_status
             FROM entities e
             LEFT JOIN glossary_terms g
-                ON e.name = g.name
+                ON LOWER(e.name) = LOWER(g.name)
                 AND g.session_id = ?
-            WHERE ({entity_where})
-            {scope_filter}
-            ORDER BY e.name
+            WHERE {entity_where}
+            {scope_filter_1}
+            AND (
+                g.id IS NOT NULL
+                OR EXISTS (
+                    SELECT 1 FROM chunk_entities ce
+                    JOIN embeddings em ON ce.chunk_id = em.chunk_id
+                    WHERE ce.entity_id = e.id
+                      AND em.document_name NOT LIKE 'glossary:%'
+                      AND em.document_name NOT LIKE 'relationship:%'
+                )
+                OR e.id IN (
+                    SELECT parent_id FROM glossary_terms
+                    WHERE session_id = ? AND parent_id IS NOT NULL
+                )
+            )
+
+            UNION ALL
+
+            -- Part 2: Glossary terms with no matching entity
+            SELECT
+                NULL AS entity_id,
+                g.name,
+                g.display_name,
+                g.semantic_type,
+                NULL AS ner_type,
+                g.session_id,
+                g.id AS glossary_id,
+                g.domain,
+                g.definition,
+                g.parent_id,
+                g.aliases,
+                g.cardinality,
+                g.plural,
+                g.list_of,
+                g.status,
+                g.provenance,
+                'defined' AS glossary_status
+            FROM glossary_terms g
+            WHERE g.session_id = ?
+            {scope_filter_2}
+            AND NOT EXISTS (
+                SELECT 1 FROM entities e2
+                WHERE LOWER(e2.name) = LOWER(g.name) AND {entity_where2}
+            )
+
+            ORDER BY name
             """,
             params,
         ).fetchall()
         import json
         results = []
+        # Collect all aliases from defined terms to suppress duplicate entities
+        alias_set: set[str] = set()
+        for row in rows:
+            aliases_json = row[10]
+            glossary_id = row[6]
+            if glossary_id and aliases_json:
+                for a in json.loads(aliases_json):
+                    if a:
+                        alias_set.add(a.strip().lower())
+
         for row in rows:
             (entity_id, name, display_name, semantic_type, ner_type,
              sess_id, glossary_id, domain, definition, parent_id,
              aliases_json, cardinality, plural, list_of, status,
              provenance, glossary_status) = row
             aliases = json.loads(aliases_json) if aliases_json else []
+
+            # Suppress self-describing entities whose name is an alias of a defined term
+            if glossary_status == "self_describing" and name.lower() in alias_set:
+                continue
+
             results.append({
                 "entity_id": entity_id,
                 "name": name,
@@ -2085,13 +2212,70 @@ class DuckDBVectorStore(VectorStoreBackend):
             })
         return results
 
-    def get_deprecated_glossary(self, session_id: str) -> list[GlossaryTerm]:
-        """Get glossary terms with no matching entity (deprecated)."""
-        rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM deprecated_glossary WHERE session_id = ?",
-            [session_id],
-        ).fetchall()
-        return [self._term_from_row(r) for r in rows]
+    def get_deprecated_glossary(
+        self,
+        session_id: str,
+        active_domains: list[str] | None = None,
+    ) -> list[GlossaryTerm]:
+        """Get glossary terms not grounded to any entity.
+
+        A term is valid if:
+        1. Its name matches a visible entity (directly grounded), OR
+        2. It is an ancestor of a grounded term (upward walk), OR
+        3. It has grounded descendants (downward walk via get_child_terms), OR
+        4. Any other glossary term references it as parent_id and that child is valid
+        """
+        entity_vis, vis_params = self.entity_visibility_filter(
+            session_id, active_domains, alias="e",
+        )
+
+        all_terms = self.list_glossary_terms(session_id)
+        if not all_terms:
+            return []
+
+        by_id = {t.id: t for t in all_terms}
+
+        # Build parent → children map from glossary_terms
+        children_of: dict[str, list[str]] = {}
+        for t in all_terms:
+            if t.parent_id and t.parent_id in by_id:
+                children_of.setdefault(t.parent_id, []).append(t.id)
+
+        # Find terms directly grounded to a visible entity
+        grounded: set[str] = set()
+        for t in all_terms:
+            row = self._conn.execute(
+                f"SELECT 1 FROM entities e WHERE LOWER(e.name) = LOWER(?) AND {entity_vis} LIMIT 1",
+                [t.name] + vis_params,
+            ).fetchone()
+            if row:
+                grounded.add(t.id)
+
+        # Walk parent chains upward from grounded terms — ancestors are valid
+        valid = set(grounded)
+        for tid in grounded:
+            current = by_id.get(tid)
+            while current and current.parent_id:
+                parent = by_id.get(current.parent_id)
+                if not parent or parent.id in valid:
+                    break
+                valid.add(parent.id)
+                current = parent
+
+        # Walk downward — a parent is valid if any child is valid
+        changed = True
+        while changed:
+            changed = False
+            for t in all_terms:
+                if t.id in valid:
+                    continue
+                for child_id in children_of.get(t.id, []):
+                    if child_id in valid:
+                        valid.add(t.id)
+                        changed = True
+                        break
+
+        return [t for t in all_terms if t.id not in valid]
 
     def clear_session_glossary(self, session_id: str) -> int:
         """Clear all glossary terms for a session.
@@ -2116,48 +2300,43 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._conn.execute(
             """
             INSERT INTO entity_relationships
-                (id, subject_entity_id, verb, object_entity_id, chunk_id,
+                (id, subject_name, verb, object_name,
                  sentence, confidence, verb_category, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             [
-                rel.id, rel.subject_entity_id, rel.verb,
-                rel.object_entity_id, rel.chunk_id, rel.sentence,
+                rel.id, rel.subject_name, rel.verb,
+                rel.object_name, rel.sentence,
                 rel.confidence, rel.verb_category, rel.session_id,
             ],
         )
 
     def get_relationships_for_entity(
-        self, entity_id: str, session_id: str,
+        self, entity_name: str, session_id: str,
     ) -> list[dict]:
-        """Get SVO relationships where entity is subject or object."""
+        """Get SVO relationships where entity is subject or object (by name), deduplicated."""
+        name_lower = entity_name.lower()
         rows = self._conn.execute(
             """
-            SELECT r.id, r.subject_entity_id, r.verb, r.object_entity_id,
-                   r.chunk_id, r.sentence, r.confidence, r.verb_category,
-                   se.name AS subject_name, oe.name AS object_name
+            SELECT FIRST(r.id), r.subject_name, r.verb, r.object_name,
+                   MAX(r.confidence), FIRST(r.verb_category)
             FROM entity_relationships r
-            LEFT JOIN entities se ON r.subject_entity_id = se.id
-            LEFT JOIN entities oe ON r.object_entity_id = oe.id
-            WHERE (r.subject_entity_id = ? OR r.object_entity_id = ?)
+            WHERE (LOWER(r.subject_name) = ? OR LOWER(r.object_name) = ?)
               AND r.session_id = ?
-            ORDER BY r.confidence DESC
+            GROUP BY r.subject_name, r.verb, r.object_name
+            ORDER BY MAX(r.confidence) DESC
             """,
-            [entity_id, entity_id, session_id],
+            [name_lower, name_lower, session_id],
         ).fetchall()
         return [
             {
                 "id": r[0],
-                "subject_entity_id": r[1],
+                "subject_name": r[1],
                 "verb": r[2],
-                "object_entity_id": r[3],
-                "chunk_id": r[4],
-                "sentence": r[5],
-                "confidence": r[6],
-                "verb_category": r[7],
-                "subject_name": r[8],
-                "object_name": r[9],
+                "object_name": r[3],
+                "confidence": r[4],
+                "verb_category": r[5],
             }
             for r in rows
         ]
@@ -2169,6 +2348,24 @@ class DuckDBVectorStore(VectorStoreBackend):
             [session_id],
         ).fetchall()
         return len(result)
+
+    def delete_entity_relationship(self, rel_id: str) -> bool:
+        """Delete a single relationship by ID."""
+        result = self._conn.execute(
+            "DELETE FROM entity_relationships WHERE id = ? RETURNING id",
+            [rel_id],
+        ).fetchall()
+        return len(result) > 0
+
+    def update_entity_relationship_verb(self, rel_id: str, verb: str) -> bool:
+        """Update the verb and verb_category of a relationship."""
+        from constat.discovery.relationship_extractor import categorize_verb
+        verb_category = categorize_verb(verb.lower())
+        result = self._conn.execute(
+            "UPDATE entity_relationships SET verb = ?, verb_category = ? WHERE id = ? RETURNING id",
+            [verb, verb_category, rel_id],
+        ).fetchall()
+        return len(result) > 0
 
     def get_glossary_terms_by_names(self, names: list[str], session_id: str) -> list[GlossaryTerm]:
         """Batch lookup glossary terms by name.
@@ -2191,11 +2388,49 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
 
-    def get_child_terms(self, parent_id: str) -> list[GlossaryTerm]:
-        """Get child glossary terms of a parent."""
+    def get_glossary_term_by_name_or_alias(
+        self, name: str, session_id: str,
+    ) -> GlossaryTerm | None:
+        """Look up a glossary term by exact name or alias.
+
+        Args:
+            name: Term name or alias (case-insensitive)
+            session_id: Session ID
+
+        Returns:
+            GlossaryTerm if found, None otherwise
+        """
+        import json
+
+        # 1. Exact name match
+        row = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms "
+            "WHERE LOWER(name) = LOWER(?) AND session_id = ?",
+            [name, session_id],
+        ).fetchone()
+        if row:
+            return self._term_from_row(row)
+
+        # 2. Alias search — LIKE on JSON column, then verify exact match
         rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE parent_id = ?",
-            [parent_id],
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms "
+            "WHERE LOWER(aliases) LIKE ? AND session_id = ?",
+            [f"%{name.lower()}%", session_id],
+        ).fetchall()
+        for row in rows:
+            term = self._term_from_row(row)
+            if any(a.lower() == name.lower() for a in (term.aliases or [])):
+                return term
+
+        return None
+
+    def get_child_terms(self, parent_id: str, *extra_ids: str) -> list[GlossaryTerm]:
+        """Get child glossary terms whose parent_id matches any of the given IDs."""
+        all_ids = [parent_id] + [i for i in extra_ids if i]
+        placeholders = ", ".join("?" for _ in all_ids)
+        rows = self._conn.execute(
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE parent_id IN ({placeholders})",
+            all_ids,
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
 

@@ -66,8 +66,8 @@ class _EntityMixin:
     def set_schema_entities(self, entities: set[str] | list[str]) -> None:
         """Set database schema entities (table names, column names) for pattern matching.
 
-        When schema entities change, entity extraction is re-run on existing
-        documents to link schema terms to document references.
+        Only stores entity names for later use by extract_entities_for_session().
+        Does NOT trigger extraction — the caller is responsible for that.
 
         Args:
             entities: Set or list of entity names
@@ -83,22 +83,6 @@ class _EntityMixin:
         logger.debug(f"set_schema_entities: new entities include: {list(new_entities)[:10]}...")
         # noinspection PyAttributeOutsideInit
         self._schema_entities = new_entities
-
-        # Re-extract entities from existing documents if we have indexed chunks
-        chunk_count = self._vector_store.count()
-        if chunk_count > 0 and hasattr(self._vector_store, 'add_entities'):
-            logger.info(f"set_schema_entities: re-extracting entities from {chunk_count} chunks")
-            # Clear existing entity links (but keep entities from other sources)
-            if hasattr(self._vector_store, 'clear_chunk_entity_links'):
-                self._vector_store.clear_chunk_entity_links()
-
-            # Get all chunks and re-extract entities
-            chunks = self._vector_store.get_chunks()
-            if chunks:
-                self._extract_and_store_entities(chunks, self._schema_entities)
-                logger.info(f"set_schema_entities: extraction complete")
-        else:
-            logger.debug(f"set_schema_entities: no chunks to re-extract ({chunk_count} chunks)")
 
     def extract_entities_for_session(
         self,
@@ -191,22 +175,15 @@ class _EntityMixin:
         if not hasattr(self._vector_store, '_conn'):
             return self._vector_store.get_chunks()
 
-        # Query chunks where domain_id is NULL, '__base__', or in domain_ids
-        conditions = ["domain_id IS NULL", "domain_id = '__base__'"]
-        params = []
+        from constat.discovery.vector_store import DuckDBVectorStore
 
-        if domain_ids:
-            placeholders = ",".join(["?" for _ in domain_ids])
-            conditions.append(f"domain_id IN ({placeholders})")
-            params.extend(domain_ids)
-
-        where_clause = " OR ".join(conditions)
+        chunk_filter, params = DuckDBVectorStore.chunk_visibility_filter(domain_ids)
 
         result = self._vector_store._conn.execute(
             f"""
             SELECT chunk_id, document_name, content, section, chunk_index
             FROM embeddings
-            WHERE {where_clause}
+            WHERE {chunk_filter}
             """,
             params,
         ).fetchall()
@@ -379,7 +356,11 @@ class _EntityMixin:
         all_links: list[ChunkEntity] = []
 
         # Extract entities from all chunks using spaCy NER
+        # Skip glossary/relationship chunks — they're indexed for search only,
+        # running NER on them creates circular entity references.
         for chunk in chunks:
+            if chunk.document_name.startswith(("glossary:", "relationship:")):
+                continue
             extractions = extractor.extract(chunk)
             logger.debug(f"[ENTITY] Chunk '{chunk.section}' -> {len(extractions)} entities")
             for entity, link in extractions:

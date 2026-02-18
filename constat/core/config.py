@@ -472,6 +472,9 @@ DEFAULT_TASK_ROUTING = {
     "fact_resolution": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
+    "relationship_extraction": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+    ),
     "general": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),

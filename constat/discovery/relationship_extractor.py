@@ -7,15 +7,20 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""SVO relationship extraction from document chunks using spaCy dependency parsing.
+"""SVO relationship extraction from document chunks using spaCy dependency parsing
+and LLM-based refinement.
 
-Extracts Subject-Verb-Object triples scoped to co-occurring entity pairs.
-Preferred verbs get confidence 1.0; others get 0.5 but are not excluded.
+Two-phase extraction:
+1. SpaCy pass — extracts candidate SVOs from co-occurring entity pairs (cheap, fast)
+2. LLM pass — validates/rejects candidates, fixes verbs, infers implicit relationships
 """
 
 import hashlib
+import json
 import logging
 from typing import Callable, Optional
+
+from constat.core.models import TaskType
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,22 @@ logger = logging.getLogger(__name__)
 MAX_RELATIONSHIPS_PER_ENTITY = 50
 MAX_CO_OCCURRING_PAIRS = 20
 MAX_CHUNKS_PER_PAIR = 10
+
+# LLM refinement limits
+LLM_BATCH_SIZE = 5
+MAX_LLM_PAIRS = 30
+MAX_EXCERPTS_PER_PAIR = 3
+MAX_EXCERPT_LENGTH = 300
+LLM_CONFIDENCE_MAP = {"high": 0.95, "medium": 0.8, "low": 0.6}
+
+# Technical nouns that spaCy mis-tags as VERB in structured/schema text
+_NON_VERBS = frozenset({
+    "endpoint", "api", "query", "type", "field", "schema", "table",
+    "column", "database", "server", "client", "model", "name", "value",
+    "key", "index", "node", "config", "code", "file", "path", "route",
+    "parameter", "object", "class", "method", "function", "module",
+    "service", "resource", "record", "entry", "item", "data",
+})
 
 # Preferred verb categories — verbs here get confidence 1.0
 PREFERRED_VERBS: dict[str, set[str]] = {
@@ -33,6 +54,36 @@ PREFERRED_VERBS: dict[str, set[str]] = {
     "association": {"relate", "associate", "link", "connect", "correspond", "reference"},
 }
 ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
+
+VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
+
+RELATIONSHIP_SYSTEM_PROMPT = """You are extracting relationships between entity pairs from document excerpts.
+
+For each pair of entities, you receive:
+- The two entity names and their types
+- Up to 3 shared document excerpts where both entities appear
+- Any spaCy-suggested relationships (may be empty or inaccurate)
+
+Return a JSON array of relationships found. For each relationship:
+- subject: must be exactly one of the two entity names provided
+- object: must be the other entity name
+- verb: a simple verb lemma (e.g., "contain", "manage", "belong_to")
+- verb_category: one of: ownership, action, causation, temporal, association, other
+- evidence: brief quote or paraphrase from the excerpt supporting this relationship
+- confidence: high, medium, or low
+
+Rules:
+- Return 0–3 relationships per pair
+- Prefer spaCy suggestions when the verb is accurate; override when text supports a better verb
+- You may infer implicit relationships even if no sentence states them directly
+  (e.g., "employee" works_in "department" can be inferred from organizational context)
+- Use simple verb lemmas (e.g., "contain" not "contains", "manage" not "is managed by")
+- subject and object must be exactly the entity names provided (no modifications)
+
+Respond ONLY with a JSON array:
+[{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}]
+
+Return [] if no relationships can be determined."""
 
 
 def categorize_verb(lemma: str) -> str:
@@ -118,8 +169,8 @@ def find_connecting_verb(sent, span_a, span_b):
     return None
 
 
-def determine_svo_direction(span_a, span_b, verb, entity_a_id: str, entity_b_id: str):
-    """Determine subject/object based on dependency labels. Returns (subject_id, object_id)."""
+def determine_svo_direction(span_a, span_b, verb, entity_a_name: str, entity_b_name: str):
+    """Determine subject/object based on dependency labels. Returns (subject_name, object_name)."""
     head_a = span_a.root
     head_b = span_b.root
 
@@ -139,13 +190,13 @@ def determine_svo_direction(span_a, span_b, verb, entity_a_id: str, entity_b_id:
     b_is_subj = is_subject_of(head_b, verb)
 
     if a_is_subj and not b_is_subj:
-        return entity_a_id, entity_b_id
+        return entity_a_name, entity_b_name
     if b_is_subj and not a_is_subj:
-        return entity_b_id, entity_a_id
+        return entity_b_name, entity_a_name
     # Fallback: word order
     if span_a.start < span_b.start:
-        return entity_a_id, entity_b_id
-    return entity_b_id, entity_a_id
+        return entity_a_name, entity_b_name
+    return entity_b_name, entity_a_name
 
 
 def extract_svo_relationships(
@@ -193,10 +244,10 @@ def extract_svo_relationships(
     relationship_count_by_entity: dict[str, int] = {}
 
     for e1_id, e1_name, e2_id, e2_name, _co_count in pairs:
-        # Check per-entity limits
-        if relationship_count_by_entity.get(e1_id, 0) >= MAX_RELATIONSHIPS_PER_ENTITY:
+        # Check per-entity limits (by name)
+        if relationship_count_by_entity.get(e1_name, 0) >= MAX_RELATIONSHIPS_PER_ENTITY:
             continue
-        if relationship_count_by_entity.get(e2_id, 0) >= MAX_RELATIONSHIPS_PER_ENTITY:
+        if relationship_count_by_entity.get(e2_name, 0) >= MAX_RELATIONSHIPS_PER_ENTITY:
             continue
 
         # Get shared chunk IDs
@@ -235,23 +286,24 @@ def extract_svo_relationships(
                     continue
 
                 lemma = verb.lemma_.lower()
+                if lemma in _NON_VERBS:
+                    continue
                 category = categorize_verb(lemma)
                 confidence = 1.0 if lemma in ALL_PREFERRED else 0.5
 
-                subject_id, object_id = determine_svo_direction(
-                    span_a, span_b, verb, e1_id, e2_id,
+                subject_name, object_name = determine_svo_direction(
+                    span_a, span_b, verb, e1_name, e2_name,
                 )
 
                 rel_id = hashlib.sha256(
-                    f"{subject_id}:{lemma}:{object_id}:{chunk_id}".encode()
+                    f"{subject_name}:{lemma}:{object_name}:{session_id}".encode()
                 ).hexdigest()[:16]
 
                 rel = EntityRelationship(
                     id=rel_id,
-                    subject_entity_id=subject_id,
+                    subject_name=subject_name,
                     verb=lemma,
-                    object_entity_id=object_id,
-                    chunk_id=chunk_id,
+                    object_name=object_name,
                     sentence=sent.text.strip(),
                     confidence=confidence,
                     verb_category=category,
@@ -262,8 +314,8 @@ def extract_svo_relationships(
                 batch_rels.append(rel)
 
                 # Track per-entity counts
-                relationship_count_by_entity[subject_id] = relationship_count_by_entity.get(subject_id, 0) + 1
-                relationship_count_by_entity[object_id] = relationship_count_by_entity.get(object_id, 0) + 1
+                relationship_count_by_entity[subject_name] = relationship_count_by_entity.get(subject_name, 0) + 1
+                relationship_count_by_entity[object_name] = relationship_count_by_entity.get(object_name, 0) + 1
 
         if batch_rels:
             all_relationships.extend(batch_rels)
@@ -272,3 +324,257 @@ def extract_svo_relationships(
 
     logger.info(f"SVO extraction complete: {len(all_relationships)} relationships for session {session_id}")
     return all_relationships
+
+
+# ---------------------------------------------------------------------------
+# LLM-based relationship refinement (Phase 2)
+# ---------------------------------------------------------------------------
+
+def get_co_occurring_pairs(
+    session_id: str,
+    vector_store,
+    min_cooccurrence: int = 2,
+    limit: int = MAX_LLM_PAIRS,
+) -> list[tuple]:
+    """Query co-occurring entity pairs with their semantic types.
+
+    Returns:
+        List of (e1_id, e1_name, e1_type, e2_id, e2_name, e2_type, co_count)
+    """
+    rows = vector_store._conn.execute("""
+        SELECT e1.id, e1.name, e1.semantic_type,
+               e2.id, e2.name, e2.semantic_type,
+               COUNT(*) as co_count
+        FROM chunk_entities ce1
+        JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+        JOIN entities e1 ON ce1.entity_id = e1.id
+        JOIN entities e2 ON ce2.entity_id = e2.id
+        WHERE e1.session_id = ? AND e2.session_id = ?
+        GROUP BY e1.id, e1.name, e1.semantic_type, e2.id, e2.name, e2.semantic_type
+        HAVING COUNT(*) >= ?
+        ORDER BY co_count DESC
+        LIMIT ?
+    """, [session_id, session_id, min_cooccurrence, limit]).fetchall()
+    return rows
+
+
+def _get_shared_excerpts(
+    vector_store,
+    e1_id: str,
+    e2_id: str,
+    max_excerpts: int = MAX_EXCERPTS_PER_PAIR,
+    max_length: int = MAX_EXCERPT_LENGTH,
+) -> list[str]:
+    """Get shared chunk excerpts for an entity pair."""
+    chunk_rows = vector_store._conn.execute("""
+        SELECT DISTINCT e.content
+        FROM chunk_entities ce1
+        JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+        JOIN embeddings e ON ce1.chunk_id = e.chunk_id
+        WHERE ce1.entity_id = ? AND ce2.entity_id = ?
+        LIMIT ?
+    """, [e1_id, e2_id, max_excerpts]).fetchall()
+    return [row[0][:max_length] for row in chunk_rows if row[0]]
+
+
+def _parse_llm_response(content: str) -> list[dict]:
+    """Parse LLM JSON response, stripping markdown fences."""
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        content = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+        content = content.strip()
+
+    try:
+        result = json.loads(content)
+        if isinstance(result, list):
+            return result
+    except json.JSONDecodeError:
+        start = content.find("[")
+        end = content.rfind("]")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(content[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+
+    logger.warning(f"Failed to parse relationship LLM response: {content[:200]}")
+    return []
+
+
+def _validate_relationship(item: dict, e1_name: str, e2_name: str) -> bool:
+    """Validate that subject/object match the entity pair names."""
+    subj = item.get("subject", "")
+    obj = item.get("object", "")
+    verb = item.get("verb", "")
+    if not (subj and obj and verb):
+        return False
+    pair_names = {e1_name.lower(), e2_name.lower()}
+    return subj.lower() in pair_names and obj.lower() in pair_names
+
+
+def refine_relationships_with_llm(
+    session_id: str,
+    vector_store,
+    router,
+    svo_candidates: list,
+    co_occurring_pairs: list[tuple],
+    on_batch: Callable[[list], None] | None = None,
+) -> list:
+    """Refine relationships using LLM, using spaCy SVOs as suggestions.
+
+    Args:
+        session_id: Session ID
+        vector_store: DuckDBVectorStore instance
+        router: LLM router with .execute()
+        svo_candidates: SpaCy-extracted EntityRelationship objects
+        co_occurring_pairs: From get_co_occurring_pairs()
+        on_batch: Optional callback per LLM batch
+
+    Returns:
+        List of EntityRelationship objects created by LLM
+    """
+    from constat.discovery.models import EntityRelationship
+
+    # Build spaCy suggestion map: (lower_name_a, lower_name_b) -> [{verb, verb_category, sentence}]
+    svo_map: dict[tuple[str, str], list[dict]] = {}
+    for rel in svo_candidates:
+        key = tuple(sorted([rel.subject_name.lower(), rel.object_name.lower()]))
+        svo_map.setdefault(key, []).append({
+            "subject": rel.subject_name,
+            "verb": rel.verb,
+            "object": rel.object_name,
+            "verb_category": rel.verb_category,
+            "sentence": rel.sentence,
+        })
+
+    # Build pair contexts for LLM
+    pair_contexts: list[dict] = []
+    for e1_id, e1_name, e1_type, e2_id, e2_name, e2_type, co_count in co_occurring_pairs:
+        excerpts = _get_shared_excerpts(vector_store, e1_id, e2_id)
+        if not excerpts:
+            continue
+
+        key = tuple(sorted([e1_name.lower(), e2_name.lower()]))
+        suggestions = svo_map.get(key, [])
+
+        pair_contexts.append({
+            "e1_name": e1_name,
+            "e1_type": e1_type or "unknown",
+            "e2_name": e2_name,
+            "e2_type": e2_type or "unknown",
+            "excerpts": excerpts,
+            "spacy_suggestions": suggestions,
+        })
+
+    if not pair_contexts:
+        logger.info(f"LLM refinement: no pair contexts to process for session {session_id}")
+        return []
+
+    logger.info(f"LLM refinement: processing {len(pair_contexts)} pairs in batches of {LLM_BATCH_SIZE}")
+
+    all_llm_rels: list[EntityRelationship] = []
+
+    # Process in batches
+    for batch_start in range(0, len(pair_contexts), LLM_BATCH_SIZE):
+        batch = pair_contexts[batch_start:batch_start + LLM_BATCH_SIZE]
+
+        # Build user message
+        parts = []
+        for i, ctx in enumerate(batch):
+            part = f"Pair {i + 1}: {ctx['e1_name']} ({ctx['e1_type']}) <-> {ctx['e2_name']} ({ctx['e2_type']})\n"
+            part += "Excerpts:\n"
+            for j, excerpt in enumerate(ctx["excerpts"]):
+                part += f"  [{j + 1}] {excerpt}\n"
+            if ctx["spacy_suggestions"]:
+                part += "SpaCy suggestions:\n"
+                for s in ctx["spacy_suggestions"]:
+                    part += f"  - {s['subject']} → {s['verb']} → {s['object']} ({s['verb_category']})\n"
+            parts.append(part)
+
+        user_message = "\n---\n".join(parts)
+
+        try:
+            result = router.execute(
+                task_type=TaskType.RELATIONSHIP_EXTRACTION,
+                system=RELATIONSHIP_SYSTEM_PROMPT,
+                user_message=user_message,
+                max_tokens=2048,
+                complexity="low",
+            )
+
+            if not result.success:
+                logger.warning(f"LLM relationship batch failed: {result.content}")
+                continue
+
+            items = _parse_llm_response(result.content)
+            batch_rels: list[EntityRelationship] = []
+
+            # Build name lookup for this batch
+            batch_pair_names: set[tuple[str, str]] = set()
+            for ctx in batch:
+                batch_pair_names.add((ctx["e1_name"], ctx["e2_name"]))
+
+            for item in items:
+                # Find which pair this relationship belongs to
+                subj = item.get("subject", "")
+                obj = item.get("object", "")
+                matched_pair = None
+                for ctx in batch:
+                    if _validate_relationship(item, ctx["e1_name"], ctx["e2_name"]):
+                        matched_pair = ctx
+                        break
+
+                if not matched_pair:
+                    continue
+
+                verb = item.get("verb", "").lower().strip()
+                if not verb:
+                    continue
+
+                # Use LLM-provided category, fall back to our own categorization
+                verb_category = item.get("verb_category", "")
+                if verb_category not in VERB_CATEGORIES:
+                    verb_category = categorize_verb(verb)
+
+                confidence_str = item.get("confidence", "medium")
+                confidence = LLM_CONFIDENCE_MAP.get(confidence_str, 0.8)
+
+                evidence = item.get("evidence", "")
+
+                # Use exact entity names from the pair context
+                # (LLM might return slightly different casing)
+                subject_name = matched_pair["e1_name"] if subj.lower() == matched_pair["e1_name"].lower() else matched_pair["e2_name"]
+                object_name = matched_pair["e2_name"] if subject_name == matched_pair["e1_name"] else matched_pair["e1_name"]
+
+                rel_id = hashlib.sha256(
+                    f"{subject_name}:{verb}:{object_name}:{session_id}".encode()
+                ).hexdigest()[:16]
+
+                rel = EntityRelationship(
+                    id=rel_id,
+                    subject_name=subject_name,
+                    verb=verb,
+                    object_name=object_name,
+                    sentence=evidence,
+                    confidence=confidence,
+                    verb_category=verb_category,
+                    session_id=session_id,
+                )
+
+                vector_store.add_entity_relationship(rel)
+                batch_rels.append(rel)
+
+            if batch_rels:
+                all_llm_rels.extend(batch_rels)
+                if on_batch:
+                    on_batch(batch_rels)
+
+            logger.info(f"LLM batch {batch_start // LLM_BATCH_SIZE + 1}: {len(batch_rels)} relationships")
+
+        except Exception as e:
+            logger.exception(f"LLM relationship batch failed: {e}")
+            continue
+
+    logger.info(f"LLM refinement complete: {len(all_llm_rels)} relationships for session {session_id}")
+    return all_llm_rels

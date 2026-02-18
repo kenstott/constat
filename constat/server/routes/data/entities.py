@@ -102,7 +102,7 @@ async def list_entities(
                 JOIN entities e2 ON ce2.entity_id = e2.id
                 WHERE ce1.entity_id = ?
                   AND ce2.entity_id != ce1.entity_id
-                  AND (e2.session_id = ? OR e2.session_id IS NULL)
+                  AND (e2.session_id IS NULL OR e2.session_id = ?)
                 GROUP BY e2.id, e2.name, e2.semantic_type
                 ORDER BY co_occurrences DESC
                 LIMIT ?
@@ -230,24 +230,10 @@ async def list_entities(
         if hasattr(managed.session, "doc_tools") and managed.session.doc_tools:
             vs = managed.session.doc_tools._vector_store
         if vs:
-            # Build filter for base + domain + session
-            # Base: domain_id IS NULL AND session_id IS NULL
-            # Domain: domain_id IN (active_domains)
-            # Session: session_id = server_session_id
             active_domains = getattr(managed, "active_domains", []) or []
-
-            filter_conditions = ["(e.domain_id IS NULL AND e.session_id IS NULL)"]
-            params: list = []
-
-            if active_domains:
-                placeholders = ",".join(["?" for _ in active_domains])
-                filter_conditions.append(f"e.domain_id IN ({placeholders})")
-                params.extend(active_domains)
-
-            filter_conditions.append("e.session_id = ?")
-            params.append(session_id)
-
-            where_clause = " OR ".join(filter_conditions)
+            where_clause, params = vs.entity_visibility_filter(
+                session_id, active_domains, alias="e",
+            )
 
             # Debug: check chunk_entities for this session (via entity_id join)
             ce_count = vs._conn.execute(
@@ -271,7 +257,7 @@ async def list_entities(
                 SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
                        (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
                 FROM entities e
-                WHERE ({where_clause})
+                WHERE {where_clause}
                 ORDER BY e.name
             """, params).fetchall()
 

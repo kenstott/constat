@@ -178,6 +178,9 @@ class EntityExtractor:
         normalized = normalize_entity_name(name).lower()
         return hashlib.sha256(f"{normalized}:{self.session_id}".encode()).hexdigest()[:16]
 
+    # Hex hash pattern (8+ hex chars, no spaces)
+    HEX_PATTERN = re.compile(r'^[0-9a-fA-F]{8,}$')
+
     def _is_noise(self, text: str) -> bool:
         """Check if text is noise (symbols, too short, etc.)."""
         if len(text) < 2:
@@ -189,6 +192,16 @@ class EntityExtractor:
         # Skip if mostly non-alphanumeric
         alpha_count = sum(1 for c in text if c.isalnum())
         if alpha_count < len(text) * 0.5:
+            return True
+        # Dot-notation schema paths (e.g., "Countries.Language.Rtl")
+        if '.' in text:
+            return True
+        # Colon-separated labels (e.g., "Analytic Datum: Information")
+        if ':' in text:
+            return True
+        # Hex hashes / auto-generated IDs
+        clean = text.replace('-', '').replace('_', '')
+        if self.HEX_PATTERN.match(clean):
             return True
         return False
 
@@ -208,7 +221,7 @@ class EntityExtractor:
             return self._entity_cache[normalized]
 
         # Determine semantic type based on source
-        semantic_type = self._label_to_semantic_type(spacy_label)
+        semantic_type = self._label_to_semantic_type(spacy_label, name)
 
         # Store the label as ner_type for all entities (spaCy + custom patterns)
         # This captures the entity source: ORG, PERSON, SCHEMA, API, TERM
@@ -226,12 +239,16 @@ class EntityExtractor:
         self._entity_cache[normalized] = entity
         return entity
 
+    # HTTP verbs that indicate actions (PUT, DELETE, PATCH are mutations)
+    _ACTION_HTTP_VERBS = {'put', 'delete', 'patch'}
+
     @staticmethod
-    def _label_to_semantic_type(label: str) -> str:
+    def _label_to_semantic_type(label: str, name: str = "") -> str:
         """Map spaCy/custom label to semantic type.
 
         Args:
             label: Entity label (e.g., 'ORG', 'SCHEMA', 'API', 'TERM')
+            name: Entity name (used for HTTP verb detection)
 
         Returns:
             SemanticType value
@@ -240,7 +257,12 @@ class EntityExtractor:
         if label == 'SCHEMA':
             return SemanticType.CONCEPT  # Tables, columns are things
         elif label == 'API':
-            return SemanticType.ACTION  # Endpoints are operations
+            # Check for HTTP verbs — GET is a concept, POST is ambiguous (concept),
+            # PUT/DELETE/PATCH are actions
+            first_word = name.split()[0].lower() if name else ""
+            if first_word in EntityExtractor._ACTION_HTTP_VERBS:
+                return SemanticType.ACTION
+            return SemanticType.CONCEPT
         elif label == 'TERM':
             return SemanticType.TERM  # Business glossary terms
 
@@ -278,21 +300,29 @@ class EntityExtractor:
             if ent.label_ not in self.KEEP_SPACY_TYPES and ent.label_ not in {'SCHEMA', 'API', 'TERM'}:
                 continue
 
-            # Deduplicate within chunk
-            normalized = normalize_entity_name(text).lower()
-            if normalized in seen_entities:
-                continue
-            seen_entities.add(normalized)
+            # Split dot-notation names into individual entities
+            texts = text.split('.') if '.' in text else [text]
 
-            entity = self._get_or_create_entity(text, ent.label_)
+            for t in texts:
+                t = t.strip()
+                if not t or self._is_noise(t):
+                    continue
 
-            link = ChunkEntity(
-                chunk_id=chunk_id,
-                entity_id=entity.id,
-                confidence=0.9 if ent.label_ in {'SCHEMA', 'API', 'TERM'} else 0.75,
-            )
+                # Deduplicate within chunk
+                normalized = normalize_entity_name(t).lower()
+                if normalized in seen_entities:
+                    continue
+                seen_entities.add(normalized)
 
-            results.append((entity, link))
+                entity = self._get_or_create_entity(t, ent.label_)
+
+                link = ChunkEntity(
+                    chunk_id=chunk_id,
+                    entity_id=entity.id,
+                    confidence=0.9 if ent.label_ in {'SCHEMA', 'API', 'TERM'} else 0.75,
+                )
+
+                results.append((entity, link))
 
         return results
 

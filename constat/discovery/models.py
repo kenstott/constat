@@ -338,13 +338,12 @@ class EntityType:
 
 @dataclass
 class EntityRelationship:
-    """An SVO relationship triple between two entities."""
+    """An SVO relationship triple between two entities (keyed by name)."""
     id: str
-    subject_entity_id: str
+    subject_name: str
     verb: str
-    object_entity_id: str
-    chunk_id: str
-    sentence: str
+    object_name: str
+    sentence: str = ""
     confidence: float = 1.0
     verb_category: str = "other"
     session_id: str = ""

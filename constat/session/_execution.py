@@ -334,7 +334,7 @@ class ExecutionMixin:
         if all_apis:
             from constat.catalog.api_executor import APIExecutor
             # Create executor with merged config (config APIs + domain APIs)
-            api_executor = APIExecutor(self.config, project_apis=self._domain_apis)
+            api_executor = APIExecutor(self.config, domain_apis=self._domain_apis)
             for api_name, api_config in all_apis.items():
                 if api_config.type == "graphql":
                     # Create a GraphQL query function

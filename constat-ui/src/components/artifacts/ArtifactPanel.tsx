@@ -32,11 +32,11 @@ import {
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useUIStore } from '@/store/uiStore'
+import { useGlossaryStore } from '@/store/glossaryStore'
 import { AccordionSection } from './ArtifactAccordion'
 import { TableAccordion } from './TableAccordion'
 import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
-import { EntityAccordion } from './EntityAccordion'
 import GlossaryPanel from './GlossaryPanel'
 import * as sessionsApi from '@/api/sessions'
 import * as rolesApi from '@/api/roles'
@@ -112,12 +112,11 @@ function parseFrontMatter(content: string): { frontMatter: Record<string, unknow
 
 export function ArtifactPanel() {
   const { session } = useSessionStore()
-  const { expandedArtifactSections, expandArtifactSection } = useUIStore()
+  const { expandedArtifactSections, expandArtifactSection, pendingDeepLink, consumeDeepLink } = useUIStore()
   const {
     artifacts,
     tables,
     facts,
-    entities,
     learnings,
     rules,
     databases,
@@ -145,6 +144,7 @@ export function ArtifactPanel() {
     fetchPermissions,
     updateSystemPrompt,
   } = useArtifactStore()
+  const { totalDefined, totalSelfDescribing } = useGlossaryStore()
 
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
   const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
@@ -217,6 +217,98 @@ export function ArtifactPanel() {
     setShowPublishedOnly(newValue)
     localStorage.setItem('constat-results-filter', newValue ? 'published' : 'all')
   }
+
+  // Deep link: ref stores the link for phase 2 (data loading after sections render)
+  // Handle deep links: uncollapse sections, load data, scroll into view
+  useEffect(() => {
+    if (!pendingDeepLink || !session) return
+    const link = consumeDeepLink()
+    if (!link) return
+
+    console.log('[deep-link] handling:', link.type, link)
+
+    // Uncollapse the appropriate group section
+    if (link.type === 'table' || link.type === 'document' || link.type === 'api') {
+      setSourcesCollapsed(false)
+      localStorage.setItem('constat-sources-collapsed', 'false')
+    }
+    if (link.type === 'glossary_term') {
+      setReasoningCollapsed(false)
+      localStorage.setItem('constat-reasoning-collapsed', 'false')
+    }
+
+    const scrollToSection = (sectionId: string) => {
+      // Double rAF to ensure DOM has updated after state changes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          document.getElementById(`section-${sectionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        })
+      })
+    }
+
+    const loadData = async () => {
+      switch (link.type) {
+        case 'table':
+          if (link.dbName && link.tableName) {
+            setExpandedDb(link.dbName)
+            setPreviewDb(null)
+            setPreviewTable(null)
+            setPreviewData(null)
+            setDbTablesLoading(link.dbName)
+            try {
+              const res = await sessionsApi.listDatabaseTables(session.session_id, link.dbName)
+              setDbTables((prev) => ({ ...prev, [link.dbName!]: res.tables }))
+            } catch (err) {
+              console.error('Failed to list tables:', err)
+              setDbTables((prev) => ({ ...prev, [link.dbName!]: [] }))
+            } finally {
+              setDbTablesLoading(null)
+            }
+            openTablePreview(link.dbName, link.tableName)
+            scrollToSection('databases')
+          }
+          break
+        case 'document':
+          if (link.documentName) {
+            handleViewDocument(link.documentName)
+            scrollToSection('documents')
+          }
+          break
+        case 'api':
+          if (link.apiName) {
+            setExpandedApi(link.apiName)
+            setExpandedEndpoint(null)
+            setApiEndpointsLoading(link.apiName)
+            try {
+              const res = await sessionsApi.getApiSchema(session.session_id, link.apiName)
+              setApiEndpoints((prev) => ({ ...prev, [link.apiName!]: res.endpoints }))
+            } catch (err) {
+              console.error('Failed to load API schema:', err)
+              setApiEndpoints((prev) => ({ ...prev, [link.apiName!]: [] }))
+            } finally {
+              setApiEndpointsLoading(null)
+            }
+            scrollToSection('apis')
+          }
+          break
+        case 'glossary_term':
+          // Handled by GlossaryPanel via glossaryStore.selectTerm
+          // Scroll to specific term element after a short delay for render
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const el = document.getElementById(`glossary-term-${link.termName}`)
+              if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              } else {
+                scrollToSection('glossary')
+              }
+            })
+          })
+          break
+      }
+    }
+    loadData()
+  }, [pendingDeepLink])
 
   // Fetch permissions on mount
   useEffect(() => {
@@ -2800,7 +2892,7 @@ ${skill.body}`
         <AccordionSection
           id="glossary"
           title="Glossary"
-          count={entities.length}
+          count={totalDefined + totalSelfDescribing}
           icon={<TagIcon className="w-4 h-4" />}
           command="/glossary"
           action={<div className="w-6 h-6" />}

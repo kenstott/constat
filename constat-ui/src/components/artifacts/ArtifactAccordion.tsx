@@ -19,7 +19,7 @@ export function AccordionSection({ id, title, count, icon, action, command, chil
   const isExpanded = expandedArtifactSections.includes(id)
 
   return (
-    <div className="border-b border-gray-200 dark:border-gray-700">
+    <div id={`section-${id}`} className="border-b border-gray-200 dark:border-gray-700">
       <div className="flex items-center">
         <button
           onClick={() => toggleArtifactSection(id)}

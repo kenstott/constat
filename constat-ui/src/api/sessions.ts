@@ -362,6 +362,35 @@ export async function bulkUpdateStatus(
   }).then(r => r.json())
 }
 
+// Relationships
+export async function createRelationship(
+  sessionId: string,
+  subjectName: string,
+  verb: string,
+  objectName: string
+): Promise<{ status: string; id: string }> {
+  return post(`/sessions/${sessionId}/relationships`, {
+    subject_name: subjectName,
+    verb,
+    object_name: objectName,
+  })
+}
+
+export async function updateRelationshipVerb(
+  sessionId: string,
+  relId: string,
+  verb: string
+): Promise<{ status: string }> {
+  return put(`/sessions/${sessionId}/relationships/${relId}`, { verb })
+}
+
+export async function deleteRelationship(
+  sessionId: string,
+  relId: string
+): Promise<{ status: string }> {
+  return del(`/sessions/${sessionId}/relationships/${relId}`)
+}
+
 export async function persistGlossary(
   sessionId: string,
   domain?: string

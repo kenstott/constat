@@ -1,6 +1,7 @@
 // Main App component
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { ConversationPanel } from '@/components/conversation/ConversationPanel'
 import { ArtifactPanel } from '@/components/artifacts/ArtifactPanel'
@@ -14,6 +15,7 @@ import { useSessionStore } from '@/store/sessionStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import { pathToDeepLink, applyDeepLink } from '@/store/uiStore'
 import * as sessionsApi from '@/api/sessions'
 
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
@@ -106,6 +108,40 @@ function SplashScreen() {
       </p>
     </div>
   )
+}
+
+/** Handles URL-based deep links on initial load and browser back/forward. */
+function NavigationSync() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const initialRef = useRef(true)
+
+  // On mount and location change (popstate / direct visit), apply deep link from URL
+  useEffect(() => {
+    const link = pathToDeepLink(location.pathname)
+    if (link) {
+      applyDeepLink(link)
+      // Replace to / so the deep link URL doesn't stick
+      navigate('/', { replace: true })
+    }
+    initialRef.current = false
+  }, [location.pathname, navigate])
+
+  // Listen for popstate (browser back/forward) — pushState in navigateTo
+  // doesn't trigger React Router's location update, so we need this listener
+  useEffect(() => {
+    const handlePopState = () => {
+      const link = pathToDeepLink(window.location.pathname)
+      if (link) {
+        applyDeepLink(link)
+        window.history.replaceState(null, '', '/')
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  return null
 }
 
 function MainApp() {
@@ -257,6 +293,7 @@ function MainApp() {
 
   return (
     <>
+      <NavigationSync />
       <MainLayout
         conversationPanel={<ConversationPanel />}
         artifactPanel={<ArtifactPanel />}
@@ -329,8 +366,12 @@ function App() {
     return <LoginPage />
   }
 
-  // User is authenticated (or auth disabled), show main app
-  return <MainApp />
+  // All routes render the same MainApp — deep links are handled by NavigationSync
+  return (
+    <Routes>
+      <Route path="/*" element={<MainApp />} />
+    </Routes>
+  )
 }
 
 export default App

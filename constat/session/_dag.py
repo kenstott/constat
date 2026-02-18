@@ -624,7 +624,7 @@ REFERENCED TABLES (query with pd.read_sql(sql, db_<name>)):
                 all_apis = self.get_all_apis()
                 if all_apis:
                     from constat.catalog.api_executor import APIExecutor
-                    api_executor = APIExecutor(self.config, project_apis=self._domain_apis)
+                    api_executor = APIExecutor(self.config, domain_apis=self._domain_apis)
                     for api_name, api_config in all_apis.items():
                         # Only fetch schema for APIs referenced in this inference
                         if not any(f"api_{api_name}" in s for s in api_sources):
