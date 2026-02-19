@@ -262,9 +262,10 @@ def generate_glossary(
     # Track claimed aliases across all batches to prevent duplicates
     # An alias cannot be: another term's primary name, or claimed by another term
     claimed_aliases: set[str] = set()  # all aliases assigned so far
-    all_term_names: set[str] = {r[1].lower() for r in rows}  # all entity names
+    entity_names: set[str] = {r[1].lower() for r in rows}  # entity names (for alias dedup only)
+    all_term_names: set[str] = set()  # tracks existing glossary + cross-batch dedup
 
-    # Also include existing glossary term names and their aliases
+    # Include existing glossary term names and their aliases
     existing_terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     for et in existing_terms:
         all_term_names.add(et.name.lower())
@@ -362,8 +363,8 @@ def generate_glossary(
                     a_lower = a.strip().lower()
                     if a_lower == name_lower:
                         continue  # Self-reference
-                    if a_lower in all_term_names:
-                        continue  # Another term's primary name
+                    if a_lower in all_term_names or a_lower in entity_names:
+                        continue  # Another term's or entity's primary name
                     if a_lower in claimed_aliases:
                         continue  # Already claimed by another term
                     deduped_aliases.append(a.strip())
@@ -395,16 +396,18 @@ def generate_glossary(
                 batch_terms.append(term)
 
             # Store batch terms immediately
+            stored_terms: list[GlossaryTerm] = []
             for term in batch_terms:
                 try:
                     _retry_on_conflict(lambda t=term: vector_store.add_glossary_term(t))
+                    stored_terms.append(term)
                 except Exception as e:
                     logger.warning(f"Failed to store glossary term '{term.name}': {e}")
 
-            generated_terms.extend(batch_terms)
+            generated_terms.extend(stored_terms)
 
-            if on_batch_complete and batch_terms:
-                on_batch_complete(batch_terms)
+            if on_batch_complete and stored_terms:
+                on_batch_complete(stored_terms)
 
         except Exception as e:
             logger.exception(f"Glossary generation batch {batch_idx} error: {e}")
