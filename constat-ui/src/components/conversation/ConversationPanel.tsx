@@ -127,6 +127,10 @@ export function ConversationPanel() {
     setTimeout(() => setCopiedAll(false), 2000)
   }
 
+  const handleRedo = useCallback((guidance?: string) => {
+    submitQuery(guidance ? '/redo ' + guidance : '/redo', true)
+  }, [submitQuery])
+
   if (!session) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -199,6 +203,8 @@ export function ConversationPanel() {
                 onViewResult={message.isFinalInsight ? (
                   message.content?.toLowerCase().includes('proof') ? openProofPanel : (hasViewableResults() ? handleViewResult : undefined)
                 ) : undefined}
+                onRedo={message.isFinalInsight && !message.content?.toLowerCase().includes('proof')
+                  ? handleRedo : undefined}
                 role={message.role}
                 skills={message.skills}
               />

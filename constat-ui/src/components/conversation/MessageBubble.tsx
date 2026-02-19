@@ -15,6 +15,7 @@ import {
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
   EyeIcon,
+  ArrowPathIcon,
 } from '@heroicons/react/24/outline'
 
 // Animated dots component for loading states
@@ -40,6 +41,7 @@ interface MessageBubbleProps {
   defaultExpanded?: boolean
   isFinalInsight?: boolean
   onViewResult?: () => void
+  onRedo?: (guidance?: string) => void
   children?: ReactNode
   role?: string // Role used for this step (e.g., "data_analyst")
   skills?: string[] // Skills used for this step
@@ -103,6 +105,7 @@ export function MessageBubble({
   defaultExpanded,
   isFinalInsight,
   onViewResult,
+  onRedo,
   children,
   role,
   skills,
@@ -120,6 +123,8 @@ export function MessageBubble({
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false)
   const [needsExpansion, setNeedsExpansion] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [showRedoForm, setShowRedoForm] = useState(false)
+  const [redoGuidance, setRedoGuidance] = useState('')
   const contentRef = useRef<HTMLDivElement>(null)
 
   // Copy message content to clipboard
@@ -265,7 +270,7 @@ export function MessageBubble({
             )}
           </div>
           {/* Action buttons row */}
-          {(needsExpansion || (isFinalInsight && onViewResult)) && (
+          {(needsExpansion || (isFinalInsight && onViewResult) || onRedo) && (
             <div className="mt-2 flex items-center gap-3">
               {needsExpansion && (
                 <button
@@ -294,6 +299,58 @@ export function MessageBubble({
                   {content.toLowerCase().includes('proof') ? 'View Proof' : 'View Result'}
                 </button>
               )}
+              {onRedo && (
+                <button
+                  onClick={() => setShowRedoForm(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-md transition-colors"
+                >
+                  <ArrowPathIcon className="w-4 h-4" />
+                  Redo
+                </button>
+              )}
+            </div>
+          )}
+          {showRedoForm && onRedo && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}>
+              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-[480px] max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
+                <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Redo Analysis</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">What should be different this time? (optional)</p>
+                </div>
+                <form
+                  className="px-5 py-4"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    onRedo(redoGuidance.trim() || undefined)
+                    setShowRedoForm(false)
+                    setRedoGuidance('')
+                  }}
+                >
+                  <textarea
+                    value={redoGuidance}
+                    onChange={(e) => setRedoGuidance(e.target.value)}
+                    placeholder="e.g. Focus on quarterly trends instead of monthly..."
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                    rows={4}
+                    autoFocus
+                  />
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => { setShowRedoForm(false); setRedoGuidance('') }}
+                      className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+                    >
+                      Redo
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
           {children}
