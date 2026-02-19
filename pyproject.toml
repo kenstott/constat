@@ -53,6 +53,7 @@ dependencies = [
     "graphviz>=0.21",
     # NLP / Named Entity Recognition
     "spacy>=3.8.11",
+    "lemminflect>=0.2.3",
 ]
 
 [project.optional-dependencies]

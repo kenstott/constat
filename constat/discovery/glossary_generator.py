@@ -419,44 +419,34 @@ def generate_glossary(
 def _prune_ungrounded(session_id: str, vector_store) -> set[str]:
     """Delete LLM-generated glossary terms that aren't grounded.
 
-    Uses graph-based reachability: a term is grounded if it has a matching
-    visible entity OR is an ancestor/descendant of a grounded term through
-    the parent-child hierarchy. Abstract parent terms are kept as long as
-    their hierarchy terminates at a concrete entity.
+    A term is grounded if it has a matching visible entity with physical
+    document chunks. Abstract parent terms are kept only if they are
+    ancestors of a grounded term — every branch must terminate at a
+    grounded leaf.
 
     Returns:
         Set of pruned term names
     """
-    from constat.discovery.vector_store import DuckDBVectorStore
-
     terms = vector_store.list_glossary_terms(session_id)
     if not terms:
         return set()
 
-    entity_vis, vis_params = DuckDBVectorStore.entity_visibility_filter(
-        session_id, None, alias="e",
-    )
-
     by_id: dict[str, GlossaryTerm] = {t.id: t for t in terms}
-    by_name: dict[str, GlossaryTerm] = {t.name.lower(): t for t in terms}
 
-    # Build parent → children map from glossary_terms
-    children_of: dict[str, list[str]] = {}
-    for t in terms:
-        if t.parent_id and t.parent_id in by_id:
-            children_of.setdefault(t.parent_id, []).append(t.id)
-
-    # Find terms directly grounded to a visible entity
+    # Find terms directly grounded to a visible entity with physical chunks
     grounded: set[str] = set()
     for t in terms:
-        row = vector_store._conn.execute(
-            f"SELECT 1 FROM entities e WHERE LOWER(e.name) = LOWER(?) AND {entity_vis} LIMIT 1",
-            [t.name] + vis_params,
-        ).fetchone()
-        if row:
+        entity = vector_store.find_entity_by_name(t.name, session_id=session_id)
+        if entity and _entity_has_physical_chunks(entity, vector_store):
             grounded.add(t.id)
 
-    # Walk parent chains upward from grounded terms — ancestors are valid
+    # A term is valid if:
+    # - It is directly grounded (has entity with physical chunks), OR
+    # - It is an ancestor of a grounded term (abstract grouping parent)
+    # Key rule: every branch must terminate at a grounded leaf.
+    # Abstract parents with NO grounded descendants are pruned.
+
+    # Walk upward from grounded terms — mark ancestors valid
     valid = set(grounded)
     for tid in grounded:
         current = by_id.get(tid)
@@ -466,19 +456,6 @@ def _prune_ungrounded(session_id: str, vector_store) -> set[str]:
                 break
             valid.add(parent.id)
             current = parent
-
-    # Walk downward — a parent is valid if any descendant is valid
-    changed = True
-    while changed:
-        changed = False
-        for t in terms:
-            if t.id in valid:
-                continue
-            for child_id in children_of.get(t.id, []):
-                if child_id in valid:
-                    valid.add(t.id)
-                    changed = True
-                    break
 
     # Prune LLM-generated terms that aren't valid
     pruned: set[str] = set()

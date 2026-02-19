@@ -82,31 +82,29 @@ ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
 VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
 
 
-def _to_third_person(lemma: str) -> str:
-    """Convert a verb lemma to third-person singular present tense.
+def _to_third_person(verb: str) -> str:
+    """Convert a verb (lemma or already-inflected) to third-person singular present.
 
-    Examples: manage→manages, process→processes, carry→carries, have→has
+    Uses lemminflect: lemmatize first, then inflect to VBZ. Handles both
+    base forms ("use") and already-inflected forms ("uses") correctly.
+
+    For underscore compounds ("belong_to"), inflects only the first word.
     """
-    if not lemma:
-        return lemma
-    # Irregular
-    if lemma == "have":
-        return "has"
-    if lemma == "be":
-        return "is"
-    if lemma == "do":
-        return "does"
-    # Already has underscore compound (e.g. "belong_to") — inflect first word
-    if "_" in lemma:
-        parts = lemma.split("_", 1)
+    if not verb:
+        return verb
+    # Underscore compound — inflect first word only
+    if "_" in verb:
+        parts = verb.split("_", 1)
         return _to_third_person(parts[0]) + "_" + parts[1]
-    # Sibilant endings: -s, -sh, -ch, -x, -z → +es
-    if lemma.endswith(("s", "sh", "ch", "x", "z")):
-        return lemma + "es"
-    # Consonant + y → -ies
-    if lemma.endswith("y") and len(lemma) > 1 and lemma[-2] not in "aeiou":
-        return lemma[:-1] + "ies"
-    return lemma + "s"
+    try:
+        from lemminflect import getLemma, getInflection
+        lemma = getLemma(verb, upos="VERB")
+        base = lemma[0] if lemma else verb
+        inflected = getInflection(base, tag="VBZ")
+        return inflected[0] if inflected else verb
+    except ImportError:
+        # Fallback: simple rules if lemminflect unavailable
+        return verb + "s" if not verb.endswith("s") else verb
 
 RELATIONSHIP_SYSTEM_PROMPT = """You are extracting relationships between entity pairs from document excerpts.
 
