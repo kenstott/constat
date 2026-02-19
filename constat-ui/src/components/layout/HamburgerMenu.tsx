@@ -92,6 +92,13 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   const [savingDomain, setSavingDomain] = useState(false)
   const [domainSaveError, setDomainSaveError] = useState<string | null>(null)
 
+  // Create domain form state
+  const [showCreateDomain, setShowCreateDomain] = useState(false)
+  const [newDomainName, setNewDomainName] = useState('')
+  const [newDomainDesc, setNewDomainDesc] = useState('')
+  const [creatingDomain, setCreatingDomain] = useState(false)
+  const [createDomainError, setCreateDomainError] = useState<string | null>(null)
+
   // Fetch sessions, projects, and skills when menu opens
   useEffect(() => {
     if (menuOpen) {
@@ -203,6 +210,30 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       onNewSession?.()
     } finally {
       setCreatingSession(false)
+    }
+  }
+
+  const handleCreateDomain = async () => {
+    if (!newDomainName.trim()) return
+    setCreatingDomain(true)
+    setCreateDomainError(null)
+    try {
+      await sessionsApi.createDomain(newDomainName.trim(), newDomainDesc.trim())
+      // Refresh domains list
+      const response = await sessionsApi.listDomains()
+      setDomains(response.domains)
+      setShowCreateDomain(false)
+      setNewDomainName('')
+      setNewDomainDesc('')
+    } catch (error: unknown) {
+      if (error && typeof error === 'object' && 'data' in error) {
+        const detail = (error as { data?: { detail?: string } }).data?.detail
+        setCreateDomainError(detail || 'Failed to create domain')
+      } else {
+        setCreateDomainError('Failed to create domain')
+      }
+    } finally {
+      setCreatingDomain(false)
     }
   }
 
@@ -353,13 +384,13 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                     <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                       <div className="flex items-center justify-between mb-2">
                         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                          Sessions
+                          Query History
                         </h3>
                         <button
                           onClick={handleNewSession}
                           disabled={creatingSession || switchingSessionId !== null}
                           className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="New session"
+                          title="New query"
                         >
                           {creatingSession ? (
                             <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -435,11 +466,57 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                     </div>
 
                     {/* Domains section */}
-                    {domains.length > 0 && (
-                      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-                        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-                          Domains
-                        </h3>
+                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                            Domains
+                          </h3>
+                          <button
+                            onClick={() => setShowCreateDomain(!showCreateDomain)}
+                            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                            title="Create domain"
+                          >
+                            <PlusIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                        {showCreateDomain && (
+                          <div className="mb-2 p-2 bg-gray-50 dark:bg-gray-900/50 rounded-md space-y-2">
+                            <input
+                              type="text"
+                              value={newDomainName}
+                              onChange={(e) => setNewDomainName(e.target.value)}
+                              placeholder="Domain name"
+                              className="w-full text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                              onKeyDown={(e) => e.key === 'Enter' && handleCreateDomain()}
+                            />
+                            <input
+                              type="text"
+                              value={newDomainDesc}
+                              onChange={(e) => setNewDomainDesc(e.target.value)}
+                              placeholder="Description (optional)"
+                              className="w-full text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                              onKeyDown={(e) => e.key === 'Enter' && handleCreateDomain()}
+                            />
+                            {createDomainError && (
+                              <p className="text-xs text-red-600 dark:text-red-400">{createDomainError}</p>
+                            )}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={handleCreateDomain}
+                                disabled={creatingDomain || !newDomainName.trim()}
+                                className="px-3 py-1 text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 rounded transition-colors"
+                              >
+                                {creatingDomain ? 'Creating...' : 'Create'}
+                              </button>
+                              <button
+                                onClick={() => { setShowCreateDomain(false); setCreateDomainError(null) }}
+                                className="px-3 py-1 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         {domainError && (
                           <div className="mb-2 p-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-md">
                             {domainError}
@@ -501,8 +578,7 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                             </>
                           )}
                         </div>
-                      </div>
-                    )}
+                    </div>
 
                     {/* Settings */}
                     <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4 space-y-4">

@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Default preferences for new users
 DEFAULT_PREFERENCES = {
     "selected_domains": [],
+    "brief_mode": False,
+    "default_mode": "exploratory",
 }
 
 

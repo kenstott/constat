@@ -1427,7 +1427,7 @@ class CommandsMixin:
             scope = args.strip().lower() if args.strip() else "all"
 
             if scope == "deprecated":
-                terms = vector_store.get_deprecated_glossary(self.session.session_id)
+                terms = vector_store.get_deprecated_glossary(self.session.session_id, user_id=self.user_id)
                 if not terms:
                     log.write(Text("No deprecated glossary terms.", style="dim"))
                     return
@@ -1438,7 +1438,7 @@ class CommandsMixin:
                     log.write(Text(f"  {name}: {defn}", style="dim"))
                 return
 
-            unified = vector_store.get_unified_glossary(self.session.session_id)
+            unified = vector_store.get_unified_glossary(self.session.session_id, user_id=self.user_id)
 
             if scope == "defined":
                 unified = [t for t in unified if t.get("glossary_status") == "defined"]
@@ -1517,12 +1517,12 @@ class CommandsMixin:
                 log.write(Text("No vector store available.", style="yellow"))
                 return
 
-            existing = vector_store.get_glossary_term(name, self.session.session_id)
+            existing = vector_store.get_glossary_term(name, self.session.session_id, user_id=self.user_id)
             if existing:
                 vector_store.update_glossary_term(name, self.session.session_id, {
                     "definition": definition,
                     "provenance": "human",
-                })
+                }, user_id=self.user_id)
                 log.write(Text(f"Updated definition for: {name}", style="green"))
             else:
                 from constat.discovery.models import GlossaryTerm
@@ -1535,6 +1535,7 @@ class CommandsMixin:
                     status="draft",
                     provenance="human",
                     session_id=self.session.session_id,
+                    user_id=self.user_id,
                 )
                 vector_store.add_glossary_term(term)
                 log.write(Text(f"Defined: {name}", style="green"))
@@ -1565,7 +1566,7 @@ class CommandsMixin:
                 log.write(Text("No vector store available.", style="yellow"))
                 return
 
-            vector_store.delete_glossary_term(name, self.session.session_id)
+            vector_store.delete_glossary_term(name, self.session.session_id, user_id=self.user_id)
             log.write(Text(f"Removed definition: {name}", style="green"))
         except Exception as e:
             log.write(Text(f"Error: {e}", style="red"))
@@ -1595,7 +1596,7 @@ class CommandsMixin:
                 log.write(Text("No vector store available.", style="yellow"))
                 return
 
-            term = vector_store.get_glossary_term(name, self.session.session_id)
+            term = vector_store.get_glossary_term(name, self.session.session_id, user_id=self.user_id)
             if not term or not term.definition:
                 log.write(Text(f"No defined term found: {name}", style="yellow"))
                 return
@@ -1630,7 +1631,7 @@ class CommandsMixin:
             vector_store.update_glossary_term(name, self.session.session_id, {
                 "definition": refined,
                 "provenance": "hybrid",
-            })
+            }, user_id=self.user_id)
 
             self.post_message(GlossaryRefineComplete({
                 "success": True,

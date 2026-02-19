@@ -186,6 +186,7 @@ def generate_glossary(
     active_domains: list[str] | None = None,
     on_batch_complete: Callable[[list[GlossaryTerm]], None] | None = None,
     on_progress: Callable[[str, int], None] | None = None,
+    user_id: str | None = None,
 ) -> list[GlossaryTerm]:
     """Generate glossary definitions for entities that need them.
 
@@ -195,13 +196,14 @@ def generate_glossary(
     for candidates that pass the elevation test.
 
     Args:
-        session_id: Session ID
+        session_id: Session ID (for entity visibility)
         vector_store: DuckDBVectorStore instance
         router: TaskRouter for LLM calls
         domain: Optional domain scope
         active_domains: Active domain IDs for entity visibility
         on_batch_complete: Optional callback invoked per batch of stored terms
         on_progress: Optional callback(stage, percent) for progress reporting
+        user_id: User ID for glossary term ownership (user-scoped)
 
     Returns:
         List of generated GlossaryTerm objects
@@ -263,7 +265,7 @@ def generate_glossary(
     all_term_names: set[str] = {r[1].lower() for r in rows}  # all entity names
 
     # Also include existing glossary term names and their aliases
-    existing_terms = vector_store.list_glossary_terms(session_id)
+    existing_terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     for et in existing_terms:
         all_term_names.add(et.name.lower())
         for a in (et.aliases or []):
@@ -364,8 +366,9 @@ def generate_glossary(
 
                 all_term_names.add(name_lower)
 
+                scope_id = user_id or session_id
                 term = GlossaryTerm(
-                    id=_make_term_id(name, session_id, domain),
+                    id=_make_term_id(name, scope_id, domain),
                     name=name_lower,
                     display_name=matching["display_name"] if matching else display_entity_name(name),
                     definition=definition,
@@ -376,6 +379,7 @@ def generate_glossary(
                     status="draft",
                     provenance="llm",
                     session_id=session_id,
+                    user_id=scope_id,
                 )
 
                 # Store parent name for later linking
@@ -403,12 +407,12 @@ def generate_glossary(
     # Link parents (second pass)
     if on_progress:
         on_progress("Linking hierarchy", 72)
-    _link_parents(generated_terms, session_id, vector_store, active_domains, domain)
+    _link_parents(generated_terms, session_id, vector_store, active_domains, domain, user_id=user_id)
 
     # Prune ungrounded terms — LLM-created parents that failed to link children
     if on_progress:
         on_progress("Pruning ungrounded", 75)
-    pruned = _prune_ungrounded(session_id, vector_store)
+    pruned = _prune_ungrounded(session_id, vector_store, user_id=user_id)
     if pruned:
         generated_terms = [t for t in generated_terms if t.name not in pruned]
 
@@ -416,7 +420,7 @@ def generate_glossary(
     return generated_terms
 
 
-def _prune_ungrounded(session_id: str, vector_store) -> set[str]:
+def _prune_ungrounded(session_id: str, vector_store, *, user_id: str | None = None) -> set[str]:
     """Delete LLM-generated glossary terms that aren't grounded.
 
     A term is grounded if it has a matching visible entity with physical
@@ -427,7 +431,7 @@ def _prune_ungrounded(session_id: str, vector_store) -> set[str]:
     Returns:
         Set of pruned term names
     """
-    terms = vector_store.list_glossary_terms(session_id)
+    terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     if not terms:
         return set()
 
@@ -466,7 +470,7 @@ def _prune_ungrounded(session_id: str, vector_store) -> set[str]:
             continue
 
         try:
-            _retry_on_conflict(lambda n=term.name: vector_store.delete_glossary_term(n, session_id))
+            _retry_on_conflict(lambda n=term.name: vector_store.delete_glossary_term(n, session_id, user_id=user_id))
             pruned.add(term.name)
             logger.debug(f"Pruned ungrounded term: {term.name}")
         except Exception as e:
@@ -483,6 +487,8 @@ def _link_parents(
     vector_store,
     active_domains: list[str] | None = None,
     domain: str | None = None,
+    *,
+    user_id: str | None = None,
 ) -> None:
     """Link parent_id fields based on suggested parent names.
 
@@ -496,10 +502,12 @@ def _link_parents(
     for term in terms:
         name_to_id[term.name.lower()] = term.id
 
-    existing = vector_store.list_glossary_terms(session_id)
+    existing = vector_store.list_glossary_terms(session_id, user_id=user_id)
     for et in existing:
         if et.name.lower() not in name_to_id:
             name_to_id[et.name.lower()] = et.id
+
+    scope_id = user_id or session_id
 
     # First pass: create stub glossary entries for referenced parents that
     # don't exist as glossary terms. This ensures parent_id always points
@@ -512,7 +520,7 @@ def _link_parents(
             continue
 
         # Parent doesn't exist as a glossary term — create a stub
-        stub_id = _make_term_id(parent_name, session_id, domain)
+        stub_id = _make_term_id(parent_name, scope_id, domain)
         stub = GlossaryTerm(
             id=stub_id,
             name=parent_name,
@@ -525,6 +533,7 @@ def _link_parents(
             status="draft",
             provenance="llm",
             session_id=session_id,
+            user_id=scope_id,
         )
         try:
             _retry_on_conflict(lambda s=stub: vector_store.add_glossary_term(s))
@@ -550,6 +559,7 @@ def _link_parents(
             _retry_on_conflict(lambda: vector_store.update_glossary_term(
                 term.name, session_id,
                 {"parent_id": parent_id, "tags": {}},
+                user_id=user_id,
             ))
             linked += 1
         except Exception as e:
@@ -562,6 +572,8 @@ def _link_parents(
 def reconcile_alias_entities(
     session_id: str,
     vector_store,
+    *,
+    user_id: str | None = None,
 ) -> int:
     """Reconcile entities that match glossary term aliases.
 
@@ -576,7 +588,7 @@ def reconcile_alias_entities(
     Returns:
         Number of entities reconciled
     """
-    terms = vector_store.list_glossary_terms(session_id)
+    terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     reconciled = 0
 
     for term in terms:
@@ -620,12 +632,12 @@ def reconcile_alias_entities(
         logger.info(f"Reconciled {reconciled} alias entities")
 
     # Deduplicate aliases across all terms
-    _deduplicate_aliases(session_id, vector_store)
+    _deduplicate_aliases(session_id, vector_store, user_id=user_id)
 
     return reconciled
 
 
-def _deduplicate_aliases(session_id: str, vector_store) -> None:
+def _deduplicate_aliases(session_id: str, vector_store, *, user_id: str | None = None) -> None:
     """Remove duplicate aliases across glossary terms.
 
     Rules:
@@ -633,7 +645,7 @@ def _deduplicate_aliases(session_id: str, vector_store) -> None:
     - An alias matching an entity name is removed (the entity is canonical)
     - An alias claimed by an earlier term wins; later duplicates are stripped
     """
-    terms = vector_store.list_glossary_terms(session_id)
+    terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     primary_names = {t.name.lower() for t in terms}
 
     # Collect all entity names
@@ -677,6 +689,7 @@ def _deduplicate_aliases(session_id: str, vector_store) -> None:
             try:
                 _retry_on_conflict(lambda n=term.name, c=clean: vector_store.update_glossary_term(
                     n, session_id, {"aliases": c},
+                    user_id=user_id,
                 ))
             except Exception as e:
                 logger.warning(f"Failed to deduplicate aliases for '{term.name}': {e}")
@@ -690,6 +703,8 @@ def resolve_physical_resources(
     vector_store,
     domain_ids: list[str] | None = None,
     _visited: set | None = None,
+    *,
+    user_id: str | None = None,
 ) -> list[dict]:
     """Walk from glossary term to physical resources, pruning ungrounded paths.
 
@@ -737,7 +752,7 @@ def resolve_physical_resources(
             }]
 
     # Check aliases for entity matches
-    term = vector_store.get_glossary_term(term_name, session_id)
+    term = vector_store.get_glossary_term(term_name, session_id, user_id=user_id)
     if term:
         for alias in (term.aliases or []):
             alias_entity = vector_store.find_entity_by_name(alias, session_id=session_id)
@@ -756,7 +771,10 @@ def resolve_physical_resources(
     if term.list_of:
         target = vector_store.get_glossary_term_by_id(term.list_of)
         if target:
-            resources = resolve_physical_resources(target.name, session_id, vector_store, domain_ids, _visited)
+            resources = resolve_physical_resources(
+                target.name, session_id, vector_store, domain_ids, _visited,
+                user_id=user_id,
+            )
             if resources:
                 return resources
 
@@ -779,6 +797,8 @@ def is_grounded(
     session_id: str,
     vector_store,
     _visited: set | None = None,
+    *,
+    user_id: str | None = None,
 ) -> bool:
     """Check if a term is grounded in physical reality."""
     if _visited is None:
@@ -795,7 +815,7 @@ def is_grounded(
         return True
 
     # Check aliases — term may be grounded through an alias entity
-    term = vector_store.get_glossary_term(term_name, session_id)
+    term = vector_store.get_glossary_term(term_name, session_id, user_id=user_id)
     if term:
         for alias in (term.aliases or []):
             alias_key = f"{alias.lower()}:{session_id}"
@@ -812,14 +832,14 @@ def is_grounded(
     # Collection: follow list_of
     if term.list_of:
         target = vector_store.get_glossary_term_by_id(term.list_of)
-        if target and is_grounded(target.name, session_id, vector_store, _visited):
+        if target and is_grounded(target.name, session_id, vector_store, _visited, user_id=user_id):
             return True
 
     # Taxonomy: check children (by glossary ID and entity ID)
     entity_for_term = vector_store.find_entity_by_name(term_name, session_id=session_id)
     extra_ids = [entity_for_term.id] if entity_for_term else []
     children = vector_store.get_child_terms(term.id, *extra_ids)
-    return any(is_grounded(c.name, session_id, vector_store, _visited) for c in children)
+    return any(is_grounded(c.name, session_id, vector_store, _visited, user_id=user_id) for c in children)
 
 
 def suggest_fk_relationships(

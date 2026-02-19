@@ -733,6 +733,8 @@ def infer_glossary_relationships(
     vector_store,
     router,
     on_batch: Callable[[list], None] | None = None,
+    *,
+    user_id: str | None = None,
 ) -> list:
     """Infer cross-cutting relationships from glossary term definitions.
 
@@ -741,7 +743,7 @@ def infer_glossary_relationships(
     """
     from constat.discovery.models import EntityRelationship
 
-    terms = vector_store.list_glossary_terms(session_id)
+    terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
     if not terms:
         return []
 

@@ -64,6 +64,7 @@ class DiscoveryTools:
         config: Optional[Config] = None,
         fact_resolver: Optional[FactResolver] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ):
         self.config = config
 
@@ -75,6 +76,7 @@ class DiscoveryTools:
             doc_tools=self.doc_tools,
             api_tools=self.api_tools,
             session_id=session_id,
+            user_id=user_id,
         ) if schema_manager else None
         self.fact_tools = FactResolutionTools(fact_resolver, self.doc_tools)
 

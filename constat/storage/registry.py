@@ -14,6 +14,7 @@ enabling collaboration, search, and audit trails.
 """
 
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -124,6 +125,7 @@ class ConstatRegistry:
         """
         self.base_dir = Path(base_dir) if base_dir else Path(".constat")
         self.db_path = self.base_dir / "registry.duckdb"
+        self._vectors_path = self.base_dir / "vectors.duckdb"
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         # Use thread-local connections for thread safety
@@ -923,3 +925,30 @@ class ConstatRegistry:
         """
         rows, columns = self._search_rows("constat_artifacts", query, user_id, limit)
         return [self._row_to_artifact_record(row, columns) for row in rows]
+
+    # --- Vectors DB ATTACH ---
+
+    def attach_vectors(self, vectors_path: Optional[Path] = None) -> bool:
+        """ATTACH vectors.duckdb as 'vectors' (READ_ONLY) on all registry connections.
+
+        Returns False if the vectors file does not exist.
+        """
+        path = vectors_path or self._vectors_path
+        if not os.path.exists(path):
+            return False
+
+        sql = f"ATTACH IF NOT EXISTS '{path}' AS vectors (READ_ONLY)"
+        self._db.add_init_sql(sql)
+        return True
+
+    def detach_vectors(self) -> None:
+        """DETACH vectors from all registry connections and remove from init_sql."""
+        self._db.remove_init_sql(lambda s: "ATTACH" in s and "vectors" in s)
+        self._db.run_on_all_connections("DETACH vectors")
+
+    def query_vectors(self, sql: str, params=None):
+        """Execute a cross-db query through the registry connection."""
+        conn = self._get_connection()
+        if params:
+            return conn.execute(sql, params)
+        return conn.execute(sql)

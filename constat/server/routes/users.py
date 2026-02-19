@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId, CurrentUserEmail
 from constat.server.permissions import get_user_permissions, list_all_permissions as list_perms
+from constat.server.user_preferences import load_user_preferences, save_user_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -76,3 +77,23 @@ async def list_all_user_permissions(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     return list_perms(server_config)
+
+
+@router.get("/me/preferences")
+async def get_preferences(
+    user_id: CurrentUserId,
+) -> dict[str, Any]:
+    """Get user preferences."""
+    return load_user_preferences(user_id)
+
+
+@router.patch("/me/preferences")
+async def update_preferences(
+    user_id: CurrentUserId,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Partially update user preferences."""
+    prefs = load_user_preferences(user_id)
+    prefs.update(body)
+    save_user_preferences(user_id, prefs)
+    return prefs

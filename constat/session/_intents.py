@@ -810,7 +810,7 @@ Provide a brief, high-level summary of the key findings."""
         }
 
     def _handle_redo(self) -> dict:
-        """Handle redo control command - re-execute last plan."""
+        """Handle redo control command - replan and re-execute."""
         if not self.datastore:
             return {
                 "success": False,
@@ -827,16 +827,13 @@ Provide a brief, high-level summary of the key findings."""
                 "meta_response": True,
             }
 
-        # Use replay to re-execute stored code
-        try:
-            result = self.replay(problem)
-            return result
-        except ValueError as e:
-            return {
-                "success": False,
-                "output": f"Cannot redo: {e}",
-                "meta_response": True,
-            }
+        # Redo stays in session mode: replan and re-execute from scratch
+        session_mode = self.datastore.get_session_meta("mode")
+        if session_mode == "auditable":
+            return self.prove_conversation()
+
+        # Exploratory: full replan with new code generation
+        return self.solve(problem)
 
     @staticmethod
     def _handle_help() -> dict:

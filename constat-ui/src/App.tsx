@@ -15,7 +15,7 @@ import { useSessionStore } from '@/store/sessionStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useProofStore } from '@/store/proofStore'
 import { useArtifactStore } from '@/store/artifactStore'
-import { pathToDeepLink, applyDeepLink } from '@/store/uiStore'
+import { pathToDeepLink, applyDeepLink, useUIStore } from '@/store/uiStore'
 import * as sessionsApi from '@/api/sessions'
 
 const SPLASH_MIN_DURATION = 1500 // Minimum splash screen duration in ms
@@ -242,6 +242,7 @@ function MainApp() {
     // 1. Getting/creating session ID from localStorage (per user)
     // 2. Sending to server (which reconnects if exists, or creates new)
     // 3. Connecting WebSocket
+    useUIStore.getState().initPreferences()
     createSession(userId)
       .then(() => {
         setInitPhase('connecting_websocket')

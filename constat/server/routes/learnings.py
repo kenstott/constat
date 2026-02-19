@@ -317,21 +317,108 @@ async def get_config_sanitized(
 
 @router.get("/domains", response_model=DomainListResponse)
 async def list_domains(
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> DomainListResponse:
-    """List available domains from the domains directory.
-
-    Domains are YAML files defining reusable collections of databases,
-    APIs, and documents. The domains_path in config determines where
-    to look for domain files.
+    """List available domains from system and user directories.
 
     Returns:
         List of available domains
     """
     domain_infos = config.list_domains()
+
+    # Also scan user-level domains (.constat/{user_id}/domains/*.yaml)
+    user_domains_dir = Path(".constat") / user_id / "domains"
+    if user_domains_dir.is_dir():
+        import yaml
+        for yaml_file in sorted(user_domains_dir.glob("*.yaml")):
+            filename = yaml_file.name
+            if filename in config.domains:
+                continue  # System domain takes precedence
+            try:
+                data = yaml.safe_load(yaml_file.read_text()) or {}
+                domain_infos.append({
+                    "filename": filename,
+                    "name": data.get("name", yaml_file.stem),
+                    "description": data.get("description", ""),
+                })
+                # Register in config.domains so load_domain/get_domain_content work
+                from constat.core.config import DomainConfig
+                data["filename"] = filename
+                data["source_path"] = str(yaml_file.resolve())
+                config.domains[filename] = DomainConfig(**data)
+            except Exception as e:
+                logger.warning(f"Failed to load user domain {filename}: {e}")
+
     return DomainListResponse(
         domains=[DomainInfo(**p) for p in domain_infos]
     )
+
+
+@router.post("/domains")
+async def create_domain(
+    body: dict,
+    user_id: CurrentUserId,
+    config: Config = Depends(get_config),
+) -> dict:
+    """Create a new user-level domain.
+
+    Args:
+        body: Dict with 'name' and optional 'description'
+        user_id: Authenticated user ID
+        config: Injected application config
+
+    Returns:
+        Created domain info
+    """
+    import re
+    import yaml
+
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    description = body.get("description", "").strip()
+
+    # Slugify name to filename
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not slug:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    filename = f"{slug}.yaml"
+
+    # Check for conflicts with system domains
+    if filename in config.domains:
+        raise HTTPException(status_code=409, detail=f"Domain '{filename}' already exists")
+
+    # Write domain file
+    user_domains_dir = Path(".constat") / user_id / "domains"
+    user_domains_dir.mkdir(parents=True, exist_ok=True)
+    domain_path = user_domains_dir / filename
+
+    if domain_path.exists():
+        raise HTTPException(status_code=409, detail=f"Domain '{filename}' already exists")
+
+    content = {
+        "name": name,
+        "description": description,
+        "databases": {},
+        "apis": {},
+        "documents": {},
+    }
+    domain_path.write_text(yaml.dump(content, default_flow_style=False, sort_keys=False))
+
+    # Register in config.domains
+    from constat.core.config import DomainConfig
+    content["filename"] = filename
+    content["source_path"] = str(domain_path.resolve())
+    config.domains[filename] = DomainConfig(**content)
+
+    return {
+        "status": "created",
+        "filename": filename,
+        "name": name,
+        "description": description,
+    }
 
 
 @router.get("/domains/{filename}", response_model=DomainDetailResponse)

@@ -2,6 +2,7 @@
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import * as api from '@/api/client'
 
 type Theme = 'light' | 'dark' | 'system'
 
@@ -100,6 +101,7 @@ interface UIState {
   // Brief mode — skips insight synthesis
   briefMode: boolean
   toggleBriefMode: () => void
+  initPreferences: () => Promise<void>
 
   // Panels
   menuOpen: boolean
@@ -152,7 +154,24 @@ export const useUIStore = create<UIState>()(
         return link
       },
 
-      toggleBriefMode: () => set((state) => ({ briefMode: !state.briefMode })),
+      toggleBriefMode: () => {
+        set((state) => {
+          const next = !state.briefMode
+          api.patch('/users/me/preferences', { brief_mode: next }).catch(() => {})
+          return { briefMode: next }
+        })
+      },
+
+      initPreferences: async () => {
+        try {
+          const prefs = await api.get<{ brief_mode?: boolean; default_mode?: string }>('/users/me/preferences')
+          if (prefs.brief_mode !== undefined) {
+            set({ briefMode: prefs.brief_mode })
+          }
+        } catch {
+          // Server may not be available yet
+        }
+      },
 
       setTheme: (theme) => {
         set({ theme })

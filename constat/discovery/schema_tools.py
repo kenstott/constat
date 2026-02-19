@@ -32,6 +32,7 @@ class SchemaDiscoveryTools:
         api_tools: Optional["APIDiscoveryTools"] = None,
         allowed_databases: Optional[set[str]] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ):
         """Initialize schema discovery tools.
 
@@ -42,12 +43,14 @@ class SchemaDiscoveryTools:
             allowed_databases: Set of allowed database names. If None, all databases
                 are visible. If empty set, no databases are visible.
             session_id: Session ID for glossary enrichment
+            user_id: User ID for user-scoped glossary
         """
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools
         self.api_tools = api_tools
         self.allowed_databases = allowed_databases
         self.session_id = session_id
+        self.user_id = user_id
 
     def _is_database_allowed(self, db_name: str) -> bool:
         """Check if a database is allowed based on permissions."""
@@ -455,7 +458,7 @@ class SchemaDiscoveryTools:
                 ]
                 terms_by_name = {}
                 if hit_names and self.session_id:
-                    fetched = vs.get_glossary_terms_by_names(hit_names, self.session_id)
+                    fetched = vs.get_glossary_terms_by_names(hit_names, self.session_id, user_id=self.user_id)
                     terms_by_name = {t.name.lower(): t for t in fetched}
 
                 for chunk_id, similarity, chunk in glossary_hits:
@@ -543,7 +546,7 @@ class SchemaDiscoveryTools:
             return {"error": "No session context"}
 
         vs = self.doc_tools._vector_store
-        term = vs.get_glossary_term_by_name_or_alias(name, self.session_id)
+        term = vs.get_glossary_term_by_name_or_alias(name, self.session_id, user_id=self.user_id)
         if not term:
             return {"error": f"Term '{name}' not found"}
 
@@ -586,7 +589,7 @@ class SchemaDiscoveryTools:
 
         # Physical resources
         from constat.discovery.glossary_generator import resolve_physical_resources
-        resources = resolve_physical_resources(term.name, self.session_id, vs)
+        resources = resolve_physical_resources(term.name, self.session_id, vs, user_id=self.user_id)
         if resources:
             result["physical_resources"] = resources
 

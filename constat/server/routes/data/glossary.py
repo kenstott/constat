@@ -44,8 +44,8 @@ def _get_vector_store(managed):
     raise HTTPException(status_code=503, detail="Vector store not available")
 
 
-def _make_term_id(name: str, session_id: str, domain: str | None = None) -> str:
-    key = f"{name}:{session_id}:{domain or ''}"
+def _make_term_id(name: str, scope_id: str, domain: str | None = None) -> str:
+    key = f"{name}:{scope_id}:{domain or ''}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -66,7 +66,7 @@ async def list_glossary(
 
     active_domains = getattr(managed, "active_domains", []) or []
 
-    rows = vs.get_unified_glossary(session_id, scope=scope, active_domains=active_domains)
+    rows = vs.get_unified_glossary(session_id, scope=scope, active_domains=active_domains, user_id=managed.user_id)
 
     # Optionally filter by domain
     if domain:
@@ -112,7 +112,7 @@ async def list_deprecated(
     vs = _get_vector_store(managed)
 
     active_domains = getattr(managed, "active_domains", []) or []
-    terms = vs.get_deprecated_glossary(session_id, active_domains=active_domains)
+    terms = vs.get_deprecated_glossary(session_id, active_domains=active_domains, user_id=managed.user_id)
     return {
         "terms": [
             {
@@ -139,14 +139,14 @@ async def get_glossary_term(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    term = vs.get_glossary_term(name, session_id)
+    term = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
     active_domains = getattr(managed, "active_domains", []) or []
 
     # Build response from unified view or just entity
     from constat.discovery.glossary_generator import resolve_physical_resources, is_grounded
 
-    resources = resolve_physical_resources(name, session_id, vs, domain_ids=active_domains)
-    grounded = is_grounded(name, session_id, vs)
+    resources = resolve_physical_resources(name, session_id, vs, domain_ids=active_domains, user_id=managed.user_id)
+    grounded = is_grounded(name, session_id, vs, user_id=managed.user_id)
 
     # Resolve parent — parent_id can be glossary_id or entity_id
     parent_info = None
@@ -243,7 +243,7 @@ async def get_term_relationships(
 
     # Also get co-occurrence suggestions
     from constat.discovery.glossary_generator import suggest_cooccurrence_relationships
-    terms = vs.list_glossary_terms(session_id)
+    terms = vs.list_glossary_terms(session_id, user_id=managed.user_id)
     cooccurrence = suggest_cooccurrence_relationships(session_id, terms, vs, min_cooccurrence=2)
     # Filter to this entity
     cooccurrence = [
@@ -349,8 +349,8 @@ async def generate_glossary(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    # Clear existing LLM-generated terms and relationships
-    vs.clear_session_glossary(session_id)
+    # Clear existing LLM-generated terms and relationships (user-scoped)
+    vs.clear_session_glossary(session_id, user_id=managed.user_id)
     vs.clear_session_relationships(session_id)
 
     # Run LLM glossary generation in background
@@ -375,13 +375,13 @@ async def add_definition(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    # Check if term already has a definition
-    existing = vs.get_glossary_term(request.name, session_id)
+    # Check if term already has a definition (user-scoped)
+    existing = vs.get_glossary_term(request.name, session_id, user_id=managed.user_id)
     if existing:
         raise HTTPException(status_code=409, detail=f"Term '{request.name}' already has a definition. Use PUT to update.")
 
     term = GlossaryTerm(
-        id=_make_term_id(request.name, session_id, request.domain),
+        id=_make_term_id(request.name, managed.user_id, request.domain),
         name=request.name.lower(),
         display_name=display_entity_name(request.name),
         definition=request.definition,
@@ -392,6 +392,7 @@ async def add_definition(
         status="draft",
         provenance="human",
         session_id=session_id,
+        user_id=managed.user_id,
     )
 
     vs.add_glossary_term(term)
@@ -414,7 +415,7 @@ async def update_definition(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    existing = vs.get_glossary_term(name, session_id)
+    existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
     if not existing:
         raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
@@ -442,7 +443,7 @@ async def update_definition(
         return {"status": "no_changes"}
 
     logger.info(f"update_definition({name}): updates={updates}")
-    result = vs.update_glossary_term(name, session_id, updates)
+    result = vs.update_glossary_term(name, session_id, updates, user_id=managed.user_id)
     logger.info(f"update_definition({name}): result={result}")
 
     return {"status": "updated", "name": name}
@@ -458,7 +459,7 @@ async def delete_definition(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    deleted = vs.delete_glossary_term(name, session_id)
+    deleted = vs.delete_glossary_term(name, session_id, user_id=managed.user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
@@ -519,7 +520,7 @@ async def refine_definition(
     vs = _get_vector_store(managed)
     session = managed.session
 
-    existing = vs.get_glossary_term(name, session_id)
+    existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
     if not existing:
         raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
@@ -559,7 +560,7 @@ async def refine_definition(
     vs.update_glossary_term(name, session_id, {
         "definition": refined,
         "provenance": "hybrid" if existing.provenance == "llm" else existing.provenance,
-    })
+    }, user_id=managed.user_id)
 
     return {
         "status": "refined",
@@ -582,7 +583,7 @@ async def suggest_taxonomy(
     if not session.router:
         raise HTTPException(status_code=503, detail="LLM router not available")
 
-    terms = vs.list_glossary_terms(session_id)
+    terms = vs.list_glossary_terms(session_id, user_id=managed.user_id)
     if len(terms) < 2:
         return {"suggestions": [], "message": "Need at least 2 defined terms"}
 
@@ -641,7 +642,7 @@ async def bulk_update_status(
     updated = []
     failed = []
     for name in request.names:
-        ok = vs.update_glossary_term(name, session_id, {"status": request.status})
+        ok = vs.update_glossary_term(name, session_id, {"status": request.status}, user_id=managed.user_id)
         if ok:
             updated.append(name)
         else:
@@ -671,8 +672,8 @@ async def persist_glossary(
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     domain_filter = body.get("domain")
 
-    # Get approved terms
-    terms = vs.list_glossary_terms(session_id)
+    # Get approved terms (user-scoped)
+    terms = vs.list_glossary_terms(session_id, user_id=managed.user_id)
     approved = [t for t in terms if t.status == "approved"]
     if domain_filter:
         approved = [t for t in approved if t.domain == domain_filter]

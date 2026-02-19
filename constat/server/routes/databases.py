@@ -550,6 +550,10 @@ async def remove_database(
             except Exception as e:
                 logger.warning(f"Failed to delete file {file_path}: {e}")
 
+    # Remove from user-level config
+    from constat.server.session_manager import ManagedSession
+    ManagedSession._remove_db_from_user_config(managed.user_id, db_name)
+
     # Re-resolve tiered config after removal
     session_manager.resolve_config(session_id)
 

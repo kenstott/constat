@@ -132,7 +132,11 @@ class ManagedSession:
         return names
 
     def save_resources(self) -> None:
-        """Save dynamic resources (dbs, file_refs, domains) to disk."""
+        """Save dynamic resources (dbs, file_refs, domains) to disk.
+
+        Also persists dynamic databases to user-level config so they
+        appear in all future sessions via TieredConfigLoader (Tier 3).
+        """
         from constat.storage.history import SessionHistory
 
         history_id = self.history_session_id
@@ -154,6 +158,61 @@ class ManagedSession:
         state["resources"] = resources
         history.save_state(history_id, state)
         logger.debug(f"Saved session resources: {len(resources['dynamic_dbs'])} dbs, {len(resources['dynamic_apis'])} apis, {len(resources['file_refs'])} refs")
+
+        # Persist dynamic databases to user-level config
+        self._persist_dbs_to_user_config()
+
+    def _persist_dbs_to_user_config(self) -> None:
+        """Write dynamic databases to .constat/{user_id}/config.yaml."""
+        import yaml
+        from pathlib import Path
+
+        config_path = Path(".constat") / self.user_id / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = {}
+        if config_path.exists():
+            existing = yaml.safe_load(config_path.read_text()) or {}
+
+        databases = existing.get("databases", {})
+
+        # Remove stale session-sourced entries not in current dynamic_dbs
+        dynamic_names = {db["name"] for db in self._dynamic_dbs}
+        databases = {
+            name: cfg for name, cfg in databases.items()
+            if cfg.get("source") != "session" or name in dynamic_names
+        }
+
+        # Upsert current dynamic databases
+        for db in self._dynamic_dbs:
+            databases[db["name"]] = {
+                "type": db.get("type", "sql"),
+                "uri": db.get("uri", ""),
+                "description": db.get("description", ""),
+                "source": "session",
+            }
+
+        existing["databases"] = databases
+        config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+        logger.debug(f"Persisted {len(self._dynamic_dbs)} dynamic databases to user config")
+
+    @staticmethod
+    def _remove_db_from_user_config(user_id: str, db_name: str) -> None:
+        """Remove a database entry from the user-level config."""
+        import yaml
+        from pathlib import Path
+
+        config_path = Path(".constat") / user_id / "config.yaml"
+        if not config_path.exists():
+            return
+
+        existing = yaml.safe_load(config_path.read_text()) or {}
+        databases = existing.get("databases", {})
+        if db_name in databases:
+            del databases[db_name]
+            existing["databases"] = databases
+            config_path.write_text(yaml.dump(existing, default_flow_style=False, sort_keys=False))
+            logger.debug(f"Removed database '{db_name}' from user config")
 
     def restore_resources(self) -> None:
         """Restore dynamic resources from disk."""
@@ -618,11 +677,12 @@ class SessionManager:
                 active_domains=active_domains,
                 on_batch_complete=on_batch,
                 on_progress=on_progress,
+                user_id=managed.user_id,
             )
 
             # Reconcile alias entities (rename "platinum" → "platinum tier")
             from constat.discovery.glossary_generator import reconcile_alias_entities
-            reconcile_alias_entities(session_id, vector_store)
+            reconcile_alias_entities(session_id, vector_store, user_id=managed.user_id)
 
             # Embed generated terms as glossary chunks
             if terms:
@@ -658,7 +718,7 @@ class SessionManager:
 
         chunks = []
         for term in terms:
-            resources = resolve_physical_resources(term.name, session_id, vector_store, domain_ids=domain_ids)
+            resources = resolve_physical_resources(term.name, session_id, vector_store, domain_ids=domain_ids, user_id=managed.user_id)
             entity_sources = []
             for r in resources:
                 for s in r.get("sources", []):
@@ -715,7 +775,7 @@ class SessionManager:
             on_progress("Extracting FK relationships", 85)
         try:
             from constat.discovery.relationship_extractor import store_fk_relationships
-            glossary_terms = vector_store.list_glossary_terms(session_id)
+            glossary_terms = vector_store.list_glossary_terms(session_id, user_id=managed.user_id)
             if glossary_terms and session.schema_manager:
                 fk_rels = store_fk_relationships(
                     session_id=session_id,
@@ -788,6 +848,7 @@ class SessionManager:
                     vector_store=vector_store,
                     router=session.router,
                     on_batch=on_batch,
+                    user_id=managed.user_id,
                 )
                 logger.info(f"Phase 3 glossary inference for {session_id}: {len(glossary_rels)} relationships")
             except Exception as e:

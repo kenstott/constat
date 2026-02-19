@@ -128,6 +128,18 @@ export async function put<T>(path: string, body: unknown): Promise<T> {
     )
 }
 
+export async function patch<T>(path: string, body: unknown): Promise<T> {
+    const headers = await getAuthHeaders()
+    return fetchWithRetry(
+        () => fetch(`${API_BASE}${path}`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify(body),
+        }),
+        handleResponse<T>
+    )
+}
+
 export async function del<T>(path: string): Promise<T> {
     const headers = await getAuthHeaders()
     return fetchWithRetry(

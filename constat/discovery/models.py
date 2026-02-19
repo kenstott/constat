@@ -393,6 +393,7 @@ class GlossaryTerm:
     status: str = "draft"
     provenance: str = "llm"
     session_id: str = ""
+    user_id: str = "default"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

@@ -351,10 +351,19 @@ class DuckDBVectorStore(VectorStoreBackend):
                 status VARCHAR DEFAULT 'draft',
                 provenance VARCHAR DEFAULT 'llm',
                 session_id VARCHAR NOT NULL,
+                user_id VARCHAR NOT NULL DEFAULT 'default',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Add user_id column to existing databases (idempotent)
+        try:
+            self._conn.execute(
+                "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT 'default'"
+            )
+        except Exception:
+            pass  # Column already exists or unsupported syntax
 
         # Create entity_relationships table for SVO triples (keyed by name)
         self._conn.execute("""
@@ -1903,7 +1912,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         import json
         (term_id, name, display_name, definition, domain, parent_id,
          parent_verb, aliases_json, semantic_type, cardinality, plural, list_of,
-         tags_json, owner, status, provenance, session_id,
+         tags_json, owner, status, provenance, session_id, user_id,
          created_at, updated_at) = row
         aliases = json.loads(aliases_json) if aliases_json else []
         tags = json.loads(tags_json) if tags_json else {}
@@ -1925,6 +1934,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             status=status or "draft",
             provenance=provenance or "llm",
             session_id=session_id,
+            user_id=user_id or "default",
             created_at=created_at,
             updated_at=updated_at,
         )
@@ -1932,7 +1942,7 @@ class DuckDBVectorStore(VectorStoreBackend):
     _GLOSSARY_COLUMNS = (
         "id, name, display_name, definition, domain, parent_id, parent_verb, "
         "aliases, semantic_type, cardinality, plural, list_of, "
-        "tags, owner, status, provenance, session_id, created_at, updated_at"
+        "tags, owner, status, provenance, session_id, user_id, created_at, updated_at"
     )
 
     def add_glossary_term(self, term: GlossaryTerm) -> None:
@@ -1943,8 +1953,8 @@ class DuckDBVectorStore(VectorStoreBackend):
             INSERT INTO glossary_terms
             (id, name, display_name, definition, domain, parent_id, parent_verb,
              aliases, semantic_type, cardinality, plural, list_of,
-             tags, owner, status, provenance, session_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tags, owner, status, provenance, session_id, user_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 term.id, term.name, term.display_name, term.definition,
@@ -1953,17 +1963,21 @@ class DuckDBVectorStore(VectorStoreBackend):
                 term.cardinality, term.plural, term.list_of,
                 json.dumps(term.tags), term.owner,
                 term.status, term.provenance, term.session_id,
+                term.user_id or "default",
                 term.created_at, term.updated_at,
             ],
         )
 
-    def update_glossary_term(self, name: str, session_id: str, updates: dict) -> bool:
-        """Update a glossary term by name and session_id.
+    def update_glossary_term(self, name: str, session_id: str, updates: dict, *, user_id: str | None = None) -> bool:
+        """Update a glossary term by name.
+
+        Filters by user_id when provided (user-scoped glossary), falls back to session_id.
 
         Args:
             name: Term name
-            session_id: Session ID
+            session_id: Session ID (legacy scope, used as fallback)
             updates: Dict of field -> value to update
+            user_id: User ID for user-scoped lookup
 
         Returns:
             True if a row was updated
@@ -1990,31 +2004,53 @@ class DuckDBVectorStore(VectorStoreBackend):
             return False
 
         sets.append("updated_at = CURRENT_TIMESTAMP")
-        params.extend([name, session_id])
+        if user_id:
+            params.extend([name, user_id])
+            where = "name = ? AND user_id = ?"
+        else:
+            params.extend([name, session_id])
+            where = "name = ? AND session_id = ?"
         result = self._conn.execute(
-            f"UPDATE glossary_terms SET {', '.join(sets)} WHERE name = ? AND session_id = ? RETURNING id",
+            f"UPDATE glossary_terms SET {', '.join(sets)} WHERE {where} RETURNING id",
             params,
         ).fetchone()
         return result is not None
 
-    def delete_glossary_term(self, name: str, session_id: str) -> bool:
-        """Delete a glossary term by name and session_id.
+    def delete_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> bool:
+        """Delete a glossary term by name.
+
+        Filters by user_id when provided, falls back to session_id.
 
         Returns:
             True if a row was deleted
         """
-        result = self._conn.execute(
-            "DELETE FROM glossary_terms WHERE name = ? AND session_id = ? RETURNING id",
-            [name, session_id],
-        ).fetchone()
+        if user_id:
+            result = self._conn.execute(
+                "DELETE FROM glossary_terms WHERE name = ? AND user_id = ? RETURNING id",
+                [name, user_id],
+            ).fetchone()
+        else:
+            result = self._conn.execute(
+                "DELETE FROM glossary_terms WHERE name = ? AND session_id = ? RETURNING id",
+                [name, session_id],
+            ).fetchone()
         return result is not None
 
-    def get_glossary_term(self, name: str, session_id: str) -> GlossaryTerm | None:
-        """Get a single glossary term by name and session_id."""
-        row = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE name = ? AND session_id = ?",
-            [name, session_id],
-        ).fetchone()
+    def get_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> GlossaryTerm | None:
+        """Get a single glossary term by name.
+
+        Filters by user_id when provided, falls back to session_id.
+        """
+        if user_id:
+            row = self._conn.execute(
+                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE name = ? AND user_id = ?",
+                [name, user_id],
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE name = ? AND session_id = ?",
+                [name, session_id],
+            ).fetchone()
         return self._term_from_row(row) if row else None
 
     def get_glossary_term_by_id(self, term_id: str) -> GlossaryTerm | None:
@@ -2030,16 +2066,25 @@ class DuckDBVectorStore(VectorStoreBackend):
         session_id: str,
         scope: str = "all",
         domain: str | None = None,
+        *,
+        user_id: str | None = None,
     ) -> list[GlossaryTerm]:
-        """List glossary terms for a session.
+        """List glossary terms.
+
+        Filters by user_id when provided (user-scoped glossary), falls back to session_id.
 
         Args:
-            session_id: Session ID
+            session_id: Session ID (legacy scope, used as fallback)
             scope: 'all', 'defined' (has definition), or status filter
             domain: Optional domain filter
+            user_id: User ID for user-scoped lookup
         """
-        conditions = ["session_id = ?"]
-        params: list = [session_id]
+        if user_id:
+            conditions = ["user_id = ?"]
+            params: list = [user_id]
+        else:
+            conditions = ["session_id = ?"]
+            params = [session_id]
         if domain:
             conditions.append("domain = ?")
             params.append(domain)
@@ -2055,16 +2100,21 @@ class DuckDBVectorStore(VectorStoreBackend):
         session_id: str,
         scope: str = "all",
         active_domains: list[str] | None = None,
+        *,
+        user_id: str | None = None,
     ) -> list[dict]:
         """Get the unified glossary for a session.
 
         Uses the same 3-part visibility filter as the entities endpoint:
         base entities (no domain/session) + domain-scoped + session-scoped.
+        Glossary terms are joined by user_id when provided (user-scoped),
+        falling back to session_id for backward compat.
 
         Args:
-            session_id: Session ID
+            session_id: Session ID (for entity visibility)
             scope: 'all' | 'defined' | 'self_describing'
             active_domains: Active domain IDs for visibility filter
+            user_id: User ID for glossary term scope
 
         Returns:
             List of unified glossary dicts
@@ -2076,11 +2126,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             session_id, active_domains, alias="e2",
         )
 
-        # Part 1 params: g.session_id, entity_params, session_id (parent subquery)
-        # Part 2 params: session_id (glossary_terms), entity_params2 (NOT EXISTS)
+        # Glossary scope: user_id if provided, else session_id
+        glossary_scope_col = "user_id" if user_id else "session_id"
+        glossary_scope_val = user_id if user_id else session_id
+
+        # Part 1 params: glossary_scope, entity_params, glossary_scope (parent subquery)
+        # Part 2 params: glossary_scope (glossary_terms), entity_params2 (NOT EXISTS)
         params: list = (
-            [session_id] + entity_params + [session_id]
-            + [session_id] + entity_params2
+            [glossary_scope_val] + entity_params + [glossary_scope_val]
+            + [glossary_scope_val] + entity_params2
         )
 
         # Scope filter
@@ -2121,7 +2175,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             FROM entities e
             LEFT JOIN glossary_terms g
                 ON LOWER(e.name) = LOWER(g.name)
-                AND g.session_id = ?
+                AND g.{glossary_scope_col} = ?
             WHERE {entity_where}
             {scope_filter_1}
             AND (
@@ -2135,7 +2189,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 )
                 OR e.id IN (
                     SELECT parent_id FROM glossary_terms
-                    WHERE session_id = ? AND parent_id IS NOT NULL
+                    WHERE {glossary_scope_col} = ? AND parent_id IS NOT NULL
                 )
             )
 
@@ -2162,7 +2216,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.provenance,
                 'defined' AS glossary_status
             FROM glossary_terms g
-            WHERE g.session_id = ?
+            WHERE g.{glossary_scope_col} = ?
             {scope_filter_2}
             AND NOT EXISTS (
                 SELECT 1 FROM entities e2
@@ -2222,6 +2276,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         self,
         session_id: str,
         active_domains: list[str] | None = None,
+        *,
+        user_id: str | None = None,
     ) -> list[GlossaryTerm]:
         """Get glossary terms not grounded to any entity.
 
@@ -2235,7 +2291,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             session_id, active_domains, alias="e",
         )
 
-        all_terms = self.list_glossary_terms(session_id)
+        all_terms = self.list_glossary_terms(session_id, user_id=user_id)
         if not all_terms:
             return []
 
@@ -2283,18 +2339,26 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         return [t for t in all_terms if t.id not in valid]
 
-    def clear_session_glossary(self, session_id: str) -> int:
-        """Clear all glossary terms for a session.
+    def clear_session_glossary(self, session_id: str, *, user_id: str | None = None) -> int:
+        """Clear all glossary terms for a session or user.
+
+        When user_id is provided, clears by user_id (user-scoped glossary).
 
         Returns:
             Number of terms deleted
         """
-        result = self._conn.execute(
-            "DELETE FROM glossary_terms WHERE session_id = ? RETURNING id",
-            [session_id],
-        ).fetchall()
+        if user_id:
+            result = self._conn.execute(
+                "DELETE FROM glossary_terms WHERE user_id = ? RETURNING id",
+                [user_id],
+            ).fetchall()
+        else:
+            result = self._conn.execute(
+                "DELETE FROM glossary_terms WHERE session_id = ? RETURNING id",
+                [session_id],
+            ).fetchall()
         count = len(result)
-        logger.debug(f"clear_session_glossary({session_id}): deleted {count} terms")
+        logger.debug(f"clear_session_glossary({session_id}, user_id={user_id}): deleted {count} terms")
         return count
 
     # ------------------------------------------------------------------
@@ -2373,12 +2437,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
         return len(result) > 0
 
-    def get_glossary_terms_by_names(self, names: list[str], session_id: str) -> list[GlossaryTerm]:
+    def get_glossary_terms_by_names(self, names: list[str], session_id: str, *, user_id: str | None = None) -> list[GlossaryTerm]:
         """Batch lookup glossary terms by name.
 
         Args:
             names: List of term names (case-insensitive)
-            session_id: Session ID
+            session_id: Session ID (fallback scope)
+            user_id: User ID for user-scoped lookup
 
         Returns:
             List of matching GlossaryTerm objects
@@ -2387,15 +2452,20 @@ class DuckDBVectorStore(VectorStoreBackend):
             return []
         lower_names = [n.lower() for n in names]
         placeholders = ",".join(["?" for _ in lower_names])
-        params: list = lower_names + [session_id]
+        if user_id:
+            params: list = lower_names + [user_id]
+            scope_clause = "user_id = ?"
+        else:
+            params = lower_names + [session_id]
+            scope_clause = "session_id = ?"
         rows = self._conn.execute(
-            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) IN ({placeholders}) AND session_id = ?",
+            f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) IN ({placeholders}) AND {scope_clause}",
             params,
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
 
     def get_glossary_term_by_name_or_alias(
-        self, name: str, session_id: str,
+        self, name: str, session_id: str, *, user_id: str | None = None,
     ) -> GlossaryTerm | None:
         """Look up a glossary term by exact name or alias.
 
@@ -2408,11 +2478,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         import json
 
+        scope_col = "user_id" if user_id else "session_id"
+        scope_val = user_id if user_id else session_id
+
         # 1. Exact name match
         row = self._conn.execute(
             f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms "
-            "WHERE LOWER(name) = LOWER(?) AND session_id = ?",
-            [name, session_id],
+            f"WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?",
+            [name, scope_val],
         ).fetchone()
         if row:
             return self._term_from_row(row)
@@ -2420,8 +2493,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         # 2. Alias search — LIKE on JSON column, then verify exact match
         rows = self._conn.execute(
             f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms "
-            "WHERE LOWER(aliases) LIKE ? AND session_id = ?",
-            [f"%{name.lower()}%", session_id],
+            f"WHERE LOWER(aliases) LIKE ? AND {scope_col} = ?",
+            [f"%{name.lower()}%", scope_val],
         ).fetchall()
         for row in rows:
             term = self._term_from_row(row)

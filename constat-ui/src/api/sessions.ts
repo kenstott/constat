@@ -753,6 +753,13 @@ export async function getDomainContent(
   return get(`/domains/${encodeURIComponent(filename)}/content`)
 }
 
+export async function createDomain(
+  name: string,
+  description: string = ''
+): Promise<{ status: string; filename: string; name: string; description: string }> {
+  return post('/domains', { name, description })
+}
+
 export async function updateDomainContent(
   filename: string,
   content: string

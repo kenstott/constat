@@ -466,7 +466,7 @@ class PromptsMixin:
         sections: list[str] = []
 
         for candidate in unique_candidates:
-            term = vs.get_glossary_term_by_name_or_alias(candidate, self.session_id)
+            term = vs.get_glossary_term_by_name_or_alias(candidate, self.session_id, user_id=self.user_id)
             if not term or term.id in matched_term_ids:
                 continue
             matched_term_ids.add(term.id)
@@ -479,7 +479,7 @@ class PromptsMixin:
 
             # Physical resource mappings
             from constat.discovery.glossary_generator import resolve_physical_resources
-            resources = resolve_physical_resources(term.name, self.session_id, vs)
+            resources = resolve_physical_resources(term.name, self.session_id, vs, user_id=self.user_id)
             if resources:
                 for res in resources:
                     src_parts = []

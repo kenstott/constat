@@ -318,7 +318,7 @@ CRITICAL INTENT RULES (apply in order):
 
                 if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.session_id:
                     try:
-                        terms = self.doc_tools._vector_store.list_glossary_terms(self.session_id)
+                        terms = self.doc_tools._vector_store.list_glossary_terms(self.session_id, user_id=self.user_id)
                         for gt in terms:
                             source_keywords.append(gt.name.lower())
                             for alias in (gt.aliases or []):

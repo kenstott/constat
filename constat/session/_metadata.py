@@ -133,7 +133,7 @@ class MetadataMixin:
         if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.session_id:
             try:
                 vs = self.doc_tools._vector_store
-                terms = vs.list_glossary_terms(self.session_id)
+                terms = vs.list_glossary_terms(self.session_id, user_id=self.user_id)
                 query_lower = query.lower()
                 existing_table_names = {t["name"] for t in results["tables"]}
 
@@ -150,7 +150,7 @@ class MetadataMixin:
                     if not matched:
                         continue
 
-                    resources = resolve_physical_resources(gt.name, self.session_id, vs)
+                    resources = resolve_physical_resources(gt.name, self.session_id, vs, user_id=self.user_id)
                     for res in resources:
                         for src in res.get("sources", []):
                             doc_name = src.get("document_name", "")
@@ -178,6 +178,7 @@ class MetadataMixin:
         from constat.discovery.schema_tools import SchemaDiscoveryTools
         tools = SchemaDiscoveryTools(
             self.schema_manager, self.doc_tools, session_id=self.session_id,
+            user_id=self.user_id,
         )
         return tools.find_entity(name, limit)
 

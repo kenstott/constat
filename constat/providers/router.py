@@ -221,6 +221,9 @@ class TaskRouter:
                     model=spec.model,
                 )
 
+                if content is None:
+                    raise ValueError("Provider returned empty response")
+
                 elapsed_ms = int((time.time() - start_time) * 1000)
 
                 # Log prompt for analysis (fire-and-forget, don't block on errors)

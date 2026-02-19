@@ -248,6 +248,26 @@ class ThreadLocalDuckDB:
             return self.conn.execute(sql, params)
         return self.conn.execute(sql)
 
+    def add_init_sql(self, sql: str) -> None:
+        """Append SQL to init list and run on all existing connections."""
+        with self._init_lock:
+            self._init_sql.append(sql)
+        self.run_on_all_connections(sql)
+
+    def remove_init_sql(self, predicate) -> None:
+        """Remove init_sql entries where predicate(sql) is True."""
+        with self._init_lock:
+            self._init_sql = [s for s in self._init_sql if not predicate(s)]
+
+    def run_on_all_connections(self, sql: str) -> None:
+        """Execute SQL on all existing thread-local connections."""
+        with self._pool._lock:
+            for conn in self._pool._connections.values():
+                try:
+                    conn.execute(sql)
+                except Exception as e:
+                    logger.debug(f"run_on_all_connections failed: {e}")
+
     def close(self) -> None:
         """Close all connections."""
         self._pool.close()
