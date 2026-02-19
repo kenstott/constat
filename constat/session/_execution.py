@@ -885,7 +885,8 @@ class ExecutionMixin:
             logger.warning(f"[Step {step.number}] Failed to inject store tables for validation: {e}")
         for v in step.post_validations:
             try:
-                result = eval(v.expression, {"__builtins__": __builtins__}, namespace)  # noqa: S307
+                eval_globals = {**namespace, "__builtins__": __builtins__}
+                result = eval(v.expression, eval_globals)  # noqa: S307
                 passed = bool(result)
             except Exception as e:
                 logger.warning(f"[Step {step.number}] Post-validation expression error: {v.expression} -> {e}")

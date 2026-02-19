@@ -338,6 +338,11 @@ def generate_glossary(
 
                 name_lower = name.lower()
 
+                # Skip terms already generated in a prior batch or existing
+                if name_lower in all_term_names:
+                    logger.debug(f"Skipping duplicate term: {name}")
+                    continue
+
                 # Skip terms not grounded or transitively grounded
                 if name_lower not in grounded_names and name_lower not in needed_parents:
                     logger.debug(f"Skipping ungrounded LLM term: {name}")

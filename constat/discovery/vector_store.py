@@ -1946,11 +1946,11 @@ class DuckDBVectorStore(VectorStoreBackend):
     )
 
     def add_glossary_term(self, term: GlossaryTerm) -> None:
-        """Insert a glossary term."""
+        """Insert a glossary term (upsert on conflict)."""
         import json
         self._conn.execute(
             """
-            INSERT INTO glossary_terms
+            INSERT OR REPLACE INTO glossary_terms
             (id, name, display_name, definition, domain, parent_id, parent_verb,
              aliases, semantic_type, cardinality, plural, list_of,
              tags, owner, status, provenance, session_id, user_id, created_at, updated_at)
