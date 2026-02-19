@@ -1139,12 +1139,20 @@ function DomainPromotePicker({
   const btnRef = useRef<HTMLSpanElement>(null)
   const { terms: allTerms, updateTerm } = useGlossaryStore()
 
+  // Close on click outside (must be before early returns — hooks rules)
+  useEffect(() => {
+    if (!open && !confirmCascade) return
+    const handler = () => { setOpen(false); setConfirmCascade(null) }
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [open, confirmCascade])
+
   // Already at system level — no further promotion
   if (currentDomain === 'system') return null
 
   // Must be approved (or self-describing) before promotion
   const selfTerm = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
-  if (!isPromotable(selfTerm!)) return null
+  if (!selfTerm || !isPromotable(selfTerm)) return null
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -1194,14 +1202,6 @@ function DomainPromotePicker({
 
   const handleSelect = (filename: string) => checkAndPromote(filename)
   const handlePromoteSystem = () => checkAndPromote('system')
-
-  // Close on click outside
-  useEffect(() => {
-    if (!open && !confirmCascade) return
-    const handler = () => { setOpen(false); setConfirmCascade(null) }
-    document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
-  }, [open, confirmCascade])
 
   const iconColor = currentDomain
     ? 'text-blue-500'
