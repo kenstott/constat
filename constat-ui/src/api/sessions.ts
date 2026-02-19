@@ -331,6 +331,13 @@ export async function deleteGlossaryTerm(
   return del(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`)
 }
 
+export async function draftGlossaryDefinition(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; name: string; draft: string }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-definition`)
+}
+
 export async function refineGlossaryTerm(
   sessionId: string,
   name: string

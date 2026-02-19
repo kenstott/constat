@@ -268,9 +268,9 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 logger.debug(f"[follow_up] Applied fact modification: {mod['fact_name']}={mod['new_value']}")
             self.fact_resolver.add_user_facts_from_text(question)
 
-            # Determine mode: use LLM recommendation, fall back to session's current mode
+            # Determine mode: redo stays in the session's current mode
             session_mode = self.datastore.get_session_meta("mode") if self.datastore else "exploratory"
-            use_proof = analysis.recommended_mode == "PROOF" or session_mode == "auditable"
+            use_proof = session_mode == "auditable"
             logger.info(f"[follow_up] REDO intent detected, mode={session_mode}, recommended={analysis.recommended_mode}, use_proof={use_proof}")
 
             if use_proof:

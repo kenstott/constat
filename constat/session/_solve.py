@@ -14,7 +14,7 @@ import logging
 from constat.core.models import PlannerResponse, StepStatus, StepResult
 from constat.execution.mode import PlanApproval, PrimaryIntent
 from constat.execution.scratchpad import Scratchpad
-from constat.session._types import QuestionType, StepEvent, is_meta_question
+from constat.session._types import QuestionAnalysis, QuestionType, StepEvent, is_meta_question
 from constat.storage.datastore import DataStore
 from constat.storage.registry_datastore import RegistryAwareDataStore
 
@@ -129,7 +129,9 @@ class SolveMixin:
         logger.debug(f"[PARALLEL] All tasks completed in {parallel_duration:.2f}s")
 
         turn_intent = results.get("intent")
-        analysis = results.get("analysis")
+        analysis = results.get("analysis") or QuestionAnalysis(
+            question_type=QuestionType.DATA_ANALYSIS, extracted_facts=[]
+        )
         clarification_request = results.get("ambiguity")
         speculative_plan = results.get("planning")
         dynamic_context = results.get("dynamic_context")

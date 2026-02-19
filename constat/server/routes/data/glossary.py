@@ -465,6 +465,49 @@ async def delete_definition(
     return {"status": "deleted", "name": name}
 
 
+@router.post("/{session_id}/glossary/{name}/draft-definition")
+async def draft_definition(
+    session_id: str,
+    name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """AI-generate a draft definition for a term that lacks one."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+    session = managed.session
+
+    if not session.router:
+        raise HTTPException(status_code=503, detail="LLM router not available")
+
+    from constat.discovery.glossary_generator import _build_entity_context
+    context = _build_entity_context(name, session_id, vs)
+
+    system = (
+        "Write a concise business glossary definition for the given term. "
+        "Describe its meaning and purpose, not its storage. "
+        "Return only the definition text, nothing else."
+    )
+    user_msg = f"Term: {display_entity_name(name)}\n\nContext:\n{context}"
+
+    from constat.core.models import TaskType
+    result = session.router.execute(
+        task_type=TaskType.GLOSSARY_GENERATION,
+        system=system,
+        user_message=user_msg,
+        max_tokens=session.router.max_output_tokens,
+        complexity="low",
+    )
+
+    if not result.success or not result.content:
+        raise HTTPException(status_code=500, detail="Draft generation failed")
+
+    return {
+        "status": "ok",
+        "name": name,
+        "draft": result.content.strip().strip('"'),
+    }
+
+
 @router.post("/{session_id}/glossary/{name}/refine")
 async def refine_definition(
     session_id: str,

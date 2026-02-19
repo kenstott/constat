@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import {
   ChevronRightIcon,
-  ChevronDownIcon,
   MagnifyingGlassIcon,
   XMarkIcon,
   PlusIcon,
+  MinusSmallIcon,
+  PlusSmallIcon,
   SparklesIcon,
   ExclamationTriangleIcon,
   TrashIcon,
@@ -24,6 +25,7 @@ import {
   updateRelationshipVerb,
   deleteRelationship,
   updateGlossaryTerm,
+  draftGlossaryDefinition,
   listDomains,
 } from '@/api/sessions'
 import type { DomainInfo } from '@/api/sessions'
@@ -641,12 +643,25 @@ function DefineInline({
   onDone: () => void
 }) {
   const [definition, setDefinition] = useState('')
+  const [drafting, setDrafting] = useState(false)
   const { addDefinition } = useGlossaryStore()
 
   const handleSubmit = async () => {
     if (!definition.trim()) return
     await addDefinition(sessionId, name, definition.trim())
     onDone()
+  }
+
+  const handleDraft = async () => {
+    setDrafting(true)
+    try {
+      const result = await draftGlossaryDefinition(sessionId, name)
+      if (result.draft) setDefinition(result.draft)
+    } catch (err) {
+      console.error('Draft generation failed:', err)
+    } finally {
+      setDrafting(false)
+    }
   }
 
   return (
@@ -665,6 +680,15 @@ function DefineInline({
           className="text-xs px-2 py-0.5 bg-blue-500 text-white rounded hover:bg-blue-600"
         >
           Save
+        </button>
+        <button
+          onClick={handleDraft}
+          disabled={drafting}
+          className="flex items-center gap-0.5 text-xs px-2 py-0.5 text-purple-500 hover:text-purple-600 disabled:opacity-50"
+          title="AI-generate a draft definition"
+        >
+          <SparklesIcon className="w-3 h-3" />
+          {drafting ? 'Drafting...' : 'AI Draft'}
         </button>
         <button
           onClick={onDone}
@@ -931,9 +955,9 @@ function TreeNodeView({
             style={{ marginLeft: `${depth * 12}px` }}
           >
             {expanded ? (
-              <ChevronDownIcon className="w-3 h-3 text-gray-400" />
+              <MinusSmallIcon className="w-3 h-3 text-gray-400" />
             ) : (
-              <ChevronRightIcon className="w-3 h-3 text-gray-400" />
+              <PlusSmallIcon className="w-3 h-3 text-gray-400" />
             )}
           </button>
         )}
