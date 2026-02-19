@@ -9,6 +9,7 @@ import { getOrCreateSessionId, createNewSessionId } from '@/api/sessions'
 import * as queriesApi from '@/api/queries'
 import { useArtifactStore } from './artifactStore'
 import { useProofStore } from './proofStore'
+import { useUIStore } from './uiStore'
 
 interface Message {
   id: string
@@ -273,6 +274,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (idx >= 0 && idx < suggestions.length) {
         expandedProblem = suggestions[idx]
       }
+    }
+
+    // Apply brief mode prefix if enabled (server detects "briefly" keyword)
+    const { briefMode } = useUIStore.getState()
+    if (briefMode && !expandedProblem.startsWith('/') && !/^briefly\b/i.test(expandedProblem)) {
+      expandedProblem = `briefly, ${expandedProblem}`
     }
 
     // Check if session is busy (planning, executing, awaiting approval)

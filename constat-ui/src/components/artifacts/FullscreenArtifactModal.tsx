@@ -1,7 +1,7 @@
 // Fullscreen Artifact Modal - triggered from View Result button
 
-import { useState, useEffect } from 'react'
-import { XMarkIcon } from '@heroicons/react/24/outline'
+import { useState, useEffect, useRef } from 'react'
+import { XMarkIcon, ArrowDownTrayIcon, ChevronDownIcon } from '@heroicons/react/24/outline'
 import { useUIStore } from '@/store/uiStore'
 import { useSessionStore } from '@/store/sessionStore'
 import * as sessionsApi from '@/api/sessions'
@@ -17,6 +17,61 @@ export function FullscreenArtifactModal() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tablePage, setTablePage] = useState(1)
+  const [downloadOpen, setDownloadOpen] = useState(false)
+  const downloadRef = useRef<HTMLDivElement>(null)
+
+  const downloadFormats = [
+    { key: 'csv', label: 'CSV', ext: '.csv' },
+    { key: 'parquet', label: 'Parquet', ext: '.parquet' },
+    { key: 'arrow', label: 'Arrow', ext: '.arrow' },
+    { key: 'excel', label: 'Excel', ext: '.xlsx' },
+    { key: 'text', label: 'Text', ext: '.txt' },
+    { key: 'markdown', label: 'Markdown', ext: '.md' },
+  ] as const
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (downloadRef.current && !downloadRef.current.contains(e.target as Node)) {
+        setDownloadOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const handleDownload = async (fmt: string, ext: string) => {
+    if (!session || !fullscreenArtifact) return
+    setDownloadOpen(false)
+
+    let url: string
+    let filename: string
+    if (fullscreenArtifact.type === 'table' && fullscreenArtifact.name) {
+      url = `/api/sessions/${session.session_id}/tables/${fullscreenArtifact.name}/download?format=${fmt}`
+      filename = `${fullscreenArtifact.name}${ext}`
+    } else if (fullscreenArtifact.type === 'database_table' && fullscreenArtifact.dbName && fullscreenArtifact.tableName) {
+      url = `/api/sessions/${session.session_id}/databases/${fullscreenArtifact.dbName}/tables/${fullscreenArtifact.tableName}/download?format=${fmt}`
+      filename = `${fullscreenArtifact.dbName}_${fullscreenArtifact.tableName}${ext}`
+    } else {
+      return
+    }
+
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error('Failed to download')
+      const blob = await response.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(blobUrl)
+    } catch (err) {
+      console.error('Download failed:', err)
+    }
+  }
 
   // Close on Escape
   useEffect(() => {
@@ -448,13 +503,40 @@ export function FullscreenArtifactModal() {
               </span>
             )}
           </div>
-          <button
-            onClick={closeFullscreenArtifact}
-            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-            title="Close (Esc)"
-          >
-            <XMarkIcon className="w-5 h-5 text-gray-500" />
-          </button>
+          <div className="flex items-center gap-2">
+            {(fullscreenArtifact.type === 'table' || fullscreenArtifact.type === 'database_table') && (
+              <div className="relative" ref={downloadRef}>
+                <button
+                  onClick={() => setDownloadOpen((o) => !o)}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4 text-gray-500" />
+                  <span className="text-gray-700 dark:text-gray-300">Download</span>
+                  <ChevronDownIcon className="w-3 h-3 text-gray-500" />
+                </button>
+                {downloadOpen && (
+                  <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10">
+                    {downloadFormats.map((f) => (
+                      <button
+                        key={f.key}
+                        onClick={() => handleDownload(f.key, f.ext)}
+                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg"
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              onClick={closeFullscreenArtifact}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+              title="Close (Esc)"
+            >
+              <XMarkIcon className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
         </div>
 
         {/* Modal Content */}

@@ -13,7 +13,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from constat.server.models import (
     ApiAddRequest,
@@ -699,6 +700,58 @@ async def preview_database_table(
     except Exception as e:
         logger.error(f"Error previewing table {db_name}.{table_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Error querying table: {e}")
+
+
+@router.get("/{session_id}/databases/{db_name}/tables/{table_name}/download")
+async def download_database_table(
+    session_id: str,
+    db_name: str,
+    table_name: str,
+    format: "DownloadFormat" = Query(default="csv"),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> Response:
+    """Download a source database table in the specified format."""
+    import pandas as pd
+    from constat.server.routes.data.tables import DownloadFormat, _df_to_download_response
+
+    managed = session_manager.get_session(session_id)
+
+    if not managed.has_database(db_name):
+        raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
+
+    db_connection = managed.get_database_connection(db_name)
+    if not db_connection:
+        raise HTTPException(status_code=404, detail=f"Database '{db_name}' is not connected.")
+
+    try:
+        from constat.catalog.file.connector import FileConnector
+        if isinstance(db_connection, FileConnector):
+            import duckdb
+            conn = duckdb.connect(":memory:")
+            file_path = db_connection.path
+            ft = db_connection.file_type.value
+            read_fn = {
+                'csv': f"read_csv_auto('{file_path}')",
+                'tsv': f"read_csv_auto('{file_path}', delim='\\t')",
+                'json': f"read_json_auto('{file_path}')",
+                'jsonl': f"read_json_auto('{file_path}', format='newline_delimited')",
+                'parquet': f"read_parquet('{file_path}')",
+                'arrow': f"read_parquet('{file_path}')",
+                'feather': f"read_parquet('{file_path}')",
+            }.get(ft, f"read_csv_auto('{file_path}')")
+            df = conn.execute(f"SELECT * FROM {read_fn}").df()
+            conn.close()
+        else:
+            query = f'SELECT * FROM "{table_name}"'
+            df = pd.read_sql(query, db_connection)
+
+        return _df_to_download_response(df, f"{db_name}_{table_name}", format)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading table {db_name}.{table_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

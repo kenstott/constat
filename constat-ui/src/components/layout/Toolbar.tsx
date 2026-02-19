@@ -2,6 +2,7 @@
 
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import { useUIStore } from '@/store/uiStore'
 import {
   PlusIcon,
   StopIcon,
@@ -10,6 +11,7 @@ import {
   LightBulbIcon,
   DocumentIcon,
   CheckBadgeIcon,
+  BoltIcon,
 } from '@heroicons/react/24/outline'
 
 interface ToolbarProps {
@@ -22,6 +24,7 @@ interface ToolbarProps {
 export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSession }: ToolbarProps) {
   const { session, status, cancelExecution } = useSessionStore()
   const { databases, apis, documents, facts, artifacts, tables, stepCodes } = useArtifactStore()
+  const { briefMode, toggleBriefMode } = useUIStore()
 
   // Count datasources (databases + APIs + documents)
   const datasourceCount = databases.length + apis.length + documents.length
@@ -64,6 +67,15 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
         >
           <CheckBadgeIcon className="w-4 h-4 mr-1" />
           Proof
+        </button>
+
+        <button
+          onClick={toggleBriefMode}
+          className={`btn-secondary text-xs ${briefMode ? 'bg-primary-100 dark:bg-primary-900/30 border-primary-400 dark:border-primary-600 text-primary-700 dark:text-primary-300' : ''}`}
+          title={briefMode ? "Brief mode ON — skipping insight synthesis" : "Brief mode OFF — full insight synthesis"}
+        >
+          <BoltIcon className="w-4 h-4 mr-1" />
+          Brief
         </button>
 
         {isExecuting && (

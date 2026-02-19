@@ -9,8 +9,9 @@
 
 """Table data endpoints."""
 
+import io
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -224,21 +225,78 @@ async def get_table_data(
         raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
 
 
+DownloadFormat = Literal["csv", "parquet", "arrow", "excel", "text", "markdown"]
+
+
+def _df_to_download_response(df: "pd.DataFrame", name: str, fmt: DownloadFormat) -> Response:
+    """Convert a DataFrame to a downloadable Response in the requested format."""
+    import pandas as pd
+    if fmt == "csv":
+        return Response(
+            content=df.to_csv(index=False),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
+        )
+    elif fmt == "parquet":
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{name}.parquet"'},
+        )
+    elif fmt == "arrow":
+        import pyarrow as pa
+        buf = io.BytesIO()
+        table = pa.Table.from_pandas(df)
+        with pa.ipc.RecordBatchFileWriter(buf, table.schema) as writer:
+            writer.write_table(table)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{name}.arrow"'},
+        )
+    elif fmt == "excel":
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False, engine="openpyxl")
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'},
+        )
+    elif fmt == "text":
+        return Response(
+            content=df.to_string(index=False),
+            media_type="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="{name}.txt"'},
+        )
+    elif fmt == "markdown":
+        return Response(
+            content=df.to_markdown(index=False),
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{name}.md"'},
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {fmt}")
+
+
 @router.get("/{session_id}/tables/{table_name}/download")
 async def download_table(
     session_id: str,
     table_name: str,
+    format: DownloadFormat = Query(default="csv"),
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> Response:
-    """Download table data as CSV.
+    """Download table data in the specified format.
 
     Args:
         session_id: Session ID
         table_name: Table name to download
+        format: Download format (csv, parquet, arrow, excel, text, markdown)
         session_manager: Injected session manager
 
     Returns:
-        CSV file response
+        File response in requested format
 
     Raises:
         404: Session or table not found
@@ -253,19 +311,13 @@ async def download_table(
         if df is None:
             raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
 
-        csv_content = df.to_csv(index=False)
+        return _df_to_download_response(df, table_name, format)
 
-        return Response(
-            content=csv_content,
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f'attachment; filename="{table_name}.csv"'
-            },
-        )
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error downloading table: {e}")
-        raise HTTPException(status_code=404, detail=f"Table not found: {table_name}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{session_id}/tables/{table_name}/star")

@@ -97,6 +97,10 @@ interface UIState {
   theme: Theme
   setTheme: (theme: Theme) => void
 
+  // Brief mode — skips insight synthesis
+  briefMode: boolean
+  toggleBriefMode: () => void
+
   // Panels
   menuOpen: boolean
   artifactPanelWidth: number
@@ -125,6 +129,7 @@ export const useUIStore = create<UIState>()(
   persist(
     (set, get) => ({
       theme: 'system' as Theme,
+      briefMode: false,
       menuOpen: false,
       artifactPanelWidth: 400,
       expandedArtifactSections: ['charts', 'tables'],
@@ -146,6 +151,8 @@ export const useUIStore = create<UIState>()(
         if (link) set({ pendingDeepLink: null })
         return link
       },
+
+      toggleBriefMode: () => set((state) => ({ briefMode: !state.briefMode })),
 
       setTheme: (theme) => {
         set({ theme })
@@ -189,6 +196,7 @@ export const useUIStore = create<UIState>()(
       name: 'constat-ui-storage',
       partialize: (state) => ({
         theme: state.theme,
+        briefMode: state.briefMode,
         artifactPanelWidth: state.artifactPanelWidth,
         expandedArtifactSections: state.expandedArtifactSections,
       }),
