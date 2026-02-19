@@ -2361,6 +2361,28 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"clear_session_glossary({session_id}, user_id={user_id}): deleted {count} terms")
         return count
 
+    def delete_glossary_by_status(
+        self, session_id: str, status: str, *, user_id: str | None = None,
+    ) -> int:
+        """Delete glossary terms matching a status.
+
+        Returns:
+            Number of terms deleted
+        """
+        if user_id:
+            result = self._conn.execute(
+                "DELETE FROM glossary_terms WHERE user_id = ? AND status = ? RETURNING id",
+                [user_id, status],
+            ).fetchall()
+        else:
+            result = self._conn.execute(
+                "DELETE FROM glossary_terms WHERE session_id = ? AND status = ? RETURNING id",
+                [session_id, status],
+            ).fetchall()
+        count = len(result)
+        logger.debug(f"delete_glossary_by_status({status}, user_id={user_id}): deleted {count} terms")
+        return count
+
     # ------------------------------------------------------------------
     # Entity Relationship CRUD
     # ------------------------------------------------------------------

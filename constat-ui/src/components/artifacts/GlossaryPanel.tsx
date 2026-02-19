@@ -1725,6 +1725,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     fetchTerms,
     fetchDeprecated,
     generateGlossary,
+    deleteDrafts,
     generating,
     generationStage,
     generationPercent,
@@ -1733,6 +1734,8 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
   } = useGlossaryStore()
 
   const [showConfirm, setShowConfirm] = useState(false)
+  const [showDeleteDrafts, setShowDeleteDrafts] = useState(false)
+  const [deletingDrafts, setDeletingDrafts] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
 
   const [search, setSearch] = useState('')
@@ -1803,6 +1806,17 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           }
         </button>
         <div className="flex-1" />
+        {!generating && (
+          <button
+            onClick={() => setShowDeleteDrafts(true)}
+            disabled={deletingDrafts}
+            className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded text-red-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+            title="Delete all draft terms"
+          >
+            <TrashIcon className="w-3.5 h-3.5" />
+            Drafts
+          </button>
+        )}
         {generating ? (
           <div className="flex items-center gap-1.5 text-xs text-purple-500">
             <SparklesIcon className="w-3.5 h-3.5 animate-spin" />
@@ -1904,6 +1918,41 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
       )}
 
       {/* Taxonomy confirmation dialog */}
+      {showDeleteDrafts && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-sm w-full mx-4 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <TrashIcon className="w-5 h-5 text-red-500" />
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                Delete Draft Terms
+              </h3>
+            </div>
+            <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+              This will permanently delete all glossary terms with <span className="font-medium">draft</span> status.
+              Reviewed and approved terms will not be affected.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setShowDeleteDrafts(false)}
+                className="text-xs px-3 py-1.5 rounded text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setShowDeleteDrafts(false)
+                  setDeletingDrafts(true)
+                  await deleteDrafts(sessionId)
+                  setDeletingDrafts(false)
+                }}
+                className="text-xs px-3 py-1.5 rounded bg-red-500 text-white hover:bg-red-600"
+              >
+                Delete Drafts
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-sm w-full mx-4 p-4 space-y-3">

@@ -37,6 +37,7 @@ interface GlossaryState {
   addDefinition: (sessionId: string, name: string, definition: string) => Promise<void>
   updateTerm: (sessionId: string, name: string, updates: Record<string, unknown>) => Promise<void>
   deleteTerm: (sessionId: string, name: string) => Promise<void>
+  deleteDrafts: (sessionId: string) => Promise<number>
   refineTerm: (sessionId: string, name: string) => Promise<{ before: string; after: string } | null>
   generateGlossary: (sessionId: string) => Promise<void>
   suggestTaxonomy: (sessionId: string) => Promise<void>
@@ -106,6 +107,12 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   deleteTerm: async (sessionId, name) => {
     await sessionsApi.deleteGlossaryTerm(sessionId, name)
     await get().fetchTerms(sessionId)
+  },
+
+  deleteDrafts: async (sessionId) => {
+    const result = await sessionsApi.deleteGlossaryByStatus(sessionId, 'draft')
+    await get().fetchTerms(sessionId)
+    return result.count
   },
 
   refineTerm: async (sessionId, name) => {

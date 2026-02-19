@@ -449,6 +449,20 @@ async def update_definition(
     return {"status": "updated", "name": name}
 
 
+@router.delete("/{session_id}/glossary")
+async def delete_glossary_by_status(
+    session_id: str,
+    status: str = "draft",
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Delete all glossary terms matching a status (default: draft)."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+
+    count = vs.delete_glossary_by_status(session_id, status, user_id=managed.user_id)
+    return {"status": "deleted", "count": count}
+
+
 @router.delete("/{session_id}/glossary/{name}")
 async def delete_definition(
     session_id: str,

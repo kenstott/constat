@@ -324,6 +324,13 @@ export async function updateGlossaryTerm(
   return put(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`, updates)
 }
 
+export async function deleteGlossaryByStatus(
+  sessionId: string,
+  status: string = 'draft'
+): Promise<{ status: string; count: number }> {
+  return del(`/sessions/${sessionId}/glossary?status=${encodeURIComponent(status)}`)
+}
+
 export async function deleteGlossaryTerm(
   sessionId: string,
   name: string
