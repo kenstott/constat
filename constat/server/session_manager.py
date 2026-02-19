@@ -793,6 +793,15 @@ class SessionManager:
             except Exception as e:
                 logger.exception(f"Phase 3 glossary inference for {session_id} failed: {e}")
 
+        # Final: deduplicate — keep only best relationship per entity pair
+        try:
+            from constat.discovery.relationship_extractor import deduplicate_relationships
+            removed = deduplicate_relationships(session_id, vector_store)
+            if removed:
+                logger.info(f"Relationship dedup for {session_id}: removed {removed} duplicates")
+        except Exception as e:
+            logger.exception(f"Relationship dedup for {session_id} failed: {e}")
+
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:
         """Push an event to a managed session's WebSocket queue."""

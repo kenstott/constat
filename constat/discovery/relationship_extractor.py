@@ -134,7 +134,7 @@ Examples of good relationships:
 - {"subject": "Analyst", "verb": "is_a_peer_of", "object": "Developer", "verb_category": "association"}
 
 Rules:
-- Return 0–3 relationships per pair
+- Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
 - Prefer spaCy suggestions when the verb is accurate; override when text supports a better verb
 - You may infer implicit relationships even if no sentence states them directly
   (e.g., "employee" works_in "department" can be inferred from organizational context)
@@ -713,6 +713,7 @@ For each group of terms below, you receive:
 Infer **cross-cutting** relationships between terms based on their definitions and business semantics.
 
 IMPORTANT RULES:
+- Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
 - Do NOT return parent-child or hierarchy relationships — those are already captured in the taxonomy
 - Focus on: action relationships, causation, temporal ordering, association between entities in different branches
 - Use third-person singular present tense verbs (e.g., "manages", "triggers", "contains")
@@ -892,3 +893,47 @@ def infer_glossary_relationships(
 
     logger.info(f"Glossary relationship inference complete: {len(all_rels)} relationships for session {session_id}")
     return all_rels
+
+
+# ---------------------------------------------------------------------------
+# Deduplication: keep only the best relationship per entity pair
+# ---------------------------------------------------------------------------
+
+def deduplicate_relationships(session_id: str, vector_store) -> int:
+    """Keep only the highest-confidence relationship per entity pair.
+
+    For each unordered pair (A, B) — regardless of which is subject/object —
+    keeps the one with the highest confidence and deletes the rest.
+
+    Returns:
+        Number of relationships deleted.
+    """
+    rows = vector_store._conn.execute(
+        """
+        SELECT id, subject_name, verb, object_name, confidence
+        FROM entity_relationships
+        WHERE session_id = ?
+        ORDER BY confidence DESC
+        """,
+        [session_id],
+    ).fetchall()
+
+    # Group by unordered pair
+    best_by_pair: dict[tuple[str, str], tuple] = {}
+    duplicates: list[str] = []
+
+    for rel_id, subj, verb, obj, confidence in rows:
+        pair_key = tuple(sorted([subj.lower(), obj.lower()]))
+        if pair_key not in best_by_pair:
+            best_by_pair[pair_key] = (rel_id, confidence)
+        else:
+            duplicates.append(rel_id)
+
+    # Delete duplicates
+    for rel_id in duplicates:
+        vector_store.delete_entity_relationship(rel_id)
+
+    if duplicates:
+        logger.info(f"Deduplicated relationships for {session_id}: removed {len(duplicates)}, kept {len(best_by_pair)}")
+
+    return len(duplicates)

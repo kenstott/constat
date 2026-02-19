@@ -381,6 +381,12 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             logger.info(f"Auto-detected follow-up for session {managed.session_id} (existing tables found)")
             is_followup = True
 
+        # Downgrade follow-up to solve if no datastore exists (e.g. prior query was
+        # conversational/knowledge and never created a datastore)
+        if is_followup and not managed.session.datastore:
+            logger.info(f"Downgrading follow-up to solve for session {managed.session_id} (no datastore)")
+            is_followup = False
+
         # Run the query via API - use follow_up if explicitly marked or auto-detected
         if is_followup:
             logger.debug(f"Running follow-up query for session {managed.session_id}")
