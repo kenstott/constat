@@ -1065,10 +1065,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
 
       case 'entity_rebuild_complete': {
-        // Entity extraction finished in background — refresh entities
+        // Entity extraction finished in background — refresh entities + glossary
         const { session: s } = get()
         if (s) {
           useArtifactStore.getState().fetchEntities(s.session_id)
+          import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+            useGlossaryStore.getState().fetchTerms(s.session_id)
+          })
         }
         break
       }
@@ -1101,6 +1104,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'glossary_rebuild_start':
         break
+
+      case 'glossary_generation_progress': {
+        const { stage, percent } = event.data as { stage: string; percent: number }
+        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+          useGlossaryStore.getState().setProgress(stage, percent)
+        })
+        break
+      }
 
       case 'relationships_extracted':
         break

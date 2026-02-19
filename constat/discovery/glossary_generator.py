@@ -185,6 +185,7 @@ def generate_glossary(
     domain: str | None = None,
     active_domains: list[str] | None = None,
     on_batch_complete: Callable[[list[GlossaryTerm]], None] | None = None,
+    on_progress: Callable[[str, int], None] | None = None,
 ) -> list[GlossaryTerm]:
     """Generate glossary definitions for entities that need them.
 
@@ -200,11 +201,15 @@ def generate_glossary(
         domain: Optional domain scope
         active_domains: Active domain IDs for entity visibility
         on_batch_complete: Optional callback invoked per batch of stored terms
+        on_progress: Optional callback(stage, percent) for progress reporting
 
     Returns:
         List of generated GlossaryTerm objects
     """
     from constat.discovery.vector_store import DuckDBVectorStore
+
+    if on_progress:
+        on_progress("Collecting entities", 0)
 
     entity_where, params = DuckDBVectorStore.entity_visibility_filter(
         session_id, active_domains, alias="e",
@@ -266,6 +271,10 @@ def generate_glossary(
                 claimed_aliases.add(a.strip().lower())
 
     for batch_idx, batch in enumerate(batches):
+        if on_progress:
+            pct = 5 + int((batch_idx + 1) / len(batches) * 65)
+            on_progress("Generating definitions", pct)
+
         # Build context for each candidate
         context_parts = []
         for candidate in batch:
@@ -392,9 +401,13 @@ def generate_glossary(
             logger.exception(f"Glossary generation batch {batch_idx} error: {e}")
 
     # Link parents (second pass)
+    if on_progress:
+        on_progress("Linking hierarchy", 72)
     _link_parents(generated_terms, session_id, vector_store, active_domains, domain)
 
     # Prune ungrounded terms — LLM-created parents that failed to link children
+    if on_progress:
+        on_progress("Pruning ungrounded", 75)
     pruned = _prune_ungrounded(session_id, vector_store)
     if pruned:
         generated_terms = [t for t in generated_terms if t.name not in pruned]
@@ -849,7 +862,7 @@ def suggest_fk_relationships(
                 continue
             for fk in table_meta.foreign_keys:
                 source_table = table_meta.name.lower()
-                target_table = fk.get("referred_table", "").lower() if isinstance(fk, dict) else ""
+                target_table = fk.to_table.lower()
 
                 source_term = term_by_name.get(source_table)
                 target_term = term_by_name.get(target_table)

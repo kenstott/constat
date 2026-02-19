@@ -1,6 +1,6 @@
 // Glossary Panel — unified glossary view replacing EntityAccordion
 
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import {
   ChevronRightIcon,
   ChevronDownIcon,
@@ -276,11 +276,15 @@ function EntityAutocomplete({
 
 // Verb picklist — shows existing verbs plus allows new
 const COMMON_VERBS = [
-  'own', 'have', 'contain', 'include', 'hold', 'belong',
-  'receive', 'submit', 'approve', 'reject', 'send', 'create', 'process',
-  'determine', 'affect', 'influence', 'cause', 'drive', 'require',
-  'precede', 'follow', 'trigger', 'initiate', 'complete',
-  'relate', 'associate', 'link', 'connect', 'correspond', 'reference',
+  'owns', 'has', 'contains', 'includes', 'holds', 'belongs_to',
+  'manages', 'supervises', 'reports_to', 'employs', 'oversees', 'leads',
+  'is_a_type_of', 'is_a_peer_of', 'works_in', 'participates_in',
+  'receives', 'submits', 'approves', 'rejects', 'sends', 'creates',
+  'processes', 'produces', 'consumes', 'makes', 'assigns',
+  'determines', 'affects', 'influences', 'causes', 'drives', 'requires',
+  'depends_on', 'enables', 'prevents',
+  'precedes', 'follows', 'triggers', 'initiates', 'completes',
+  'relates_to', 'connects_to', 'references', 'maps_to', 'collaborates_with',
 ]
 
 function VerbAutocomplete({
@@ -737,9 +741,10 @@ function GlossaryItem({
 
   return (
     <div id={`glossary-term-${term.name}`} className="border-b border-gray-100 dark:border-gray-700 last:border-b-0">
-      <button
+      <div
+        role="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center gap-2 py-2 px-1 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+        className="group w-full flex items-center gap-2 py-2 px-1 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 16 + 4}px` }}
       >
         <ChevronRightIcon
@@ -760,17 +765,15 @@ function GlossaryItem({
             {term.semantic_type}
           </span>
         )}
-        <span
-          role="button"
+        <LazyGraphIcon
+          sessionId={sessionId}
+          termName={term.name}
           onClick={(e) => { e.stopPropagation(); setShowGraph(true) }}
-          className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-          title="View relationships graph"
-        >
-          <GraphIcon className="w-3 h-3" />
-        </span>
+        />
         <DomainPromotePicker
           termName={term.name}
           currentDomain={term.domain || null}
+          termStatus={term.status || undefined}
           sessionId={sessionId}
         />
         {isDefined && term.status && (
@@ -781,7 +784,15 @@ function GlossaryItem({
             {term.domain}
           </span>
         )}
-      </button>
+        <span
+          role="button"
+          onClick={(e) => { e.stopPropagation(); handleDelete() }}
+          className="p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-900/30 flex-shrink-0 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+          title="Remove term"
+        >
+          <TrashIcon className="w-3 h-3" />
+        </span>
+      </div>
 
       {isOpen && (
         <div className="pb-2 space-y-1.5" style={{ paddingLeft: `${depth * 16 + 24}px` }}>
@@ -1038,7 +1049,77 @@ function GraphIcon({ className }: { className?: string }) {
   )
 }
 
+// Lazy graph icon — fetches connection status once, hides if unconnected
+const graphStatusCache = new Map<string, boolean | null>() // true=connected, false=unconnected, null=loading
+
+function LazyGraphIcon({
+  sessionId,
+  termName,
+  onClick,
+}: {
+  sessionId: string
+  termName: string
+  onClick: (e: React.MouseEvent) => void
+}) {
+  const cacheKey = `${sessionId}:${termName}`
+  const cached = graphStatusCache.get(cacheKey)
+  const [connected, setConnected] = useState<boolean | null>(cached ?? null)
+
+  useEffect(() => {
+    if (cached !== undefined) { setConnected(cached); return }
+    graphStatusCache.set(cacheKey, null)
+    getGlossaryTerm(sessionId, termName).then((data) => {
+      const has = !!(data.parent || (data.children && data.children.length > 0) || (data.relationships && data.relationships.length > 0))
+      graphStatusCache.set(cacheKey, has)
+      setConnected(has)
+    }).catch(() => {
+      graphStatusCache.set(cacheKey, false)
+      setConnected(false)
+    })
+  }, [sessionId, termName, cacheKey, cached])
+
+  // Still loading or confirmed connected → show icon
+  // Confirmed unconnected → hide
+  if (connected === false) return null
+
+  return (
+    <span
+      role="button"
+      onClick={onClick}
+      className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+      title="View relationships graph"
+    >
+      <GraphIcon className="w-3 h-3" />
+    </span>
+  )
+}
+
 // Domain promote picker — assign/remove a term's domain
+// Promotion ladder: (none) → domain → system (admin only). No downgrade.
+// Term must be approved before promotion is available.
+// Collect all descendant terms (recursive via parent_id)
+function getDescendants(termName: string, allTerms: GlossaryTerm[]): GlossaryTerm[] {
+  // Find IDs that could be this term's parent reference
+  const term = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
+  if (!term) return []
+  const parentIds = new Set<string>()
+  if (term.glossary_id) parentIds.add(term.glossary_id)
+  if (term.entity_id) parentIds.add(term.entity_id)
+
+  const children = allTerms.filter(t => t.parent_id && parentIds.has(t.parent_id))
+  const result: GlossaryTerm[] = []
+  for (const child of children) {
+    result.push(child)
+    result.push(...getDescendants(child.name, allTerms))
+  }
+  return result
+}
+
+// Check if a term is promotable (approved or self-describing)
+function isPromotable(term: GlossaryTerm): boolean {
+  return term.glossary_status === 'self_describing' || term.status === 'approved'
+}
+
 function DomainPromotePicker({
   termName,
   currentDomain,
@@ -1046,66 +1127,117 @@ function DomainPromotePicker({
 }: {
   termName: string
   currentDomain: string | null
+  termStatus?: string | undefined
   sessionId: string
 }) {
   const [open, setOpen] = useState(false)
   const [domains, setDomains] = useState<DomainInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const { updateTerm } = useGlossaryStore()
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
+  const [confirmCascade, setConfirmCascade] = useState<{ target: string; descendants: GlossaryTerm[]; blocked: GlossaryTerm[] } | null>(null)
+  const btnRef = useRef<HTMLSpanElement>(null)
+  const { terms: allTerms, updateTerm } = useGlossaryStore()
+
+  // Already at system level — no further promotion
+  if (currentDomain === 'system') return null
+
+  // Must be approved (or self-describing) before promotion
+  const selfTerm = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
+  if (!isPromotable(selfTerm!)) return null
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation()
     if (open) { setOpen(false); return }
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setMenuPos({ top: rect.bottom + 4, left: rect.right })
+    }
     setOpen(true)
     setLoading(true)
-    const activeDomains = useSessionStore.getState().session?.active_domains || []
-    const { domains: allDomains } = await listDomains()
-    setDomains(
-      activeDomains.length > 0
-        ? allDomains.filter((d) => activeDomains.includes(d.filename))
-        : allDomains
-    )
+    const { useAuthStore } = await import('@/store/authStore')
+    setIsAdmin(useAuthStore.getState().isAdmin)
+    if (!currentDomain) {
+      const activeDomains = useSessionStore.getState().session?.active_domains || []
+      const { domains: allDomains } = await listDomains()
+      setDomains(
+        activeDomains.length > 0
+          ? allDomains.filter((d) => activeDomains.includes(d.filename))
+          : allDomains
+      )
+    }
     setLoading(false)
   }
 
-  const handleSelect = async (filename: string) => {
-    await updateTerm(sessionId, termName, { domain: filename })
-    setOpen(false)
+  const checkAndPromote = (target: string) => {
+    const descendants = getDescendants(termName, allTerms)
+    const blocked = descendants.filter(d => !isPromotable(d))
+    if (blocked.length > 0) {
+      setConfirmCascade({ target, descendants, blocked })
+      return
+    }
+    executeCascade(target, descendants)
   }
 
-  const handleRemove = async () => {
-    await updateTerm(sessionId, termName, { domain: '' })
+  const executeCascade = async (target: string, descendants: GlossaryTerm[]) => {
+    // Promote self
+    await updateTerm(sessionId, termName, { domain: target })
+    // Cascade to promotable descendants not already at this level
+    for (const d of descendants) {
+      if (isPromotable(d) && d.domain !== target) {
+        await updateTerm(sessionId, d.name, { domain: target })
+      }
+    }
     setOpen(false)
+    setConfirmCascade(null)
   }
+
+  const handleSelect = (filename: string) => checkAndPromote(filename)
+  const handlePromoteSystem = () => checkAndPromote('system')
 
   // Close on click outside
   useEffect(() => {
-    if (!open) return
-    const handler = () => setOpen(false)
+    if (!open && !confirmCascade) return
+    const handler = () => { setOpen(false); setConfirmCascade(null) }
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
-  }, [open])
+  }, [open, confirmCascade])
+
+  const iconColor = currentDomain
+    ? 'text-blue-500'
+    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
 
   return (
-    <span className="relative flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+    <span className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
       <span
+        ref={btnRef}
         role="button"
         onClick={handleOpen}
-        className={`p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 ${
-          currentDomain ? 'text-blue-500' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
-        }`}
-        title={currentDomain ? `Domain: ${currentDomain}` : 'Assign to domain'}
+        className={`p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 inline-flex ${iconColor}`}
+        title={currentDomain ? 'Promote to system' : 'Assign to domain'}
       >
         <ArrowUpIcon className="w-3 h-3" />
       </span>
-      {open && (
+      {open && !confirmCascade && (
         <div
-          className="absolute right-0 top-full mt-1 z-50 min-w-[10rem] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg max-h-48 overflow-y-auto"
+          className="fixed z-50 min-w-[10rem] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg max-h-48 overflow-y-auto"
+          style={{ top: menuPos.top, left: menuPos.left, transform: 'translateX(-100%)' }}
           onClick={(e) => e.stopPropagation()}
         >
           {loading ? (
             <div className="text-xs text-gray-400 px-2 py-1">Loading...</div>
-          ) : domains.length === 0 ? (
+          ) : currentDomain ? (
+            isAdmin ? (
+              <button
+                onClick={handlePromoteSystem}
+                className="w-full text-left text-xs px-2 py-1 hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600 dark:text-purple-400"
+              >
+                Promote to system
+              </button>
+            ) : (
+              <div className="text-xs text-gray-400 px-2 py-1">Admin required to promote to system</div>
+            )
+          ) : domains.length === 0 && !isAdmin ? (
             <div className="text-xs text-gray-400 px-2 py-1">No domains available</div>
           ) : (
             <>
@@ -1113,26 +1245,71 @@ function DomainPromotePicker({
                 <button
                   key={d.filename}
                   onClick={() => handleSelect(d.filename)}
-                  className={`w-full text-left text-xs px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 truncate ${
-                    currentDomain === d.filename
-                      ? 'text-blue-600 dark:text-blue-400 font-medium'
-                      : 'text-gray-700 dark:text-gray-300'
-                  }`}
+                  className="w-full text-left text-xs px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 truncate"
                 >
                   {d.name}
                   <span className="text-gray-400 ml-1">({d.filename})</span>
                 </button>
               ))}
-              {currentDomain && (
+              {isAdmin && (
                 <button
-                  onClick={handleRemove}
-                  className="w-full text-left text-xs px-2 py-1 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 border-t border-gray-100 dark:border-gray-700"
+                  onClick={handlePromoteSystem}
+                  className="w-full text-left text-xs px-2 py-1 hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-t border-gray-100 dark:border-gray-700"
                 >
-                  Remove domain
+                  Promote to system
                 </button>
               )}
             </>
           )}
+        </div>
+      )}
+      {confirmCascade && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmCascade(null) }}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-sm w-full mx-4 p-4 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Promote with children
+            </div>
+            {confirmCascade.blocked.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-xs text-amber-600 dark:text-amber-400">
+                  {confirmCascade.blocked.length} descendant{confirmCascade.blocked.length > 1 ? 's' : ''} not yet approved:
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 ml-2 max-h-24 overflow-y-auto">
+                  {confirmCascade.blocked.map(d => (
+                    <div key={d.name}>{d.display_name} <span className="text-gray-400">({d.status || 'draft'})</span></div>
+                  ))}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  These will be skipped. Promote the rest?
+                </div>
+              </div>
+            )}
+            {confirmCascade.descendants.filter(d => isPromotable(d)).length > 0 && (
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                {confirmCascade.descendants.filter(d => isPromotable(d)).length} descendant{confirmCascade.descendants.filter(d => isPromotable(d)).length > 1 ? 's' : ''} will also be promoted.
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setConfirmCascade(null)}
+                className="text-xs px-3 py-1.5 rounded text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => executeCascade(confirmCascade.target, confirmCascade.descendants)}
+                className="text-xs px-3 py-1.5 rounded bg-blue-500 text-white hover:bg-blue-600"
+              >
+                Promote
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </span>
@@ -1245,7 +1422,7 @@ function TermGraphModal({
             if (!nodeMap.has(pid)) {
               nodeMap.set(pid, { id: pid, label: data.parent.display_name, type: 'parent', depth: d + 1 })
             }
-            addEdge(pid, name, 'parent', 'parent')
+            addEdge(pid, name, 'has', 'parent')
             if (d + 1 < depth) queue.push([pid, d + 1])
           }
 
@@ -1254,7 +1431,7 @@ function TermGraphModal({
             if (!nodeMap.has(c.name)) {
               nodeMap.set(c.name, { id: c.name, label: c.display_name, type: 'child', depth: d + 1 })
             }
-            addEdge(name, c.name, 'child', 'child')
+            addEdge(name, c.name, 'has', 'child')
             if (d + 1 < depth) queue.push([c.name, d + 1])
           }
 
@@ -1402,7 +1579,18 @@ function TermGraphModal({
           {loading ? (
             <div className="text-xs text-gray-400 py-8 text-center">Loading graph...</div>
           ) : empty || !graph ? (
-            <div className="text-xs text-gray-400 py-8 text-center">No connected terms</div>
+            <svg width="100%" viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`} className="select-none">
+              <g transform={`translate(${GRAPH_W / 2},${GRAPH_H / 2})`}>
+                <circle r={24} fill="#3b82f6" />
+                <text
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  className="text-[10px] fill-white font-semibold pointer-events-none"
+                >
+                  {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
+                </text>
+              </g>
+            </svg>
           ) : (
             <svg width="100%" viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`} className="select-none">
               <defs>
@@ -1508,6 +1696,8 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     fetchDeprecated,
     generateGlossary,
     generating,
+    generationStage,
+    generationPercent,
     setFilter,
     setViewMode,
   } = useGlossaryStore()
@@ -1583,21 +1773,26 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           }
         </button>
         <div className="flex-1" />
-        <button
-          onClick={() => {
-            if (!generating) setShowConfirm(true)
-          }}
-          disabled={generating}
-          className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded ${
-            generating
-              ? 'text-purple-400 cursor-wait'
-              : 'text-purple-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20'
-          }`}
-          title="Generate definitions, taxonomy, and relationships"
-        >
-          <SparklesIcon className={`w-3.5 h-3.5 ${generating ? 'animate-spin' : ''}`} />
-          {generating ? 'Generating...' : 'Taxonomy'}
-        </button>
+        {generating ? (
+          <div className="flex items-center gap-1.5 text-xs text-purple-500">
+            <SparklesIcon className="w-3.5 h-3.5 animate-spin" />
+            <span className="truncate max-w-[8rem]">{generationStage || 'Starting...'}</span>
+            <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div className="h-full bg-purple-500 rounded-full transition-all"
+                   style={{ width: `${generationPercent}%` }} />
+            </div>
+            <span className="text-[10px] text-gray-400">{generationPercent}%</span>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowConfirm(true)}
+            className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded text-purple-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+            title="Generate definitions, taxonomy, and relationships"
+          >
+            <SparklesIcon className="w-3.5 h-3.5" />
+            Taxonomy
+          </button>
+        )}
       </div>
 
       {/* Search */}

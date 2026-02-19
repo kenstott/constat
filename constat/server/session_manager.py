@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Optional, Any
+from typing import Callable, Optional, Any
 
 from constat.api.impl import ConstatAPIImpl
 from constat.core.config import Config
@@ -605,6 +605,11 @@ class SessionManager:
                     })
                 self._push_event(managed, EventType.GLOSSARY_TERMS_ADDED, {"terms": term_dicts})
 
+            def on_progress(stage: str, pct: int):
+                self._push_event(managed, EventType.GLOSSARY_GENERATION_PROGRESS, {
+                    "stage": stage, "percent": pct,
+                })
+
             active_domains = getattr(managed, "active_domains", []) or []
             terms = generate_glossary(
                 session_id=session_id,
@@ -612,6 +617,7 @@ class SessionManager:
                 router=session.router,
                 active_domains=active_domains,
                 on_batch_complete=on_batch,
+                on_progress=on_progress,
             )
 
             # Reconcile alias entities (rename "platinum" → "platinum tier")
@@ -620,12 +626,14 @@ class SessionManager:
 
             # Embed generated terms as glossary chunks
             if terms:
+                on_progress("Embedding terms", 78)
                 active_domains = getattr(managed, "active_domains", []) or []
                 self._embed_glossary_terms(terms, session_id, vector_store, session, active_domains)
 
-            # SVO relationship extraction
-            self._run_svo_extraction(session_id, managed, vector_store)
+            # Relationship extraction (4 phases: FK, SVO, LLM refinement, glossary inference)
+            self._run_svo_extraction(session_id, managed, vector_store, on_progress=on_progress)
 
+            on_progress("Complete", 100)
             duration_ms = int((time.time() - t0) * 1000)
             self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
                 "session_id": session_id,
@@ -675,12 +683,17 @@ class SessionManager:
         session_id: str,
         managed: "ManagedSession",
         vector_store,
+        on_progress: Callable[[str, int], None] | None = None,
     ) -> None:
-        """Run two-phase relationship extraction after glossary generation.
+        """Run four-phase relationship extraction after glossary generation.
 
+        Phase 0: FK relationships (from schema foreign keys)
         Phase 1: SpaCy SVO (optional — graceful skip if no spaCy)
         Phase 2: LLM refinement (if router available)
+        Phase 3: Glossary-informed LLM inference (cross-cutting relationships)
         """
+        session = managed.session
+
         def on_batch(batch_rels):
             rel_dicts = [
                 {
@@ -697,7 +710,27 @@ class SessionManager:
                 "relationships": rel_dicts,
             })
 
+        # Phase 0: FK relationships
+        if on_progress:
+            on_progress("Extracting FK relationships", 85)
+        try:
+            from constat.discovery.relationship_extractor import store_fk_relationships
+            glossary_terms = vector_store.list_glossary_terms(session_id)
+            if glossary_terms and session.schema_manager:
+                fk_rels = store_fk_relationships(
+                    session_id=session_id,
+                    glossary_terms=glossary_terms,
+                    schema_manager=session.schema_manager,
+                    vector_store=vector_store,
+                    on_batch=on_batch,
+                )
+                logger.info(f"Phase 0 FK relationships for {session_id}: {len(fk_rels)} relationships")
+        except Exception as e:
+            logger.exception(f"Phase 0 FK relationships for {session_id} failed: {e}")
+
         # Phase 1: spaCy SVO (optional)
+        if on_progress:
+            on_progress("Extracting text relationships", 88)
         svo_rels = []
         try:
             from constat.discovery.entity_extractor import get_nlp
@@ -720,7 +753,8 @@ class SessionManager:
             logger.exception(f"Phase 1 SVO extraction for {session_id} failed: {e}")
 
         # Phase 2: LLM refinement (if router available)
-        session = managed.session
+        if on_progress:
+            on_progress("Refining relationships", 92)
         if hasattr(session, 'router') and session.router:
             try:
                 from constat.discovery.relationship_extractor import (
@@ -742,6 +776,22 @@ class SessionManager:
                 logger.exception(f"Phase 2 LLM refinement for {session_id} failed: {e}")
         else:
             logger.debug(f"Session {session_id}: no router available, skipping Phase 2 LLM refinement")
+
+        # Phase 3: Glossary-informed LLM inference
+        if on_progress:
+            on_progress("Inferring relationships", 96)
+        if hasattr(session, 'router') and session.router:
+            try:
+                from constat.discovery.relationship_extractor import infer_glossary_relationships
+                glossary_rels = infer_glossary_relationships(
+                    session_id=session_id,
+                    vector_store=vector_store,
+                    router=session.router,
+                    on_batch=on_batch,
+                )
+                logger.info(f"Phase 3 glossary inference for {session_id}: {len(glossary_rels)} relationships")
+            except Exception as e:
+                logger.exception(f"Phase 3 glossary inference for {session_id} failed: {e}")
 
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:

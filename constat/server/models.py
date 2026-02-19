@@ -96,6 +96,7 @@ class EventType(str, Enum):
     GLOSSARY_REBUILD_START = "glossary_rebuild_start"
     GLOSSARY_TERMS_ADDED = "glossary_terms_added"
     GLOSSARY_REBUILD_COMPLETE = "glossary_rebuild_complete"
+    GLOSSARY_GENERATION_PROGRESS = "glossary_generation_progress"
 
     # Relationship extraction events
     RELATIONSHIPS_EXTRACTED = "relationships_extracted"

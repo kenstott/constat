@@ -441,6 +441,7 @@ export type EventType =
   | 'glossary_rebuild_start'
   | 'glossary_rebuild_complete'
   | 'glossary_terms_added'
+  | 'glossary_generation_progress'
   | 'relationships_extracted'
 
 export interface WSEvent {

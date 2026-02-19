@@ -27,6 +27,8 @@ interface GlossaryState {
   totalSelfDescribing: number
   loading: boolean
   generating: boolean
+  generationStage: string | null
+  generationPercent: number
   refreshKey: number
   error: string | null
 
@@ -46,6 +48,7 @@ interface GlossaryState {
   setFilter: (filter: Partial<GlossaryFilter>) => void
   setViewMode: (mode: 'tree' | 'list') => void
   setGenerating: (generating: boolean) => void
+  setProgress: (stage: string, percent: number) => void
 }
 
 export const useGlossaryStore = create<GlossaryState>((set, get) => ({
@@ -59,6 +62,8 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   totalSelfDescribing: 0,
   loading: false,
   generating: false,
+  generationStage: null,
+  generationPercent: 0,
   refreshKey: 0,
   error: null,
 
@@ -186,7 +191,12 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
 
   setGenerating: (generating) => set((state) => ({
     generating,
+    // Reset progress when generation completes
+    generationStage: generating ? state.generationStage : null,
+    generationPercent: generating ? state.generationPercent : 0,
     // Increment refreshKey when generation completes so ConnectedResources re-fetches
     refreshKey: !generating ? state.refreshKey + 1 : state.refreshKey,
   })),
+
+  setProgress: (stage, percent) => set({ generationStage: stage, generationPercent: percent }),
 }))
