@@ -718,7 +718,7 @@ class SessionManager:
 
         chunks = []
         for term in terms:
-            resources = resolve_physical_resources(term.name, session_id, vector_store, domain_ids=domain_ids, user_id=managed.user_id)
+            resources = resolve_physical_resources(term.name, session_id, vector_store, domain_ids=domain_ids, user_id=term.user_id)
             entity_sources = []
             for r in resources:
                 for s in r.get("sources", []):
