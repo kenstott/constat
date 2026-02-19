@@ -1115,9 +1115,17 @@ function getDescendants(termName: string, allTerms: GlossaryTerm[]): GlossaryTer
   return result
 }
 
-// Check if a term is promotable (approved or self-describing)
-function isPromotable(term: GlossaryTerm): boolean {
-  return term.glossary_status === 'self_describing' || term.status === 'approved'
+// Can this term be directly promoted? Only defined terms that are approved.
+function canPromote(term: GlossaryTerm): boolean {
+  return term.glossary_status === 'defined' && term.status === 'approved'
+}
+
+// Does this term block a parent's cascade promotion?
+// Self-describing (entities) don't block — they're session-level and implicitly fine.
+// Only unapproved defined terms block.
+function blocksCascade(term: GlossaryTerm): boolean {
+  if (term.glossary_status === 'self_describing') return false
+  return term.status !== 'approved'
 }
 
 function DomainPromotePicker({
@@ -1150,9 +1158,9 @@ function DomainPromotePicker({
   // Already at system level — no further promotion
   if (currentDomain === 'system') return null
 
-  // Must be approved (or self-describing) before promotion
+  // Only defined + approved terms can be promoted
   const selfTerm = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
-  if (!selfTerm || !isPromotable(selfTerm)) return null
+  if (!selfTerm || !canPromote(selfTerm)) return null
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -1179,7 +1187,7 @@ function DomainPromotePicker({
 
   const checkAndPromote = (target: string) => {
     const descendants = getDescendants(termName, allTerms)
-    const blocked = descendants.filter(d => !isPromotable(d))
+    const blocked = descendants.filter(d => blocksCascade(d))
     if (blocked.length > 0) {
       setConfirmCascade({ target, descendants, blocked })
       return
@@ -1190,9 +1198,9 @@ function DomainPromotePicker({
   const executeCascade = async (target: string, descendants: GlossaryTerm[]) => {
     // Promote self
     await updateTerm(sessionId, termName, { domain: target })
-    // Cascade to promotable descendants not already at this level
+    // Cascade to defined+approved descendants (skip self-describing and unapproved)
     for (const d of descendants) {
-      if (isPromotable(d) && d.domain !== target) {
+      if (canPromote(d) && d.domain !== target) {
         await updateTerm(sessionId, d.name, { domain: target })
       }
     }
@@ -1290,9 +1298,9 @@ function DomainPromotePicker({
                 </div>
               </div>
             )}
-            {confirmCascade.descendants.filter(d => isPromotable(d)).length > 0 && (
+            {confirmCascade.descendants.filter(d => canPromote(d)).length > 0 && (
               <div className="text-xs text-gray-500 dark:text-gray-400">
-                {confirmCascade.descendants.filter(d => isPromotable(d)).length} descendant{confirmCascade.descendants.filter(d => isPromotable(d)).length > 1 ? 's' : ''} will also be promoted.
+                {confirmCascade.descendants.filter(d => canPromote(d)).length} descendant{confirmCascade.descendants.filter(d => canPromote(d)).length > 1 ? 's' : ''} will also be promoted.
               </div>
             )}
             <div className="flex justify-end gap-2 pt-1">
