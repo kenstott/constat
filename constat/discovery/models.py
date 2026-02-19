@@ -382,6 +382,7 @@ class GlossaryTerm:
     definition: str
     domain: Optional[str] = None
     parent_id: Optional[str] = None
+    parent_verb: str = "has"
     aliases: list[str] = field(default_factory=list)
     semantic_type: Optional[str] = None
     cardinality: str = "many"

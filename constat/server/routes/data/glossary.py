@@ -80,6 +80,7 @@ async def list_glossary(
             definition=row.get("definition"),
             domain=row.get("domain"),
             parent_id=row.get("parent_id"),
+            parent_verb=row.get("parent_verb") or "has",
             aliases=row.get("aliases") or [],
             semantic_type=row.get("semantic_type"),
             cardinality=row.get("cardinality") or "many",
@@ -169,7 +170,7 @@ async def get_glossary_term(
         candidate_ids.append(entity.id)
     if candidate_ids:
         child_terms = vs.get_child_terms(candidate_ids[0], *candidate_ids[1:])
-        children = [{"name": c.name, "display_name": c.display_name} for c in child_terms]
+        children = [{"name": c.name, "display_name": c.display_name, "parent_verb": c.parent_verb} for c in child_terms]
 
     # Resolve SVO relationships (keyed by name)
     rels = vs.get_relationships_for_entity(lookup_name, session_id)
@@ -192,6 +193,7 @@ async def get_glossary_term(
             "definition": term.definition,
             "domain": term.domain,
             "parent_id": term.parent_id,
+            "parent_verb": term.parent_verb,
             "parent": parent_info,
             "aliases": term.aliases,
             "semantic_type": term.semantic_type,
@@ -423,6 +425,8 @@ async def update_definition(
         updates["aliases"] = request.aliases
     if request.parent_id is not None:
         updates["parent_id"] = request.parent_id
+    if request.parent_verb is not None:
+        updates["parent_verb"] = request.parent_verb
     if request.status is not None:
         updates["status"] = request.status
     if request.domain is not None:

@@ -18,6 +18,21 @@ from constat.session._types import STEP_SYSTEM_PROMPT, STEP_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "must", "can", "could", "of", "in", "to",
+    "for", "with", "on", "at", "by", "from", "as", "into", "about",
+    "between", "through", "during", "before", "after", "above", "below",
+    "and", "but", "or", "nor", "not", "so", "yet", "both", "either",
+    "neither", "each", "every", "all", "any", "few", "more", "most",
+    "other", "some", "such", "no", "only", "own", "same", "than", "too",
+    "very", "just", "because", "if", "when", "where", "how", "what",
+    "which", "who", "whom", "this", "that", "these", "those", "i", "me",
+    "my", "we", "our", "you", "your", "he", "him", "his", "she", "her",
+    "it", "its", "they", "them", "their", "much", "many",
+})
+
 
 # noinspection PyUnresolvedReferences
 class PromptsMixin:
@@ -127,13 +142,18 @@ class PromptsMixin:
                     artifact_lines.append(f"  - {a['name']} ({a.get('type', 'unknown')})")
                 published_artifacts_text = "\n".join(artifact_lines)
 
+        glossary_context = self._build_glossary_context(step.goal)
+        domain_ctx = self._get_system_prompt(step_goal=step.goal) or "No additional context."
+        if glossary_context:
+            domain_ctx += "\n" + glossary_context
+
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=STEP_SYSTEM_PROMPT,
             injected_sections=injected_sections,
             skill_functions=skill_functions_text,
             schema_overview=ctx["schema_overview"],
             api_overview=ctx["api_overview"],
-            domain_context=self._get_system_prompt(step_goal=step.goal) or "No additional context.",
+            domain_context=domain_ctx,
             user_facts=ctx["user_facts"],
             learnings=learnings_text,
             datastore_tables=datastore_info,
@@ -407,6 +427,81 @@ class PromptsMixin:
             "doc_overview": doc_overview,
             "user_facts": user_facts,
         }
+
+    def _build_glossary_context(self, query: str) -> str:
+        """Build glossary context by matching query n-grams against glossary terms.
+
+        Extracts 1–3 word candidates from the query, looks up each against
+        glossary term names/aliases, and formats definitions + physical
+        resource mappings for matched terms.
+
+        Returns:
+            Formatted glossary context string, or "" if no matches.
+        """
+        if not self.doc_tools or not hasattr(self.doc_tools, '_vector_store') or not self.session_id:
+            return ""
+
+        vs = self.doc_tools._vector_store
+
+        # Build n-gram candidates (1–3 words)
+        words = query.lower().split()
+        candidates: list[str] = []
+        for n in range(3, 0, -1):
+            for i in range(len(words) - n + 1):
+                gram = " ".join(words[i:i + n])
+                if n == 1 and gram in _STOP_WORDS:
+                    continue
+                candidates.append(gram)
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_candidates: list[str] = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                unique_candidates.append(c)
+
+        # Look up each candidate
+        matched_term_ids: set[str] = set()
+        sections: list[str] = []
+
+        for candidate in unique_candidates:
+            term = vs.get_glossary_term_by_name_or_alias(candidate, self.session_id)
+            if not term or term.id in matched_term_ids:
+                continue
+            matched_term_ids.add(term.id)
+
+            lines = [f"### {term.display_name or term.name}"]
+            if term.definition:
+                lines.append(f"Definition: {term.definition}")
+            if term.aliases:
+                lines.append(f"Aliases: {', '.join(term.aliases)}")
+
+            # Physical resource mappings
+            from constat.discovery.glossary_generator import resolve_physical_resources
+            resources = resolve_physical_resources(term.name, self.session_id, vs)
+            if resources:
+                for res in resources:
+                    src_parts = []
+                    for s in res.get("sources", [])[:3]:
+                        src_parts.append(s.get("document_name", ""))
+                    lines.append(f"Physical: {res.get('entity_name', '')} -> {', '.join(src_parts)}")
+
+            # Top 3 SVO relationships
+            rels = vs.get_relationships_for_entity(term.name, self.session_id)
+            if rels:
+                rel_strs = [f"{r['subject']} {r['verb']} {r['object']}" for r in rels[:3]]
+                lines.append(f"Relationships: {'; '.join(rel_strs)}")
+
+            sections.append("\n".join(lines))
+
+            if len(sections) >= 5:
+                break
+
+        if not sections:
+            return ""
+
+        return "\n\n## Glossary Context (domain term definitions and mappings)\n\n" + "\n\n".join(sections)
 
     def _build_available_sources_description(self) -> str:
         """Build a concise description of available data sources for Tier 2 assessment.

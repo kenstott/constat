@@ -45,41 +45,23 @@ _NON_VERBS = frozenset({
     "service", "resource", "record", "entry", "item", "data",
 })
 
-# Preferred verb categories — verbs here get confidence 1.0
-# All verbs use third-person singular present tense for natural reading:
+# Canonical verb vocabulary — small, constrained set for graph consistency.
+# All verbs use third-person singular present tense:
 #   "Manager" -[manages]-> "Employee"
 PREFERRED_VERBS: dict[str, set[str]] = {
-    "ownership": {
-        "owns", "has", "contains", "includes", "holds", "belongs_to",
-        "comprises", "consists_of", "possesses",
-    },
-    "hierarchy": {
-        "manages", "supervises", "reports_to", "employs", "oversees",
-        "leads", "delegates_to", "is_a_type_of", "is_a_subtype_of",
-        "inherits_from", "extends", "specializes",
-    },
-    "action": {
-        "receives", "submits", "approves", "rejects", "sends", "creates",
-        "processes", "produces", "consumes", "generates", "executes",
-        "makes", "builds", "delivers", "assigns", "allocates",
-    },
-    "causation": {
-        "determines", "affects", "influences", "causes", "drives", "requires",
-        "enables", "prevents", "constrains", "depends_on",
-    },
-    "temporal": {
-        "precedes", "follows", "triggers", "initiates", "completes",
-        "starts", "ends", "schedules", "expires",
-    },
-    "association": {
-        "relates_to", "associates_with", "links_to", "connects_to",
-        "corresponds_to", "references", "is_a_peer_of", "collaborates_with",
-        "works_in", "belongs_to", "participates_in", "maps_to",
-    },
+    "ownership": {"contains", "has", "belongs_to"},
+    "hierarchy": {"manages", "reports_to", "is_type_of"},
+    "action": {"creates", "processes", "approves", "places"},
+    "flow": {"sends", "receives", "transfers"},
+    "causation": {"drives", "requires", "enables"},
+    "temporal": {"precedes", "follows", "triggers"},
+    "association": {"references", "works_in", "participates_in", "uses"},
 }
 ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
 
 VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
+
+_CANONICAL_VERB_LIST = ", ".join(sorted(ALL_PREFERRED))
 
 
 def _to_third_person(verb: str) -> str:
@@ -106,7 +88,7 @@ def _to_third_person(verb: str) -> str:
         # Fallback: simple rules if lemminflect unavailable
         return verb + "s" if not verb.endswith("s") else verb
 
-RELATIONSHIP_SYSTEM_PROMPT = """You are extracting relationships between entity pairs from document excerpts.
+RELATIONSHIP_SYSTEM_PROMPT = f"""You are extracting relationships between entity pairs from document excerpts.
 
 For each pair of entities, you receive:
 - The two entity names and their types
@@ -117,21 +99,25 @@ Return a JSON array of relationships found. For each relationship:
 - subject: must be exactly one of the two entity names provided
 - object: must be the other entity name
 - verb: third-person singular present tense (e.g., "manages", "contains", "belongs_to")
-- verb_category: one of: ownership, hierarchy, action, causation, temporal, association, other
+- verb_category: one of: ownership, hierarchy, action, flow, causation, temporal, association, other
 - evidence: brief quote or paraphrase from the excerpt supporting this relationship
 - confidence: high, medium, or low
 
+VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
+If none of these accurately describes the relationship, you may use a different third-person singular verb, but strongly prefer the canonical list.
+
+DIRECTION RULE — The subject performs the action on the object:
+- CORRECT: "Customer places Order" (Customer is the actor)
+- WRONG: "Order receives Customer" (Order is not the actor)
+
 Examples of good relationships:
-- {"subject": "Manager", "verb": "manages", "object": "Employee", "verb_category": "hierarchy"}
-- {"subject": "Department", "verb": "contains", "object": "Team", "verb_category": "ownership"}
-- {"subject": "Employee", "verb": "works_in", "object": "Department", "verb_category": "association"}
-- {"subject": "Employee", "verb": "reports_to", "object": "Manager", "verb_category": "hierarchy"}
-- {"subject": "Order", "verb": "includes", "object": "LineItem", "verb_category": "ownership"}
-- {"subject": "Service", "verb": "sends", "object": "Notification", "verb_category": "action"}
-- {"subject": "Customer", "verb": "owns", "object": "Account", "verb_category": "ownership"}
-- {"subject": "Invoice", "verb": "triggers", "object": "Payment", "verb_category": "temporal"}
-- {"subject": "Gold", "verb": "is_a_type_of", "object": "CustomerTier", "verb_category": "hierarchy"}
-- {"subject": "Analyst", "verb": "is_a_peer_of", "object": "Developer", "verb_category": "association"}
+- {{"subject": "Manager", "verb": "manages", "object": "Employee", "verb_category": "hierarchy"}}
+- {{"subject": "Department", "verb": "contains", "object": "Team", "verb_category": "ownership"}}
+- {{"subject": "Employee", "verb": "works_in", "object": "Department", "verb_category": "association"}}
+- {{"subject": "Employee", "verb": "reports_to", "object": "Manager", "verb_category": "hierarchy"}}
+- {{"subject": "Order", "verb": "contains", "object": "LineItem", "verb_category": "ownership"}}
+- {{"subject": "Customer", "verb": "places", "object": "Order", "verb_category": "action"}}
+- {{"subject": "Invoice", "verb": "triggers", "object": "Payment", "verb_category": "temporal"}}
 
 Rules:
 - Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
@@ -139,11 +125,11 @@ Rules:
 - You may infer implicit relationships even if no sentence states them directly
   (e.g., "employee" works_in "department" can be inferred from organizational context)
 - Use third-person singular present tense (e.g., "manages" not "manage", "contains" not "contain")
-- Use underscores for compound verbs (e.g., "belongs_to", "reports_to", "is_a_type_of")
+- Use underscores for compound verbs (e.g., "belongs_to", "reports_to", "is_type_of")
 - subject and object must be exactly the entity names provided (no modifications)
 
 Respond ONLY with a JSON array:
-[{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}]
+[{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
 
 Return [] if no relationships can be determined."""
 
@@ -705,12 +691,19 @@ def store_fk_relationships(
 # Phase 3: Glossary-informed LLM relationship inference
 # ---------------------------------------------------------------------------
 
-GLOSSARY_RELATIONSHIP_PROMPT = """You are inferring cross-cutting relationships between business glossary terms.
+GLOSSARY_RELATIONSHIP_PROMPT = f"""You are inferring cross-cutting relationships between business glossary terms.
 
 For each group of terms below, you receive:
 - Term name, definition, semantic type, and parent (if any)
 
 Infer **cross-cutting** relationships between terms based on their definitions and business semantics.
+
+VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
+If none of these accurately describes the relationship, you may use a different third-person singular verb, but strongly prefer the canonical list.
+
+DIRECTION RULE — The subject performs the action on the object:
+- CORRECT: "Customer places Order" (Customer is the actor)
+- WRONG: "Order receives Customer" (Order is not the actor)
 
 IMPORTANT RULES:
 - Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
@@ -721,16 +714,16 @@ IMPORTANT RULES:
 - Only return relationships where you have reasonable confidence from the definitions
 
 Examples of good cross-cutting relationships:
-- {"subject": "Employee", "verb": "works_in", "object": "Department", "verb_category": "association"}
-- {"subject": "Invoice", "verb": "triggers", "object": "Payment", "verb_category": "temporal"}
-- {"subject": "Customer", "verb": "places", "object": "Order", "verb_category": "action"}
-- {"subject": "Manager", "verb": "approves", "object": "Expense", "verb_category": "action"}
-- {"subject": "Policy", "verb": "constrains", "object": "Claim", "verb_category": "causation"}
+- {{"subject": "Employee", "verb": "works_in", "object": "Department", "verb_category": "association"}}
+- {{"subject": "Invoice", "verb": "triggers", "object": "Payment", "verb_category": "temporal"}}
+- {{"subject": "Customer", "verb": "places", "object": "Order", "verb_category": "action"}}
+- {{"subject": "Manager", "verb": "approves", "object": "Expense", "verb_category": "action"}}
+- {{"subject": "Policy", "verb": "requires", "object": "Claim", "verb_category": "causation"}}
 
-verb_category must be one of: ownership, hierarchy, action, causation, temporal, association, other
+verb_category must be one of: ownership, hierarchy, action, flow, causation, temporal, association, other
 
 Respond ONLY with a JSON array:
-[{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}]
+[{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
 
 Return [] if no cross-cutting relationships can be inferred."""
 
@@ -908,6 +901,21 @@ def deduplicate_relationships(session_id: str, vector_store) -> int:
     Returns:
         Number of relationships deleted.
     """
+    # Build set of parent-child pairs from glossary taxonomy.
+    # Any SVO relationship duplicating a taxonomy edge is redundant.
+    parent_child_pairs: set[tuple[str, str]] = set()
+    pc_rows = vector_store._conn.execute(
+        """
+        SELECT child.name, parent.name
+        FROM glossary_terms child
+        JOIN glossary_terms parent ON child.parent_id = parent.id
+        WHERE child.session_id = ?
+        """,
+        [session_id],
+    ).fetchall()
+    for child_name, parent_name in pc_rows:
+        parent_child_pairs.add(tuple(sorted([child_name.lower(), parent_name.lower()])))
+
     rows = vector_store._conn.execute(
         """
         SELECT id, subject_name, verb, object_name, confidence
@@ -924,6 +932,10 @@ def deduplicate_relationships(session_id: str, vector_store) -> int:
 
     for rel_id, subj, verb, obj, confidence in rows:
         pair_key = tuple(sorted([subj.lower(), obj.lower()]))
+        # Remove SVO relationships that duplicate a parent-child taxonomy edge
+        if pair_key in parent_child_pairs:
+            duplicates.append(rel_id)
+            continue
         if pair_key not in best_by_pair:
             best_by_pair[pair_key] = (rel_id, confidence)
         else:

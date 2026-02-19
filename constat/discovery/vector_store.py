@@ -340,6 +340,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 definition TEXT NOT NULL,
                 domain VARCHAR,
                 parent_id VARCHAR,
+                parent_verb VARCHAR DEFAULT 'has',
                 aliases TEXT,
                 semantic_type VARCHAR,
                 cardinality VARCHAR DEFAULT 'many',
@@ -385,6 +386,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.domain,
                 g.definition,
                 g.parent_id,
+                g.parent_verb,
                 g.aliases,
                 g.cardinality,
                 g.plural,
@@ -1900,7 +1902,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Convert a database row to a GlossaryTerm."""
         import json
         (term_id, name, display_name, definition, domain, parent_id,
-         aliases_json, semantic_type, cardinality, plural, list_of,
+         parent_verb, aliases_json, semantic_type, cardinality, plural, list_of,
          tags_json, owner, status, provenance, session_id,
          created_at, updated_at) = row
         aliases = json.loads(aliases_json) if aliases_json else []
@@ -1912,6 +1914,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             definition=definition,
             domain=domain,
             parent_id=parent_id,
+            parent_verb=parent_verb or "has",
             aliases=aliases,
             semantic_type=semantic_type,
             cardinality=cardinality or "many",
@@ -1927,7 +1930,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         )
 
     _GLOSSARY_COLUMNS = (
-        "id, name, display_name, definition, domain, parent_id, "
+        "id, name, display_name, definition, domain, parent_id, parent_verb, "
         "aliases, semantic_type, cardinality, plural, list_of, "
         "tags, owner, status, provenance, session_id, created_at, updated_at"
     )
@@ -1938,14 +1941,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._conn.execute(
             """
             INSERT INTO glossary_terms
-            (id, name, display_name, definition, domain, parent_id,
+            (id, name, display_name, definition, domain, parent_id, parent_verb,
              aliases, semantic_type, cardinality, plural, list_of,
              tags, owner, status, provenance, session_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 term.id, term.name, term.display_name, term.definition,
-                term.domain, term.parent_id,
+                term.domain, term.parent_id, term.parent_verb,
                 json.dumps(term.aliases), term.semantic_type,
                 term.cardinality, term.plural, term.list_of,
                 json.dumps(term.tags), term.owner,
@@ -1967,7 +1970,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         import json
         allowed = {
-            "definition", "display_name", "domain", "parent_id",
+            "definition", "display_name", "domain", "parent_id", "parent_verb",
             "aliases", "semantic_type", "cardinality", "plural",
             "list_of", "tags", "owner", "status", "provenance",
         }
@@ -2104,6 +2107,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.domain,
                 g.definition,
                 g.parent_id,
+                g.parent_verb,
                 g.aliases,
                 g.cardinality,
                 g.plural,
@@ -2149,6 +2153,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.domain,
                 g.definition,
                 g.parent_id,
+                g.parent_verb,
                 g.aliases,
                 g.cardinality,
                 g.plural,
@@ -2173,7 +2178,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Collect all aliases from defined terms to suppress duplicate entities
         alias_set: set[str] = set()
         for row in rows:
-            aliases_json = row[10]
+            aliases_json = row[11]
             glossary_id = row[6]
             if glossary_id and aliases_json:
                 for a in json.loads(aliases_json):
@@ -2183,8 +2188,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         for row in rows:
             (entity_id, name, display_name, semantic_type, ner_type,
              sess_id, glossary_id, domain, definition, parent_id,
-             aliases_json, cardinality, plural, list_of, status,
-             provenance, glossary_status) = row
+             parent_verb, aliases_json, cardinality, plural, list_of,
+             status, provenance, glossary_status) = row
             aliases = json.loads(aliases_json) if aliases_json else []
 
             # Suppress self-describing entities whose name is an alias of a defined term
@@ -2202,6 +2207,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "domain": domain,
                 "definition": definition,
                 "parent_id": parent_id,
+                "parent_verb": parent_verb or "has",
                 "aliases": aliases,
                 "cardinality": cardinality,
                 "plural": plural,

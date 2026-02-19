@@ -129,6 +129,48 @@ class MetadataMixin:
                 if a.get("similarity", 0) >= min_similarity
             ]
 
+        # Supplement with glossary physical resource mappings
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.session_id:
+            try:
+                vs = self.doc_tools._vector_store
+                terms = vs.list_glossary_terms(self.session_id)
+                query_lower = query.lower()
+                existing_table_names = {t["name"] for t in results["tables"]}
+
+                from constat.discovery.glossary_generator import resolve_physical_resources
+
+                for gt in terms:
+                    # Check if term name or alias appears in query
+                    matched = gt.name.lower() in query_lower
+                    if not matched:
+                        for alias in (gt.aliases or []):
+                            if len(alias) > 3 and alias.lower() in query_lower:
+                                matched = True
+                                break
+                    if not matched:
+                        continue
+
+                    resources = resolve_physical_resources(gt.name, self.session_id, vs)
+                    for res in resources:
+                        for src in res.get("sources", []):
+                            doc_name = src.get("document_name", "")
+                            # doc_name for schema sources looks like "db.table"
+                            if doc_name and doc_name not in existing_table_names:
+                                # Check if this is a real table in our schema
+                                table_meta = self.schema_manager.metadata_cache.get(doc_name)
+                                if table_meta:
+                                    results["tables"].append({
+                                        "source_type": "table",
+                                        "name": doc_name,
+                                        "database": table_meta.database,
+                                        "summary": table_meta.summary or "",
+                                        "relevance": 0.7,
+                                        "documentation": [],
+                                    })
+                                    existing_table_names.add(doc_name)
+            except Exception as e:
+                logger.debug(f"Glossary resource supplement failed: {e}")
+
         return results
 
     def _find_entity(self, name: str, limit: int = 3) -> dict:

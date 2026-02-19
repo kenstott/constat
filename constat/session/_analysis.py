@@ -197,6 +197,10 @@ class AnalysisMixin:
         if data_sources:
             source_context = "\nAvailable data sources:\n" + "\n".join(f"- {s}" for s in data_sources)
 
+        glossary_context = self._build_glossary_context(problem)
+        if glossary_context:
+            source_context += glossary_context
+
         # Build follow-up context if this is a continuation of a previous analysis
         followup_context = ""
         if previous_problem:
@@ -311,6 +315,17 @@ CRITICAL INTENT RULES (apply in order):
                             for word in doc.description.lower().split():
                                 if len(word) > 4 and word.isalpha():
                                     source_keywords.append(word)
+
+                if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.session_id:
+                    try:
+                        terms = self.doc_tools._vector_store.list_glossary_terms(self.session_id)
+                        for gt in terms:
+                            source_keywords.append(gt.name.lower())
+                            for alias in (gt.aliases or []):
+                                if len(alias) > 3:
+                                    source_keywords.append(alias.lower())
+                    except Exception:
+                        pass
 
                 # Check for matches
                 for keyword in source_keywords:
@@ -490,6 +505,10 @@ CRITICAL INTENT RULES (apply in order):
                 table_lines.append(f"- `{t['name']}`: {t.get('row_count', '?')} rows (step {t.get('step_number', '?')})")
             session_tables_text = "\n".join(table_lines)
 
+        glossary_context = self._build_glossary_context(problem)
+        if glossary_context:
+            ctx["schema_overview"] += glossary_context
+
         prompt = load_prompt("detect_ambiguity.md").format(
             problem=problem,
             schema_overview=ctx["schema_overview"],
@@ -635,9 +654,23 @@ CRITICAL INTENT RULES (apply in order):
         """
         Answer a general knowledge question directly using LLM.
         """
+        # Detect if the question is about the system itself
+        _self_keywords = ("you", "vera", "constat", "your", "this system", "this tool")
+        is_about_system = any(kw in problem.lower() for kw in _self_keywords)
+
+        if is_about_system:
+            capabilities_doc = load_prompt("system_capabilities.md")
+            system_msg = (
+                "You are Vera, an AI data analyst powered by Constat. "
+                "Answer questions about your capabilities accurately using the reference below.\n\n"
+                f"## System Capabilities Reference\n{capabilities_doc}"
+            )
+        else:
+            system_msg = "You are a helpful assistant. Answer the question directly and concisely."
+
         result = self.router.execute(
             task_type=TaskType.GENERAL,
-            system="You are a helpful assistant. Answer the question directly and concisely.",
+            system=system_msg,
             user_message=problem,
         )
 
@@ -798,6 +831,7 @@ Examples:
 
         ctx = self._build_source_context(include_user_facts=False)
         domain_context = self._get_system_prompt()
+        capabilities_doc = load_prompt("system_capabilities.md")
 
         # Get user role if known
         user_role = None
@@ -810,30 +844,28 @@ Examples:
 
         role_context = f"\nThe user's role is: {user_role}" if user_role else ""
 
-        prompt = f"""The user is asking about your capabilities. Answer based on the available data.
+        prompt = f"""The user is asking about your capabilities. Answer based on the system capabilities reference and the available data.
 
 User question: {problem}{role_context}
 
-Available databases and tables:
+## System Capabilities Reference
+{capabilities_doc}
+
+## Available Data Sources
 {ctx["schema_overview"]}
 {ctx["api_overview"]}
 {ctx["doc_overview"]}
 
-Domain context:
+## Domain Context
 {domain_context}
 
-Provide a helpful summary tailored to the user's role (if known):
-1. What data sources are relevant to their role (databases, APIs, and reference documents)
-2. What types of analyses would be most valuable
-
-Then provide 3-6 example questions the user could ask, each on its own line in quotes like:
-"What is the revenue by region?"
+Answer the user's specific question using the capabilities reference above. If they ask about a specific feature (proof, glossary, roles, skills, etc.), explain that feature accurately. If they ask a general "what can you do" question, provide a helpful summary tailored to their role (if known) with 3-6 example questions in quotes.
 
 Keep it concise and actionable."""
 
         result = self.router.execute(
             task_type=TaskType.SUMMARIZATION,
-            system="You are a helpful assistant explaining data analysis capabilities.",
+            system="You are Vera, an AI data analyst powered by Constat. Answer questions about your capabilities accurately using the provided reference document.",
             user_message=prompt,
         )
 

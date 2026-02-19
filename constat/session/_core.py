@@ -394,6 +394,14 @@ class CoreMixin:
         except Exception as e:
             logger.debug(f"Failed to sync user facts to planner: {e}")
 
+    def _sync_glossary_to_planner(self, query: str) -> None:
+        """Build glossary context for the query and pass it to the planner."""
+        try:
+            context = self._build_glossary_context(query)
+            self.planner.set_glossary_context(context)
+        except Exception as e:
+            logger.debug(f"Failed to sync glossary to planner: {e}")
+
     def _sync_available_roles_to_planner(self) -> None:
         """Sync available roles to the planner for role-based step assignment."""
         try:

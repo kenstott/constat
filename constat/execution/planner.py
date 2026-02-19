@@ -107,6 +107,7 @@ class Planner:
         self.allowed_documents = allowed_documents
         self._available_roles: list[dict] = []  # For role-based step assignment
         self._skill_manager = None  # Set via set_skill_manager()
+        self._glossary_context: str = ""  # Set via set_glossary_context()
 
         # Support both direct provider (backward compat) and router (new)
         if isinstance(router_or_provider, TaskRouter):
@@ -165,6 +166,14 @@ class Planner:
             roles: List of role dicts with 'name' and 'description' keys
         """
         self._available_roles = roles or []
+
+    def set_glossary_context(self, context: str) -> None:
+        """Set glossary context for inclusion in planning prompts.
+
+        Args:
+            context: Formatted glossary context string
+        """
+        self._glossary_context = context or ""
 
     def set_skill_manager(self, skill_manager) -> None:
         """Set skill manager for injecting active skills into planning prompts."""
@@ -286,13 +295,17 @@ class Planner:
                 active_skills_text = "## Available Skills\n" + "\n".join(parts)
                 logger.info(f"[PLANNER] Listing {len(active_skill_objects)} available skills")
 
+        domain_text = self.config.system_prompt or "No additional domain context provided."
+        if self._glossary_context:
+            domain_text += "\n" + self._glossary_context
+
         return PLANNER_PROMPT_TEMPLATE.format(
             system_prompt=PLANNER_SYSTEM_PROMPT,
             injected_sections=injected_sections,
             schema_overview=self.schema_manager.get_brief_summary(self.allowed_databases),
             api_overview=api_overview,
             doc_overview=doc_overview,
-            domain_context=self.config.system_prompt or "No additional domain context provided.",
+            domain_context=domain_text,
             active_skills=active_skills_text,
             user_facts=user_facts_text,
             learnings=learnings_text,

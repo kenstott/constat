@@ -58,3 +58,53 @@ patterns:
   - "who built you"
   - "tell me about yourself"
   - "introduce yourself"
+
+  # Feature-specific: proof mode
+  - "what does proof"
+  - "what is proof"
+  - "how does proof"
+  - "prove mode"
+  - "audit trail"
+  - "auditable"
+
+  # Feature-specific: glossary & taxonomy
+  - "glossary"
+  - "taxonomy"
+  - "how do you define"
+  - "entity grounding"
+
+  # Feature-specific: clarification & uncertainty
+  - "do you ask clarif"
+  - "do you ask question"
+  - "does vera ask"
+  - "assumptions do you"
+  - "handle uncertainty"
+  - "handle ambiguity"
+
+  # Feature-specific: skills & roles
+  - "what are skills"
+  - "what is a skill"
+  - "what are roles"
+  - "what is a role"
+
+  # Feature-specific: learnings & corrections
+  - "do you learn"
+  - "does vera learn"
+  - "how do you learn"
+  - "can i correct"
+  - "can you learn"
+
+  # Feature-specific: relationships
+  - "what are relationship"
+  - "how do relationship"
+  - "entity relationship"
+
+  # Generic self-referential (careful: must not match data requests)
+  - "does vera "
+  - "does constat "
+  - "your feature"
+
+  # Feature questions
+  - "how do you use the"
+  - "how do you handle"
+  - "what features"

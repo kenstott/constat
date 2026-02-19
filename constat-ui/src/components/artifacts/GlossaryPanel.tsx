@@ -276,15 +276,13 @@ function EntityAutocomplete({
 
 // Verb picklist — shows existing verbs plus allows new
 const COMMON_VERBS = [
-  'owns', 'has', 'contains', 'includes', 'holds', 'belongs_to',
-  'manages', 'supervises', 'reports_to', 'employs', 'oversees', 'leads',
-  'is_a_type_of', 'is_a_peer_of', 'works_in', 'participates_in',
-  'receives', 'submits', 'approves', 'rejects', 'sends', 'creates',
-  'processes', 'produces', 'consumes', 'makes', 'assigns',
-  'determines', 'affects', 'influences', 'causes', 'drives', 'requires',
-  'depends_on', 'enables', 'prevents',
-  'precedes', 'follows', 'triggers', 'initiates', 'completes',
-  'relates_to', 'connects_to', 'references', 'maps_to', 'collaborates_with',
+  'contains', 'has', 'belongs_to',
+  'manages', 'reports_to', 'is_type_of',
+  'creates', 'processes', 'approves', 'places',
+  'sends', 'receives', 'transfers',
+  'drives', 'requires', 'enables',
+  'precedes', 'follows', 'triggers',
+  'references', 'works_in', 'participates_in', 'uses',
 ]
 
 function VerbAutocomplete({
@@ -1430,7 +1428,7 @@ function TermGraphModal({
             if (!nodeMap.has(pid)) {
               nodeMap.set(pid, { id: pid, label: data.parent.display_name, type: 'parent', depth: d + 1 })
             }
-            addEdge(pid, name, 'has', 'parent')
+            addEdge(pid, name, data.parent_verb || 'has', 'parent')
             if (d + 1 < depth) queue.push([pid, d + 1])
           }
 
@@ -1439,7 +1437,7 @@ function TermGraphModal({
             if (!nodeMap.has(c.name)) {
               nodeMap.set(c.name, { id: c.name, label: c.display_name, type: 'child', depth: d + 1 })
             }
-            addEdge(name, c.name, 'has', 'child')
+            addEdge(name, c.name, c.parent_verb || 'has', 'child')
             if (d + 1 < depth) queue.push([c.name, d + 1])
           }
 

@@ -94,6 +94,7 @@ class SolveMixin:
             # Speculative planning - may be discarded if intent doesn't need it
             try:
                 self._sync_user_facts_to_planner()
+                self._sync_glossary_to_planner(problem)
                 self._sync_available_roles_to_planner()
                 return self.planner.plan(problem)
             except Exception as exc:
@@ -297,8 +298,9 @@ class SolveMixin:
                     data={"message": "Analyzing data sources and creating plan..."}
                 ))
 
-                # Sync user facts and roles to planner before generating plan
+                # Sync user facts, glossary, and roles to planner before generating plan
                 self._sync_user_facts_to_planner()
+                self._sync_glossary_to_planner(current_problem)
                 self._sync_available_roles_to_planner()
 
                 # Generate plan

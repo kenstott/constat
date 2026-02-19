@@ -338,8 +338,9 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             data={"message": "Planning follow-up analysis..."}
         ))
 
-        # Sync user facts and roles to planner before generating plan
+        # Sync user facts, glossary, and roles to planner before generating plan
         self._sync_user_facts_to_planner()
+        self._sync_glossary_to_planner(question)
         self._sync_available_roles_to_planner()
 
         # Generate plan for follow-up
@@ -436,6 +437,7 @@ User feedback: {suggestion_text}
                     ))
 
                     self._sync_user_facts_to_planner()
+                    self._sync_glossary_to_planner(question)
                     self._sync_available_roles_to_planner()
                     planner_response = self.planner.plan(context_prompt_with_feedback)
                     follow_up_plan = planner_response.plan
@@ -780,6 +782,12 @@ If you don't have enough information, say so rather than guessing."""
         config_prompt = self._get_system_prompt()
         if config_prompt:
             system_prompt = f"{system_prompt}\n\n{config_prompt}"
+
+        # Inject system capabilities doc if question is about the system
+        _self_keywords = ("you", "vera", "constat", "your", "this system", "this tool")
+        if any(kw in problem.lower() for kw in _self_keywords):
+            capabilities_doc = load_prompt("system_capabilities.md")
+            doc_context = f"## System Capabilities Reference\n{capabilities_doc}\n\n{doc_context}"
 
         # Build user message with document context
         if doc_context:
