@@ -187,6 +187,7 @@ def generate_glossary(
     on_batch_complete: Callable[[list[GlossaryTerm]], None] | None = None,
     on_progress: Callable[[str, int], None] | None = None,
     user_id: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> list[GlossaryTerm]:
     """Generate glossary definitions for entities that need them.
 
@@ -274,6 +275,10 @@ def generate_glossary(
                 claimed_aliases.add(a.strip().lower())
 
     for batch_idx, batch in enumerate(batches):
+        if cancelled and cancelled():
+            logger.info(f"Glossary generation cancelled at batch {batch_idx}/{len(batches)}")
+            break
+
         if on_progress:
             pct = 5 + int((batch_idx + 1) / len(batches) * 65)
             on_progress("Generating definitions", pct)

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # noinspection PyUnresolvedReferences
 class SolveMixin:
 
-    def solve(self, problem: str) -> dict:
+    def solve(self, problem: str, *, force_plan: bool = False) -> dict:
         """
         Solve a problem with intent-based routing and multistep execution.
 
@@ -164,7 +164,7 @@ class SolveMixin:
         # Route based on primary intent (may discard speculative plan)
         route_to_planning = False
 
-        if turn_intent and turn_intent.primary == PrimaryIntent.QUERY:
+        if not force_plan and turn_intent and turn_intent.primary == PrimaryIntent.QUERY:
             # QUERY intent - answer from knowledge or current context
             result = self._handle_query_intent(turn_intent, problem)
             if not result.get("_route_to_planning"):
@@ -173,7 +173,7 @@ class SolveMixin:
             logger.info("[ROUTING] QUERY/LOOKUP found data sources, routing to planning")
             route_to_planning = True
 
-        if turn_intent and turn_intent.primary == PrimaryIntent.CONTROL and not route_to_planning:
+        if not force_plan and turn_intent and turn_intent.primary == PrimaryIntent.CONTROL and not route_to_planning:
             logger.debug("[PARALLEL] CONTROL intent (speculative plan discarded)")
             return self._handle_control_intent(turn_intent, problem)
 

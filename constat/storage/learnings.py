@@ -43,6 +43,7 @@ class LearningCategory(Enum):
     HTTP_ERROR = "http_error"  # 4xx/5xx errors from external APIs
     CODEGEN_ERROR = "codegen_error"
     NL_CORRECTION = "nl_correction"
+    GLOSSARY_REFINEMENT = "glossary_refinement"
 
 
 class LearningSource(Enum):

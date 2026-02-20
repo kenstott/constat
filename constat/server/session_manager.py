@@ -14,6 +14,7 @@ Manages server-side Session instances, tracking lifecycle, timeout, and cleanup.
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -62,6 +63,9 @@ class ManagedSession:
 
     # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+
+    # Cancellation flag for background glossary generation
+    _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
 
     # Approval event for blocking on plan approval
     approval_event: Optional[asyncio.Event] = None
@@ -640,6 +644,7 @@ class SessionManager:
 
         try:
             t0 = time.time()
+            managed._glossary_cancelled.clear()
             self._push_event(managed, EventType.GLOSSARY_REBUILD_START, {
                 "session_id": session_id,
             })
@@ -647,6 +652,8 @@ class SessionManager:
             from constat.discovery.glossary_generator import generate_glossary
 
             def on_batch(batch_terms):
+                if managed._glossary_cancelled.is_set():
+                    return
                 term_dicts = []
                 for t in batch_terms:
                     term_dicts.append({
@@ -678,6 +685,7 @@ class SessionManager:
                 on_batch_complete=on_batch,
                 on_progress=on_progress,
                 user_id=managed.user_id,
+                cancelled=managed._glossary_cancelled.is_set,
             )
 
             # Reconcile alias entities (rename "platinum" → "platinum tier")

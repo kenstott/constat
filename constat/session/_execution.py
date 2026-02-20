@@ -937,6 +937,136 @@ class ExecutionMixin:
                 return answer
         return None
 
+    @staticmethod
+    def _detect_glossary_correction(correction: str, context: dict) -> dict | None:
+        """Detect glossary-relevant corrections from user input or error fixes.
+
+        Returns:
+            Detection dict with type "alias" or "definition", or None.
+        """
+        if not correction:
+            return None
+
+        text = correction.strip()
+
+        # --- Alias from user correction: "use X not Y" / "use X instead of Y" ---
+        m = re.search(r'use\s+(\w+)\s+(?:not|instead\s+of)\s+(\w+)', text, re.IGNORECASE)
+        if m:
+            return {"type": "alias", "canonical": m.group(1).lower(), "alternate": m.group(2).lower()}
+
+        # --- Definition from user correction: "X means <long text>" ---
+        m = re.search(r'(\w+)\s+means\s+(.{20,})', text, re.IGNORECASE)
+        if m:
+            return {"type": "definition", "term": m.group(1).lower(), "text": m.group(2).strip()}
+
+        # --- Alias from user correction: "X is Y" / "X means Y" (short RHS = alias) ---
+        m = re.search(r'(\w+)\s+(?:is|means)\s+(\w+)$', text, re.IGNORECASE)
+        if m:
+            return {"type": "alias", "canonical": m.group(2).lower(), "alternate": m.group(1).lower()}
+
+        # --- Alias from error fix: diff SQL identifiers between original and fixed code ---
+        original = context.get("original_code", "")
+        fixed = context.get("fixed_code", "")
+        if original and fixed:
+            orig_ids = set(re.findall(r'\b([a-z_][a-z0-9_]*)\b', original.lower()))
+            fix_ids = set(re.findall(r'\b([a-z_][a-z0-9_]*)\b', fixed.lower()))
+            removed = orig_ids - fix_ids
+            added = fix_ids - orig_ids
+            if len(removed) == 1 and len(added) == 1:
+                wrong = removed.pop()
+                correct = added.pop()
+                # Skip Python keywords / very short tokens
+                if len(wrong) > 2 and len(correct) > 2:
+                    return {"type": "alias", "canonical": correct, "alternate": wrong}
+
+        # --- Error-based: "no such table/column" ---
+        error_msg = context.get("error_message", "")
+        if error_msg and fixed:
+            m_err = re.search(r'no such (?:table|column):?\s*["\']?(\w+)', error_msg, re.IGNORECASE)
+            if not m_err:
+                m_err = re.search(r'(?:table|column)\s+["\']?(\w+)["\']?\s+(?:not found|does not exist)', error_msg, re.IGNORECASE)
+            if m_err:
+                wrong_name = m_err.group(1).lower()
+                fix_ids = set(re.findall(r'\b([a-z_][a-z0-9_]*)\b', fixed.lower()))
+                orig_ids = set(re.findall(r'\b([a-z_][a-z0-9_]*)\b', original.lower())) if original else set()
+                new_ids = fix_ids - orig_ids
+                if len(new_ids) == 1:
+                    correct_name = new_ids.pop()
+                    if correct_name != wrong_name and len(correct_name) > 2:
+                        return {"type": "alias", "canonical": correct_name, "alternate": wrong_name}
+
+        return None
+
+    def _apply_glossary_draft(self, detection: dict) -> None:
+        """Write a draft glossary term/alias based on a detected correction."""
+        import hashlib
+        from constat.discovery.models import GlossaryTerm, display_entity_name
+
+        if not self.doc_tools or not hasattr(self.doc_tools, '_vector_store'):
+            return
+        vs = self.doc_tools._vector_store
+        if vs is None:
+            return
+
+        user_id = getattr(self, 'user_id', None)
+        session_id = getattr(self, 'session_id', None)
+        if not session_id:
+            return
+        scope_id = user_id or session_id
+
+        def make_id(name: str, domain: str | None = None) -> str:
+            key = f"{name}:{scope_id}:{domain or ''}"
+            return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+        try:
+            dtype = detection["type"]
+            if dtype == "alias":
+                canonical = detection["canonical"]
+                alternate = detection["alternate"]
+                existing = vs.get_glossary_term(canonical, session_id, user_id=user_id)
+                if existing:
+                    aliases = list(existing.aliases or [])
+                    if alternate not in aliases:
+                        aliases.append(alternate)
+                        vs.update_glossary_term(canonical, session_id, {"aliases": aliases}, user_id=user_id)
+                else:
+                    term = GlossaryTerm(
+                        id=make_id(canonical),
+                        name=canonical,
+                        display_name=display_entity_name(canonical),
+                        definition="",
+                        aliases=[alternate],
+                        status="draft",
+                        provenance="learning",
+                        session_id=session_id,
+                        user_id=user_id or "default",
+                    )
+                    vs.add_glossary_term(term)
+                logger.info(f"[GLOSSARY] Draft alias: {alternate} -> {canonical}")
+
+            elif dtype == "definition":
+                term_name = detection["term"]
+                definition_text = detection["text"]
+                existing = vs.get_glossary_term(term_name, session_id, user_id=user_id)
+                if existing:
+                    updates = {"definition": definition_text, "provenance": "learning"}
+                    vs.update_glossary_term(term_name, session_id, updates, user_id=user_id)
+                else:
+                    term = GlossaryTerm(
+                        id=make_id(term_name),
+                        name=term_name,
+                        display_name=display_entity_name(term_name),
+                        definition=definition_text,
+                        status="draft",
+                        provenance="learning",
+                        session_id=session_id,
+                        user_id=user_id or "default",
+                    )
+                    vs.add_glossary_term(term)
+                logger.info(f"[GLOSSARY] Draft definition for: {term_name}")
+        except Exception as e:
+            logger.debug(f"Glossary draft write failed (non-fatal): {e}")
+
     def _capture_error_learning(self, context: dict, fixed_code: str) -> None:
         """Capture a learning from a successful error fix.
 
@@ -958,6 +1088,12 @@ class ExecutionMixin:
             # Add fixed code to context
             context["fixed_code"] = fixed_code[:500]
 
+            # Detect glossary-relevant correction
+            detection = self._detect_glossary_correction(summary, context)
+            if detection:
+                category = LearningCategory.GLOSSARY_REFINEMENT
+                context["glossary_detection"] = detection
+
             # Save the learning
             self.learning_store.save_learning(
                 category=category,
@@ -965,6 +1101,10 @@ class ExecutionMixin:
                 correction=summary,
                 source=LearningSource.AUTO_CAPTURE,
             )
+
+            # Apply glossary draft after save
+            if detection:
+                self._apply_glossary_draft(detection)
 
             # Auto-compact if too many raw learnings
             stats = self.learning_store.get_stats()
@@ -1143,13 +1283,24 @@ Return ONLY the JSON array."""
             if self.session_id:
                 context["session_id"] = self.session_id
 
+            # Detect glossary-relevant correction
+            detection = self._detect_glossary_correction(user_input, context)
+            category = LearningCategory.USER_CORRECTION
+            if detection:
+                category = LearningCategory.GLOSSARY_REFINEMENT
+                context["glossary_detection"] = detection
+
             # Save the correction as a learning
             learning_id = self.learning_store.save_learning(
-                category=LearningCategory.USER_CORRECTION,
+                category=category,
                 context=context,
                 correction=user_input,
                 source=LearningSource.NL_DETECTION,
             )
+
+            # Apply glossary draft after save
+            if detection:
+                self._apply_glossary_draft(detection)
 
             logger.info(f"Saved user correction as learning {learning_id}: {user_input[:50]}...")
 

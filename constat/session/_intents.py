@@ -833,7 +833,7 @@ Provide a brief, high-level summary of the key findings."""
             return self.prove_conversation()
 
         # Exploratory: full replan with new code generation
-        return self.solve(problem)
+        return self.solve(problem, force_plan=True)
 
     @staticmethod
     def _handle_help() -> dict:

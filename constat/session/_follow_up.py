@@ -208,9 +208,23 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         if not self.datastore:
             raise ValueError("No datastore available. Session may not have been properly initialized.")
 
+        # Fast path: /redo bypasses command registry (it's an intent-based command)
+        stripped = question.strip()
+        if stripped.lower().startswith("/redo"):
+            guidance = stripped[5:].strip()
+            if guidance:
+                # Guidance provided — extract facts and re-solve with context
+                self.fact_resolver.add_user_facts_from_text(guidance)
+                session_mode = self.datastore.get_session_meta("mode") if self.datastore else "exploratory"
+                if session_mode == "auditable":
+                    return self.prove_conversation(guidance=guidance)
+                original_problem = self.datastore.get_session_meta("problem") if self.datastore else guidance
+                return self.solve(original_problem, force_plan=True)
+            return self._handle_redo()
+
         # Fast path: Handle slash commands directly via command registry
-        if question.strip().startswith("/"):
-            return self._handle_slash_command(question.strip())
+        if stripped.startswith("/"):
+            return self._handle_slash_command(stripped)
 
         # Log the follow-up query
         self.history.log_user_input(self.session_id, question, "followup")
@@ -278,7 +292,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             else:
                 # Re-run exploratory: get original problem, re-solve with updated facts
                 original_problem = self.datastore.get_session_meta("problem") if self.datastore else question
-                return self.solve(original_problem)
+                return self.solve(original_problem, force_plan=True)
 
         # Check for ambiguity and request clarification if needed
         if self.session_config.ask_clarifications and self._clarification_callback:

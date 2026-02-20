@@ -349,6 +349,9 @@ async def generate_glossary(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
+    # Cancel any in-progress generation before clearing and restarting
+    managed._glossary_cancelled.set()
+
     # Clear existing LLM-generated terms and relationships (user-scoped)
     vs.clear_session_glossary(session_id, user_id=managed.user_id)
     vs.clear_session_relationships(session_id)
@@ -458,6 +461,9 @@ async def delete_glossary_by_status(
     """Delete all glossary terms matching a status (default: draft)."""
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
+
+    # Cancel any in-progress glossary generation so it doesn't re-create drafts
+    managed._glossary_cancelled.set()
 
     count = vs.delete_glossary_by_status(session_id, status, user_id=managed.user_id)
     return {"status": "deleted", "count": count}
