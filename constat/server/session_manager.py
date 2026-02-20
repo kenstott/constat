@@ -651,6 +651,20 @@ class SessionManager:
 
             from constat.discovery.glossary_generator import generate_glossary
 
+            # Prune deprecated LLM-generated terms before generating new ones.
+            # User-edited terms (provenance != 'llm') are kept.
+            active_domains = getattr(managed, "active_domains", []) or []
+            deprecated = vector_store.get_deprecated_glossary(
+                session_id, active_domains=active_domains, user_id=managed.user_id,
+            )
+            pruned = 0
+            for term in deprecated:
+                if term.provenance == "llm" and term.status == "draft":
+                    vector_store.delete_glossary_term(term.name, session_id, user_id=managed.user_id)
+                    pruned += 1
+            if pruned:
+                logger.info(f"Glossary pre-generation prune for {session_id}: removed {pruned} deprecated draft terms")
+
             def on_batch(batch_terms):
                 if managed._glossary_cancelled.is_set():
                     return
@@ -676,7 +690,6 @@ class SessionManager:
                     "stage": stage, "percent": pct,
                 })
 
-            active_domains = getattr(managed, "active_domains", []) or []
             terms = generate_glossary(
                 session_id=session_id,
                 vector_store=vector_store,

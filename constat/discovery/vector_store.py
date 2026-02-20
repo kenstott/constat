@@ -476,6 +476,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         session_id: str,
         active_domains: list[str] | None = None,
         alias: str = "e",
+        cross_session: bool = False,
     ) -> tuple[str, list]:
         """Build the 3-part entity visibility WHERE clause.
 
@@ -488,6 +489,9 @@ class DuckDBVectorStore(VectorStoreBackend):
             session_id: Current session ID
             active_domains: Active domain IDs
             alias: Table alias (e.g. 'e', 'e2', or '' for no alias)
+            cross_session: If True, include entities from ANY session
+                (for user-scoped glossary checks where session_id changes
+                 should not affect grounding)
 
         Returns:
             (sql_fragment, params) — fragment is parenthesized OR clause
@@ -501,8 +505,11 @@ class DuckDBVectorStore(VectorStoreBackend):
             parts.append(f"{pfx}domain_id IN ({placeholders})")
             params.extend(active_domains)
 
-        parts.append(f"{pfx}session_id = ?")
-        params.append(session_id)
+        if cross_session:
+            parts.append(f"{pfx}session_id IS NOT NULL")
+        else:
+            parts.append(f"{pfx}session_id = ?")
+            params.append(session_id)
 
         return f"({' OR '.join(parts)})", params
 
@@ -2119,11 +2126,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         Returns:
             List of unified glossary dicts
         """
+        # Use cross_session=True so glossary (user-scoped) sees entities
+        # from any session, not just the current one.
         entity_where, entity_params = self.entity_visibility_filter(
-            session_id, active_domains, alias="e",
+            session_id, active_domains, alias="e", cross_session=True,
         )
         entity_where2, entity_params2 = self.entity_visibility_filter(
-            session_id, active_domains, alias="e2",
+            session_id, active_domains, alias="e2", cross_session=True,
         )
 
         # Glossary scope: user_id if provided, else session_id
@@ -2131,10 +2140,11 @@ class DuckDBVectorStore(VectorStoreBackend):
         glossary_scope_val = user_id if user_id else session_id
 
         # Part 1 params: glossary_scope, entity_params, glossary_scope (parent subquery)
-        # Part 2 params: glossary_scope (glossary_terms), entity_params2 (NOT EXISTS)
+        # Part 2 params: glossary_scope (glossary_terms), entity_params2 (NOT EXISTS),
+        #                glossary_scope (grounding: parent check)
         params: list = (
             [glossary_scope_val] + entity_params + [glossary_scope_val]
-            + [glossary_scope_val] + entity_params2
+            + [glossary_scope_val] + entity_params2 + [glossary_scope_val]
         )
 
         # Scope filter
@@ -2222,6 +2232,17 @@ class DuckDBVectorStore(VectorStoreBackend):
                 SELECT 1 FROM entities e2
                 WHERE LOWER(e2.name) = LOWER(g.name) AND {entity_where2}
             )
+            AND (
+                -- Grounding: only include if it's a parent of another
+                -- in-scope glossary term (category/taxonomy term) or
+                -- is user-sourced (learning-based draft)
+                g.provenance = 'learning'
+                OR EXISTS (
+                    SELECT 1 FROM glossary_terms g2
+                    WHERE g2.parent_id = g.id
+                    AND g2.{glossary_scope_col} = ?
+                )
+            )
 
             ORDER BY name
             """,
@@ -2286,9 +2307,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         2. It is an ancestor of a grounded term (upward walk), OR
         3. It has grounded descendants (downward walk via get_child_terms), OR
         4. Any other glossary term references it as parent_id and that child is valid
+
+        Uses cross_session=True so glossary terms grounded by entities
+        from any session remain non-deprecated (glossary is user-scoped,
+        so grounding checks should be user-scoped too).
         """
         entity_vis, vis_params = self.entity_visibility_filter(
-            session_id, active_domains, alias="e",
+            session_id, active_domains, alias="e", cross_session=True,
         )
 
         all_terms = self.list_glossary_terms(session_id, user_id=user_id)

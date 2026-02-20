@@ -12,8 +12,8 @@ Your code has access to:
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask`: a function to query the LLM for general knowledge (batch calls, never loop)
-- `llm_map(values, target, source_desc)`: fuzzy map a list of values to a target domain using LLM knowledge
-- `llm_classify(values, categories, context)`: classify items into fixed categories using LLM
+- `llm_map(values, target, source_desc) -> dict[str, str]`: fuzzy map a list of values to a target domain using LLM knowledge. Returns a dict keyed by input value. Use with `df['col'].map(result)`
+- `llm_classify(values, categories, context) -> dict[str, str]`: classify items into fixed categories using LLM. Returns a dict keyed by input value. Use with `df['col'].map(result)`
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM
 - `llm_score(texts, min_val, max_val, instruction)`: score texts on a numeric scale using LLM judgment. Returns list of `(score, reasoning)` tuples. Score is a float in [min_val, max_val]
