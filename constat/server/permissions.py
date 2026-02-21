@@ -141,7 +141,7 @@ def get_user_permissions(
     Returns:
         UserPermissions object
     """
-    config_perms = server_config.permissions.get_user_permissions(email)
+    config_perms = server_config.permissions.get_user_permissions(email=email, user_id=user_id)
     return UserPermissions.from_config(config_perms, user_id=user_id, email=email)
 
 

@@ -62,9 +62,13 @@ class PermissionsConfig(BaseModel):
         description="Default permissions for users not explicitly listed",
     )
 
-    def get_user_permissions(self, email: str) -> UserPermissions:
-        """Get permissions for a user by email."""
-        return self.users.get(email, self.default)
+    def get_user_permissions(self, email: str = "", user_id: str = "") -> UserPermissions:
+        """Get permissions for a user by email or user ID."""
+        if email and email in self.users:
+            return self.users[email]
+        if user_id and user_id in self.users:
+            return self.users[user_id]
+        return self.default
 
 
 class ServerConfig(BaseModel):

@@ -17,6 +17,13 @@ users:
     documents: []
     apis: []
 
+  8TgdzQHw7EbTHSJY9osIuCElbGF2:
+    persona: platform_admin
+    projects: []
+    databases: []
+    documents: []
+    apis: []
+
   # Example non-admin user:
   # analyst@company.com:
   #   persona: domain_user
