@@ -1,6 +1,9 @@
 # User Permissions Configuration
 # Included by config.yaml via !include permissions.yaml
 #
+# Users are keyed by stable user ID (e.g. Firebase UID).
+# Email addresses change; UIDs don't.
+#
 # Controls access to:
 #   - projects: Project configs user can activate
 #   - databases: SQL/file databases user can query
@@ -10,13 +13,6 @@
 # platform_admin persona has full access - arrays are ignored.
 
 users:
-  kennethstott@gmail.com:
-    persona: platform_admin
-    projects: []
-    databases: []
-    documents: []
-    apis: []
-
   8TgdzQHw7EbTHSJY9osIuCElbGF2:
     persona: platform_admin
     projects: []
@@ -25,7 +21,7 @@ users:
     apis: []
 
   # Example non-admin user:
-  # analyst@company.com:
+  # xK9mPqR2wYnZaB4cD7eF1gH3iJ5:
   #   persona: domain_user
   #   projects:
   #     - sales-analytics
@@ -37,7 +33,7 @@ users:
   #     - countries
 
   # Example SME user (can edit glossary, facts, learnings):
-  # sme@company.com:
+  # aB3cD4eF5gH6iJ7kL8mN9oP0qR1:
   #   persona: sme
   #   projects: []
   #   databases: []
@@ -45,7 +41,7 @@ users:
   #   apis: []
 
   # Example viewer (read-only, no feedback):
-  # viewer@company.com:
+  # zZ9yY8xX7wW6vV5uU4tT3sS2rR1:
   #   persona: viewer
   #   projects: []
   #   databases: []

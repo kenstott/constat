@@ -55,17 +55,15 @@ class PermissionsConfig(BaseModel):
 
     users: dict[str, UserPermissions] = Field(
         default_factory=dict,
-        description="Per-user permissions keyed by email",
+        description="Per-user permissions keyed by user ID (stable identifier)",
     )
     default: UserPermissions = Field(
         default_factory=UserPermissions,
         description="Default permissions for users not explicitly listed",
     )
 
-    def get_user_permissions(self, email: str = "", user_id: str = "") -> UserPermissions:
-        """Get permissions for a user by email or user ID."""
-        if email and email in self.users:
-            return self.users[email]
+    def get_user_permissions(self, user_id: str = "") -> UserPermissions:
+        """Get permissions for a user by ID."""
         if user_id and user_id in self.users:
             return self.users[user_id]
         return self.default

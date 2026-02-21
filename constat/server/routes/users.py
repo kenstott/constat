@@ -47,7 +47,7 @@ async def get_my_permissions(
         User's permissions including admin status, persona, and resolved visibility/writes/feedback
     """
     server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
 
     # Resolve persona-based visibility/writes/feedback
     from constat.server.persona_config import PersonasConfig
@@ -93,7 +93,7 @@ async def list_all_user_permissions(
     server_config = request.app.state.server_config
 
     # Check if current user is admin
-    current_perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    current_perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
     if current_perms.persona != "platform_admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 

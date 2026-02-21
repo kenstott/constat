@@ -756,7 +756,7 @@ async def update_system_prompt(
     """
     # Check admin permission
     server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
     if not perms.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 

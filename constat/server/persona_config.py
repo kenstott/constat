@@ -95,7 +95,7 @@ def require_write(resource: str):
         if personas_config is None:
             return  # No persona config loaded — allow (backwards compat)
 
-        perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+        perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
 
         if not personas_config.can_write(perms.persona, resource):
             raise HTTPException(

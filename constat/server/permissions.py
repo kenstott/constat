@@ -10,14 +10,14 @@ Permissions are defined in the config.yaml under the 'permissions' section:
 ```yaml
 permissions:
   users:
-    kennethstott@gmail.com:
+    8TgdzQHw7EbTHSJY9osIuCElbGF2:
       persona: platform_admin
       domains: []
       databases: []
       documents: []
       apis: []
 
-    analyst@company.com:
+    xK9mPqR2wYnZaB4cD7eF1gH3iJ5:
       persona: domain_user
       domains:
         - sales-analytics.yaml
@@ -128,20 +128,20 @@ class UserPermissions:
 
 def get_user_permissions(
     server_config: ServerConfig,
-    email: str,
-    user_id: str = "",
+    user_id: str,
+    email: str = "",
 ) -> UserPermissions:
     """Get permissions for a user from server config.
 
     Args:
         server_config: Server configuration containing permissions
-        email: User's email address
-        user_id: Firebase user ID (for reference)
+        user_id: Stable user identifier (Firebase UID, etc.)
+        email: User's email address (informational, not used for lookup)
 
     Returns:
         UserPermissions object
     """
-    config_perms = server_config.permissions.get_user_permissions(email=email, user_id=user_id)
+    config_perms = server_config.permissions.get_user_permissions(user_id=user_id)
     return UserPermissions.from_config(config_perms, user_id=user_id, email=email)
 
 
@@ -155,9 +155,9 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
         List of user permission dicts
     """
     result = []
-    for email, perms in server_config.permissions.users.items():
+    for user_id, perms in server_config.permissions.users.items():
         result.append({
-            "email": email,
+            "user_id": user_id,
             "admin": perms.persona == "platform_admin",
             "persona": perms.persona,
             "domains": perms.domains,
@@ -236,7 +236,7 @@ def compute_effective_permissions(
         # Check if domain has its own permissions.yaml
         if domain.permissions is not None:
             # Domain has scoped permissions — intersect with domain restrictions
-            domain_perms = domain.permissions.get_user_permissions(user_perms.email or "")
+            domain_perms = domain.permissions.get_user_permissions(user_id=user_perms.user_id)
             domain_allowed_dbs = set(domain_perms.databases)
             domain_allowed_apis = set(domain_perms.apis)
             domain_allowed_docs = set(domain_perms.documents)

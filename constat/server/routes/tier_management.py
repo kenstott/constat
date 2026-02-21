@@ -281,7 +281,7 @@ async def promote_item(
 
     # Permission check
     server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
     config = request.app.state.config
 
     # Determine domain name from active domains (use first if multiple)
@@ -368,7 +368,7 @@ async def remove_item(
 
     # Permission check
     server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
     config = request.app.state.config
 
     domain_name = managed.active_domains[0] if managed.active_domains else None
@@ -442,7 +442,7 @@ async def create_item(
 
     # Permission check
     server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
     config = request.app.state.config
 
     domain_name = managed.active_domains[0] if managed.active_domains else None
