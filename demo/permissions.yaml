@@ -7,12 +7,11 @@
 #   - documents: Reference documents user can search
 #   - apis: External APIs user can call
 #
-# Admins (admin: true) have full access - arrays are ignored.
+# platform_admin persona has full access - arrays are ignored.
 
 users:
   kennethstott@gmail.com:
-    admin: true
-    role: platform_admin
+    persona: platform_admin
     projects: []
     databases: []
     documents: []
@@ -20,8 +19,7 @@ users:
 
   # Example non-admin user:
   # analyst@company.com:
-  #   admin: false
-  #   role: domain_user
+  #   persona: domain_user
   #   projects:
   #     - sales-analytics
   #   databases:
@@ -33,8 +31,7 @@ users:
 
   # Example SME user (can edit glossary, facts, learnings):
   # sme@company.com:
-  #   admin: false
-  #   role: sme
+  #   persona: sme
   #   projects: []
   #   databases: []
   #   documents: []
@@ -42,8 +39,7 @@ users:
 
   # Example viewer (read-only, no feedback):
   # viewer@company.com:
-  #   admin: false
-  #   role: viewer
+  #   persona: viewer
   #   projects: []
   #   databases: []
   #   documents: []
@@ -51,7 +47,6 @@ users:
 
 # Default permissions for users not listed above
 default:
-  admin: false
   projects: []
   databases: []
   documents: []

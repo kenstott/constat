@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from constat.core.tiered_config import ConfigSource
 from constat.server.auth import CurrentUserId, CurrentUserEmail
 from constat.server.permissions import get_user_permissions
-from constat.server.role_config import require_write
+from constat.server.persona_config import require_write
 from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ async def promote_item(
     domain_name = managed.active_domains[0] if managed.active_domains else None
     is_owner = _is_domain_owner(config, domain_name, email) if domain_name and email else False
 
-    _check_promotion_permission(current_tier_source, target_tier, perms.admin, is_owner)
+    _check_promotion_permission(current_tier_source, target_tier, perms.is_admin, is_owner)
 
     # Get the item value
     section_data = getattr(rc, body.section, {})
@@ -374,7 +374,7 @@ async def remove_item(
     domain_name = managed.active_domains[0] if managed.active_domains else None
     is_owner = _is_domain_owner(config, domain_name, email) if domain_name and email else False
 
-    _check_remove_permission(remove_tier, perms.admin, is_owner)
+    _check_remove_permission(remove_tier, perms.is_admin, is_owner)
 
     # Write null to the tier's YAML (null-deletion semantics)
     yaml_path = _get_tier_yaml_path(remove_tier, server_config, managed.user_id, config.config_dir, domain_name)
@@ -448,7 +448,7 @@ async def create_item(
     domain_name = managed.active_domains[0] if managed.active_domains else None
     is_owner = _is_domain_owner(config, domain_name, email) if domain_name and email else False
 
-    _check_promotion_permission(ConfigSource.USER, target_tier, perms.admin, is_owner)
+    _check_promotion_permission(ConfigSource.USER, target_tier, perms.is_admin, is_owner)
 
     # Write to target tier YAML
     yaml_path = _get_tier_yaml_path(target_tier, server_config, managed.user_id, config.config_dir, domain_name)

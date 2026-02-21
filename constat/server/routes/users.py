@@ -25,7 +25,7 @@ class PermissionsResponse(BaseModel):
     user_id: str
     email: str | None
     admin: bool
-    role: str
+    persona: str
     domains: list[str]
     databases: list[str]
     documents: list[str]
@@ -44,19 +44,19 @@ async def get_my_permissions(
     """Get permissions for the current authenticated user.
 
     Returns:
-        User's permissions including admin status, role, and resolved visibility/writes/feedback
+        User's permissions including admin status, persona, and resolved visibility/writes/feedback
     """
     server_config = request.app.state.server_config
     perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
 
-    # Resolve role-based visibility/writes/feedback
-    from constat.server.role_config import RolesConfig
-    roles_config: RolesConfig | None = getattr(request.app.state, "roles_config", None)
-    if roles_config:
-        role_def = roles_config.get_role(perms.role)
-        visibility = role_def.visibility
-        writes = role_def.writes
-        feedback = role_def.feedback
+    # Resolve persona-based visibility/writes/feedback
+    from constat.server.persona_config import PersonasConfig
+    personas_config: PersonasConfig | None = getattr(request.app.state, "personas_config", None)
+    if personas_config:
+        persona_def = personas_config.get_persona(perms.persona)
+        visibility = persona_def.visibility
+        writes = persona_def.writes
+        feedback = persona_def.feedback
     else:
         visibility = {}
         writes = {}
@@ -65,8 +65,8 @@ async def get_my_permissions(
     return PermissionsResponse(
         user_id=perms.user_id,
         email=perms.email,
-        admin=perms.admin,
-        role=perms.role,
+        admin=perms.is_admin,
+        persona=perms.persona,
         domains=perms.domains,
         databases=perms.databases,
         documents=perms.documents,
@@ -94,7 +94,7 @@ async def list_all_user_permissions(
 
     # Check if current user is admin
     current_perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
-    if current_perms.role != "platform_admin":
+    if current_perms.persona != "platform_admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
     return list_perms(server_config)

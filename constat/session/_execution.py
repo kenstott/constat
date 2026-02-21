@@ -548,7 +548,7 @@ class ExecutionMixin:
                     df=value,
                     step_number=step_number,
                     description=f"Auto-saved from step {step_number}",
-                    role_id=self._current_role_id,
+                    role_id=self._current_agent_id,
                 )
 
             # Auto-save lists (as state, since they might be useful)
@@ -578,8 +578,8 @@ class ExecutionMixin:
         pending_learning_context = None  # Track error for potential learning capture
 
         # Set current role context for this step (facts created will inherit this role_id)
-        previous_role_id = self._current_role_id
-        self._current_role_id = step.role_id
+        previous_role_id = self._current_agent_id
+        self._current_agent_id = step.role_id
 
         self._emit_event(StepEvent(
             event_type="step_start",
@@ -672,9 +672,9 @@ class ExecutionMixin:
 
             # Record artifacts in datastore
             if self.datastore:
-                self.datastore.add_artifact(step.number, attempt, "code", code, role_id=self._current_role_id)
+                self.datastore.add_artifact(step.number, attempt, "code", code, role_id=self._current_agent_id)
                 if result.stdout:
-                    self.datastore.add_artifact(step.number, attempt, "output", result.stdout, role_id=self._current_role_id)
+                    self.datastore.add_artifact(step.number, attempt, "output", result.stdout, role_id=self._current_agent_id)
 
             if result.success:
                 duration_ms = int((time.time() - start_time) * 1000)
@@ -771,7 +771,7 @@ class ExecutionMixin:
                     )
 
                 # Restore previous role context
-                self._current_role_id = previous_role_id
+                self._current_agent_id = previous_role_id
 
                 return StepResult(
                     success=True,
@@ -793,7 +793,7 @@ class ExecutionMixin:
 
             # Record error artifact
             if self.datastore:
-                self.datastore.add_artifact(step.number, attempt, "error", last_error, role_id=self._current_role_id)
+                self.datastore.add_artifact(step.number, attempt, "error", last_error, role_id=self._current_agent_id)
 
             # Determine error type for better status messages
             error_lower = last_error.lower() if last_error else ""
@@ -855,7 +855,7 @@ class ExecutionMixin:
             )
 
         # Restore previous role context
-        self._current_role_id = previous_role_id
+        self._current_agent_id = previous_role_id
 
         return StepResult(
             success=False,

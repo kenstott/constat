@@ -18,8 +18,7 @@ import {
  import * as usersApi from '@/api/users'
 
 interface Permissions {
-  admin: boolean
-  role: string
+  persona: string
   domains: string[]
   databases: string[]
   documents: string[]
@@ -80,10 +79,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return get().user?.uid || 'default'
   },
 
-  // Check if user has admin permissions
+  // Check if user has admin permissions (derived from persona)
   get isAdmin() {
     if (isAuthDisabled) return true  // Admin when auth disabled
-    return get().permissions?.admin || false
+    return get().permissions?.persona === 'platform_admin'
   },
 
   canSee: (section: string) => {
@@ -105,14 +104,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         loading: false,
         initialized: true,
         permissions: {
-          admin: true,
-          role: 'platform_admin',
+          persona: 'platform_admin',
           domains: [],
           databases: [],
           documents: [],
           apis: [],
-          visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, roles: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
-          writes: { sources: true, glossary: true, skills: true, roles: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
+          visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, agents: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
+          writes: { sources: true, glossary: true, skills: true, agents: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
           feedback: { flag_answers: true, suggest_glossary: true },
         },
       })
@@ -127,11 +125,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (user) {
         try {
           const perms = await usersApi.getMyPermissions()
-          set({ permissions: { admin: perms.admin, role: perms.role, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis, visibility: perms.visibility, writes: perms.writes, feedback: perms.feedback } })
+          set({ permissions: { persona: perms.persona, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis, visibility: perms.visibility, writes: perms.writes, feedback: perms.feedback } })
         } catch (err) {
           console.error('Failed to fetch permissions:', err)
           // Default to no permissions on error
-          set({ permissions: { admin: false, role: 'viewer', domains: [], databases: [], documents: [], apis: [], visibility: { results: true }, writes: {}, feedback: {} } })
+          set({ permissions: { persona: 'viewer', domains: [], databases: [], documents: [], apis: [], visibility: { results: true }, writes: {}, feedback: {} } })
         }
       } else {
         set({ permissions: null })
@@ -142,14 +140,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   fetchPermissions: async () => {
     if (isAuthDisabled) {
       set({ permissions: {
-        admin: true,
-        role: 'platform_admin',
+        persona: 'platform_admin',
         domains: [],
         databases: [],
         documents: [],
         apis: [],
-        visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, roles: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
-        writes: { sources: true, glossary: true, skills: true, roles: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
+        visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, agents: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
+        writes: { sources: true, glossary: true, skills: true, agents: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
         feedback: { flag_answers: true, suggest_glossary: true },
       } })
       return
@@ -157,7 +154,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     try {
       const perms = await usersApi.getMyPermissions()
-      set({ permissions: { admin: perms.admin, role: perms.role, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis, visibility: perms.visibility, writes: perms.writes, feedback: perms.feedback } })
+      set({ permissions: { persona: perms.persona, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis, visibility: perms.visibility, writes: perms.writes, feedback: perms.feedback } })
     } catch (err) {
       console.error('Failed to fetch permissions:', err)
     }

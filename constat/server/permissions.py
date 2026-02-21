@@ -11,14 +11,14 @@ Permissions are defined in the config.yaml under the 'permissions' section:
 permissions:
   users:
     kennethstott@gmail.com:
-      admin: true
+      persona: platform_admin
       domains: []
       databases: []
       documents: []
       apis: []
 
     analyst@company.com:
-      admin: false
+      persona: domain_user
       domains:
         - sales-analytics.yaml
       databases:
@@ -28,7 +28,7 @@ permissions:
       apis: []
 
   default:
-    admin: false
+    persona: viewer
     domains: []
     databases: []
     documents: []
@@ -51,8 +51,7 @@ class UserPermissions:
         self,
         user_id: str,
         email: Optional[str] = None,
-        admin: bool = False,
-        role: str = "viewer",
+        persona: str = "viewer",
         domains: Optional[list[str]] = None,
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
@@ -60,34 +59,38 @@ class UserPermissions:
     ):
         self.user_id = user_id
         self.email = email
-        self.admin = admin
-        self.role = role
+        self.persona = persona
         self.domains = domains or []
         self.databases = databases or []
         self.documents = documents or []
         self.apis = apis or []
 
+    @property
+    def is_admin(self) -> bool:
+        """Derived admin status from persona."""
+        return self.persona == "platform_admin"
+
     def can_access_domain(self, domain_filename: str) -> bool:
         """Check if user can access a specific domain."""
-        if self.admin:
+        if self.is_admin:
             return True
         return domain_filename in self.domains
 
     def can_access_database(self, db_name: str) -> bool:
         """Check if user can access a specific database."""
-        if self.admin:
+        if self.is_admin:
             return True
         return db_name in self.databases
 
     def can_access_document(self, doc_name: str) -> bool:
         """Check if user can access a specific document."""
-        if self.admin:
+        if self.is_admin:
             return True
         return doc_name in self.documents
 
     def can_access_api(self, api_name: str) -> bool:
         """Check if user can access a specific API."""
-        if self.admin:
+        if self.is_admin:
             return True
         return api_name in self.apis
 
@@ -96,8 +99,8 @@ class UserPermissions:
         return {
             "user_id": self.user_id,
             "email": self.email,
-            "admin": self.admin,
-            "role": self.role,
+            "admin": self.is_admin,
+            "persona": self.persona,
             "domains": self.domains,
             "databases": self.databases,
             "documents": self.documents,
@@ -115,8 +118,7 @@ class UserPermissions:
         return cls(
             user_id=user_id,
             email=email,
-            admin=config_perms.admin,
-            role=config_perms.role,
+            persona=config_perms.persona,
             domains=config_perms.domains,
             databases=config_perms.databases,
             documents=config_perms.documents,
@@ -156,8 +158,8 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
     for email, perms in server_config.permissions.users.items():
         result.append({
             "email": email,
-            "admin": perms.admin,
-            "role": perms.role,
+            "admin": perms.persona == "platform_admin",
+            "persona": perms.persona,
             "domains": perms.domains,
             "databases": perms.databases,
             "documents": perms.documents,
@@ -172,12 +174,17 @@ def compute_effective_permissions(
     active_domains: Optional[list[str]] = None,
     permissions_configured: bool = True,
 ) -> dict[str, Optional[set[str]]]:
-    """Compute effective allowed resources by merging permissions and active domains.
+    """Compute effective allowed resources using least-privilege intersection.
 
     Rules:
-    - If no permissions configured (permissions_configured=False) → no filtering
-    - If user is admin → no filtering
-    - Otherwise, merge explicit permissions + active domain resources
+    - If no permissions configured (permissions_configured=False) -> no filtering
+    - If user is admin -> no filtering
+    - Otherwise, start with user's global permissions, then INTERSECT with
+      domain-level restrictions (if a domain has its own permissions.yaml).
+    - If a domain has no permissions.yaml, all of that domain's resources are
+      available (no additional restriction from the domain side).
+    - Final allowed = resources the user has global permission for AND that
+      aren't restricted by domain-scoped permissions.
 
     Args:
         user_perms: User's base permissions (None if no permissions configured)
@@ -199,31 +206,53 @@ def compute_effective_permissions(
         }
 
     # Admins see everything
-    if user_perms.admin:
+    if user_perms.is_admin:
         return {
             "allowed_databases": None,
             "allowed_apis": None,
             "allowed_documents": None,
         }
 
-    # Start with explicit permissions
+    # Start with user's global permissions
     allowed_databases = set(user_perms.databases)
     allowed_apis = set(user_perms.apis)
     allowed_documents = set(user_perms.documents)
 
-    # Add resources from active domains the user has access to
+    # Process active domains
     active_domains = active_domains or []
     for domain_id in active_domains:
         # Check user has access to this domain
         if not user_perms.can_access_domain(domain_id):
             continue
 
-        # Load domain and add all its resources
         domain = config.load_domain(domain_id)
-        if domain:
-            allowed_databases.update(domain.databases.keys())
-            allowed_apis.update(domain.apis.keys())
-            allowed_documents.update(domain.documents.keys())
+        if not domain:
+            continue
+
+        domain_databases = set(domain.databases.keys())
+        domain_apis = set(domain.apis.keys())
+        domain_documents = set(domain.documents.keys())
+
+        # Check if domain has its own permissions.yaml
+        if domain.permissions is not None:
+            # Domain has scoped permissions — intersect with domain restrictions
+            domain_perms = domain.permissions.get_user_permissions(user_perms.email or "")
+            domain_allowed_dbs = set(domain_perms.databases)
+            domain_allowed_apis = set(domain_perms.apis)
+            domain_allowed_docs = set(domain_perms.documents)
+
+            # User gets domain resources that are in BOTH their global permissions
+            # and the domain's allowed list (least privilege)
+            allowed_databases.update(domain_databases & domain_allowed_dbs)
+            allowed_apis.update(domain_apis & domain_allowed_apis)
+            allowed_documents.update(domain_documents & domain_allowed_docs)
+        else:
+            # No domain permissions — all domain resources available
+            # but still intersected with user's global permissions implicitly
+            # (user must have global permission OR domain grants access)
+            allowed_databases.update(domain_databases)
+            allowed_apis.update(domain_apis)
+            allowed_documents.update(domain_documents)
 
     return {
         "allowed_databases": allowed_databases,

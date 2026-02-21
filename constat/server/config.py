@@ -27,38 +27,27 @@ def _get_bool_env(key: str) -> bool | None:
 class UserPermissions(BaseModel):
     """Permissions for a single user."""
 
-    admin: bool = Field(
-        default=False,
-        description="Whether user has admin access (full access to everything)",
-    )
-    role: str = Field(
+    persona: str = Field(
         default="viewer",
-        description="Platform role (platform_admin, domain_builder, sme, domain_user, viewer)",
+        description="Platform persona (platform_admin, domain_builder, sme, domain_user, viewer)",
     )
     domains: list[str] = Field(
         default_factory=list,
-        description="Domain filenames user can access (empty = none, unless admin)",
+        description="Domain filenames user can access (empty = none, unless platform_admin)",
     )
 
     databases: list[str] = Field(
         default_factory=list,
-        description="Database names user can query (empty = none, unless admin)",
+        description="Database names user can query (empty = none, unless platform_admin)",
     )
     documents: list[str] = Field(
         default_factory=list,
-        description="Document names user can search (empty = none, unless admin)",
+        description="Document names user can search (empty = none, unless platform_admin)",
     )
     apis: list[str] = Field(
         default_factory=list,
-        description="API names user can call (empty = none, unless admin)",
+        description="API names user can call (empty = none, unless platform_admin)",
     )
-
-    @model_validator(mode="after")
-    def sync_admin_role(self) -> "UserPermissions":
-        """If admin=True and role is default viewer, auto-upgrade to platform_admin."""
-        if self.admin and self.role == "viewer":
-            self.role = "platform_admin"
-        return self
 
 
 class PermissionsConfig(BaseModel):

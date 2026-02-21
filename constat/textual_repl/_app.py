@@ -37,7 +37,7 @@ from constat.textual_repl._feedback import TextualFeedbackHandler
 from constat.textual_repl._messages import (
     ShowApprovalUI, ShowClarificationUI, )
 from constat.textual_repl._operations import OperationsMixin
-from constat.textual_repl._role_screen import RoleSelectorScreen
+from constat.textual_repl._agent_screen import AgentSelectorScreen
 from constat.textual_repl._widgets import (
     StatusBar, ConstatInput, OutputLog, SidePanel, ProofTreePanel,
     markdown_to_rich_markup, linkify_artifact_references,
@@ -481,9 +481,9 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
     def _update_role_display(self) -> None:
         """Update the status bar role display."""
         status_bar = self.query_one("#status-bar", StatusBar)
-        if self.session and hasattr(self.session, "role_manager"):
-            role_name = self.session.role_manager.active_role_name
-            status_bar.role_display = role_name or ""
+        if self.session and hasattr(self.session, "agent_manager"):
+            agent_name = self.session.agent_manager.active_agent_name
+            status_bar.role_display = agent_name or ""
         else:
             status_bar.role_display = ""
 
@@ -613,35 +613,35 @@ class ConstatREPLApp(OperationsMixin, CommandsMixin, App):
             self._update_panel_sizes()
 
     def action_select_role(self) -> None:
-        """Open the role selector modal."""
-        if not self.session or not hasattr(self.session, "role_manager"):
+        """Open the agent selector modal."""
+        if not self.session or not hasattr(self.session, "agent_manager"):
             return
 
-        role_manager = self.session.role_manager
-        roles = role_manager.list_roles()
+        agent_manager = self.session.agent_manager
+        agents = agent_manager.list_agents()
 
-        if not roles:
+        if not agents:
             log = self.query_one("#output-log", OutputLog)
             log.write(Text(
-                f"No roles defined. Create roles in: {role_manager.roles_file_path}",
+                f"No agents defined. Create agents in: {agent_manager.agents_file_path}",
                 style="yellow"
             ))
             return
 
-        def handle_role_selection(selected: str | None) -> None:
-            """Handle the selected role from the modal."""
-            if self.session and hasattr(self.session, "role_manager"):
-                self.session.role_manager.set_active_role(selected)
+        def handle_agent_selection(selected: str | None) -> None:
+            """Handle the selected agent from the modal."""
+            if self.session and hasattr(self.session, "agent_manager"):
+                self.session.agent_manager.set_active_agent(selected)
                 self._update_role_display()
                 output_log = self.query_one("#output-log", OutputLog)
                 if selected:
-                    output_log.write(Text(f"Role set to: {selected}", style="cyan"))
+                    output_log.write(Text(f"Agent set to: {selected}", style="cyan"))
                 else:
-                    output_log.write(Text("Role cleared.", style="dim"))
+                    output_log.write(Text("Agent cleared.", style="dim"))
 
         self.push_screen(
-            RoleSelectorScreen(roles, role_manager.active_role_name),
-            handle_role_selection
+            AgentSelectorScreen(agents, agent_manager.active_agent_name),
+            handle_agent_selection
         )
 
     def action_copy_output(self) -> None:

@@ -83,7 +83,7 @@ class SolveMixin:
             return self._detect_ambiguity(problem, is_auditable_mode=True, session_tables=existing_tables)
 
         def run_dynamic_context():
-            # Match skills and roles dynamically based on query
+            # Match skills and agents dynamically based on query
             try:
                 return self.get_dynamic_context(problem)
             except Exception as exc:
@@ -95,7 +95,7 @@ class SolveMixin:
             try:
                 self._sync_user_facts_to_planner()
                 self._sync_glossary_to_planner(problem)
-                self._sync_available_roles_to_planner()
+                self._sync_available_agents_to_planner()
                 return self.planner.plan(problem)
             except Exception as exc:
                 logger.debug(f"[PARALLEL] Speculative planning failed: {exc}")
@@ -150,11 +150,11 @@ class SolveMixin:
                     logger.debug("[PARALLEL] Skills activated, discarding speculative plan")
 
             event_data = {
-                "role": dynamic_context.get("role"),
+                "agent": dynamic_context.get("agent"),
                 "skills": matched_skills,
-                "role_source": dynamic_context.get("role_source"),
+                "agent_source": dynamic_context.get("agent_source"),
             }
-            logger.info(f"[DYNAMIC_CONTEXT] Emitting event with data: role={event_data.get('role')}, skills={event_data.get('skills')}")
+            logger.info(f"[DYNAMIC_CONTEXT] Emitting event with data: agent={event_data.get('agent')}, skills={event_data.get('skills')}")
             self._emit_event(StepEvent(
                 event_type="dynamic_context",
                 step_number=0,
@@ -300,10 +300,10 @@ class SolveMixin:
                     data={"message": "Analyzing data sources and creating plan..."}
                 ))
 
-                # Sync user facts, glossary, and roles to planner before generating plan
+                # Sync user facts, glossary, and agents to planner before generating plan
                 self._sync_user_facts_to_planner()
                 self._sync_glossary_to_planner(current_problem)
-                self._sync_available_roles_to_planner()
+                self._sync_available_agents_to_planner()
 
                 # Generate plan
                 planner_response = self.planner.plan(current_problem)

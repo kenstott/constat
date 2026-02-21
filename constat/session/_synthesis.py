@@ -275,5 +275,5 @@ Return ONLY the suggestions, one per line, no numbering or bullets."""
         enhanced_problem = f"{problem}\n\nPlan Adjustments:\n{feedback}"
 
         self._sync_user_facts_to_planner()
-        self._sync_available_roles_to_planner()
+        self._sync_available_agents_to_planner()
         return self.planner.plan(enhanced_problem)

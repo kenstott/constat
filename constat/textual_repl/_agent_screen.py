@@ -7,7 +7,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""RoleSelectorScreen modal dialog for selecting a role."""
+"""AgentSelectorScreen modal dialog for selecting an agent."""
 
 from __future__ import annotations
 
@@ -19,19 +19,19 @@ from textual.widgets import Static, OptionList
 from textual.widgets.option_list import Option
 
 
-class RoleSelectorScreen(ModalScreen[str | None]):
-    """Modal screen for selecting a role."""
+class AgentSelectorScreen(ModalScreen[str | None]):
+    """Modal screen for selecting an agent."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
     ]
 
     CSS = """
-    RoleSelectorScreen {
+    AgentSelectorScreen {
         align: center middle;
     }
 
-    RoleSelectorScreen > Vertical {
+    AgentSelectorScreen > Vertical {
         width: 50;
         height: auto;
         max-height: 20;
@@ -40,38 +40,38 @@ class RoleSelectorScreen(ModalScreen[str | None]):
         padding: 1 2;
     }
 
-    RoleSelectorScreen > Vertical > Static {
+    AgentSelectorScreen > Vertical > Static {
         text-align: center;
         margin-bottom: 1;
     }
 
-    RoleSelectorScreen OptionList {
+    AgentSelectorScreen OptionList {
         height: auto;
         max-height: 12;
     }
     """
 
-    def __init__(self, roles: list[str], current_role: str | None = None):
+    def __init__(self, agents: list[str], current_agent: str | None = None):
         super().__init__()
-        self.roles = roles
-        self.current_role = current_role
+        self.agents = agents
+        self.current_agent = current_agent
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("Select Role", classes="title")
-            option_list = OptionList(id="role-list")
-            option_list.add_option(Option("(no role)", id="__none__"))
-            for role in self.roles:
-                marker = "→ " if role == self.current_role else "  "
-                option_list.add_option(Option(f"{marker}{role}", id=role))
+            yield Static("Select Agent", classes="title")
+            option_list = OptionList(id="agent-list")
+            option_list.add_option(Option("(no agent)", id="__none__"))
+            for agent in self.agents:
+                marker = "→ " if agent == self.current_agent else "  "
+                option_list.add_option(Option(f"{marker}{agent}", id=agent))
             yield option_list
 
     def on_mount(self) -> None:
         """Focus the option list."""
-        self.query_one("#role-list", OptionList).focus()
+        self.query_one("#agent-list", OptionList).focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle role selection."""
+        """Handle agent selection."""
         selected_id = str(event.option.id) if event.option.id else None
         if selected_id == "__none__":
             self.dismiss(None)
@@ -79,5 +79,5 @@ class RoleSelectorScreen(ModalScreen[str | None]):
             self.dismiss(selected_id)
 
     def action_cancel(self) -> None:
-        """Cancel without changing role."""
-        self.dismiss(self.current_role)
+        """Cancel without changing agent."""
+        self.dismiss(self.current_agent)

@@ -1,6 +1,6 @@
-# Roles for demo environment
-# Switch roles with: /role <name>
-# List roles with: /roles
+# Agents for demo environment
+# Switch agents with: /agent <name>
+# List agents with: /agents
 
 data-analyst:
   description: Focus on metrics, trends, and actionable insights

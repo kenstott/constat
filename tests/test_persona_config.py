@@ -3,28 +3,28 @@
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
 
-"""Tests for role configuration and permission gating."""
+"""Tests for persona configuration and permission gating."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from constat.server.role_config import (
-    RoleDefinition,
-    RolesConfig,
-    load_roles_config,
+from constat.server.persona_config import (
+    PersonaDefinition,
+    PersonasConfig,
+    load_personas_config,
     require_write,
 )
 from constat.server.config import UserPermissions
 
 
 # ---------------------------------------------------------------------------
-# load_roles_config
+# load_personas_config
 # ---------------------------------------------------------------------------
 
-class TestLoadRolesConfig:
-    def test_loads_all_roles(self):
-        config = load_roles_config()
-        assert set(config.roles.keys()) == {
+class TestLoadPersonasConfig:
+    def test_loads_all_personas(self):
+        config = load_personas_config()
+        assert set(config.personas.keys()) == {
             "platform_admin",
             "domain_builder",
             "sme",
@@ -34,34 +34,34 @@ class TestLoadRolesConfig:
 
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            load_roles_config(tmp_path / "nonexistent.yaml")
+            load_personas_config(tmp_path / "nonexistent.yaml")
 
     def test_custom_path(self, tmp_path):
-        p = tmp_path / "roles.yaml"
-        p.write_text("roles:\n  custom:\n    description: test\n    visibility: {x: true}\n    writes: {}\n    feedback: {}\n")
-        config = load_roles_config(p)
-        assert "custom" in config.roles
+        p = tmp_path / "personas.yaml"
+        p.write_text("personas:\n  custom:\n    description: test\n    visibility: {x: true}\n    writes: {}\n    feedback: {}\n")
+        config = load_personas_config(p)
+        assert "custom" in config.personas
 
 
 # ---------------------------------------------------------------------------
-# RolesConfig.can_see / can_write
+# PersonasConfig.can_see / can_write
 # ---------------------------------------------------------------------------
 
 class TestCanSee:
     @pytest.fixture(autouse=True)
     def _config(self):
-        self.config = load_roles_config()
+        self.config = load_personas_config()
 
     @pytest.mark.parametrize("section", [
         "results", "databases", "apis", "documents", "system_prompt",
-        "roles", "skills", "learnings", "code", "inference_code", "facts", "glossary",
+        "agents", "skills", "learnings", "code", "inference_code", "facts", "glossary",
     ])
     def test_platform_admin_sees_all(self, section):
         assert self.config.can_see("platform_admin", section)
 
     @pytest.mark.parametrize("section", [
         "results", "databases", "apis", "documents", "system_prompt",
-        "roles", "skills", "learnings", "code", "inference_code", "facts", "glossary",
+        "agents", "skills", "learnings", "code", "inference_code", "facts", "glossary",
     ])
     def test_domain_builder_sees_all(self, section):
         assert self.config.can_see("domain_builder", section)
@@ -81,17 +81,17 @@ class TestCanSee:
         assert self.config.can_see("viewer", "results")
         assert not self.config.can_see("viewer", "skills")
 
-    def test_unknown_role_sees_nothing(self):
+    def test_unknown_persona_sees_nothing(self):
         assert not self.config.can_see("nonexistent", "results")
 
 
 class TestCanWrite:
     @pytest.fixture(autouse=True)
     def _config(self):
-        self.config = load_roles_config()
+        self.config = load_personas_config()
 
     @pytest.mark.parametrize("resource", [
-        "sources", "glossary", "skills", "roles", "facts",
+        "sources", "glossary", "skills", "agents", "facts",
         "learnings", "system_prompt", "tier_promote",
     ])
     def test_platform_admin_writes_all(self, resource):
@@ -114,25 +114,25 @@ class TestCanWrite:
 
 
 # ---------------------------------------------------------------------------
-# UserPermissions admin → role validator
+# UserPermissions admin → persona validator
 # ---------------------------------------------------------------------------
 
 class TestUserPermissionsValidator:
-    def test_admin_true_default_role_upgrades(self):
-        p = UserPermissions(admin=True)
-        assert p.role == "platform_admin"
+    def test_platform_admin_persona_implies_admin(self):
+        p = UserPermissions(persona="platform_admin")
+        assert p.persona == "platform_admin"
 
-    def test_admin_true_explicit_role_preserved(self):
-        p = UserPermissions(admin=True, role="domain_builder")
-        assert p.role == "domain_builder"
+    def test_default_persona_is_viewer(self):
+        p = UserPermissions()
+        assert p.persona == "viewer"
 
-    def test_admin_false_default_role_stays_viewer(self):
-        p = UserPermissions(admin=False)
-        assert p.role == "viewer"
+    def test_explicit_persona_preserved(self):
+        p = UserPermissions(persona="sme")
+        assert p.persona == "sme"
 
-    def test_non_admin_explicit_role_preserved(self):
-        p = UserPermissions(admin=False, role="sme")
-        assert p.role == "sme"
+    def test_domain_builder_persona(self):
+        p = UserPermissions(persona="domain_builder")
+        assert p.persona == "domain_builder"
 
 
 # ---------------------------------------------------------------------------
@@ -143,39 +143,40 @@ class TestRequireWrite:
     @pytest.mark.asyncio
     async def test_allows_admin_write(self):
         dep = require_write("glossary")
-        config = load_roles_config()
+        config = load_personas_config()
 
         request = MagicMock()
-        request.app.state.roles_config = config
-        request.app.state.server_config = MagicMock()
+        request.app.state.personas_config = config
+        request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(role="platform_admin")
+            mock_perms.return_value = MagicMock(persona="platform_admin")
             # Should not raise
             await dep(request=request, user_id="uid", email="admin@test.com")
 
     @pytest.mark.asyncio
     async def test_blocks_viewer_write(self):
         dep = require_write("glossary")
-        config = load_roles_config()
+        config = load_personas_config()
 
         request = MagicMock()
-        request.app.state.roles_config = config
-        request.app.state.server_config = MagicMock()
+        request.app.state.personas_config = config
+        request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(role="viewer")
+            mock_perms.return_value = MagicMock(persona="viewer")
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
                 await dep(request=request, user_id="uid", email="viewer@test.com")
             assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_allows_when_no_roles_config(self):
+    async def test_allows_when_no_personas_config(self):
         dep = require_write("glossary")
 
         request = MagicMock()
-        request.app.state.roles_config = None
+        request.app.state.personas_config = None
+        request.app.state.server_config = MagicMock(auth_disabled=False)
 
         # Should not raise — backwards compat
         await dep(request=request, user_id="uid", email="anyone@test.com")
@@ -183,27 +184,27 @@ class TestRequireWrite:
     @pytest.mark.asyncio
     async def test_sme_can_write_glossary(self):
         dep = require_write("glossary")
-        config = load_roles_config()
+        config = load_personas_config()
 
         request = MagicMock()
-        request.app.state.roles_config = config
-        request.app.state.server_config = MagicMock()
+        request.app.state.personas_config = config
+        request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(role="sme")
+            mock_perms.return_value = MagicMock(persona="sme")
             await dep(request=request, user_id="uid", email="sme@test.com")
 
     @pytest.mark.asyncio
     async def test_sme_cannot_write_skills(self):
         dep = require_write("skills")
-        config = load_roles_config()
+        config = load_personas_config()
 
         request = MagicMock()
-        request.app.state.roles_config = config
-        request.app.state.server_config = MagicMock()
+        request.app.state.personas_config = config
+        request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(role="sme")
+            mock_perms.return_value = MagicMock(persona="sme")
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
                 await dep(request=request, user_id="uid", email="sme@test.com")

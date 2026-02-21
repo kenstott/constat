@@ -281,10 +281,10 @@ class PromptsMixin:
         if base_prompt:
             parts.append(base_prompt)
 
-        # Role prompt (if active)
-        role_prompt = self.role_manager.get_role_prompt()
-        if role_prompt:
-            parts.append(role_prompt)
+        # Agent prompt (if active)
+        agent_prompt = self.agent_manager.get_agent_prompt()
+        if agent_prompt:
+            parts.append(agent_prompt)
 
         # Skills prompts — filtered by step goal relevance
         active_skill_objects = self.skill_manager.active_skill_objects

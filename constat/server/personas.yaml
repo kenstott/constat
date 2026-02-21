@@ -1,4 +1,4 @@
-roles:
+personas:
   platform_admin:
     description: "Manages domains, users, system config"
     visibility:
@@ -7,7 +7,7 @@ roles:
       apis: true
       documents: true
       system_prompt: true
-      roles: true
+      agents: true
       skills: true
       learnings: true
       code: true
@@ -18,7 +18,7 @@ roles:
       sources: true
       glossary: true
       skills: true
-      roles: true
+      agents: true
       facts: true
       learnings: true
       system_prompt: true
@@ -35,7 +35,7 @@ roles:
       apis: true
       documents: true
       system_prompt: true
-      roles: true
+      agents: true
       skills: true
       learnings: true
       code: true
@@ -46,7 +46,7 @@ roles:
       sources: true
       glossary: true
       skills: true
-      roles: true
+      agents: true
       facts: true
       learnings: true
       system_prompt: true

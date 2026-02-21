@@ -459,9 +459,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     # noinspection PyUnresolvedReferences
     fastapi_app.state.session_manager = session_manager
 
-    # Load role definitions
-    from constat.server.role_config import load_roles_config
-    fastapi_app.state.roles_config = load_roles_config()
+    # Load persona definitions
+    from constat.server.persona_config import load_personas_config
+    fastapi_app.state.personas_config = load_personas_config()
 
     # Add CORS middleware
     fastapi_app.add_middleware(
@@ -560,16 +560,16 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.databases import router as databases_router
     from constat.server.routes.learnings import router as learnings_router
     from constat.server.routes.users import router as users_router
-    from constat.server.routes.roles import router as roles_router
+    from constat.server.routes.agents import router as agents_router
     from constat.server.routes.skills import router as skills_router
     from constat.server.routes.tier_management import router as tier_management_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
-    # Otherwise the wildcard routes will match paths like /roles, /skills, etc.
+    # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
     fastapi_app.include_router(
-        roles_router,
+        agents_router,
         prefix="/api/sessions",
-        tags=["roles"],
+        tags=["agents"],
     )
     fastapi_app.include_router(
         skills_router,

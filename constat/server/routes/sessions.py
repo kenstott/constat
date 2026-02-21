@@ -25,7 +25,7 @@ from constat.server.models import (
     SessionStatus,
 )
 from constat.server.permissions import get_user_permissions
-from constat.server.role_config import require_write
+from constat.server.persona_config import require_write
 from constat.server.session_manager import SessionManager, ManagedSession
 from constat.server.user_preferences import get_selected_domains, set_selected_domains
 from constat.storage.history import SessionHistory
@@ -696,15 +696,15 @@ async def get_prompt_context(
     system_prompt = session._get_system_prompt() if hasattr(session, '_get_system_prompt') else (session.config.system_prompt or "")
     logger.info(f"[prompt-context] system_prompt length: {len(system_prompt)}, has _get_system_prompt: {hasattr(session, '_get_system_prompt')}")
 
-    # Get active role
+    # Get active agent
     active_role = None
-    if hasattr(session, "role_manager"):
-        role_name = session.role_manager.active_role_name
-        if role_name:
-            role = session.role_manager.get_role(role_name)
+    if hasattr(session, "agent_manager"):
+        agent_name = session.agent_manager.active_agent_name
+        if agent_name:
+            agent = session.agent_manager.get_agent(agent_name)
             active_role = {
-                "name": role_name,
-                "prompt": role.prompt if role else "",
+                "name": agent_name,
+                "prompt": agent.prompt if agent else "",
             }
 
     # Get active skills
@@ -757,7 +757,7 @@ async def update_system_prompt(
     # Check admin permission
     server_config = request.app.state.server_config
     perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
-    if not perms.admin:
+    if not perms.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
     managed = session_manager.get_session(session_id)
@@ -815,7 +815,7 @@ async def match_dynamic_context(
     context = session.get_dynamic_context(query)
 
     return {
-        "role": context.get("role"),
+        "agent": context.get("agent"),
         "skills": context.get("skills"),
-        "role_source": context.get("role_source"),
+        "agent_source": context.get("agent_source"),
     }

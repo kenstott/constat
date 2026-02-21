@@ -55,21 +55,21 @@ help_commands:
   - ["/rule <text>", "Add a new rule directly", "Analysis"]
   - ["/rule-edit <id> <text>", "Edit an existing rule", "Analysis"]
   - ["/rule-delete <id>", "Delete a rule", "Analysis"]
-  # Roles & Skills
-  - ["/role [name]", "Show or set current role", "Roles & Skills"]
-  - ["/roles", "List available roles", "Roles & Skills"]
-  - ["/role-create <name>", "Create a new role", "Roles & Skills"]
-  - ["/role-edit <name> <prompt>", "Edit a role's prompt", "Roles & Skills"]
-  - ["/role-delete <name>", "Delete a role", "Roles & Skills"]
-  - ["/role-draft <name> <desc>", "Draft a role using AI", "Roles & Skills"]
-  - ["/skill [name]", "Show active or activate a skill", "Roles & Skills"]
-  - ["/skills", "List available skills", "Roles & Skills"]
-  - ["/skill-create <name>", "Create a new skill", "Roles & Skills"]
-  - ["/skill-edit <name> <content>", "Edit a skill's content", "Roles & Skills"]
-  - ["/skill-delete <name>", "Delete a skill", "Roles & Skills"]
-  - ["/skill-deactivate <name>", "Deactivate a skill", "Roles & Skills"]
-  - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Roles & Skills"]
-  - ["/skill-download <name> [file]", "Download skill as Claude Desktop zip", "Roles & Skills"]
+  # Agents & Skills
+  - ["/agent [name]", "Show or set current agent", "Agents & Skills"]
+  - ["/agents", "List available agents", "Agents & Skills"]
+  - ["/agent-create <name>", "Create a new agent", "Agents & Skills"]
+  - ["/agent-edit <name> <prompt>", "Edit an agent's prompt", "Agents & Skills"]
+  - ["/agent-delete <name>", "Delete an agent", "Agents & Skills"]
+  - ["/agent-draft <name> <desc>", "Draft an agent using AI", "Agents & Skills"]
+  - ["/skill [name]", "Show active or activate a skill", "Agents & Skills"]
+  - ["/skills", "List available skills", "Agents & Skills"]
+  - ["/skill-create <name>", "Create a new skill", "Agents & Skills"]
+  - ["/skill-edit <name> <content>", "Edit a skill's content", "Agents & Skills"]
+  - ["/skill-delete <name>", "Delete a skill", "Agents & Skills"]
+  - ["/skill-deactivate <name>", "Deactivate a skill", "Agents & Skills"]
+  - ["/skill-draft <name> <desc>", "Draft a skill using AI", "Agents & Skills"]
+  - ["/skill-download <name> [file]", "Download skill as Claude Desktop zip", "Agents & Skills"]
   # Glossary
   - ["/glossary [scope]", "Show glossary (all|defined|deprecated)", "Glossary"]
   - ["/define <name> <def>", "Add a glossary definition", "Glossary"]
@@ -115,12 +115,12 @@ command_descriptions:
   rule-edit: "Edit an existing rule"
   rule-delete: "Delete a rule"
   correct: "Record a correction"
-  role: "Set or show current role"
-  roles: "List available roles"
-  role-create: "Create a new role"
-  role-edit: "Edit a role's prompt"
-  role-delete: "Delete a role"
-  role-draft: "Draft a role using AI"
+  agent: "Set or show current agent"
+  agents: "List available agents"
+  agent-create: "Create a new agent"
+  agent-edit: "Edit an agent's prompt"
+  agent-delete: "Delete an agent"
+  agent-draft: "Draft an agent using AI"
   skill: "Show or activate a skill"
   skills: "List available skills"
   skill-create: "Create a new skill"

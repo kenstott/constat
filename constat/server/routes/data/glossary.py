@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from constat.server.role_config import require_write
+from constat.server.persona_config import require_write
 
 from constat.discovery.models import GlossaryTerm, display_entity_name
 from constat.server.models import (

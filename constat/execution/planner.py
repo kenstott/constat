@@ -105,7 +105,7 @@ class Planner:
         self.allowed_databases = allowed_databases
         self.allowed_apis = allowed_apis
         self.allowed_documents = allowed_documents
-        self._available_roles: list[dict] = []  # For role-based step assignment
+        self._available_agents: list[dict] = []  # For agent-based step assignment
         self._skill_manager = None  # Set via set_skill_manager()
         self._glossary_context: str = ""  # Set via set_glossary_context()
 
@@ -159,13 +159,13 @@ class Planner:
         """
         self._learning_store = learning_store
 
-    def set_available_roles(self, roles: list[dict]) -> None:
-        """Set available roles for role-based step assignment.
+    def set_available_agents(self, agents: list[dict]) -> None:
+        """Set available agents for agent-based step assignment.
 
         Args:
-            roles: List of role dicts with 'name' and 'description' keys
+            agents: List of agent dicts with 'name' and 'description' keys
         """
-        self._available_roles = roles or []
+        self._available_agents = agents or []
 
     def set_glossary_context(self, context: str) -> None:
         """Set glossary context for inclusion in planning prompts.
@@ -254,22 +254,22 @@ class Planner:
             except (KeyError, ValueError, OSError):
                 pass  # Don't fail planning if learnings can't be loaded
 
-        # Build available roles section for role-based step assignment
+        # Build available agents section for agent-based step assignment
         roles_text = ""
-        if self._available_roles:
-            role_lines = [
-                "\n## Available Roles - ASSIGN TO EACH STEP",
-                "**You MUST assign one of these role_id values to each step based on what the step does:**",
+        if self._available_agents:
+            agent_lines = [
+                "\n## Available Agents - ASSIGN TO EACH STEP",
+                "**You MUST assign one of these agent_id values to each step based on what the step does:**",
             ]
-            for role in self._available_roles:
-                name = role.get("name", "")
-                desc = role.get("description", "")
-                role_lines.append(f"- **{name}**: {desc}")
-            role_lines.append("\nChoose the most appropriate role for each step. Use `null` only if no role applies.")
-            roles_text = "\n".join(role_lines)
-            logger.info(f"[PLANNER] Including {len(self._available_roles)} roles in prompt")
+            for agent in self._available_agents:
+                name = agent.get("name", "")
+                desc = agent.get("description", "")
+                agent_lines.append(f"- **{name}**: {desc}")
+            agent_lines.append("\nChoose the most appropriate agent for each step. Use `null` only if no agent applies.")
+            roles_text = "\n".join(agent_lines)
+            logger.info(f"[PLANNER] Including {len(self._available_agents)} agents in prompt")
         else:
-            logger.debug("[PLANNER] No roles available for prompt")
+            logger.debug("[PLANNER] No agents available for prompt")
 
         # Build active skills section — names only, no prompt content.
         # Full skill prompts are injected at step codegen time based on step goal relevance.

@@ -168,13 +168,13 @@ class CoreMixin:
         # Pass learning store to planner for injecting learned rules
         self.planner.set_learning_store(self.learning_store)
 
-        # Role manager for user-defined roles ({data_dir}/{user_id}/roles.yaml)
-        from constat.core.roles import RoleManager
-        self.role_manager = RoleManager(user_id=self.user_id, base_dir=self.data_dir)
+        # Agent manager for user-defined agents ({data_dir}/{user_id}/agents.yaml)
+        from constat.core.agents import AgentManager
+        self.agent_manager = AgentManager(user_id=self.user_id, base_dir=self.data_dir)
 
-        # Role matcher for dynamic role selection based on query
-        from constat.core.role_matcher import RoleMatcher
-        self.role_matcher = RoleMatcher(self.role_manager)
+        # Agent matcher for dynamic agent selection based on query
+        from constat.core.agent_matcher import AgentMatcher
+        self.agent_matcher = AgentMatcher(self.agent_manager)
         # Initialize lazily on first use to avoid blocking startup
 
         # Skill manager: loads system, domain, and user skills in precedence order
@@ -193,8 +193,8 @@ class CoreMixin:
         # Wire skill manager into planner so active skills appear in planning prompts
         self.planner.set_skill_manager(self.skill_manager)
 
-        # Track current role for this query (None = shared context)
-        self._current_role_id: Optional[str] = None
+        # Track current agent for this query (None = shared context)
+        self._current_agent_id: Optional[str] = None
 
         # Event callbacks for monitoring
         self._event_handlers: list[Callable[[StepEvent], None]] = []
@@ -402,20 +402,20 @@ class CoreMixin:
         except Exception as e:
             logger.debug(f"Failed to sync glossary to planner: {e}")
 
-    def _sync_available_roles_to_planner(self) -> None:
-        """Sync available roles to the planner for role-based step assignment."""
+    def _sync_available_agents_to_planner(self) -> None:
+        """Sync available agents to the planner for agent-based step assignment."""
         try:
-            role_names = self.role_manager.list_roles()  # Returns list[str]
+            agent_names = self.agent_manager.list_agents()  # Returns list[str]
             # Convert to list of dicts with name and description
-            roles_list = []
-            for name in role_names:
-                role = self.role_manager.get_role(name)
-                if role:
-                    roles_list.append({"name": name, "description": role.description or ""})
-            logger.info(f"[ROLES] Syncing {len(roles_list)} roles to planner: {[r['name'] for r in roles_list]}")
-            self.planner.set_available_roles(roles_list)
+            agents_list = []
+            for name in agent_names:
+                agent = self.agent_manager.get_agent(name)
+                if agent:
+                    agents_list.append({"name": name, "description": agent.description or ""})
+            logger.info(f"[AGENTS] Syncing {len(agents_list)} agents to planner: {[a['name'] for a in agents_list]}")
+            self.planner.set_available_agents(agents_list)
         except Exception as e:
-            logger.warning(f"Failed to sync roles to planner: {e}")
+            logger.warning(f"Failed to sync agents to planner: {e}")
 
     def cancel_execution(self) -> None:
         """

@@ -87,20 +87,20 @@ If no active skills match the request, plan from primitives as usual.
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).
 
-## Role-Based Steps
-**IMPORTANT: Assign roles proactively to steps based on the step's content and purpose.**
+## Agent-Based Steps
+**IMPORTANT: Assign agents proactively to steps based on the step's content and purpose.**
 
-When available roles are listed below, assign the most appropriate role_id to EACH step based on:
+When available agents are listed below, assign the most appropriate agent_id to EACH step based on:
 - The type of analysis being performed (financial analysis -> financial-analyst)
 - The data domain being queried (SQL queries -> sql-expert)
 - The expertise required (research tasks -> researcher)
 
-Users may also explicitly specify roles using phrases like "as a financial analyst" - honor these explicitly.
+Users may also explicitly specify agents using phrases like "as a financial analyst" - honor these explicitly.
 
 Guidelines:
-1. Set `role_id` on each step to the most appropriate available role
-2. If no role fits well, use `null` for that step
-3. Prefer specific roles over generic ones when multiple could apply
+1. Set `role_id` on each step to the most appropriate available agent
+2. If no agent fits well, use `null` for that step
+3. Prefer specific agents over generic ones when multiple could apply
 
 ## Output Format
 Return a JSON object:

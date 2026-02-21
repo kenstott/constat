@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from constat.server.role_config import require_write
+from constat.server.persona_config import require_write
 
 from constat.core.config import Config
 from constat.server.auth import CurrentUserId

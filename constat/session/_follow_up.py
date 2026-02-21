@@ -352,10 +352,10 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             data={"message": "Planning follow-up analysis..."}
         ))
 
-        # Sync user facts, glossary, and roles to planner before generating plan
+        # Sync user facts, glossary, and agents to planner before generating plan
         self._sync_user_facts_to_planner()
         self._sync_glossary_to_planner(question)
-        self._sync_available_roles_to_planner()
+        self._sync_available_agents_to_planner()
 
         # Generate plan for follow-up
         planner_response = self.planner.plan(context_prompt)
@@ -452,7 +452,7 @@ User feedback: {suggestion_text}
 
                     self._sync_user_facts_to_planner()
                     self._sync_glossary_to_planner(question)
-                    self._sync_available_roles_to_planner()
+                    self._sync_available_agents_to_planner()
                     planner_response = self.planner.plan(context_prompt_with_feedback)
                     follow_up_plan = planner_response.plan
 

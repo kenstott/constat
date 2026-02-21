@@ -7,7 +7,7 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Resources mixin: database/file management, context, roles, facts."""
+"""Resources mixin: database/file management, context, agents, facts."""
 
 from __future__ import annotations
 
@@ -444,9 +444,9 @@ class ResourcesMixin:
         Returns:
             Dict with the created fact
         """
-        # Use current role context if not explicitly provided
-        if "role_id" not in params and self._current_role_id:
-            params["role_id"] = self._current_role_id
+        # Use current agent context if not explicitly provided
+        if "role_id" not in params and self._current_agent_id:
+            params["role_id"] = self._current_agent_id
 
         fact = self.fact_resolver.add_user_fact(
             fact_name=fact_name,
@@ -457,28 +457,28 @@ class ResourcesMixin:
         return fact.to_dict()
 
     # =========================================================================
-    # Dynamic Role and Skill Selection
+    # Dynamic Agent and Skill Selection
     # =========================================================================
 
-    def match_role_for_query(self, query: str) -> Optional[str]:
-        """Match a query to the best-fitting role using semantic similarity.
+    def match_agent_for_query(self, query: str) -> Optional[str]:
+        """Match a query to the best-fitting agent using semantic similarity.
 
         Args:
             query: User's natural language query
 
         Returns:
-            Role name if matched, None if no match (use shared context)
+            Agent name if matched, None if no match (use shared context)
         """
 
-        match = self.role_matcher.match(query)
+        match = self.agent_matcher.match(query)
         if match:
             # noinspection PyAttributeOutsideInit
-            self._current_role_id = match.role.name
-            logger.info(f"Matched role '{match.role.name}' for query (similarity: {match.similarity:.2f})")
-            return match.role.name
+            self._current_agent_id = match.agent.name
+            logger.info(f"Matched agent '{match.agent.name}' for query (similarity: {match.similarity:.2f})")
+            return match.agent.name
 
         # noinspection PyAttributeOutsideInit
-        self._current_role_id = None
+        self._current_agent_id = None
         return None
 
     def match_skills_for_query(self, query: str) -> list[str]:
@@ -494,13 +494,13 @@ class ResourcesMixin:
         return [m.skill.name for m in matches]
 
     def get_dynamic_context(self, query: str) -> dict:
-        """Get the dynamically selected role and skills for a query.
+        """Get the dynamically selected agent and skills for a query.
 
         This is the main entry point for dynamic selection. It:
         1. Matches the query to skills (multiple selection)
-        2. Checks if any skill specifies a role/agent context
-        3. If skill specifies role -> use that role
-        4. Otherwise -> matches the query to a role (single selection)
+        2. Checks if any skill specifies an agent context
+        3. If skill specifies agent -> use that agent
+        4. Otherwise -> matches the query to an agent (single selection)
         5. Returns the combined context for prompt building
 
         Args:
@@ -508,17 +508,17 @@ class ResourcesMixin:
 
         Returns:
             Dict with:
-                - role: Optional[dict] with name, description, similarity
+                - agent: Optional[dict] with name, description, similarity
                 - skills: List of dicts with name, prompt, description
-                - role_prompt: Combined role prompt content
+                - agent_prompt: Combined agent prompt content
                 - skills_prompt: Combined skills prompt content
-                - role_source: "skill" if role came from skill, "query" if from query match
+                - agent_source: "skill" if agent came from skill, "query" if from query match
         """
         # Step 1: Match skills first
         skill_matches = self.skill_matcher.match(query)
         skills_info = []
         skills_prompts = []
-        skill_specified_role = None
+        skill_specified_agent = None
 
         for match in skill_matches:
             skills_info.append({
@@ -528,11 +528,11 @@ class ResourcesMixin:
             })
             skills_prompts.append(f"## {match.skill.name}\n{match.skill.prompt}")
 
-            # Check if skill specifies a role/agent
+            # Check if skill specifies an agent
             # Uses the 'agent' field from SKILL.md frontmatter
-            if match.skill.agent and not skill_specified_role:
-                skill_specified_role = match.skill.agent
-                logger.info(f"Skill '{match.skill.name}' specifies agent/role: {skill_specified_role}")
+            if match.skill.agent and not skill_specified_agent:
+                skill_specified_agent = match.skill.agent
+                logger.info(f"Skill '{match.skill.name}' specifies agent: {skill_specified_agent}")
 
         if skill_matches:
             similarities = [f"{m.skill.name}({m.similarity:.2f})" for m in skill_matches]
@@ -540,52 +540,52 @@ class ResourcesMixin:
         else:
             logger.info("[CONTEXT] No skills matched for query")
 
-        # Step 2: Determine role
-        role_info = None
-        role_prompt = ""
-        role_source = None
+        # Step 2: Determine agent
+        agent_info = None
+        agent_prompt = ""
+        agent_source = None
 
-        if skill_specified_role:
-            # Skill specified a role - try to use it
-            role = self.role_manager.get_role(skill_specified_role)
-            if role:
-                self._current_role_id = role.name
-                role_info = {
-                    "name": role.name,
-                    "description": role.description,
+        if skill_specified_agent:
+            # Skill specified an agent - try to use it
+            agent = self.agent_manager.get_agent(skill_specified_agent)
+            if agent:
+                self._current_agent_id = agent.name
+                agent_info = {
+                    "name": agent.name,
+                    "description": agent.description,
                     "similarity": 1.0,  # Explicit specification = full match
                 }
-                role_prompt = role.prompt
-                role_source = "skill"
-                logger.info(f"[CONTEXT] Selected role: {role.name} (specified by skill)")
+                agent_prompt = agent.prompt
+                agent_source = "skill"
+                logger.info(f"[CONTEXT] Selected agent: {agent.name} (specified by skill)")
             else:
-                logger.warning(f"Skill specified role '{skill_specified_role}' not found, falling back to query match")
+                logger.warning(f"Skill specified agent '{skill_specified_agent}' not found, falling back to query match")
 
-        if not role_info:
-            # No skill-specified role, match based on query
-            role_match = self.role_matcher.match(query)
-            if role_match:
-                self._current_role_id = role_match.role.name
-                role_info = {
-                    "name": role_match.role.name,
-                    "description": role_match.role.description,
-                    "similarity": role_match.similarity,
+        if not agent_info:
+            # No skill-specified agent, match based on query
+            agent_match = self.agent_matcher.match(query)
+            if agent_match:
+                self._current_agent_id = agent_match.agent.name
+                agent_info = {
+                    "name": agent_match.agent.name,
+                    "description": agent_match.agent.description,
+                    "similarity": agent_match.similarity,
                 }
-                role_prompt = role_match.role.prompt
-                role_source = "query"
-                logger.info(f"[CONTEXT] Selected role: {role_match.role.name} (similarity: {role_match.similarity:.2f})")
+                agent_prompt = agent_match.agent.prompt
+                agent_source = "query"
+                logger.info(f"[CONTEXT] Selected agent: {agent_match.agent.name} (similarity: {agent_match.similarity:.2f})")
             else:
                 # noinspection PyAttributeOutsideInit
-                self._current_role_id = None
-                logger.info("[CONTEXT] No role matched for query")
+                self._current_agent_id = None
+                logger.info("[CONTEXT] No agent matched for query")
 
-        # Step 3: Merge role-declared skills
-        # If the selected role declares explicit skills, add them if not already matched
-        if role_info:
-            role_obj = self.role_manager.get_role(role_info["name"])
-            if role_obj and role_obj.skills:
+        # Step 3: Merge agent-declared skills
+        # If the selected agent declares explicit skills, add them if not already matched
+        if agent_info:
+            agent_obj = self.agent_manager.get_agent(agent_info["name"])
+            if agent_obj and agent_obj.skills:
                 matched_skill_names = {s["name"] for s in skills_info}
-                for skill_name in role_obj.skills:
+                for skill_name in agent_obj.skills:
                     if skill_name not in matched_skill_names:
                         skill_obj = self.skill_manager.get_skill(skill_name)
                         if skill_obj:
@@ -593,45 +593,45 @@ class ResourcesMixin:
                                 "name": skill_obj.name,
                                 "description": skill_obj.description,
                                 "similarity": 1.0,
-                                "source": "role",
+                                "source": "agent",
                             })
                             skills_prompts.append(
-                                f"## {skill_obj.name} (required by role: {role_info['name']})\n{skill_obj.prompt}"
+                                f"## {skill_obj.name} (required by agent: {agent_info['name']})\n{skill_obj.prompt}"
                             )
-                            logger.info(f"[CONTEXT] Added role-declared skill: {skill_name}")
+                            logger.info(f"[CONTEXT] Added agent-declared skill: {skill_name}")
                         else:
-                            logger.warning(f"Role '{role_info['name']}' declares skill '{skill_name}' but it was not found")
+                            logger.warning(f"Agent '{agent_info['name']}' declares skill '{skill_name}' but it was not found")
 
         return {
-            "role": role_info,
+            "agent": agent_info,
             "skills": skills_info,
-            "role_prompt": role_prompt,
+            "agent_prompt": agent_prompt,
             "skills_prompt": "\n\n".join(skills_prompts),
-            "role_source": role_source,
+            "agent_source": agent_source,
         }
 
     @property
-    def current_role_id(self) -> Optional[str]:
-        """Get the current role ID for this query context."""
-        return self._current_role_id
+    def current_agent_id(self) -> Optional[str]:
+        """Get the current agent ID for this query context."""
+        return self._current_agent_id
 
-    def set_current_role(self, role_name: Optional[str]) -> bool:
-        """Manually set the current role (override dynamic selection).
+    def set_current_agent(self, agent_name: Optional[str]) -> bool:
+        """Manually set the current agent (override dynamic selection).
 
         Args:
-            role_name: Role name or None to clear
+            agent_name: Agent name or None to clear
 
         Returns:
-            True if successful, False if role not found
+            True if successful, False if agent not found
         """
-        if role_name is None:
+        if agent_name is None:
             # noinspection PyAttributeOutsideInit
-            self._current_role_id = None
-            self.role_manager.set_active_role(None)
+            self._current_agent_id = None
+            self.agent_manager.set_active_agent(None)
             return True
 
-        if self.role_manager.set_active_role(role_name):
+        if self.agent_manager.set_active_agent(agent_name):
             # noinspection PyAttributeOutsideInit
-            self._current_role_id = role_name
+            self._current_agent_id = agent_name
             return True
         return False

@@ -3,16 +3,16 @@
 # This source code is licensed under the Business Source License 1.1
 # found in the LICENSE file in the root directory of this source tree.
 
-"""Embedding-based role matching for dynamic role selection.
+"""Embedding-based agent matching for dynamic agent selection.
 
-Matches user queries to roles based on semantic similarity between
-the query and role descriptions. Uses the same embedding model as
+Matches user queries to agents based on semantic similarity between
+the query and agent descriptions. Uses the same embedding model as
 intent classification for consistency.
 
 The matcher:
-1. Encodes role descriptions at initialization
-2. For each query, computes similarity to all role descriptions
-3. Returns the best matching role if above threshold, else None
+1. Encodes agent descriptions at initialization
+2. For each query, computes similarity to all agent descriptions
+3. Returns the best matching agent if above threshold, else None
 """
 
 import logging
@@ -21,63 +21,63 @@ from typing import Optional
 
 import numpy as np
 
-from constat.core.roles import Role, RoleManager
+from constat.core.agents import Agent, AgentManager
 from constat.embedding_loader import EmbeddingModelLoader
 
 logger = logging.getLogger(__name__)
 
-# Similarity threshold for role matching
-# Lower than intent classification (0.80) since role descriptions are broader
-ROLE_MATCH_THRESHOLD = 0.45
+# Similarity threshold for agent matching
+# Lower than intent classification (0.80) since agent descriptions are broader
+AGENT_MATCH_THRESHOLD = 0.45
 
 
 @dataclass
-class RoleMatch:
-    """Result of role matching."""
-    role: Role
+class AgentMatch:
+    """Result of agent matching."""
+    agent: Agent
     similarity: float
 
     @property
     def name(self) -> str:
-        return self.role.name
+        return self.agent.name
 
 
-class RoleMatcher:
-    """Matches user queries to roles using embedding similarity.
+class AgentMatcher:
+    """Matches user queries to agents using embedding similarity.
 
     Uses BAAI/bge-large-en-v1.5 model (same as ConceptDetector and IntentClassifier)
-    for semantic matching between queries and role descriptions.
+    for semantic matching between queries and agent descriptions.
 
     Example:
-        matcher = RoleMatcher(role_manager)
+        matcher = AgentMatcher(agent_manager)
         matcher.initialize()
 
         match = matcher.match("analyze quarterly revenue trends")
         if match:
-            print(f"Matched role: {match.role.name} ({match.similarity:.2f})")
+            print(f"Matched agent: {match.agent.name} ({match.similarity:.2f})")
     """
 
     def __init__(
         self,
-        role_manager: RoleManager,
-        threshold: float = ROLE_MATCH_THRESHOLD,
+        agent_manager: AgentManager,
+        threshold: float = AGENT_MATCH_THRESHOLD,
     ):
-        """Initialize the role matcher.
+        """Initialize the agent matcher.
 
         Args:
-            role_manager: RoleManager instance with loaded roles
-            threshold: Minimum cosine similarity to match a role (default 0.45)
+            agent_manager: AgentManager instance with loaded agents
+            threshold: Minimum cosine similarity to match an agent (default 0.45)
         """
-        self._role_manager = role_manager
+        self._agent_manager = agent_manager
         self._threshold = threshold
 
         # Lazy-loaded model and embeddings
         self._model: Optional[object] = None
-        self._role_embeddings: Optional[dict[str, np.ndarray]] = None
+        self._agent_embeddings: Optional[dict[str, np.ndarray]] = None
         self._initialized = False
 
     def initialize(self) -> None:
-        """Precompute embeddings for all role descriptions.
+        """Precompute embeddings for all agent descriptions.
 
         Called lazily on first match. Embeddings are cached for fast matching.
         """
@@ -87,19 +87,19 @@ class RoleMatcher:
         # Use shared embedding model loader
         self._model = EmbeddingModelLoader.get_instance().get_model()
 
-        # Compute embeddings for each role's description
-        self._role_embeddings = {}
+        # Compute embeddings for each agent's description
+        self._agent_embeddings = {}
 
-        for role_name in self._role_manager.list_roles():
-            role = self._role_manager.get_role(role_name)
-            if not role:
+        for agent_name in self._agent_manager.list_agents():
+            agent = self._agent_manager.get_agent(agent_name)
+            if not agent:
                 continue
 
             # Use description if available, otherwise use first line of prompt
-            text_to_embed = role.description if role.description else role.prompt.split('\n')[0]
+            text_to_embed = agent.description if agent.description else agent.prompt.split('\n')[0]
 
             if not text_to_embed.strip():
-                logger.warning(f"Role '{role_name}' has no description or prompt, skipping")
+                logger.warning(f"Agent '{agent_name}' has no description or prompt, skipping")
                 continue
 
             # noinspection PyUnresolvedReferences
@@ -107,35 +107,35 @@ class RoleMatcher:
                 text_to_embed,
                 normalize_embeddings=True,
             )
-            self._role_embeddings[role_name] = embedding
+            self._agent_embeddings[agent_name] = embedding
 
-        logger.info(f"RoleMatcher initialized with {len(self._role_embeddings)} roles")
+        logger.info(f"AgentMatcher initialized with {len(self._agent_embeddings)} agents")
         self._initialized = True
 
     def reload(self) -> None:
-        """Reload role embeddings after role changes."""
+        """Reload agent embeddings after agent changes."""
         self._initialized = False
-        self._role_embeddings = None
+        self._agent_embeddings = None
         self.initialize()
 
     def match(
         self,
         query: str,
         threshold: Optional[float] = None,
-    ) -> Optional[RoleMatch]:
-        """Match a query to the best-fitting role.
+    ) -> Optional[AgentMatch]:
+        """Match a query to the best-fitting agent.
 
         Args:
             query: User's natural language query
             threshold: Optional override for similarity threshold
 
         Returns:
-            RoleMatch if a role matches above threshold, None otherwise
+            AgentMatch if an agent matches above threshold, None otherwise
         """
         if not self._initialized:
             self.initialize()
 
-        if not self._role_embeddings:
+        if not self._agent_embeddings:
             return None
 
         threshold = threshold if threshold is not None else self._threshold
@@ -147,34 +147,34 @@ class RoleMatcher:
             normalize_embeddings=True,
         )
 
-        # Find best matching role
-        best_role: Optional[Role] = None
+        # Find best matching agent
+        best_agent: Optional[Agent] = None
         best_similarity = 0.0
 
-        for role_name, role_embedding in self._role_embeddings.items():
+        for agent_name, agent_embedding in self._agent_embeddings.items():
             # Cosine similarity (embeddings are normalized, so dot product works)
-            similarity = float(np.dot(role_embedding, query_embedding))
+            similarity = float(np.dot(agent_embedding, query_embedding))
 
             if similarity > best_similarity:
                 best_similarity = similarity
-                best_role = self._role_manager.get_role(role_name)
+                best_agent = self._agent_manager.get_agent(agent_name)
 
         # Check threshold
-        if best_role is None or best_similarity < threshold:
+        if best_agent is None or best_similarity < threshold:
             logger.debug(
-                f"No role matched for query (best: {best_similarity:.2f}, threshold: {threshold})"
+                f"No agent matched for query (best: {best_similarity:.2f}, threshold: {threshold})"
             )
             return None
 
-        logger.info(f"Matched role '{best_role.name}' with similarity {best_similarity:.2f}")
-        return RoleMatch(role=best_role, similarity=best_similarity)
+        logger.info(f"Matched agent '{best_agent.name}' with similarity {best_similarity:.2f}")
+        return AgentMatch(agent=best_agent, similarity=best_similarity)
 
     def match_all(
         self,
         query: str,
         threshold: Optional[float] = None,
-    ) -> list[RoleMatch]:
-        """Get all roles that match above threshold, sorted by similarity.
+    ) -> list[AgentMatch]:
+        """Get all agents that match above threshold, sorted by similarity.
 
         Useful for debugging or showing alternatives to the user.
 
@@ -183,12 +183,12 @@ class RoleMatcher:
             threshold: Optional override for similarity threshold
 
         Returns:
-            List of RoleMatch objects sorted by similarity (highest first)
+            List of AgentMatch objects sorted by similarity (highest first)
         """
         if not self._initialized:
             self.initialize()
 
-        if not self._role_embeddings:
+        if not self._agent_embeddings:
             return []
 
         threshold = threshold if threshold is not None else self._threshold
@@ -200,15 +200,15 @@ class RoleMatcher:
             normalize_embeddings=True,
         )
 
-        # Compute similarities for all roles
+        # Compute similarities for all agents
         matches = []
-        for role_name, role_embedding in self._role_embeddings.items():
-            similarity = float(np.dot(role_embedding, query_embedding))
+        for agent_name, agent_embedding in self._agent_embeddings.items():
+            similarity = float(np.dot(agent_embedding, query_embedding))
 
             if similarity >= threshold:
-                role = self._role_manager.get_role(role_name)
-                if role:
-                    matches.append(RoleMatch(role=role, similarity=similarity))
+                agent = self._agent_manager.get_agent(agent_name)
+                if agent:
+                    matches.append(AgentMatch(agent=agent, similarity=similarity))
 
         # Sort by similarity descending
         matches.sort(key=lambda x: x.similarity, reverse=True)
@@ -230,6 +230,6 @@ class RoleMatcher:
         return self._initialized
 
     @property
-    def role_count(self) -> int:
-        """Get the number of roles with embeddings."""
-        return len(self._role_embeddings) if self._role_embeddings else 0
+    def agent_count(self) -> int:
+        """Get the number of agents with embeddings."""
+        return len(self._agent_embeddings) if self._agent_embeddings else 0

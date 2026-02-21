@@ -5,8 +5,7 @@ import { get } from './client'
 export interface UserPermissions {
   user_id: string
   email: string | null
-  admin: boolean
-  role: string
+  persona: string
   domains: string[]
   databases: string[]
   documents: string[]

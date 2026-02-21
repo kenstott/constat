@@ -48,7 +48,7 @@ interface RoleInfo {
 // User permissions
 interface UserPermissions {
   isAdmin: boolean
-  role: string
+  persona: string
   visibility: Record<string, boolean>
   writes: Record<string, boolean>
 }
@@ -138,7 +138,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   promptContext: null,
   allSkills: [],
   allRoles: [],
-  userPermissions: { isAdmin: false, role: 'viewer', visibility: {}, writes: {} },
+  userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
   selectedArtifact: null,
   selectedTable: null,
   loading: false,
@@ -418,11 +418,11 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchPermissions: async () => {
     try {
       const perms = await sessionsApi.getMyPermissions()
-      set({ userPermissions: { isAdmin: perms.admin, role: perms.role, visibility: perms.visibility, writes: perms.writes } })
+      set({ userPermissions: { isAdmin: perms.persona === 'platform_admin', persona: perms.persona, visibility: perms.visibility, writes: perms.writes } })
     } catch (error) {
       // If auth is disabled or user not logged in, default to non-admin
       console.warn('Failed to fetch permissions:', error)
-      set({ userPermissions: { isAdmin: false, role: 'viewer', visibility: {}, writes: {} } })
+      set({ userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} } })
     }
   },
 
@@ -636,7 +636,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       promptContext: null,
       allSkills: [],
       allRoles: [],
-      userPermissions: { isAdmin: false, role: 'viewer', visibility: {}, writes: {} },
+      userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
       selectedArtifact: null,
       selectedTable: null,
       error: null,

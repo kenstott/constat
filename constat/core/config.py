@@ -863,6 +863,9 @@ class DomainConfig(BaseModel):
     facts: dict[str, Any] = Field(default_factory=dict)
     learnings: dict[str, Any] = Field(default_factory=dict)
 
+    # Optional domain-scoped permissions (loaded from permissions.yaml in domain directory)
+    permissions: Optional[Any] = Field(default=None, description="Domain-scoped PermissionsConfig (restricts global permissions)")
+
     # Optional domain-specific settings
     databases_description: str = ""
     system_prompt: str = ""
@@ -902,6 +905,7 @@ class DomainConfig(BaseModel):
 
         Expected structure:
             <path>/config.yaml          — domain config
+            <path>/permissions.yaml     — optional domain-scoped permissions
             <path>/skills/              — domain-specific skills
             <path>/domains/<sub>/       — nested sub-domains
 
@@ -920,6 +924,17 @@ class DomainConfig(BaseModel):
 
         # Load parent config
         parent = cls.from_yaml(config_file)
+
+        # Load domain-scoped permissions if present
+        permissions_file = path / "permissions.yaml"
+        if permissions_file.exists():
+            from constat.server.config import PermissionsConfig
+            with open(permissions_file) as f:
+                raw_content = f.read()
+            substituted = _substitute_env_vars(raw_content)
+            perms_data = yaml.safe_load(substituted)
+            if perms_data:
+                parent.permissions = PermissionsConfig.model_validate(perms_data)
 
         # Load and merge sub-domains (alphabetically)
         sub_domains_dir = path / "domains"
@@ -946,7 +961,11 @@ class DomainConfig(BaseModel):
 
             # Ensure required fields
             merged_data.setdefault("name", parent.name)
-            return cls.model_validate(merged_data)
+            result = cls.model_validate(merged_data)
+            # Preserve permissions from parent (model_validate won't carry it through merged_data correctly)
+            if parent.permissions is not None:
+                result.permissions = parent.permissions
+            return result
 
         return parent
 
