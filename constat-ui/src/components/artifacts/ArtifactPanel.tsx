@@ -1,6 +1,6 @@
 // Artifact Panel container
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -110,8 +110,63 @@ function parseFrontMatter(content: string): { frontMatter: Record<string, unknow
   return { frontMatter, body }
 }
 
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainSec = Math.round(seconds % 60)
+  return `${minutes}m ${remainSec}s`
+}
+
+/** Collapsible step code list for the Exploratory Code section */
+function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string }> }) {
+  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set())
+
+  const toggleStep = useCallback((stepNumber: number) => {
+    setCollapsedSteps((prev) => {
+      const next = new Set(prev)
+      if (next.has(stepNumber)) {
+        next.delete(stepNumber)
+      } else {
+        next.add(stepNumber)
+      }
+      return next
+    })
+  }, [])
+
+  return (
+    <div className="space-y-1">
+      {stepCodes.map((step) => {
+        const isCollapsed = collapsedSteps.has(step.step_number)
+        return (
+          <div key={step.step_number}>
+            <button
+              onClick={() => toggleStep(step.step_number)}
+              className="flex items-center gap-1 w-full text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
+            >
+              {isCollapsed ? (
+                <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+              ) : (
+                <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+              )}
+              <span>Step {step.step_number}: {step.goal}</span>
+            </button>
+            {!isCollapsed && (
+              <CodeViewer
+                code={step.code}
+                language="python"
+              />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function ArtifactPanel() {
-  const { session } = useSessionStore()
+  const { session, messages } = useSessionStore()
   const { expandedArtifactSections, expandArtifactSection, pendingDeepLink, consumeDeepLink } = useUIStore()
   const {
     artifacts,
@@ -1168,7 +1223,12 @@ ${skill.body}`
       )}
 
       {/* ═══════════════ RESULTS ═══════════════ */}
-      {totalCount > 0 && (
+      {totalCount > 0 && (() => {
+        // Get total elapsed from the final insight message (query submit → complete)
+        const finalInsight = messages.find((m) => m.isFinalInsight && m.stepDurationMs != null)
+        const totalElapsedMs = finalInsight?.stepDurationMs ?? null
+
+        return (
         <>
           <AccordionSection
             id="results"
@@ -1177,17 +1237,24 @@ ${skill.body}`
             icon={<StarIcon className="w-4 h-4" />}
             command="/results"
             action={
-              <button
-                onClick={(e) => { e.stopPropagation(); toggleResultsFilter(); }}
-                className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-                  showPublishedOnly
-                    ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
-                    : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
-                }`}
-                title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
-              >
-                {showPublishedOnly ? 'published' : 'all'}
-              </button>
+              <div className="flex items-center gap-1.5">
+                {totalElapsedMs != null && totalElapsedMs > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400" title="Total elapsed time">
+                    {formatMs(totalElapsedMs)}
+                  </span>
+                )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleResultsFilter(); }}
+                  className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                    showPublishedOnly
+                      ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                      : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                  }`}
+                  title={showPublishedOnly ? 'Showing published only. Click to show all.' : 'Showing all. Click to show published only.'}
+                >
+                  {showPublishedOnly ? 'published' : 'all'}
+                </button>
+              </div>
             }
           >
             {displayedResults.length === 0 ? (
@@ -1217,7 +1284,8 @@ ${skill.body}`
             )}
           </AccordionSection>
         </>
-      )}
+        )
+      })()}
 
       {/* ═══════════════ SOURCES ═══════════════ */}
       <button
@@ -1229,7 +1297,7 @@ ${skill.body}`
         className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between hover:bg-gray-150 dark:hover:bg-gray-750 transition-colors"
       >
         <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-          Sources
+          Sources ({databases.length + apis.length + documents.length})
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />
       </button>
@@ -2671,19 +2739,7 @@ ${skill.body}`
             </button>
           }
         >
-          <div className="space-y-3">
-            {stepCodes.map((step) => (
-              <div key={step.step_number}>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                  Step {step.step_number}: {step.goal}
-                </p>
-                <CodeViewer
-                  code={step.code}
-                  language="python"
-                />
-              </div>
-            ))}
-          </div>
+          <StepCodeList stepCodes={stepCodes} />
         </AccordionSection>
       )}
 

@@ -16,6 +16,9 @@ import {
   ClipboardDocumentCheckIcon,
   EyeIcon,
   ArrowPathIcon,
+  LightBulbIcon,
+  BoltIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline'
 
 // Animated dots component for loading states
@@ -30,6 +33,7 @@ function AnimatedDots() {
 }
 
 type MessageType = 'user' | 'system' | 'plan' | 'step' | 'output' | 'error' | 'thinking'
+export type StepDisplayMode = 'oneline' | 'condensed' | 'full'
 
 interface MessageBubbleProps {
   type: MessageType
@@ -45,6 +49,20 @@ interface MessageBubbleProps {
   children?: ReactNode
   role?: string // Role used for this step (e.g., "data_analyst")
   skills?: string[] // Skills used for this step
+  stepStartedAt?: number
+  stepDurationMs?: number
+  stepAttempts?: number
+  stepDisplayMode?: StepDisplayMode // External override for condense-all / expand-all
+  stepDisplayModeVersion?: number // Increment to re-trigger override
+}
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainSec = Math.round(seconds % 60)
+  return `${minutes}m ${remainSec}s`
 }
 
 const typeStyles: Record<MessageType, { bg: string; text: string; icon: typeof UserIcon; iconColor: string }> = {
@@ -109,23 +127,59 @@ export function MessageBubble({
   children,
   role,
   skills,
+  stepStartedAt,
+  stepDurationMs,
+  stepAttempts,
+  stepDisplayMode: externalStepMode,
+  stepDisplayModeVersion: externalStepModeVersion,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
   const Icon = styles.icon
   const isUser = type === 'user'
+
+  // Elapsed timer for running steps
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!stepStartedAt || stepDurationMs !== undefined) return
+    setElapsed(Date.now() - stepStartedAt)
+    const id = setInterval(() => setElapsed(Date.now() - stepStartedAt), 1000)
+    return () => clearInterval(id)
+  }, [stepStartedAt, stepDurationMs])
 
   // Strip "Step X:" or "Step X" prefix from content if stepNumber is shown in header
   const cleanedContent = stepNumber !== undefined
     ? content.replace(/^Step\s+\d+:?\s*/i, '')
     : content
 
-  // Expand/collapse state
+  // Step 3-mode display state
+  const isStep = type === 'step'
+  const getInitialStepMode = (): StepDisplayMode => {
+    if (defaultExpanded) return 'full'
+    return 'condensed'
+  }
+  const [stepMode, setStepMode] = useState<StepDisplayMode>(getInitialStepMode)
+
+  // Non-step expand/collapse state (unchanged)
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false)
   const [needsExpansion, setNeedsExpansion] = useState(false)
   const [copied, setCopied] = useState(false)
   const [showRedoForm, setShowRedoForm] = useState(false)
   const [redoGuidance, setRedoGuidance] = useState('')
   const contentRef = useRef<HTMLDivElement>(null)
+
+  // Sync external step mode override (condense-all / expand-all)
+  useEffect(() => {
+    if (isStep && externalStepMode !== undefined) {
+      setStepMode(externalStepMode)
+    }
+  }, [externalStepMode, externalStepModeVersion])
+
+  // Auto-collapse step to condensed when it completes
+  useEffect(() => {
+    if (isStep && !isLive && !isPending && stepMode === 'full') {
+      setStepMode('condensed')
+    }
+  }, [isLive])
 
   // Copy message content to clipboard
   const handleCopy = async () => {
@@ -140,7 +194,7 @@ export function MessageBubble({
       const scrollHeight = contentRef.current.scrollHeight
       setNeedsExpansion(scrollHeight > MAX_COLLAPSED_HEIGHT)
     }
-  }, [content])
+  }, [content, stepMode])
 
   // Check if content ends with "..." to show animated dots
   const showAnimatedDots = (isLive || isPending) && cleanedContent.endsWith('...')
@@ -164,27 +218,36 @@ export function MessageBubble({
             isUser ? 'rounded-tr-none' : 'rounded-tl-none'
           } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''}`}
         >
-          {/* Copy button - appears on hover, tucked into corner */}
-          <button
-            onClick={handleCopy}
-            className={`absolute top-[-2px] right-[-2px] p-1 rounded transition-all ${
-              copied
-                ? 'text-green-500 dark:text-green-400'
-                : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
-            }`}
-            title={copied ? 'Copied!' : 'Copy message'}
-          >
-            {copied ? (
-              <ClipboardDocumentCheckIcon className="w-4 h-4" />
-            ) : (
-              <ClipboardDocumentIcon className="w-4 h-4" />
-            )}
-          </button>
+          {/* Copy button for non-step messages - appears on hover, tucked into corner */}
+          {!isStep && (
+            <button
+              onClick={handleCopy}
+              className={`absolute top-[-2px] right-[-2px] p-1 rounded transition-all ${
+                copied
+                  ? 'text-green-500 dark:text-green-400'
+                  : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
+              }`}
+              title={copied ? 'Copied!' : 'Copy message'}
+            >
+              {copied ? (
+                <ClipboardDocumentCheckIcon className="w-4 h-4" />
+              ) : (
+                <ClipboardDocumentIcon className="w-4 h-4" />
+              )}
+            </button>
+          )}
           {stepNumber !== undefined && (
-            <div className="flex items-center gap-2 mb-1">
+            <div className={`flex items-center gap-2 ${stepMode === 'oneline' ? '' : 'mb-1'}`}>
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
                 Step {stepNumber}
               </span>
+              {isPending && isLive ? (
+                <LightBulbIcon className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+              ) : isLive ? (
+                <BoltIcon className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
+              ) : stepDurationMs !== undefined ? (
+                <CheckIcon className="w-3.5 h-3.5 text-green-500" />
+              ) : null}
               {role && (
                 <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300">
                   @{role}
@@ -198,17 +261,70 @@ export function MessageBubble({
                   {skill}
                 </span>
               ))}
+              {stepStartedAt && (
+                <span className="text-[10px] text-gray-400 dark:text-gray-500 ml-auto">
+                  {stepDurationMs !== undefined
+                    ? formatMs(stepDurationMs)
+                    : formatMs(elapsed)}
+                  {(stepAttempts ?? 0) > 0 && (
+                    <span className="ml-1 text-amber-500">{stepAttempts} {stepAttempts === 1 ? 'retry' : 'retries'}</span>
+                  )}
+                </span>
+              )}
+              {isStep && (
+                <span className={`inline-flex items-center ${!stepStartedAt ? 'ml-auto' : ''}`}>
+                  {(stepMode === 'condensed' || stepMode === 'full') && (
+                    <button
+                      onClick={() => setStepMode(stepMode === 'condensed' ? 'oneline' : 'condensed')}
+                      className="p-0.5 rounded text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
+                      title="Show less"
+                    >
+                      <ChevronUpIcon className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {(stepMode === 'oneline' || (stepMode === 'condensed' && needsExpansion)) && (
+                    <button
+                      onClick={() => setStepMode(stepMode === 'oneline' ? 'condensed' : 'full')}
+                      className="p-0.5 rounded text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
+                      title="Show more"
+                    >
+                      <ChevronDownIcon className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </span>
+              )}
+              {/* Copy button for step messages - inline in header after chevrons */}
+              {isStep && (
+                <button
+                  onClick={handleCopy}
+                  className={`p-0.5 rounded transition-all ${
+                    copied
+                      ? 'text-green-500 dark:text-green-400'
+                      : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
+                  }`}
+                  title={copied ? 'Copied!' : 'Copy message'}
+                >
+                  {copied ? (
+                    <ClipboardDocumentCheckIcon className="w-3.5 h-3.5" />
+                  ) : (
+                    <ClipboardDocumentIcon className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              )}
             </div>
           )}
+          {!(isStep && stepMode === 'oneline') && (
           <div
             ref={contentRef}
             className={`text-sm ${styles.text} ${
-              !isExpanded && needsExpansion
-                ? 'overflow-y-auto pr-[5px]'
-                : ''
+              isStep
+                ? stepMode === 'condensed' ? 'overflow-y-auto' : ''
+                : !isExpanded && needsExpansion ? 'overflow-y-auto pr-[5px]' : ''
             }`}
             style={{
-              maxHeight: !isExpanded && needsExpansion ? `${MAX_COLLAPSED_HEIGHT}px` : undefined,
+              maxHeight: isStep
+                ? stepMode === 'condensed' ? `${MAX_COLLAPSED_HEIGHT}px` : undefined
+                : !isExpanded && needsExpansion ? `${MAX_COLLAPSED_HEIGHT}px` : undefined,
             }}
           >
             {type === 'thinking' ? (
@@ -269,10 +385,11 @@ export function MessageBubble({
               </ReactMarkdown>
             )}
           </div>
-          {/* Action buttons row */}
-          {(needsExpansion || (isFinalInsight && onViewResult) || onRedo) && (
+          )}
+          {/* Action buttons row — non-step expand/collapse + view/redo */}
+          {((!isStep && needsExpansion) || (isFinalInsight && onViewResult) || onRedo) && (
             <div className="mt-2 flex items-center gap-3">
-              {needsExpansion && (
+              {!isStep && needsExpansion && (
                 <button
                   onClick={() => setIsExpanded(!isExpanded)}
                   className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
@@ -298,6 +415,11 @@ export function MessageBubble({
                   <EyeIcon className="w-4 h-4" />
                   {content.toLowerCase().includes('proof') ? 'View Proof' : 'View Result'}
                 </button>
+              )}
+              {isFinalInsight && stepDurationMs != null && stepDurationMs > 0 && (
+                <span className="text-xs text-gray-400 dark:text-gray-500" title="Total elapsed time">
+                  {formatMs(stepDurationMs)}
+                </span>
               )}
               {onRedo && (
                 <button

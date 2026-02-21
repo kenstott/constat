@@ -105,6 +105,7 @@ interface UIState {
 
   // Panels
   menuOpen: boolean
+  artifactPanelHidden: boolean
   artifactPanelWidth: number
   expandedArtifactSections: string[]
 
@@ -121,6 +122,7 @@ interface UIState {
   // Actions
   toggleMenu: () => void
   setMenuOpen: (open: boolean) => void
+  toggleArtifactPanel: () => void
   setArtifactPanelWidth: (width: number) => void
   toggleArtifactSection: (section: string) => void
   expandArtifactSection: (section: string) => void
@@ -133,6 +135,7 @@ export const useUIStore = create<UIState>()(
       theme: 'system' as Theme,
       briefMode: false,
       menuOpen: false,
+      artifactPanelHidden: false,
       artifactPanelWidth: 400,
       expandedArtifactSections: ['charts', 'tables'],
       fullscreenArtifact: null,
@@ -185,6 +188,7 @@ export const useUIStore = create<UIState>()(
 
       toggleMenu: () => set((state) => ({ menuOpen: !state.menuOpen })),
       setMenuOpen: (open) => set({ menuOpen: open }),
+      toggleArtifactPanel: () => set((state) => ({ artifactPanelHidden: !state.artifactPanelHidden })),
       setArtifactPanelWidth: (width) => set({ artifactPanelWidth: width }),
 
       toggleArtifactSection: (section) =>
@@ -216,6 +220,7 @@ export const useUIStore = create<UIState>()(
       partialize: (state) => ({
         theme: state.theme,
         briefMode: state.briefMode,
+        artifactPanelHidden: state.artifactPanelHidden,
         artifactPanelWidth: state.artifactPanelWidth,
         expandedArtifactSections: state.expandedArtifactSections,
       }),

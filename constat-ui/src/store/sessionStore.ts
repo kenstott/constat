@@ -24,6 +24,9 @@ interface Message {
   isFinalInsight?: boolean // Final insight message with View Result button
   role?: string // Role used for this step (e.g., "data_analyst")
   skills?: string[] // Skills used for this step
+  stepStartedAt?: number // Epoch ms when step started
+  stepDurationMs?: number // Final duration from backend
+  stepAttempts?: number // Number of attempts (retries)
 }
 
 // Execution phases for live status updates
@@ -81,6 +84,7 @@ interface SessionState {
   currentStepNumber: number
   stepAttempt: number
   lastQueryStartStep: number // First step number of the current/last query (for View Result)
+  querySubmittedAt: number | null // Epoch ms when query was submitted
 
   // Plan
   plan: Plan | null
@@ -148,6 +152,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   suggestions: [],
   queuedMessages: [],
   lastQueryStartStep: 0,
+  querySubmittedAt: null,
   roles: [],
   currentRole: null,
   queryContext: null,
@@ -229,6 +234,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       liveMessageId: null,
       thinkingMessageId: null,
       lastQueryStartStep: 0,
+  querySubmittedAt: null,
       queryContext: null,
       isCreatingSession: false,
     })
@@ -317,6 +323,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       liveMessageId: null,
       stepMessageIds: {},
       currentQuery: expandedProblem,
+      querySubmittedAt: Date.now(),
       status: 'planning',
       executionPhase: 'idle',
       currentStepNumber: 0,
@@ -652,6 +659,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
         // Role/skills are shown as badges in the step header (not in content)
         updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
+        // Set stepStartedAt on the step message
+        const startMsgId = stepMessageIds[event.step_number]
+        if (startMsgId) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === startMsgId ? { ...m, stepStartedAt: Date.now(), stepAttempts: 0 } : m
+            ),
+          }))
+        }
         set({
           status: 'executing',
           currentStepNumber: event.step_number,
@@ -665,13 +681,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const goal = (event.data.goal as string) || ''
         const attempt = stepAttempt > 1 ? ` (attempt ${stepAttempt})` : ''
         const goalPrefix = goal ? `${goal}. ` : ''
-        updateStepMessage(event.step_number, `Step ${event.step_number}: ${goalPrefix}Planning${attempt}...`)
+        // Keep isPending=true during code generation (planning phase)
+        const genMsgId = stepMessageIds[event.step_number]
+        if (genMsgId) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === genMsgId
+                ? { ...m, content: `Step ${event.step_number}: ${goalPrefix}Planning${attempt}...`, isLive: true, isPending: true }
+                : m
+            ),
+          }))
+        }
         set({ executionPhase: 'generating' })
         break
       }
 
       case 'step_executing': {
         const goal = (event.data.goal as string) || ''
+        const code = (event.data.code as string) || ''
+        if (code) {
+          useArtifactStore.getState().addStepCode(event.step_number, goal, code)
+        }
         updateStepMessage(event.step_number, `Step ${event.step_number}: Executing${goal ? ` - ${goal}` : ''}...`)
         set({ executionPhase: 'executing' })
         break
@@ -681,6 +711,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Show retry attempt in step message
         const newAttempt = stepAttempt + 1
         updateStepMessage(event.step_number, `Step ${event.step_number}: Retrying (attempt ${newAttempt})...`)
+        // Increment stepAttempts on the message
+        const errMsgId = stepMessageIds[event.step_number]
+        if (errMsgId) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === errMsgId ? { ...m, stepAttempts: (m.stepAttempts || 0) + 1 } : m
+            ),
+          }))
+        }
         set({ stepAttempt: newAttempt, executionPhase: 'retrying' })
         break
       }
@@ -699,6 +738,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           goal?: string
           code?: string
           tables_created?: string[]
+          duration_ms?: number
+          attempts?: number
         }
         // Update step bubble with completion status and output (code goes to Code accordion)
         const summary = result.goal || 'Completed'
@@ -708,6 +749,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           `Step ${event.step_number}: ✓ ${summary}${outputSummary}`,
           true
         )
+        // Set final duration and attempts on the message
+        const completeMsgId = stepMessageIds[event.step_number]
+        if (completeMsgId) {
+          set((state) => ({
+            messages: state.messages.map((m) => {
+              if (m.id !== completeMsgId) return m
+              const duration = result.duration_ms ?? (m.stepStartedAt ? Date.now() - m.stepStartedAt : undefined)
+              return {
+                ...m,
+                stepDurationMs: duration,
+                stepAttempts: result.attempts != null ? Math.max(0, result.attempts - 1) : (m.stepAttempts || 0),
+              }
+            }),
+          }))
+        }
         // Store code for the Code accordion
         if (result.code) {
           useArtifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code)
@@ -864,12 +920,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Extract suggestions for number shortcuts
         const completeSuggestions = (event.data.suggestions as string[]) || []
         set({ status: 'completed', currentStepNumber: 0, stepAttempt: 1, suggestions: completeSuggestions, executionPhase: 'idle', queryContext: null })
+        // Compute total elapsed time from query submission to now
+        const { querySubmittedAt } = get()
+        const totalElapsedMs = querySubmittedAt ? Date.now() - querySubmittedAt : undefined
         // Add final insights bubble
         const output = (event.data.output as string) || 'Analysis complete'
         addMessage({
           type: 'output',
           content: output,
           isFinalInsight: true,
+          stepDurationMs: totalElapsedMs,
         })
         // Refresh artifact panel with final data (including learnings)
         const { session } = get()
