@@ -25,6 +25,7 @@ from constat.server.models import (
     SessionStatus,
 )
 from constat.server.permissions import get_user_permissions
+from constat.server.role_config import require_write
 from constat.server.session_manager import SessionManager, ManagedSession
 from constat.server.user_preferences import get_selected_domains, set_selected_domains
 from constat.storage.history import SessionHistory
@@ -725,7 +726,7 @@ async def get_prompt_context(
     }
 
 
-@router.put("/{session_id}/system-prompt")
+@router.put("/{session_id}/system-prompt", dependencies=[Depends(require_write("system_prompt"))])
 async def update_system_prompt(
     session_id: str,
     request: Request,

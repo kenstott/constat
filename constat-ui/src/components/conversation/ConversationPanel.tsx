@@ -5,13 +5,15 @@ import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useUIStore } from '@/store/uiStore'
 import { useProofStore } from '@/store/proofStore'
-import { MessageBubble } from './MessageBubble'
+import { MessageBubble, StepDisplayMode } from './MessageBubble'
 import { AutocompleteInput } from './AutocompleteInput'
 import {
   ClipboardDocumentIcon,
   ClipboardDocumentCheckIcon,
   XMarkIcon,
   ClockIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline'
 
 export function ConversationPanel() {
@@ -21,6 +23,9 @@ export function ConversationPanel() {
   const { openPanel: openProofPanel } = useProofStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [copiedAll, setCopiedAll] = useState(false)
+  const [stepOverride, setStepOverride] = useState<{ mode: StepDisplayMode; version: number } | undefined>()
+
+  const hasSteps = messages.some((m) => m.type === 'step')
 
   // Auto-scroll to bottom on new messages or queued messages
   useEffect(() => {
@@ -144,9 +149,29 @@ export function ConversationPanel() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Copy All button - shown when there are messages */}
+      {/* Toolbar - shown when there are messages */}
       {messages.length > 0 && (
-        <div className="flex justify-end px-4 pt-2">
+        <div className="flex justify-end gap-1 px-4 pt-2">
+          {hasSteps && (
+            <>
+              <button
+                onClick={() => setStepOverride({ mode: 'oneline', version: (stepOverride?.version ?? 0) + 1 })}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                title="Collapse all steps"
+              >
+                <ChevronUpIcon className="w-3.5 h-3.5" />
+                Collapse
+              </button>
+              <button
+                onClick={() => setStepOverride({ mode: 'condensed', version: (stepOverride?.version ?? 0) + 1 })}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                title="Expand all steps"
+              >
+                <ChevronDownIcon className="w-3.5 h-3.5" />
+                Expand
+              </button>
+            </>
+          )}
           <button
             onClick={handleCopyAll}
             className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
@@ -207,6 +232,11 @@ export function ConversationPanel() {
                   ? handleRedo : undefined}
                 role={message.role}
                 skills={message.skills}
+                stepStartedAt={message.stepStartedAt}
+                stepDurationMs={message.stepDurationMs}
+                stepAttempts={message.stepAttempts}
+                stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
+                stepDisplayModeVersion={stepOverride?.version}
               />
             ))}
             {/* Queued messages */}

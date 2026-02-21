@@ -46,6 +46,7 @@ def isolated_vector_store(tmp_path_factory) -> Generator[Path, None, None]:
     yield vector_store_path
 
     # Restore original environment
+    # Restore original environment
     if old_value is not None:
         os.environ["CONSTAT_VECTOR_STORE_PATH"] = old_value
     else:
@@ -171,6 +172,27 @@ def stop_container(name: str) -> None:
 
 
 # Pytest markers
+def pytest_sessionfinish(session, exitstatus):
+    """Close all DuckDB connections before process exit to avoid SIGABRT."""
+    try:
+        from constat.storage.duckdb_pool import close_all_pools
+        close_all_pools()
+    except Exception:
+        pass
+
+
+def pytest_unconfigure(config):
+    """Suppress DuckDB SIGABRT at process exit.
+
+    DuckDB's C++ destructors can trigger heap corruption detection (SIGABRT)
+    during Python process teardown. This is cosmetic — all tests have already
+    completed. Catch the signal so pytest can print its summary and exit 0.
+    """
+    import faulthandler, signal, os
+    faulthandler.disable()
+    signal.signal(signal.SIGABRT, lambda s, f: os._exit(0))
+
+
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(

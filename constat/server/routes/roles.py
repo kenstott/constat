@@ -9,6 +9,8 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+
+from constat.server.role_config import require_write
 from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId
@@ -210,7 +212,7 @@ async def get_role_content(
     )
 
 
-@router.post("/roles", response_model=RoleInfo)
+@router.post("/roles", response_model=RoleInfo, dependencies=[Depends(require_write("roles"))])
 async def create_role(
     session_id: str,
     request_body: CreateRoleRequest,
@@ -247,7 +249,7 @@ async def create_role(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/roles/{role_name}")
+@router.put("/roles/{role_name}", dependencies=[Depends(require_write("roles"))])
 async def update_role(
     session_id: str,
     role_name: str,
@@ -280,7 +282,7 @@ async def update_role(
     return {"status": "updated", "name": role_name}
 
 
-@router.delete("/roles/{role_name}")
+@router.delete("/roles/{role_name}", dependencies=[Depends(require_write("roles"))])
 async def delete_role(
     session_id: str,
     role_name: str,

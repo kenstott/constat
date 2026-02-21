@@ -7,9 +7,6 @@ import {
   PlusIcon,
   StopIcon,
   QuestionMarkCircleIcon,
-  CircleStackIcon,
-  LightBulbIcon,
-  DocumentIcon,
   CheckBadgeIcon,
   BoltIcon,
 } from '@heroicons/react/24/outline'
@@ -22,17 +19,9 @@ interface ToolbarProps {
 }
 
 export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSession }: ToolbarProps) {
-  const { session, status, cancelExecution } = useSessionStore()
-  const { databases, apis, documents, facts, artifacts, tables, stepCodes } = useArtifactStore()
+  const { status, cancelExecution } = useSessionStore()
+  const { tables, stepCodes } = useArtifactStore()
   const { briefMode, toggleBriefMode } = useUIStore()
-
-  // Count datasources (databases + APIs + documents)
-  const datasourceCount = databases.length + apis.length + documents.length
-
-  // Count results (tables + non-code/error/output artifacts) - matches Results accordion
-  const excludedArtifactTypes = new Set(['code', 'error', 'output', 'table'])
-  const resultArtifacts = artifacts.filter((a) => !excludedArtifactTypes.has(a.artifact_type))
-  const resultsCount = tables.length + resultArtifacts.length
 
   const isExecuting = status === 'planning' || status === 'executing'
 
@@ -98,24 +87,6 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
 
       {/* Spacer */}
       <div className="flex-1" />
-
-      {/* Stats */}
-      {session && (
-        <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-          <div className="flex items-center gap-1" title="Data Sources: Connected databases, APIs, and documents available for querying">
-            <CircleStackIcon className="w-4 h-4" />
-            <span>{datasourceCount}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Results: Tables, charts, and other analysis outputs">
-            <DocumentIcon className="w-4 h-4" />
-            <span>{resultsCount}</span>
-          </div>
-          <div className="flex items-center gap-1" title="Facts: Discovered insights and computed values stored for reference">
-            <LightBulbIcon className="w-4 h-4" />
-            <span>{facts.length}</span>
-          </div>
-        </div>
-      )}
 
       {/* Help */}
       <button onClick={onShowHelp} className="btn-ghost text-xs">

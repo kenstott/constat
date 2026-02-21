@@ -345,6 +345,13 @@ export async function draftGlossaryDefinition(
   return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-definition`)
 }
 
+export async function draftGlossaryAliases(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; name: string; aliases: string[] }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-aliases`)
+}
+
 export async function refineGlossaryTerm(
   sessionId: string,
   name: string
@@ -426,6 +433,7 @@ export interface StepCode {
   step_number: number
   goal: string
   code: string
+  prompt?: string
 }
 
 export async function listStepCodes(
@@ -443,6 +451,7 @@ export interface InferenceCode {
   operation: string
   code: string
   attempt: number
+  prompt?: string
 }
 
 export async function listInferenceCodes(
@@ -811,10 +820,14 @@ export interface UserPermissions {
   user_id: string
   email: string | null
   admin: boolean
+  role: string
   domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]
+  visibility: Record<string, boolean>
+  writes: Record<string, boolean>
+  feedback: Record<string, boolean>
 }
 
 export async function getMyPermissions(): Promise<UserPermissions> {

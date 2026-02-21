@@ -2249,6 +2249,23 @@ class DuckDBVectorStore(VectorStoreBackend):
             params,
         ).fetchall()
         import json
+
+        # Deduplicate rows by LOWER(name) — cross_session entity visibility
+        # can produce multiple rows for the same entity name across sessions.
+        _seen: dict[str, int] = {}
+        _unique: list = []
+        for row in rows:
+            name_lower = row[1].lower()
+            if name_lower in _seen:
+                idx = _seen[name_lower]
+                # Prefer row with glossary term (defined > self_describing)
+                if row[6] is not None and _unique[idx][6] is None:
+                    _unique[idx] = row
+                continue
+            _seen[name_lower] = len(_unique)
+            _unique.append(row)
+        rows = _unique
+
         results = []
         # Collect all aliases from defined terms to suppress duplicate entities
         alias_set: set[str] = set()

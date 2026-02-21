@@ -10,7 +10,9 @@ from pathlib import Path
 
 import yaml
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from constat.server.role_config import require_write
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -134,7 +136,7 @@ async def list_skills(
         raise
 
 
-@router.post("/skills", response_model=SkillInfo)
+@router.post("/skills", response_model=SkillInfo, dependencies=[Depends(require_write("skills"))])
 async def create_skill(
     request: Request,
     skill_request: CreateSkillRequest,
@@ -463,7 +465,7 @@ async def get_skill_content(
     )
 
 
-@router.put("/skills/{skill_name}")
+@router.put("/skills/{skill_name}", dependencies=[Depends(require_write("skills"))])
 async def update_skill(
     request: Request,
     skill_name: str,
@@ -483,7 +485,7 @@ async def update_skill(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/skills/{skill_name}")
+@router.delete("/skills/{skill_name}", dependencies=[Depends(require_write("skills"))])
 async def delete_skill(
     request: Request,
     skill_name: str,

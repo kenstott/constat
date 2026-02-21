@@ -12,6 +12,7 @@
 users:
   kennethstott@gmail.com:
     admin: true
+    role: platform_admin
     projects: []
     databases: []
     documents: []
@@ -20,6 +21,7 @@ users:
   # Example non-admin user:
   # analyst@company.com:
   #   admin: false
+  #   role: domain_user
   #   projects:
   #     - sales-analytics
   #   databases:
@@ -28,6 +30,24 @@ users:
   #   documents: []
   #   apis:
   #     - countries
+
+  # Example SME user (can edit glossary, facts, learnings):
+  # sme@company.com:
+  #   admin: false
+  #   role: sme
+  #   projects: []
+  #   databases: []
+  #   documents: []
+  #   apis: []
+
+  # Example viewer (read-only, no feedback):
+  # viewer@company.com:
+  #   admin: false
+  #   role: viewer
+  #   projects: []
+  #   databases: []
+  #   documents: []
+  #   apis: []
 
 # Default permissions for users not listed above
 default:

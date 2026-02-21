@@ -651,6 +651,8 @@ class ExecutionMixin:
                     "max_attempts": max_attempts,
                     "is_retry": attempt > 1,
                     "code_lines": len(code.split('\n')),
+                    "code": code,
+                    "goal": step.goal,
                 }
             ))
 
@@ -688,8 +690,8 @@ class ExecutionMixin:
                 validation_warnings: list[str] = []
                 if step.post_validations:
                     logger.debug(f"[Step {step.number}] Running {len(step.post_validations)} post-validations (attempt {attempt})")
-                    validation_warnings, failed_validation = self._run_post_validations(step, result.namespace)
-                    logger.debug(f"[Step {step.number}] Post-validation result: failed={failed_validation is not None}, warnings={len(validation_warnings)}")
+                    validation_warnings, failed_validation, validation_diagnostic = self._run_post_validations(step, result.namespace)
+                    logger.debug(f"[Step {step.number}] Post-validation result: failed={failed_validation is not None}, warnings={len(validation_warnings)}{f', diagnostic={validation_diagnostic}' if validation_diagnostic else ''}")
 
                     if failed_validation:
                         if failed_validation.on_fail == ValidationOnFail.CLARIFY:
@@ -709,10 +711,12 @@ class ExecutionMixin:
                             stdout_context = ""
                             if result.stdout:
                                 stdout_context = f"\nCode stdout (shows actual state):\n{result.stdout[-2000:]}\n"
+                            diagnostic_context = f"\nDiagnostic: {validation_diagnostic}\n" if validation_diagnostic else ""
                             last_error = (
                                 f"Code executed without errors, but post-validation failed.\n"
                                 f"Validation: {failed_validation.description}\n"
                                 f"Expression: {failed_validation.expression}\n"
+                                f"{diagnostic_context}"
                                 f"{stdout_context}"
                                 f"The code must be fixed so this validation passes."
                             )
@@ -763,6 +767,7 @@ class ExecutionMixin:
                         goal=step.goal,
                         code=code,
                         output=result.stdout,
+                        prompt=prompt,
                     )
 
                 # Restore previous role context
@@ -863,20 +868,26 @@ class ExecutionMixin:
 
     def _run_post_validations(
         self, step: Step, namespace: dict
-    ) -> tuple[list[str], PostValidation | None]:
+    ) -> tuple[list[str], PostValidation | None, str]:
         """Run post-validations against step's execution namespace.
 
         Returns:
-            (warnings, first_failing_validation)
+            (warnings, first_failing_validation, diagnostic)
             - warnings: list of warning messages from on_fail=WARN validations
             - first_failing_validation: first RETRY or CLARIFY validation that failed, or None
+            - diagnostic: string describing what the expression evaluated to (for retry context)
         """
         warnings: list[str] = []
-        # Inject store tables so validations can reference them by name
+        # Inject store tables for names NOT already in the namespace.
+        # Don't overwrite values the step code just produced — even if
+        # they aren't DataFrames — to avoid replacing fresh results with
+        # stale store data from a previous step/attempt.
+        import pandas as pd
         try:
             for t in self.datastore.list_tables():
                 name = t["name"]
-                if name not in namespace:
+                existing = namespace.get(name)
+                if existing is None:
                     df = self.datastore.load_dataframe(name)
                     if df is not None:
                         namespace[name] = df
@@ -884,21 +895,56 @@ class ExecutionMixin:
         except Exception as e:
             logger.warning(f"[Step {step.number}] Failed to inject store tables for validation: {e}")
         for v in step.post_validations:
+            diagnostic = ""
             try:
                 eval_globals = {**namespace, "__builtins__": __builtins__}
                 result = eval(v.expression, eval_globals)  # noqa: S307
                 passed = bool(result)
+                if not passed:
+                    diagnostic = f"Expression `{v.expression}` evaluated to: {result!r}"
+                    # Try to give more context by evaluating sub-expressions
+                    self._add_validation_diagnostics(v.expression, eval_globals, diagnostic_parts := [])
+                    if diagnostic_parts:
+                        diagnostic += "\n" + "\n".join(diagnostic_parts)
             except Exception as e:
                 logger.warning(f"[Step {step.number}] Post-validation expression error: {v.expression} -> {e}")
                 passed = False
+                diagnostic = f"Expression raised {type(e).__name__}: {e}"
 
             if not passed:
                 if v.on_fail == ValidationOnFail.WARN:
                     warnings.append(f"Validation warning: {v.description}")
                 else:
                     # RETRY or CLARIFY — return immediately
-                    return warnings, v
-        return warnings, None
+                    return warnings, v, diagnostic
+        return warnings, None, ""
+
+    @staticmethod
+    def _add_validation_diagnostics(expression: str, eval_globals: dict, parts: list[str]) -> None:
+        """Extract diagnostic info from sub-expressions of a failed validation."""
+        import ast
+        try:
+            tree = ast.parse(expression, mode='eval')
+            # For comparisons like `len(df) > 0`, evaluate each side
+            if isinstance(tree.body, ast.Compare):
+                left = ast.Expression(body=tree.body.left)
+                ast.fix_missing_locations(left)
+                left_val = eval(compile(left, '<diag>', 'eval'), eval_globals)  # noqa: S307
+                parts.append(f"  Left side: {ast.unparse(tree.body.left)} = {left_val!r}")
+                for comparator in tree.body.comparators:
+                    right = ast.Expression(body=comparator)
+                    ast.fix_missing_locations(right)
+                    right_val = eval(compile(right, '<diag>', 'eval'), eval_globals)  # noqa: S307
+                    parts.append(f"  Right side: {ast.unparse(comparator)} = {right_val!r}")
+            # For boolean ops like `x and y`, evaluate each value
+            elif isinstance(tree.body, ast.BoolOp):
+                for i, value in enumerate(tree.body.values):
+                    sub = ast.Expression(body=value)
+                    ast.fix_missing_locations(sub)
+                    sub_val = eval(compile(sub, '<diag>', 'eval'), eval_globals)  # noqa: S307
+                    parts.append(f"  Clause {i+1}: {ast.unparse(value)} = {sub_val!r}")
+        except Exception:
+            pass  # Diagnostics are best-effort
 
     def _ask_validation_clarification(self, step: Step, validation: PostValidation) -> str | None:
         """Ask user for clarification when a post-validation fails with on_fail=CLARIFY.

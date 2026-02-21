@@ -6,10 +6,14 @@ export interface UserPermissions {
   user_id: string
   email: string | null
   admin: boolean
+  role: string
   domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]
+  visibility: Record<string, boolean>
+  writes: Record<string, boolean>
+  feedback: Record<string, boolean>
 }
 
 /**

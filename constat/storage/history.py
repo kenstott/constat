@@ -605,6 +605,7 @@ class SessionHistory:
         code: str,
         output: Optional[str] = None,
         error: Optional[str] = None,
+        prompt: Optional[str] = None,
     ) -> None:
         """
         Save code for a specific execution step.
@@ -616,6 +617,7 @@ class SessionHistory:
             code: Python code that was executed
             output: Standard output from execution (optional)
             error: Error message if execution failed (optional)
+            prompt: LLM prompt used to generate the code (optional)
         """
         steps_dir = self._steps_dir(session_id)
         self._ensure_dir(steps_dir)
@@ -645,6 +647,12 @@ class SessionHistory:
             error_file = steps_dir / f"step_{step_number:03d}_error.txt"
             with open(error_file, "w") as f:
                 f.write(error)
+
+        # Save prompt if present
+        if prompt:
+            prompt_file = steps_dir / f"step_{step_number:03d}_prompt.txt"
+            with open(prompt_file, "w") as f:
+                f.write(prompt)
 
         # Update step index
         index_file = steps_dir / "index.jsonl"
@@ -680,10 +688,16 @@ class SessionHistory:
                         if code_file.exists():
                             with open(code_file) as cf:
                                 code = cf.read()
+                            prompt_file = steps_dir / f"step_{step_number:03d}_prompt.txt"
+                            prompt = ""
+                            if prompt_file.exists():
+                                with open(prompt_file) as pf:
+                                    prompt = pf.read()
                             steps.append({
                                 "step_number": step_number,
                                 "goal": step_data.get("goal", ""),
                                 "code": code,
+                                "prompt": prompt,
                             })
 
         return sorted(steps, key=lambda x: x["step_number"])
@@ -709,6 +723,7 @@ class SessionHistory:
         attempt: int = 1,
         output: Optional[str] = None,
         error: Optional[str] = None,
+        prompt: Optional[str] = None,
     ) -> None:
         """Save code for a specific inference node (auditable mode)."""
         inferences_dir = self._inferences_dir(session_id)
@@ -729,6 +744,11 @@ class SessionHistory:
             error_file = inferences_dir / f"{inference_id}_error.txt"
             with open(error_file, "w") as f:
                 f.write(error)
+
+        if prompt:
+            prompt_file = inferences_dir / f"{inference_id}_prompt.txt"
+            with open(prompt_file, "w") as f:
+                f.write(prompt)
 
         # Update index
         index_file = inferences_dir / "index.jsonl"
@@ -807,12 +827,18 @@ class SessionHistory:
                     if code_file.exists():
                         with open(code_file) as cf:
                             code = cf.read()
+                        prompt_file = inferences_dir / f"{iid}_prompt.txt"
+                        prompt = ""
+                        if prompt_file.exists():
+                            with open(prompt_file) as pf:
+                                prompt = pf.read()
                         inferences.append({
                             "inference_id": iid,
                             "name": data.get("name", ""),
                             "operation": data.get("operation", ""),
                             "code": code,
                             "attempt": data.get("attempt", 1),
+                            "prompt": prompt,
                         })
 
             # Deduplicate: keep last entry per inference_id

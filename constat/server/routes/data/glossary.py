@@ -17,6 +17,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from constat.server.role_config import require_write
+
 from constat.discovery.models import GlossaryTerm, display_entity_name
 from constat.server.models import (
     GlossaryBulkStatusRequest,
@@ -258,7 +260,7 @@ async def get_term_relationships(
     }
 
 
-@router.post("/{session_id}/relationships")
+@router.post("/{session_id}/relationships", dependencies=[Depends(require_write("glossary"))])
 async def create_relationship(
     session_id: str,
     request: Request,
@@ -300,7 +302,7 @@ async def create_relationship(
     }
 
 
-@router.put("/{session_id}/relationships/{rel_id}")
+@router.put("/{session_id}/relationships/{rel_id}", dependencies=[Depends(require_write("glossary"))])
 async def update_relationship_verb(
     session_id: str,
     rel_id: str,
@@ -323,7 +325,7 @@ async def update_relationship_verb(
     return {"status": "updated", "id": rel_id, "verb": verb}
 
 
-@router.delete("/{session_id}/relationships/{rel_id}")
+@router.delete("/{session_id}/relationships/{rel_id}", dependencies=[Depends(require_write("glossary"))])
 async def delete_relationship(
     session_id: str,
     rel_id: str,
@@ -340,7 +342,7 @@ async def delete_relationship(
     return {"status": "deleted", "id": rel_id}
 
 
-@router.post("/{session_id}/glossary/generate")
+@router.post("/{session_id}/glossary/generate", dependencies=[Depends(require_write("glossary"))])
 async def generate_glossary(
     session_id: str,
     session_manager: SessionManager = Depends(get_session_manager),
@@ -368,7 +370,7 @@ async def generate_glossary(
     return {"status": "generating", "message": "Glossary generation started"}
 
 
-@router.post("/{session_id}/glossary")
+@router.post("/{session_id}/glossary", dependencies=[Depends(require_write("glossary"))])
 async def add_definition(
     session_id: str,
     request: GlossaryCreateRequest,
@@ -407,7 +409,7 @@ async def add_definition(
     }
 
 
-@router.put("/{session_id}/glossary/{name}")
+@router.put("/{session_id}/glossary/{name}", dependencies=[Depends(require_write("glossary"))])
 async def update_definition(
     session_id: str,
     name: str,
@@ -452,7 +454,7 @@ async def update_definition(
     return {"status": "updated", "name": name}
 
 
-@router.delete("/{session_id}/glossary")
+@router.delete("/{session_id}/glossary", dependencies=[Depends(require_write("glossary"))])
 async def delete_glossary_by_status(
     session_id: str,
     status: str = "draft",
@@ -469,7 +471,7 @@ async def delete_glossary_by_status(
     return {"status": "deleted", "count": count}
 
 
-@router.delete("/{session_id}/glossary/{name}")
+@router.delete("/{session_id}/glossary/{name}", dependencies=[Depends(require_write("glossary"))])
 async def delete_definition(
     session_id: str,
     name: str,
@@ -486,7 +488,7 @@ async def delete_definition(
     return {"status": "deleted", "name": name}
 
 
-@router.post("/{session_id}/glossary/{name}/draft-definition")
+@router.post("/{session_id}/glossary/{name}/draft-definition", dependencies=[Depends(require_write("glossary"))])
 async def draft_definition(
     session_id: str,
     name: str,
@@ -529,7 +531,86 @@ async def draft_definition(
     }
 
 
-@router.post("/{session_id}/glossary/{name}/refine")
+@router.post("/{session_id}/glossary/{name}/draft-aliases", dependencies=[Depends(require_write("glossary"))])
+async def draft_aliases(
+    session_id: str,
+    name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """AI-generate draft aliases for a glossary term."""
+    import json as _json
+
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+    session = managed.session
+
+    if not session.router:
+        raise HTTPException(status_code=503, detail="LLM router not available")
+
+    from constat.discovery.glossary_generator import _build_entity_context
+    context = _build_entity_context(name, session_id, vs)
+
+    # Collect all existing aliases across all terms in the domain for cross-term dedup
+    all_aliases: set[str] = set()
+    all_term_names: set[str] = set()
+    terms = vs.list_glossary_terms(session_id, user_id=managed.user_id)
+    for t in terms:
+        all_term_names.add(t.name.lower())
+        if t.display_name:
+            all_term_names.add(t.display_name.lower())
+        for a in (t.aliases or []):
+            all_aliases.add(a.lower())
+
+    existing_list = ", ".join(sorted(all_aliases | all_term_names)) if (all_aliases or all_term_names) else "none"
+
+    system = (
+        "Generate 3-5 alternative names or aliases for the given glossary term. "
+        "These should be synonyms, abbreviations, or alternative phrasings that users might use. "
+        "Do NOT include any of the existing aliases or term names listed below. "
+        "Return ONLY a JSON array of strings, nothing else."
+    )
+    user_msg = (
+        f"Term: {display_entity_name(name)}\n\n"
+        f"Context:\n{context}\n\n"
+        f"Existing aliases and term names (DO NOT reuse any of these):\n{existing_list}"
+    )
+
+    from constat.core.models import TaskType
+    result = session.router.execute(
+        task_type=TaskType.GLOSSARY_GENERATION,
+        system=system,
+        user_message=user_msg,
+        max_tokens=session.router.max_output_tokens,
+        complexity="low",
+    )
+
+    if not result.success or not result.content:
+        raise HTTPException(status_code=500, detail="Alias generation failed")
+
+    # Parse JSON array from response
+    content = result.content.strip()
+    # Strip markdown code fences if present
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        aliases = _json.loads(content)
+        if not isinstance(aliases, list):
+            aliases = []
+    except _json.JSONDecodeError:
+        aliases = []
+
+    # Dedup against all existing aliases (case-insensitive)
+    forbidden = all_aliases | all_term_names
+    aliases = [a for a in aliases if isinstance(a, str) and a.lower() not in forbidden]
+
+    return {
+        "status": "ok",
+        "name": name,
+        "aliases": aliases,
+    }
+
+
+@router.post("/{session_id}/glossary/{name}/refine", dependencies=[Depends(require_write("glossary"))])
 async def refine_definition(
     session_id: str,
     name: str,
@@ -590,7 +671,7 @@ async def refine_definition(
     }
 
 
-@router.post("/{session_id}/glossary/suggest-taxonomy")
+@router.post("/{session_id}/glossary/suggest-taxonomy", dependencies=[Depends(require_write("glossary"))])
 async def suggest_taxonomy(
     session_id: str,
     session_manager: SessionManager = Depends(get_session_manager),
@@ -649,7 +730,7 @@ async def suggest_taxonomy(
     return {"suggestions": suggestions}
 
 
-@router.patch("/{session_id}/glossary/bulk-status")
+@router.patch("/{session_id}/glossary/bulk-status", dependencies=[Depends(require_write("glossary"))])
 async def bulk_update_status(
     session_id: str,
     request: GlossaryBulkStatusRequest,
@@ -676,7 +757,7 @@ async def bulk_update_status(
     }
 
 
-@router.post("/{session_id}/glossary/persist")
+@router.post("/{session_id}/glossary/persist", dependencies=[Depends(require_write("glossary"))])
 async def persist_glossary(
     session_id: str,
     request: Request,

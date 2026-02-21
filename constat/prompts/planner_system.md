@@ -17,7 +17,8 @@ Analyze the user's question and create a step-by-step plan to answer it. Each st
 - Database connections (`db_<name>`), API clients (`api_<name>`)
 - `duckdb` for SQL queries on any data (DataFrames, JSON, Parquet)
 - `pd` (pandas), `np` (numpy), `store` for persisting data between steps
-- `llm_ask(question)` for general knowledge, `send_email(to, subject, body, fmt="markdown", df=None)` for emails (use fmt="markdown" for styled HTML)
+- `llm_ask(question) -> scalar` for single factual lookups (GDP, capital, conversion rate). For per-row enrichment use `llm_map`/`llm_classify`/`llm_extract` instead.
+- `send_email(to, subject, body, fmt="markdown", df=None)` for emails (use fmt="markdown" for styled HTML)
 - `doc_read(name)` to load reference document content at runtime, `llm_extract(texts, fields, context)` to parse structured rules from it
 
 ## Data Source Selection
@@ -77,6 +78,11 @@ If no active skills match the request, plan from primitives as usual.
       - Elasticsearch: Use terms query
     - General principle: Query smaller dataset first, push those values as constants to filter the larger dataset; avoid loading large datasets into Python when the database can filter
 11. **ENHANCE = UPDATE THE SOURCE TABLE** - When the task is to "enhance", "add columns to", or "extend" an existing table, the **final step MUST update that table**. Intermediate steps may create lookup/mapping/reference tables, but those are NOT the deliverable — the updated source table is. Example: "enhance breeds with standard country" → final step must save updated `breeds` with the new column, not just a separate `country_mapping` table.
+12. **COMPUTATIONAL EFFICIENCY** - Consider the cost of each step relative to the value it adds:
+    - Avoid querying entire large tables when only a subset is needed
+    - Prefer aggregation at the database level over pulling raw data into Python
+    - When the user asks a simple question, prefer fewer steps over exhaustive multi-step analysis
+    - Use `llm_map`/`llm_classify` only on unique values, not every row
 
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).

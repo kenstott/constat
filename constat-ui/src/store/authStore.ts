@@ -19,10 +19,14 @@ import {
 
 interface Permissions {
   admin: boolean
+  role: string
   domains: string[]
   databases: string[]
   documents: string[]
   apis: string[]
+  visibility: Record<string, boolean>
+  writes: Record<string, boolean>
+  feedback: Record<string, boolean>
 }
 
 interface AuthState {
@@ -37,6 +41,10 @@ interface AuthState {
   isAuthenticated: boolean
   userId: string
   isAdmin: boolean
+
+  // Helpers
+  canSee: (section: string) => boolean
+  canWrite: (resource: string) => boolean
 
   // Actions
   initialize: () => void
@@ -78,6 +86,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return get().permissions?.admin || false
   },
 
+  canSee: (section: string) => {
+    if (isAuthDisabled) return true
+    return get().permissions?.visibility?.[section] ?? false
+  },
+
+  canWrite: (resource: string) => {
+    if (isAuthDisabled) return true
+    return get().permissions?.writes?.[resource] ?? false
+  },
+
   initialize: () => {
     if (get().initialized) return
 
@@ -86,7 +104,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         loading: false,
         initialized: true,
-        permissions: { admin: true, domains: [], databases: [], documents: [], apis: [] },
+        permissions: {
+          admin: true,
+          role: 'platform_admin',
+          domains: [],
+          databases: [],
+          documents: [],
+          apis: [],
+          visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, roles: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
+          writes: { sources: true, glossary: true, skills: true, roles: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
+          feedback: { flag_answers: true, suggest_glossary: true },
+        },
       })
       return
     }
@@ -99,11 +127,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (user) {
         try {
           const perms = await usersApi.getMyPermissions()
-          set({ permissions: { admin: perms.admin, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis } })
+          set({ permissions: { admin: perms.admin, role: perms.role, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis, visibility: perms.visibility, writes: perms.writes, feedback: perms.feedback } })
         } catch (err) {
           console.error('Failed to fetch permissions:', err)
           // Default to no permissions on error
-          set({ permissions: { admin: false, domains: [], databases: [], documents: [], apis: [] } })
+          set({ permissions: { admin: false, role: 'viewer', domains: [], databases: [], documents: [], apis: [], visibility: { results: true }, writes: {}, feedback: {} } })
         }
       } else {
         set({ permissions: null })
@@ -113,13 +141,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   fetchPermissions: async () => {
     if (isAuthDisabled) {
-      set({ permissions: { admin: true, domains: [], databases: [], documents: [], apis: [] } })
+      set({ permissions: {
+        admin: true,
+        role: 'platform_admin',
+        domains: [],
+        databases: [],
+        documents: [],
+        apis: [],
+        visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, roles: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
+        writes: { sources: true, glossary: true, skills: true, roles: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
+        feedback: { flag_answers: true, suggest_glossary: true },
+      } })
       return
     }
 
     try {
       const perms = await usersApi.getMyPermissions()
-      set({ permissions: { admin: perms.admin, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis } })
+      set({ permissions: { admin: perms.admin, role: perms.role, domains: perms.domains, databases: perms.databases, documents: perms.documents, apis: perms.apis, visibility: perms.visibility, writes: perms.writes, feedback: perms.feedback } })
     } catch (err) {
       console.error('Failed to fetch permissions:', err)
     }

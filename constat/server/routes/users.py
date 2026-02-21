@@ -25,10 +25,14 @@ class PermissionsResponse(BaseModel):
     user_id: str
     email: str | None
     admin: bool
+    role: str
     domains: list[str]
     databases: list[str]
     documents: list[str]
     apis: list[str]
+    visibility: dict[str, bool]
+    writes: dict[str, bool]
+    feedback: dict[str, bool]
 
 
 @router.get("/me/permissions", response_model=PermissionsResponse)
@@ -40,19 +44,36 @@ async def get_my_permissions(
     """Get permissions for the current authenticated user.
 
     Returns:
-        User's permissions including admin status and accessible resources
+        User's permissions including admin status, role, and resolved visibility/writes/feedback
     """
     server_config = request.app.state.server_config
     perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
+
+    # Resolve role-based visibility/writes/feedback
+    from constat.server.role_config import RolesConfig
+    roles_config: RolesConfig | None = getattr(request.app.state, "roles_config", None)
+    if roles_config:
+        role_def = roles_config.get_role(perms.role)
+        visibility = role_def.visibility
+        writes = role_def.writes
+        feedback = role_def.feedback
+    else:
+        visibility = {}
+        writes = {}
+        feedback = {}
 
     return PermissionsResponse(
         user_id=perms.user_id,
         email=perms.email,
         admin=perms.admin,
+        role=perms.role,
         domains=perms.domains,
         databases=perms.databases,
         documents=perms.documents,
         apis=perms.apis,
+        visibility=visibility,
+        writes=writes,
+        feedback=feedback,
     )
 
 
@@ -73,7 +94,7 @@ async def list_all_user_permissions(
 
     # Check if current user is admin
     current_perms = get_user_permissions(server_config, email=email or "", user_id=user_id)
-    if not current_perms.admin:
+    if current_perms.role != "platform_admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
     return list_perms(server_config)

@@ -120,11 +120,24 @@ function formatMs(ms: number): string {
 }
 
 /** Collapsible step code list for the Exploratory Code section */
-function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string }> }) {
+function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string }> }) {
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set())
+  const [showPrompt, setShowPrompt] = useState<Set<number>>(new Set())
 
   const toggleStep = useCallback((stepNumber: number) => {
     setCollapsedSteps((prev) => {
+      const next = new Set(prev)
+      if (next.has(stepNumber)) {
+        next.delete(stepNumber)
+      } else {
+        next.add(stepNumber)
+      }
+      return next
+    })
+  }, [])
+
+  const togglePrompt = useCallback((stepNumber: number) => {
+    setShowPrompt((prev) => {
       const next = new Set(prev)
       if (next.has(stepNumber)) {
         next.delete(stepNumber)
@@ -141,22 +154,39 @@ function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; g
         const isCollapsed = collapsedSteps.has(step.step_number)
         return (
           <div key={step.step_number}>
-            <button
-              onClick={() => toggleStep(step.step_number)}
-              className="flex items-center gap-1 w-full text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
-            >
-              {isCollapsed ? (
-                <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
-              ) : (
-                <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => toggleStep(step.step_number)}
+                className="flex items-center gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
+              >
+                {isCollapsed ? (
+                  <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+                ) : (
+                  <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+                )}
+                <span>Step {step.step_number}: {step.goal}</span>
+              </button>
+              {step.prompt && (
+                <button
+                  onClick={() => togglePrompt(step.step_number)}
+                  className="text-[10px] text-gray-400 hover:text-primary-500 ml-auto px-1"
+                >
+                  {showPrompt.has(step.step_number) ? 'Hide Prompt' : 'Prompt'}
+                </button>
               )}
-              <span>Step {step.step_number}: {step.goal}</span>
-            </button>
+            </div>
             {!isCollapsed && (
-              <CodeViewer
-                code={step.code}
-                language="python"
-              />
+              <>
+                {showPrompt.has(step.step_number) && step.prompt && (
+                  <pre className="text-[10px] leading-tight text-gray-400 bg-gray-50 dark:bg-gray-800/50 p-2 rounded overflow-auto max-h-60 mb-1 whitespace-pre-wrap">
+                    {step.prompt}
+                  </pre>
+                )}
+                <CodeViewer
+                  code={step.code}
+                  language="python"
+                />
+              </>
             )}
           </div>
         )
@@ -200,6 +230,16 @@ export function ArtifactPanel() {
     updateSystemPrompt,
   } = useArtifactStore()
   const { totalDefined, totalSelfDescribing } = useGlossaryStore()
+
+  // Role-based visibility/writes shortcuts
+  const vis = userPermissions.visibility ?? {}
+  const writes = userPermissions.writes ?? {}
+  const canSeeSection = (key: string) => vis[key] ?? false
+  const canWrite = (key: string) => writes[key] ?? false
+  // Sources group visible if any child section visible
+  const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents')
+  // Reasoning group visible if any child section visible
+  const reasoningVisible = canSeeSection('system_prompt') || canSeeSection('roles') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code') || canSeeSection('facts') || canSeeSection('glossary')
 
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
   const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
@@ -254,6 +294,7 @@ export function ArtifactPanel() {
   const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string } | null>(null)
   const [loadingDocument, setLoadingDocument] = useState(false)
   // Results filter - persisted in localStorage
+  const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
   const [showPublishedOnly, setShowPublishedOnly] = useState(() => {
     const stored = localStorage.getItem('constat-results-filter')
     return stored !== 'all' // Default to published only
@@ -956,9 +997,9 @@ ${skill.body}`
       })),
   ]
 
-  // Sort by step_number descending (most recent steps first), then by name
+  // Sort by step_number ascending (1, 2, 3...), then by name
   allResults.sort((a, b) => {
-    const stepDiff = (b.data.step_number || 0) - (a.data.step_number || 0)
+    const stepDiff = (a.data.step_number || 0) - (b.data.step_number || 0)
     if (stepDiff !== 0) return stepDiff
     return a.data.name.localeCompare(b.data.name)
   })
@@ -1288,6 +1329,7 @@ ${skill.body}`
       })()}
 
       {/* ═══════════════ SOURCES ═══════════════ */}
+      {sourcesVisible && (
       <button
         onClick={() => {
           const newVal = !sourcesCollapsed
@@ -1301,10 +1343,12 @@ ${skill.body}`
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${sourcesCollapsed ? '' : 'rotate-90'}`} />
       </button>
+      )}
 
       {/* Databases */}
-      {!sourcesCollapsed && (
+      {sourcesVisible && !sourcesCollapsed && (
       <>
+      {canSeeSection('databases') && (
       <AccordionSection
         id="databases"
         title="Databases"
@@ -1312,13 +1356,15 @@ ${skill.body}`
         icon={<CircleStackIcon className="w-4 h-4" />}
         command="/databases"
         action={
-          <button
-            onClick={() => openModal('database')}
-            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Add database"
-          >
-            <PlusIcon className="w-4 h-4" />
-          </button>
+          canWrite('sources') ? (
+            <button
+              onClick={() => openModal('database')}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Add database"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          ) : <div className="w-6 h-6" />
         }
       >
         {databases.length === 0 ? (
@@ -1491,8 +1537,10 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      )}
 
       {/* APIs */}
+      {canSeeSection('apis') && (
       <AccordionSection
         id="apis"
         title="APIs"
@@ -1500,13 +1548,15 @@ ${skill.body}`
         icon={<GlobeAltIcon className="w-4 h-4" />}
         command="/apis"
         action={
-          <button
-            onClick={() => openModal('api')}
-            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Add API"
+          canWrite('sources') ? (
+            <button
+              onClick={() => openModal('api')}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Add API"
           >
             <PlusIcon className="w-4 h-4" />
           </button>
+          ) : <div className="w-6 h-6" />
         }
       >
         {apis.length === 0 ? (
@@ -1683,8 +1733,10 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      )}
 
       {/* Documents */}
+      {canSeeSection('documents') && (
       <AccordionSection
         id="documents"
         title="Documents"
@@ -1692,13 +1744,15 @@ ${skill.body}`
         icon={<DocumentTextIcon className="w-4 h-4" />}
         command="/docs"
         action={
-          <button
-            onClick={() => openModal('document')}
-            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Add document"
-          >
-            <PlusIcon className="w-4 h-4" />
-          </button>
+          canWrite('sources') ? (
+            <button
+              onClick={() => openModal('document')}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Add document"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          ) : <div className="w-6 h-6" />
         }
       >
         {documents.length === 0 ? (
@@ -1765,10 +1819,12 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      )}
       </>
       )}
 
       {/* ═══════════════ REASONING ═══════════════ */}
+      {reasoningVisible && (
       <button
         onClick={() => {
           const newVal = !reasoningCollapsed
@@ -1782,19 +1838,20 @@ ${skill.body}`
         </span>
         <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${reasoningCollapsed ? '' : 'rotate-90'}`} />
       </button>
+      )}
 
-      {!reasoningCollapsed && (
+      {reasoningVisible && !reasoningCollapsed && (
       <>
 
-      {/* System Prompt - show when there's content or user is admin */}
-      {(promptContext?.systemPrompt || userPermissions.isAdmin) && (
+      {/* System Prompt - show when there's content or user can see it */}
+      {canSeeSection('system_prompt') && (promptContext?.systemPrompt || canWrite('system_prompt')) && (
         <AccordionSection
           id="system-prompt"
           title="System Prompt"
           icon={<Cog6ToothIcon className="w-4 h-4" />}
           command="/system"
           action={
-            userPermissions.isAdmin ? (
+            canWrite('system_prompt') ? (
               <button
                 onClick={handleEditSystemPrompt}
                 className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
@@ -1842,7 +1899,8 @@ ${skill.body}`
         </AccordionSection>
       )}
 
-      {/* Roles - always show with create/edit/delete */}
+      {/* Roles */}
+      {canSeeSection('roles') && (
       <AccordionSection
         id="roles"
         title="Roles"
@@ -1850,16 +1908,18 @@ ${skill.body}`
         icon={<UserCircleIcon className="w-4 h-4" />}
         command="/role"
         action={
-          <button
-            onClick={() => {
-              expandArtifactSection('roles')
-              setCreatingRole(true)
-            }}
-            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Create role"
-          >
-            <PlusIcon className="w-4 h-4" />
-          </button>
+          canWrite('roles') ? (
+            <button
+              onClick={() => {
+                expandArtifactSection('roles')
+                setCreatingRole(true)
+              }}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Create role"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          ) : <div className="w-6 h-6" />
         }
       >
         {/* Create role form */}
@@ -2108,8 +2168,10 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      )}
 
-      {/* Skills - always show with create/edit/delete */}
+      {/* Skills */}
+      {canSeeSection('skills') && (
       <AccordionSection
         id="skills"
         title="Skills"
@@ -2117,16 +2179,18 @@ ${skill.body}`
         icon={<SparklesIcon className="w-4 h-4" />}
         command="/skills"
         action={
-          <button
-            onClick={() => {
-              expandArtifactSection('skills')
-              setCreatingSkill(true)
-            }}
-            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-            title="Create skill"
-          >
-            <PlusIcon className="w-4 h-4" />
-          </button>
+          canWrite('skills') ? (
+            <button
+              onClick={() => {
+                expandArtifactSection('skills')
+                setCreatingSkill(true)
+              }}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Create skill"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          ) : <div className="w-6 h-6" />
         }
       >
         {/* Create skill form */}
@@ -2523,8 +2587,10 @@ ${skill.body}`
             })}
           </div>
         )}</AccordionSection>
+      )}
 
-      {/* Learnings - always show (has add action) */}
+      {/* Learnings */}
+      {canSeeSection('learnings') && (
       <AccordionSection
         id="learnings"
         title="Learnings"
@@ -2684,9 +2750,10 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      )}
 
-      {/* Code - only show when there's code */}
-      {stepCodes.length > 0 && (
+      {/* Code - only show when there's code and user can see it */}
+      {canSeeSection('code') && stepCodes.length > 0 && (
         <AccordionSection
           id="code"
           title="Exploratory Code"
@@ -2744,7 +2811,7 @@ ${skill.body}`
       )}
 
       {/* Inference Code - auditable mode (separate from step code) */}
-      {inferenceCodes.length > 0 && (
+      {canSeeSection('inference_code') && inferenceCodes.length > 0 && (
         <AccordionSection
           id="inference-code"
           title="Inference Code"
@@ -2796,9 +2863,29 @@ ${skill.body}`
           <div className="space-y-3">
             {inferenceCodes.map((inf) => (
               <div key={inf.inference_id}>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                  {inf.inference_id}: {inf.name} = {inf.operation}
-                </p>
+                <div className="flex items-center gap-1 mb-1">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 flex-1">
+                    {inf.inference_id}: {inf.name} = {inf.operation}
+                  </p>
+                  {inf.prompt && (
+                    <button
+                      onClick={() => setShowInferencePrompt((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(inf.inference_id)) next.delete(inf.inference_id)
+                        else next.add(inf.inference_id)
+                        return next
+                      })}
+                      className="text-[10px] text-gray-400 hover:text-primary-500 px-1"
+                    >
+                      {showInferencePrompt.has(inf.inference_id) ? 'Hide Prompt' : 'Prompt'}
+                    </button>
+                  )}
+                </div>
+                {showInferencePrompt.has(inf.inference_id) && inf.prompt && (
+                  <pre className="text-[10px] leading-tight text-gray-400 bg-gray-50 dark:bg-gray-800/50 p-2 rounded overflow-auto max-h-60 mb-1 whitespace-pre-wrap">
+                    {inf.prompt}
+                  </pre>
+                )}
                 <CodeViewer
                   code={inf.code}
                   language="python"
@@ -2809,7 +2896,8 @@ ${skill.body}`
         </AccordionSection>
       )}
 
-      {/* Facts - always show (has add action) */}
+      {/* Facts */}
+      {canSeeSection('facts') && (
       <AccordionSection
         id="facts"
         title="Facts"
@@ -2942,9 +3030,10 @@ ${skill.body}`
           </div>
         )}
       </AccordionSection>
+      )}
 
       {/* Glossary (replaces Entities) */}
-      {session && (
+      {canSeeSection('glossary') && session && (
         <AccordionSection
           id="glossary"
           title="Glossary"

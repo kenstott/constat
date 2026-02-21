@@ -1042,6 +1042,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     code=code,
                     attempt=attempt + 1,
                     output=output or None,
+                    prompt=inference_prompt,
                 )
 
             # Reduce confidence if inference used LLM fuzzy mapping

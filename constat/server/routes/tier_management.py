@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from constat.core.tiered_config import ConfigSource
 from constat.server.auth import CurrentUserId, CurrentUserEmail
 from constat.server.permissions import get_user_permissions
+from constat.server.role_config import require_write
 from constat.server.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -231,7 +232,7 @@ async def get_resolved_config(
 # POST promote
 # ---------------------------------------------------------------------------
 
-@router.post("/{session_id}/config/promote", response_model=TierItemResponse)
+@router.post("/{session_id}/config/promote", response_model=TierItemResponse, dependencies=[Depends(require_write("tier_promote"))])
 async def promote_item(
     session_id: str,
     body: TierItemRequest,
@@ -324,7 +325,7 @@ async def promote_item(
 # DELETE remove
 # ---------------------------------------------------------------------------
 
-@router.post("/{session_id}/config/remove", response_model=TierItemResponse)
+@router.post("/{session_id}/config/remove", response_model=TierItemResponse, dependencies=[Depends(require_write("tier_promote"))])
 async def remove_item(
     session_id: str,
     body: TierItemRequest,
@@ -404,7 +405,7 @@ async def remove_item(
 # POST create
 # ---------------------------------------------------------------------------
 
-@router.post("/{session_id}/config/create", response_model=TierItemResponse)
+@router.post("/{session_id}/config/create", response_model=TierItemResponse, dependencies=[Depends(require_write("tier_promote"))])
 async def create_item(
     session_id: str,
     body: TierItemRequest,

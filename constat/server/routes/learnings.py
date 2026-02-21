@@ -17,6 +17,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from constat.server.role_config import require_write
+
 from constat.core.config import Config
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
@@ -130,7 +132,7 @@ async def list_learnings(
     )
 
 
-@router.post("/learnings", response_model=LearningInfo)
+@router.post("/learnings", response_model=LearningInfo, dependencies=[Depends(require_write("learnings"))])
 async def add_learning(
     body: LearningCreateRequest,
     user_id: CurrentUserId,
@@ -186,7 +188,7 @@ async def add_learning(
     )
 
 
-@router.delete("/learnings/{learning_id}")
+@router.delete("/learnings/{learning_id}", dependencies=[Depends(require_write("learnings"))])
 async def delete_learning(
     learning_id: str,
     user_id: CurrentUserId,
@@ -547,7 +549,7 @@ async def update_domain_content(
 # ============================================================================
 
 
-@router.post("/rules", response_model=RuleInfo)
+@router.post("/rules", response_model=RuleInfo, dependencies=[Depends(require_write("learnings"))])
 async def add_rule(
     body: RuleCreateRequest,
     user_id: CurrentUserId,
@@ -595,7 +597,7 @@ async def add_rule(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/rules/{rule_id}", response_model=RuleInfo)
+@router.put("/rules/{rule_id}", response_model=RuleInfo, dependencies=[Depends(require_write("learnings"))])
 async def update_rule(
     rule_id: str,
     body: RuleUpdateRequest,
@@ -657,7 +659,7 @@ async def update_rule(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", dependencies=[Depends(require_write("learnings"))])
 async def delete_rule(
     rule_id: str,
     user_id: CurrentUserId,

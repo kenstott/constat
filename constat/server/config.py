@@ -31,6 +31,10 @@ class UserPermissions(BaseModel):
         default=False,
         description="Whether user has admin access (full access to everything)",
     )
+    role: str = Field(
+        default="viewer",
+        description="Platform role (platform_admin, domain_builder, sme, domain_user, viewer)",
+    )
     domains: list[str] = Field(
         default_factory=list,
         description="Domain filenames user can access (empty = none, unless admin)",
@@ -48,6 +52,13 @@ class UserPermissions(BaseModel):
         default_factory=list,
         description="API names user can call (empty = none, unless admin)",
     )
+
+    @model_validator(mode="after")
+    def sync_admin_role(self) -> "UserPermissions":
+        """If admin=True and role is default viewer, auto-upgrade to platform_admin."""
+        if self.admin and self.role == "viewer":
+            self.role = "platform_admin"
+        return self
 
 
 class PermissionsConfig(BaseModel):

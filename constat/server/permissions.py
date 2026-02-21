@@ -52,6 +52,7 @@ class UserPermissions:
         user_id: str,
         email: Optional[str] = None,
         admin: bool = False,
+        role: str = "viewer",
         domains: Optional[list[str]] = None,
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
@@ -60,6 +61,7 @@ class UserPermissions:
         self.user_id = user_id
         self.email = email
         self.admin = admin
+        self.role = role
         self.domains = domains or []
         self.databases = databases or []
         self.documents = documents or []
@@ -95,6 +97,7 @@ class UserPermissions:
             "user_id": self.user_id,
             "email": self.email,
             "admin": self.admin,
+            "role": self.role,
             "domains": self.domains,
             "databases": self.databases,
             "documents": self.documents,
@@ -113,6 +116,7 @@ class UserPermissions:
             user_id=user_id,
             email=email,
             admin=config_perms.admin,
+            role=config_perms.role,
             domains=config_perms.domains,
             databases=config_perms.databases,
             documents=config_perms.documents,
@@ -153,6 +157,7 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
         result.append({
             "email": email,
             "admin": perms.admin,
+            "role": perms.role,
             "domains": perms.domains,
             "databases": perms.databases,
             "documents": perms.documents,

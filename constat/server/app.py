@@ -459,6 +459,10 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     # noinspection PyUnresolvedReferences
     fastapi_app.state.session_manager = session_manager
 
+    # Load role definitions
+    from constat.server.role_config import load_roles_config
+    fastapi_app.state.roles_config = load_roles_config()
+
     # Add CORS middleware
     fastapi_app.add_middleware(
         CORSMiddleware,

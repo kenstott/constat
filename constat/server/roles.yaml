@@ -1,0 +1,86 @@
+roles:
+  platform_admin:
+    description: "Manages domains, users, system config"
+    visibility:
+      results: true
+      databases: true
+      apis: true
+      documents: true
+      system_prompt: true
+      roles: true
+      skills: true
+      learnings: true
+      code: true
+      inference_code: true
+      facts: true
+      glossary: true
+    writes:
+      sources: true
+      glossary: true
+      skills: true
+      roles: true
+      facts: true
+      learnings: true
+      system_prompt: true
+      tier_promote: true
+    feedback:
+      flag_answers: true
+      suggest_glossary: true
+
+  domain_builder:
+    description: "Builds and configures domains"
+    visibility:
+      results: true
+      databases: true
+      apis: true
+      documents: true
+      system_prompt: true
+      roles: true
+      skills: true
+      learnings: true
+      code: true
+      inference_code: true
+      facts: true
+      glossary: true
+    writes:
+      sources: true
+      glossary: true
+      skills: true
+      roles: true
+      facts: true
+      learnings: true
+      system_prompt: true
+      tier_promote: true
+    feedback:
+      flag_answers: true
+      suggest_glossary: true
+
+  sme:
+    description: "Subject matter expert — curates glossary, facts, learnings"
+    visibility:
+      results: true
+      learnings: true
+      facts: true
+      glossary: true
+    writes:
+      glossary: true
+      facts: true
+      learnings: true
+    feedback:
+      flag_answers: true
+
+  domain_user:
+    description: "Business user — asks questions, flags answers"
+    visibility:
+      results: true
+    writes: {}
+    feedback:
+      flag_answers: true
+      suggest_glossary: true
+
+  viewer:
+    description: "Read-only viewer"
+    visibility:
+      results: true
+    writes: {}
+    feedback: {}

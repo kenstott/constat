@@ -26,6 +26,7 @@ import {
   deleteRelationship,
   updateGlossaryTerm,
   draftGlossaryDefinition,
+  draftGlossaryAliases,
   listDomains,
 } from '@/api/sessions'
 import type { DomainInfo } from '@/api/sessions'
@@ -535,6 +536,7 @@ function AliasEditor({ term, sessionId }: { term: GlossaryTerm; sessionId: strin
   const [newAlias, setNewAlias] = useState('')
   const [editIdx, setEditIdx] = useState<number | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [drafting, setDrafting] = useState(false)
   const { fetchTerms } = useGlossaryStore()
 
   const aliases = term.aliases || []
@@ -564,6 +566,29 @@ function AliasEditor({ term, sessionId }: { term: GlossaryTerm; sessionId: strin
     updated[editIdx] = val
     await save(updated)
     setEditIdx(null)
+  }
+
+  const handleDraft = async () => {
+    setDrafting(true)
+    try {
+      const result = await draftGlossaryAliases(sessionId, term.name)
+      if (result.aliases && result.aliases.length > 0) {
+        // Merge with existing, dedup case-insensitive (keep first occurrence)
+        const seen = new Set(aliases.map(a => a.toLowerCase()))
+        const merged = [...aliases]
+        for (const a of result.aliases) {
+          if (!seen.has(a.toLowerCase())) {
+            seen.add(a.toLowerCase())
+            merged.push(a)
+          }
+        }
+        await save(merged)
+      }
+    } catch (err) {
+      console.error('Draft aliases failed:', err)
+    } finally {
+      setDrafting(false)
+    }
   }
 
   return (
@@ -620,13 +645,24 @@ function AliasEditor({ term, sessionId }: { term: GlossaryTerm; sessionId: strin
           />
         </span>
       ) : (
-        <button
-          onClick={() => setAdding(true)}
-          className="ml-1 text-blue-500 hover:text-blue-600"
-          title="Add alias"
-        >
-          <PlusIcon className="w-3 h-3 inline" />
-        </button>
+        <>
+          <button
+            onClick={() => setAdding(true)}
+            className="ml-1 text-blue-500 hover:text-blue-600"
+            title="Add alias"
+          >
+            <PlusIcon className="w-3 h-3 inline" />
+          </button>
+          <button
+            onClick={handleDraft}
+            disabled={drafting}
+            className="ml-1 inline-flex items-center gap-0.5 text-purple-500 hover:text-purple-600 disabled:opacity-50"
+            title="AI-generate aliases"
+          >
+            <SparklesIcon className="w-3 h-3" />
+            <span className="text-[10px]">{drafting ? 'Drafting...' : 'AI Draft'}</span>
+          </button>
+        </>
       )}
     </div>
   )
@@ -1163,7 +1199,7 @@ function DomainPromotePicker({
   const [open, setOpen] = useState(false)
   const [domains, setDomains] = useState<DomainInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const [isAdmin, setIsAdmin] = useState(false)
+  const [canPromoteToSystem, setCanPromoteToSystem] = useState(false)
   const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const [confirmCascade, setConfirmCascade] = useState<{ target: string; descendants: GlossaryTerm[]; blocked: GlossaryTerm[] } | null>(null)
   const btnRef = useRef<HTMLSpanElement>(null)
@@ -1194,7 +1230,7 @@ function DomainPromotePicker({
     setOpen(true)
     setLoading(true)
     const { useAuthStore } = await import('@/store/authStore')
-    setIsAdmin(useAuthStore.getState().isAdmin)
+    setCanPromoteToSystem(useAuthStore.getState().canWrite('tier_promote'))
     if (!currentDomain) {
       const activeDomains = useSessionStore.getState().session?.active_domains || []
       const { domains: allDomains } = await listDomains()
@@ -1257,7 +1293,7 @@ function DomainPromotePicker({
           {loading ? (
             <div className="text-xs text-gray-400 px-2 py-1">Loading...</div>
           ) : currentDomain ? (
-            isAdmin ? (
+            canPromoteToSystem ? (
               <button
                 onClick={handlePromoteSystem}
                 className="w-full text-left text-xs px-2 py-1 hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600 dark:text-purple-400"
@@ -1267,7 +1303,7 @@ function DomainPromotePicker({
             ) : (
               <div className="text-xs text-gray-400 px-2 py-1">Admin required to promote to system</div>
             )
-          ) : domains.length === 0 && !isAdmin ? (
+          ) : domains.length === 0 && !canPromoteToSystem ? (
             <div className="text-xs text-gray-400 px-2 py-1">No domains available</div>
           ) : (
             <>
@@ -1281,7 +1317,7 @@ function DomainPromotePicker({
                   <span className="text-gray-400 ml-1">({d.filename})</span>
                 </button>
               ))}
-              {isAdmin && (
+              {canPromoteToSystem && (
                 <button
                   onClick={handlePromoteSystem}
                   className="w-full text-left text-xs px-2 py-1 hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-t border-gray-100 dark:border-gray-700"

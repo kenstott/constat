@@ -36,9 +36,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Generator
 
+import weakref
+
 import duckdb
 
 logger = logging.getLogger(__name__)
+
+# Track all live pools so they can be closed before process exit
+_all_pools: weakref.WeakSet["DuckDBConnectionPool"] = weakref.WeakSet()
+
+
+def close_all_pools() -> None:
+    """Close all live DuckDBConnectionPool instances.
+
+    Call before process exit to avoid SIGABRT from DuckDB's C++ destructors.
+    """
+    for pool in list(_all_pools):
+        try:
+            pool.close()
+        except Exception:
+            pass
 
 
 class DuckDBConnectionPool:
@@ -80,6 +97,7 @@ class DuckDBConnectionPool:
             read_only=self._read_only,
             config=self._config,
         )
+        _all_pools.add(self)
 
     @property
     def db_path(self) -> str:

@@ -69,7 +69,13 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   error: null,
 
   fetchTerms: async (sessionId) => {
-    set({ loading: true, error: null })
+    // Only show loading skeleton on initial load to avoid unmounting open panels
+    const isInitialLoad = get().terms.length === 0
+    if (isInitialLoad) {
+      set({ loading: true, error: null })
+    } else {
+      set({ error: null })
+    }
     try {
       const { filters } = get()
       const response = await sessionsApi.getGlossary(sessionId, filters.scope || 'all')

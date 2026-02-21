@@ -11,12 +11,12 @@ Your code has access to:
 - `pd`: pandas (imported as pd)
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
-- `llm_ask`: a function to query the LLM for general knowledge (batch calls, never loop)
-- `llm_map(values, target, source_desc) -> dict[str, str]`: fuzzy map a list of values to a target domain using LLM knowledge. Returns a dict keyed by input value. Use with `df['col'].map(result)`
-- `llm_classify(values, categories, context) -> dict[str, str]`: classify items into fixed categories using LLM. Returns a dict keyed by input value. Use with `df['col'].map(result)`
-- `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple.
-- `llm_summarize(texts, instruction)`: summarize texts using LLM
-- `llm_score(texts, min_val, max_val, instruction)`: score texts on a numeric scale using LLM judgment. Returns list of `(score, reasoning)` tuples. Score is a float in [min_val, max_val]
+- `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
+- `llm_map(values, target, source_desc) -> dict[str, str]`: fuzzy map a list of values to a target domain using LLM knowledge. Returns a dict keyed by input value. Use with `df['col'].map(result)`. Best for: country→code, product→category, name→standardized_name. Pass ALL unique values at once (never loop).
+- `llm_classify(values, categories, context) -> dict[str, str]`: classify items into one of a FIXED set of categories using LLM. Returns a dict keyed by input value. Use with `df['col'].map(result)`. Categories must be a known list (e.g., ["high", "medium", "low"]). Pass ALL unique values at once.
+- `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple. Best for: parsing addresses, extracting entities from descriptions.
+- `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
+- `llm_score(texts, min_val, max_val, instruction)`: score texts on a numeric scale using LLM judgment. Returns list of `(score, reasoning)` tuples. Score is a float in [min_val, max_val]. Pass ALL texts at once.
 - `doc_read(name)`: read a reference document by name, returns text content
 - `parse_number(val)`: parse string numbers → tuple of all values. "8-12%" → (8.0, 12.0), "1,2,3" → (1.0, 2.0, 3.0), "5%" → (5.0,). Use `min()`/`max()` for range bounds
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
@@ -66,6 +66,15 @@ file_paths = skill_name_run_proof(param=value)
 ```
 Functions are prefixed with the skill's package name (hyphens → underscores), e.g. `cat_and_country_analysis_run_proof()`.
 Do NOT import skill modules. The functions are already available as globals, just like `store`, `llm_ask`, and `doc_read`.
+
+## LLM Primitive Selection Guide
+- **Map values to another domain** (product→breed, city→country_code): use `llm_map(unique_values, target_desc)` then `df['new_col'] = df['source_col'].map(result)`
+- **Classify into fixed categories** (sentiment, priority, risk level): use `llm_classify(unique_values, categories)`
+- **Extract multiple fields from text** (parse addresses, extract entities): use `llm_extract(texts, field_names)`
+- **Generate per-row reasoning/descriptions**: use `llm_extract(descriptions, ["reasoning"])` or `llm_summarize(texts, instruction)` — NEVER `llm_ask` in a loop or with all rows concatenated
+- **Single factual lookup** (GDP, capital, conversion rate): use `llm_ask(question)`
+- All batch primitives (llm_map, llm_classify, llm_extract, llm_summarize, llm_score) accept lists and process all items in ONE call. Pass unique values, never loop.
+- `llm_ask` is NOT a batch primitive. It takes one question and returns one value. Do not pass it a list of items.
 
 ## Common Pitfalls
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {{list(df.columns)}}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.
