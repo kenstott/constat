@@ -417,7 +417,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
 
   fetchPermissions: async () => {
     // When auth disabled, grant full access (matches authStore behavior)
-    const { isAuthDisabled } = await import('@/store/authStore')
+    const { isAuthDisabled, useAuthStore } = await import('@/store/authStore')
     if (isAuthDisabled) {
       set({ userPermissions: {
         isAdmin: true, persona: 'platform_admin',
@@ -426,12 +426,16 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       } })
       return
     }
+    // Skip if auth token not yet available (avoids 401 → logout during HMR)
+    const token = await useAuthStore.getState().getToken()
+    if (!token) {
+      return
+    }
     try {
       const perms = await sessionsApi.getMyPermissions()
       set({ userPermissions: { isAdmin: perms.persona === 'platform_admin', persona: perms.persona, visibility: perms.visibility, writes: perms.writes } })
     } catch (error) {
       console.warn('Failed to fetch permissions:', error)
-      set({ userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} } })
     }
   },
 
