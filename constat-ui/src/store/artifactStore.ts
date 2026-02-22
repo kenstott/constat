@@ -118,6 +118,7 @@ interface ArtifactState {
   updateRule: (ruleId: string, summary: string, tags?: string[]) => Promise<void>
   deleteRule: (ruleId: string) => Promise<void>
   deleteLearning: (learningId: string) => Promise<void>
+  addInferenceCode: (ic: InferenceCode) => void
   clear: () => void
   clearQueryResults: () => void  // Clear artifacts/tables/facts/stepCodes but keep data sources/entities/learnings
   clearInferenceCodes: () => void  // Clear inference codes on proof re-run
@@ -666,6 +667,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       selectedArtifact: null,
       selectedTable: null,
       error: null,
+    }),
+  addInferenceCode: (ic) =>
+    set((state) => {
+      // Replace if same inference_id exists (retry), otherwise append
+      const filtered = state.inferenceCodes.filter(x => x.inference_id !== ic.inference_id)
+      return { inferenceCodes: [...filtered, ic] }
     }),
   clearInferenceCodes: () => set({ inferenceCodes: [] }),
 }))

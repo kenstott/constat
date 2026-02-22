@@ -31,6 +31,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
+import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { useGlossaryStore } from '@/store/glossaryStore'
 import { AccordionSection } from './ArtifactAccordion'
@@ -225,17 +226,12 @@ export function ArtifactPanel() {
     updateSkill,
     deleteSkill,
     draftSkill,
-    userPermissions,
-    fetchPermissions,
     updateSystemPrompt,
   } = useArtifactStore()
   const { totalDefined, totalSelfDescribing } = useGlossaryStore()
-
-  // Persona-based visibility/writes shortcuts
-  const vis = userPermissions.visibility ?? {}
-  const writes = userPermissions.writes ?? {}
-  const canSeeSection = (key: string) => vis[key] ?? false
-  const canWrite = (key: string) => writes[key] ?? false
+  const authPermissions = useAuthStore(s => s.permissions)
+  const canSeeSection = (key: string) => isAuthDisabled || (authPermissions?.visibility?.[key] ?? false)
+  const canWrite = (key: string) => isAuthDisabled || (authPermissions?.writes?.[key] ?? false)
   // Sources group visible if any child section visible
   const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents')
   // Reasoning group visible if any child section visible
@@ -405,11 +401,6 @@ export function ArtifactPanel() {
     }
     loadData()
   }, [pendingDeepLink])
-
-  // Fetch permissions on mount
-  useEffect(() => {
-    fetchPermissions()
-  }, [fetchPermissions])
 
   // Fetch data when session changes
   useEffect(() => {

@@ -36,6 +36,7 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
           onClick={onNewQuery}
           disabled={isExecuting || isCreatingNewSession}
           className="btn-secondary text-xs disabled:opacity-50"
+          title="Start a new query session"
         >
           {isCreatingNewSession ? (
             <svg className="w-4 h-4 mr-1 animate-spin" viewBox="0 0 24 24" fill="none">

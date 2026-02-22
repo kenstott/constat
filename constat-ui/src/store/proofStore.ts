@@ -18,6 +18,8 @@ export interface FactNode {
   reason?: string
   dependencies: string[]
   elapsed_ms?: number
+  attempt?: number
+  code?: string
 }
 
 interface ProofState {
@@ -85,6 +87,25 @@ export const useProofStore = create<ProofState>((set, get) => ({
       return
     }
 
+    // Handle inference_code event (keyed by fact_name from inference_id + name)
+    if (eventType === 'inference_code') {
+      const codeFact = factName || (data.inference_id as string)
+      if (!codeFact) return
+      set((state) => {
+        const next = new Map(state.facts)
+        const existing = next.get(codeFact)
+        if (existing) {
+          next.set(codeFact, {
+            ...existing,
+            code: data.code as string,
+            attempt: data.attempt as number,
+          })
+        }
+        return { facts: next }
+      })
+      return
+    }
+
     // Remaining events require fact_name
     if (!factName) return
 
@@ -134,6 +155,7 @@ export const useProofStore = create<ProofState>((set, get) => ({
             strategy: data.strategy as string | undefined,
             dependencies: (data.dependencies as string[]) || existing.dependencies,
             elapsed_ms: data.elapsed_ms as number | undefined,
+            attempt: data.attempt as number | undefined ?? existing.attempt,
           })
           return { facts: next }
 

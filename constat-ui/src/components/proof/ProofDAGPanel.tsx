@@ -26,6 +26,8 @@ interface FactNode {
   reason?: string
   dependencies: string[]
   elapsed_ms?: number
+  attempt?: number
+  code?: string
   validations?: string[]
   profile?: string[]
 }
@@ -248,16 +250,18 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
-  const [selectedNodeStack, setSelectedNodeStack] = useState<FactNode[]>([])
+  const [selectedIdStack, setSelectedIdStack] = useState<string[]>([])
+  // Derive selectedNode from live facts map so updates (code, elapsed_ms) are reflected
+  const selectedNodeStack = selectedIdStack.map(id => facts.get(id)).filter((n): n is FactNode => !!n)
   const selectedNode = selectedNodeStack.length > 0 ? selectedNodeStack[selectedNodeStack.length - 1] : null
   const [showSkillForm, setShowSkillForm] = useState(false)
   const [skillName, setSkillName] = useState('')
   const [isSavingSkill, setIsSavingSkill] = useState(false)
   const [showRedoForm, setShowRedoForm] = useState(false)
   const [redoGuidance, setRedoGuidance] = useState('')
-  const pushSelectedNode = (node: FactNode) => setSelectedNodeStack(prev => [...prev, node])
-  const popSelectedNode = () => setSelectedNodeStack(prev => prev.slice(0, -1))
-  const clearSelectedNodes = () => setSelectedNodeStack([])
+  const pushSelectedNode = (node: FactNode) => setSelectedIdStack(prev => [...prev, node.id])
+  const popSelectedNode = () => setSelectedIdStack(prev => prev.slice(0, -1))
+  const clearSelectedNodes = () => setSelectedIdStack([])
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
   const [panelSize, setPanelSize] = useState(() => {
     try {
@@ -669,10 +673,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
         <text
           x={32}
           y={NODE_HEIGHT / 2 + 4}
-          fill="#1F2937"
+          className="select-none fill-gray-800 dark:fill-gray-100"
           fontSize={12}
           fontWeight={500}
-          className="select-none"
         >
           {nodeData.name.length > 27 ? nodeData.name.slice(0, 24) + '...' : nodeData.name}
         </text>
@@ -899,6 +902,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               <button
                 onClick={() => setShowRedoForm(true)}
                 className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
+                title="Re-run proof with optional guidance"
               >
                 Redo
               </button>
@@ -1255,10 +1259,30 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   <p className="text-red-600 dark:text-red-400 mt-1">{selectedNode.reason}</p>
                 </div>
               )}
-              {selectedNode.elapsed_ms !== undefined && (
+              {(selectedNode.elapsed_ms !== undefined || selectedNode.attempt !== undefined) && (
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  {selectedNode.elapsed_ms !== undefined && (
+                    <div>
+                      <span className="text-xs font-medium text-gray-500 uppercase">Elapsed Time</span>
+                      <p className="text-gray-700 dark:text-gray-300 mt-1">
+                        {selectedNode.elapsed_ms >= 1000
+                          ? `${(selectedNode.elapsed_ms / 1000).toFixed(1)}s`
+                          : `${selectedNode.elapsed_ms}ms`}
+                      </p>
+                    </div>
+                  )}
+                  {selectedNode.attempt !== undefined && selectedNode.attempt > 1 && (
+                    <div>
+                      <span className="text-xs font-medium text-gray-500 uppercase">Retries</span>
+                      <p className="text-amber-600 dark:text-amber-400 mt-1">{selectedNode.attempt - 1} {selectedNode.attempt === 2 ? 'retry' : 'retries'}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {selectedNode.code && (
                 <div>
-                  <span className="text-xs font-medium text-gray-500 uppercase">Elapsed Time</span>
-                  <p className="text-gray-700 dark:text-gray-300 mt-1">{selectedNode.elapsed_ms}ms</p>
+                  <span className="text-xs font-medium text-gray-500 uppercase">Code</span>
+                  <pre className="font-mono text-xs bg-gray-50 dark:bg-gray-900 p-3 rounded mt-1 overflow-x-auto max-h-64 overflow-y-auto">{selectedNode.code}</pre>
                 </div>
               )}
             </div>

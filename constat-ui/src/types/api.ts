@@ -424,6 +424,7 @@ export type EventType =
   | 'fact_failed'
   | 'fact_blocked'
   | 'dag_execution_start'
+  | 'inference_code'
   | 'proof_complete'
   | 'proof_summary_ready'
   | 'progress'

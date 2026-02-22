@@ -64,6 +64,7 @@ class EventType(str, Enum):
     FACT_EXECUTING = "fact_executing"  # Derivation/query executing
     FACT_FAILED = "fact_failed"  # Resolution failed
     DAG_EXECUTION_START = "dag_execution_start"  # DAG ready, execution beginning
+    INFERENCE_CODE = "inference_code"  # Inference code generated, about to execute
     PROOF_COMPLETE = "proof_complete"  # All facts resolved, DAG complete
     PROOF_SUMMARY_READY = "proof_summary_ready"  # LLM-generated summary available
 

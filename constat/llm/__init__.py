@@ -9,7 +9,7 @@
 
 """LLM primitives for auditable data transformations.
 
-Provides llm_map, llm_classify, llm_extract, llm_summarize, llm_score —
+Provides llm_enrich (unified), llm_summarize, llm_score —
 importable by generated scripts. Auto-detects provider from env vars for
 standalone use; call set_backend(router) for in-session use.
 """
@@ -233,31 +233,84 @@ def _notify(event: LLMCallEvent) -> None:
 # Primitives
 # ---------------------------------------------------------------------------
 
-def llm_map(values: list[str], target: str, source_desc: str = "values") -> dict[str, str]:
+def llm_map(
+    values: list[str],
+    target: str,
+    source_desc: str = "values",
+    *,
+    reason: bool = False,
+    score: bool = False,
+) -> dict[str, str] | dict[str, dict]:
     """Map a list of values to a target domain using LLM knowledge.
 
     Args:
         values: List of source values to map (e.g., ["United Kingdom", "Burma"])
         target: Description of what to map to (e.g., "ISO 3166-1 alpha-2 country code")
         source_desc: Label for the source values (e.g., "country names")
+        reason: If True, include a reasoning string per mapping.
+        score: If True, include a confidence score (0.0–1.0) per mapping.
 
     Returns:
-        Dict mapping source values to target values. Unmappable values map to None.
+        dict[str, str] by default. Every input gets a best-effort mapping.
+        dict[str, dict] when reason or score is True, with keys "value", "reason", "score".
+        Consumer should use score to decide acceptance threshold.
     """
     values_str = "\n".join(f"- {v}" for v in values)
-    prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
+    rich = reason or score
+
+    if rich:
+        # Build per-entry keys list for the prompt
+        entry_keys = ['"value"']
+        if reason:
+            entry_keys.append('"reason"')
+        if score:
+            entry_keys.append('"score"')
+        keys_str = ", ".join(entry_keys)
+
+        example_entry = {"value": "mapped1"}
+        if reason:
+            example_entry["reason"] = "brief explanation"
+        if score:
+            example_entry["score"] = 0.95
+        example_low = {"value": "best_guess"}
+        if reason:
+            example_low["reason"] = "weak match but closest available"
+        if score:
+            example_low["score"] = 0.3
+        example_json = json.dumps({"input1": example_entry, "input2": example_low})
+
+        prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
 
 {values_str}
 
-Respond with ONLY valid JSON: a single object mapping each input value to its {target}.
-If a value cannot be confidently mapped, map it to null.
+Respond with ONLY valid JSON: a single object where EVERY input value is a key mapped to an object with keys {keys_str}.
+IMPORTANT: You MUST return a mapping for EVERY input. Always provide your best match — NEVER set "value" to null. Use the score to reflect confidence instead.
+The JSON keys MUST be the EXACT input strings listed above.
+{"\"reason\" should be a brief explanation of the mapping." if reason else ""}
+{"\"score\" should be a float 0.0–1.0 reflecting confidence. Low confidence is fine — the consumer decides the threshold." if score else ""}
 
-Example format: {{"input1": "mapped1", "input2": "mapped2", "input3": null}}
+Example format: {example_json}
 
 YOUR JSON RESPONSE:"""
 
+        system_msg = f"You map {source_desc} to {target}. Output ONLY valid JSON. Each entry has keys {keys_str}. ALWAYS provide a best-effort mapping for every input — never null. Use score to reflect confidence."
+    else:
+        prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
+
+{values_str}
+
+Respond with ONLY valid JSON: a single object where EVERY input value is a key mapped to its {target}.
+IMPORTANT: You MUST return a mapping for EVERY input. Always provide your best match — NEVER map to null.
+The JSON keys MUST be the EXACT input strings listed above.
+
+Example format: {{"input1": "mapped1", "input2": "mapped2", "input3": "mapped3"}}
+
+YOUR JSON RESPONSE:"""
+
+        system_msg = f"You map {source_desc} to {target}. Output ONLY valid JSON. Always provide a best-effort mapping — never null."
+
     content, model_used, provider_used = _execute(
-        system=f"You map {source_desc} to {target}. Output ONLY valid JSON. Use null for uncertain mappings.",
+        system=system_msg,
         user_message=prompt,
     )
 
@@ -265,11 +318,17 @@ YOUR JSON RESPONSE:"""
 
     if not content.startswith("{"):
         logger.warning(f"[LLM_MAP] Could not parse response: {content[:200]}")
-        mapping = {v: None for v in values}
+        if rich:
+            mapping = {v: _null_rich_entry(reason, score) for v in values}
+        else:
+            mapping = {v: None for v in values}
     else:
         mapping = json.loads(content)
 
-    null_count = sum(1 for v in mapping.values() if v is None)
+    if rich:
+        null_count = sum(1 for v in mapping.values() if isinstance(v, dict) and v.get("value") is None)
+    else:
+        null_count = sum(1 for v in mapping.values() if v is None)
     logger.info(
         f"[LLM_MAP] Mapped {len(values) - null_count}/{len(values)} {source_desc} -> {target}"
     )
@@ -285,22 +344,78 @@ YOUR JSON RESPONSE:"""
     return mapping
 
 
-def llm_classify(values: list[str], categories: list[str], context: str = "") -> dict[str, str]:
+def _null_rich_entry(reason: bool, score: bool) -> dict:
+    """Build a null rich entry for failed parse fallback."""
+    entry = {"value": None}
+    if reason:
+        entry["reason"] = None
+    if score:
+        entry["score"] = None
+    return entry
+
+
+def llm_classify(
+    values: list[str],
+    categories: list[str],
+    context: str = "",
+    *,
+    reason: bool = False,
+    score: bool = False,
+) -> dict[str, str] | dict[str, dict]:
     """Classify items into fixed categories using LLM knowledge.
 
     Args:
         values: List of items to classify.
         categories: List of valid category names.
         context: Optional context describing the domain.
+        reason: If True, include a reasoning string per classification.
+        score: If True, include a confidence score (0.0–1.0) per classification.
 
     Returns:
-        Dict mapping each value to one of the categories (or None if unclassifiable).
+        dict[str, str] by default. Unclassifiable values map to None.
+        dict[str, dict] when reason or score is True, with keys "value", "reason", "score".
     """
     values_str = "\n".join(f"- {v}" for v in values)
     cats_str = ", ".join(f'"{c}"' for c in categories)
     ctx = f" ({context})" if context else ""
+    rich = reason or score
 
-    prompt = f"""Classify each of the following items{ctx} into exactly one of these categories: {cats_str}.
+    if rich:
+        entry_keys = ['"value"']
+        if reason:
+            entry_keys.append('"reason"')
+        if score:
+            entry_keys.append('"score"')
+        keys_str = ", ".join(entry_keys)
+
+        example_entry = {"value": "category_a"}
+        if reason:
+            example_entry["reason"] = "brief explanation"
+        if score:
+            example_entry["score"] = 0.95
+        example_null = {"value": None}
+        if reason:
+            example_null["reason"] = None
+        if score:
+            example_null["score"] = None
+        example_json = json.dumps({"item1": example_entry, "item2": example_null})
+
+        prompt = f"""Classify each of the following items{ctx} into exactly one of these categories: {cats_str}.
+
+{values_str}
+
+Respond with ONLY valid JSON: a single object mapping each input to an object with keys {keys_str}.
+"value" must be one of the categories above, or null if unclassifiable.
+{"\"reason\" should be a brief explanation of the classification." if reason else ""}
+{"\"score\" should be a float 0.0–1.0 reflecting confidence in the classification." if score else ""}
+
+Example format: {example_json}
+
+YOUR JSON RESPONSE:"""
+
+        system_msg = f"You classify items into categories: {cats_str}. Output ONLY valid JSON. Each entry has keys {keys_str}. Use null value for uncertain."
+    else:
+        prompt = f"""Classify each of the following items{ctx} into exactly one of these categories: {cats_str}.
 
 {values_str}
 
@@ -311,8 +426,10 @@ Example format: {{"item1": "category_a", "item2": "category_b", "item3": null}}
 
 YOUR JSON RESPONSE:"""
 
+        system_msg = f"You classify items into categories: {cats_str}. Output ONLY valid JSON. Use null for uncertain."
+
     content, model_used, provider_used = _execute(
-        system=f"You classify items into categories: {cats_str}. Output ONLY valid JSON. Use null for uncertain.",
+        system=system_msg,
         user_message=prompt,
     )
 
@@ -320,11 +437,17 @@ YOUR JSON RESPONSE:"""
 
     if not content.startswith("{"):
         logger.warning(f"[LLM_CLASSIFY] Could not parse response: {content[:200]}")
-        mapping = {v: None for v in values}
+        if rich:
+            mapping = {v: _null_rich_entry(reason, score) for v in values}
+        else:
+            mapping = {v: None for v in values}
     else:
         mapping = json.loads(content)
 
-    null_count = sum(1 for v in mapping.values() if v is None)
+    if rich:
+        null_count = sum(1 for v in mapping.values() if isinstance(v, dict) and v.get("value") is None)
+    else:
+        null_count = sum(1 for v in mapping.values() if v is None)
     logger.info(
         f"[LLM_CLASSIFY] Classified {len(values) - null_count}/{len(values)} items into {len(categories)} categories"
     )

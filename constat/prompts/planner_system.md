@@ -83,6 +83,12 @@ If no active skills match the request, plan from primitives as usual.
     - Prefer aggregation at the database level over pulling raw data into Python
     - When the user asks a simple question, prefer fewer steps over exhaustive multi-step analysis
     - Use `llm_map`/`llm_classify` only on unique values, not every row
+13. **NO DUPLICATE WORK** - Never plan a step that re-does work already completed by a prior step.
+    - If step N produces a table with columns A, B, C, step N+1 must NOT recompute those columns — load and use the table directly.
+    - WRONG: Step 3 matches products→breeds with reasoning. Step 4 "generates final list with reasoning" by re-calling `llm_map`. This duplicates Step 3.
+    - RIGHT: Step 3 matches products→breeds with reasoning. Step 4 formats the existing matches into a report. No LLM calls needed.
+    - A later step should only transform, filter, aggregate, or present prior results — never regenerate them.
+    - If a step's output already contains the fields needed downstream (e.g., reasoning, scores), do NOT plan another step to "add" those same fields.
 
 ## Data Sensitivity
 Set `contains_sensitive_data: true` for data under privacy regulations (GDPR, HIPAA).

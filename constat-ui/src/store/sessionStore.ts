@@ -1086,8 +1086,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       case 'fact_executing':
       case 'fact_resolved':
       case 'fact_failed':
-      case 'dag_execution_start': {
+      case 'dag_execution_start':
+      case 'inference_code': {
         useProofStore.getState().handleFactEvent(event.event_type, event.data as Record<string, unknown>)
+        // Also add to artifactStore for real-time display in right panel
+        const icData = event.data as Record<string, unknown>
+        useArtifactStore.getState().addInferenceCode({
+          inference_id: icData.inference_id as string,
+          name: icData.name as string || '',
+          operation: icData.operation as string || '',
+          code: icData.code as string,
+          attempt: icData.attempt as number,
+        })
         break
       }
 

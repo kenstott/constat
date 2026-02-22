@@ -12,8 +12,12 @@ Your code has access to:
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
-- `llm_map(values, target, source_desc) -> dict[str, str]`: fuzzy map a list of values to a target domain using LLM knowledge. Returns a dict keyed by input value. Use with `df['col'].map(result)`. Best for: country→code, product→category, name→standardized_name. Pass ALL unique values at once (never loop).
-- `llm_classify(values, categories, context) -> dict[str, str]`: classify items into one of a FIXED set of categories using LLM. Returns a dict keyed by input value. Use with `df['col'].map(result)`. Categories must be a known list (e.g., ["high", "medium", "low"]). Pass ALL unique values at once.
+- `llm_map(values, target, source_desc, reason=False, score=False)`: fuzzy map a list of values to a target domain using LLM knowledge. Returns a dict keyed by EXACT input value. ALWAYS returns a best-effort mapping for every input — never null. Pass ALL unique values at once (never loop).
+  - Default: `dict[str, str]` — `{"Burma": "MM", "UK": "GB"}`. Use with `df['col'].map(result)`.
+  - `reason=True` and/or `score=True`: `dict[str, dict]` — `{"Burma": {"value": "MM", "reason": "...", "score": 0.95}}`. Use `.map(lambda x: result[x]["value"])` for the mapped value. Score is a float 0.0–1.0 reflecting mapping confidence. Use score to filter weak matches — do NOT assume null means unmappable.
+- `llm_classify(values, categories, context, reason=False, score=False)`: classify items into **semantic categories you defined** (e.g., ["high", "medium", "low"], ["bug", "feature"]). NOT for matching to a domain list — use `llm_map` for that. Pass ALL unique values at once.
+  - Default: `dict[str, str]`. Use with `df['col'].map(result)`.
+  - `reason=True` and/or `score=True`: `dict[str, dict]` — same shape as `llm_map` rich mode.
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple. Best for: parsing addresses, extracting entities from descriptions.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
 - `llm_score(texts, min_val, max_val, instruction)`: score texts on a numeric scale using LLM judgment. Returns list of `(score, reasoning)` tuples. Score is a float in [min_val, max_val]. Pass ALL texts at once.
@@ -46,6 +50,13 @@ Share data between steps ONLY via `store`:
 - `store.set_state('key', value, step_number=N)` / `store.get_state('key')` (check for None!)
 - `store.query('SELECT ... FROM table')` for SQL on saved data
 
+## Trust Prior Step Results
+When a prior step saved data to `store`, **use it directly** — do NOT re-derive or defensively recompute it.
+- WRONG: Load `inventory_breed_matches`, check if empty, re-call `llm_map()` as fallback. This wastes tokens and duplicates work.
+- RIGHT: Load `inventory_breed_matches` and use the columns already present (reasoning, scores, etc.).
+- If a prior step's output is missing or broken, let the error propagate — the retry mechanism will fix the prior step.
+- NEVER wrap `store.load_dataframe()` in a try/except with fallback recomputation.
+
 ## Corrections and Updates
 When correcting or updating previous results:
 - **OVERWRITE the original table** with the exact same name - NEVER create "corrected_*", "updated_*", or "*_v2" versions
@@ -68,11 +79,19 @@ Functions are prefixed with the skill's package name (hyphens → underscores), 
 Do NOT import skill modules. The functions are already available as globals, just like `store`, `llm_ask`, and `doc_read`.
 
 ## LLM Primitive Selection Guide
-- **Map values to another domain** (product→breed, city→country_code): use `llm_map(unique_values, target_desc)` then `df['new_col'] = df['source_col'].map(result)`
-- **Classify into fixed categories** (sentiment, priority, risk level): use `llm_classify(unique_values, categories)`
+- **Map values to another domain** (product→breed, city→country_code, name→standardized): use `llm_map`. The LLM generates the target value from its knowledge — output is open-ended.
+  - RIGHT: `llm_map(products, "most similar cat breed")` — LLM picks from entire breed knowledge
+  - RIGHT: `llm_map(countries, "ISO 3166-1 alpha-2 code")` — LLM generates codes
+  - WRONG: `llm_classify(products, breed_list)` — this is NOT classification, it's fuzzy matching to a domain
+- **Classify into semantic categories** (sentiment, priority, risk level): use `llm_classify`. Categories must be a predetermined **semantic grouping** you defined, not just "a list of things to pick from."
+  - RIGHT: `llm_classify(tickets, ["bug", "feature", "question"])` — semantic categories you defined
+  - RIGHT: `llm_classify(reviews, ["positive", "neutral", "negative"])` — sentiment buckets
+  - WRONG: `llm_classify(products, breed_names)` — breed names are NOT semantic categories, this is a mapping task
+  - WRONG: `llm_classify(cities, country_names)` — countries are a domain to map to, not categories
 - **Extract multiple fields from text** (parse addresses, extract entities): use `llm_extract(texts, field_names)`
-- **Generate per-row reasoning/descriptions**: use `llm_extract(descriptions, ["reasoning"])` or `llm_summarize(texts, instruction)` — NEVER `llm_ask` in a loop or with all rows concatenated
+- **Generate per-row reasoning/descriptions**: use `llm_map(values, target, reason=True)` for mapping with explanations, `llm_extract(descriptions, ["reasoning"])`, or `llm_summarize(texts, instruction)` — NEVER `llm_ask` in a loop or with all rows concatenated
 - **Single factual lookup** (GDP, capital, conversion rate): use `llm_ask(question)`
+- **Key distinction**: if the target values come from a known domain (breeds, countries, codes) → `llm_map`. If you're bucketing inputs into labels you invented (high/med/low, categories) → `llm_classify`.
 - All batch primitives (llm_map, llm_classify, llm_extract, llm_summarize, llm_score) accept lists and process all items in ONE call. Pass unique values, never loop.
 - `llm_ask` is NOT a batch primitive. It takes one question and returns one value. Do not pass it a list of items.
 

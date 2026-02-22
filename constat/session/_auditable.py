@@ -140,24 +140,36 @@ class AuditableMixin:
             hint_lines.append("")
             cached_facts_hint = "\n".join(hint_lines) + "\n"
 
-        # Extract document sources used during exploratory session
+        # Extract document sources and step summaries from exploratory session
         exploratory_docs_hint = ""
+        exploratory_steps_hint = ""
         step_hints = getattr(self, '_proof_step_hints', [])
         if step_hints:
             doc_names = set()
+            step_code_blocks = []
             for step in step_hints:
                 code = step.get("code", "")
                 for m in re.findall(r"""doc_read\(\s*['"]([^'"]+)['"]\s*\)""", code):
                     doc_names.add(m)
+                goal = step.get("goal", "")
+                step_num = step.get("step_number", "?")
+                if code:
+                    step_code_blocks.append(f"# Step {step_num}: {goal}\n{code}")
             if doc_names:
                 names_str = ", ".join(f'"{n}"' for n in sorted(doc_names))
                 exploratory_docs_hint = f"DOCUMENT CONSTRAINT: The exploratory analysis used these documents: {names_str}. Use the SAME document sources for consistency.\n\n"
+            if step_code_blocks:
+                exploratory_steps_hint = (
+                    "EXPLORATORY SESSION CODE (working code that produced the accepted answer — use as reference, not prescription. "
+                    "Your proof should reason independently but make informed method choices):\n```python\n"
+                    + "\n\n".join(step_code_blocks) + "\n```\n\n"
+                )
 
         fact_plan_prompt = f"""Construct a logical derivation to answer this question with full provenance.
 
 Question: {problem}
 
-{cached_facts_hint}{exploratory_docs_hint}Available databases:
+{cached_facts_hint}{exploratory_docs_hint}{exploratory_steps_hint}Available databases:
 {ctx["schema_overview"]}
 {ctx["doc_overview"]}
 {ctx["api_overview"]}
@@ -198,6 +210,8 @@ INFERENCE RULES:
 - CRITICAL: Each inference result_name MUST be GLOBALLY UNIQUE. NEVER reuse any name. BAD: two inferences both named "data_verified". GOOD: "validation_result" then "final_verification".
 - CRITICAL: The final inference(s) should COMPUTE THE ACTUAL ANSWER, not just verify data exists. If the user asks for recommendations, calculate them. If they ask for comparisons, compute them.
 - CRITICAL: Only ONE verify_exists() at the very end, referencing the computed answer. Do NOT add validate() or verify() steps before it.
+- CRITICAL: Do NOT add intermediate analysis steps that are not required by the question. If the question asks to "match X to Y", plan ONE inference that does the matching — do NOT plan separate steps to "analyze characteristics", "classify categories", "score complexity" etc. unless explicitly requested.
+- CRITICAL: Each inference should produce data that the NEXT inference actually needs. Do NOT generate intermediate datasets that are never consumed downstream.
 - Operations like date extraction, filtering, grouping belong HERE, not in premises
 - Keep operations simple: filter, join, group_sum, count, apply_rules, calculate, etc.
 - For FUZZY MAPPING (e.g., free-text country names → ISO codes): plan the inference to first attempt mapping via data sources (APIs, databases), then use llm_map() as fallback for unmatched values. This reduces confidence but enables mapping when no exact data source exists.
@@ -339,48 +353,6 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
                     conclusion = line.split("C:", 1)[1].strip()
                 elif not conclusion:
                     conclusion = line
-
-        # Detect collection-oriented queries (reports, lists, etc.)
-        # These don't have explicit scalar comparisons - the implicit goal is "data exists"
-        comparison_keywords = [
-            "greater than", "less than", "equal to", "equals",
-            ">", "<", ">=", "<=", "==", "!=",
-            "compare", "check if", "verify that", "prove that",
-            "is positive", "is negative", "is zero",
-        ]
-        is_collection_query = True
-        combined_text = (problem + " " + conclusion).lower()
-        for keyword in comparison_keywords:
-            if keyword.lower() in combined_text:
-                is_collection_query = False
-                break
-
-        # Also check if the last inference is a comparison operation
-        if inferences:
-            last_op = inferences[-1].get("operation", "").lower()
-            if any(kw in last_op for kw in ["compare", "check", "verify", ">", "<"]):
-                is_collection_query = False
-
-        # For collection queries, add implicit verification inference
-        if is_collection_query and inferences:
-            last_inf_id = inferences[-1]["id"]
-            verify_id = f"I{len(inferences) + 1}"
-            # Use a unique name that won't conflict with LLM-generated names
-            existing_names = {inf.get("name", "") for inf in inferences}
-            verify_name = "final_data_verification"
-            suffix = 1
-            while verify_name in existing_names:
-                verify_name = f"final_data_verification_{suffix}"
-                suffix += 1
-            inferences.append({
-                "id": verify_id,
-                "name": verify_name,
-                "operation": f"verify_exists({last_inf_id})",
-                "explanation": "Verify result has data (count > 0) to confirm derivation succeeded",
-            })
-            # Update conclusion to emphasize provenance
-            if not conclusion.lower().startswith("the data"):
-                conclusion = f"The data is verified to exist with provenance: {conclusion}"
 
         # Validate plan structure BEFORE execution
         # This catches invalid references, unused premises, duplicates, etc.
@@ -545,6 +517,46 @@ REMEMBER:
                         conclusion = line.split("C:", 1)[1].strip()
                     elif not conclusion:
                         conclusion = line
+
+        # Detect collection-oriented queries (reports, lists, etc.)
+        # These don't have explicit scalar comparisons - the implicit goal is "data exists"
+        # (runs after validation loop so it uses the final parsed plan)
+        comparison_keywords = [
+            "greater than", "less than", "equal to", "equals",
+            ">", "<", ">=", "<=", "==", "!=",
+            "compare", "check if", "verify that", "prove that",
+            "is positive", "is negative", "is zero",
+        ]
+        is_collection_query = True
+        combined_text = (problem + " " + conclusion).lower()
+        for keyword in comparison_keywords:
+            if keyword.lower() in combined_text:
+                is_collection_query = False
+                break
+
+        if inferences:
+            last_op = inferences[-1].get("operation", "").lower()
+            if any(kw in last_op for kw in ["compare", "check", "verify", ">", "<"]):
+                is_collection_query = False
+
+        # For collection queries, add implicit verification inference
+        if is_collection_query and inferences:
+            last_inf_id = inferences[-1]["id"]
+            verify_id = f"I{len(inferences) + 1}"
+            existing_names = {inf.get("name", "") for inf in inferences}
+            verify_name = "final_data_verification"
+            suffix = 1
+            while verify_name in existing_names:
+                verify_name = f"final_data_verification_{suffix}"
+                suffix += 1
+            inferences.append({
+                "id": verify_id,
+                "name": verify_name,
+                "operation": f"verify_exists({last_inf_id})",
+                "explanation": "Verify result has data (count > 0) to confirm derivation succeeded",
+            })
+            if not conclusion.lower().startswith("the data"):
+                conclusion = f"The data is verified to exist with provenance: {conclusion}"
 
         # Emit planning complete
         total_steps = len(premises) + len(inferences) + 1  # +1 for conclusion
@@ -802,6 +814,12 @@ REMEMBER:
                     validations = data.get("validations")
                     if validations:
                         fact_resolved_data["validations"] = validations
+                    elapsed_ms = data.get("elapsed_ms")
+                    if elapsed_ms is not None:
+                        fact_resolved_data["elapsed_ms"] = elapsed_ms
+                    attempt = data.get("attempt")
+                    if attempt is not None:
+                        fact_resolved_data["attempt"] = attempt
                     self._emit_event(StepEvent(
                         event_type="fact_resolved",
                         step_number=level + 1,

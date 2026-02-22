@@ -416,6 +416,9 @@ RULES:
 
         else:
             # === INFERENCE EXECUTION ===
+            import time as _time
+            _inf_start = _time.time()
+
             inf_id = node.fact_id
             operation = node.operation
             explanation = node.description
@@ -717,29 +720,16 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             step_hints_section = ""
             step_hints = getattr(self, '_proof_step_hints', [])
             if step_hints:
-                relevant = []
-                op_lower = (operation or "").lower()
-                name_lower = (inf_name or "").lower()
+                blocks = []
                 for step in step_hints:
-                    goal_lower = (step.get("goal", "") or "").lower()
-                    # Include step if goal overlaps with inference operation or name
-                    if (any(word in goal_lower for word in name_lower.split() if len(word) > 3)
-                            or any(word in goal_lower for word in op_lower.split() if len(word) > 3)):
-                        relevant.append(step)
-                if not relevant and step_hints:
-                    # No keyword match — include all steps as general reference
-                    relevant = step_hints
-                if relevant:
-                    hints = []
-                    for step in relevant[:3]:  # Limit to 3 most relevant
-                        goal = step.get("goal", f"Step {step.get('step_number', '?')}")
-                        code_text = step.get("code", "")
-                        if len(code_text) > 800:
-                            code_text = code_text[:800] + "\n# ... (truncated)"
-                        hints.append(f"# Step: {goal}\n{code_text}")
+                    code_text = step.get("code", "")
+                    goal = step.get("goal", f"Step {step.get('step_number', '?')}")
+                    if code_text:
+                        blocks.append(f"# Step: {goal}\n{code_text}")
+                if blocks:
                     step_hints_section = (
                         "\n\nREFERENCE CODE from exploratory session (use as hints, adapt as needed):\n"
-                        + "\n---\n".join(hints) + "\n"
+                        + "\n---\n".join(blocks) + "\n"
                     )
 
             # Build codegen learnings for inference
@@ -805,6 +795,20 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 code = re.sub(r'\bif\s+not\s+(df|result|data)\s*:', r'if \1.empty:', code)
 
                 node.code = code
+
+                # Emit code preview before execution
+                self._emit_event(StepEvent(
+                    event_type="inference_code",
+                    step_number=0,
+                    data={
+                        "inference_id": inf_id,
+                        "fact_name": f"{inf_id}: {inf_name}",
+                        "name": inf_name,
+                        "operation": operation or "",
+                        "code": code,
+                        "attempt": attempt + 1,
+                    }
+                ))
 
                 import sys
                 import numpy as np
@@ -941,6 +945,10 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     _user_validations = getattr(self, '_proof_user_validations', [])
                     if not _val_error and _user_validations and table_name in _val_tables:
                         for _uv in _user_validations:
+                            # Only apply validation if it targets this inference (or has no target)
+                            _uv_target = _uv.get('target')
+                            if _uv_target and _uv_target != inf_id:
+                                continue
                             try:
                                 _uv_result = self.datastore.query(_uv['sql'].format(table=table_name))
                                 _uv_ok = bool(_uv_result.iloc[0, 0]) if len(_uv_result) > 0 else False
@@ -1078,7 +1086,8 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 context=f"Code:\n{code}" if code else None,
             )
 
-            return result_value, confidence, "llm_knowledge" if used_llm else "derived", _val_passed, _val_profile
+            elapsed_ms = int((_time.time() - _inf_start) * 1000)
+            return result_value, confidence, "llm_knowledge" if used_llm else "derived", _val_passed, _val_profile, elapsed_ms, attempt + 1
 
     @staticmethod
     def _find_skill_script(scripts_dir: Path) -> Path | None:
@@ -1270,13 +1279,14 @@ Extract ONLY explicitly stated constraints. Do NOT invent constraints that aren'
 For each constraint, provide:
 - label: Human-readable description of the check
 - sql: A DuckDB SQL expression that returns TRUE if the constraint passes, using {{table}} as placeholder for the table name
+- target: The inference ID (e.g., "I1", "I3") whose output table this constraint should check. Pick the inference whose output is most relevant to the constraint.
 
 Respond with ONLY valid JSON array. Empty array [] if no explicit constraints found.
 
 Example:
 [
-  {{"label": "No raise exceeds 15%", "sql": "SELECT COUNT(*) = 0 FROM \\"{{table}}\\" WHERE raise_pct > 0.15"}},
-  {{"label": "Total budget under $100k", "sql": "SELECT SUM(raise_amount) < 100000 FROM \\"{{table}}\\""}}
+  {{"label": "No raise exceeds 15%", "sql": "SELECT COUNT(*) = 0 FROM \\"{{table}}\\" WHERE raise_pct > 0.15", "target": "I3"}},
+  {{"label": "Total budget under $100k", "sql": "SELECT SUM(raise_amount) < 100000 FROM \\"{{table}}\\"", "target": "I3"}}
 ]
 
 YOUR JSON RESPONSE:"""

@@ -479,8 +479,21 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         cfg = Config()
         print("=== DEFAULT CONFIG LOADED ===", file=sys.stderr, flush=True)
 
-    # Build server config
-    server_config = ServerConfig(host=host, port=port)
+    # Build server config from YAML server section (includes permissions, auth, etc.)
+    if config:
+        import yaml
+        from constat.core.config import _resolve_refs, _substitute_env_vars
+        with open(config) as f:
+            raw_content = f.read()
+        substituted = _substitute_env_vars(raw_content)
+        raw_data = yaml.safe_load(substituted)
+        raw_data = _resolve_refs(raw_data, Path(config).parent.resolve())
+        server_data = raw_data.get("server") or {}
+    else:
+        server_data = {}
+    server_data["host"] = host
+    server_data["port"] = port
+    server_config = ServerConfig.from_yaml_data(server_data)
 
     # Configure logging
     import logging

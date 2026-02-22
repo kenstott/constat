@@ -724,10 +724,14 @@ class DAGExecutor:
                     node = futures[future]
                     try:
                         result = future.result()
-                        # Support tuples up to 5 elements: (v, conf, src, validations, profile)
+                        # Support tuples up to 7 elements: (v, conf, src, validations, profile, elapsed_ms, attempt)
                         validations = None
                         profile = None
-                        if isinstance(result, tuple) and len(result) >= 5:
+                        elapsed_ms = None
+                        attempt = None
+                        if isinstance(result, tuple) and len(result) >= 7:
+                            value, confidence, source, validations, profile, elapsed_ms, attempt = result[0], result[1], result[2], result[3], result[4], result[5], result[6]
+                        elif isinstance(result, tuple) and len(result) >= 5:
                             value, confidence, source, validations, profile = result[0], result[1], result[2], result[3], result[4]
                         elif isinstance(result, tuple) and len(result) >= 4:
                             value, confidence, source, validations = result[0], result[1], result[2], result[3]
@@ -765,6 +769,10 @@ class DAGExecutor:
                                 event_data["validations"] = validations
                             if profile:
                                 event_data["profile"] = profile
+                            if elapsed_ms is not None:
+                                event_data["elapsed_ms"] = elapsed_ms
+                            if attempt is not None:
+                                event_data["attempt"] = attempt
                             self.event_callback("node_resolved", event_data)
                     except Exception as e:
                         node.status = NodeStatus.FAILED
