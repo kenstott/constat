@@ -680,7 +680,7 @@ async def get_prompt_context(
         session_manager: Injected session manager
 
     Returns:
-        Dict with system_prompt, active_role, active_skills
+        Dict with system_prompt, active_agent, active_skills
 
     Raises:
         404: Session not found
@@ -697,12 +697,12 @@ async def get_prompt_context(
     logger.info(f"[prompt-context] system_prompt length: {len(system_prompt)}, has _get_system_prompt: {hasattr(session, '_get_system_prompt')}")
 
     # Get active agent
-    active_role = None
+    active_agent = None
     if hasattr(session, "agent_manager"):
         agent_name = session.agent_manager.active_agent_name
         if agent_name:
             agent = session.agent_manager.get_agent(agent_name)
-            active_role = {
+            active_agent = {
                 "name": agent_name,
                 "prompt": agent.prompt if agent else "",
             }
@@ -721,7 +721,7 @@ async def get_prompt_context(
 
     return {
         "system_prompt": system_prompt,
-        "active_role": active_role,
+        "active_agent": active_agent,
         "active_skills": active_skills,
     }
 

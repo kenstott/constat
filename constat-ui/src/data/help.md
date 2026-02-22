@@ -92,7 +92,7 @@ When reviewing a plan:
 - **Edit step goals** — Click a step to modify its objective
 - **Delete steps** — Click the X to remove unwanted steps
 - **Provide feedback** — Add comments to trigger replanning
-- **Role assignment** — Steps can be assigned to specialist roles
+- **Agent assignment** — Steps can be assigned to specialist agents
 
 ## Right Panel
 

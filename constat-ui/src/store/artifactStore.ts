@@ -25,7 +25,7 @@ interface InferenceCode {
 // Prompt context types
 interface PromptContext {
   systemPrompt: string
-  activeRole: { name: string; prompt: string } | null
+  activeAgent: { name: string; prompt: string } | null
   activeSkills: Array<{ name: string; prompt: string; description: string }>
 }
 
@@ -38,8 +38,8 @@ interface SkillInfo {
   is_active: boolean
 }
 
-// Role info (all roles, not just active)
-interface RoleInfo {
+// Agent info (all agents, not just active)
+interface AgentInfo {
   name: string
   prompt: string
   is_active: boolean
@@ -68,7 +68,7 @@ interface ArtifactState {
   inferenceCodes: InferenceCode[]
   promptContext: PromptContext | null
   allSkills: SkillInfo[]
-  allRoles: RoleInfo[]
+  allAgents: AgentInfo[]
   userPermissions: UserPermissions
 
   // Selected items
@@ -96,8 +96,8 @@ interface ArtifactState {
   deleteSkill: (name: string) => Promise<void>
   toggleSkillActive: (name: string, sessionId: string) => Promise<void>
   draftSkill: (sessionId: string, name: string, description: string) => Promise<{ content: string; description: string }>
-  fetchAllRoles: (sessionId: string) => Promise<void>
-  setActiveRole: (roleName: string | null, sessionId: string) => Promise<void>
+  fetchAllAgents: (sessionId: string) => Promise<void>
+  setActiveAgent: (agentName: string | null, sessionId: string) => Promise<void>
   fetchPermissions: () => Promise<void>
   updateSystemPrompt: (sessionId: string, systemPrompt: string) => Promise<void>
   selectArtifact: (sessionId: string, artifactId: number) => Promise<void>
@@ -137,7 +137,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   documents: [],
   promptContext: null,
   allSkills: [],
-  allRoles: [],
+  allAgents: [],
   userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
   selectedArtifact: null,
   selectedTable: null,
@@ -269,7 +269,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       set({
         promptContext: {
           systemPrompt: response.system_prompt,
-          activeRole: response.active_role,
+          activeAgent: response.active_agent,
           activeSkills: response.active_skills,
         },
       })
@@ -355,7 +355,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     }
   },
 
-  fetchAllRoles: async (sessionId) => {
+  fetchAllAgents: async (sessionId) => {
     try {
       // Import auth helpers
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
@@ -367,28 +367,28 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         }
       }
 
-      const response = await fetch(`/api/sessions/roles?session_id=${sessionId}`, {
+      const response = await fetch(`/api/sessions/agents?session_id=${sessionId}`, {
         headers,
         credentials: 'include',
       })
       if (response.ok) {
         const data = await response.json()
         set({
-          allRoles: (data.roles || []).map((r: { name: string; prompt: string; is_active: boolean }) => ({
+          allAgents: (data.agents || []).map((r: { name: string; prompt: string; is_active: boolean }) => ({
             name: r.name,
             prompt: r.prompt,
             is_active: r.is_active,
           })),
         })
       } else {
-        console.warn('Failed to fetch roles:', response.status, response.statusText)
+        console.warn('Failed to fetch agents:', response.status, response.statusText)
       }
     } catch (error) {
-      console.warn('Failed to fetch roles:', error)
+      console.warn('Failed to fetch agents:', error)
     }
   },
 
-  setActiveRole: async (roleName, sessionId) => {
+  setActiveAgent: async (agentName, sessionId) => {
     try {
       // Import auth helpers
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
@@ -400,14 +400,14 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         }
       }
 
-      const response = await fetch(`/api/sessions/roles/current?session_id=${sessionId}`, {
+      const response = await fetch(`/api/sessions/agents/current?session_id=${sessionId}`, {
         method: 'PUT',
         headers,
         credentials: 'include',
-        body: JSON.stringify({ role_name: roleName }),
+        body: JSON.stringify({ agent_name: agentName }),
       })
       if (response.ok) {
-        get().fetchAllRoles(sessionId)
+        get().fetchAllAgents(sessionId)
         get().fetchPromptContext(sessionId)
       }
     } catch (error) {
@@ -635,7 +635,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   inferenceCodes: [],
       promptContext: null,
       allSkills: [],
-      allRoles: [],
+      allAgents: [],
       userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
       selectedArtifact: null,
       selectedTable: null,

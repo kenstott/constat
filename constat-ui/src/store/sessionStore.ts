@@ -22,7 +22,7 @@ interface Message {
   isPending?: boolean // Step that hasn't started yet (shows pending animation)
   defaultExpanded?: boolean // Start expanded (don't collapse)
   isFinalInsight?: boolean // Final insight message with View Result button
-  role?: string // Role used for this step (e.g., "data_analyst")
+  role?: string // Agent used for this step (e.g., "data_analyst")
   skills?: string[] // Skills used for this step
   stepStartedAt?: number // Epoch ms when step started
   stepDurationMs?: number // Final duration from backend
@@ -60,7 +60,7 @@ interface QueuedMessage {
   timestamp: Date
 }
 
-interface RoleInfo {
+interface AgentInfo {
   name: string
   prompt: string
   is_active: boolean
@@ -98,13 +98,13 @@ interface SessionState {
   // Queued messages (submitted while busy)
   queuedMessages: QueuedMessage[]
 
-  // Roles
-  roles: RoleInfo[]
-  currentRole: string | null
+  // Agents
+  agents: AgentInfo[]
+  currentAgent: string | null
 
-  // Dynamic context for current query (role/skills selected)
+  // Dynamic context for current query (agent/skills selected)
   queryContext: {
-    role?: { name: string; similarity: number }
+    agent?: { name: string; similarity: number }
     skills?: { name: string; similarity: number }[]
   } | null
 
@@ -131,8 +131,8 @@ interface SessionState {
   handleWSEvent: (event: WSEvent) => void
   removeQueuedMessage: (id: string) => void
   clearQueue: () => void
-  fetchRoles: () => Promise<void>
-  setRole: (roleName: string | null) => Promise<void>
+  fetchAgents: () => Promise<void>
+  setAgent: (agentName: string | null) => Promise<void>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -153,8 +153,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   queuedMessages: [],
   lastQueryStartStep: 0,
   querySubmittedAt: null,
-  roles: [],
-  currentRole: null,
+  agents: [],
+  currentAgent: null,
   queryContext: null,
   isCreatingSession: false,
 
@@ -621,15 +621,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
 
       case 'dynamic_context': {
-        // Role and skills selected for this query
-        const role = event.data.role as { name: string; similarity: number } | undefined
+        // Agent and skills selected for this query
+        const agent = event.data.agent as { name: string; similarity: number } | undefined
         const skills = event.data.skills as { name: string; similarity: number }[] | undefined
-        set({ queryContext: { role, skills } })
+        set({ queryContext: { agent, skills } })
 
         // Update thinking message to show context
         const contextParts: string[] = []
-        if (role?.name) {
-          contextParts.push(`@${role.name}`)
+        if (agent?.name) {
+          contextParts.push(`@${agent.name}`)
         }
         if (skills && skills.length > 0) {
           contextParts.push(...skills.map(s => s.name))
@@ -657,7 +657,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const { currentStepNumber: prevStep } = get()
         const isFirstStep = prevStep === 0
 
-        // Role/skills are shown as badges in the step header (not in content)
+        // Agent/skills are shown as badges in the step header (not in content)
         updateStepMessage(event.step_number, `Step ${event.step_number}: ${goal}...`)
         // Set stepStartedAt on the step message
         const startMsgId = stepMessageIds[event.step_number]
@@ -1185,7 +1185,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  fetchRoles: async () => {
+  fetchAgents: async () => {
     const { session } = get()
     if (!session) return
 
@@ -1200,23 +1200,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
 
-      const response = await fetch(`/api/sessions/roles?session_id=${session.session_id}`, {
+      const response = await fetch(`/api/sessions/agents?session_id=${session.session_id}`, {
         headers,
         credentials: 'include',
       })
       if (response.ok) {
         const data = await response.json()
         set({
-          roles: data.roles || [],
-          currentRole: data.current_role || null,
+          agents: data.agents || [],
+          currentAgent: data.current_agent || null,
         })
       }
     } catch (error) {
-      console.error('Failed to fetch roles:', error)
+      console.error('Failed to fetch agents:', error)
     }
   },
 
-  setRole: async (roleName: string | null) => {
+  setAgent: async (agentName: string | null) => {
     const { session } = get()
     if (!session) return
 
@@ -1231,27 +1231,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
 
-      const response = await fetch(`/api/sessions/roles/current?session_id=${session.session_id}`, {
+      const response = await fetch(`/api/sessions/agents/current?session_id=${session.session_id}`, {
         method: 'PUT',
         headers,
         credentials: 'include',
-        body: JSON.stringify({ role_name: roleName }),
+        body: JSON.stringify({ agent_name: agentName }),
       })
       if (response.ok) {
         const data = await response.json()
-        set({ currentRole: data.current_role })
-        // Update roles list to reflect active state
+        set({ currentAgent: data.current_agent })
+        // Update agents list to reflect active state
         set((state) => ({
-          roles: state.roles.map((r) => ({
+          agents: state.agents.map((r) => ({
             ...r,
-            is_active: r.name === data.current_role,
+            is_active: r.name === data.current_agent,
           })),
         }))
         // Refresh prompt context in artifact store
         useArtifactStore.getState().fetchPromptContext(session.session_id)
       }
     } catch (error) {
-      console.error('Failed to set role:', error)
+      console.error('Failed to set agent:', error)
     }
   },
 }))

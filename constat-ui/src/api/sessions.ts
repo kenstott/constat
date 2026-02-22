@@ -784,7 +784,7 @@ export async function updateDomainContent(
 }
 
 // Prompt Context
-export interface ActiveRole {
+export interface ActiveAgent {
   name: string
   prompt: string
 }
@@ -797,7 +797,7 @@ export interface ActiveSkill {
 
 export interface PromptContext {
   system_prompt: string
-  active_role: ActiveRole | null
+  active_agent: ActiveAgent | null
   active_skills: ActiveSkill[]
 }
 

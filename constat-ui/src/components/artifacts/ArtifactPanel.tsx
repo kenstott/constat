@@ -39,7 +39,7 @@ import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
 import * as sessionsApi from '@/api/sessions'
-import * as rolesApi from '@/api/roles'
+import * as agentsApi from '@/api/agents'
 
 type ModalType = 'database' | 'api' | 'document' | 'fact' | 'rule' | null
 
@@ -211,7 +211,7 @@ export function ArtifactPanel() {
     inferenceCodes,
     promptContext,
     allSkills,
-    allRoles,
+    allAgents,
     fetchArtifacts,
     fetchTables,
     fetchFacts,
@@ -220,7 +220,7 @@ export function ArtifactPanel() {
     fetchDataSources,
     fetchPromptContext,
     fetchAllSkills,
-    fetchAllRoles,
+    fetchAllAgents,
     createSkill,
     updateSkill,
     deleteSkill,
@@ -231,7 +231,7 @@ export function ArtifactPanel() {
   } = useArtifactStore()
   const { totalDefined, totalSelfDescribing } = useGlossaryStore()
 
-  // Role-based visibility/writes shortcuts
+  // Persona-based visibility/writes shortcuts
   const vis = userPermissions.visibility ?? {}
   const writes = userPermissions.writes ?? {}
   const canSeeSection = (key: string) => vis[key] ?? false
@@ -239,7 +239,7 @@ export function ArtifactPanel() {
   // Sources group visible if any child section visible
   const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents')
   // Reasoning group visible if any child section visible
-  const reasoningVisible = canSeeSection('system_prompt') || canSeeSection('roles') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code') || canSeeSection('facts') || canSeeSection('glossary')
+  const reasoningVisible = canSeeSection('system_prompt') || canSeeSection('agents') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code') || canSeeSection('facts') || canSeeSection('glossary')
 
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
   const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
@@ -276,13 +276,13 @@ export function ArtifactPanel() {
   })
   const [draftingSkill, setDraftingSkill] = useState(false)
   const [newToolInput, setNewToolInput] = useState('')
-  // Role editing state
-  const [draftingRole, setDraftingRole] = useState(false)
-  const [editingRole, setEditingRole] = useState<{ name: string; prompt: string; description: string; skills: string[] } | null>(null)
-  const [expandedRoles, setExpandedRoles] = useState<Set<string>>(new Set())
-  const [roleContents, setRoleContents] = useState<Record<string, { prompt: string; description: string }>>({})
-  const [creatingRole, setCreatingRole] = useState(false)
-  const [newRole, setNewRole] = useState({ name: '', prompt: '', description: '', skills: [] as string[] })
+  // Agent editing state
+  const [draftingAgent, setDraftingAgent] = useState(false)
+  const [editingAgent, setEditingAgent] = useState<{ name: string; prompt: string; description: string; skills: string[] } | null>(null)
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set())
+  const [agentContents, setAgentContents] = useState<Record<string, { prompt: string; description: string }>>({})
+  const [creatingAgent, setCreatingAgent] = useState(false)
+  const [newAgent, setNewAgent] = useState({ name: '', prompt: '', description: '', skills: [] as string[] })
   // System prompt editing state (admin only)
   const [editingSystemPrompt, setEditingSystemPrompt] = useState(false)
   const [systemPromptDraft, setSystemPromptDraft] = useState('')
@@ -422,9 +422,9 @@ export function ArtifactPanel() {
       fetchDataSources(session.session_id)
       fetchPromptContext(session.session_id)
       fetchAllSkills()
-      fetchAllRoles(session.session_id)
+      fetchAllAgents(session.session_id)
     }
-  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllRoles])
+  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents])
 
   // Handlers
   const handleForgetFact = async (factName: string) => {
@@ -728,16 +728,16 @@ ${skill.body}`
     }
   }
 
-  const handleDraftRole = async () => {
-    if (!session || !newRole.name.trim() || !newRole.description.trim()) return
-    setDraftingRole(true)
+  const handleDraftAgent = async () => {
+    if (!session || !newAgent.name.trim() || !newAgent.description.trim()) return
+    setDraftingAgent(true)
     try {
-      const result = await rolesApi.draftRole(session.session_id, newRole.name.trim(), newRole.description.trim())
-      setNewRole(prev => ({ ...prev, prompt: result.prompt || '', description: result.description || prev.description, skills: result.skills || [] }))
+      const result = await agentsApi.draftAgent(session.session_id, newAgent.name.trim(), newAgent.description.trim())
+      setNewAgent(prev => ({ ...prev, prompt: result.prompt || '', description: result.description || prev.description, skills: result.skills || [] }))
     } catch (err) {
-      console.error('Failed to draft role:', err)
+      console.error('Failed to draft agent:', err)
     } finally {
-      setDraftingRole(false)
+      setDraftingAgent(false)
     }
   }
 
@@ -761,21 +761,21 @@ ${skill.body}`
     }
   }
 
-  const handleToggleRoleExpand = async (roleName: string) => {
+  const handleToggleAgentExpand = async (agentName: string) => {
     if (!session) return
 
-    const newExpanded = new Set(expandedRoles)
-    if (newExpanded.has(roleName)) {
-      newExpanded.delete(roleName)
-      setExpandedRoles(newExpanded)
+    const newExpanded = new Set(expandedAgents)
+    if (newExpanded.has(agentName)) {
+      newExpanded.delete(agentName)
+      setExpandedAgents(newExpanded)
       return
     }
 
     // Expand and load content if not already loaded
-    newExpanded.add(roleName)
-    setExpandedRoles(newExpanded)
+    newExpanded.add(agentName)
+    setExpandedAgents(newExpanded)
 
-    if (roleContents[roleName]) return // Already loaded
+    if (agentContents[agentName]) return // Already loaded
 
     try {
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
@@ -785,19 +785,19 @@ ${skill.body}`
         if (token) headers['Authorization'] = `Bearer ${token}`
       }
       const response = await fetch(
-        `/api/sessions/roles/${encodeURIComponent(roleName)}?session_id=${session.session_id}`,
+        `/api/sessions/agents/${encodeURIComponent(agentName)}?session_id=${session.session_id}`,
         { headers, credentials: 'include' }
       )
       if (response.ok) {
         const data = await response.json()
-        setRoleContents(prev => ({ ...prev, [roleName]: { prompt: data.prompt, description: data.description } }))
+        setAgentContents(prev => ({ ...prev, [agentName]: { prompt: data.prompt, description: data.description } }))
       }
     } catch (err) {
-      console.error('Failed to fetch role content:', err)
+      console.error('Failed to fetch agent content:', err)
     }
   }
 
-  const handleEditRole = async (roleName: string) => {
+  const handleEditAgent = async (agentName: string) => {
     if (!session) return
     try {
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
@@ -807,20 +807,20 @@ ${skill.body}`
         if (token) headers['Authorization'] = `Bearer ${token}`
       }
       const response = await fetch(
-        `/api/sessions/roles/${encodeURIComponent(roleName)}?session_id=${session.session_id}`,
+        `/api/sessions/agents/${encodeURIComponent(agentName)}?session_id=${session.session_id}`,
         { headers, credentials: 'include' }
       )
       if (response.ok) {
         const data = await response.json()
-        setEditingRole({ name: data.name, prompt: data.prompt || '', description: data.description || '', skills: data.skills || [] })
+        setEditingAgent({ name: data.name, prompt: data.prompt || '', description: data.description || '', skills: data.skills || [] })
       }
     } catch (err) {
-      console.error('Failed to fetch role content:', err)
+      console.error('Failed to fetch agent content:', err)
     }
   }
 
-  const handleCreateRole = async () => {
-    if (!session || !newRole.name.trim() || !newRole.prompt.trim()) return
+  const handleCreateAgent = async () => {
+    if (!session || !newAgent.name.trim() || !newAgent.prompt.trim()) return
     try {
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -829,26 +829,26 @@ ${skill.body}`
         if (token) headers['Authorization'] = `Bearer ${token}`
       }
       const response = await fetch(
-        `/api/sessions/roles?session_id=${session.session_id}`,
+        `/api/sessions/agents?session_id=${session.session_id}`,
         {
           method: 'POST',
           headers,
           credentials: 'include',
-          body: JSON.stringify(newRole),
+          body: JSON.stringify(newAgent),
         }
       )
       if (response.ok) {
-        setNewRole({ name: '', prompt: '', description: '', skills: [] })
-        setCreatingRole(false)
-        fetchAllRoles(session.session_id)
+        setNewAgent({ name: '', prompt: '', description: '', skills: [] })
+        setCreatingAgent(false)
+        fetchAllAgents(session.session_id)
       }
     } catch (err) {
-      console.error('Failed to create role:', err)
+      console.error('Failed to create agent:', err)
     }
   }
 
-  const handleUpdateRole = async () => {
-    if (!session || !editingRole) return
+  const handleUpdateAgent = async () => {
+    if (!session || !editingAgent) return
     try {
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -857,25 +857,25 @@ ${skill.body}`
         if (token) headers['Authorization'] = `Bearer ${token}`
       }
       const response = await fetch(
-        `/api/sessions/roles/${encodeURIComponent(editingRole.name)}?session_id=${session.session_id}`,
+        `/api/sessions/agents/${encodeURIComponent(editingAgent.name)}?session_id=${session.session_id}`,
         {
           method: 'PUT',
           headers,
           credentials: 'include',
-          body: JSON.stringify({ prompt: editingRole.prompt, description: editingRole.description, skills: editingRole.skills }),
+          body: JSON.stringify({ prompt: editingAgent.prompt, description: editingAgent.description, skills: editingAgent.skills }),
         }
       )
       if (response.ok) {
-        setEditingRole(null)
-        fetchAllRoles(session.session_id)
+        setEditingAgent(null)
+        fetchAllAgents(session.session_id)
       }
     } catch (err) {
-      console.error('Failed to update role:', err)
+      console.error('Failed to update agent:', err)
     }
   }
 
-  const handleDeleteRole = async (roleName: string) => {
-    if (!session || !confirm(`Delete role "${roleName}"?`)) return
+  const handleDeleteAgent = async (agentName: string) => {
+    if (!session || !confirm(`Delete agent "${agentName}"?`)) return
     try {
       const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
       const headers: Record<string, string> = {}
@@ -884,7 +884,7 @@ ${skill.body}`
         if (token) headers['Authorization'] = `Bearer ${token}`
       }
       const response = await fetch(
-        `/api/sessions/roles/${encodeURIComponent(roleName)}?session_id=${session.session_id}`,
+        `/api/sessions/agents/${encodeURIComponent(agentName)}?session_id=${session.session_id}`,
         {
           method: 'DELETE',
           headers,
@@ -892,10 +892,10 @@ ${skill.body}`
         }
       )
       if (response.ok) {
-        fetchAllRoles(session.session_id)
+        fetchAllAgents(session.session_id)
       }
     } catch (err) {
-      console.error('Failed to delete role:', err)
+      console.error('Failed to delete agent:', err)
     }
   }
 
@@ -1899,50 +1899,50 @@ ${skill.body}`
         </AccordionSection>
       )}
 
-      {/* Roles */}
-      {canSeeSection('roles') && (
+      {/* Agents */}
+      {canSeeSection('agents') && (
       <AccordionSection
-        id="roles"
-        title="Roles"
-        count={allRoles.length}
+        id="agents"
+        title="Agents"
+        count={allAgents.length}
         icon={<UserCircleIcon className="w-4 h-4" />}
-        command="/role"
+        command="/agent"
         action={
-          canWrite('roles') ? (
+          canWrite('agents') ? (
             <button
               onClick={() => {
-                expandArtifactSection('roles')
-                setCreatingRole(true)
+                expandArtifactSection('agents')
+                setCreatingAgent(true)
               }}
               className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-              title="Create role"
+              title="Create agent"
             >
               <PlusIcon className="w-4 h-4" />
             </button>
           ) : <div className="w-6 h-6" />
         }
       >
-        {/* Create role form */}
-        {creatingRole && (
+        {/* Create agent form */}
+        {creatingAgent && (
           <div className="mb-3 p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-700">
             <input
               type="text"
-              placeholder="Role name"
-              value={newRole.name || ''}
-              onChange={(e) => setNewRole({ ...newRole, name: e.target.value })}
+              placeholder="Agent name"
+              value={newAgent.name || ''}
+              onChange={(e) => setNewAgent({ ...newAgent, name: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             />
             <input
               type="text"
               placeholder="Description (for AI drafting or display)"
-              value={newRole.description || ''}
-              onChange={(e) => setNewRole({ ...newRole, description: e.target.value })}
+              value={newAgent.description || ''}
+              onChange={(e) => setNewAgent({ ...newAgent, description: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             />
             <textarea
-              placeholder="Role prompt (persona definition)..."
-              value={newRole.prompt || ''}
-              onChange={(e) => setNewRole({ ...newRole, prompt: e.target.value })}
+              placeholder="Agent prompt (persona definition)..."
+              value={newAgent.prompt || ''}
+              onChange={(e) => setNewAgent({ ...newAgent, prompt: e.target.value })}
               className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[100px] resize-none"
             />
             {allSkills.length > 0 && (
@@ -1953,11 +1953,11 @@ ${skill.body}`
                     <button
                       key={skill.name}
                       onClick={() => {
-                        const has = newRole.skills.includes(skill.name)
-                        setNewRole({ ...newRole, skills: has ? newRole.skills.filter(s => s !== skill.name) : [...newRole.skills, skill.name] })
+                        const has = newAgent.skills.includes(skill.name)
+                        setNewAgent({ ...newAgent, skills: has ? newAgent.skills.filter(s => s !== skill.name) : [...newAgent.skills, skill.name] })
                       }}
                       className={`px-2 py-0.5 text-xs rounded-full border ${
-                        newRole.skills.includes(skill.name)
+                        newAgent.skills.includes(skill.name)
                           ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300'
                           : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400'
                       }`}
@@ -1971,18 +1971,18 @@ ${skill.body}`
             )}
             <div className="flex gap-1 items-center">
               <button
-                onClick={handleDraftRole}
-                disabled={draftingRole || !newRole.name.trim() || !newRole.description.trim()}
+                onClick={handleDraftAgent}
+                disabled={draftingAgent || !newAgent.name.trim() || !newAgent.description.trim()}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Draft with AI (requires name and description)"
               >
                 <SparklesIcon className="w-3 h-3" />
-                {draftingRole ? 'Drafting...' : 'Draft with AI'}
+                {draftingAgent ? 'Drafting...' : 'Draft with AI'}
               </button>
               <div className="flex-1" />
               <button
-                onClick={handleCreateRole}
-                disabled={!newRole.name.trim() || !newRole.prompt.trim()}
+                onClick={handleCreateAgent}
+                disabled={!newAgent.name.trim() || !newAgent.prompt.trim()}
                 className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Create"
               >
@@ -1990,8 +1990,8 @@ ${skill.body}`
               </button>
               <button
                 onClick={() => {
-                  setCreatingRole(false)
-                  setNewRole({ name: '', prompt: '', description: '', skills: [] })
+                  setCreatingAgent(false)
+                  setNewAgent({ name: '', prompt: '', description: '', skills: [] })
                 }}
                 className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 title="Cancel"
@@ -2002,23 +2002,23 @@ ${skill.body}`
           </div>
         )}
 
-        {/* Edit role modal */}
-        {editingRole && (
+        {/* Edit agent modal */}
+        {editingAgent && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white dark:bg-gray-800 rounded-lg p-4 w-[500px] max-h-[80vh] shadow-xl flex flex-col">
               <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
-                Edit Role: {editingRole.name}
+                Edit Agent: {editingAgent.name}
               </h3>
               <input
                 type="text"
                 placeholder="Description (optional)"
-                value={editingRole.description || ''}
-                onChange={(e) => setEditingRole({ ...editingRole, description: e.target.value })}
+                value={editingAgent.description || ''}
+                onChange={(e) => setEditingAgent({ ...editingAgent, description: e.target.value })}
                 className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded mb-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
               />
               <textarea
-                value={editingRole.prompt || ''}
-                onChange={(e) => setEditingRole({ ...editingRole, prompt: e.target.value })}
+                value={editingAgent.prompt || ''}
+                onChange={(e) => setEditingAgent({ ...editingAgent, prompt: e.target.value })}
                 className="flex-1 min-h-[300px] px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none"
               />
               {allSkills.length > 0 && (
@@ -2029,11 +2029,11 @@ ${skill.body}`
                       <button
                         key={skill.name}
                         onClick={() => {
-                          const has = editingRole.skills.includes(skill.name)
-                          setEditingRole({ ...editingRole, skills: has ? editingRole.skills.filter(s => s !== skill.name) : [...editingRole.skills, skill.name] })
+                          const has = editingAgent.skills.includes(skill.name)
+                          setEditingAgent({ ...editingAgent, skills: has ? editingAgent.skills.filter(s => s !== skill.name) : [...editingAgent.skills, skill.name] })
                         }}
                         className={`px-2 py-0.5 text-xs rounded-full border ${
-                          editingRole.skills.includes(skill.name)
+                          editingAgent.skills.includes(skill.name)
                             ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300'
                             : 'bg-gray-50 dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400'
                         }`}
@@ -2047,13 +2047,13 @@ ${skill.body}`
               )}
               <div className="flex justify-end gap-2 mt-4">
                 <button
-                  onClick={() => setEditingRole(null)}
+                  onClick={() => setEditingAgent(null)}
                   className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleUpdateRole}
+                  onClick={handleUpdateAgent}
                   className="px-3 py-1.5 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700"
                 >
                   Save
@@ -2063,24 +2063,24 @@ ${skill.body}`
           </div>
         )}
 
-        {allRoles.length === 0 && !creatingRole ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">No roles defined</p>
+        {allAgents.length === 0 && !creatingAgent ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">No agents defined</p>
         ) : (
           <div className="-mx-4">
-            {allRoles.map((role) => {
-              const isExpanded = expandedRoles.has(role.name)
-              const content = roleContents[role.name]
+            {allAgents.map((agent) => {
+              const isExpanded = expandedAgents.has(agent.name)
+              const content = agentContents[agent.name]
 
               return (
-                <div key={role.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+                <div key={agent.name} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
                   {/* Sub-accordion header */}
                   <div className="flex items-center group">
                     <button
-                      onClick={() => handleToggleRoleExpand(role.name)}
+                      onClick={() => handleToggleAgentExpand(agent.name)}
                       className="flex-1 flex items-center gap-2 px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                     >
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
-                        {role.name}
+                        {agent.name}
                       </span>
                       <ChevronDownIcon
                         className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
@@ -2088,16 +2088,16 @@ ${skill.body}`
                     </button>
                     <div className="flex gap-1 pr-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
-                        onClick={() => handleEditRole(role.name)}
+                        onClick={() => handleEditAgent(agent.name)}
                         className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
-                        title="Edit role"
+                        title="Edit agent"
                       >
                         <PencilIcon className="w-3 h-3" />
                       </button>
                       <button
-                        onClick={() => handleDeleteRole(role.name)}
+                        onClick={() => handleDeleteAgent(agent.name)}
                         className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
-                        title="Delete role"
+                        title="Delete agent"
                       >
                         <TrashIcon className="w-3 h-3" />
                       </button>
