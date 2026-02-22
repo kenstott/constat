@@ -39,7 +39,7 @@ permissions:
 import logging
 from typing import Any, Optional
 
-from constat.server.config import ServerConfig, UserPermissions as ConfigUserPermissions
+from constat.server.config import Persona, ServerConfig, UserPermissions as ConfigUserPermissions
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class UserPermissions:
         self,
         user_id: str,
         email: Optional[str] = None,
-        persona: str = "viewer",
+        persona: str = Persona.VIEWER,
         domains: Optional[list[str]] = None,
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
@@ -68,7 +68,7 @@ class UserPermissions:
     @property
     def is_admin(self) -> bool:
         """Derived admin status from persona."""
-        return self.persona == "platform_admin"
+        return self.persona == Persona.PLATFORM_ADMIN
 
     def can_access_domain(self, domain_filename: str) -> bool:
         """Check if user can access a specific domain."""
@@ -158,7 +158,7 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
     for user_id, perms in server_config.permissions.users.items():
         result.append({
             "user_id": user_id,
-            "admin": perms.persona == "platform_admin",
+            "admin": perms.persona == Persona.PLATFORM_ADMIN,
             "persona": perms.persona,
             "domains": perms.domains,
             "databases": perms.databases,

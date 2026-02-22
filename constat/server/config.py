@@ -13,7 +13,19 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field, model_validator
+
+
+class Persona(StrEnum):
+    """Platform persona — controls UI visibility, write access, and feedback permissions."""
+
+    PLATFORM_ADMIN = "platform_admin"
+    DOMAIN_BUILDER = "domain_builder"
+    SME = "sme"
+    DOMAIN_USER = "domain_user"
+    VIEWER = "viewer"
 
 
 def _get_bool_env(key: str) -> bool | None:
@@ -28,7 +40,7 @@ class UserPermissions(BaseModel):
     """Permissions for a single user."""
 
     persona: str = Field(
-        default="viewer",
+        default=Persona.VIEWER,
         description="Platform persona (platform_admin, domain_builder, sme, domain_user, viewer)",
     )
     domains: list[str] = Field(

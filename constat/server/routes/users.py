@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId, CurrentUserEmail
+from constat.server.config import Persona
 from constat.server.permissions import get_user_permissions, list_all_permissions as list_perms
 from constat.server.user_preferences import load_user_preferences, save_user_preferences
 
@@ -94,7 +95,7 @@ async def list_all_user_permissions(
 
     # Check if current user is admin
     current_perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
-    if current_perms.persona != "platform_admin":
+    if current_perms.persona != Persona.PLATFORM_ADMIN:
         raise HTTPException(status_code=403, detail="Admin access required")
 
     return list_perms(server_config)

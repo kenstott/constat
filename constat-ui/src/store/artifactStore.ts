@@ -416,11 +416,20 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   },
 
   fetchPermissions: async () => {
+    // When auth disabled, grant full access (matches authStore behavior)
+    const { isAuthDisabled } = await import('@/store/authStore')
+    if (isAuthDisabled) {
+      set({ userPermissions: {
+        isAdmin: true, persona: 'platform_admin',
+        visibility: { results: true, databases: true, apis: true, documents: true, system_prompt: true, agents: true, skills: true, learnings: true, code: true, inference_code: true, facts: true, glossary: true },
+        writes: { sources: true, glossary: true, skills: true, agents: true, facts: true, learnings: true, system_prompt: true, tier_promote: true },
+      } })
+      return
+    }
     try {
       const perms = await sessionsApi.getMyPermissions()
       set({ userPermissions: { isAdmin: perms.persona === 'platform_admin', persona: perms.persona, visibility: perms.visibility, writes: perms.writes } })
     } catch (error) {
-      // If auth is disabled or user not logged in, default to non-admin
       console.warn('Failed to fetch permissions:', error)
       set({ userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} } })
     }

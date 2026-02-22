@@ -14,7 +14,7 @@ from constat.server.persona_config import (
     load_personas_config,
     require_write,
 )
-from constat.server.config import UserPermissions
+from constat.server.config import Persona, UserPermissions
 
 
 # ---------------------------------------------------------------------------
@@ -25,11 +25,11 @@ class TestLoadPersonasConfig:
     def test_loads_all_personas(self):
         config = load_personas_config()
         assert set(config.personas.keys()) == {
-            "platform_admin",
-            "domain_builder",
-            "sme",
-            "domain_user",
-            "viewer",
+            Persona.PLATFORM_ADMIN,
+            Persona.DOMAIN_BUILDER,
+            Persona.SME,
+            Persona.DOMAIN_USER,
+            Persona.VIEWER,
         }
 
     def test_missing_file_raises(self, tmp_path):
@@ -57,29 +57,29 @@ class TestCanSee:
         "agents", "skills", "learnings", "code", "inference_code", "facts", "glossary",
     ])
     def test_platform_admin_sees_all(self, section):
-        assert self.config.can_see("platform_admin", section)
+        assert self.config.can_see(Persona.PLATFORM_ADMIN, section)
 
     @pytest.mark.parametrize("section", [
         "results", "databases", "apis", "documents", "system_prompt",
         "agents", "skills", "learnings", "code", "inference_code", "facts", "glossary",
     ])
     def test_domain_builder_sees_all(self, section):
-        assert self.config.can_see("domain_builder", section)
+        assert self.config.can_see(Persona.DOMAIN_BUILDER, section)
 
     def test_sme_sees_results_learnings_facts_glossary(self):
         for s in ("results", "learnings", "facts", "glossary"):
-            assert self.config.can_see("sme", s)
+            assert self.config.can_see(Persona.SME, s)
 
     def test_sme_cannot_see_databases(self):
-        assert not self.config.can_see("sme", "databases")
+        assert not self.config.can_see(Persona.SME, "databases")
 
     def test_domain_user_sees_results_only(self):
-        assert self.config.can_see("domain_user", "results")
-        assert not self.config.can_see("domain_user", "glossary")
+        assert self.config.can_see(Persona.DOMAIN_USER, "results")
+        assert not self.config.can_see(Persona.DOMAIN_USER, "glossary")
 
     def test_viewer_sees_results_only(self):
-        assert self.config.can_see("viewer", "results")
-        assert not self.config.can_see("viewer", "skills")
+        assert self.config.can_see(Persona.VIEWER, "results")
+        assert not self.config.can_see(Persona.VIEWER, "skills")
 
     def test_unknown_persona_sees_nothing(self):
         assert not self.config.can_see("nonexistent", "results")
@@ -95,22 +95,22 @@ class TestCanWrite:
         "learnings", "system_prompt", "tier_promote",
     ])
     def test_platform_admin_writes_all(self, resource):
-        assert self.config.can_write("platform_admin", resource)
+        assert self.config.can_write(Persona.PLATFORM_ADMIN, resource)
 
     def test_sme_can_write_glossary_facts_learnings(self):
         for r in ("glossary", "facts", "learnings"):
-            assert self.config.can_write("sme", r)
+            assert self.config.can_write(Persona.SME, r)
 
     def test_sme_cannot_write_skills(self):
-        assert not self.config.can_write("sme", "skills")
+        assert not self.config.can_write(Persona.SME, "skills")
 
     def test_domain_user_cannot_write_anything(self):
-        assert not self.config.can_write("domain_user", "glossary")
-        assert not self.config.can_write("domain_user", "sources")
+        assert not self.config.can_write(Persona.DOMAIN_USER, "glossary")
+        assert not self.config.can_write(Persona.DOMAIN_USER, "sources")
 
     def test_viewer_cannot_write_anything(self):
-        assert not self.config.can_write("viewer", "glossary")
-        assert not self.config.can_write("viewer", "tier_promote")
+        assert not self.config.can_write(Persona.VIEWER, "glossary")
+        assert not self.config.can_write(Persona.VIEWER, "tier_promote")
 
 
 # ---------------------------------------------------------------------------
@@ -119,20 +119,20 @@ class TestCanWrite:
 
 class TestUserPermissionsValidator:
     def test_platform_admin_persona_implies_admin(self):
-        p = UserPermissions(persona="platform_admin")
-        assert p.persona == "platform_admin"
+        p = UserPermissions(persona=Persona.PLATFORM_ADMIN)
+        assert p.persona == Persona.PLATFORM_ADMIN
 
     def test_default_persona_is_viewer(self):
         p = UserPermissions()
-        assert p.persona == "viewer"
+        assert p.persona == Persona.VIEWER
 
     def test_explicit_persona_preserved(self):
-        p = UserPermissions(persona="sme")
-        assert p.persona == "sme"
+        p = UserPermissions(persona=Persona.SME)
+        assert p.persona == Persona.SME
 
     def test_domain_builder_persona(self):
-        p = UserPermissions(persona="domain_builder")
-        assert p.persona == "domain_builder"
+        p = UserPermissions(persona=Persona.DOMAIN_BUILDER)
+        assert p.persona == Persona.DOMAIN_BUILDER
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ class TestRequireWrite:
         request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(persona="platform_admin")
+            mock_perms.return_value = MagicMock(persona=Persona.PLATFORM_ADMIN)
             # Should not raise
             await dep(request=request, user_id="uid", email="admin@test.com")
 
@@ -164,7 +164,7 @@ class TestRequireWrite:
         request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(persona="viewer")
+            mock_perms.return_value = MagicMock(persona=Persona.VIEWER)
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
                 await dep(request=request, user_id="uid", email="viewer@test.com")
@@ -191,7 +191,7 @@ class TestRequireWrite:
         request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(persona="sme")
+            mock_perms.return_value = MagicMock(persona=Persona.SME)
             await dep(request=request, user_id="uid", email="sme@test.com")
 
     @pytest.mark.asyncio
@@ -204,7 +204,7 @@ class TestRequireWrite:
         request.app.state.server_config = MagicMock(auth_disabled=False)
 
         with patch("constat.server.permissions.get_user_permissions") as mock_perms:
-            mock_perms.return_value = MagicMock(persona="sme")
+            mock_perms.return_value = MagicMock(persona=Persona.SME)
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
                 await dep(request=request, user_id="uid", email="sme@test.com")
