@@ -567,11 +567,14 @@ def introspect_graphql_endpoint(
         results = catalog.find_relevant_operations("find countries in Europe")
     """
     # Run introspection query
+    default_headers = {"Accept-Encoding": "identity"}
+    if headers:
+        default_headers.update(headers)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
             url,
             json={"query": INTROSPECTION_QUERY},
-            headers=headers or {},
+            headers=default_headers,
         )
         response.raise_for_status()
         data = response.json()
