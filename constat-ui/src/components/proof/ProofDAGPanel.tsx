@@ -1325,6 +1325,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
+                    pre({ children }) {
+                      return <pre className="has-[.mermaid-container]:!bg-transparent has-[.mermaid-container]:!border-none has-[.mermaid-container]:!p-0 has-[.mermaid-container]:!shadow-none">{children}</pre>
+                    },
                     code({ className, children }) {
                       if (className === 'language-mermaid') {
                         return <MermaidBlock chart={String(children)} />

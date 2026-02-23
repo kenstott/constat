@@ -28,18 +28,10 @@ export function MermaidBlock({ chart }: { chart: string }) {
   }, [chart])
 
   return (
-    <>
-      <style>{`
-        .mermaid-container svg rect.background { stroke: none !important; stroke-width: 0 !important; fill: transparent !important; }
-        .mermaid-container svg > rect { stroke: none !important; stroke-width: 0 !important; fill: transparent !important; }
-        .mermaid-container svg > g > rect { stroke: none !important; stroke-width: 0 !important; fill: transparent !important; }
-        .mermaid-container svg { max-width: 100%; height: auto; }
-      `}</style>
-      <div
-        ref={containerRef}
-        className="mermaid-container my-4 flex justify-center overflow-x-auto bg-white dark:bg-gray-900"
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
-    </>
+    <div
+      ref={containerRef}
+      className="mermaid-container my-4 flex justify-center overflow-x-auto bg-white dark:bg-gray-900"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
   )
 }
