@@ -12,9 +12,9 @@ Your code has access to:
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
-- `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)`: map values to an allowed set using LLM knowledge. `allowed` is the complete list of valid target values. Returns a dict keyed by EXACT input value. Values not in `allowed` are set to None. Pass ALL unique values at once (never loop).
-  - Default: `dict[str, str]` — `{"Whisker Wand": "Abyssinian", "Purrfect Pillow": null}`. Use with `df['col'].map(result)`.
-  - `reason=True` and/or `score=True`: `dict[str, dict]` — `{"Whisker Wand": {"value": "Abyssinian", "reason": "...", "score": 0.95}}`. Use `.map(lambda x: result[x]["value"])` for the mapped value. Score is a float 0.0–1.0 reflecting mapping confidence.
+- `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)`: map values to an allowed set using LLM knowledge. `allowed` is the complete list of valid target values. Returns a dict keyed by EXACT input value. ALWAYS returns a best-effort mapping for every input — never null. Pass ALL unique values at once (never loop).
+  - Default: `dict[str, str]` — `{"Whisker Wand": "Abyssinian", "Purrfect Pillow": "Bengal"}`. Use with `df['col'].map(result)`.
+  - `reason=True` and/or `score=True`: `dict[str, dict]` — `{"Whisker Wand": {"value": "Abyssinian", "reason": "...", "score": 0.95}}`. Use `.map(lambda x: result[x]["value"])` for the mapped value. Score is a float 0.0–1.0 reflecting mapping confidence. Use score to filter weak matches — do NOT assume null means unmappable.
 - `llm_classify(values, categories, context, reason=False, score=False)`: classify items into **semantic categories you defined** (e.g., ["high", "medium", "low"], ["bug", "feature"]). NOT for matching to a domain list — use `llm_map` for that. Pass ALL unique values at once.
   - Default: `dict[str, str]`. Use with `df['col'].map(result)`.
   - `reason=True` and/or `score=True`: `dict[str, dict]` — same shape as `llm_map` rich mode.

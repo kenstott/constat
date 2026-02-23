@@ -458,8 +458,11 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
+  const [graphOpen, setGraphOpen] = useState(false)
+
   const { resources, parent, children, relationships } = detail
-  const hasContent = resources.length > 0 || parent || children.length > 0 || relationships.length > 0
+  const hasConnections = !!(parent || children.length > 0 || relationships.length > 0)
+  const hasContent = resources.length > 0 || hasConnections
   if (!hasContent) return null
 
   return (
@@ -524,6 +527,18 @@ function ConnectedResources({
               ))}
             </div>
           ))}
+        </div>
+      )}
+      {hasConnections && (
+        <div>
+          <button
+            onClick={() => setGraphOpen(!graphOpen)}
+            className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          >
+            <ChevronRightIcon className={`w-3 h-3 transition-transform ${graphOpen ? 'rotate-90' : ''}`} />
+            Graph
+          </button>
+          {graphOpen && <TermGraphInline sessionId={sessionId} termName={termName} />}
         </div>
       )}
     </div>
@@ -750,7 +765,6 @@ function GlossaryItem({
   const { terms: allTerms, selectedName, updateTerm, refineTerm, deleteTerm } = useGlossaryStore()
   const isSelected = selectedName?.toLowerCase() === term.name.toLowerCase()
   const [isOpen, setIsOpen] = useState(false)
-  const [showGraph, setShowGraph] = useState(false)
   const [isDefining, setIsDefining] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editDef, setEditDef] = useState('')
@@ -823,11 +837,6 @@ function GlossaryItem({
             {term.semantic_type}
           </span>
         )}
-        <LazyGraphIcon
-          sessionId={sessionId}
-          termName={term.name}
-          onClick={(e) => { e.stopPropagation(); setShowGraph(true) }}
-        />
         <DomainPromotePicker
           termName={term.name}
           currentDomain={term.domain || null}
@@ -962,9 +971,6 @@ function GlossaryItem({
           )}
         </div>
       )}
-      {showGraph && (
-        <TermGraphModal sessionId={sessionId} termName={term.name} onClose={() => setShowGraph(false)} />
-      )}
     </div>
   )
 }
@@ -1091,64 +1097,6 @@ function TreeIcon({ className }: { className?: string }) {
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
       <path d="M12 3v6M12 9H6M6 9v6M6 15H3M6 15h3M12 9h6M18 9v6M18 15h3M18 15h-3" />
     </svg>
-  )
-}
-
-// Graph icon SVG inline — 3 connected nodes
-function GraphIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <circle cx="8" cy="4" r="2" />
-      <circle cx="3" cy="12" r="2" />
-      <circle cx="13" cy="12" r="2" />
-      <line x1="8" y1="6" x2="3" y2="10" />
-      <line x1="8" y1="6" x2="13" y2="10" />
-    </svg>
-  )
-}
-
-// Lazy graph icon — fetches connection status once, hides if unconnected
-const graphStatusCache = new Map<string, boolean | null>() // true=connected, false=unconnected, null=loading
-
-function LazyGraphIcon({
-  sessionId,
-  termName,
-  onClick,
-}: {
-  sessionId: string
-  termName: string
-  onClick: (e: React.MouseEvent) => void
-}) {
-  const cacheKey = `${sessionId}:${termName}`
-  const cached = graphStatusCache.get(cacheKey)
-  const [connected, setConnected] = useState<boolean | null>(cached ?? null)
-
-  useEffect(() => {
-    if (cached !== undefined) { setConnected(cached); return }
-    graphStatusCache.set(cacheKey, null)
-    getGlossaryTerm(sessionId, termName).then((data) => {
-      const has = !!(data.parent || (data.children && data.children.length > 0) || (data.relationships && data.relationships.length > 0))
-      graphStatusCache.set(cacheKey, has)
-      setConnected(has)
-    }).catch(() => {
-      graphStatusCache.set(cacheKey, false)
-      setConnected(false)
-    })
-  }, [sessionId, termName, cacheKey, cached])
-
-  // Still loading or confirmed connected → show icon
-  // Confirmed unconnected → hide
-  if (connected === false) return null
-
-  return (
-    <span
-      role="button"
-      onClick={onClick}
-      className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-      title="View relationships graph"
-    >
-      <GraphIcon className="w-3 h-3" />
-    </span>
   )
 }
 
@@ -1406,29 +1354,20 @@ const NODE_STYLES: Record<string, { fill: string; r: number }> = {
   relationship: { fill: '#9ca3af', r: 16 },
 }
 
-const GRAPH_W = 500
-const GRAPH_H = 400
+const GRAPH_W = 460
+const GRAPH_H = 300
 
-function TermGraphModal({
+function TermGraphInline({
   sessionId,
   termName,
-  onClose,
 }: {
   sessionId: string
   termName: string
-  onClose: () => void
 }) {
   const [graph, setGraph] = useState<{ nodes: PositionedNode[]; edges: PositionedEdge[] } | null>(null)
   const [loading, setLoading] = useState(true)
   const [empty, setEmpty] = useState(false)
   const [depth, setDepth] = useState(1)
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
 
   // BFS fetch neighborhood up to `depth` levels, then simulate layout
   useEffect(() => {
@@ -1602,7 +1541,6 @@ function TermGraphModal({
   }, [sessionId, termName, depth])
 
   const handleNodeClick = (name: string) => {
-    onClose()
     navigateToTerm(name)
   }
 
@@ -1615,137 +1553,122 @@ function TermGraphModal({
   }, [graph])
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-[540px] max-w-[90vw]">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-            {termName} — neighborhood
-          </span>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-            <XMarkIcon className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-200 dark:border-gray-700">
-          <label className="text-[10px] text-gray-500 dark:text-gray-400 select-none">Depth</label>
-          <input
-            type="range"
-            min={1}
-            max={4}
-            value={depth}
-            onChange={(e) => setDepth(Number(e.target.value))}
-            disabled={loading}
-            className="flex-1 h-1 accent-blue-500"
-          />
-          <span className="text-[10px] text-gray-500 dark:text-gray-400 w-3 text-center">{depth}</span>
-        </div>
-        <div className="p-2">
-          {loading ? (
-            <div className="text-xs text-gray-400 py-8 text-center">Loading graph...</div>
-          ) : empty || !graph ? (
-            <svg width="100%" viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`} className="select-none">
-              <g transform={`translate(${GRAPH_W / 2},${GRAPH_H / 2})`}>
-                <circle r={24} fill="#3b82f6" />
-                <text
-                  textAnchor="middle"
-                  dominantBaseline="central"
-                  className="text-[10px] fill-white font-semibold pointer-events-none"
-                >
-                  {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
-                </text>
-              </g>
-            </svg>
-          ) : (
-            <svg width="100%" viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`} className="select-none">
-              <defs>
-                <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                  <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
-                </marker>
-              </defs>
-              {/* Edges */}
-              {graph.edges.map((e, i) => {
-                const src = posMap.get(e.sourceId)
-                const tgt = posMap.get(e.targetId)
-                if (!src || !tgt) return null
+    <div className="mt-1">
+      <div className="flex items-center gap-2 mb-1">
+        <label className="text-[10px] text-gray-500 dark:text-gray-400 select-none">Depth</label>
+        <input
+          type="range"
+          min={1}
+          max={4}
+          value={depth}
+          onChange={(e) => setDepth(Number(e.target.value))}
+          disabled={loading}
+          className="flex-1 h-1 accent-blue-500"
+        />
+        <span className="text-[10px] text-gray-500 dark:text-gray-400 w-3 text-center">{depth}</span>
+      </div>
+      {loading ? (
+        <div className="text-xs text-gray-400 py-4 text-center">Loading graph...</div>
+      ) : empty || !graph ? (
+        <svg width="100%" viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`} className="select-none">
+          <g transform={`translate(${GRAPH_W / 2},${GRAPH_H / 2})`}>
+            <circle r={24} fill="#3b82f6" />
+            <text
+              textAnchor="middle"
+              dominantBaseline="central"
+              className="text-[10px] fill-white font-semibold pointer-events-none"
+            >
+              {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
+            </text>
+          </g>
+        </svg>
+      ) : (
+        <>
+          <svg width="100%" viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`} className="select-none">
+            <defs>
+              <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+              </marker>
+            </defs>
+            {/* Edges */}
+            {graph.edges.map((e, i) => {
+              const src = posMap.get(e.sourceId)
+              const tgt = posMap.get(e.targetId)
+              if (!src || !tgt) return null
 
-                const srcR = Math.max(10, (NODE_STYLES[src.type]?.r || 16) - (src.depth * 2))
-                const tgtR = Math.max(10, (NODE_STYLES[tgt.type]?.r || 16) - (tgt.depth * 2))
-                const dx = tgt.x - src.x
-                const dy = tgt.y - src.y
-                const dist = Math.sqrt(dx * dx + dy * dy) || 1
-                const startX = src.x + (dx / dist) * srcR
-                const startY = src.y + (dy / dist) * srcR
-                const endX = tgt.x - (dx / dist) * tgtR
-                const endY = tgt.y - (dy / dist) * tgtR
-                const midX = (src.x + tgt.x) / 2
-                const midY = (src.y + tgt.y) / 2
+              const srcR = Math.max(10, (NODE_STYLES[src.type]?.r || 16) - (src.depth * 2))
+              const tgtR = Math.max(10, (NODE_STYLES[tgt.type]?.r || 16) - (tgt.depth * 2))
+              const dx = tgt.x - src.x
+              const dy = tgt.y - src.y
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1
+              const startX = src.x + (dx / dist) * srcR
+              const startY = src.y + (dy / dist) * srcR
+              const endX = tgt.x - (dx / dist) * tgtR
+              const endY = tgt.y - (dy / dist) * tgtR
+              const midX = (src.x + tgt.x) / 2
+              const midY = (src.y + tgt.y) / 2
 
-                return (
-                  <g key={i}>
-                    <line
-                      x1={startX} y1={startY} x2={endX} y2={endY}
-                      stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : '#9ca3af'}
-                      strokeWidth={1.5}
-                      strokeDasharray={e.type === 'relationship' ? undefined : '4 3'}
-                      markerEnd={e.type === 'relationship' ? 'url(#arrowhead)' : undefined}
-                    />
-                    <text
-                      x={midX} y={midY - 5}
-                      textAnchor="middle"
-                      className="text-[9px] fill-gray-400 dark:fill-gray-500 pointer-events-none"
-                    >
-                      {e.label}
-                    </text>
-                  </g>
-                )
-              })}
-              {/* Nodes */}
-              {graph.nodes.map((n) => {
-                const style = NODE_STYLES[n.type]
-                const r = Math.max(10, style.r - (n.depth * 2))
-                return (
-                  <g
-                    key={n.id}
-                    transform={`translate(${n.x},${n.y})`}
-                    className="cursor-pointer"
-                    onClick={() => handleNodeClick(n.id)}
+              return (
+                <g key={i}>
+                  <line
+                    x1={startX} y1={startY} x2={endX} y2={endY}
+                    stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : '#9ca3af'}
+                    strokeWidth={1.5}
+                    strokeDasharray={e.type === 'relationship' ? undefined : '4 3'}
+                    markerEnd={e.type === 'relationship' ? 'url(#arrowhead)' : undefined}
+                  />
+                  <text
+                    x={midX} y={midY - 5}
+                    textAnchor="middle"
+                    className="text-[9px] fill-gray-400 dark:fill-gray-500 pointer-events-none"
                   >
-                    <circle r={r} fill={style.fill} />
-                    <title>{n.label}</title>
+                    {e.label}
+                  </text>
+                </g>
+              )
+            })}
+            {/* Nodes */}
+            {graph.nodes.map((n) => {
+              const style = NODE_STYLES[n.type]
+              const r = Math.max(10, style.r - (n.depth * 2))
+              return (
+                <g
+                  key={n.id}
+                  transform={`translate(${n.x},${n.y})`}
+                  className="cursor-pointer"
+                  onClick={() => handleNodeClick(n.id)}
+                >
+                  <circle r={r} fill={style.fill} />
+                  <title>{n.label}</title>
+                  <text
+                    y={r + 12}
+                    textAnchor="middle"
+                    className="text-[10px] fill-gray-700 dark:fill-gray-300 pointer-events-none"
+                  >
+                    {n.label.length > 18 ? n.label.slice(0, 16) + '...' : n.label}
+                  </text>
+                  {n.type === 'focal' && (
                     <text
-                      y={r + 12}
                       textAnchor="middle"
-                      className="text-[10px] fill-gray-700 dark:fill-gray-300 pointer-events-none"
+                      dominantBaseline="central"
+                      className="text-[10px] fill-white font-semibold pointer-events-none"
                     >
-                      {n.label.length > 18 ? n.label.slice(0, 16) + '...' : n.label}
+                      {n.label.length > 10 ? n.label.slice(0, 8) + '..' : n.label}
                     </text>
-                    {n.type === 'focal' && (
-                      <text
-                        textAnchor="middle"
-                        dominantBaseline="central"
-                        className="text-[10px] fill-white font-semibold pointer-events-none"
-                      >
-                        {n.label.length > 10 ? n.label.slice(0, 8) + '..' : n.label}
-                      </text>
-                    )}
-                  </g>
-                )
-              })}
-            </svg>
-          )}
-        </div>
-        {/* Legend */}
-        {graph && graph.nodes.length > 1 && (
-          <div className="flex items-center gap-3 px-3 pb-2 text-[10px] text-gray-400">
+                  )}
+                </g>
+              )
+            })}
+          </svg>
+          {/* Legend */}
+          <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-1">
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-blue-500" /> focal</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-purple-400" /> parent</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-400" /> child</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-gray-400" /> relationship</span>
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   )
 }

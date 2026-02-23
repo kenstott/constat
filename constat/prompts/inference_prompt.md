@@ -39,7 +39,7 @@ CRITICAL Rules:
 8. For ANY VALUE MAPPING, CLASSIFICATION, or DATA EXTRACTION requiring world knowledge:
    NEVER hardcode a mapping dictionary, classification table, or extracted constants.
    Use the appropriate LLM primitive:
-   - `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)` — map values to an allowed set. `allowed` is the complete list of valid target values. Returns dict[str, str] by default; values not in `allowed` are set to None. With `reason=True`/`score=True`, returns dict[str, dict] with keys "value", "reason", "score". Use score to filter weak matches.
+   - `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)` — map values to an allowed set. `allowed` is the complete list of valid target values. ALWAYS returns a best-effort mapping for every input — never null. Returns dict[str, str] by default. With `reason=True`/`score=True`, returns dict[str, dict] with keys "value", "reason", "score". Use score to filter weak matches.
    - `llm_classify(values, categories, context, reason=False, score=False)` — classification into **semantic categories you defined** (e.g., sentiment, priority, risk). NOT for matching to a domain list. Same rich return shape as llm_map when reason/score enabled.
    - `llm_extract(texts, fields, context)` — structured field extraction from free text. `fields` is a list of strings. Returns a dict if one text is passed, list of dicts if multiple.
    - `llm_summarize(texts, instruction)` — text summarization/condensation
