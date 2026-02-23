@@ -2,12 +2,14 @@
 // Uses d3-dag for proper directed acyclic graph layout
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
-import { XMarkIcon, TableCellsIcon } from '@heroicons/react/24/outline'
+import { XMarkIcon, TableCellsIcon, ChevronDownIcon } from '@heroicons/react/24/outline'
 import * as d3dag from 'd3-dag'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useUIStore } from '@/store/uiStore'
 import { createSkillFromProof } from '@/api/skills'
+import { MermaidBlock } from './MermaidBlock'
+import { CodeViewer } from '@/components/artifacts/CodeViewer'
 
 // Node status types matching server events
 type NodeStatus = 'pending' | 'planning' | 'executing' | 'resolved' | 'failed' | 'blocked'
@@ -259,8 +261,9 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
   const [isSavingSkill, setIsSavingSkill] = useState(false)
   const [showRedoForm, setShowRedoForm] = useState(false)
   const [redoGuidance, setRedoGuidance] = useState('')
-  const pushSelectedNode = (node: FactNode) => setSelectedIdStack(prev => [...prev, node.id])
-  const popSelectedNode = () => setSelectedIdStack(prev => prev.slice(0, -1))
+  const [codeExpanded, setCodeExpanded] = useState(false)
+  const pushSelectedNode = (node: FactNode) => { setSelectedIdStack(prev => [...prev, node.id]); setCodeExpanded(false) }
+  const popSelectedNode = () => { setSelectedIdStack(prev => prev.slice(0, -1)); setCodeExpanded(false) }
   const clearSelectedNodes = () => setSelectedIdStack([])
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 })
   const [panelSize, setPanelSize] = useState(() => {
@@ -1281,8 +1284,18 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
               )}
               {selectedNode.code && (
                 <div>
-                  <span className="text-xs font-medium text-gray-500 uppercase">Code</span>
-                  <pre className="font-mono text-xs bg-gray-50 dark:bg-gray-900 p-3 rounded mt-1 overflow-x-auto max-h-64 overflow-y-auto">{selectedNode.code}</pre>
+                  <button
+                    onClick={() => setCodeExpanded(prev => !prev)}
+                    className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+                  >
+                    <ChevronDownIcon className={`w-3 h-3 transition-transform ${codeExpanded ? '' : '-rotate-90'}`} />
+                    Code
+                  </button>
+                  {codeExpanded && (
+                    <div className="mt-1">
+                      <CodeViewer code={selectedNode.code} language="python" />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1309,7 +1322,17 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             <div className="p-4">
               <p className="text-xs text-gray-500 mb-3 italic">LLM-generated summary of the proof derivation</p>
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    code({ className, children }) {
+                      if (className === 'language-mermaid') {
+                        return <MermaidBlock chart={String(children)} />
+                      }
+                      return <code className={className}>{children}</code>
+                    },
+                  }}
+                >
                   {summary}
                 </ReactMarkdown>
               </div>

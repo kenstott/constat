@@ -214,7 +214,7 @@ INFERENCE RULES:
 - CRITICAL: Each inference should produce data that the NEXT inference actually needs. Do NOT generate intermediate datasets that are never consumed downstream.
 - Operations like date extraction, filtering, grouping belong HERE, not in premises
 - Keep operations simple: filter, join, group_sum, count, apply_rules, calculate, etc.
-- For FUZZY MAPPING (e.g., free-text country names → ISO codes): plan the inference to first attempt mapping via data sources (APIs, databases), then use llm_map() as fallback for unmatched values. This reduces confidence but enables mapping when no exact data source exists.
+- For FUZZY MAPPING (e.g., free-text product names → breed names): plan the inference to first attempt mapping via data sources (APIs, databases), then use llm_map(values, allowed_list, source_desc, target_desc) as fallback for unmatched values. This reduces confidence but enables mapping when no exact data source exists.
 
 CONCLUSION:
 C: <final sentence describing what the final inference contains - use ENGLISH NAMES not I1/I2 references>
@@ -1227,7 +1227,15 @@ If the original question had multiple goals or sub-questions, note whether all w
                     fact = self.fact_resolver.get_fact(inf_name)
                     if fact and hasattr(fact, 'reasoning'):
                         node_reasoning = fact.reasoning
-                deps = [p['id'] for p in premises]  # Inferences depend on premises
+                # Get actual dependencies from DAG (names → fact_ids)
+                deps = []
+                if dag_node and dag_node.dependencies:
+                    for dep_name in dag_node.dependencies:
+                        dep_node = dag.get_node(dep_name)
+                        if dep_node:
+                            deps.append(dep_node.fact_id)
+                if not deps:
+                    deps = [p['id'] for p in premises]  # Fallback
                 proof_nodes.append({
                     "id": iid,
                     "name": inf_name,

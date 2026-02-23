@@ -170,6 +170,41 @@ Provide a summary covering:
         return SummarizeResult(success=False, error=str(e))
 
 
+def _build_proof_mermaid(proof_nodes: list[dict]) -> str:
+    """Build a mermaid flowchart from proof nodes."""
+    lines = ["```mermaid", "flowchart TD"]
+
+    for node in proof_nodes:
+        nid = node.get("id", "")
+        name = node.get("name", nid)
+        value = str(node.get("value", ""))[:40]
+        label = f"{nid}: {name}"
+        if value and value != "None":
+            label += f"<br/>{value}"
+        # Escape quotes in label
+        label = label.replace('"', '#quot;')
+        lines.append(f'    {nid}["{label}"]')
+
+    # Edges from dependencies
+    for node in proof_nodes:
+        nid = node.get("id", "")
+        for dep in node.get("dependencies", []):
+            lines.append(f"    {dep} --> {nid}")
+
+    # Styles: one style directive per node (mermaid doesn't support comma-separated IDs)
+    for n in proof_nodes:
+        nid = n.get("id", "")
+        if n.get("status") == "failed":
+            lines.append(f"    style {nid} fill:#FEE2E2,stroke:#EF4444,color:#991B1B")
+        elif nid.startswith("P"):
+            lines.append(f"    style {nid} fill:#DBEAFE,stroke:#3B82F6,color:#1E40AF")
+        elif nid.startswith("I"):
+            lines.append(f"    style {nid} fill:#DCFCE7,stroke:#22C55E,color:#166534")
+
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def summarize_proof(
     problem: str,
     proof_nodes: list[dict],
@@ -246,7 +281,8 @@ Write as a clear explanation for someone reviewing the audit trail."""
             max_tokens=1000,
         )
         logger.info(f"[summarize_proof] LLM returned result length={len(result) if result else 0}")
-        return SummarizeResult(success=True, summary=result)
+        diagram = _build_proof_mermaid(proof_nodes)
+        return SummarizeResult(success=True, summary=f"{diagram}\n\n{result}")
     except Exception as e:
         logger.error(f"[summarize_proof] LLM call failed: {e}", exc_info=True)
         return SummarizeResult(success=False, error=str(e))

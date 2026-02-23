@@ -291,6 +291,7 @@ export function ArtifactPanel() {
   const [loadingDocument, setLoadingDocument] = useState(false)
   // Results filter - persisted in localStorage
   const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
+  const [collapsedInferences, setCollapsedInferences] = useState<Set<string>>(new Set())
   const [showPublishedOnly, setShowPublishedOnly] = useState(() => {
     const stored = localStorage.getItem('constat-results-filter')
     return stored !== 'all' // Default to published only
@@ -2851,38 +2852,58 @@ ${skill.body}`
             </button>
           }
         >
-          <div className="space-y-3">
-            {inferenceCodes.map((inf) => (
-              <div key={inf.inference_id}>
-                <div className="flex items-center gap-1 mb-1">
-                  <p className="text-xs text-gray-500 dark:text-gray-400 flex-1">
-                    {inf.inference_id}: {inf.name} = {inf.operation}
-                  </p>
-                  {inf.prompt && (
+          <div className="space-y-1">
+            {inferenceCodes.map((inf) => {
+              const isCollapsed = collapsedInferences.has(inf.inference_id)
+              return (
+                <div key={inf.inference_id}>
+                  <div className="flex items-center gap-1">
                     <button
-                      onClick={() => setShowInferencePrompt((prev) => {
+                      onClick={() => setCollapsedInferences((prev) => {
                         const next = new Set(prev)
                         if (next.has(inf.inference_id)) next.delete(inf.inference_id)
                         else next.add(inf.inference_id)
                         return next
                       })}
-                      className="text-[10px] text-gray-400 hover:text-primary-500 px-1"
+                      className="flex items-center gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
                     >
-                      {showInferencePrompt.has(inf.inference_id) ? 'Hide Prompt' : 'Prompt'}
+                      {isCollapsed ? (
+                        <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+                      ) : (
+                        <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+                      )}
+                      <span>{inf.inference_id}: {inf.name} = {inf.operation}</span>
                     </button>
+                    {inf.prompt && (
+                      <button
+                        onClick={() => setShowInferencePrompt((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(inf.inference_id)) next.delete(inf.inference_id)
+                          else next.add(inf.inference_id)
+                          return next
+                        })}
+                        className="text-[10px] text-gray-400 hover:text-primary-500 ml-auto px-1"
+                      >
+                        {showInferencePrompt.has(inf.inference_id) ? 'Hide Prompt' : 'Prompt'}
+                      </button>
+                    )}
+                  </div>
+                  {!isCollapsed && (
+                    <>
+                      {showInferencePrompt.has(inf.inference_id) && inf.prompt && (
+                        <pre className="text-[10px] leading-tight text-gray-400 bg-gray-50 dark:bg-gray-800/50 p-2 rounded overflow-auto max-h-60 mb-1 whitespace-pre-wrap">
+                          {inf.prompt}
+                        </pre>
+                      )}
+                      <CodeViewer
+                        code={inf.code}
+                        language="python"
+                      />
+                    </>
                   )}
                 </div>
-                {showInferencePrompt.has(inf.inference_id) && inf.prompt && (
-                  <pre className="text-[10px] leading-tight text-gray-400 bg-gray-50 dark:bg-gray-800/50 p-2 rounded overflow-auto max-h-60 mb-1 whitespace-pre-wrap">
-                    {inf.prompt}
-                  </pre>
-                )}
-                <CodeViewer
-                  code={inf.code}
-                  language="python"
-                />
-              </div>
-            ))}
+              )
+            })}
           </div>
         </AccordionSection>
       )}

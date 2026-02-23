@@ -210,7 +210,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchInferenceCodes: async (sessionId) => {
     try {
       const response = await sessionsApi.listInferenceCodes(sessionId)
-      set({ inferenceCodes: response.inferences })
+      set({ inferenceCodes: response.inferences.filter((ic: { inference_id: string }) => ic.inference_id) })
     } catch (error) {
       console.warn('Failed to fetch inference codes:', error)
     }

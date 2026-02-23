@@ -39,15 +39,15 @@ CRITICAL Rules:
 8. For ANY VALUE MAPPING, CLASSIFICATION, or DATA EXTRACTION requiring world knowledge:
    NEVER hardcode a mapping dictionary, classification table, or extracted constants.
    Use the appropriate LLM primitive:
-   - `llm_map(values, target, source_desc, reason=False, score=False)` — value mapping (names → codes, etc.). ALWAYS returns a best-effort mapping for every input — never null. Returns dict[str, str] by default. With `reason=True`/`score=True`, returns dict[str, dict] with keys "value", "reason", "score". Use score to filter weak matches.
+   - `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)` — map values to an allowed set. `allowed` is the complete list of valid target values. Returns dict[str, str] by default; values not in `allowed` are set to None. With `reason=True`/`score=True`, returns dict[str, dict] with keys "value", "reason", "score". Use score to filter weak matches.
    - `llm_classify(values, categories, context, reason=False, score=False)` — classification into **semantic categories you defined** (e.g., sentiment, priority, risk). NOT for matching to a domain list. Same rich return shape as llm_map when reason/score enabled.
    - `llm_extract(texts, fields, context)` — structured field extraction from free text. `fields` is a list of strings. Returns a dict if one text is passed, list of dicts if multiple.
    - `llm_summarize(texts, instruction)` — text summarization/condensation
    - `llm_score(texts, min_val, max_val, instruction)` — numeric scoring with reasoning. Returns list of `(score, reasoning)` tuples
 
    Example (mapping):
-   mapping = llm_map(df['country'].unique().tolist(), "ISO 3166-1 alpha-2 country code", "country names")
-   df['country_iso'] = df['country'].map(mapping)
+   mapping = llm_map(df['item'].unique().tolist(), breed_names, "inventory items", "cat breeds")
+   df['breed'] = df['item'].map(mapping)
 
    Example (classification):
    classes = llm_classify(df['description'].tolist(), ["bug", "feature", "question"], "support tickets")
@@ -61,11 +61,11 @@ CRITICAL Rules:
    Hardcoded dicts embed unverifiable LLM knowledge and WILL be flagged.
 
    PRIMITIVE SELECTION — key distinction:
-   - `llm_map` = target values come from a known domain (breeds, countries, ISO codes). LLM generates the value. Output is open-ended.
+   - `llm_map` = map to a known allowed set. You provide the complete list of valid values. LLM picks from that list only.
    - `llm_classify` = you defined semantic categories (high/med/low, bug/feature/question). LLM picks from YOUR labels.
-   - WRONG: `llm_classify(items, breed_names)` — breeds are a domain to map to, not semantic categories. Use `llm_map(items, "cat breed")`.
-   - WRONG: `llm_classify(cities, country_list)` — use `llm_map(cities, "country")`.
+   - RIGHT: `llm_map(items, breed_names, "inventory items", "cat breeds")` — mapping to a known set of breeds.
    - RIGHT: `llm_classify(tickets, ["bug", "feature", "question"])` — semantic buckets you defined.
+   - WRONG: `llm_classify(items, breed_names)` — breeds are a domain to map to, not semantic categories. Use `llm_map`.
 9. MISSING COLUMNS: If an expected column is missing, raise an error listing actual columns:
    `raise KeyError(f"Expected 'col' but columns are: {{list(df.columns)}}")`
    NEVER silently default to zero or skip with `if col in df.columns: ... else: 0`.

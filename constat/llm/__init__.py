@@ -235,27 +235,31 @@ def _notify(event: LLMCallEvent) -> None:
 
 def llm_map(
     values: list[str],
-    target: str,
+    allowed: list[str],
     source_desc: str = "values",
+    target_desc: str = "",
     *,
     reason: bool = False,
     score: bool = False,
 ) -> dict[str, str] | dict[str, dict]:
-    """Map a list of values to a target domain using LLM knowledge.
+    """Map a list of values to an allowed set using LLM knowledge.
 
     Args:
-        values: List of source values to map (e.g., ["United Kingdom", "Burma"])
-        target: Description of what to map to (e.g., "ISO 3166-1 alpha-2 country code")
-        source_desc: Label for the source values (e.g., "country names")
+        values: List of source values to map (e.g., ["Whisker Wand", "Purrfect Pillow"])
+        allowed: List of valid target values to map to (e.g., ["Abyssinian", "Bengal", ...])
+        source_desc: Label for the source values (e.g., "product names")
+        target_desc: Optional context about the target domain (e.g., "cat breeds")
         reason: If True, include a reasoning string per mapping.
         score: If True, include a confidence score (0.0–1.0) per mapping.
 
     Returns:
-        dict[str, str] by default. Every input gets a best-effort mapping.
+        dict[str, str] by default. Values not in allowed are set to None.
         dict[str, dict] when reason or score is True, with keys "value", "reason", "score".
-        Consumer should use score to decide acceptance threshold.
     """
     values_str = "\n".join(f"- {v}" for v in values)
+    allowed_str = "\n".join(f"- {a}" for a in allowed)
+    allowed_set = set(allowed)
+    target_ctx = f" ({target_desc})" if target_desc else ""
     rich = reason or score
 
     if rich:
@@ -267,47 +271,57 @@ def llm_map(
             entry_keys.append('"score"')
         keys_str = ", ".join(entry_keys)
 
-        example_entry = {"value": "mapped1"}
+        example_val = allowed[0] if allowed else "allowed_val"
+        example_entry = {"value": example_val}
         if reason:
             example_entry["reason"] = "brief explanation"
         if score:
             example_entry["score"] = 0.95
-        example_low = {"value": "best_guess"}
+        example_null = {"value": None}
         if reason:
-            example_low["reason"] = "weak match but closest available"
+            example_null["reason"] = "no good match in allowed set"
         if score:
-            example_low["score"] = 0.3
-        example_json = json.dumps({"input1": example_entry, "input2": example_low})
+            example_null["score"] = 0.1
+        example_json = json.dumps({"input1": example_entry, "input2": example_null})
 
-        prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
+        prompt = f"""Map each of the following {source_desc} to the most appropriate value from the ALLOWED set{target_ctx}.
 
+SOURCE {source_desc.upper()}:
 {values_str}
 
+ALLOWED VALUES (you MUST pick from this list or use null):
+{allowed_str}
+
 Respond with ONLY valid JSON: a single object where EVERY input value is a key mapped to an object with keys {keys_str}.
-IMPORTANT: You MUST return a mapping for EVERY input. Always provide your best match — NEVER set "value" to null. Use the score to reflect confidence instead.
+"value" MUST be one of the ALLOWED VALUES above, or null if no reasonable match exists.
 The JSON keys MUST be the EXACT input strings listed above.
 {"\"reason\" should be a brief explanation of the mapping." if reason else ""}
-{"\"score\" should be a float 0.0–1.0 reflecting confidence. Low confidence is fine — the consumer decides the threshold." if score else ""}
+{"\"score\" should be a float 0.0–1.0 reflecting confidence in the match." if score else ""}
 
 Example format: {example_json}
 
 YOUR JSON RESPONSE:"""
 
-        system_msg = f"You map {source_desc} to {target}. Output ONLY valid JSON. Each entry has keys {keys_str}. ALWAYS provide a best-effort mapping for every input — never null. Use score to reflect confidence."
+        system_msg = f"You map {source_desc} to an allowed set of values{target_ctx}. Output ONLY valid JSON. Each entry has keys {keys_str}. \"value\" must be from the allowed set or null."
     else:
-        prompt = f"""Map each of the following {source_desc} to its corresponding {target}.
+        example_val = allowed[0] if allowed else "allowed_val"
+        prompt = f"""Map each of the following {source_desc} to the most appropriate value from the ALLOWED set{target_ctx}.
 
+SOURCE {source_desc.upper()}:
 {values_str}
 
-Respond with ONLY valid JSON: a single object where EVERY input value is a key mapped to its {target}.
-IMPORTANT: You MUST return a mapping for EVERY input. Always provide your best match — NEVER map to null.
+ALLOWED VALUES (you MUST pick from this list or use null):
+{allowed_str}
+
+Respond with ONLY valid JSON: a single object where EVERY input value is a key mapped to its best match from ALLOWED VALUES.
+If no reasonable match exists, map to null.
 The JSON keys MUST be the EXACT input strings listed above.
 
-Example format: {{"input1": "mapped1", "input2": "mapped2", "input3": "mapped3"}}
+Example format: {{"input1": "{example_val}", "input2": null}}
 
 YOUR JSON RESPONSE:"""
 
-        system_msg = f"You map {source_desc} to {target}. Output ONLY valid JSON. Always provide a best-effort mapping — never null."
+        system_msg = f"You map {source_desc} to an allowed set of values{target_ctx}. Output ONLY valid JSON. Every mapped value must be from the allowed set or null."
 
     content, model_used, provider_used = _execute(
         system=system_msg,
@@ -325,12 +339,29 @@ YOUR JSON RESPONSE:"""
     else:
         mapping = json.loads(content)
 
+        # Validate: every mapped value must be in the allowed set
+        violations = []
+        for k, v in mapping.items():
+            if rich and isinstance(v, dict):
+                val = v.get("value")
+                if val is not None and val not in allowed_set:
+                    violations.append(f"{k!r} -> {val!r}")
+                    v["value"] = None
+            elif not rich:
+                if v is not None and v not in allowed_set:
+                    violations.append(f"{k!r} -> {v!r}")
+                    mapping[k] = None
+        if violations:
+            logger.warning(
+                f"[LLM_MAP] {len(violations)} value(s) not in allowed set, set to None: {violations}"
+            )
+
     if rich:
         null_count = sum(1 for v in mapping.values() if isinstance(v, dict) and v.get("value") is None)
     else:
         null_count = sum(1 for v in mapping.values() if v is None)
     logger.info(
-        f"[LLM_MAP] Mapped {len(values) - null_count}/{len(values)} {source_desc} -> {target}"
+        f"[LLM_MAP] Mapped {len(values) - null_count}/{len(values)} {source_desc} -> allowed set ({len(allowed)} values)"
     )
 
     _notify(LLMCallEvent(

@@ -12,9 +12,9 @@ Your code has access to:
 - `np`: numpy (imported as np)
 - `store`: a persistent DuckDB datastore for sharing data between steps
 - `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
-- `llm_map(values, target, source_desc, reason=False, score=False)`: fuzzy map a list of values to a target domain using LLM knowledge. Returns a dict keyed by EXACT input value. ALWAYS returns a best-effort mapping for every input — never null. Pass ALL unique values at once (never loop).
-  - Default: `dict[str, str]` — `{"Burma": "MM", "UK": "GB"}`. Use with `df['col'].map(result)`.
-  - `reason=True` and/or `score=True`: `dict[str, dict]` — `{"Burma": {"value": "MM", "reason": "...", "score": 0.95}}`. Use `.map(lambda x: result[x]["value"])` for the mapped value. Score is a float 0.0–1.0 reflecting mapping confidence. Use score to filter weak matches — do NOT assume null means unmappable.
+- `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)`: map values to an allowed set using LLM knowledge. `allowed` is the complete list of valid target values. Returns a dict keyed by EXACT input value. Values not in `allowed` are set to None. Pass ALL unique values at once (never loop).
+  - Default: `dict[str, str]` — `{"Whisker Wand": "Abyssinian", "Purrfect Pillow": null}`. Use with `df['col'].map(result)`.
+  - `reason=True` and/or `score=True`: `dict[str, dict]` — `{"Whisker Wand": {"value": "Abyssinian", "reason": "...", "score": 0.95}}`. Use `.map(lambda x: result[x]["value"])` for the mapped value. Score is a float 0.0–1.0 reflecting mapping confidence.
 - `llm_classify(values, categories, context, reason=False, score=False)`: classify items into **semantic categories you defined** (e.g., ["high", "medium", "low"], ["bug", "feature"]). NOT for matching to a domain list — use `llm_map` for that. Pass ALL unique values at once.
   - Default: `dict[str, str]`. Use with `df['col'].map(result)`.
   - `reason=True` and/or `score=True`: `dict[str, dict]` — same shape as `llm_map` rich mode.
@@ -79,10 +79,10 @@ Functions are prefixed with the skill's package name (hyphens → underscores), 
 Do NOT import skill modules. The functions are already available as globals, just like `store`, `llm_ask`, and `doc_read`.
 
 ## LLM Primitive Selection Guide
-- **Map values to another domain** (product→breed, city→country_code, name→standardized): use `llm_map`. The LLM generates the target value from its knowledge — output is open-ended.
-  - RIGHT: `llm_map(products, "most similar cat breed")` — LLM picks from entire breed knowledge
-  - RIGHT: `llm_map(countries, "ISO 3166-1 alpha-2 code")` — LLM generates codes
-  - WRONG: `llm_classify(products, breed_list)` — this is NOT classification, it's fuzzy matching to a domain
+- **Map values to an allowed set** (product→breed, city→country_code, name→standardized): use `llm_map`. You provide the complete list of valid target values; the LLM picks from that list only.
+  - RIGHT: `llm_map(products, breed_names, "products", "cat breeds")` — map to a known breed list
+  - RIGHT: `llm_map(countries, iso_codes, "countries", "ISO 3166-1 alpha-2 codes")` — map to known codes
+  - WRONG: `llm_classify(products, breed_list)` — this is NOT classification, it's mapping to a domain
 - **Classify into semantic categories** (sentiment, priority, risk level): use `llm_classify`. Categories must be a predetermined **semantic grouping** you defined, not just "a list of things to pick from."
   - RIGHT: `llm_classify(tickets, ["bug", "feature", "question"])` — semantic categories you defined
   - RIGHT: `llm_classify(reviews, ["positive", "neutral", "negative"])` — sentiment buckets
