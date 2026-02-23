@@ -334,8 +334,39 @@ export async function deleteGlossaryByStatus(
 export async function deleteGlossaryTerm(
   sessionId: string,
   name: string
-): Promise<{ status: string }> {
+): Promise<{ status: string; deleted?: string; reparented?: string[]; deprecated?: string[] }> {
   return del(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}`)
+}
+
+export async function renameTerm(
+  sessionId: string,
+  name: string,
+  newName: string
+): Promise<{ status: string; old_name: string; new_name: string; display_name: string; relationships_updated: number }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/rename`, { new_name: newName })
+}
+
+export async function reconnectTerm(
+  sessionId: string,
+  name: string,
+  updates: { parent_id?: string; domain?: string }
+): Promise<{ status: string; name: string; still_deprecated: boolean }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/reconnect`, updates)
+}
+
+export interface DomainTreeNode {
+  filename: string
+  name: string
+  path: string
+  description: string
+  databases: string[]
+  apis: string[]
+  documents: string[]
+  children: DomainTreeNode[]
+}
+
+export async function getDomainTree(): Promise<DomainTreeNode[]> {
+  return get('/domains/tree')
 }
 
 export async function draftGlossaryDefinition(

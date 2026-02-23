@@ -43,6 +43,8 @@ interface GlossaryState {
   suggestTaxonomy: (sessionId: string) => Promise<void>
   acceptTaxonomySuggestion: (sessionId: string, suggestion: TaxonomySuggestion) => Promise<void>
   dismissTaxonomySuggestion: (suggestion: TaxonomySuggestion) => void
+  renameTerm: (sessionId: string, name: string, newName: string) => Promise<void>
+  reconnectTerm: (sessionId: string, name: string, updates: { parent_id?: string; domain?: string }) => Promise<void>
   addTerms: (terms: GlossaryTerm[]) => void
   bulkUpdateStatus: (sessionId: string, names: string[], status: string) => Promise<void>
   selectTerm: (name: string | null) => void
@@ -78,7 +80,7 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
     }
     try {
       const { filters } = get()
-      const response = await sessionsApi.getGlossary(sessionId, filters.scope || 'all')
+      const response = await sessionsApi.getGlossary(sessionId, filters.scope || 'all', filters.domain)
       set({
         terms: response.terms,
         totalDefined: response.total_defined,
@@ -113,6 +115,17 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   deleteTerm: async (sessionId, name) => {
     await sessionsApi.deleteGlossaryTerm(sessionId, name)
     await get().fetchTerms(sessionId)
+  },
+
+  renameTerm: async (sessionId, name, newName) => {
+    await sessionsApi.renameTerm(sessionId, name, newName)
+    await get().fetchTerms(sessionId)
+  },
+
+  reconnectTerm: async (sessionId, name, updates) => {
+    await sessionsApi.reconnectTerm(sessionId, name, updates)
+    await get().fetchTerms(sessionId)
+    await get().fetchDeprecated(sessionId)
   },
 
   deleteDrafts: async (sessionId) => {

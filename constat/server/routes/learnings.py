@@ -27,6 +27,7 @@ from constat.server.models import (
     DomainDetailResponse,
     DomainInfo,
     DomainListResponse,
+    DomainTreeNode,
     LearningCreateRequest,
     LearningInfo,
     LearningListResponse,
@@ -315,6 +316,86 @@ async def get_config_sanitized(
 # ============================================================================
 # Domain Endpoints
 # ============================================================================
+
+
+@router.get("/domains/tree")
+async def get_domain_tree(
+    user_id: CurrentUserId,
+    config: Config = Depends(get_config),
+) -> list[DomainTreeNode]:
+    """Get nested domain hierarchy tree."""
+    from constat.core.config import DomainConfig
+
+    def _build_node(domain_cfg: DomainConfig) -> DomainTreeNode:
+        return DomainTreeNode(
+            filename=domain_cfg.filename,
+            name=domain_cfg.name,
+            path=domain_cfg.path,
+            description=domain_cfg.description,
+            databases=list(domain_cfg.databases.keys()),
+            apis=list(domain_cfg.apis.keys()),
+            documents=list(domain_cfg.documents.keys()),
+        )
+
+    def _scan_dir(dir_path: Path, parent_path: str = "") -> list[DomainTreeNode]:
+        nodes: list[DomainTreeNode] = []
+        if not dir_path.is_dir():
+            return nodes
+        for entry in sorted(dir_path.iterdir()):
+            if entry.is_dir() and (entry / "config.yaml").exists():
+                domain_cfg = DomainConfig.from_directory(entry, parent_path=parent_path)
+                node = _build_node(domain_cfg)
+                sub_dir = entry / "domains"
+                if sub_dir.is_dir():
+                    node.children = _scan_dir(sub_dir, parent_path=domain_cfg.path)
+                nodes.append(node)
+            elif entry.is_file() and entry.suffix in (".yaml", ".yml"):
+                try:
+                    domain_cfg = DomainConfig.from_yaml(entry)
+                    domain_cfg.path = f"{parent_path}.{entry.stem}" if parent_path else entry.stem
+                    nodes.append(_build_node(domain_cfg))
+                except Exception:
+                    pass
+        return nodes
+
+    # Build tree from config directory's domains/ folder
+    result: list[DomainTreeNode] = []
+    if config.config_dir:
+        domains_dir = Path(config.config_dir) / "domains"
+        result.extend(_scan_dir(domains_dir))
+
+    # If no directory-based domains found, build flat tree from config.domains
+    if not result and config.domains:
+        for key, domain_cfg in sorted(config.domains.items()):
+            node = _build_node(domain_cfg)
+            # Use the config dict key as filename — this is what domain_id
+            # stores in entities/embeddings and what active_domains contains
+            node.filename = key
+            result.append(node)
+
+    # Scan user domains
+    user_domains_dir = Path(".constat") / user_id / "domains"
+    if user_domains_dir.is_dir():
+        existing_filenames = {n.filename for n in result}
+        for node in _scan_dir(user_domains_dir):
+            if node.filename not in existing_filenames:
+                result.append(node)
+
+    # Wrap all domains under a System root node — domains are children of system
+    if result:
+        system_node = DomainTreeNode(
+            filename="system",
+            name="System",
+            path="system",
+            description="Root configuration",
+            databases=list(config.databases.keys()),
+            apis=list(config.apis.keys()),
+            documents=[],
+            children=result,
+        )
+        return [system_node]
+
+    return result
 
 
 @router.get("/domains", response_model=DomainListResponse)

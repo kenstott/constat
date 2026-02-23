@@ -10,6 +10,7 @@
 """Entity extraction and linking mixin for DocumentDiscoveryTools."""
 
 import logging
+from collections import defaultdict
 
 from constat.discovery.entity_extractor import EntityExtractor
 from constat.discovery.models import DocumentChunk, ChunkEntity
@@ -138,27 +139,40 @@ class _EntityMixin:
 
         logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")
 
-        # Create extractor with session's entity catalog
-        extractor = EntityExtractor(
-            session_id=session_id,
-            schema_terms=self._schema_entities,
-            api_terms=self._collect_api_terms(),
-            business_terms=business_terms,
-        )
+        # Group chunks by domain_id so each EntityExtractor gets the correct domain
+        chunks_by_domain: dict[str | None, list[DocumentChunk]] = defaultdict(list)
+        for chunk in chunks:
+            chunks_by_domain[chunk.domain_id].append(chunk)
 
-        all_links = _extract_links_from_chunks(extractor, chunks)
+        all_links: list[ChunkEntity] = []
+        all_entities = []
 
-        # Store entities - Entity model now has semantic_type instead of metadata
-        entities = extractor.get_all_entities()
-        if entities:
-            # Add all entities to vector store (session_id is required)
-            self._vector_store.add_entities(entities, session_id=session_id)
+        for domain_id, domain_chunks in chunks_by_domain.items():
+            extractor = EntityExtractor(
+                session_id=session_id,
+                domain_id=domain_id,
+                schema_terms=self._schema_entities,
+                api_terms=self._collect_api_terms(),
+                business_terms=business_terms,
+            )
+            links = _extract_links_from_chunks(extractor, domain_chunks)
+            all_links.extend(links)
+            all_entities.extend(extractor.get_all_entities())
+            logger.debug(f"extract_entities_for_session({session_id}): domain={domain_id} -> {len(domain_chunks)} chunks, {len(links)} links")
 
-        # Store links WITH session_id
+        if all_entities:
+            self._vector_store.add_entities(all_entities, session_id=session_id)
+
         if all_links:
             deduped = _deduplicate_chunk_links(all_links)
             self._vector_store.link_chunk_entities(deduped)
             logger.info(f"extract_entities_for_session({session_id}): created {len(deduped)} links")
+
+            # Reconcile glossary term domains — move terms to follow
+            # their entity when a data source changed domains.
+            if hasattr(self._vector_store, 'reconcile_glossary_domains'):
+                self._vector_store.reconcile_glossary_domains(session_id)
+
             return len(deduped)
 
         return 0
@@ -181,7 +195,7 @@ class _EntityMixin:
 
         result = self._vector_store._conn.execute(
             f"""
-            SELECT chunk_id, document_name, content, section, chunk_index
+            SELECT chunk_id, document_name, content, section, chunk_index, domain_id
             FROM embeddings
             WHERE {chunk_filter}
             """,
@@ -190,12 +204,13 @@ class _EntityMixin:
 
         chunks = []
         for row in result:
-            chunk_id, doc_name, content, section, chunk_idx = row
+            chunk_id, doc_name, content, section, chunk_idx, domain_id = row
             chunk = DocumentChunk(
                 document_name=doc_name,
                 content=content,
                 section=section,
                 chunk_index=chunk_idx,
+                domain_id=domain_id,
             )
             # Store chunk_id for linking (hacky but needed for entity extraction)
             chunk._chunk_id = chunk_id

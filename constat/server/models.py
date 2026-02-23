@@ -851,6 +851,20 @@ class DomainInfo(BaseModel):
     filename: str = Field(description="Domain YAML filename")
     name: str = Field(description="Domain display name")
     description: str = Field(default="", description="Domain description")
+    path: str = Field(default="", description="Dot-delimited hierarchy path")
+
+
+class DomainTreeNode(BaseModel):
+    """Nested domain tree node."""
+
+    filename: str = Field(description="Domain YAML filename")
+    name: str = Field(description="Domain display name")
+    path: str = Field(default="", description="Dot-delimited hierarchy path")
+    description: str = Field(default="", description="Domain description")
+    databases: list[str] = Field(default_factory=list)
+    apis: list[str] = Field(default_factory=list)
+    documents: list[str] = Field(default_factory=list)
+    children: list["DomainTreeNode"] = Field(default_factory=list)
 
 
 class DomainListResponse(BaseModel):

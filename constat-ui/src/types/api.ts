@@ -283,6 +283,7 @@ export interface GlossaryFilter {
   status?: GlossaryEditorialStatus
   type?: string
   search?: string
+  domain?: string
 }
 
 // Proof Tree

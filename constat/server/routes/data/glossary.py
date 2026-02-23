@@ -70,9 +70,33 @@ async def list_glossary(
 
     rows = vs.get_unified_glossary(session_id, scope=scope, active_domains=active_domains, user_id=managed.user_id)
 
-    # Optionally filter by domain
+    # Optionally filter by domain (comma-separated list)
+    # A term "belongs" to a domain if:
+    #   - Its glossary_term.domain matches (explicitly promoted), OR
+    #   - Its entity.domain_id matches (source-based origin)
+    # "system" = root-level terms with no domain assignment and no entity domain
     if domain:
-        rows = [r for r in rows if r.get("domain") == domain]
+        domain_set = set(domain.split(","))
+        include_system = "system" in domain_set
+        # Expand each domain to both with and without .yaml suffix
+        explicit_domains: set[str] = set()
+        for d in domain_set - {"system"}:
+            explicit_domains.add(d)
+            explicit_domains.add(d.removesuffix(".yaml"))
+            if not d.endswith(".yaml"):
+                explicit_domains.add(d + ".yaml")
+
+
+        def _matches_domain(r: dict) -> bool:
+            term_domain = r.get("domain")
+            entity_domain = r.get("entity_domain_id")
+            has_domain = bool(term_domain) or bool(entity_domain)
+            if include_system and not has_domain:
+                return True
+            if term_domain in explicit_domains or entity_domain in explicit_domains:
+                return True
+            return False
+        rows = [r for r in rows if _matches_domain(r)]
 
     terms = []
     for row in sorted(rows, key=lambda r: r["name"]):
@@ -385,6 +409,18 @@ async def add_definition(
     if existing:
         raise HTTPException(status_code=409, detail=f"Term '{request.name}' already has a definition. Use PUT to update.")
 
+    # Connectivity check: abstract terms (no entity match) must have a parent
+    if not request.parent_id:
+        entity_row = vs._conn.execute(
+            "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
+            [request.name, session_id],
+        ).fetchone()
+        if not entity_row:
+            raise HTTPException(
+                status_code=422,
+                detail="Abstract term must have parent_id or match a grounded entity",
+            )
+
     term = GlossaryTerm(
         id=_make_term_id(request.name, managed.user_id, request.domain),
         name=request.name.lower(),
@@ -477,15 +513,91 @@ async def delete_definition(
     name: str,
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
-    """Remove a definition (term reverts to self-describing)."""
+    """Delete a term with cascade: children reparented to root, ancestors revalidated."""
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    deleted = vs.delete_glossary_term(name, session_id, user_id=managed.user_id)
-    if not deleted:
+    active_domains = managed.session.active_domains if hasattr(managed.session, "active_domains") else None
+    result = vs.delete_glossary_term_cascade(
+        name, session_id, active_domains, user_id=managed.user_id,
+    )
+    if not result:
         raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
-    return {"status": "deleted", "name": name}
+    return {"status": "deleted", **result}
+
+
+@router.post("/{session_id}/glossary/{name}/rename", dependencies=[Depends(require_write("glossary"))])
+async def rename_term(
+    session_id: str,
+    name: str,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Rename a glossary term. Only abstract (non-grounded) terms can be renamed."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+
+    body = await request.json()
+    new_name = body.get("new_name", "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="new_name is required")
+
+    try:
+        result = vs.rename_glossary_term(
+            name, new_name, session_id, user_id=managed.user_id,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if "already exists" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        if "grounded" in msg or "immutable" in msg:
+            raise HTTPException(status_code=422, detail=msg)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+    return {"status": "renamed", **result}
+
+
+@router.post("/{session_id}/glossary/{name}/reconnect", dependencies=[Depends(require_write("glossary"))])
+async def reconnect_term(
+    session_id: str,
+    name: str,
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Reconnect a deprecated term by updating parent_id and/or domain."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+
+    existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
+
+    body = await request.json()
+    updates: dict[str, Any] = {}
+    if "parent_id" in body:
+        updates["parent_id"] = body["parent_id"]
+    if "domain" in body:
+        updates["domain"] = body["domain"]
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="parent_id or domain required")
+
+    vs.update_glossary_term(name, session_id, updates, user_id=managed.user_id)
+
+    # Re-check grounding status
+    active_domains = managed.session.active_domains if hasattr(managed.session, "active_domains") else None
+    deprecated = vs.get_deprecated_glossary(session_id, active_domains, user_id=managed.user_id)
+    deprecated_ids = {t.id for t in deprecated}
+    still_deprecated = existing.id in deprecated_ids
+
+    return {
+        "status": "reconnected",
+        "name": name,
+        "still_deprecated": still_deprecated,
+    }
 
 
 @router.post("/{session_id}/glossary/{name}/draft-definition", dependencies=[Depends(require_write("glossary"))])

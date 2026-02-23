@@ -473,6 +473,7 @@ class DocumentChunk:
     chunk_index: int = 0
     source: str = "document"
     chunk_type: ChunkType = ChunkType.DOCUMENT
+    domain_id: Optional[str] = None
 
 
 @dataclass

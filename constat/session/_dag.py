@@ -271,15 +271,42 @@ class DagMixin:
                     error_context = f"\nPREVIOUS ERROR: {last_error}\nFix the query." if last_error else ""
                     sql_learnings = self._get_codegen_learnings(fact_desc, TaskType.SQL_GENERATION)
 
+                    # Build step hints, but drop them on table validation retries
+                    step_hints_section = ""
+                    table_validation_failed = last_error and "Tables not found" in last_error
+                    if not table_validation_failed:
+                        step_hints = getattr(self, '_proof_step_hints', [])
+                        if step_hints:
+                            blocks = []
+                            for step in step_hints:
+                                code_text = step.get("code", "")
+                                goal = step.get("goal", f"Step {step.get('step_number', '?')}")
+                                if code_text and db_name in code_text:
+                                    blocks.append(f"# Step: {goal}\n{code_text}")
+                            if blocks:
+                                step_hints_section = (
+                                    "\nREFERENCE CODE from exploratory session (use table/column names from here):\n"
+                                    + "\n---\n".join(blocks) + "\n"
+                                )
+
+                    # Build available tables constraint
+                    known_tables = set()
+                    available_tables_rule = ""
+                    if self.schema_manager:
+                        known_tables = {m.name.lower() for m in self.schema_manager.get_tables_for_db(db_name)}
+                        if known_tables:
+                            available_tables_rule = f"\n- ONLY use these tables (no others exist): {', '.join(sorted(known_tables))}"
+
                     sql_prompt = f"""Generate a SQL query to retrieve: {fact_desc}
 
 Schema:
 {detailed_schema}
 {sql_learnings}
+{step_hints_section}
 {error_context}
 RULES:
 - Always SELECT primary key columns for joins
-- Always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts"""
+- Always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts{available_tables_rule}"""
 
                     sql_result = self.router.execute(
                         task_type=TaskType.SQL_GENERATION,
@@ -298,6 +325,17 @@ RULES:
 
                     # Log generated SQL for debugging
                     logger.debug(f"[SQL] Generated SQL for '{fact_name}' (attempt {attempt + 1}/{max_retries}):\n{sql}")
+
+                    # Validate table names against schema
+                    if known_tables:
+                        referenced = set()
+                        for m in re.finditer(r'(?:FROM|JOIN)\s+(?:"?(\w+)"?\.)?"?(\w+)"?', sql, re.IGNORECASE):
+                            referenced.add(m.group(2).lower())
+                        unknown = referenced - known_tables
+                        if unknown:
+                            last_error = f"Tables not found in {db_name} database: {', '.join(sorted(unknown))}. Available tables: {', '.join(sorted(known_tables))}"
+                            logger.warning(f"[SQL] Pre-validation failed for '{fact_name}': {last_error}")
+                            continue
 
                     # Emit SQL executing event
                     self._emit_event(StepEvent(

@@ -850,6 +850,7 @@ class DomainConfig(BaseModel):
     definition: str = ""
     filename: str = ""  # Source filename, autopopulated from _source_file
     source_path: str = ""  # Full path to source file, for editing
+    path: str = ""  # Dot-delimited hierarchy path (e.g. "sales.north-america.retail")
 
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
@@ -885,6 +886,9 @@ class DomainConfig(BaseModel):
         data = yaml.safe_load(substituted)
         data["filename"] = path.name
         data["source_path"] = str(path.resolve())
+        # Default path to filename stem if not set
+        if not data.get("path"):
+            data["path"] = path.stem
 
         return cls.model_validate(data)
 
@@ -900,7 +904,7 @@ class DomainConfig(BaseModel):
         return cls.model_validate(data)
 
     @classmethod
-    def from_directory(cls, path: str | Path) -> "DomainConfig":
+    def from_directory(cls, path: str | Path, parent_path: str = "") -> "DomainConfig":
         """Load domain config from a directory structure.
 
         Expected structure:
@@ -913,6 +917,7 @@ class DomainConfig(BaseModel):
 
         Args:
             path: Path to domain directory
+            parent_path: Dot-delimited parent hierarchy path
 
         Returns:
             DomainConfig with sub-domains merged in
@@ -924,6 +929,10 @@ class DomainConfig(BaseModel):
 
         # Load parent config
         parent = cls.from_yaml(config_file)
+
+        # Compute hierarchy path
+        stem = path.stem
+        parent.path = f"{parent_path}.{stem}" if parent_path else stem
 
         # Load domain-scoped permissions if present
         permissions_file = path / "permissions.yaml"
@@ -942,7 +951,7 @@ class DomainConfig(BaseModel):
             merged_data: dict = {}
             for sub_dir in sorted(sub_domains_dir.iterdir()):
                 if sub_dir.is_dir() and (sub_dir / "config.yaml").exists():
-                    sub_domain = cls.from_directory(sub_dir)
+                    sub_domain = cls.from_directory(sub_dir, parent_path=parent.path)
                     sub_data = sub_domain.model_dump(exclude_defaults=True)
                     # Merge sub-domain data additively
                     for key, value in sub_data.items():

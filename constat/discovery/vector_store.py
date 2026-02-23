@@ -2017,11 +2017,19 @@ class DuckDBVectorStore(VectorStoreBackend):
         else:
             params.extend([name, session_id])
             where = "name = ? AND session_id = ?"
-        result = self._conn.execute(
-            f"UPDATE glossary_terms SET {', '.join(sets)} WHERE {where} RETURNING id",
-            params,
-        ).fetchone()
-        return result is not None
+
+        import time
+        import duckdb
+        sql = f"UPDATE glossary_terms SET {', '.join(sets)} WHERE {where} RETURNING id"
+        for attempt in range(5):
+            try:
+                result = self._conn.execute(sql, params).fetchone()
+                return result is not None
+            except duckdb.TransactionException:
+                if attempt < 4:
+                    time.sleep(0.1 * (attempt + 1))
+                else:
+                    raise
 
     def delete_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> bool:
         """Delete a glossary term by name.
@@ -2181,7 +2189,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 CASE
                     WHEN g.id IS NOT NULL THEN 'defined'
                     ELSE 'self_describing'
-                END AS glossary_status
+                END AS glossary_status,
+                e.domain_id AS entity_domain_id
             FROM entities e
             LEFT JOIN glossary_terms g
                 ON LOWER(e.name) = LOWER(g.name)
@@ -2224,7 +2233,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.list_of,
                 g.status,
                 g.provenance,
-                'defined' AS glossary_status
+                'defined' AS glossary_status,
+                NULL AS entity_domain_id
             FROM glossary_terms g
             WHERE g.{glossary_scope_col} = ?
             {scope_filter_2}
@@ -2281,7 +2291,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             (entity_id, name, display_name, semantic_type, ner_type,
              sess_id, glossary_id, domain, definition, parent_id,
              parent_verb, aliases_json, cardinality, plural, list_of,
-             status, provenance, glossary_status) = row
+             status, provenance, glossary_status, entity_domain_id) = row
             aliases = json.loads(aliases_json) if aliases_json else []
 
             # Suppress self-describing entities whose name is an alias of a defined term
@@ -2297,6 +2307,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "session_id": sess_id,
                 "glossary_id": glossary_id,
                 "domain": domain,
+                "entity_domain_id": entity_domain_id,
                 "definition": definition,
                 "parent_id": parent_id,
                 "parent_verb": parent_verb or "has",
@@ -2380,6 +2391,194 @@ class DuckDBVectorStore(VectorStoreBackend):
                         break
 
         return [t for t in all_terms if t.id not in valid]
+
+    def delete_glossary_term_cascade(
+        self,
+        name: str,
+        session_id: str,
+        active_domains: list[str] | None = None,
+        *,
+        user_id: str | None = None,
+    ) -> dict:
+        """Delete a glossary term with cascade: reparent children, revalidate ancestors.
+
+        Returns:
+            {deleted: str, reparented: [names], deprecated: [ancestor names]}
+        """
+        term = self.get_glossary_term(name, session_id, user_id=user_id)
+        if not term:
+            return {}
+
+        former_parent_id = term.parent_id
+
+        # Reparent children to root (parent_id = NULL)
+        children = self.get_child_terms(term.id)
+        reparented = []
+        for child in children:
+            self._conn.execute(
+                "UPDATE glossary_terms SET parent_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [child.id],
+            )
+            reparented.append(child.name)
+
+        # Delete the term
+        self.delete_glossary_term(name, session_id, user_id=user_id)
+
+        # Revalidate: find which ancestors became deprecated
+        deprecated_names: list[str] = []
+        if former_parent_id:
+            deprecated_terms = self.get_deprecated_glossary(
+                session_id, active_domains, user_id=user_id,
+            )
+            deprecated_ids = {t.id for t in deprecated_terms}
+            # Walk ancestors from former_parent_id upward
+            current_id = former_parent_id
+            while current_id:
+                ancestor = self.get_glossary_term_by_id(current_id)
+                if not ancestor:
+                    break
+                if ancestor.id in deprecated_ids:
+                    deprecated_names.append(ancestor.name)
+                current_id = ancestor.parent_id
+
+        return {
+            "deleted": name,
+            "reparented": reparented,
+            "deprecated": deprecated_names,
+        }
+
+    def rename_glossary_term(
+        self,
+        old_name: str,
+        new_name: str,
+        session_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict:
+        """Rename a glossary term atomically.
+
+        Rejects if the term has a matching entity (name is the join key).
+        Updates name, display_name, and entity_relationships references.
+        parent_id refs are by ID so no cascade needed.
+
+        Returns:
+            {old_name, new_name, relationships_updated}
+        """
+        from constat.discovery.models import display_entity_name
+
+        term = self.get_glossary_term(old_name, session_id, user_id=user_id)
+        if not term:
+            raise ValueError(f"Term '{old_name}' not found")
+
+        # Check if term has a matching entity — name is immutable for grounded terms
+        scope_col = "user_id" if user_id else "session_id"
+        scope_val = user_id if user_id else session_id
+        entity_row = self._conn.execute(
+            "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
+            [old_name, session_id],
+        ).fetchone()
+        if entity_row:
+            raise ValueError(f"Term '{old_name}' is grounded to an entity — name is immutable")
+
+        # Check for conflicts
+        existing = self.get_glossary_term(new_name, session_id, user_id=user_id)
+        if existing:
+            raise ValueError(f"Term '{new_name}' already exists")
+
+        new_display = display_entity_name(new_name)
+
+        # Update glossary_terms
+        if user_id:
+            self._conn.execute(
+                "UPDATE glossary_terms SET name = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ? AND user_id = ?",
+                [new_name.lower(), new_display, old_name, user_id],
+            )
+        else:
+            self._conn.execute(
+                "UPDATE glossary_terms SET name = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ? AND session_id = ?",
+                [new_name.lower(), new_display, old_name, session_id],
+            )
+
+        # Update entity_relationships references
+        rel_count = 0
+        result = self._conn.execute(
+            "UPDATE entity_relationships SET subject_name = ? WHERE LOWER(subject_name) = LOWER(?) AND session_id = ? RETURNING id",
+            [new_name.lower(), old_name, session_id],
+        ).fetchall()
+        rel_count += len(result)
+        result = self._conn.execute(
+            "UPDATE entity_relationships SET object_name = ? WHERE LOWER(object_name) = LOWER(?) AND session_id = ? RETURNING id",
+            [new_name.lower(), old_name, session_id],
+        ).fetchall()
+        rel_count += len(result)
+
+        return {
+            "old_name": old_name,
+            "new_name": new_name.lower(),
+            "display_name": new_display,
+            "relationships_updated": rel_count,
+        }
+
+    def backfill_entity_domains(self) -> int:
+        """Backfill domain_id on entities from their chunk associations.
+
+        Walks chunk_entities → embeddings, propagates domain_id to entities.
+
+        Returns:
+            Number of entities updated.
+        """
+        result = self._conn.execute("""
+            UPDATE entities SET domain_id = sub.domain_id
+            FROM (
+                SELECT DISTINCT ce.entity_id, c.domain_id
+                FROM chunk_entities ce
+                JOIN embeddings c ON ce.chunk_id = c.chunk_id
+                WHERE c.domain_id IS NOT NULL AND c.domain_id != ''
+            ) sub
+            WHERE entities.id = sub.entity_id
+              AND (entities.domain_id IS NULL OR entities.domain_id = '')
+            RETURNING entities.id
+        """).fetchall()
+        count = len(result)
+        logger.debug(f"backfill_entity_domains: updated {count} entities")
+        return count
+
+    def reconcile_glossary_domains(self, session_id: str, *, user_id: str | None = None) -> list[dict]:
+        """Move glossary terms to follow their entity's domain after re-extraction.
+
+        The definition always follows its grounding. If entity.domain_id
+        changed, the glossary term moves. Entities in the old domain
+        revert to self-describing.
+
+        Returns list of {name, from_domain, to_domain} for moved terms.
+        """
+        scope_col = "user_id" if user_id else "session_id"
+        scope_val = user_id or session_id
+
+        rows = self._conn.execute(f"""
+            SELECT g.name, g.domain, e.domain_id
+            FROM glossary_terms g
+            JOIN entities e ON LOWER(g.name) = LOWER(e.name)
+            WHERE g.{scope_col} = ?
+              AND e.domain_id IS NOT NULL
+              AND e.domain_id != ''
+              AND g.domain IS NOT NULL
+              AND g.domain != ''
+              AND g.domain != e.domain_id
+        """, [scope_val]).fetchall()
+
+        moved = []
+        for name, old_domain, new_domain in rows:
+            self._conn.execute(
+                f"UPDATE glossary_terms SET domain = ? WHERE LOWER(name) = LOWER(?) AND {scope_col} = ?",
+                [new_domain, name, scope_val],
+            )
+            moved.append({"name": name, "from_domain": old_domain, "to_domain": new_domain})
+
+        if moved:
+            logger.info(f"reconcile_glossary_domains: moved {len(moved)} terms: {moved}")
+
+        return moved
 
     def clear_session_glossary(self, session_id: str, *, user_id: str | None = None) -> int:
         """Clear all glossary terms for a session or user.
