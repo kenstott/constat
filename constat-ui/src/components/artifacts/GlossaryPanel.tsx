@@ -434,6 +434,7 @@ function ConnectedResources({
     relationships: Array<{ id: string; subject: string; verb: string; object: string; confidence: number }>
   }>({ resources: [], parent: null, children: [], relationships: [] })
   const [loaded, setLoaded] = useState(false)
+  const [graphOpen, setGraphOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -457,8 +458,6 @@ function ConnectedResources({
   }, [sessionId, termName, refreshKey])
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
-
-  const [graphOpen, setGraphOpen] = useState(false)
 
   const { resources, parent, children, relationships } = detail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0)
