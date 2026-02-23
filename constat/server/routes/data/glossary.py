@@ -483,9 +483,13 @@ async def update_definition(
     if not updates:
         return {"status": "no_changes"}
 
-    logger.info(f"update_definition({name}): updates={updates}")
+    logger.info(f"update_definition({name}): updates={updates}, user_id={managed.user_id}, session_id={session_id}")
     result = vs.update_glossary_term(name, session_id, updates, user_id=managed.user_id)
     logger.info(f"update_definition({name}): result={result}")
+
+    if not result:
+        logger.warning(f"update_definition({name}): update matched zero rows! user_id={managed.user_id}, session_id={session_id}")
+        raise HTTPException(status_code=404, detail=f"Term '{name}' not found for update")
 
     return {"status": "updated", "name": name}
 

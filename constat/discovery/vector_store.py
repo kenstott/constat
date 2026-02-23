@@ -2013,17 +2013,19 @@ class DuckDBVectorStore(VectorStoreBackend):
         sets.append("updated_at = CURRENT_TIMESTAMP")
         if user_id:
             params.extend([name, user_id])
-            where = "name = ? AND user_id = ?"
+            where = "LOWER(name) = LOWER(?) AND user_id = ?"
         else:
             params.extend([name, session_id])
-            where = "name = ? AND session_id = ?"
+            where = "LOWER(name) = LOWER(?) AND session_id = ?"
 
         import time
         import duckdb
         sql = f"UPDATE glossary_terms SET {', '.join(sets)} WHERE {where} RETURNING id"
+        logger.debug(f"update_glossary_term: sql={sql}, params={params}")
         for attempt in range(5):
             try:
                 result = self._conn.execute(sql, params).fetchone()
+                logger.debug(f"update_glossary_term: result={result}")
                 return result is not None
             except duckdb.TransactionException:
                 if attempt < 4:
@@ -2041,12 +2043,12 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         if user_id:
             result = self._conn.execute(
-                "DELETE FROM glossary_terms WHERE name = ? AND user_id = ? RETURNING id",
+                "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND user_id = ? RETURNING id",
                 [name, user_id],
             ).fetchone()
         else:
             result = self._conn.execute(
-                "DELETE FROM glossary_terms WHERE name = ? AND session_id = ? RETURNING id",
+                "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND session_id = ? RETURNING id",
                 [name, session_id],
             ).fetchone()
         return result is not None
@@ -2058,12 +2060,12 @@ class DuckDBVectorStore(VectorStoreBackend):
         """
         if user_id:
             row = self._conn.execute(
-                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE name = ? AND user_id = ?",
+                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND user_id = ?",
                 [name, user_id],
             ).fetchone()
         else:
             row = self._conn.execute(
-                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE name = ? AND session_id = ?",
+                f"SELECT {self._GLOSSARY_COLUMNS} FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND session_id = ?",
                 [name, session_id],
             ).fetchone()
         return self._term_from_row(row) if row else None
@@ -2490,12 +2492,12 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Update glossary_terms
         if user_id:
             self._conn.execute(
-                "UPDATE glossary_terms SET name = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ? AND user_id = ?",
+                "UPDATE glossary_terms SET name = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(name) = LOWER(?) AND user_id = ?",
                 [new_name.lower(), new_display, old_name, user_id],
             )
         else:
             self._conn.execute(
-                "UPDATE glossary_terms SET name = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ? AND session_id = ?",
+                "UPDATE glossary_terms SET name = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(name) = LOWER(?) AND session_id = ?",
                 [new_name.lower(), new_display, old_name, session_id],
             )
 
