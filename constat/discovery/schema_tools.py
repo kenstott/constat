@@ -508,30 +508,23 @@ class SchemaDiscoveryTools:
                             if parent:
                                 entry["parent"] = parent.display_name
 
-                        # Find entity by canonical name (not hash ID)
-                        entity = vs.find_entity_by_name(term.name, session_id=self.session_id)
-                        if entity:
-                            # SVO relationships
-                            rels = vs.get_relationships_for_entity(entity.id, self.session_id)
-                            if rels:
-                                entry["relationships"] = [
-                                    f"{r['subject_name']} {r['verb']} {r['object_name']}"
-                                    for r in rels[:5]
-                                ]
-
-                            # Connected data sources (tables, APIs, docs)
-                            chunks_for = vs.get_chunks_for_entity(entity.id, limit=50)
-                            sources = []
-                            seen = set()
-                            for _, c, _ in chunks_for:
-                                dn = c.document_name
-                                if dn.startswith("glossary:") or dn.startswith("relationship:"):
-                                    continue
-                                if dn not in seen:
-                                    seen.add(dn)
-                                    sources.append(dn)
-                            if sources:
-                                entry["sources"] = sources
+                        # Connected resources via resolve_physical_resources
+                        from constat.discovery.glossary_generator import resolve_physical_resources
+                        resources = resolve_physical_resources(
+                            term.name, self.session_id or "", vs,
+                            user_id=self.user_id,
+                        )
+                        if resources:
+                            entry["sources"] = [
+                                {
+                                    "entity": r["entity_name"],
+                                    "type": r["entity_type"],
+                                    "locations": [
+                                        s["document_name"] for s in r.get("sources", [])
+                                    ],
+                                }
+                                for r in resources
+                            ]
                     else:
                         entry["definition"] = chunk.content[:300]
 
