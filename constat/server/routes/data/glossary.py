@@ -197,6 +197,7 @@ async def get_glossary_term(
     if candidate_ids:
         child_terms = vs.get_child_terms(candidate_ids[0], *candidate_ids[1:])
         children = [{"name": c.name, "display_name": c.display_name, "parent_verb": c.parent_verb} for c in child_terms]
+    logger.debug(f"get_glossary_term({name}): candidate_ids={candidate_ids}, child_terms_found={len(children)}")
 
     # Resolve SVO relationships (keyed by name)
     rels = vs.get_relationships_for_entity(lookup_name, session_id)

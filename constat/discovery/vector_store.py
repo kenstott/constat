@@ -256,6 +256,13 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def _init_schema(self) -> None:
         """Initialize database schema if not exists."""
+        # Force checkpoint to recover from unclean shutdowns that can
+        # corrupt dictionary-encoded column indexes
+        try:
+            self._conn.execute("FORCE CHECKPOINT")
+        except Exception:
+            pass
+
         # VSS extension is loaded via init_sql in ThreadLocalDuckDB
 
         # Create embeddings table with FLOAT array for vectors

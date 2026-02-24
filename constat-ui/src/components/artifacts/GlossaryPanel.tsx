@@ -79,7 +79,8 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
     nodeMap.set(t.name.toLowerCase(), { term: t, children: [] })
   }
 
-  const roots: TreeNode[] = []
+  // Build term hierarchy within each domain
+  const domainRoots = new Map<string, TreeNode[]>()
   const orphans: GlossaryTerm[] = []
 
   for (const t of terms) {
@@ -90,12 +91,37 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
       if (parentNode) {
         parentNode.children.push(node)
       } else {
-        roots.push(node)
+        // Root within its domain
+        const domain = t.domain || '(no domain)'
+        if (!domainRoots.has(domain)) domainRoots.set(domain, [])
+        domainRoots.get(domain)!.push(node)
       }
     } else {
-      roots.push(node)
+      const domain = t.domain || '(no domain)'
+      if (!domainRoots.has(domain)) domainRoots.set(domain, [])
+      domainRoots.get(domain)!.push(node)
     }
   }
+
+  // If only one domain (or no domains), flatten — no domain grouping needed
+  const domains = [...domainRoots.keys()]
+  if (domains.length <= 1) {
+    return { roots: domainRoots.get(domains[0] || '(no domain)') || [], orphans }
+  }
+
+  // Multiple domains: create domain folder nodes
+  const roots: TreeNode[] = domains.sort().map(domain => ({
+    term: {
+      name: `__domain__${domain}`,
+      display_name: domain === '(no domain)' ? 'Unassigned' : domain,
+      glossary_status: 'defined' as const,
+      aliases: [],
+      connected_resources: [],
+      cardinality: 'many',
+      mention_count: 0,
+    } as GlossaryTerm,
+    children: domainRoots.get(domain) || [],
+  }))
 
   return { roots, orphans }
 }
@@ -972,7 +998,12 @@ function GlossaryItem({
           {/* Aliases (editable) */}
           <AliasEditor term={term} sessionId={sessionId} />
 
-          {/* Provenance */}
+          {/* Domain & Provenance */}
+          {term.domain && (
+            <div className="text-xs text-gray-400 dark:text-gray-500">
+              Domain: {term.domain}
+            </div>
+          )}
           {isDefined && term.provenance && (
             <div className="text-xs text-gray-400 dark:text-gray-500">
               Provenance: {term.provenance}
@@ -1034,6 +1065,7 @@ function TreeNodeView({
   depth?: number
 }) {
   const [expanded, setExpanded] = useState(depth < 2)
+  const isDomainFolder = node.term.name.startsWith('__domain__')
 
   return (
     <div>
@@ -1051,9 +1083,19 @@ function TreeNodeView({
             )}
           </button>
         )}
-        <div className="flex-1" style={{ marginLeft: node.children.length === 0 ? `${depth * 12 + 16}px` : '0' }}>
-          <GlossaryItem term={node.term} sessionId={sessionId} depth={0} />
-        </div>
+        {isDomainFolder ? (
+          <div
+            className="flex-1 text-xs font-semibold text-gray-600 dark:text-gray-300 py-1 px-1"
+            style={{ marginLeft: node.children.length === 0 ? `${depth * 12 + 16}px` : '0' }}
+          >
+            {node.term.display_name}
+            <span className="ml-1 text-gray-400 font-normal">({node.children.length})</span>
+          </div>
+        ) : (
+          <div className="flex-1" style={{ marginLeft: node.children.length === 0 ? `${depth * 12 + 16}px` : '0' }}>
+            <GlossaryItem term={node.term} sessionId={sessionId} depth={0} />
+          </div>
+        )}
       </div>
       {expanded && node.children.map((child) => (
         <TreeNodeView
