@@ -29,6 +29,7 @@ export type ArtifactType =
   | 'error'
   | 'table'
   | 'json'
+  | 'csv'
   | 'html'
   | 'markdown'
   | 'text'

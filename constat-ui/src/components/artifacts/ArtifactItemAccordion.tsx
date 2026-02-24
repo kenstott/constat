@@ -1,6 +1,6 @@
 // Artifact Item Accordion - individual artifact with expandable content and fullscreen mode
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -10,10 +10,90 @@ import {
   StarIcon as StarOutline,
 } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Artifact, ArtifactContent, ArtifactVersionInfo, TableData } from '@/types/api'
+
+/** Parse CSV text into header + rows and render as a scrollable table. */
+function CsvTableView({ content, maxHeight }: { content: string; maxHeight?: string }) {
+  const { columns, rows } = useMemo(() => {
+    const lines = content.split('\n').filter((l) => l.trim())
+    if (lines.length === 0) return { columns: [] as string[], rows: [] as string[][] }
+
+    // Naive CSV parse (handles quoted fields with commas)
+    const parseLine = (line: string): string[] => {
+      const result: string[] = []
+      let current = ''
+      let inQuotes = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"'
+            i++
+          } else {
+            inQuotes = !inQuotes
+          }
+        } else if (ch === ',' && !inQuotes) {
+          result.push(current.trim())
+          current = ''
+        } else {
+          current += ch
+        }
+      }
+      result.push(current.trim())
+      return result
+    }
+
+    const cols = parseLine(lines[0])
+    const dataRows = lines.slice(1).map(parseLine)
+    return { columns: cols, rows: dataRows }
+  }, [content])
+
+  if (columns.length === 0) {
+    return (
+      <div className="text-sm text-gray-500 dark:text-gray-400 py-4 px-3">
+        Empty CSV
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-auto" style={{ maxHeight: maxHeight || '300px' }}>
+      <table className="min-w-full text-sm">
+        <thead className="sticky top-0 bg-white dark:bg-gray-900">
+          <tr className="border-b border-gray-200 dark:border-gray-700">
+            {columns.map((col, i) => (
+              <th
+                key={i}
+                className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap"
+              >
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+          {rows.map((row, ri) => (
+            <tr key={ri} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+              {columns.map((_, ci) => (
+                <td
+                  key={ci}
+                  className="px-3 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap"
+                >
+                  {row[ci] ?? ''}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
 
 interface ArtifactItemAccordionProps {
   artifact: Artifact
@@ -291,6 +371,12 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
         } else if (artifactContent.artifact_type === 'html' || artifactContent.mime_type === 'text/html') {
           blob = new Blob([artifactContent.content], { type: 'text/html' })
           filename = `${artifact.name}.html`
+        } else if (artifactContent.artifact_type === 'json' || artifactContent.mime_type === 'application/json') {
+          blob = new Blob([artifactContent.content], { type: 'application/json' })
+          filename = `${artifact.name}.json`
+        } else if (artifactContent.artifact_type === 'csv' || artifactContent.mime_type === 'text/csv') {
+          blob = new Blob([artifactContent.content], { type: 'text/csv' })
+          filename = `${artifact.name}.csv`
         } else {
           // Default: download as text
           blob = new Blob([artifactContent.content], { type: 'text/plain' })
@@ -531,6 +617,45 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       )
     }
 
+    // JSON
+    if (
+      content.artifact_type === 'json' ||
+      content.mime_type === 'application/json'
+    ) {
+      let formatted = content.content
+      try {
+        formatted = JSON.stringify(JSON.parse(content.content), null, 2)
+      } catch {
+        // already formatted or invalid — show as-is
+      }
+      return (
+        <div className="overflow-auto" style={containerStyle}>
+          <SyntaxHighlighter
+            style={oneDark as Record<string, React.CSSProperties>}
+            language="json"
+            PreTag="div"
+            customStyle={{
+              margin: 0,
+              padding: '0.75rem',
+              fontSize: '0.75rem',
+              borderRadius: 0,
+            }}
+            wrapLongLines
+          >
+            {formatted}
+          </SyntaxHighlighter>
+        </div>
+      )
+    }
+
+    // CSV — parse into a table
+    if (
+      content.artifact_type === 'csv' ||
+      content.mime_type === 'text/csv'
+    ) {
+      return <CsvTableView content={content.content} maxHeight={maxHeight} />
+    }
+
     // SVG
     if (content.artifact_type === 'svg' || content.mime_type === 'image/svg+xml') {
       return (
@@ -593,6 +718,8 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
     pptx: 'PowerPoint',
     ppt: 'PowerPoint',
     pdf: 'PDF',
+    json: 'JSON',
+    csv: 'CSV',
   }
   const typeLabel = sourceType
     ? extensionMap[sourceType] || sourceType
