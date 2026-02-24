@@ -768,11 +768,11 @@ class DuckDBVectorStore(VectorStoreBackend):
             True if a hash was deleted, False if not found
         """
         resource_id = self._make_resource_id(source_id, resource_type, resource_name)
-        result = self._conn.execute(
+        results = self._conn.execute(
             "DELETE FROM resource_hashes WHERE resource_id = ? RETURNING resource_id",
             [resource_id],
-        ).fetchone()
-        deleted = result is not None
+        ).fetchall()
+        deleted = len(results) > 0
         logger.debug(f"delete_resource_hash({resource_id}): deleted={deleted}")
         return deleted
 
@@ -2021,9 +2021,9 @@ class DuckDBVectorStore(VectorStoreBackend):
         logger.debug(f"update_glossary_term: sql={sql}, params={params}")
         for attempt in range(5):
             try:
-                result = self._conn.execute(sql, params).fetchone()
-                logger.debug(f"update_glossary_term: result={result}")
-                return result is not None
+                results = self._conn.execute(sql, params).fetchall()
+                logger.debug(f"update_glossary_term: results={results}")
+                return len(results) > 0
             except duckdb.TransactionException:
                 if attempt < 4:
                     time.sleep(0.1 * (attempt + 1))
@@ -2039,16 +2039,16 @@ class DuckDBVectorStore(VectorStoreBackend):
             True if a row was deleted
         """
         if user_id:
-            result = self._conn.execute(
+            results = self._conn.execute(
                 "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND user_id = ? RETURNING id",
                 [name, user_id],
-            ).fetchone()
+            ).fetchall()
         else:
-            result = self._conn.execute(
+            results = self._conn.execute(
                 "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND session_id = ? RETURNING id",
                 [name, session_id],
-            ).fetchone()
-        return result is not None
+            ).fetchall()
+        return len(results) > 0
 
     def get_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> GlossaryTerm | None:
         """Get a single glossary term by name.
