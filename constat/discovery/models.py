@@ -369,7 +369,7 @@ class GlossaryTerm:
         semantic_type: CONCEPT, ATTRIBUTE, ACTION, TERM
         cardinality: many | distinct | singular
         plural: Irregular plural form
-        list_of: Glossary term ID if collection
+        (list_of removed — use parent_verb HAS_MANY instead)
         tags: Map of tags
         owner: Term-level owner
         status: draft | reviewed | approved
@@ -382,12 +382,11 @@ class GlossaryTerm:
     definition: str
     domain: Optional[str] = None
     parent_id: Optional[str] = None
-    parent_verb: str = "has"
+    parent_verb: str = "HAS_KIND"  # HAS_A (composition), HAS_KIND (taxonomy), HAS_MANY (collection)
     aliases: list[str] = field(default_factory=list)
     semantic_type: Optional[str] = None
     cardinality: str = "many"
     plural: Optional[str] = None
-    list_of: Optional[str] = None
     tags: dict[str, dict] = field(default_factory=dict)
     owner: Optional[str] = None
     status: str = "draft"

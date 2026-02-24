@@ -340,12 +340,11 @@ class DuckDBVectorStore(VectorStoreBackend):
                 definition TEXT NOT NULL,
                 domain VARCHAR,
                 parent_id VARCHAR,
-                parent_verb VARCHAR DEFAULT 'has',
+                parent_verb VARCHAR DEFAULT 'HAS_KIND',
                 aliases TEXT,
                 semantic_type VARCHAR,
                 cardinality VARCHAR DEFAULT 'many',
                 plural VARCHAR,
-                list_of VARCHAR,
                 tags TEXT,
                 owner VARCHAR,
                 status VARCHAR DEFAULT 'draft',
@@ -399,7 +398,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.aliases,
                 g.cardinality,
                 g.plural,
-                g.list_of,
                 g.status,
                 g.provenance,
                 CASE
@@ -1918,7 +1916,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Convert a database row to a GlossaryTerm."""
         import json
         (term_id, name, display_name, definition, domain, parent_id,
-         parent_verb, aliases_json, semantic_type, cardinality, plural, list_of,
+         parent_verb, aliases_json, semantic_type, cardinality, plural,
          tags_json, owner, status, provenance, session_id, user_id,
          created_at, updated_at) = row
         aliases = json.loads(aliases_json) if aliases_json else []
@@ -1930,12 +1928,11 @@ class DuckDBVectorStore(VectorStoreBackend):
             definition=definition,
             domain=domain,
             parent_id=parent_id,
-            parent_verb=parent_verb or "has",
+            parent_verb=parent_verb or "HAS_KIND",
             aliases=aliases,
             semantic_type=semantic_type,
             cardinality=cardinality or "many",
             plural=plural,
-            list_of=list_of,
             tags=tags,
             owner=owner,
             status=status or "draft",
@@ -1948,7 +1945,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     _GLOSSARY_COLUMNS = (
         "id, name, display_name, definition, domain, parent_id, parent_verb, "
-        "aliases, semantic_type, cardinality, plural, list_of, "
+        "aliases, semantic_type, cardinality, plural, "
         "tags, owner, status, provenance, session_id, user_id, created_at, updated_at"
     )
 
@@ -1959,15 +1956,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             """
             INSERT OR REPLACE INTO glossary_terms
             (id, name, display_name, definition, domain, parent_id, parent_verb,
-             aliases, semantic_type, cardinality, plural, list_of,
+             aliases, semantic_type, cardinality, plural,
              tags, owner, status, provenance, session_id, user_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 term.id, term.name, term.display_name, term.definition,
                 term.domain, term.parent_id, term.parent_verb,
                 json.dumps(term.aliases), term.semantic_type,
-                term.cardinality, term.plural, term.list_of,
+                term.cardinality, term.plural,
                 json.dumps(term.tags), term.owner,
                 term.status, term.provenance, term.session_id,
                 term.user_id or "default",
@@ -1993,7 +1990,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         allowed = {
             "definition", "display_name", "domain", "parent_id", "parent_verb",
             "aliases", "semantic_type", "cardinality", "plural",
-            "list_of", "tags", "owner", "status", "provenance",
+            "tags", "owner", "status", "provenance",
         }
         sets = []
         params: list = []
@@ -2185,7 +2182,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.aliases,
                 g.cardinality,
                 g.plural,
-                g.list_of,
                 g.status,
                 g.provenance,
                 CASE
@@ -2232,7 +2228,6 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.aliases,
                 g.cardinality,
                 g.plural,
-                g.list_of,
                 g.status,
                 g.provenance,
                 'defined' AS glossary_status,
@@ -2292,7 +2287,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         for row in rows:
             (entity_id, name, display_name, semantic_type, ner_type,
              sess_id, glossary_id, domain, definition, parent_id,
-             parent_verb, aliases_json, cardinality, plural, list_of,
+             parent_verb, aliases_json, cardinality, plural,
              status, provenance, glossary_status, entity_domain_id) = row
             aliases = json.loads(aliases_json) if aliases_json else []
 
@@ -2312,11 +2307,10 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "entity_domain_id": entity_domain_id,
                 "definition": definition,
                 "parent_id": parent_id,
-                "parent_verb": parent_verb or "has",
+                "parent_verb": parent_verb or "HAS_KIND",
                 "aliases": aliases,
                 "cardinality": cardinality,
                 "plural": plural,
-                "list_of": list_of,
                 "status": status,
                 "provenance": provenance,
                 "glossary_status": glossary_status,

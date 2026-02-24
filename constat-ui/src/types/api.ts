@@ -246,7 +246,7 @@ export interface GlossaryTerm {
   definition?: string | null
   domain?: string | null
   parent_id?: string | null
-  parent_verb?: string
+  parent_verb?: 'HAS_A' | 'HAS_KIND' | 'HAS_MANY'
   parent?: { name: string; display_name: string } | null
   aliases: string[]
   semantic_type?: string | null
@@ -262,7 +262,7 @@ export interface GlossaryTerm {
     entity_type: string
     sources: Array<{ document_name: string; source: string; section?: string }>
   }>
-  children?: Array<{ name: string; display_name: string; parent_verb?: string }>
+  children?: Array<{ name: string; display_name: string; parent_verb?: 'HAS_A' | 'HAS_KIND' | 'HAS_MANY' }>
   relationships?: Array<{
     id: string
     subject: string

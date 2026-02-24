@@ -432,9 +432,10 @@ function ConnectedResources({
       sources: Array<{ document_name: string; source: string; section?: string }>
     }>
     parent: { name: string; display_name: string } | null
-    children: Array<{ name: string; display_name: string }>
+    parent_verb: string
+    children: Array<{ name: string; display_name: string; parent_verb?: string }>
     relationships: Array<{ id: string; subject: string; verb: string; object: string; confidence: number }>
-  }>({ resources: [], parent: null, children: [], relationships: [] })
+  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [] })
   const [loaded, setLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -447,6 +448,7 @@ function ConnectedResources({
         setDetail({
           resources: data.connected_resources || [],
           parent: data.parent || null,
+          parent_verb: data.parent_verb || 'HAS_KIND',
           children: data.children || [],
           relationships: data.relationships || [],
         })
@@ -461,7 +463,7 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
-  const { resources, parent, children, relationships } = detail
+  const { resources, parent, parent_verb, children, relationships } = detail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0)
   const hasContent = resources.length > 0 || hasConnections
   if (!hasContent) return null
@@ -470,7 +472,9 @@ function ConnectedResources({
     <div className="mt-1.5 space-y-1.5">
       {parent && (
         <div>
-          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">Parent</div>
+          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">
+            Parent <span className="text-gray-400 font-normal">({parent_verb})</span>
+          </div>
           <div className="text-xs ml-2">
             <TermLink name={parent.name} displayName={parent.display_name} />
           </div>
@@ -1108,14 +1112,19 @@ function DeprecatedSection({
   const { deprecatedTerms, deleteTerm, reconnectTerm, terms: allTerms } = useGlossaryStore()
   const [reconnecting, setReconnecting] = useState<string | null>(null)
   const [selectedParent, setSelectedParent] = useState('')
+  const [reconnectVerb, setReconnectVerb] = useState<'HAS_A' | 'HAS_KIND' | 'HAS_MANY'>('HAS_KIND')
 
   if (deprecatedTerms.length === 0) return null
 
   const handleReconnect = async (name: string) => {
     if (!selectedParent) return
     await reconnectTerm(sessionId, name, { parent_id: selectedParent })
+    // Also set the parent_verb via updateTerm
+    const { updateTerm } = useGlossaryStore.getState()
+    await updateTerm(sessionId, name, { parent_verb: reconnectVerb })
     setReconnecting(null)
     setSelectedParent('')
+    setReconnectVerb('HAS_KIND')
   }
 
   return (
@@ -1146,6 +1155,15 @@ function DeprecatedSection({
           </div>
           {reconnecting === t.name && (
             <div className="flex items-center gap-1 mt-1">
+              <select
+                value={reconnectVerb}
+                onChange={(e) => setReconnectVerb(e.target.value as 'HAS_A' | 'HAS_KIND' | 'HAS_MANY')}
+                className="text-xs py-0.5 px-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 w-20"
+              >
+                <option value="HAS_A">HAS_A</option>
+                <option value="HAS_KIND">HAS_KIND</option>
+                <option value="HAS_MANY">HAS_MANY</option>
+              </select>
               <select
                 value={selectedParent}
                 onChange={(e) => setSelectedParent(e.target.value)}
@@ -1510,7 +1528,7 @@ function TermGraphInline({
             if (!nodeMap.has(pid)) {
               nodeMap.set(pid, { id: pid, label: data.parent.display_name, type: 'parent', depth: d + 1 })
             }
-            addEdge(pid, name, data.parent_verb || 'has', 'parent')
+            addEdge(pid, name, data.parent_verb || 'HAS_KIND', 'parent')
             if (d + 1 < depth) queue.push([pid, d + 1])
           }
 
@@ -1519,7 +1537,7 @@ function TermGraphInline({
             if (!nodeMap.has(c.name)) {
               nodeMap.set(c.name, { id: c.name, label: c.display_name, type: 'child', depth: d + 1 })
             }
-            addEdge(name, c.name, c.parent_verb || 'has', 'child')
+            addEdge(name, c.name, c.parent_verb || 'HAS_KIND', 'child')
             if (d + 1 < depth) queue.push([c.name, d + 1])
           }
 

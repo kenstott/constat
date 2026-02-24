@@ -61,6 +61,13 @@ For each entity, also provide:
   term you create (e.g., "Customer Tier" as parent of "Platinum", "Gold", "Bronze").
   Include any new parent terms as entries in the output with their own definitions.
   Every term must ultimately ground to a physical entity through the hierarchy.
+- parent_verb — the type of hierarchy relationship (from parent's perspective):
+  - "HAS_A" for composition (parent is composed of child).
+    Example: Order HAS_A Line Item, Employee HAS_A Compensation
+  - "HAS_KIND" for taxonomy/classification (child is a kind of parent).
+    Example: Account HAS_KIND Savings Account, Customer Tier HAS_KIND Gold
+  - "HAS_MANY" for collection (parent contains many of child).
+    Example: Team HAS_MANY Employee, Portfolio HAS_MANY Investment
 - Aliases (other names people use for this concept)
 - Confidence (high/medium/low) in the definition
 
@@ -74,6 +81,7 @@ Respond as a JSON array with one entry per entity (plus any new parent terms):
   "name": "...",
   "definition": "...",
   "parent": "..." or null,
+  "parent_verb": "HAS_A" or "HAS_KIND" or "HAS_MANY",
   "aliases": ["..."],
   "confidence": "high|medium|low"
 }]"""
@@ -393,10 +401,13 @@ def generate_glossary(
                     user_id=scope_id,
                 )
 
-                # Store parent name for later linking
+                # Store parent name and verb for later linking
                 parent_name = item.get("parent")
                 if parent_name:
-                    term.tags = {"_suggested_parent": {"name": parent_name}}
+                    verb = item.get("parent_verb", "HAS_KIND")
+                    if verb not in ("HAS_A", "HAS_KIND", "HAS_MANY"):
+                        verb = "HAS_KIND"
+                    term.tags = {"_suggested_parent": {"name": parent_name, "verb": verb}}
 
                 batch_terms.append(term)
 
@@ -568,10 +579,11 @@ def _link_parents(
             logger.warning(f"Parent '{parent_name}' not found for term '{term.name}'")
             continue
 
+        verb = suggested.get("verb", "HAS_KIND")
         try:
             _retry_on_conflict(lambda: vector_store.update_glossary_term(
                 term.name, session_id,
-                {"parent_id": parent_id, "tags": {}},
+                {"parent_id": parent_id, "parent_verb": verb, "tags": {}},
                 user_id=user_id,
             ))
             linked += 1
@@ -721,10 +733,9 @@ def resolve_physical_resources(
 ) -> list[dict]:
     """Walk from glossary term to physical resources, pruning ungrounded paths.
 
-    Handles three grounding paths:
+    Handles two grounding paths:
     1. Direct: term name matches entities -> return their sources
-    2. Collection: term.list_of -> resolve the element type
-    3. Taxonomy: term.children -> resolve each child recursively
+    2. Hierarchy: term.children (HAS_A/HAS_KIND/HAS_MANY) -> resolve recursively
     """
     if _visited is None:
         _visited = set()
@@ -780,18 +791,7 @@ def resolve_physical_resources(
     if not term:
         return []
 
-    # Collection: follow list_of to element type
-    if term.list_of:
-        target = vector_store.get_glossary_term_by_id(term.list_of)
-        if target:
-            resources = resolve_physical_resources(
-                target.name, session_id, vector_store, domain_ids, _visited,
-                user_id=user_id,
-            )
-            if resources:
-                return resources
-
-    # Taxonomy: children are shown in the UI's Children section.
+    # Hierarchy: children are shown in the UI's Children section.
     # Don't duplicate their resources here — user navigates to them directly.
     return []
 
@@ -842,13 +842,7 @@ def is_grounded(
     if not term:
         return False
 
-    # Collection: follow list_of
-    if term.list_of:
-        target = vector_store.get_glossary_term_by_id(term.list_of)
-        if target and is_grounded(target.name, session_id, vector_store, _visited, user_id=user_id):
-            return True
-
-    # Taxonomy: check children (by glossary ID and entity ID)
+    # Hierarchy: check children (by glossary ID and entity ID)
     entity_for_term = vector_store.find_entity_by_name(term_name, session_id=session_id)
     extra_ids = [entity_for_term.id] if entity_for_term else []
     children = vector_store.get_child_terms(term.id, *extra_ids)

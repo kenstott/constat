@@ -106,7 +106,7 @@ async def list_glossary(
             definition=row.get("definition"),
             domain=row.get("domain"),
             parent_id=row.get("parent_id"),
-            parent_verb=row.get("parent_verb") or "has",
+            parent_verb=row.get("parent_verb") or "HAS_KIND",
             aliases=row.get("aliases") or [],
             semantic_type=row.get("semantic_type"),
             cardinality=row.get("cardinality") or "many",
@@ -225,7 +225,6 @@ async def get_glossary_term(
             "semantic_type": term.semantic_type,
             "cardinality": term.cardinality,
             "plural": term.plural,
-            "list_of": term.list_of,
             "tags": term.tags,
             "owner": term.owner,
             "status": term.status,
@@ -809,10 +808,14 @@ async def suggest_taxonomy(
     )
 
     system = (
-        "You are organizing business glossary terms into a taxonomy. "
+        "You are organizing business glossary terms into a hierarchy. "
         "Suggest parent-child relationships between terms. "
-        "Only suggest relationships where a clear is-a or belongs-to relationship exists. "
-        "Respond as a JSON array: [{\"child\": \"...\", \"parent\": \"...\", \"confidence\": \"high|medium|low\", \"reason\": \"...\"}]"
+        "Each relationship must be one of two types (from the parent's perspective):\n"
+        "- HAS_A (composition): parent is composed of child. Example: Order HAS_A Line Item\n"
+        "- HAS_KIND (taxonomy): child is a kind of parent. Example: Account HAS_KIND Savings Account\n"
+        "- HAS_MANY (collection): parent contains many of child. Example: Team HAS_MANY Employee\n"
+        "Only suggest relationships where a clear HAS_A, HAS_KIND, or HAS_MANY relationship exists. "
+        "Respond as a JSON array: [{\"child\": \"...\", \"parent\": \"...\", \"parent_verb\": \"HAS_A\" or \"HAS_KIND\" or \"HAS_MANY\", \"confidence\": \"high|medium|low\", \"reason\": \"...\"}]"
     )
     user_msg = f"Terms:\n{term_descriptions}"
 
@@ -836,9 +839,13 @@ async def suggest_taxonomy(
         child = item.get("child", "")
         parent = item.get("parent", "")
         if child and parent:
+            verb = item.get("parent_verb", "HAS_KIND")
+            if verb not in ("HAS_A", "HAS_KIND", "HAS_MANY"):
+                verb = "HAS_KIND"
             suggestions.append({
                 "child": child,
                 "parent": parent,
+                "parent_verb": verb,
                 "confidence": item.get("confidence", "medium"),
                 "reason": item.get("reason", ""),
             })
