@@ -522,6 +522,45 @@ async def submit_query(
     # Generate execution ID
     execution_id = str(uuid.uuid4())
 
+    # Fast path: slash commands bypass async execution pipeline
+    # Run synchronously and emit result directly to event queue
+    stripped = body.problem.strip()
+    if stripped.startswith("/") and not stripped.lower().startswith("/redo"):
+        try:
+            from constat.commands.registry import is_command
+            if is_command(stripped):
+                result = managed.session._handle_slash_command(stripped)
+                output = result.get("output", "")
+                if result.get("success", True):
+                    managed.event_queue.put_nowait({
+                        "event_type": EventType.QUERY_COMPLETE.value,
+                        "session_id": managed.session_id,
+                        "step_number": 0,
+                        "data": {
+                            "execution_id": execution_id,
+                            "output": output,
+                            "tables": [],
+                            "suggestions": result.get("suggestions", []),
+                        },
+                    })
+                else:
+                    managed.event_queue.put_nowait({
+                        "event_type": EventType.QUERY_ERROR.value,
+                        "session_id": managed.session_id,
+                        "step_number": 0,
+                        "data": {
+                            "execution_id": execution_id,
+                            "error": output or result.get("error", "Command failed"),
+                        },
+                    })
+                return QueryResponse(
+                    execution_id=execution_id,
+                    status="completed",
+                    message=output[:200] if output else "Command executed.",
+                )
+        except Exception as e:
+            logger.warning(f"Slash command fast path failed, falling back to async: {e}")
+
     # Update session state
     managed.current_query = body.problem
     managed.execution_id = execution_id

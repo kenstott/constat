@@ -1022,12 +1022,7 @@ function GlossaryItem({
           {/* Aliases (editable) */}
           <AliasEditor term={term} sessionId={sessionId} />
 
-          {/* Domain — from list data (entity_domain_id fallback already applied server-side) */}
-          {term.domain && (
-            <div className="text-xs text-gray-400 dark:text-gray-500">
-              Domain: {term.domain_path || term.domain}
-            </div>
-          )}
+          {/* Domain already shown as badge in header row */}
 
           {/* Provenance */}
           {isDefined && term.provenance && (
