@@ -529,6 +529,9 @@ async def submit_query(
         try:
             from constat.commands.registry import is_command
             if is_command(stripped):
+                # Sync active domains to doc_tools before slash command execution
+                if managed.session.doc_tools and hasattr(managed, 'active_domains'):
+                    managed.session.doc_tools._active_domain_ids = managed.active_domains or []
                 result = managed.session._handle_slash_command(stripped)
                 output = result.get("output", "")
                 if result.get("success", True):
