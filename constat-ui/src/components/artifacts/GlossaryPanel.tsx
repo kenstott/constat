@@ -483,11 +483,14 @@ function ConnectedResources({
       {children.length > 0 && (
         <div>
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">Children</div>
-          {children.map((c, i) => (
-            <div key={i} className="text-xs ml-2">
-              <TermLink name={c.name} displayName={c.display_name} />
-            </div>
-          ))}
+          <div className="text-xs ml-2 flex flex-wrap gap-x-0.5">
+            {children.map((c, i) => (
+              <span key={i}>
+                <TermLink name={c.name} displayName={c.display_name} />
+                {i < children.length - 1 && <span className="text-gray-400">, </span>}
+              </span>
+            ))}
+          </div>
         </div>
       )}
       {relationships.length > 0 && (
