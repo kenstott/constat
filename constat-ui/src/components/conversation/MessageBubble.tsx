@@ -32,6 +32,46 @@ function AnimatedDots() {
   )
 }
 
+// Code block with copy-on-hover button
+function CodeBlockWithCopy({ language, children }: { language: string; children: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(children)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="relative group/code">
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-2 p-1 rounded bg-gray-700/80 hover:bg-gray-600 text-gray-300 hover:text-white opacity-0 group-hover/code:opacity-100 transition-opacity z-10"
+        title="Copy to clipboard"
+      >
+        {copied ? (
+          <ClipboardDocumentCheckIcon className="w-4 h-4 text-green-400" />
+        ) : (
+          <ClipboardDocumentIcon className="w-4 h-4" />
+        )}
+      </button>
+      <SyntaxHighlighter
+        style={oneDark as { [key: string]: React.CSSProperties }}
+        language={language}
+        PreTag="div"
+        customStyle={{
+          margin: '0.5rem 0',
+          padding: '0.75rem',
+          borderRadius: '0.375rem',
+          fontSize: '0.75rem',
+        }}
+      >
+        {children}
+      </SyntaxHighlighter>
+    </div>
+  )
+}
+
 type MessageType = 'user' | 'system' | 'plan' | 'step' | 'output' | 'error' | 'thinking'
 export type StepDisplayMode = 'oneline' | 'condensed' | 'full'
 
@@ -346,19 +386,9 @@ export function MessageBubble({
                     return isInline ? (
                       <code className="bg-gray-200 dark:bg-gray-700 px-1 py-0.5 rounded text-xs">{children}</code>
                     ) : (
-                      <SyntaxHighlighter
-                        style={oneDark as { [key: string]: React.CSSProperties }}
-                        language={match[1]}
-                        PreTag="div"
-                        customStyle={{
-                          margin: '0.5rem 0',
-                          padding: '0.75rem',
-                          borderRadius: '0.375rem',
-                          fontSize: '0.75rem',
-                        }}
-                      >
+                      <CodeBlockWithCopy language={match[1]}>
                         {String(children).replace(/\n$/, '')}
-                      </SyntaxHighlighter>
+                      </CodeBlockWithCopy>
                     )
                   },
                   table: ({ children }) => (
