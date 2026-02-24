@@ -1635,7 +1635,9 @@ class DuckDBVectorStore(VectorStoreBackend):
                 SELECT e.id, e.name, e.semantic_type
                 FROM chunk_entities ce
                 JOIN entities e ON ce.entity_id = e.id
+                LEFT JOIN glossary_terms g ON g.entity_id = e.id
                 WHERE {where}
+                  AND COALESCE(g.ignored, FALSE) = FALSE
                 """,
                 params,
             ).fetchall()

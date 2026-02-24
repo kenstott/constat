@@ -921,7 +921,7 @@ function GlossaryItem({
         <span
           role="button"
           onClick={(e) => { e.stopPropagation(); updateTerm(sessionId, term.name, { ignored: !isIgnored }) }}
-          className={`p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity ${isIgnored ? 'text-amber-500' : 'text-gray-300 hover:text-gray-500'}`}
+          className={`p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0 transition-opacity ${isIgnored ? 'text-amber-500 opacity-100' : 'text-gray-300 hover:text-gray-500 opacity-0 group-hover:opacity-100'}`}
           title={isIgnored ? 'Show in graph & search' : 'Hide from graph & search'}
         >
           {isIgnored ? <EyeSlashIcon className="w-3 h-3" /> : <EyeIcon className="w-3 h-3" />}
@@ -2532,7 +2532,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
 
   const [domainTree, setDomainTree] = useState<DomainTreeNode[]>([])
   const [domainFilterOpen, setDomainFilterOpen] = useState(false)
-  const [showIgnored, setShowIgnored] = useState(false)
+  const [showIgnored, setShowIgnored] = useState(true)
 
   useEffect(() => {
     fetchTerms(sessionId)
