@@ -765,7 +765,7 @@ def resolve_physical_resources(
         return sources
 
     # Direct match — concrete term
-    entity = vector_store.find_entity_by_name(term_name, session_id=session_id)
+    entity = vector_store.find_entity_by_name(term_name, domain_ids=domain_ids, session_id=session_id)
     if entity:
         sources = _collect_entity_sources(entity)
         if sources:
@@ -779,7 +779,7 @@ def resolve_physical_resources(
     term = vector_store.get_glossary_term(term_name, session_id, user_id=user_id)
     if term:
         for alias in (term.aliases or []):
-            alias_entity = vector_store.find_entity_by_name(alias, session_id=session_id)
+            alias_entity = vector_store.find_entity_by_name(alias, domain_ids=domain_ids, session_id=session_id)
             if alias_entity:
                 sources = _collect_entity_sources(alias_entity)
                 if sources:
