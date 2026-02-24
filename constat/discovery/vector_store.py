@@ -359,7 +359,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 session_id VARCHAR NOT NULL,
                 user_id VARCHAR NOT NULL DEFAULT 'default',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ignored BOOLEAN DEFAULT FALSE
             )
         """)
 
@@ -370,6 +371,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         except Exception:
             pass  # Column already exists or unsupported syntax
+
+        # Add ignored column to existing databases (idempotent)
+        try:
+            self._conn.execute(
+                "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE"
+            )
+        except Exception:
+            pass
 
         # Create entity_relationships table for SVO triples (keyed by name)
         self._conn.execute("""
@@ -1744,6 +1753,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
+        stop_list: set[str] | None = None,
     ) -> int:
         """Run NER entity extraction on all chunks for a session.
 
@@ -1753,6 +1763,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             schema_terms: Database table/column names for custom patterns
             api_terms: API endpoint names for custom patterns
             business_terms: Business glossary terms for custom patterns
+            stop_list: Terms to filter out during extraction
 
         Returns:
             Number of entities extracted
@@ -1776,6 +1787,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             schema_terms=schema_terms,
             api_terms=api_terms,
             business_terms=business_terms,
+            stop_list=stop_list,
         )
 
         # Extract entities from each chunk
@@ -1801,6 +1813,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
+        stop_list: set[str] | None = None,
     ) -> int:
         """Extract entities for a specific domain's chunks (incremental add).
 
@@ -1810,6 +1823,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             schema_terms: Database table/column names for custom patterns
             api_terms: API endpoint names for custom patterns
             business_terms: Business glossary terms for custom patterns
+            stop_list: Terms to filter out during extraction
 
         Returns:
             Number of entities extracted
@@ -1831,6 +1845,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             schema_terms=schema_terms,
             api_terms=api_terms,
             business_terms=business_terms,
+            stop_list=stop_list,
         )
 
         # Extract entities from each chunk
@@ -1925,7 +1940,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         (term_id, name, display_name, definition, domain, parent_id,
          parent_verb, aliases_json, semantic_type, cardinality, plural,
          tags_json, owner, status, provenance, session_id, user_id,
-         created_at, updated_at) = row
+         created_at, updated_at, ignored) = row
         aliases = json.loads(aliases_json) if aliases_json else []
         tags = json.loads(tags_json) if tags_json else {}
         return GlossaryTerm(
@@ -1948,12 +1963,13 @@ class DuckDBVectorStore(VectorStoreBackend):
             user_id=user_id or "default",
             created_at=created_at,
             updated_at=updated_at,
+            ignored=bool(ignored),
         )
 
     _GLOSSARY_COLUMNS = (
         "id, name, display_name, definition, domain, parent_id, parent_verb, "
         "aliases, semantic_type, cardinality, plural, "
-        "tags, owner, status, provenance, session_id, user_id, created_at, updated_at"
+        "tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored"
     )
 
     def add_glossary_term(self, term: GlossaryTerm) -> None:
@@ -1964,8 +1980,8 @@ class DuckDBVectorStore(VectorStoreBackend):
             INSERT OR REPLACE INTO glossary_terms
             (id, name, display_name, definition, domain, parent_id, parent_verb,
              aliases, semantic_type, cardinality, plural,
-             tags, owner, status, provenance, session_id, user_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 term.id, term.name, term.display_name, term.definition,
@@ -1975,7 +1991,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 json.dumps(term.tags), term.owner,
                 term.status, term.provenance, term.session_id,
                 term.user_id or "default",
-                term.created_at, term.updated_at,
+                term.created_at, term.updated_at, term.ignored,
             ],
         )
 
@@ -1997,7 +2013,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         allowed = {
             "definition", "display_name", "domain", "parent_id", "parent_verb",
             "aliases", "semantic_type", "cardinality", "plural",
-            "tags", "owner", "status", "provenance",
+            "tags", "owner", "status", "provenance", "ignored",
         }
         sets = []
         params: list = []
@@ -2195,7 +2211,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                     WHEN g.id IS NOT NULL THEN 'defined'
                     ELSE 'self_describing'
                 END AS glossary_status,
-                e.domain_id AS entity_domain_id
+                e.domain_id AS entity_domain_id,
+                COALESCE(g.ignored, FALSE) AS ignored
             FROM entities e
             LEFT JOIN glossary_terms g
                 ON LOWER(e.name) = LOWER(g.name)
@@ -2238,7 +2255,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 g.status,
                 g.provenance,
                 'defined' AS glossary_status,
-                NULL AS entity_domain_id
+                NULL AS entity_domain_id,
+                COALESCE(g.ignored, FALSE) AS ignored
             FROM glossary_terms g
             WHERE g.{glossary_scope_col} = ?
             {scope_filter_2}
@@ -2295,7 +2313,8 @@ class DuckDBVectorStore(VectorStoreBackend):
             (entity_id, name, display_name, semantic_type, ner_type,
              sess_id, glossary_id, domain, definition, parent_id,
              parent_verb, aliases_json, cardinality, plural,
-             status, provenance, glossary_status, entity_domain_id) = row
+             status, provenance, glossary_status, entity_domain_id,
+             ignored) = row
             aliases = json.loads(aliases_json) if aliases_json else []
 
             # Suppress self-describing entities whose name is an alias of a defined term
@@ -2321,6 +2340,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "status": status,
                 "provenance": provenance,
                 "glossary_status": glossary_status,
+                "ignored": bool(ignored),
             })
         return results
 

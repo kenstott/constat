@@ -864,6 +864,9 @@ class DomainConfig(BaseModel):
     facts: dict[str, Any] = Field(default_factory=dict)
     learnings: dict[str, Any] = Field(default_factory=dict)
 
+    # NER stop list — terms to filter out during entity extraction
+    ner_stop_list: list[str] = Field(default_factory=list)
+
     # Optional domain-scoped permissions (loaded from permissions.yaml in domain directory)
     permissions: Optional[Any] = Field(default=None, description="Domain-scoped PermissionsConfig (restricts global permissions)")
 
@@ -1046,6 +1049,9 @@ class Config(BaseModel):
     rights: dict[str, Any] = Field(default_factory=dict)
     glossary: dict[str, Any] = Field(default_factory=dict)
     relationships: dict[str, Any] = Field(default_factory=dict)
+
+    # NER stop list — system-level terms to filter out during entity extraction
+    ner_stop_list: list[str] = Field(default_factory=list)
 
     @property
     def projects(self) -> dict[str, DomainConfig]:

@@ -51,6 +51,83 @@ def _make_term_id(name: str, scope_id: str, domain: str | None = None) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+def _build_domain_maps(config, session=None) -> tuple[dict[str, str], dict[str, str]]:
+    """Build domain_path_map and source_to_domain from config + session resources.
+
+    Uses SessionResources as the authoritative source for resource→domain mappings,
+    since databases may be defined in domain YAMLs but promoted to the root config
+    during loading.
+
+    Returns:
+        (domain_path_map, source_to_domain)
+    """
+    domain_path_map: dict[str, str] = {}
+    source_to_domain: dict[str, str] = {}
+
+    # Build domain path map from config
+    for fname, dcfg in config.domains.items():
+        if dcfg.path:
+            domain_path_map[fname] = dcfg.path
+            domain_path_map[fname.removesuffix(".yaml")] = dcfg.path
+        # Also map from domain config's own databases/apis/documents
+        for db_name in dcfg.databases:
+            source_to_domain[db_name] = fname
+        for api_name in dcfg.apis:
+            source_to_domain[api_name] = fname
+        for doc_name in dcfg.documents:
+            source_to_domain[doc_name] = fname
+
+    # Authoritative mapping from SessionResources (tracks source for each resource)
+    resources = getattr(session, "resources", None) if session else None
+    if resources:
+        for db_name, db_info in resources.databases.items():
+            if db_info.source and db_info.source.startswith("domain:"):
+                domain_fname = db_info.source.removeprefix("domain:")
+                source_to_domain[db_name] = domain_fname
+        for api_name, api_info in resources.apis.items():
+            if api_info.source and api_info.source.startswith("domain:"):
+                domain_fname = api_info.source.removeprefix("domain:")
+                source_to_domain[api_name] = domain_fname
+        for doc_name, doc_info in resources.documents.items():
+            if doc_info.source and doc_info.source.startswith("domain:"):
+                domain_fname = doc_info.source.removeprefix("domain:")
+                source_to_domain[doc_name] = domain_fname
+
+    return domain_path_map, source_to_domain
+
+
+def _resolve_entity_domain(entity_id: str | None, vs, source_to_domain: dict[str, str]) -> str | None:
+    """Resolve domain for an entity by tracing its chunk document sources.
+
+    Looks up which document_name(s) the entity's chunks came from, then maps
+    the database/api/document name back to a domain via source_to_domain.
+    """
+    if not entity_id:
+        return None
+    try:
+        doc_rows = vs._conn.execute(
+            "SELECT DISTINCT em.document_name FROM chunk_entities ce "
+            "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
+            "WHERE ce.entity_id = ? LIMIT 5",
+            [entity_id],
+        ).fetchall()
+    except Exception:
+        return None
+    for (doc_name,) in doc_rows:
+        if doc_name.startswith("schema:"):
+            db_name = doc_name.split(":")[1].split(".")[0]
+            if db_name in source_to_domain:
+                return source_to_domain[db_name]
+        elif doc_name.startswith("api:"):
+            api_name = doc_name.split(":")[1].split(".")[0]
+            if api_name in source_to_domain:
+                return source_to_domain[api_name]
+        # Try full document name (for documents indexed with their config key as name)
+        if doc_name in source_to_domain:
+            return source_to_domain[doc_name]
+    return None
+
+
 @router.get("/{session_id}/glossary", response_model=GlossaryListResponse)
 async def list_glossary(
     session_id: str,
@@ -69,6 +146,15 @@ async def list_glossary(
     active_domains = getattr(managed, "active_domains", []) or []
 
     rows = vs.get_unified_glossary(session_id, scope=scope, active_domains=active_domains, user_id=managed.user_id)
+
+    config = managed.session.config
+    domain_path_map, source_to_domain = _build_domain_maps(config, managed.session)
+
+    def _resolve_domain(row: dict) -> str | None:
+        d = row.get("domain") or row.get("entity_domain_id")
+        if d:
+            return d
+        return _resolve_entity_domain(row.get("entity_id"), vs, source_to_domain)
 
     # Optionally filter by domain (comma-separated list)
     # A term "belongs" to a domain if:
@@ -100,11 +186,13 @@ async def list_glossary(
 
     terms = []
     for row in sorted(rows, key=lambda r: r["name"]):
+        effective_domain = _resolve_domain(row)
         terms.append(GlossaryTermResponse(
             name=row["name"],
             display_name=row["display_name"],
             definition=row.get("definition"),
-            domain=row.get("domain"),
+            domain=effective_domain,
+            domain_path=domain_path_map.get(effective_domain) if effective_domain else None,
             parent_id=row.get("parent_id"),
             parent_verb=row.get("parent_verb") or "HAS_KIND",
             aliases=row.get("aliases") or [],
@@ -116,6 +204,7 @@ async def list_glossary(
             entity_id=row.get("entity_id"),
             glossary_id=row.get("glossary_id"),
             ner_type=row.get("ner_type"),
+            ignored=row.get("ignored") or False,
         ))
 
     defined = sum(1 for t in terms if t.glossary_status == "defined")
@@ -168,6 +257,9 @@ async def get_glossary_term(
     term = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
     active_domains = getattr(managed, "active_domains", []) or []
 
+    config = managed.session.config
+    domain_path_map, source_to_domain = _build_domain_maps(config, managed.session)
+
     # Build response from unified view or just entity
     from constat.discovery.glossary_generator import resolve_physical_resources, is_grounded
 
@@ -214,11 +306,17 @@ async def get_glossary_term(
     logger.debug(f"get_glossary_term({name}): {len(relationships)} relationships, parent={bool(parent_info)}, children={len(children)}")
 
     if term:
+        effective_domain = (
+            term.domain
+            or (entity.domain_id if entity else None)
+            or _resolve_entity_domain(entity.id if entity else None, vs, source_to_domain)
+        )
         return {
             "name": term.name,
             "display_name": term.display_name,
             "definition": term.definition,
-            "domain": term.domain,
+            "domain": effective_domain,
+            "domain_path": domain_path_map.get(effective_domain) if effective_domain else None,
             "parent_id": term.parent_id,
             "parent_verb": term.parent_verb,
             "parent": parent_info,
@@ -235,15 +333,18 @@ async def get_glossary_term(
             "connected_resources": resources,
             "children": children,
             "relationships": relationships,
+            "ignored": term.ignored,
         }
 
     # No glossary term — check if entity exists (self-describing)
     if entity:
+        effective_domain = entity.domain_id or _resolve_entity_domain(entity.id, vs, source_to_domain)
         return {
             "name": entity.name,
             "display_name": entity.display_name,
             "definition": None,
-            "domain": entity.domain_id,
+            "domain": effective_domain,
+            "domain_path": domain_path_map.get(effective_domain) if effective_domain else None,
             "semantic_type": entity.semantic_type,
             "glossary_status": "self_describing",
             "grounded": True,
@@ -475,6 +576,8 @@ async def update_definition(
         updates["domain"] = request.domain
     if request.semantic_type is not None:
         updates["semantic_type"] = request.semantic_type
+    if request.ignored is not None:
+        updates["ignored"] = request.ignored
 
     # Update provenance to hybrid if was LLM-generated
     if existing.provenance == "llm" and updates:

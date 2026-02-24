@@ -395,6 +395,7 @@ class GlossaryTerm:
     user_id: str = "default"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    ignored: bool = False
 
     def __post_init__(self):
         now = datetime.now()

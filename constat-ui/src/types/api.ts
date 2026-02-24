@@ -245,6 +245,7 @@ export interface GlossaryTerm {
   display_name: string
   definition?: string | null
   domain?: string | null
+  domain_path?: string | null
   parent_id?: string | null
   parent_verb?: 'HAS_A' | 'HAS_KIND' | 'HAS_MANY'
   parent?: { name: string; display_name: string } | null
@@ -257,6 +258,7 @@ export interface GlossaryTerm {
   entity_id?: string | null
   glossary_id?: string | null
   ner_type?: string | null
+  ignored?: boolean
   connected_resources: Array<{
     entity_name: string
     entity_type: string

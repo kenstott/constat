@@ -154,6 +154,7 @@ class _EntityMixin:
                 schema_terms=self._schema_entities,
                 api_terms=self._collect_api_terms(),
                 business_terms=business_terms,
+                stop_list=self._stop_list,
             )
             links = _extract_links_from_chunks(extractor, domain_chunks)
             all_links.extend(links)
@@ -261,6 +262,7 @@ class _EntityMixin:
             session_id="__metadata__",
             schema_terms=self._schema_entities,
             api_terms=self._collect_api_terms(),
+            stop_list=self._stop_list,
         )
 
         all_links = _extract_links_from_chunks(extractor, chunks)
@@ -363,6 +365,7 @@ class _EntityMixin:
             session_id=session_id,
             schema_terms=self._schema_entities,
             api_terms=self._collect_api_terms(),
+            stop_list=self._stop_list,
         )
         if domain_id:
             extractor_kwargs["domain_id"] = domain_id

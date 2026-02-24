@@ -763,6 +763,7 @@ class GlossaryTermResponse(BaseModel):
     display_name: str = Field(description="Display name")
     definition: Optional[str] = Field(default=None, description="Business definition")
     domain: Optional[str] = Field(default=None, description="Owning domain")
+    domain_path: Optional[str] = Field(default=None, description="Full domain hierarchy path")
     parent_id: Optional[str] = Field(default=None, description="Parent term ID")
     parent_verb: str = Field(default="HAS_KIND", description="Hierarchy type: HAS_A (composition), HAS_KIND (taxonomy), HAS_MANY (collection)")
     aliases: list[str] = Field(default_factory=list, description="Alternate names")
@@ -775,6 +776,7 @@ class GlossaryTermResponse(BaseModel):
     glossary_id: Optional[str] = Field(default=None, description="Glossary term ID (for parent_id linking)")
     ner_type: Optional[str] = Field(default=None, description="NER type")
     connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
+    ignored: bool = Field(default=False, description="Whether term is excluded from graphs and similarity")
 
 
 class GlossaryListResponse(BaseModel):
@@ -806,6 +808,7 @@ class GlossaryUpdateRequest(BaseModel):
     status: Optional[str] = Field(default=None, description="New status")
     domain: Optional[str] = Field(default=None, description="New domain")
     semantic_type: Optional[str] = Field(default=None, description="New semantic type")
+    ignored: Optional[bool] = Field(default=None, description="Mark term as ignored")
 
 
 class GlossaryBulkStatusRequest(BaseModel):

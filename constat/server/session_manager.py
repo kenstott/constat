@@ -522,7 +522,20 @@ class SessionManager:
         if session.config.relationships:
             business_terms.extend(get_relationship_terms_for_ner(session.config.relationships))
 
-        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities")
+        # Build NER stop list from system config + active domains
+        stop_words: set[str] = set()
+        for w in (session.config.ner_stop_list or []):
+            stop_words.add(w.lower())
+        if hasattr(self, '_sessions') and session_id in self._sessions:
+            for domain_name in (self._sessions[session_id].active_domains or []):
+                domain_cfg = session.config.load_domain(domain_name)
+                if domain_cfg and domain_cfg.ner_stop_list:
+                    for w in domain_cfg.ner_stop_list:
+                        stop_words.add(w.lower())
+        if stop_words:
+            session.doc_tools._stop_list = stop_words
+
+        logger.info(f"Session {session_id}: running NER with {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business entities, {len(stop_words)} stop words")
 
         # Fingerprint caching — skip NER if scope unchanged
         from constat.discovery.ner_fingerprint import compute_ner_fingerprint, should_skip_ner, update_ner_fingerprint

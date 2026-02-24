@@ -79,6 +79,7 @@ class EntityExtractor:
         schema_terms: Optional[list[str]] = None,
         api_terms: Optional[list[str]] = None,
         business_terms: Optional[list[str]] = None,
+        stop_list: Optional[set[str]] = None,
     ):
         """Initialize the entity extractor.
 
@@ -88,9 +89,11 @@ class EntityExtractor:
             schema_terms: Database table/column names to recognize
             api_terms: API endpoint names to recognize
             business_terms: Business glossary terms to recognize
+            stop_list: Additional terms to filter out during extraction
         """
         self.session_id = session_id
         self.domain_id = domain_id
+        self._stop_list = stop_list or set()
 
         # Build custom NLP pipeline with EntityRuler
         self._nlp = get_nlp()
@@ -188,6 +191,8 @@ class EntityExtractor:
         if self.NOISE_PATTERN.search(text):
             return True
         if text.lower() in self.NOISE_WORDS:
+            return True
+        if text.lower() in self._stop_list:
             return True
         # Skip if mostly non-alphanumeric
         alpha_count = sum(1 for c in text if c.isalnum())

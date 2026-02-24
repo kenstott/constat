@@ -16,6 +16,8 @@ import {
   ArrowsPointingInIcon,
   ArrowUpIcon,
   PencilIcon,
+  EyeIcon,
+  EyeSlashIcon,
 } from '@heroicons/react/24/outline'
 import { useGlossaryStore } from '@/store/glossaryStore'
 import { useUIStore } from '@/store/uiStore'
@@ -461,7 +463,9 @@ function ConnectedResources({
     parent_verb: string
     children: Array<{ name: string; display_name: string; parent_verb?: string }>
     relationships: Array<{ id: string; subject: string; verb: string; object: string; confidence: number }>
-  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [] })
+    domain: string | null
+    domain_path: string | null
+  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], domain: null, domain_path: null })
   const [loaded, setLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -477,6 +481,8 @@ function ConnectedResources({
           parent_verb: data.parent_verb || 'HAS_KIND',
           children: data.children || [],
           relationships: data.relationships || [],
+          domain: data.domain || null,
+          domain_path: data.domain_path || null,
         })
         setLoaded(true)
       }
@@ -489,13 +495,18 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
-  const { resources, parent, parent_verb, children, relationships } = detail
+  const { resources, parent, parent_verb, children, relationships, domain, domain_path } = detail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0)
-  const hasContent = resources.length > 0 || hasConnections
+  const hasContent = resources.length > 0 || hasConnections || !!domain
   if (!hasContent) return null
 
   return (
     <div className="mt-1.5 space-y-1.5">
+      {domain && (
+        <div className="text-xs text-gray-400 dark:text-gray-500">
+          Domain: {domain_path || domain}
+        </div>
+      )}
       {parent && (
         <div>
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">
@@ -804,6 +815,7 @@ function GlossaryItem({
   const [editDef, setEditDef] = useState('')
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameTo, setRenameTo] = useState('')
+  const isIgnored = term.ignored === true
 
   // Can rename: defined term with no entity (abstract only)
   const canRename = term.glossary_status === 'defined' && !term.entity_id
@@ -887,7 +899,7 @@ function GlossaryItem({
             className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-1 bg-white dark:bg-gray-800 border border-blue-400 rounded px-1 py-0 outline-none min-w-0"
           />
         ) : (
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex-1 truncate">
+          <span className={`text-sm font-medium flex-1 truncate ${isIgnored ? 'text-gray-400 dark:text-gray-500 line-through opacity-60' : 'text-gray-700 dark:text-gray-300'}`}>
             {term.display_name}
             {parentName && (
               <span className="text-xs font-normal text-gray-400 dark:text-gray-500 ml-1">
@@ -906,6 +918,14 @@ function GlossaryItem({
             <PencilIcon className="w-3 h-3" />
           </span>
         )}
+        <span
+          role="button"
+          onClick={(e) => { e.stopPropagation(); updateTerm(sessionId, term.name, { ignored: !isIgnored }) }}
+          className={`p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity ${isIgnored ? 'text-amber-500' : 'text-gray-300 hover:text-gray-500'}`}
+          title={isIgnored ? 'Show in graph & search' : 'Hide from graph & search'}
+        >
+          {isIgnored ? <EyeSlashIcon className="w-3 h-3" /> : <EyeIcon className="w-3 h-3" />}
+        </span>
         {term.semantic_type && (
           <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${typeColor}`}>
             {term.semantic_type}
@@ -921,8 +941,11 @@ function GlossaryItem({
           <span className={`text-xs flex-shrink-0 ${statusColor}`}>{term.status}</span>
         )}
         {term.domain && (
-          <span className="text-xs px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
-            {term.domain}
+          <span
+            className="text-xs px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0"
+            title={term.domain_path || term.domain}
+          >
+            {term.domain_path || term.domain}
           </span>
         )}
         <span
@@ -998,12 +1021,14 @@ function GlossaryItem({
           {/* Aliases (editable) */}
           <AliasEditor term={term} sessionId={sessionId} />
 
-          {/* Domain & Provenance */}
+          {/* Domain — from list data (entity_domain_id fallback already applied server-side) */}
           {term.domain && (
             <div className="text-xs text-gray-400 dark:text-gray-500">
-              Domain: {term.domain}
+              Domain: {term.domain_path || term.domain}
             </div>
           )}
+
+          {/* Provenance */}
           {isDefined && term.provenance && (
             <div className="text-xs text-gray-400 dark:text-gray-500">
               Provenance: {term.provenance}
@@ -1476,6 +1501,7 @@ interface PositionedNode {
   label: string
   type: 'focal' | 'parent' | 'child' | 'relationship'
   depth: number
+  domain?: string | null
   x: number
   y: number
 }
@@ -1494,10 +1520,183 @@ const NODE_STYLES: Record<string, { fill: string; r: number }> = {
   relationship: { fill: '#9ca3af', r: 16 },
 }
 
+// Convex hull (Graham scan) for cluster backgrounds
+function convexHull(points: { x: number; y: number }[]): { x: number; y: number }[] {
+  if (points.length < 3) return points
+  const pts = [...points].sort((a, b) => a.x - b.x || a.y - b.y)
+  const cross = (o: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+  const lower: { x: number; y: number }[] = []
+  for (const p of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p) }
+  const upper: { x: number; y: number }[] = []
+  for (const p of pts.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p) }
+  return lower.slice(0, -1).concat(upper.slice(0, -1))
+}
+
+// Expand hull points outward from centroid by padding
+function expandHull(hull: { x: number; y: number }[], pad: number): { x: number; y: number }[] {
+  if (hull.length === 0) return hull
+  const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length
+  const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length
+  return hull.map(p => {
+    const dx = p.x - cx, dy = p.y - cy
+    const d = Math.sqrt(dx * dx + dy * dy) || 1
+    return { x: p.x + (dx / d) * pad, y: p.y + (dy / d) * pad }
+  })
+}
+
+const CLUSTER_COLORS = [
+  'rgba(59,130,246,0.08)',   // blue
+  'rgba(168,85,247,0.08)',   // purple
+  'rgba(34,197,94,0.08)',    // green
+  'rgba(249,115,22,0.08)',   // orange
+  'rgba(236,72,153,0.08)',   // pink
+  'rgba(20,184,166,0.08)',   // teal
+  'rgba(234,179,8,0.08)',    // yellow
+]
+
+const CLUSTER_STROKES = [
+  'rgba(59,130,246,0.25)',
+  'rgba(168,85,247,0.25)',
+  'rgba(34,197,94,0.25)',
+  'rgba(249,115,22,0.25)',
+  'rgba(236,72,153,0.25)',
+  'rgba(20,184,166,0.25)',
+  'rgba(234,179,8,0.25)',
+]
+
+// Tooltip for graph node hover — read-only detail card
+function NodeTooltip({ sessionId, termName }: { sessionId: string; termName: string }) {
+  const [data, setData] = useState<(GlossaryTerm & { grounded: boolean; connected_resources: Array<{ entity_name: string; entity_type: string; sources: Array<{ document_name: string; source: string }> }> }) | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getGlossaryTerm(sessionId, termName)
+      .then((d) => { if (!cancelled) setData(d) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [sessionId, termName])
+
+  if (!data) return <div className="text-[10px] text-gray-400 px-2 py-1">Loading...</div>
+
+  return (
+    <div className="space-y-1 max-w-[280px]">
+      <div className="font-semibold text-[11px] text-gray-800 dark:text-gray-100">{data.display_name}</div>
+      {data.definition && (
+        <p className="text-[10px] text-gray-600 dark:text-gray-400 italic">&ldquo;{data.definition}&rdquo;</p>
+      )}
+      {data.aliases?.length > 0 && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Aliases:</span> {data.aliases.join(', ')}
+        </div>
+      )}
+      {(data.domain_path || data.domain) && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Domain:</span> {data.domain_path || data.domain}
+        </div>
+      )}
+      {data.provenance && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Provenance:</span> {data.provenance}
+        </div>
+      )}
+      {data.parent && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Parent ({data.parent_verb || 'HAS_KIND'}):</span> {data.parent.display_name}
+        </div>
+      )}
+      {data.children && data.children.length > 0 && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Children:</span> {data.children.map(c => c.display_name).join(', ')}
+        </div>
+      )}
+      {data.relationships && data.relationships.length > 0 && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Relationships:</span>
+          {data.relationships.map((r, i) => (
+            <div key={i} className="ml-1">{r.subject} <span className="text-gray-400">{r.verb}</span> {r.object}</div>
+          ))}
+        </div>
+      )}
+      {data.connected_resources && data.connected_resources.length > 0 && (
+        <div className="text-[10px] text-gray-500 dark:text-gray-400">
+          <span className="font-medium">Resources:</span>
+          {data.connected_resources.map((r, i) => (
+            <div key={i} className="ml-1">{r.entity_name} <span className="text-gray-400">({r.entity_type})</span></div>
+          ))}
+        </div>
+      )}
+      {data.status && (
+        <div className="text-[10px] text-gray-400">Status: {data.status}</div>
+      )}
+    </div>
+  )
+}
+
 const GRAPH_W = 800
 const GRAPH_H = 600
 const GRAPH_MODAL_W = 1200
 const GRAPH_MODAL_H = 900
+
+// Domain filter for graph — compact multi-select dropdown
+function GraphDomainFilter({
+  domains,
+  selected,
+  onChange,
+}: {
+  domains: string[]
+  selected: Set<string> | null
+  onChange: (v: Set<string> | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const allSelected = !selected || selected.size === 0
+  const label = allSelected ? 'All domains' : `${selected!.size} domain${selected!.size > 1 ? 's' : ''}`
+
+  return (
+    <div className="relative ml-1">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`text-[10px] py-0.5 px-1.5 border rounded flex items-center gap-0.5 ${
+          allSelected
+            ? 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+            : 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+        }`}
+      >
+        {label}
+        <ChevronRightIcon className={`w-2.5 h-2.5 transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-0.5 z-50 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 shadow-lg py-1 min-w-[120px] max-h-40 overflow-y-auto">
+          <button
+            onClick={() => { onChange(null); setOpen(false) }}
+            className={`block w-full text-left text-[10px] px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 ${allSelected ? 'text-blue-600 font-medium' : 'text-gray-600 dark:text-gray-400'}`}
+          >
+            All
+          </button>
+          {domains.map(d => {
+            const checked = !selected || selected.has(d)
+            return (
+              <label key={d} className="flex items-center gap-1.5 px-2 py-0.5 text-[10px] text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => {
+                    const next = new Set(selected || domains)
+                    if (next.has(d)) next.delete(d)
+                    else next.add(d)
+                    onChange(next.size === domains.length || next.size === 0 ? null : next)
+                  }}
+                  className="w-2.5 h-2.5 accent-blue-500"
+                />
+                {d}
+              </label>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function TermGraphInline({
   sessionId,
@@ -1516,11 +1715,40 @@ function TermGraphInline({
   const [dragging, setDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [layout, setLayout] = useState<'force' | 'tree-v' | 'tree-h'>('force')
+  const [nodeSpacing, setNodeSpacing] = useState(100)
+  const [showLeaves, setShowLeaves] = useState(true)
+  const [graphDomains, setGraphDomains] = useState<string[]>([])
+  const [graphDomainFilter, setGraphDomainFilter] = useState<Set<string> | null>(null)
+  const [hoverNode, setHoverNode] = useState<{ name: string; x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
 
-  const gw = fullscreen ? GRAPH_MODAL_W : GRAPH_W
-  const gh = fullscreen ? GRAPH_MODAL_H : GRAPH_H
+  // Track container size with ResizeObserver — debounced to avoid render loops
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const obs = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect
+      if (!r || r.width <= 0 || r.height <= 0) return
+      const nw = Math.round(r.width)
+      const nh = Math.round(r.height)
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        setContainerSize(prev => {
+          if (prev && Math.abs(prev.w - nw) < 10 && Math.abs(prev.h - nh) < 10) return prev
+          return { w: nw, h: nh }
+        })
+      }, 200)
+    })
+    obs.observe(el)
+    return () => { obs.disconnect(); if (timer) clearTimeout(timer) }
+  }, [fullscreen, graph])
+
+  const gw = containerSize?.w || (fullscreen ? GRAPH_MODAL_W : GRAPH_W)
+  const gh = containerSize?.h || (fullscreen ? GRAPH_MODAL_H : GRAPH_H)
 
   // BFS fetch neighborhood up to `depth` levels, then simulate layout
   useEffect(() => {
@@ -1530,7 +1758,7 @@ function TermGraphInline({
     setGraph(null)
 
     async function fetchNeighborhood() {
-      const nodeMap = new Map<string, { id: string; label: string; type: PositionedNode['type']; depth: number }>()
+      const nodeMap = new Map<string, { id: string; label: string; type: PositionedNode['type']; depth: number; domain?: string | null }>()
       const rawEdges: { source: string; target: string; label: string; type: PositionedEdge['type'] }[] = []
       const edgeSet = new Set<string>()
 
@@ -1564,6 +1792,9 @@ function TermGraphInline({
           if (!res) continue
           const { name, d, data } = res
 
+          // Skip ignored terms (except the focal node)
+          if (d > 0 && data.ignored) continue
+
           // Add the fetched node itself
           if (!nodeMap.has(name)) {
             nodeMap.set(name, {
@@ -1571,6 +1802,7 @@ function TermGraphInline({
               label: data.display_name || name,
               type: d === 0 ? 'focal' : 'relationship',
               depth: d,
+              domain: data.domain,
             })
           }
 
@@ -1578,7 +1810,7 @@ function TermGraphInline({
           if (data.parent) {
             const pid = data.parent.name
             if (!nodeMap.has(pid)) {
-              nodeMap.set(pid, { id: pid, label: data.parent.display_name, type: 'parent', depth: d + 1 })
+              nodeMap.set(pid, { id: pid, label: data.parent.display_name, type: 'parent', depth: d + 1, domain: data.domain })
             }
             addEdge(pid, name, data.parent_verb || 'HAS_KIND', 'parent')
             if (d + 1 < depth) queue.push([pid, d + 1])
@@ -1587,7 +1819,7 @@ function TermGraphInline({
           // Children
           for (const c of data.children || []) {
             if (!nodeMap.has(c.name)) {
-              nodeMap.set(c.name, { id: c.name, label: c.display_name, type: 'child', depth: d + 1 })
+              nodeMap.set(c.name, { id: c.name, label: c.display_name, type: 'child', depth: d + 1, domain: data.domain })
             }
             addEdge(name, c.name, c.parent_verb || 'HAS_KIND', 'child')
             if (d + 1 < depth) queue.push([c.name, d + 1])
@@ -1597,7 +1829,7 @@ function TermGraphInline({
           for (const r of data.relationships || []) {
             const partner = r.subject === name ? r.object : r.subject
             if (!nodeMap.has(partner)) {
-              nodeMap.set(partner, { id: partner, label: partner, type: 'relationship', depth: d + 1 })
+              nodeMap.set(partner, { id: partner, label: partner, type: 'relationship', depth: d + 1, domain: data.domain })
             }
             addEdge(
               r.subject === name ? name : partner,
@@ -1612,7 +1844,43 @@ function TermGraphInline({
 
       if (cancelled) return
 
-      const nodeArr = Array.from(nodeMap.values())
+      let nodeArr = Array.from(nodeMap.values())
+
+      // Collect unique domains found in the graph
+      const domainSet = new Set<string>()
+      for (const n of nodeArr) {
+        if (n.domain) domainSet.add(n.domain)
+      }
+      if (!cancelled) setGraphDomains(Array.from(domainSet).sort())
+
+      // Apply domain filter (focal node always kept)
+      if (graphDomainFilter && graphDomainFilter.size > 0) {
+        const kept = new Set(nodeArr.filter(n => n.type === 'focal' || !n.domain || graphDomainFilter.has(n.domain)).map(n => n.id))
+        nodeArr = nodeArr.filter(n => kept.has(n.id))
+        for (let i = rawEdges.length - 1; i >= 0; i--) {
+          if (!kept.has(rawEdges[i].source) || !kept.has(rawEdges[i].target)) rawEdges.splice(i, 1)
+        }
+      }
+
+      // Filter out leaf nodes (single-edge terminals) when toggle is off
+      if (!showLeaves && nodeArr.length > 2) {
+        const edgeCount = new Map<string, number>()
+        for (const e of rawEdges) {
+          edgeCount.set(e.source, (edgeCount.get(e.source) || 0) + 1)
+          edgeCount.set(e.target, (edgeCount.get(e.target) || 0) + 1)
+        }
+        const leafIds = new Set(
+          nodeArr.filter(n => n.type !== 'focal' && (edgeCount.get(n.id) || 0) <= 1).map(n => n.id)
+        )
+        if (leafIds.size < nodeArr.length - 1) {
+          nodeArr = nodeArr.filter(n => !leafIds.has(n.id))
+          // Remove edges referencing pruned nodes
+          const kept = new Set(nodeArr.map(n => n.id))
+          for (let i = rawEdges.length - 1; i >= 0; i--) {
+            if (!kept.has(rawEdges[i].source) || !kept.has(rawEdges[i].target)) rawEdges.splice(i, 1)
+          }
+        }
+      }
 
       if (nodeArr.length <= 1) {
         setEmpty(true)
@@ -1627,19 +1895,48 @@ function TermGraphInline({
       if (layout === 'force') {
         // Force-directed layout
         const nodeCount = nodeArr.length
-        const linkDist = nodeCount > 15 ? 100 : 150
-        const chargeStr = nodeCount > 15 ? -300 : -500
+        const linkDist = nodeSpacing * (nodeCount > 15 ? 0.67 : 1)
+        const chargeStr = -(nodeSpacing * (nodeCount > 15 ? 2 : 3.3))
         const collideExtra = nodeCount > 15 ? 8 : 12
 
         interface SimNode {
-          id: string; label: string; type: PositionedNode['type']; depth: number
-          x?: number; y?: number; fx?: number | null; fy?: number | null
+          id: string; label: string; type: PositionedNode['type']; depth: number; domain?: string | null
+          x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null
         }
         const simNodes: SimNode[] = nodeArr.map((n) => ({ ...n }))
         const simEdges = rawEdges.map((e) => ({ source: e.source, target: e.target }))
         for (const n of simNodes) {
           if (n.type === 'focal' && n.depth === 0) { n.fx = cx; n.fy = cy }
         }
+
+        // Compute domain cluster centroids for clustering force
+        const domainNodes = new Map<string, SimNode[]>()
+        for (const n of simNodes) {
+          const d = n.domain || '__none__'
+          if (!domainNodes.has(d)) domainNodes.set(d, [])
+          domainNodes.get(d)!.push(n)
+        }
+        const hasClusters = domainNodes.size > 1
+
+        // Custom clustering force — pull same-domain nodes toward their centroid
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const clusterForce: any = hasClusters ? Object.assign(
+          (alpha: number) => {
+            for (const [, nodes] of domainNodes) {
+              if (nodes.length < 2) continue
+              let mx = 0, my = 0
+              for (const n of nodes) { mx += (n.x ?? 0); my += (n.y ?? 0) }
+              mx /= nodes.length; my /= nodes.length
+              const strength = 0.3 * alpha
+              for (const n of nodes) {
+                if (n.fx != null) continue
+                n.vx = (n.vx ?? 0) + (mx - (n.x ?? 0)) * strength
+                n.vy = (n.vy ?? 0) + (my - (n.y ?? 0)) * strength
+              }
+            }
+          },
+          { initialize: () => {} }
+        ) : null
 
         const sim = forceSimulation<SimNode>(simNodes)
           .force('link', forceLink<SimNode, { source: string; target: string }>(simEdges).id((d) => d.id).distance(linkDist))
@@ -1650,11 +1947,12 @@ function TermGraphInline({
             const baseR = NODE_STYLES[d.type]?.r || 16
             return Math.max(10, baseR - (d.depth * 2)) + collideExtra
           }))
-          .stop()
+        if (clusterForce) sim.force('cluster', clusterForce)
+        sim.stop()
         for (let i = 0; i < 200; i++) sim.tick()
 
         posNodes = simNodes.map((n) => ({
-          id: n.id, label: n.label, type: n.type, depth: n.depth,
+          id: n.id, label: n.label, type: n.type, depth: n.depth, domain: n.domain,
           x: n.x ?? cx, y: n.y ?? cy,
         }))
       } else {
@@ -1700,7 +1998,7 @@ function TermGraphInline({
           }
         }
 
-        const spacing = isHoriz ? { level: 160, node: 60 } : { level: 80, node: 140 }
+        const spacing = isHoriz ? { level: nodeSpacing * 1.6, node: nodeSpacing * 0.6 } : { level: nodeSpacing * 0.8, node: nodeSpacing * 1.4 }
         const startX = 80
         const startY = 60
 
@@ -1710,7 +2008,7 @@ function TermGraphInline({
           const idx = siblings.indexOf(n.id)
           const x = isHoriz ? startX + lvl * spacing.level : startX + idx * spacing.node + ((gw - siblings.length * spacing.node) / 2)
           const y = isHoriz ? startY + idx * spacing.node + ((gh - siblings.length * spacing.node) / 2) : startY + lvl * spacing.level
-          return { id: n.id, label: n.label, type: n.type, depth: n.depth, x, y }
+          return { id: n.id, label: n.label, type: n.type, depth: n.depth, domain: n.domain, x, y }
         })
       }
 
@@ -1732,7 +2030,20 @@ function TermGraphInline({
     })
 
     return () => { cancelled = true }
-  }, [sessionId, termName, depth, fullscreen, layout])
+  }, [sessionId, termName, depth, fullscreen, layout, nodeSpacing, gw, gh, showLeaves, graphDomainFilter])
+
+  // Compute viewBox from node bounds so nothing is clipped
+  const svgViewBox = useMemo(() => {
+    if (!graph || graph.nodes.length === 0) return `0 0 ${gw} ${gh}`
+    const pad = 40
+    const xs = graph.nodes.map(n => n.x)
+    const ys = graph.nodes.map(n => n.y)
+    const minX = Math.min(0, Math.min(...xs) - pad)
+    const minY = Math.min(0, Math.min(...ys) - pad)
+    const maxX = Math.max(gw, Math.max(...xs) + pad)
+    const maxY = Math.max(gh, Math.max(...ys) + pad)
+    return `${minX} ${minY} ${maxX - minX} ${maxY - minY}`
+  }, [graph, gw, gh])
 
   // Reset zoom/pan when graph changes
   useEffect(() => {
@@ -1768,7 +2079,7 @@ function TermGraphInline({
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
-    const delta = e.deltaY > 0 ? 0.9 : 1.1
+    const delta = e.deltaY > 0 ? 0.95 : 1.05
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     const mx = e.clientX - rect.left
@@ -1804,6 +2115,38 @@ function TermGraphInline({
     return m
   }, [graph])
 
+  // Compute cluster hulls per domain
+  const clusterHulls = useMemo(() => {
+    if (!graph) return []
+    const byDomain = new Map<string, PositionedNode[]>()
+    for (const n of graph.nodes) {
+      const d = n.domain || '__none__'
+      if (!byDomain.has(d)) byDomain.set(d, [])
+      byDomain.get(d)!.push(n)
+    }
+    // Only show hulls if there are multiple domains
+    if (byDomain.size <= 1) return []
+    const domains = Array.from(byDomain.keys()).sort()
+    return domains.map((domain, i) => {
+      const nodes = byDomain.get(domain)!
+      if (nodes.length < 2) return null
+      const points = nodes.map(n => ({ x: n.x, y: n.y }))
+      const hull = convexHull(points)
+      const expanded = expandHull(hull, 30)
+      const pathD = expanded.length > 0
+        ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
+        : ''
+      return {
+        domain: domain === '__none__' ? 'Unassigned' : domain,
+        path: pathD,
+        fill: CLUSTER_COLORS[i % CLUSTER_COLORS.length],
+        stroke: CLUSTER_STROKES[i % CLUSTER_STROKES.length],
+        cx: nodes.reduce((s, n) => s + n.x, 0) / nodes.length,
+        cy: Math.min(...nodes.map(n => n.y)) - 20,
+      }
+    }).filter(Boolean) as { domain: string; path: string; fill: string; stroke: string; cx: number; cy: number }[]
+  }, [graph])
+
   const svgContent = graph && !empty ? (
     <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
       <defs>
@@ -1811,6 +2154,19 @@ function TermGraphInline({
           <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
         </marker>
       </defs>
+      {/* Cluster hulls */}
+      {clusterHulls.map((c, i) => (
+        <g key={`cluster-${i}`}>
+          <path d={c.path} fill={c.fill} stroke={c.stroke} strokeWidth={1.5} strokeDasharray="6 3" />
+          <text
+            x={c.cx} y={c.cy}
+            textAnchor="middle"
+            className="text-[9px] fill-gray-400 dark:fill-gray-500 pointer-events-none font-medium"
+          >
+            {c.domain}
+          </text>
+        </g>
+      ))}
       {/* Edges */}
       {graph.edges.map((e, i) => {
         const src = posMap.get(e.sourceId)
@@ -1858,9 +2214,15 @@ function TermGraphInline({
             transform={`translate(${n.x},${n.y})`}
             className="cursor-pointer"
             onClick={() => handleNodeClick(n.id)}
+            onMouseEnter={(e) => {
+              if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+              setHoverNode({ name: n.id, x: e.clientX + 12, y: e.clientY - 10 })
+            }}
+            onMouseLeave={() => {
+              hoverTimeout.current = setTimeout(() => setHoverNode(null), 150)
+            }}
           >
-            <circle r={r} fill={style.fill} />
-            <title>{n.label}</title>
+            <circle r={r} fill={style.fill} className="hover:stroke-amber-400 hover:stroke-2" />
             <text
               y={r + 12}
               textAnchor="middle"
@@ -1923,6 +2285,31 @@ function TermGraphInline({
           1:1
         </button>
         <span className="text-[10px] text-gray-400">{Math.round(zoom * 100)}%</span>
+        <span className="text-[10px] text-gray-500 dark:text-gray-400 ml-1 select-none">Spacing</span>
+        <input
+          type="range"
+          min={40}
+          max={250}
+          value={nodeSpacing}
+          onChange={(e) => setNodeSpacing(Number(e.target.value))}
+          className="w-16 h-1 accent-blue-500"
+        />
+        <label className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 select-none ml-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showLeaves}
+            onChange={(e) => setShowLeaves(e.target.checked)}
+            className="w-3 h-3 accent-blue-500"
+          />
+          Leaves
+        </label>
+        {graphDomains.length > 1 && (
+          <GraphDomainFilter
+            domains={graphDomains}
+            selected={graphDomainFilter}
+            onChange={setGraphDomainFilter}
+          />
+        )}
         <button
           onClick={() => setFullscreen(!fullscreen)}
           className="ml-auto p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
@@ -1936,8 +2323,8 @@ function TermGraphInline({
       ) : empty || !graph ? (
         <div
           ref={containerRef}
-          className="overflow-hidden border border-gray-200 dark:border-gray-700 rounded"
-          style={{ height: fullscreen ? 'calc(80vh - 80px)' : '300px' }}
+          className={`overflow-hidden border border-gray-200 dark:border-gray-700 rounded ${fullscreen ? 'flex-1 min-h-0' : ''}`}
+          style={fullscreen ? undefined : { height: '300px' }}
         >
           <svg width="100%" height="100%" className="select-none">
             <g transform={`translate(50%,50%)`}>
@@ -1956,18 +2343,26 @@ function TermGraphInline({
         <>
           <div
             ref={containerRef}
-            className="overflow-hidden border border-gray-200 dark:border-gray-700 rounded cursor-grab active:cursor-grabbing"
-            style={{ height: fullscreen ? 'calc(80vh - 80px)' : '300px' }}
+            className={`overflow-hidden border border-gray-200 dark:border-gray-700 rounded cursor-grab active:cursor-grabbing ${fullscreen ? 'flex-1 min-h-0' : ''}`}
+            style={fullscreen ? undefined : { height: '300px' }}
             onWheel={handleWheel}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerUp}
           >
-            <svg ref={svgRef} width="100%" height="100%" className="select-none">
+            <svg ref={svgRef} width="100%" height="100%" viewBox={svgViewBox} className="select-none">
               {svgContent}
             </svg>
           </div>
+          {hoverNode && (
+            <div
+              className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-2 pointer-events-none"
+              style={{ left: hoverNode.x, top: hoverNode.y, maxHeight: '260px', overflow: 'hidden' }}
+            >
+              <NodeTooltip sessionId={sessionId} termName={hoverNode.name} />
+            </div>
+          )}
           {/* Legend */}
           <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-1">
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-blue-500" /> focal</span>
@@ -1989,7 +2384,7 @@ function TermGraphInline({
           onClick={() => setFullscreen(false)}
         >
           <div
-            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 overflow-auto"
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 overflow-auto flex flex-col"
             style={{ width: '80vw', height: '80vh', resize: 'both', minWidth: '400px', minHeight: '300px' }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -2137,6 +2532,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
 
   const [domainTree, setDomainTree] = useState<DomainTreeNode[]>([])
   const [domainFilterOpen, setDomainFilterOpen] = useState(false)
+  const [showIgnored, setShowIgnored] = useState(false)
 
   useEffect(() => {
     fetchTerms(sessionId)
@@ -2164,11 +2560,17 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     )
   }, [terms, search])
 
-  // Filter by status
+  // Filter by status and ignored
   const displayTerms = useMemo(() => {
-    if (!filters.status) return filteredTerms
-    return filteredTerms.filter((t) => t.status === filters.status)
-  }, [filteredTerms, filters.status])
+    let result = filteredTerms
+    if (!showIgnored) {
+      result = result.filter((t) => !t.ignored)
+    }
+    if (filters.status) {
+      result = result.filter((t) => t.status === filters.status)
+    }
+    return result
+  }, [filteredTerms, filters.status, showIgnored])
 
   // Build tree for tree view
   const tree = useMemo(() => {
@@ -2280,8 +2682,15 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
             {tab.label}
           </button>
         ))}
+        <button
+          onClick={() => setShowIgnored(!showIgnored)}
+          className={`ml-auto p-1 rounded ${showIgnored ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+          title={showIgnored ? 'Hide ignored terms' : 'Show ignored terms'}
+        >
+          <EyeSlashIcon className="w-3.5 h-3.5" />
+        </button>
         {search && (
-          <span className="text-xs text-gray-400 self-center ml-auto">
+          <span className="text-xs text-gray-400 self-center">
             {displayTerms.length} results
           </span>
         )}

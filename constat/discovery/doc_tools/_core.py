@@ -102,6 +102,9 @@ class _CoreMixin:
         self._graphql_types: list[str] = []
         self._graphql_fields: list[str] = []
 
+        # NER stop list (terms to filter during extraction)
+        self._stop_list: set[str] = set()
+
         # Cache directory for persisting document metadata
         if cache_dir:
             self._cache_dir = cache_dir
@@ -654,6 +657,7 @@ class _CoreMixin:
             session_id="__document__",
             schema_terms=schema_entities,
             api_terms=self._collect_api_terms(),
+            stop_list=self._stop_list,
         )
 
         # Extract entities from each chunk
