@@ -1268,12 +1268,10 @@ function TreeIcon({ className }: { className?: string }) {
   )
 }
 
-// Domain promote picker — assign/remove a term's domain
-// Promotion ladder: (none) → domain → system (admin only). No downgrade.
-// Term must be approved before promotion is available.
+// Domain move picker — assign/reassign/unassign a term's domain
+// Any term can be moved between domains. Cascade moves descendants too.
 // Collect all descendant terms (recursive via parent_id)
 function getDescendants(termName: string, allTerms: GlossaryTerm[]): GlossaryTerm[] {
-  // Find IDs that could be this term's parent reference
   const term = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
   if (!term) return []
   const parentIds = new Set<string>()
@@ -1287,19 +1285,6 @@ function getDescendants(termName: string, allTerms: GlossaryTerm[]): GlossaryTer
     result.push(...getDescendants(child.name, allTerms))
   }
   return result
-}
-
-// Can this term be directly promoted? Only defined terms that are approved.
-function canPromote(term: GlossaryTerm): boolean {
-  return term.glossary_status === 'defined' && term.status === 'approved'
-}
-
-// Does this term block a parent's cascade promotion?
-// Self-describing (entities) don't block — they're session-level and implicitly fine.
-// Only unapproved defined terms block.
-function blocksCascade(term: GlossaryTerm): boolean {
-  if (term.glossary_status === 'self_describing') return false
-  return term.status !== 'approved'
 }
 
 function DomainPromotePicker({
@@ -1316,15 +1301,11 @@ function DomainPromotePicker({
   const [treeNodes, setTreeNodes] = useState<DomainTreeNode[]>([])
   const [loading, setLoading] = useState(false)
   const [canPromoteToSystem, setCanPromoteToSystem] = useState(false)
-  const [confirmCascade, setConfirmCascade] = useState<{ target: string; descendants: GlossaryTerm[]; blocked: GlossaryTerm[] } | null>(null)
+  const [confirmCascade, setConfirmCascade] = useState<{ target: string | null; descendants: GlossaryTerm[] } | null>(null)
   const { terms: allTerms, updateTerm } = useGlossaryStore()
 
-  // Already at system level — no further promotion
-  if (currentDomain === 'system') return null
-
-  // Only defined + approved terms can be promoted
   const selfTerm = allTerms.find(t => t.name.toLowerCase() === termName.toLowerCase())
-  if (!selfTerm || !canPromote(selfTerm)) return null
+  if (!selfTerm) return null
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -1341,7 +1322,6 @@ function DomainPromotePicker({
           : nodes
       setTreeNodes(filterTree(tree))
     } catch {
-      // Fallback to flat list
       const { domains: allDomains } = await listDomains()
       const flat = (activeDomains.length > 0
         ? allDomains.filter(d => activeDomains.includes(d.filename))
@@ -1352,21 +1332,20 @@ function DomainPromotePicker({
     setLoading(false)
   }
 
-  const checkAndPromote = (target: string) => {
+  const checkAndMove = (target: string | null) => {
     const descendants = getDescendants(termName, allTerms)
-    const blocked = descendants.filter(d => blocksCascade(d))
-    if (blocked.length > 0) {
-      setConfirmCascade({ target, descendants, blocked })
+    if (descendants.length > 0) {
+      setConfirmCascade({ target, descendants })
       return
     }
-    executeCascade(target, descendants)
+    executeMove(target, [])
   }
 
-  const executeCascade = async (target: string, descendants: GlossaryTerm[]) => {
-    await updateTerm(sessionId, termName, { domain: target })
+  const executeMove = async (target: string | null, descendants: GlossaryTerm[]) => {
+    await updateTerm(sessionId, termName, { domain: target || '' })
     for (const d of descendants) {
-      if (canPromote(d) && d.domain !== target) {
-        await updateTerm(sessionId, d.name, { domain: target })
+      if (d.domain !== target) {
+        await updateTerm(sessionId, d.name, { domain: target || '' })
       }
     }
     setOpen(false)
@@ -1395,28 +1374,13 @@ function DomainPromotePicker({
             {confirmCascade ? (
               <>
                 <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Promote with children
+                  Move with {confirmCascade.descendants.length} descendant{confirmCascade.descendants.length > 1 ? 's' : ''}?
                 </div>
-                {confirmCascade.blocked.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="text-xs text-amber-600 dark:text-amber-400">
-                      {confirmCascade.blocked.length} descendant{confirmCascade.blocked.length > 1 ? 's' : ''} not yet approved:
-                    </div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400 ml-2 max-h-24 overflow-y-auto">
-                      {confirmCascade.blocked.map(d => (
-                        <div key={d.name}>{d.display_name} <span className="text-gray-400">({d.status || 'draft'})</span></div>
-                      ))}
-                    </div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                      These will be skipped. Promote the rest?
-                    </div>
-                  </div>
-                )}
-                {confirmCascade.descendants.filter(d => canPromote(d)).length > 0 && (
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    {confirmCascade.descendants.filter(d => canPromote(d)).length} descendant{confirmCascade.descendants.filter(d => canPromote(d)).length > 1 ? 's' : ''} will also be promoted.
-                  </div>
-                )}
+                <div className="text-xs text-gray-500 dark:text-gray-400 ml-2 max-h-24 overflow-y-auto">
+                  {confirmCascade.descendants.map(d => (
+                    <div key={d.name}>{d.display_name}</div>
+                  ))}
+                </div>
                 <div className="flex justify-end gap-2 pt-1">
                   <button
                     onClick={() => setConfirmCascade(null)}
@@ -1425,10 +1389,10 @@ function DomainPromotePicker({
                     Back
                   </button>
                   <button
-                    onClick={() => executeCascade(confirmCascade.target, confirmCascade.descendants)}
+                    onClick={() => executeMove(confirmCascade.target, confirmCascade.descendants)}
                     className="text-xs px-3 py-1.5 rounded bg-blue-500 text-white hover:bg-blue-600"
                   >
-                    Promote
+                    Move all
                   </button>
                 </div>
               </>
@@ -1446,12 +1410,20 @@ function DomainPromotePicker({
                   <div className="text-xs text-gray-400 py-2 text-center">Loading domains...</div>
                 ) : (
                   <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {currentDomain && (
+                      <button
+                        onClick={() => checkAndMove(null)}
+                        className="w-full text-left text-xs px-3 py-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700 mb-1 pb-2"
+                      >
+                        <div className="font-medium">Unassign domain</div>
+                      </button>
+                    )}
                     {(() => {
                       const renderNode = (node: DomainTreeNode, depth: number = 0): React.ReactNode => (
                         <div key={node.filename}>
                           {node.filename !== currentDomain && (
                             <button
-                              onClick={() => checkAndPromote(node.filename)}
+                              onClick={() => checkAndMove(node.filename)}
                               className="w-full text-left text-xs px-3 py-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
                               style={{ paddingLeft: `${depth * 12 + 12}px` }}
                             >
@@ -1464,16 +1436,16 @@ function DomainPromotePicker({
                       )
                       return treeNodes.map(n => renderNode(n))
                     })()}
-                    {canPromoteToSystem && (
+                    {canPromoteToSystem && currentDomain !== 'system' && (
                       <button
-                        onClick={() => checkAndPromote('system')}
+                        onClick={() => checkAndMove('system')}
                         className="w-full text-left text-xs px-3 py-2 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-t border-gray-100 dark:border-gray-700 mt-1 pt-2"
                       >
-                        <div className="font-medium">Promote to system</div>
+                        <div className="font-medium">Move to system</div>
                         <div className="text-purple-400 dark:text-purple-500">Available to all sessions</div>
                       </button>
                     )}
-                    {treeNodes.length === 0 && !canPromoteToSystem && (
+                    {treeNodes.length === 0 && !canPromoteToSystem && !currentDomain && (
                       <div className="text-xs text-gray-400 py-2 text-center">No domains available</div>
                     )}
                   </div>

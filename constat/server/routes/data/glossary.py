@@ -573,7 +573,7 @@ async def update_definition(
     if request.status is not None:
         updates["status"] = request.status
     if request.domain is not None:
-        updates["domain"] = request.domain
+        updates["domain"] = request.domain or None
     if request.semantic_type is not None:
         updates["semantic_type"] = request.semantic_type
     if request.ignored is not None:
