@@ -1989,8 +1989,8 @@ function TermGraphInline({
           onClick={() => setFullscreen(false)}
         >
           <div
-            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4"
-            style={{ width: '80vw', height: '80vh' }}
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 overflow-auto"
+            style={{ width: '80vw', height: '80vh', resize: 'both', minWidth: '400px', minHeight: '300px' }}
             onClick={(e) => e.stopPropagation()}
           >
             {graphContent}
