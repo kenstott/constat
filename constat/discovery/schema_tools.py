@@ -549,8 +549,9 @@ class SchemaDiscoveryTools:
                         "definition": chunk.content[:300],
                         "relevance": round(similarity, 3),
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                import logging as _log
+                _log.getLogger(__name__).warning(f"Glossary/relationship search failed: {e}", exc_info=True)
 
         # Add summary
         # noinspection PyTypeChecker
