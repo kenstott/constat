@@ -87,35 +87,35 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
 
   for (const t of terms) {
     const node = nodeMap.get(t.name.toLowerCase())!
+    const bucket = t.domain || (t.status === 'approved' ? '(system)' : '(user)')
     if (t.parent_id) {
       const parentTerm = byId.get(t.parent_id)
       const parentNode = parentTerm ? nodeMap.get(parentTerm.name.toLowerCase()) : null
       if (parentNode) {
         parentNode.children.push(node)
       } else {
-        // Root within its domain
-        const domain = t.domain || '(no domain)'
-        if (!domainRoots.has(domain)) domainRoots.set(domain, [])
-        domainRoots.get(domain)!.push(node)
+        if (!domainRoots.has(bucket)) domainRoots.set(bucket, [])
+        domainRoots.get(bucket)!.push(node)
       }
     } else {
-      const domain = t.domain || '(no domain)'
-      if (!domainRoots.has(domain)) domainRoots.set(domain, [])
-      domainRoots.get(domain)!.push(node)
+      if (!domainRoots.has(bucket)) domainRoots.set(bucket, [])
+      domainRoots.get(bucket)!.push(node)
     }
   }
 
   // If only one domain (or no domains), flatten — no domain grouping needed
   const domains = [...domainRoots.keys()]
   if (domains.length <= 1) {
-    return { roots: domainRoots.get(domains[0] || '(no domain)') || [], orphans }
+    return { roots: domainRoots.get(domains[0] || '(user)') || [], orphans }
   }
+
+  const bucketLabel = (d: string) => d === '(system)' ? 'System' : d === '(user)' ? 'User' : d
 
   // Multiple domains: create domain folder nodes
   const roots: TreeNode[] = domains.sort().map(domain => ({
     term: {
       name: `__domain__${domain}`,
-      display_name: domain === '(no domain)' ? 'Unassigned' : domain,
+      display_name: bucketLabel(domain),
       glossary_status: 'defined' as const,
       aliases: [],
       connected_resources: [],
@@ -2137,7 +2137,7 @@ function TermGraphInline({
         ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
         : ''
       return {
-        domain: domain === '__none__' ? 'Unassigned' : domain,
+        domain: domain === '__none__' ? 'System' : domain,
         path: pathD,
         fill: CLUSTER_COLORS[i % CLUSTER_COLORS.length],
         stroke: CLUSTER_STROKES[i % CLUSTER_STROKES.length],
