@@ -623,6 +623,7 @@ class CommandsMixin:
                 api_tools=None,
                 session_id=session_id,
                 user_id=user_id,
+                api_schema_manager=getattr(self.session, 'api_schema_manager', None),
             )
 
             result = tools.search_all(query, limit=15)

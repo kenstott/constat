@@ -13,7 +13,7 @@ These tools allow the LLM to discover database schemas on-demand
 rather than loading everything into the system prompt upfront.
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from constat.catalog.schema_manager import SchemaManager
 
@@ -33,6 +33,7 @@ class SchemaDiscoveryTools:
         allowed_databases: Optional[set[str]] = None,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        api_schema_manager: Optional[Any] = None,
     ):
         """Initialize schema discovery tools.
 
@@ -44,6 +45,7 @@ class SchemaDiscoveryTools:
                 are visible. If empty set, no databases are visible.
             session_id: Session ID for glossary enrichment
             user_id: User ID for user-scoped glossary
+            api_schema_manager: Optional APISchemaManager (fallback when api_tools is None)
         """
         self.schema_manager = schema_manager
         self.doc_tools = doc_tools
@@ -51,6 +53,7 @@ class SchemaDiscoveryTools:
         self.allowed_databases = allowed_databases
         self.session_id = session_id
         self.user_id = user_id
+        self.api_schema_manager = api_schema_manager
 
     def _is_database_allowed(self, db_name: str) -> bool:
         """Check if a database is allowed based on permissions."""
@@ -399,7 +402,7 @@ class SchemaDiscoveryTools:
         except Exception:
             pass  # Continue even if table search fails
 
-        # 2. Search APIs via API tools if available
+        # 2. Search APIs via API tools or API schema manager
         if self.api_tools:
             try:
                 api_results = self.api_tools.search_operations(query, limit=per_source_limit)
@@ -415,19 +418,40 @@ class SchemaDiscoveryTools:
                     })
             except Exception:
                 pass  # Continue even if API search fails
+        elif self.api_schema_manager:
+            try:
+                api_results = self.api_schema_manager.find_relevant_apis(query, limit=per_source_limit)
+                for r in api_results:
+                    results["apis"].append({
+                        "type": "api_operation",
+                        "name": r.get("endpoint", r.get("name", "")),
+                        "api": r.get("api_name", ""),
+                        "operation_type": r.get("type", ""),
+                        "relevance": round(r.get("similarity", 0), 3),
+                        "summary": r.get("description", ""),
+                    })
+            except Exception:
+                pass
 
         # 3. Search documents via doc tools if available
+        # Filter out glossary/relationship chunks (they have their own sections)
         if self.doc_tools:
             try:
-                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit)
+                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit + 5)
                 for r in doc_results:
+                    doc_name = r.get("document", "")
+                    if doc_name.startswith("glossary:") or doc_name.startswith("relationship:"):
+                        continue
+                    excerpt = r.get("excerpt", "")
                     results["documents"].append({
                         "type": "document",
-                        "name": r.get("document"),
+                        "name": doc_name,
                         "section": r.get("section"),
-                        "excerpt": r.get("excerpt", "")[:300] + "..." if len(r.get("excerpt", "")) > 300 else r.get("excerpt", ""),
+                        "excerpt": excerpt[:300] + "..." if len(excerpt) > 300 else excerpt,
                         "relevance": round(r.get("relevance", 0), 3),
                     })
+                    if len(results["documents"]) >= per_source_limit:
+                        break
             except Exception:
                 pass  # Continue even if doc search fails
 
