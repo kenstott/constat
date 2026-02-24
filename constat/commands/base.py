@@ -79,6 +79,14 @@ class KeyValueResult(CommandResult):
 
 
 @dataclass
+class JsonResult(CommandResult):
+    """Result containing structured JSON data."""
+    title: Optional[str] = None
+    data: Any = None
+    footer: Optional[str] = None
+
+
+@dataclass
 class ErrorResult(CommandResult):
     """Result indicating an error."""
     success: bool = False

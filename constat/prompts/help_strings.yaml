@@ -46,7 +46,7 @@ help_commands:
   - ["/preferences", "Show current preferences", "Preferences"]
   - ["/user [name]", "Show or set current user", "Preferences"]
   # Analysis
-  - ["/discover [scope] <query>", "Search data sources (database|api|document)", "Analysis"]
+  - ["/discover <query>", "Search all data sources (returns structured JSON)", "Analysis"]
   - ["/summarize <target>", "Summarize plan|session|facts|<table>", "Analysis"]
   - ["/prove", "Verify conversation claims with auditable proof", "Analysis"]
   - ["/correct <text>", "Record a correction for future reference", "Analysis"]
@@ -109,7 +109,7 @@ command_descriptions:
   apis: "List APIs"
   documents: "List documents"
   files: "List data files"
-  discover: "Semantic search across all data sources"
+  discover: "Search all data sources (returns structured JSON)"
   learnings: "Show learnings and rules"
   rule: "Add a new rule"
   rule-edit: "Edit an existing rule"

@@ -369,6 +369,16 @@ export async function getDomainTree(): Promise<DomainTreeNode[]> {
   return get('/domains/tree')
 }
 
+export async function moveDomainSource(body: {
+  source_type: 'databases' | 'apis' | 'documents'
+  source_name: string
+  from_domain: string
+  to_domain: string
+  session_id?: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-source', body)
+}
+
 export async function draftGlossaryDefinition(
   sessionId: string,
   name: string

@@ -14,6 +14,7 @@ from constat.commands.base import (
     ListResult,
     TextResult,
     KeyValueResult,
+    JsonResult,
     ErrorResult,
     HelpResult,
 )
@@ -42,6 +43,9 @@ def render_markdown(result: CommandResult) -> str:
 
     if isinstance(result, KeyValueResult):
         return _render_keyvalue_markdown(result)
+
+    if isinstance(result, JsonResult):
+        return _render_json_markdown(result)
 
     if isinstance(result, HelpResult):
         return _render_help_markdown(result)
@@ -128,6 +132,22 @@ def _render_keyvalue_markdown(result: KeyValueResult) -> str:
     return "\n".join(lines)
 
 
+def _render_json_markdown(result: JsonResult) -> str:
+    """Render JsonResult as Markdown code block."""
+    import json
+    lines = []
+    if result.title:
+        lines.append(f"**{result.title}**")
+        lines.append("")
+    lines.append("```json")
+    lines.append(json.dumps(result.data, indent=2, default=str))
+    lines.append("```")
+    if result.footer:
+        lines.append("")
+        lines.append(f"*{result.footer}*")
+    return "\n".join(lines)
+
+
 def _render_help_markdown(result: HelpResult) -> str:
     """Render HelpResult as Markdown."""
     # Group commands by category
@@ -188,6 +208,9 @@ def render_rich(result: CommandResult) -> Any:
 
     if isinstance(result, KeyValueResult):
         return _render_keyvalue_rich(result)
+
+    if isinstance(result, JsonResult):
+        return _render_json_rich(result)
 
     if isinstance(result, HelpResult):
         return _render_help_rich(result)
@@ -255,6 +278,23 @@ def _render_keyvalue_rich(result: KeyValueResult) -> Any:
         table.add_row(key, str(value))
 
     return table
+
+
+def _render_json_rich(result: JsonResult) -> Any:
+    """Render JsonResult as Rich Syntax."""
+    import json
+    from rich.syntax import Syntax
+    from rich.text import Text
+    from rich.console import Group
+
+    parts = []
+    if result.title:
+        parts.append(Text(result.title, style="bold"))
+    json_str = json.dumps(result.data, indent=2, default=str)
+    parts.append(Syntax(json_str, "json", theme="monokai", word_wrap=True))
+    if result.footer:
+        parts.append(Text(result.footer, style="dim"))
+    return Group(*parts)
 
 
 def _render_help_rich(result: HelpResult) -> Any:

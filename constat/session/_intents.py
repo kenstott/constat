@@ -684,6 +684,7 @@ Provide a brief, high-level summary of the key findings."""
             ListResult,
             TextResult,
             ErrorResult,
+            JsonResult,
         )
 
         # Parse the command
@@ -762,6 +763,22 @@ Provide a brief, high-level summary of the key findings."""
             return {
                 "success": result.success,
                 "output": result.content,
+                "meta_response": True,
+            }
+
+        elif isinstance(result, JsonResult):
+            import json as _json
+            lines = []
+            if result.title:
+                lines.append(f"**{result.title}**\n")
+            lines.append("```json")
+            lines.append(_json.dumps(result.data, indent=2, default=str))
+            lines.append("```")
+            if result.footer:
+                lines.append(f"\n*{result.footer}*")
+            return {
+                "success": result.success,
+                "output": "\n".join(lines),
                 "meta_response": True,
             }
 

@@ -32,6 +32,7 @@ import {
   draftGlossaryAliases,
   listDomains,
   getDomainTree,
+  moveDomainSource,
 } from '@/api/sessions'
 import type { DomainTreeNode } from '@/api/sessions'
 import { forceSimulation, forceLink, forceManyBody, forceCollide, forceX, forceY } from 'd3-force'
@@ -2374,6 +2375,127 @@ function TermGraphInline({
   )
 }
 
+// Modal to move a data source between domains
+function SourceMovePicker({
+  sourceName,
+  sourceType,
+  currentDomain,
+  sessionId,
+  onMoved,
+}: {
+  sourceName: string
+  sourceType: 'databases' | 'apis' | 'documents'
+  currentDomain: string
+  sessionId: string
+  onMoved: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [treeNodes, setTreeNodes] = useState<DomainTreeNode[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const handleOpen = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setOpen(true)
+    setLoading(true)
+    try {
+      const tree = await getDomainTree()
+      setTreeNodes(tree)
+    } catch {
+      const { domains: allDomains } = await listDomains()
+      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], children: [] })))
+    }
+    setLoading(false)
+  }
+
+  const executeMove = async (targetDomain: string) => {
+    await moveDomainSource({
+      source_type: sourceType,
+      source_name: sourceName,
+      from_domain: currentDomain,
+      to_domain: targetDomain,
+      session_id: sessionId,
+    })
+    setOpen(false)
+    onMoved()
+  }
+
+  const typeLabel = sourceType === 'databases' ? 'database' : sourceType === 'apis' ? 'API' : 'document'
+
+  return (
+    <span className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+      <span
+        role="button"
+        onClick={handleOpen}
+        className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 inline-flex text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+        title={`Move ${typeLabel} to another domain`}
+      >
+        <ArrowUpIcon className="w-3 h-3" />
+      </span>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false) }}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-sm w-full mx-4 p-4 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Move {typeLabel} "{sourceName}"
+            </div>
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              Currently in: <span className="font-medium">{currentDomain}</span>
+            </div>
+            {loading ? (
+              <div className="text-xs text-gray-400 py-2 text-center">Loading domains...</div>
+            ) : (
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {currentDomain !== 'system' && (
+                  <button
+                    onClick={() => executeMove('system')}
+                    className="w-full text-left text-xs px-3 py-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700 mb-1 pb-2"
+                  >
+                    <div className="font-medium">Unassign (move to system)</div>
+                  </button>
+                )}
+                {(() => {
+                  const renderNode = (node: DomainTreeNode, depth: number = 0): React.ReactNode => (
+                    <div key={node.filename}>
+                      {node.filename !== currentDomain && node.filename !== 'system' && (
+                        <button
+                          onClick={() => executeMove(node.filename)}
+                          className="w-full text-left text-xs px-3 py-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                          style={{ paddingLeft: `${depth * 12 + 12}px` }}
+                        >
+                          <div className="font-medium">{node.name}</div>
+                          <div className="text-gray-400">{node.path || node.filename}</div>
+                        </button>
+                      )}
+                      {node.children?.map(child => renderNode(child, depth + 1))}
+                    </div>
+                  )
+                  return treeNodes.map(n => renderNode(n))
+                })()}
+                {treeNodes.length === 0 && (
+                  <div className="text-xs text-gray-400 py-2 text-center">No domains available</div>
+                )}
+              </div>
+            )}
+            <div className="flex justify-end pt-1">
+              <button
+                onClick={() => setOpen(false)}
+                className="text-xs px-3 py-1.5 rounded text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </span>
+  )
+}
+
 // Domain filter checkbox tree
 function DomainFilterTree({
   tree,
@@ -2381,12 +2503,16 @@ function DomainFilterTree({
   onChange,
   open,
   onToggle,
+  sessionId,
+  onTreeRefresh,
 }: {
   tree: DomainTreeNode[]
   selected: string[]
   onChange: (selected: string[]) => void
   open: boolean
   onToggle: () => void
+  sessionId: string
+  onTreeRefresh?: () => void
 }) {
   // Collect all filenames under a node (inclusive)
   const collectFilenames = useCallback((node: DomainTreeNode): string[] => {
@@ -2427,10 +2553,19 @@ function DomainFilterTree({
       ? (selected[0] === 'system' ? 'System (root)' : tree.find(n => n.filename === selected[0])?.name || selected[0])
       : `${selected.length} domains`
 
+  const sourcesForNode = (node: DomainTreeNode): { name: string; type: 'databases' | 'apis' | 'documents'; label: string }[] => {
+    const items: { name: string; type: 'databases' | 'apis' | 'documents'; label: string }[] = []
+    for (const db of node.databases || []) items.push({ name: db, type: 'databases', label: 'db' })
+    for (const api of node.apis || []) items.push({ name: api, type: 'apis', label: 'api' })
+    for (const doc of node.documents || []) items.push({ name: doc, type: 'documents', label: 'doc' })
+    return items
+  }
+
   const renderNode = (node: DomainTreeNode, depth: number = 0): React.ReactNode => {
     const nodeFiles = collectFilenames(node)
     const allChecked = nodeFiles.every(f => selected.includes(f))
     const someChecked = !allChecked && nodeFiles.some(f => selected.includes(f))
+    const sources = sourcesForNode(node)
     return (
       <div key={node.filename}>
         <label
@@ -2449,6 +2584,23 @@ function DomainFilterTree({
             <span className="text-gray-400 text-[10px]">+{nodeFiles.length - 1}</span>
           )}
         </label>
+        {sources.length > 0 && sources.map(src => (
+          <div
+            key={`${node.filename}:${src.type}:${src.name}`}
+            className="flex items-center gap-1 py-0.5 text-[10px] text-gray-400 dark:text-gray-500"
+            style={{ paddingLeft: `${depth * 14 + 24}px` }}
+          >
+            <span className="bg-gray-100 dark:bg-gray-700 rounded px-1">{src.label}</span>
+            <span className="truncate">{src.name}</span>
+            <SourceMovePicker
+              sourceName={src.name}
+              sourceType={src.type}
+              currentDomain={node.filename}
+              sessionId={sessionId}
+              onMoved={() => onTreeRefresh?.()}
+            />
+          </div>
+        ))}
         {node.children?.map(child => renderNode(child, depth + 1))}
       </div>
     )
@@ -2511,13 +2663,17 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     fetchDeprecated(sessionId)
   }, [sessionId, filters.scope, filters.domain, fetchTerms, fetchDeprecated])
 
-  useEffect(() => {
+  const refreshDomainTree = useCallback(() => {
     getDomainTree()
       .then(setDomainTree)
       .catch(() => listDomains().then(r => setDomainTree(
         r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], children: [] }))
       )).catch(() => {}))
   }, [])
+
+  useEffect(() => {
+    refreshDomainTree()
+  }, [refreshDomainTree])
 
   // Filter terms by search
   const filteredTerms = useMemo(() => {
@@ -2676,6 +2832,8 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           onChange={(selected) => setFilter({ domain: selected.length > 0 ? selected.join(',') : undefined })}
           open={domainFilterOpen}
           onToggle={() => setDomainFilterOpen(!domainFilterOpen)}
+          sessionId={sessionId}
+          onTreeRefresh={refreshDomainTree}
         />
       )}
 

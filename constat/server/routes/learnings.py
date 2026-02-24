@@ -22,6 +22,7 @@ from constat.server.persona_config import require_write
 from constat.core.config import Config
 from constat.server.auth import CurrentUserId
 from constat.server.config import ServerConfig
+from constat.server.session_manager import SessionManager
 from constat.server.models import (
     ConfigResponse,
     DomainDetailResponse,
@@ -50,6 +51,11 @@ def get_config(request: Request) -> Config:
 def get_server_config(request: Request) -> ServerConfig:
     """Dependency to get server config from app state."""
     return request.app.state.server_config
+
+
+def get_session_manager(request: Request) -> SessionManager:
+    """Dependency to get session manager from app state."""
+    return request.app.state.session_manager
 
 
 # In-memory learnings store (would use LearningStore in production)
@@ -623,6 +629,102 @@ async def update_domain_content(
         "filename": filename,
         "path": str(domain_path),
     }
+
+
+@router.post("/domains/move-source")
+async def move_domain_source(
+    body: dict,
+    config: Config = Depends(get_config),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Move a data source (database/api/document) between domains.
+
+    Reads both domain YAML files, moves the source entry, writes both files,
+    reloads the domain configs in-place, and triggers entity refresh.
+    """
+    import yaml
+    from constat.core.config import DomainConfig
+
+    source_type = body.get("source_type")
+    source_name = body.get("source_name")
+    from_domain = body.get("from_domain")
+    to_domain = body.get("to_domain")
+    session_id = body.get("session_id")
+
+    if source_type not in ("databases", "apis", "documents"):
+        raise HTTPException(status_code=400, detail="source_type must be databases, apis, or documents")
+    if not source_name or not from_domain or not to_domain:
+        raise HTTPException(status_code=400, detail="source_name, from_domain, to_domain are required")
+    if from_domain == to_domain:
+        raise HTTPException(status_code=400, detail="from_domain and to_domain must differ")
+
+    # Resolve file paths — "system" maps to root config.yaml
+    def _resolve_path(domain_key: str) -> Path:
+        if domain_key == "system":
+            return Path(config.config_dir) / "config.yaml"
+        dcfg = config.domains.get(domain_key)
+        if not dcfg:
+            raise HTTPException(status_code=404, detail=f"Domain not found: {domain_key}")
+        if not dcfg.source_path:
+            raise HTTPException(status_code=400, detail=f"Domain has no source path: {domain_key}")
+        p = Path(dcfg.source_path)
+        if not p.exists():
+            raise HTTPException(status_code=404, detail=f"Domain file not found: {p}")
+        return p
+
+    from_path = _resolve_path(from_domain)
+    to_path = _resolve_path(to_domain)
+
+    # Read and parse both files
+    from_data = yaml.safe_load(from_path.read_text())
+    to_data = yaml.safe_load(to_path.read_text())
+
+    # Verify source exists in from_domain
+    from_section = from_data.get(source_type)
+    if not isinstance(from_section, dict) or source_name not in from_section:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{source_type}.{source_name} not found in {from_domain}",
+        )
+
+    # Verify no naming conflict in to_domain
+    to_section = to_data.get(source_type)
+    if isinstance(to_section, dict) and source_name in to_section:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{source_type}.{source_name} already exists in {to_domain}",
+        )
+
+    # Move the entry
+    entry = from_section.pop(source_name)
+    if to_section is None:
+        to_data[source_type] = {}
+    to_data[source_type][source_name] = entry
+
+    # Write both files
+    from_path.write_text(yaml.safe_dump(from_data, default_flow_style=False, sort_keys=False))
+    to_path.write_text(yaml.safe_dump(to_data, default_flow_style=False, sort_keys=False))
+
+    # Reload domain configs in-place
+    for domain_key in (from_domain, to_domain):
+        if domain_key == "system":
+            continue
+        try:
+            path = Path(config.domains[domain_key].source_path)
+            refreshed = DomainConfig.from_yaml(path)
+            config.domains[domain_key] = refreshed
+        except Exception as e:
+            logger.warning(f"Failed to reload domain {domain_key}: {e}")
+
+    # Trigger entity refresh for the session
+    if session_id:
+        try:
+            session_manager.resolve_config(session_id)
+            session_manager.refresh_entities_async(session_id)
+        except Exception as e:
+            logger.warning(f"Failed to refresh entities for session {session_id}: {e}")
+
+    return {"status": "moved"}
 
 
 # ============================================================================

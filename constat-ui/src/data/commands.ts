@@ -60,7 +60,7 @@ export const COMMANDS: CommandDef[] = [
   { command: '/user', description: 'Show or set current user', category: 'Preferences', argType: 'text' },
 
   // Analysis
-  { command: '/discover', description: 'Search data sources', category: 'Analysis', argType: 'scope' },
+  { command: '/discover', description: 'Search all data sources (returns structured JSON)', category: 'Analysis', argType: 'text' },
   { command: '/summarize', description: 'Summarize plan|session|facts|<table>', category: 'Analysis', argType: 'entity' },
   { command: '/prove', description: 'Verify conversation claims with auditable proof', category: 'Analysis' },
   { command: '/correct', description: 'Record a correction for future reference', category: 'Analysis', argType: 'text' },

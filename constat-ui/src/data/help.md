@@ -69,7 +69,7 @@ Type `/` in the input to see autocomplete. Key commands:
 
 | Command | Description |
 |---------|-------------|
-| `/discover <scope>` | Search data sources (database, api, document) |
+| `/discover <query>` | Search all data sources (returns structured JSON) |
 | `/summarize <target>` | Summarize plan, session, facts, or a table |
 | `/prove` | Verify claims with auditable proof |
 | `/correct <text>` | Record a correction as a learning |

@@ -595,114 +595,49 @@ class CommandsMixin:
             log.write(Text(f"Error: {e}", style="red"))
 
     async def _discover(self: "ConstatREPLApp", args: str) -> None:
-        """Unified semantic search across ALL data sources."""
+        """Search all data sources and display structured JSON results."""
         log = self.query_one("#output-log", OutputLog)
         status_bar = self.query_one(StatusBar)
 
         if not args.strip():
-            log.write(Text("Usage: /discover [scope] <query>", style="yellow"))
-            log.write(Text("  scope: database|api|document (optional)", style="dim"))
-            log.write(Text("  query: semantic search terms", style="dim"))
+            log.write(Text("Usage: /discover <query>", style="yellow"))
+            log.write(Text("  Example: /discover employee compensation", style="dim"))
             return
 
-        parts = args.strip().split()
-        source_filter = None
-        query_parts = parts
-
-        scope_map = {
-            "database": "schema", "db": "schema", "databases": "schema",
-            "table": "schema", "tables": "schema",
-            "api": "api", "apis": "api",
-            "document": "document", "documents": "document",
-            "doc": "document", "docs": "document",
-        }
-
-        if parts and parts[0].lower() in scope_map:
-            source_filter = scope_map[parts[0].lower()]
-            query_parts = parts[1:]
-
-        if not query_parts:
-            log.write(Text("Please provide a search query.", style="yellow"))
-            return
-
-        query = " ".join(query_parts)
+        query = args.strip()
         status_bar.update_status(status_message=f"Searching: {query[:40]}...")
 
         try:
-            vector_store = None
-            if self.session:
-                if hasattr(self.session, 'schema_manager') and self.session.schema_manager:
-                    vector_store = getattr(self.session.schema_manager, '_vector_store', None)
-                if not vector_store and hasattr(self.session, 'doc_tools') and self.session.doc_tools:
-                    vector_store = getattr(self.session.doc_tools, '_vector_store', None)
-
-            if not vector_store:
-                log.write(Text("No vector store available.", style="yellow"))
+            if not self.session or not hasattr(self.session, 'schema_manager') or not self.session.schema_manager:
+                log.write(Text("No schema manager available.", style="yellow"))
                 return
 
-            from constat.embedding_loader import EmbeddingModelLoader
-            import numpy as np
-            model = EmbeddingModelLoader.get_instance().get_model()
-            query_embedding = model.encode(query, convert_to_numpy=True)
-            if isinstance(query_embedding, list):
-                query_embedding = np.array(query_embedding)
+            from constat.discovery.schema_tools import SchemaDiscoveryTools
 
-            enriched_results = vector_store.search_enriched(
-                query_embedding=query_embedding,
-                limit=20,
+            session_id = getattr(self.session, 'session_id', None)
+            user_id = self.user_id
+
+            tools = SchemaDiscoveryTools(
+                schema_manager=self.session.schema_manager,
+                doc_tools=getattr(self.session, 'doc_tools', None),
+                api_tools=None,
+                session_id=session_id,
+                user_id=user_id,
             )
 
-            def get_source_type(document_name: str) -> str:
-                if document_name.startswith("schema:"):
-                    return "schema"
-                elif document_name.startswith("api:"):
-                    return "api"
-                return "document"
+            result = tools.search_all(query, limit=15)
 
-            if source_filter:
-                enriched_results = [
-                    r for r in enriched_results
-                    if get_source_type(r.chunk.document_name) == source_filter
-                ]
+            json_str = json.dumps(result, indent=2, default=str)
+            log.write(Text(f"Discovery: {query}", style="bold"))
+            log.write(Syntax(json_str, "json", theme="monokai", word_wrap=True))
 
-            enriched_results = [r for r in enriched_results if r.score >= 0.3]
-
-            if not enriched_results:
-                scope_str = f" in {source_filter}" if source_filter else ""
-                log.write(Text(f"No results found for '{query}'{scope_str}.", style="dim"))
-                return
-
-            scope_str = f" ({source_filter})" if source_filter else ""
-            log.write(Text(f"Found {len(enriched_results)} matches{scope_str}:", style="bold"))
-
-            table = Table(show_header=True, box=None, padding=(0, 1))
-            table.add_column("Score", style="dim", width=5)
-            table.add_column("Source", style="cyan", width=10)
-            table.add_column("Name", style="bold", width=30)
-            table.add_column("Content", style="dim")
-
-            for r in enriched_results:
-                score = f"{r.score:.2f}"
-                doc_name = r.chunk.document_name
-                source_type = get_source_type(doc_name)
-
-                if source_type == "schema":
-                    source_display = "DATABASE"
-                    name = doc_name.replace("schema:", "")
-                elif source_type == "api":
-                    source_display = "API"
-                    name = doc_name.replace("api:", "")
-                else:
-                    source_display = "DOCUMENT"
-                    name = doc_name
-
-                content_preview = r.chunk.content[:60].replace("\n", " ")
-                if len(r.chunk.content) > 60:
-                    content_preview += "..."
-
-                table.add_row(score, source_display, name, content_preview)
-
-            log.write(table)
+            counts = (
+                f"tables={len(result.get('tables', []))} "
+                f"apis={len(result.get('apis', []))} "
+                f"documents={len(result.get('documents', []))} "
+                f"glossary={len(result.get('glossary', []))}"
+            )
+            log.write(Text(counts, style="dim"))
             status_bar.update_status(status_message="Search complete")
 
         except Exception as e:

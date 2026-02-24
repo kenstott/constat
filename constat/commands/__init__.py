@@ -14,6 +14,7 @@ from constat.commands.base import (
     ListResult,
     TextResult,
     KeyValueResult,
+    JsonResult,
     HelpResult,
     ErrorResult,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "ListResult",
     "TextResult",
     "KeyValueResult",
+    "JsonResult",
     "HelpResult",
     "ErrorResult",
     # Registry

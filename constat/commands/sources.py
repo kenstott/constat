@@ -143,137 +143,38 @@ def files_command(ctx: CommandContext) -> ListResult:
     )
 
 
-def discover_command(ctx: CommandContext) -> TableResult | ErrorResult:
-    """Unified semantic search across all data sources (databases, APIs, documents).
+def discover_command(ctx: CommandContext) -> "JsonResult | ErrorResult":
+    """Search all data sources and return structured JSON results.
 
     Usage:
-        /discover <query>           - Search all sources
-        /discover database <query>  - Search database tables/columns only
-        /discover api <query>       - Search API endpoints only
-        /discover document <query>  - Search documents only
+        /discover <query>  - Search all sources (tables, APIs, documents, glossary)
     """
-    import numpy as np
-    from constat.embedding_loader import EmbeddingModelLoader
+    from constat.commands.base import JsonResult
+    from constat.discovery.schema_tools import SchemaDiscoveryTools
 
     args = ctx.args.strip()
     if not args:
-        return TableResult(
-            success=True,
-            title="Usage",
-            columns=["Command", "Description"],
-            rows=[
-                ["/discover <query>", "Search all sources"],
-                ["/discover database <query>", "Search database tables/columns"],
-                ["/discover api <query>", "Search API endpoints"],
-                ["/discover document <query>", "Search documents"],
-            ],
-            footer="Example: /discover performance review",
-        )
+        return ErrorResult(error="Usage: /discover <query>\nExample: /discover employee compensation")
 
-    # Parse scope filter
-    parts = args.split()
-    source_filter = None
-    scope_map = {
-        "database": "schema", "db": "schema", "databases": "schema",
-        "table": "schema", "tables": "schema",
-        "api": "api", "apis": "api",
-        "document": "document", "documents": "document", "doc": "document", "docs": "document",
-    }
-
-    if parts and parts[0].lower() in scope_map:
-        source_filter = scope_map[parts[0].lower()]
-        query = " ".join(parts[1:])
-    else:
-        query = args
-
-    if not query:
-        return ErrorResult(error="Please provide a search query.")
-
-    # Get vector store
-    vector_store = None
     session = ctx.session
-    if hasattr(session, 'schema_manager') and session.schema_manager:
-        vector_store = getattr(session.schema_manager, '_vector_store', None)
-    if not vector_store and hasattr(session, 'doc_tools') and session.doc_tools:
-        vector_store = getattr(session.doc_tools, '_vector_store', None)
+    if not hasattr(session, 'schema_manager') or not session.schema_manager:
+        return ErrorResult(error="No schema manager available.")
 
-    if not vector_store:
-        return ErrorResult(error="No vector store available.")
+    session_id = getattr(session, 'session_id', None)
+    user_id = getattr(session, 'user_id', None)
 
-    # Embed query and search
-    model = EmbeddingModelLoader.get_instance().get_model()
-    query_embedding = model.encode(query, convert_to_numpy=True)
-    if isinstance(query_embedding, list):
-        query_embedding = np.array(query_embedding)
-
-    # Get active domain IDs for filtering
-    domain_ids = None
-    if hasattr(session, 'doc_tools') and session.doc_tools:
-        domain_ids = getattr(session.doc_tools, '_active_domain_ids', None)
-
-    # Get session_id for entity lookup
-    session_id = getattr(ctx, 'session_id', None) or getattr(session, 'session_id', None)
-
-    # Search chunks - base + active domains, with entities
-    enriched_results = vector_store.search_enriched(
-        query_embedding=query_embedding,
-        limit=15,
-        domain_ids=domain_ids,
+    tools = SchemaDiscoveryTools(
+        schema_manager=session.schema_manager,
+        doc_tools=getattr(session, 'doc_tools', None),
+        api_tools=None,
         session_id=session_id,
+        user_id=user_id,
     )
 
-    # Filter by source type
-    if source_filter:
-        enriched_results = [
-            r for r in enriched_results
-            if r.chunk.source == source_filter
-        ]
+    result = tools.search_all(args, limit=15)
 
-    # Filter by minimum score
-    enriched_results = [r for r in enriched_results if r.score >= 0.3]
-
-    if not enriched_results:
-        scope_str = f" in {source_filter}" if source_filter else ""
-        return TableResult(
-            success=True,
-            title="Discovery Results",
-            columns=["Score", "Type", "Name", "Classifiers", "Content"],
-            rows=[],
-            footer=f"No results found for '{query}'{scope_str}.",
-        )
-
-    # Build result rows
-    rows = []
-    for r in enriched_results:
-        score = f"{r.score:.2f}"
-
-        # Use granular chunk_type (db_table, api_endpoint, graphql_field, etc.)
-        chunk_type = r.chunk.chunk_type.value if hasattr(r.chunk.chunk_type, 'value') else str(r.chunk.chunk_type)
-
-        # Use document_name as the name
-        name = r.chunk.document_name
-
-        # Collect all unique classifiers (ner_type + semantic_type) from entities
-        classifiers = set()
-        for e in r.entities:
-            if e.ner_type:
-                classifiers.add(e.ner_type)
-            if e.semantic_type:
-                classifiers.add(e.semantic_type)
-        classifiers_str = ", ".join(sorted(classifiers)) if classifiers else "-"
-
-        # Truncate content
-        content = r.chunk.content[:40].replace("\n", " ")
-        if len(r.chunk.content) > 40:
-            content += "..."
-
-        rows.append([score, chunk_type, name, classifiers_str, content])
-
-    scope_str = f" ({source_filter})" if source_filter else ""
-    return TableResult(
-        success=True,
-        title=f"Discovery Results{scope_str}",
-        columns=["Score", "Type", "Name", "Classifiers", "Content"],
-        rows=rows,
-        footer=f"Found {len(rows)} matches for '{query}'",
+    return JsonResult(
+        title=f"Discovery: {args}",
+        data=result,
+        footer=f"tables={len(result.get('tables', []))} apis={len(result.get('apis', []))} documents={len(result.get('documents', []))} glossary={len(result.get('glossary', []))}",
     )

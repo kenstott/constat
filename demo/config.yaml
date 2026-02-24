@@ -83,6 +83,15 @@ system_prompt: |
   - orders.customer_id -> customers.customer_id
   - order_items.product_id -> products.product_id
 
+ner_stop_list:
+  - api
+  - length
+  - string
+  - int
+  - integer
+  - graphql
+  - JSON
+
 # External APIs (examples - these are public demo APIs)
 apis:
   countries:
