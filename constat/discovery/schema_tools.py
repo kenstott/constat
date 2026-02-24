@@ -510,8 +510,10 @@ class SchemaDiscoveryTools:
 
                         # Connected resources via resolve_physical_resources
                         from constat.discovery.glossary_generator import resolve_physical_resources
+                        active_domains = getattr(self.doc_tools, '_active_domain_ids', None)
                         resources = resolve_physical_resources(
                             term.name, self.session_id or "", vs,
+                            domain_ids=active_domains,
                             user_id=self.user_id,
                         )
                         if resources:
