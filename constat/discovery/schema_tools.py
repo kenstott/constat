@@ -527,6 +527,16 @@ class SchemaDiscoveryTools:
                                 }
                                 for r in resources
                             ]
+                        # DEBUG: show what we tried
+                        entry["_debug"] = {
+                            "term_name": term.name,
+                            "session_id": self.session_id,
+                            "user_id": self.user_id,
+                            "active_domains": active_domains,
+                            "resources_found": len(resources),
+                            "entity_direct": bool(vs.find_entity_by_name(term.name, domain_ids=active_domains, session_id=self.session_id)),
+                            "entity_no_filter": bool(vs.find_entity_by_name(term.name)),
+                        }
                     else:
                         entry["definition"] = chunk.content[:300]
 
