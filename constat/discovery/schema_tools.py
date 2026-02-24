@@ -486,40 +486,51 @@ class SchemaDiscoveryTools:
                     terms_by_name = {t.name.lower(): t for t in fetched}
 
                 for chunk_id, similarity, chunk in glossary_hits:
-                    name = chunk.document_name.replace("glossary:", "")
-                    term = terms_by_name.get(name.lower())
+                    term_key = chunk.document_name.replace("glossary:", "")
+                    term = terms_by_name.get(term_key.lower())
 
-                    entry = {
+                    entry: dict[str, Any] = {
                         "type": "glossary_term",
-                        "name": name,
+                        "name": term.display_name if term else term_key,
                         "relevance": round(similarity, 3),
                     }
 
                     if term:
                         entry["definition"] = term.definition
-                        entry["aliases"] = term.aliases or []
+                        if term.aliases:
+                            entry["aliases"] = term.aliases
                         entry["status"] = term.status
 
                         # Parent name
                         if term.parent_id:
                             parent = vs.get_glossary_term_by_id(term.parent_id)
-                            entry["parent"] = parent.display_name if parent else None
+                            if parent:
+                                entry["parent"] = parent.display_name
 
-                        # 1st-order SVO relationships
-                        entity = vs.find_entity_by_name(name, session_id=self.session_id)
+                        # Find entity by canonical name (not hash ID)
+                        entity = vs.find_entity_by_name(term.name, session_id=self.session_id)
                         if entity:
+                            # SVO relationships
                             rels = vs.get_relationships_for_entity(entity.id, self.session_id)
-                            entry["relationships"] = [
-                                f"{r['subject_name']} {r['verb']} {r['object_name']}"
-                                for r in rels[:5]
-                            ]
-                            # Physical source count (exclude glossary/relationship chunks)
+                            if rels:
+                                entry["relationships"] = [
+                                    f"{r['subject_name']} {r['verb']} {r['object_name']}"
+                                    for r in rels[:5]
+                                ]
+
+                            # Connected data sources (tables, APIs, docs)
                             chunks_for = vs.get_chunks_for_entity(entity.id, limit=50)
-                            sources = set(
-                                c.document_name for _, c, _ in chunks_for
-                                if not c.document_name.startswith("glossary:") and not c.document_name.startswith("relationship:")
-                            )
-                            entry["source_count"] = len(sources)
+                            sources = []
+                            seen = set()
+                            for _, c, _ in chunks_for:
+                                dn = c.document_name
+                                if dn.startswith("glossary:") or dn.startswith("relationship:"):
+                                    continue
+                                if dn not in seen:
+                                    seen.add(dn)
+                                    sources.append(dn)
+                            if sources:
+                                entry["sources"] = sources
                     else:
                         entry["definition"] = chunk.content[:300]
 
