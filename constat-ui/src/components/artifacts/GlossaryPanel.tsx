@@ -1,6 +1,6 @@
 // Glossary Panel — unified glossary view replacing EntityAccordion
 
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import {
   ChevronRightIcon,
   MagnifyingGlassIcon,
@@ -1494,10 +1494,10 @@ const NODE_STYLES: Record<string, { fill: string; r: number }> = {
   relationship: { fill: '#9ca3af', r: 16 },
 }
 
-const GRAPH_W = 460
-const GRAPH_H = 200
-const GRAPH_MODAL_W = 800
-const GRAPH_MODAL_H = 600
+const GRAPH_W = 800
+const GRAPH_H = 600
+const GRAPH_MODAL_W = 1200
+const GRAPH_MODAL_H = 900
 
 function TermGraphInline({
   sessionId,
@@ -1511,6 +1511,13 @@ function TermGraphInline({
   const [empty, setEmpty] = useState(false)
   const [depth, setDepth] = useState(1)
   const [fullscreen, setFullscreen] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const [layout, setLayout] = useState<'force' | 'tree-v' | 'tree-h'>('force')
+  const svgRef = useRef<SVGSVGElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   const gw = fullscreen ? GRAPH_MODAL_W : GRAPH_W
   const gh = fullscreen ? GRAPH_MODAL_H : GRAPH_H
@@ -1613,58 +1620,99 @@ function TermGraphInline({
         return
       }
 
-      // Scale simulation parameters with node count
-      const nodeCount = nodeArr.length
-      const linkDist = nodeCount > 15 ? 100 : 150
-      const chargeStr = nodeCount > 15 ? -300 : -500
-      const collideExtra = nodeCount > 15 ? 8 : 12
-
-      // Build simulation-friendly copies (d3 mutates these in place)
-      interface SimNode {
-        id: string
-        label: string
-        type: PositionedNode['type']
-        depth: number
-        x?: number
-        y?: number
-        fx?: number | null
-        fy?: number | null
-      }
-      const simNodes: SimNode[] = nodeArr.map((n) => ({ ...n }))
-      const simEdges = rawEdges.map((e) => ({ source: e.source, target: e.target }))
-
+      let posNodes: PositionedNode[]
       const cx = gw / 2
       const cy = gh / 2
-      for (const n of simNodes) {
-        if (n.type === 'focal' && n.depth === 0) { n.fx = cx; n.fy = cy }
-      }
 
-      const sim = forceSimulation<SimNode>(simNodes)
-        .force('link', forceLink<SimNode, { source: string; target: string }>(simEdges).id((d) => d.id).distance(linkDist))
-        .force('charge', forceManyBody().strength(chargeStr))
-        .force('x', forceX<SimNode>(cx).strength(0.05))
-        .force('y', forceY<SimNode>(cy).strength(0.05))
-        .force('collide', forceCollide<SimNode>().radius((d) => {
-          const baseR = NODE_STYLES[d.type]?.r || 16
-          return Math.max(10, baseR - (d.depth * 2)) + collideExtra
-        }))
-        .stop()
+      if (layout === 'force') {
+        // Force-directed layout
+        const nodeCount = nodeArr.length
+        const linkDist = nodeCount > 15 ? 100 : 150
+        const chargeStr = nodeCount > 15 ? -300 : -500
+        const collideExtra = nodeCount > 15 ? 8 : 12
 
-      for (let i = 0; i < 200; i++) sim.tick()
-
-      // Produce clean positioned output (new objects, no d3 refs)
-      const posNodes: PositionedNode[] = simNodes.map((n) => {
-        const baseR = NODE_STYLES[n.type]?.r || 16
-        const r = Math.max(10, baseR - (n.depth * 2))
-        return {
-          id: n.id,
-          label: n.label,
-          type: n.type,
-          depth: n.depth,
-          x: Math.max(r + 40, Math.min(gw - r - 40, n.x ?? cx)),
-          y: Math.max(r + 20, Math.min(gh - r - 20, n.y ?? cy)),
+        interface SimNode {
+          id: string; label: string; type: PositionedNode['type']; depth: number
+          x?: number; y?: number; fx?: number | null; fy?: number | null
         }
-      })
+        const simNodes: SimNode[] = nodeArr.map((n) => ({ ...n }))
+        const simEdges = rawEdges.map((e) => ({ source: e.source, target: e.target }))
+        for (const n of simNodes) {
+          if (n.type === 'focal' && n.depth === 0) { n.fx = cx; n.fy = cy }
+        }
+
+        const sim = forceSimulation<SimNode>(simNodes)
+          .force('link', forceLink<SimNode, { source: string; target: string }>(simEdges).id((d) => d.id).distance(linkDist))
+          .force('charge', forceManyBody().strength(chargeStr))
+          .force('x', forceX<SimNode>(cx).strength(0.05))
+          .force('y', forceY<SimNode>(cy).strength(0.05))
+          .force('collide', forceCollide<SimNode>().radius((d) => {
+            const baseR = NODE_STYLES[d.type]?.r || 16
+            return Math.max(10, baseR - (d.depth * 2)) + collideExtra
+          }))
+          .stop()
+        for (let i = 0; i < 200; i++) sim.tick()
+
+        posNodes = simNodes.map((n) => ({
+          id: n.id, label: n.label, type: n.type, depth: n.depth,
+          x: n.x ?? cx, y: n.y ?? cy,
+        }))
+      } else {
+        // Tree layout (vertical or horizontal)
+        const isHoriz = layout === 'tree-h'
+        // Build adjacency from edges (source→target)
+        const children = new Map<string, string[]>()
+        const hasParent = new Set<string>()
+        for (const e of rawEdges) {
+          if (!children.has(e.source)) children.set(e.source, [])
+          children.get(e.source)!.push(e.target)
+          hasParent.add(e.target)
+        }
+        // Find roots (no incoming edges)
+        const roots = nodeArr.filter(n => !hasParent.has(n.id))
+        if (roots.length === 0 && nodeArr.length > 0) roots.push(nodeArr[0])
+
+        // BFS assign levels + horizontal position within level
+        const levelMap = new Map<string, number>()
+        const levelNodes = new Map<number, string[]>()
+        const queue: string[] = roots.map(r => r.id)
+        for (const r of roots) levelMap.set(r.id, 0)
+        let qi = 0
+        while (qi < queue.length) {
+          const nid = queue[qi++]
+          const lvl = levelMap.get(nid)!
+          if (!levelNodes.has(lvl)) levelNodes.set(lvl, [])
+          levelNodes.get(lvl)!.push(nid)
+          for (const child of children.get(nid) || []) {
+            if (!levelMap.has(child)) {
+              levelMap.set(child, lvl + 1)
+              queue.push(child)
+            }
+          }
+        }
+        // Place unvisited nodes
+        for (const n of nodeArr) {
+          if (!levelMap.has(n.id)) {
+            const lvl = (levelMap.get(roots[0]?.id) ?? 0) + 1
+            levelMap.set(n.id, lvl)
+            if (!levelNodes.has(lvl)) levelNodes.set(lvl, [])
+            levelNodes.get(lvl)!.push(n.id)
+          }
+        }
+
+        const spacing = isHoriz ? { level: 160, node: 60 } : { level: 80, node: 140 }
+        const startX = 80
+        const startY = 60
+
+        posNodes = nodeArr.map((n) => {
+          const lvl = levelMap.get(n.id) ?? 0
+          const siblings = levelNodes.get(lvl) || [n.id]
+          const idx = siblings.indexOf(n.id)
+          const x = isHoriz ? startX + lvl * spacing.level : startX + idx * spacing.node + ((gw - siblings.length * spacing.node) / 2)
+          const y = isHoriz ? startY + idx * spacing.node + ((gh - siblings.length * spacing.node) / 2) : startY + lvl * spacing.level
+          return { id: n.id, label: n.label, type: n.type, depth: n.depth, x, y }
+        })
+      }
 
       const posEdges: PositionedEdge[] = rawEdges.map((e) => ({
         sourceId: e.source,
@@ -1684,11 +1732,69 @@ function TermGraphInline({
     })
 
     return () => { cancelled = true }
-  }, [sessionId, termName, depth, fullscreen])
+  }, [sessionId, termName, depth, fullscreen, layout])
+
+  // Reset zoom/pan when graph changes
+  useEffect(() => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+  }, [graph])
 
   const handleNodeClick = (name: string) => {
     navigateToTerm(name)
   }
+
+  const fitToWindow = useCallback(() => {
+    if (!graph || graph.nodes.length === 0 || !containerRef.current) return
+    const padding = 60
+    const xs = graph.nodes.map(n => n.x)
+    const ys = graph.nodes.map(n => n.y)
+    const minX = Math.min(...xs) - padding
+    const maxX = Math.max(...xs) + padding
+    const minY = Math.min(...ys) - padding
+    const maxY = Math.max(...ys) + padding
+    const contentW = maxX - minX
+    const contentH = maxY - minY
+    const containerW = containerRef.current.clientWidth
+    const containerH = containerRef.current.clientHeight
+    const scaleX = containerW / contentW
+    const scaleY = containerH / contentH
+    const newZoom = Math.min(scaleX, scaleY, 2)
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    setPan({ x: (containerW / 2) - cx * newZoom, y: (containerH / 2) - cy * newZoom })
+    setZoom(newZoom)
+  }, [graph])
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? 0.9 : 1.1
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
+    setZoom(z => {
+      const nz = Math.max(0.1, Math.min(5, z * delta))
+      setPan(p => ({
+        x: mx - (mx - p.x) * (nz / z),
+        y: my - (my - p.y) * (nz / z),
+      }))
+      return nz
+    })
+  }, [])
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('circle')) return
+    setDragging(true)
+    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y })
+  }, [pan])
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!dragging) return
+    setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y })
+  }, [dragging, dragStart])
+
+  const handlePointerUp = useCallback(() => setDragging(false), [])
 
   // Build a position lookup for edge rendering
   const posMap = useMemo(() => {
@@ -1698,9 +1804,88 @@ function TermGraphInline({
     return m
   }, [graph])
 
+  const svgContent = graph && !empty ? (
+    <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+      <defs>
+        <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+        </marker>
+      </defs>
+      {/* Edges */}
+      {graph.edges.map((e, i) => {
+        const src = posMap.get(e.sourceId)
+        const tgt = posMap.get(e.targetId)
+        if (!src || !tgt) return null
+
+        const srcR = Math.max(10, (NODE_STYLES[src.type]?.r || 16) - (src.depth * 2))
+        const tgtR = Math.max(10, (NODE_STYLES[tgt.type]?.r || 16) - (tgt.depth * 2))
+        const dx = tgt.x - src.x
+        const dy = tgt.y - src.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1
+        const startX = src.x + (dx / dist) * srcR
+        const startY = src.y + (dy / dist) * srcR
+        const endX = tgt.x - (dx / dist) * tgtR
+        const endY = tgt.y - (dy / dist) * tgtR
+        const midX = (src.x + tgt.x) / 2
+        const midY = (src.y + tgt.y) / 2
+
+        return (
+          <g key={i}>
+            <line
+              x1={startX} y1={startY} x2={endX} y2={endY}
+              stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : '#9ca3af'}
+              strokeWidth={1.5}
+              strokeDasharray={e.type === 'relationship' ? undefined : '4 3'}
+              markerEnd={e.type === 'relationship' ? 'url(#arrowhead)' : undefined}
+            />
+            <text
+              x={midX} y={midY - 5}
+              textAnchor="middle"
+              className="text-[9px] fill-gray-400 dark:fill-gray-500 pointer-events-none"
+            >
+              {e.label}
+            </text>
+          </g>
+        )
+      })}
+      {/* Nodes */}
+      {graph.nodes.map((n) => {
+        const style = NODE_STYLES[n.type]
+        const r = Math.max(10, style.r - (n.depth * 2))
+        return (
+          <g
+            key={n.id}
+            transform={`translate(${n.x},${n.y})`}
+            className="cursor-pointer"
+            onClick={() => handleNodeClick(n.id)}
+          >
+            <circle r={r} fill={style.fill} />
+            <title>{n.label}</title>
+            <text
+              y={r + 12}
+              textAnchor="middle"
+              className="text-[10px] fill-gray-700 dark:fill-gray-300 pointer-events-none"
+            >
+              {n.label.length > 18 ? n.label.slice(0, 16) + '...' : n.label}
+            </text>
+            {n.type === 'focal' && (
+              <text
+                textAnchor="middle"
+                dominantBaseline="central"
+                className="text-[10px] fill-white font-semibold pointer-events-none"
+              >
+                {n.label.length > 10 ? n.label.slice(0, 8) + '..' : n.label}
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </g>
+  ) : null
+
   const graphContent = (
     <>
-      <div className="flex items-center gap-2 mb-1">
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
         <label className="text-[10px] text-gray-500 dark:text-gray-400 select-none">Depth</label>
         <input
           type="range"
@@ -1709,9 +1894,35 @@ function TermGraphInline({
           value={depth}
           onChange={(e) => setDepth(Number(e.target.value))}
           disabled={loading}
-          className="flex-1 h-1 accent-blue-500"
+          className="w-20 h-1 accent-blue-500"
         />
         <span className="text-[10px] text-gray-500 dark:text-gray-400 w-3 text-center">{depth}</span>
+        <select
+          value={layout}
+          onChange={(e) => setLayout(e.target.value as typeof layout)}
+          className="text-[10px] py-0.5 px-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+        >
+          <option value="force">Force</option>
+          <option value="tree-v">Tree ↓</option>
+          <option value="tree-h">Tree →</option>
+        </select>
+        <button
+          onClick={fitToWindow}
+          className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          title="Fit to window"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
+          </svg>
+        </button>
+        <button
+          onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }}
+          className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          title="Reset zoom"
+        >
+          1:1
+        </button>
+        <span className="text-[10px] text-gray-400">{Math.round(zoom * 100)}%</span>
         <button
           onClick={() => setFullscreen(!fullscreen)}
           className="ml-auto p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
@@ -1723,96 +1934,40 @@ function TermGraphInline({
       {loading ? (
         <div className="text-xs text-gray-400 py-4 text-center">Loading graph...</div>
       ) : empty || !graph ? (
-        <svg width="100%" viewBox={`0 0 ${gw} ${gh}`} className="select-none">
-          <g transform={`translate(${gw / 2},${gh / 2})`}>
-            <circle r={24} fill="#3b82f6" />
-            <text
-              textAnchor="middle"
-              dominantBaseline="central"
-              className="text-[10px] fill-white font-semibold pointer-events-none"
-            >
-              {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
-            </text>
-          </g>
-        </svg>
+        <div
+          ref={containerRef}
+          className="overflow-hidden border border-gray-200 dark:border-gray-700 rounded"
+          style={{ height: fullscreen ? 'calc(80vh - 80px)' : '300px' }}
+        >
+          <svg width="100%" height="100%" className="select-none">
+            <g transform={`translate(50%,50%)`}>
+              <circle cx="0" cy="0" r={24} fill="#3b82f6" />
+              <text
+                textAnchor="middle"
+                dominantBaseline="central"
+                className="text-[10px] fill-white font-semibold pointer-events-none"
+              >
+                {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
+              </text>
+            </g>
+          </svg>
+        </div>
       ) : (
         <>
-          <svg width="100%" viewBox={`0 0 ${gw} ${gh}`} className="select-none">
-            <defs>
-              <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
-              </marker>
-            </defs>
-            {/* Edges */}
-            {graph.edges.map((e, i) => {
-              const src = posMap.get(e.sourceId)
-              const tgt = posMap.get(e.targetId)
-              if (!src || !tgt) return null
-
-              const srcR = Math.max(10, (NODE_STYLES[src.type]?.r || 16) - (src.depth * 2))
-              const tgtR = Math.max(10, (NODE_STYLES[tgt.type]?.r || 16) - (tgt.depth * 2))
-              const dx = tgt.x - src.x
-              const dy = tgt.y - src.y
-              const dist = Math.sqrt(dx * dx + dy * dy) || 1
-              const startX = src.x + (dx / dist) * srcR
-              const startY = src.y + (dy / dist) * srcR
-              const endX = tgt.x - (dx / dist) * tgtR
-              const endY = tgt.y - (dy / dist) * tgtR
-              const midX = (src.x + tgt.x) / 2
-              const midY = (src.y + tgt.y) / 2
-
-              return (
-                <g key={i}>
-                  <line
-                    x1={startX} y1={startY} x2={endX} y2={endY}
-                    stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : '#9ca3af'}
-                    strokeWidth={1.5}
-                    strokeDasharray={e.type === 'relationship' ? undefined : '4 3'}
-                    markerEnd={e.type === 'relationship' ? 'url(#arrowhead)' : undefined}
-                  />
-                  <text
-                    x={midX} y={midY - 5}
-                    textAnchor="middle"
-                    className="text-[9px] fill-gray-400 dark:fill-gray-500 pointer-events-none"
-                  >
-                    {e.label}
-                  </text>
-                </g>
-              )
-            })}
-            {/* Nodes */}
-            {graph.nodes.map((n) => {
-              const style = NODE_STYLES[n.type]
-              const r = Math.max(10, style.r - (n.depth * 2))
-              return (
-                <g
-                  key={n.id}
-                  transform={`translate(${n.x},${n.y})`}
-                  className="cursor-pointer"
-                  onClick={() => handleNodeClick(n.id)}
-                >
-                  <circle r={r} fill={style.fill} />
-                  <title>{n.label}</title>
-                  <text
-                    y={r + 12}
-                    textAnchor="middle"
-                    className="text-[10px] fill-gray-700 dark:fill-gray-300 pointer-events-none"
-                  >
-                    {n.label.length > 18 ? n.label.slice(0, 16) + '...' : n.label}
-                  </text>
-                  {n.type === 'focal' && (
-                    <text
-                      textAnchor="middle"
-                      dominantBaseline="central"
-                      className="text-[10px] fill-white font-semibold pointer-events-none"
-                    >
-                      {n.label.length > 10 ? n.label.slice(0, 8) + '..' : n.label}
-                    </text>
-                  )}
-                </g>
-              )
-            })}
-          </svg>
+          <div
+            ref={containerRef}
+            className="overflow-hidden border border-gray-200 dark:border-gray-700 rounded cursor-grab active:cursor-grabbing"
+            style={{ height: fullscreen ? 'calc(80vh - 80px)' : '300px' }}
+            onWheel={handleWheel}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerUp}
+          >
+            <svg ref={svgRef} width="100%" height="100%" className="select-none">
+              {svgContent}
+            </svg>
+          </div>
           {/* Legend */}
           <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-1">
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-blue-500" /> focal</span>
