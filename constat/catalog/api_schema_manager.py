@@ -127,15 +127,19 @@ class APISchemaManager:
         if self._load_metadata_cache(config_hash):
             logger.debug("Loaded API schema from cache")
             self._progress_callback = None
-            return
+        else:
+            # Introspect APIs
+            self._introspect_apis()
 
-        # Introspect APIs
-        self._introspect_apis()
+            # Save metadata cache
+            self._save_metadata_cache(config_hash)
 
-        # Save metadata cache
-        self._save_metadata_cache(config_hash)
+            self._progress_callback = None
 
-        self._progress_callback = None
+        # Ensure vector store is available for search (chunks built at server startup)
+        if self._vector_store is None:
+            from constat.discovery.vector_store import DuckDBVectorStore
+            self._vector_store = DuckDBVectorStore()
 
     def build_chunks(self) -> None:
         """Build chunks for search (called at server startup).

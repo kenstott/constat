@@ -402,7 +402,7 @@ class SchemaDiscoveryTools:
         except Exception:
             pass  # Continue even if table search fails
 
-        # 2. Search APIs via API tools if available
+        # 2. Search APIs via api_tools or api_schema_manager
         if self.api_tools:
             try:
                 api_results = self.api_tools.search_operations(query, limit=per_source_limit)
@@ -417,37 +417,41 @@ class SchemaDiscoveryTools:
                         "summary": r.get("summary", ""),
                     })
             except Exception:
-                pass  # Continue even if API search fails
+                pass
+        elif self.api_schema_manager:
+            try:
+                api_results = self.api_schema_manager.find_relevant_apis(query, limit=per_source_limit)
+                for r in api_results:
+                    results["apis"].append({
+                        "type": "api",
+                        "name": r.get("endpoint", ""),
+                        "api": r.get("api_name", ""),
+                        "operation_type": r.get("type", ""),
+                        "relevance": round(r.get("similarity", 0), 3),
+                        "summary": r.get("description", ""),
+                    })
+            except Exception:
+                pass
 
         # 3. Search documents via doc tools if available
-        # Route chunks to correct section: api: → apis, glossary:/relationship: → skip (own sections)
+        # Filter out api:/glossary:/relationship: chunks — they have dedicated sections
         if self.doc_tools:
             try:
-                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit * 3)
+                doc_results = self.doc_tools.search_documents(query, limit=per_source_limit + 10)
                 for r in doc_results:
                     doc_name = r.get("document", "")
-                    # Glossary and relationship have dedicated sections
-                    if doc_name.startswith("glossary:") or doc_name.startswith("relationship:"):
+                    if doc_name.startswith("glossary:") or doc_name.startswith("relationship:") or doc_name.startswith("api:"):
                         continue
                     excerpt = r.get("excerpt", "")
-                    entry = {
+                    results["documents"].append({
+                        "type": "document",
                         "name": doc_name,
                         "section": r.get("section"),
                         "excerpt": excerpt[:300] + "..." if len(excerpt) > 300 else excerpt,
                         "relevance": round(r.get("relevance", 0), 3),
-                    }
-                    # API chunks go to apis section (not documents)
-                    if doc_name.startswith("api:"):
-                        if len(results["apis"]) < per_source_limit:
-                            entry["type"] = "api"
-                            # Extract api name from "api:catfacts.CatFact.fact" → "catfacts"
-                            parts = doc_name.removeprefix("api:").split(".", 1)
-                            entry["api"] = parts[0] if parts else ""
-                            results["apis"].append(entry)
-                    else:
-                        if len(results["documents"]) < per_source_limit:
-                            entry["type"] = "document"
-                            results["documents"].append(entry)
+                    })
+                    if len(results["documents"]) >= per_source_limit:
+                        break
             except Exception:
                 pass  # Continue even if doc search fails
 
