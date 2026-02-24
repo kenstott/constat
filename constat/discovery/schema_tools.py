@@ -475,19 +475,20 @@ class SchemaDiscoveryTools:
                     chunk_types=[ChunkType.GLOSSARY_TERM],
                 )
 
-                # Batch-fetch full glossary terms for enrichment
-                hit_names = [
+                # Batch-fetch full glossary terms by ID
+                hit_ids = [
                     chunk.document_name.replace("glossary:", "")
                     for _, _, chunk in glossary_hits
                 ]
-                terms_by_name = {}
-                if hit_names and self.session_id:
-                    fetched = vs.get_glossary_terms_by_names(hit_names, self.session_id, user_id=self.user_id)
-                    terms_by_name = {t.name.lower(): t for t in fetched}
+                terms_by_id: dict[str, Any] = {}
+                for tid in hit_ids:
+                    t = vs.get_glossary_term_by_id(tid)
+                    if t:
+                        terms_by_id[tid] = t
 
                 for chunk_id, similarity, chunk in glossary_hits:
-                    term_key = chunk.document_name.replace("glossary:", "")
-                    term = terms_by_name.get(term_key.lower())
+                    term_id = chunk.document_name.replace("glossary:", "")
+                    term = terms_by_id.get(term_id)
 
                     entry: dict[str, Any] = {
                         "type": "glossary_term",
