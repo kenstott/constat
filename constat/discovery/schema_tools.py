@@ -492,7 +492,7 @@ class SchemaDiscoveryTools:
 
                     entry: dict[str, Any] = {
                         "type": "glossary_term",
-                        "name": term.display_name if term else term_key,
+                        "name": term.display_name if term else term_id,
                         "relevance": round(similarity, 3),
                     }
 
