@@ -28,7 +28,7 @@ def vs():
     api_chunk = DocumentChunk(
         document_name="api:catfacts.CatFact",
         content="CatFact endpoint: CatFact",
-        section="rest/schema",
+        section="openapi/model",
         chunk_index=0,
         source="api",
         chunk_type=ChunkType.DOCUMENT,

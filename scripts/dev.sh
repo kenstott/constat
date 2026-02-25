@@ -80,7 +80,7 @@ stop_servers() {
 start_server() {
     echo "Starting constat server..."
     echo "Server log: $SERVER_LOG"
-    PYTHONUNBUFFERED=1 constat serve -c "$CONFIG_FILE" --debug > "$SERVER_LOG" 2>&1 &
+    PYTHONUNBUFFERED=1 constat serve -c "$CONFIG_FILE" --debug --reload > "$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
     echo "Server PID: $SERVER_PID"
 

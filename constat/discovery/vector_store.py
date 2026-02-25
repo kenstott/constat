@@ -66,7 +66,7 @@ class VectorStoreBackend(ABC):
 
     @abstractmethod
     def search(
-        self, query_embedding: np.ndarray, limit: int = 5
+        self, query_embedding: np.ndarray, limit: int = 5, query_text: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Search for similar chunks by query embedding.
 
@@ -156,6 +156,7 @@ class NumpyVectorStore(VectorStoreBackend):
         limit: int = 5,
         domain_ids: list[str] | None = None,
         session_id: str | None = None,
+        query_text: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Search using cosine similarity."""
         if self._embeddings is None or len(self._chunks) == 0:
@@ -220,12 +221,13 @@ class DuckDBVectorStore(VectorStoreBackend):
     - HNSW indexing for O(log n) approximate search (on supported versions)
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, reranker_model: str | None = None):
         """Initialize DuckDB vector store.
 
         Args:
             db_path: Path to DuckDB database file. If None, uses
                      ~/.constat/vectors.duckdb or CONSTAT_VECTOR_STORE_PATH env var
+            reranker_model: Cross-encoder model name for reranking. None disables reranking.
         """
         import os
         from constat.storage.duckdb_pool import ThreadLocalDuckDB
@@ -245,8 +247,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         # Each thread gets its own connection to avoid heap corruption
         self._db = ThreadLocalDuckDB(
             str(self._db_path),
-            init_sql=["INSTALL vss", "LOAD vss"],
+            init_sql=["INSTALL vss", "LOAD vss", "INSTALL fts", "LOAD fts"],
         )
+        self._fts_dirty = True
+        self._clusters_dirty = True
+        self._reranker_model = reranker_model
+        if reranker_model:
+            from constat.reranker_loader import RerankerModelLoader
+            RerankerModelLoader.get_instance().start_loading(reranker_model)
         self._init_schema()
 
     @property
@@ -256,10 +264,19 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def _init_schema(self) -> None:
         """Initialize database schema if not exists."""
-        # Force checkpoint to recover from unclean shutdowns that can
-        # corrupt dictionary-encoded column indexes
+        # Skip checkpoint when tables already exist (i.e., not first init).
+        # CHECKPOINT requires write lock and blocks if another connection
+        # to the same file is active (e.g., previous session).
         try:
-            self._conn.execute("FORCE CHECKPOINT")
+            exists = self._conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'embeddings'"
+            ).fetchone()[0]
+            if exists:
+                return  # Schema already initialized, skip checkpoint and DDL
+        except Exception:
+            pass
+        try:
+            self._conn.execute("CHECKPOINT")
         except Exception:
             pass
 
@@ -481,6 +498,16 @@ class DuckDBVectorStore(VectorStoreBackend):
         except Exception as e:
             logger.debug(f"Index creation skipped: {e}")
 
+        # Glossary clustering table
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS glossary_clusters (
+                term_name VARCHAR NOT NULL,
+                cluster_id INTEGER NOT NULL,
+                session_id VARCHAR NOT NULL,
+                PRIMARY KEY (term_name, session_id)
+            )
+        """)
+
     # =========================================================================
     # Visibility filters — single source of truth for scoping queries
     # =========================================================================
@@ -581,6 +608,9 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._conn.execute("DELETE FROM glossary_terms WHERE session_id = ?", [session_id])
         self._conn.execute("DELETE FROM entity_relationships WHERE session_id = ?", [session_id])
 
+        self._conn.execute("DELETE FROM glossary_clusters WHERE session_id = ?", [session_id])
+        self._fts_dirty = True
+        self._clusters_dirty = True
         logger.debug(f"clear_session_data({session_id}): deleted session data")
 
     def delete_document(self, document_name: str, session_id: str | None = None) -> int:
@@ -638,6 +668,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 [document_name]
             )
 
+        self._fts_dirty = True
         logger.debug(f"delete_document({document_name}, {session_id}): deleted {len(chunk_ids)} chunks")
         return len(chunk_ids)
 
@@ -897,6 +928,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 [resource_name, source_type, source_id],
             )
 
+        self._fts_dirty = True
         logger.info(f"delete_resource_chunks({source_id}, {resource_type}, {resource_name}): deleted {len(chunk_ids)} chunks")
         return len(chunk_ids)
 
@@ -953,6 +985,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             [domain_id]
         )
 
+        self._fts_dirty = True
         count = len(chunk_ids)
         logger.debug(f"clear_domain_embeddings({domain_id}): deleted {count} embeddings")
         return count
@@ -1039,6 +1072,156 @@ class DuckDBVectorStore(VectorStoreBackend):
             """,
             records,
         )
+        self._fts_dirty = True
+
+    def _rebuild_fts_index(self) -> None:
+        """Rebuild the FTS index if dirty. Degrades to vector-only on failure."""
+        if not self._fts_dirty:
+            return
+        try:
+            count = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+            if count == 0:
+                self._fts_dirty = False
+                return
+            self._conn.execute(
+                "PRAGMA create_fts_index('embeddings', 'chunk_id', 'content', stemmer='porter', overwrite=1)"
+            )
+            self._fts_dirty = False
+        except Exception as e:
+            logger.debug(f"FTS index rebuild failed (vector-only mode): {e}")
+            self._fts_dirty = False
+
+    def _bm25_search(
+        self,
+        query_text: str,
+        limit: int = 5,
+        chunk_filter: str = "1=1",
+        filter_params: list | None = None,
+        chunk_type_clause: str = "",
+        ct_params: list | None = None,
+        source_filter: str | None = None,
+        source_params: list | None = None,
+    ) -> list[tuple[str, float, "DocumentChunk"]]:
+        """BM25 full-text search. Returns [] on failure."""
+        from constat.discovery.models import ChunkType
+        try:
+            self._rebuild_fts_index()
+
+            params: list = [query_text]
+            where_parts = [
+                "bm25_score IS NOT NULL",
+                chunk_filter,
+            ]
+            if filter_params:
+                params.extend(filter_params)
+            if chunk_type_clause:
+                where_parts.append(chunk_type_clause.lstrip(" AND "))
+                if ct_params:
+                    params.extend(ct_params)
+            if source_filter:
+                where_parts.append(source_filter)
+                if source_params:
+                    params.extend(source_params)
+
+            params.append(limit)
+            where = " AND ".join(where_parts)
+
+            rows = self._conn.execute(
+                f"""
+                SELECT chunk_id, document_name, source, chunk_type, section,
+                       chunk_index, content,
+                       fts_main_embeddings.match_bm25(chunk_id, ?) AS bm25_score
+                FROM embeddings
+                WHERE {where}
+                ORDER BY bm25_score DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+            results = []
+            for row in rows:
+                chunk_id, doc_name, src, chunk_type_str, section, chunk_idx, content, score = row
+                try:
+                    chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+                except ValueError:
+                    chunk_type = ChunkType.DOCUMENT
+                chunk = DocumentChunk(
+                    document_name=doc_name,
+                    content=content,
+                    section=section,
+                    chunk_index=chunk_idx,
+                    source=src or "document",
+                    chunk_type=chunk_type,
+                )
+                results.append((chunk_id, float(score), chunk))
+            return results
+        except Exception as e:
+            logger.debug(f"BM25 search failed (vector-only mode): {e}")
+            return []
+
+    @staticmethod
+    def _rrf_merge(
+        vector_results: list[tuple[str, float, "DocumentChunk"]],
+        bm25_results: list[tuple[str, float, "DocumentChunk"]],
+        k: int = 60,
+    ) -> list[tuple[str, float, "DocumentChunk"]]:
+        """Merge vector and BM25 results using Reciprocal Rank Fusion.
+
+        RRF score = sum(1 / (k + rank_i)) for each retrieval method.
+        Normalized to [0, 1] by dividing by max possible score (2 / (k + 1)).
+        """
+        max_rrf = 2.0 / (k + 1)
+        scores: dict[str, float] = {}
+        chunks: dict[str, tuple[str, "DocumentChunk"]] = {}
+
+        for rank, (chunk_id, _score, chunk) in enumerate(vector_results, start=1):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
+            chunks[chunk_id] = (chunk_id, chunk)
+
+        for rank, (chunk_id, _score, chunk) in enumerate(bm25_results, start=1):
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
+            if chunk_id not in chunks:
+                chunks[chunk_id] = (chunk_id, chunk)
+
+        merged = []
+        for chunk_id, rrf_score in scores.items():
+            normalized = rrf_score / max_rrf
+            cid, chunk = chunks[chunk_id]
+            merged.append((cid, normalized, chunk))
+
+        merged.sort(key=lambda x: x[1], reverse=True)
+        return merged
+
+    def _rerank(
+        self,
+        query_text: str,
+        candidates: list[tuple[str, float, "DocumentChunk"]],
+        limit: int,
+    ) -> list[tuple[str, float, "DocumentChunk"]]:
+        """Rerank candidates using a cross-encoder model.
+
+        Scores each (query, chunk.content) pair jointly, normalizes via sigmoid,
+        sorts descending, and returns top `limit`.
+        """
+        if not candidates:
+            return candidates
+
+        from constat.reranker_loader import RerankerModelLoader
+        model = RerankerModelLoader.get_instance().get_model()
+
+        pairs = [(query_text, chunk.content) for _, _, chunk in candidates]
+        raw_scores = model.predict(pairs)
+
+        # Sigmoid normalization to [0, 1]
+        sigmoid = 1.0 / (1.0 + np.exp(-np.array(raw_scores, dtype=np.float64)))
+
+        scored = [
+            (cid, float(sigmoid[i]), chunk)
+            for i, (cid, _, chunk) in enumerate(candidates)
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:limit]
 
     def search(
         self,
@@ -1047,8 +1230,9 @@ class DuckDBVectorStore(VectorStoreBackend):
         domain_ids: list[str] | None = None,
         session_id: str | None = None,
         chunk_types: list[str] | None = None,
+        query_text: str | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
-        """Search using DuckDB's array_cosine_similarity.
+        """Search using cosine similarity, optionally fused with BM25 via RRF.
 
         Args:
             query_embedding: Query embedding vector
@@ -1056,6 +1240,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             domain_ids: List of domain IDs to include (None means no domain filter)
             session_id: Session ID to include (None means no session filter)
             chunk_types: Optional list of chunk_type values to filter by
+            query_text: Raw query string — when provided, enables hybrid BM25+vector search
 
         Returns:
             List of (chunk_id, similarity, DocumentChunk) tuples
@@ -1068,13 +1253,17 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         # Optional chunk_type filter
         chunk_type_clause = ""
+        ct_params: list = []
         if chunk_types:
             ct_values = [ct.value if hasattr(ct, 'value') else str(ct) for ct in chunk_types]
             ct_placeholders = ",".join(["?" for _ in ct_values])
             chunk_type_clause = f" AND chunk_type IN ({ct_placeholders})"
+            ct_params = ct_values
             params.extend(ct_values)
 
-        params.append(limit)
+        # Determine fetch limit
+        fetch_limit = limit * 3 if query_text else limit
+        params.append(fetch_limit)
 
         # Query with cosine similarity
         result = self._conn.execute(
@@ -1098,10 +1287,9 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         # Convert to output format
         from constat.discovery.models import ChunkType
-        results = []
+        vector_results = []
         for row in result:
             chunk_id, doc_name, source, chunk_type_str, section, chunk_idx, content, similarity = row
-            # Convert string to ChunkType enum
             try:
                 chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
             except ValueError:
@@ -1114,13 +1302,34 @@ class DuckDBVectorStore(VectorStoreBackend):
                 source=source or "document",
                 chunk_type=chunk_type,
             )
-            results.append((chunk_id, float(similarity), chunk))
+            vector_results.append((chunk_id, float(similarity), chunk))
 
-        return results
+        if not query_text:
+            return vector_results
+
+        # Hybrid: run BM25 and merge with RRF
+        bm25_results = self._bm25_search(
+            query_text,
+            limit=fetch_limit,
+            chunk_filter=chunk_filter,
+            filter_params=list(filter_params),
+            chunk_type_clause=chunk_type_clause,
+            ct_params=ct_params,
+        )
+        if not bm25_results:
+            results = vector_results[:limit]
+        else:
+            results = self._rrf_merge(vector_results, bm25_results)[:limit * 3]
+
+        # Rerank if configured
+        if self._reranker_model and query_text:
+            return self._rerank(query_text, results, limit)
+        return results[:limit]
 
     def clear(self) -> None:
         """Clear all stored data."""
         self._conn.execute("DELETE FROM embeddings")
+        self._fts_dirty = True
 
     def clear_chunks(self, source: str) -> None:
         """Clear chunks by source type.
@@ -1139,6 +1348,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         if source not in ("schema", "api", "document"):
             raise ValueError(f"source must be 'schema', 'api', or 'document', got: {source}")
         self._conn.execute("DELETE FROM embeddings WHERE source = ?", [source])
+        self._fts_dirty = True
 
     def clear_chunk_entity_links(self, session_id: str | None = None) -> None:
         """Clear chunk-entity links (but keep entities).
@@ -1180,14 +1390,16 @@ class DuckDBVectorStore(VectorStoreBackend):
         source: str,
         limit: int = 5,
         min_similarity: float = 0.3,
+        query_text: str | None = None,
     ) -> list[tuple[str, float, "DocumentChunk"]]:
-        """Search chunks filtered by source type using cosine similarity.
+        """Search chunks filtered by source type, optionally with hybrid BM25+vector.
 
         Args:
             query_embedding: Query embedding vector
             source: Source type to filter by ('schema', 'api', 'document')
             limit: Maximum number of results
             min_similarity: Minimum cosine similarity threshold
+            query_text: Raw query string — when provided, enables hybrid search
 
         Returns:
             List of (chunk_id, similarity, DocumentChunk) tuples
@@ -1195,6 +1407,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         from constat.discovery.models import ChunkType
 
         query = query_embedding.flatten().tolist()
+        fetch_limit = limit * 3 if query_text else limit
 
         result = self._conn.execute(
             f"""
@@ -1213,10 +1426,10 @@ class DuckDBVectorStore(VectorStoreBackend):
             ORDER BY similarity DESC
             LIMIT ?
             """,
-            [query, source, query, min_similarity, limit],
+            [query, source, query, min_similarity, fetch_limit],
         ).fetchall()
 
-        results = []
+        vector_results = []
         for row in result:
             chunk_id, doc_name, src, chunk_type_str, section, chunk_idx, content, similarity = row
             try:
@@ -1231,9 +1444,27 @@ class DuckDBVectorStore(VectorStoreBackend):
                 source=src or "document",
                 chunk_type=chunk_type,
             )
-            results.append((chunk_id, float(similarity), chunk))
+            vector_results.append((chunk_id, float(similarity), chunk))
 
-        return results
+        if not query_text:
+            return vector_results
+
+        # Hybrid: run BM25 with source filter and merge
+        bm25_results = self._bm25_search(
+            query_text,
+            limit=fetch_limit,
+            source_filter="source = ?",
+            source_params=[source],
+        )
+        if not bm25_results:
+            results = vector_results[:limit]
+        else:
+            results = self._rrf_merge(vector_results, bm25_results)[:limit * 3]
+
+        # Rerank if configured
+        if self._reranker_model and query_text:
+            return self._rerank(query_text, results, limit)
+        return results[:limit]
 
     def get_chunks(self) -> list[DocumentChunk]:
         """Get all stored chunks."""
@@ -1289,6 +1520,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             "DELETE FROM embeddings WHERE document_name = ?",
             [document_name],
         )
+        self._fts_dirty = True
 
         return count_before
 
@@ -1341,6 +1573,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             except Exception:
                 # Entity already exists, skip
                 pass
+        self._clusters_dirty = True
 
     def link_chunk_entities(
         self,
@@ -1562,6 +1795,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         limit: int = 5,
         domain_ids: list[str] | None = None,
         session_id: str | None = None,
+        query_text: str | None = None,
     ) -> list[EnrichedChunk]:
         """Search for chunks and include associated entities.
 
@@ -1570,12 +1804,13 @@ class DuckDBVectorStore(VectorStoreBackend):
             limit: Maximum number of results
             domain_ids: List of domain IDs to include (None means no domain filter)
             session_id: Session ID to include entities (None means no entities)
+            query_text: Raw query string — when provided, enables hybrid search
 
         Returns:
             List of EnrichedChunk objects with entities
         """
         # First do the regular search with filtering
-        results = self.search(query_embedding, limit, domain_ids, session_id)
+        results = self.search(query_embedding, limit, domain_ids, session_id, query_text=query_text)
 
         # Enrich with entities if session_id provided
         enriched = []
@@ -1996,6 +2231,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 term.created_at, term.updated_at, term.ignored,
             ],
         )
+        self._clusters_dirty = True
 
     def update_glossary_term(self, name: str, session_id: str, updates: dict, *, user_id: str | None = None) -> bool:
         """Update a glossary term by name.
@@ -2048,7 +2284,10 @@ class DuckDBVectorStore(VectorStoreBackend):
             try:
                 results = self._conn.execute(sql, params).fetchall()
                 logger.debug(f"update_glossary_term: results={results}")
-                return len(results) > 0
+                updated = len(results) > 0
+                if updated:
+                    self._clusters_dirty = True
+                return updated
             except duckdb.TransactionException:
                 if attempt < 4:
                     time.sleep(0.1 * (attempt + 1))
@@ -2073,7 +2312,10 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "DELETE FROM glossary_terms WHERE LOWER(name) = LOWER(?) AND session_id = ? RETURNING id",
                 [name, session_id],
             ).fetchall()
-        return len(results) > 0
+        deleted = len(results) > 0
+        if deleted:
+            self._clusters_dirty = True
+        return deleted
 
     def get_glossary_term(self, name: str, session_id: str, *, user_id: str | None = None) -> GlossaryTerm | None:
         """Get a single glossary term by name.
@@ -2537,6 +2779,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
         rel_count += len(result)
 
+        self._clusters_dirty = True
         return {
             "old_name": old_name,
             "new_name": new_name.lower(),
@@ -2801,6 +3044,81 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
         return [self._term_from_row(r) for r in rows]
 
+    # =========================================================================
+    # Glossary Clustering
+    # =========================================================================
+
+    def _rebuild_clusters(self, session_id: str) -> None:
+        """Lazily rebuild glossary term clusters from embeddings using KMeans."""
+        if not self._clusters_dirty:
+            return
+
+        rows = self._conn.execute(
+            """
+            SELECT e.document_name, e.embedding
+            FROM embeddings e
+            WHERE e.document_name LIKE 'glossary:%'
+              AND (e.session_id = ? OR e.session_id IS NULL)
+            """,
+            [session_id],
+        ).fetchall()
+
+        if len(rows) < 2:
+            self._conn.execute(
+                "DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]
+            )
+            self._clusters_dirty = False
+            return
+
+        from sklearn.cluster import KMeans
+
+        term_names = []
+        vectors = []
+        for doc_name, embedding in rows:
+            # Extract term name from "glossary:<term_id>"
+            term_names.append(doc_name.replace("glossary:", "", 1))
+            vectors.append(np.array(embedding, dtype=np.float32))
+
+        X = np.vstack(vectors)
+        k = max(2, len(term_names) // 5)
+        kmeans = KMeans(n_clusters=k, n_init="auto", random_state=42)
+        labels = kmeans.fit_predict(X)
+
+        self._conn.execute(
+            "DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]
+        )
+        for name, cluster_id in zip(term_names, labels):
+            self._conn.execute(
+                "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
+                [name, int(cluster_id), session_id],
+            )
+
+        self._clusters_dirty = False
+
+    def get_cluster_siblings(
+        self, term_name: str, session_id: str, limit: int = 10,
+    ) -> list[str]:
+        """Return other glossary term names in the same cluster."""
+        self._rebuild_clusters(session_id)
+
+        row = self._conn.execute(
+            "SELECT cluster_id FROM glossary_clusters WHERE term_name = ? AND session_id = ?",
+            [term_name, session_id],
+        ).fetchone()
+        if not row:
+            return []
+
+        cluster_id = row[0]
+        rows = self._conn.execute(
+            """
+            SELECT term_name FROM glossary_clusters
+            WHERE cluster_id = ? AND session_id = ? AND term_name != ?
+            LIMIT ?
+            """,
+            [cluster_id, session_id, term_name, limit],
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def close(self) -> None:
         """Close the database connection."""
         if hasattr(self, "_conn"):
@@ -2814,12 +3132,14 @@ class DuckDBVectorStore(VectorStoreBackend):
 def create_vector_store(
     backend: str = "duckdb",
     db_path: Optional[str] = None,
+    reranker_model: str | None = None,
 ) -> VectorStoreBackend:
     """Factory function to create a vector store backend.
 
     Args:
         backend: Backend type - "duckdb" or "numpy"
         db_path: Path to DuckDB database file (only for duckdb backend)
+        reranker_model: Cross-encoder model name for reranking (only for duckdb backend)
 
     Returns:
         VectorStoreBackend instance
@@ -2829,7 +3149,7 @@ def create_vector_store(
         ValueError: If unknown backend type is specified
     """
     if backend == "duckdb":
-        return DuckDBVectorStore(db_path=db_path)
+        return DuckDBVectorStore(db_path=db_path, reranker_model=reranker_model)
     elif backend == "numpy":
         return NumpyVectorStore()
     else:

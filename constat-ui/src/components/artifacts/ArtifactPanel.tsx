@@ -1700,8 +1700,8 @@ ${skill.body}`
 
                       // REST: operations grouped by HTTP method, then schema types
                       const restOps = allEps.filter((ep) => ep.kind === 'rest' || (!ep.kind?.startsWith('graphql_') && !ep.kind?.includes('/') && ep.http_method))
-                      const restTypes = allEps.filter((ep) => ep.kind === 'rest/schema')
-                      const restOther = allEps.filter((ep) => !ep.kind?.startsWith('graphql_') && ep.kind !== 'rest' && ep.kind !== 'rest/schema' && !ep.http_method)
+                      const restTypes = allEps.filter((ep) => ep.kind === 'openapi/model')
+                      const restOther = allEps.filter((ep) => !ep.kind?.startsWith('graphql_') && ep.kind !== 'rest' && ep.kind !== 'openapi/model' && !ep.http_method)
                       const methodOrder = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
                       const restMethods = [...new Set(restOps.map((ep) => ep.http_method || 'OTHER'))]
                         .sort((a, b) => (methodOrder.indexOf(a) === -1 ? 99 : methodOrder.indexOf(a)) - (methodOrder.indexOf(b) === -1 ? 99 : methodOrder.indexOf(b)))

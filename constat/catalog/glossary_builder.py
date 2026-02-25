@@ -145,12 +145,14 @@ def build_relationship_chunks(relationships: dict[str, Any]) -> list[DocumentChu
 def glossary_term_to_chunk(
     term: "GlossaryTerm",
     entity_sources: list[str],
+    relationships: list[dict] | None = None,
 ) -> DocumentChunk:
     """Build an embeddable chunk from a GlossaryTerm with its physical resources.
 
     Args:
         term: GlossaryTerm dataclass instance
         entity_sources: Resolved physical resource strings (e.g., "crm.customers (schema)")
+        relationships: SVO triples from entity_relationships (dicts with subject_name, verb, object_name)
 
     Returns:
         DocumentChunk with chunk_type=GLOSSARY_TERM
@@ -167,6 +169,22 @@ def glossary_term_to_chunk(
         parts.append("Connected resources:")
         for source in entity_sources:
             parts.append(f"  - {source}")
+
+    if relationships:
+        hierarchy_verbs = {"HAS_A", "HAS_KIND", "HAS_MANY"}
+        parent_name = term.parent_id.lower() if term.parent_id else None
+
+        rel_lines = []
+        for rel in relationships:
+            verb_upper = rel["verb"].upper().replace(" ", "_")
+            if verb_upper in hierarchy_verbs and parent_name:
+                other = rel["object_name"] if rel["subject_name"].lower() == term.name.lower() else rel["subject_name"]
+                if other.lower() == parent_name:
+                    continue
+            rel_lines.append(f"{rel['subject_name']} {verb_upper} {rel['object_name']}")
+
+        if rel_lines:
+            parts.append("Related: " + "; ".join(rel_lines))
 
     return DocumentChunk(
         document_name=f"glossary:{term.id}",

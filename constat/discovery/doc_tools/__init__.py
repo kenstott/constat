@@ -22,7 +22,6 @@ from ._schema_inference import (
     _infer_csv_schema,
     _infer_json_schema,
     _infer_column_type,
-    _infer_json_value_type,
     _infer_structured_schema,
     _infer_jsonl_schema,
 )
@@ -46,7 +45,6 @@ __all__ = [
     "_infer_csv_schema",
     "_infer_json_schema",
     "_infer_column_type",
-    "_infer_json_value_type",
     "_infer_structured_schema",
     "_infer_jsonl_schema",
 ]

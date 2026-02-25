@@ -314,6 +314,7 @@ class _AccessMixin:
                 limit=limit,
                 domain_ids=self._active_domain_ids,
                 session_id=session_id,
+                query_text=query,
             )
 
         logger.debug(f"[SEARCH] Found {len(search_results)} results for '{query}'")
@@ -366,6 +367,7 @@ class _AccessMixin:
                     limit=limit,
                     domain_ids=self._active_domain_ids,
                     session_id=session_id,
+                    query_text=query,
                 )
 
             results = []

@@ -331,7 +331,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       suggestions: [], // Clear suggestions after use
     }))
 
-    await queriesApi.submitQuery(session.session_id, expandedProblem, isFollowup)
+    const response = await queriesApi.submitQuery(session.session_id, expandedProblem, isFollowup)
+
+    // Slash commands return completed/error immediately via HTTP (no websocket event)
+    if ((response.status === 'completed' || response.status === 'error') && response.message) {
+      const { thinkingMessageId } = get()
+      if (thinkingMessageId) {
+        set((state) => ({
+          messages: state.messages.filter(m => m.id !== thinkingMessageId),
+          thinkingMessageId: null,
+          liveMessageId: null,
+        }))
+      }
+      addMessage({
+        type: response.status === 'error' ? 'error' : 'output',
+        content: response.message,
+        isFinalInsight: response.status === 'completed',
+      })
+      set({ status: response.status === 'error' ? 'error' : 'completed', currentStepNumber: 0, stepAttempt: 1, executionPhase: 'idle' })
+    }
   },
 
   cancelExecution: async () => {

@@ -534,32 +534,11 @@ async def submit_query(
                     managed.session.doc_tools._active_domain_ids = managed.active_domains or []
                 result = managed.session._handle_slash_command(stripped)
                 output = result.get("output", "")
-                if result.get("success", True):
-                    managed.event_queue.put_nowait({
-                        "event_type": EventType.QUERY_COMPLETE.value,
-                        "session_id": managed.session_id,
-                        "step_number": 0,
-                        "data": {
-                            "execution_id": execution_id,
-                            "output": output,
-                            "tables": [],
-                            "suggestions": result.get("suggestions", []),
-                        },
-                    })
-                else:
-                    managed.event_queue.put_nowait({
-                        "event_type": EventType.QUERY_ERROR.value,
-                        "session_id": managed.session_id,
-                        "step_number": 0,
-                        "data": {
-                            "execution_id": execution_id,
-                            "error": output or result.get("error", "Command failed"),
-                        },
-                    })
+                status = "completed" if result.get("success", True) else "error"
                 return QueryResponse(
                     execution_id=execution_id,
-                    status="completed",
-                    message=output[:200] if output else "Command executed.",
+                    status=status,
+                    message=output or (result.get("error", "Command failed") if status == "error" else "Command executed."),
                 )
         except Exception as e:
             logger.warning(f"Slash command fast path failed, falling back to async: {e}")

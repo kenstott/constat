@@ -75,6 +75,15 @@ help_commands:
   - ["/define <name> <def>", "Add a glossary definition", "Glossary"]
   - ["/undefine <name>", "Remove a glossary definition", "Glossary"]
   - ["/refine <name>", "AI-refine a glossary definition", "Glossary"]
+  # Diagnostics (LLM tool inspection)
+  - ["/schema <db.table>", "Show detailed table schema (as LLM sees it)", "Diagnostics"]
+  - ["/search-tables <query>", "Semantic search for relevant tables", "Diagnostics"]
+  - ["/search-apis <query>", "Semantic search for relevant APIs", "Diagnostics"]
+  - ["/search-docs <query>", "Semantic search for relevant documents", "Diagnostics"]
+  - ["/lookup <name>", "Look up glossary term with full details", "Diagnostics"]
+  - ["/entity <name>", "Find entity across schema and documents", "Diagnostics"]
+  - ["/known-facts", "List all known/cached facts (LLM view)", "Diagnostics"]
+  - ["/sources <query>", "Find relevant sources for a query (LLM context)", "Diagnostics"]
   # Exit
   - ["/quit, /q", "Exit the session", "Exit"]
 
@@ -134,3 +143,11 @@ command_descriptions:
   define: "Add a glossary definition"
   undefine: "Remove a glossary definition"
   refine: "AI-refine a glossary definition"
+  schema: "Show detailed table schema"
+  search-tables: "Semantic search for tables"
+  search-apis: "Semantic search for APIs"
+  search-docs: "Semantic search for documents"
+  lookup: "Look up glossary term"
+  entity: "Find entity across sources"
+  known-facts: "List known facts"
+  sources: "Find relevant sources"

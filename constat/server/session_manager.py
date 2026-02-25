@@ -757,7 +757,8 @@ class SessionManager:
             for r in resources:
                 for s in r.get("sources", []):
                     entity_sources.append(f"{s.get('document_name', '')} ({s.get('source', '')})")
-            chunk = glossary_term_to_chunk(term, entity_sources)
+            rels = vector_store.get_relationships_for_entity(term.name, session_id)
+            chunk = glossary_term_to_chunk(term, entity_sources, relationships=rels)
             chunks.append(chunk)
 
         if chunks and session.doc_tools:

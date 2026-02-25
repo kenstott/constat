@@ -59,6 +59,16 @@ from constat.commands.sources import (
     files_command,
     discover_command,
 )
+from constat.commands.diagnostic import (
+    schema_command,
+    search_tables_command,
+    search_apis_command,
+    search_docs_command,
+    lookup_command,
+    entity_command,
+    known_facts_command,
+    sources_command,
+)
 
 
 # Command descriptions loaded from YAML for i18n support
@@ -113,6 +123,15 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/skill-download",), skill_download_command, _cmd_desc["skill-download"]),
     # Proof/verification
     (("/prove",), prove_command, _cmd_desc["prove"]),
+    # Diagnostics (LLM tool inspection)
+    (("/schema",), schema_command, _cmd_desc["schema"]),
+    (("/search-tables",), search_tables_command, _cmd_desc["search-tables"]),
+    (("/search-apis",), search_apis_command, _cmd_desc["search-apis"]),
+    (("/search-docs",), search_docs_command, _cmd_desc["search-docs"]),
+    (("/lookup",), lookup_command, _cmd_desc["lookup"]),
+    (("/entity",), entity_command, _cmd_desc["entity"]),
+    (("/known-facts",), known_facts_command, _cmd_desc["known-facts"]),
+    (("/sources",), sources_command, _cmd_desc["sources"]),
 ]
 
 # Build lookup dict for fast access

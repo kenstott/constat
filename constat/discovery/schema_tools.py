@@ -380,6 +380,18 @@ class SchemaDiscoveryTools:
             "relationships": [],
         }
 
+        # Build source→domain map for domain resolution
+        source_to_domain: dict[str, str] = {}
+        config = getattr(self.schema_manager, 'config', None)
+        if config and hasattr(config, 'domains'):
+            for fname, dcfg in config.domains.items():
+                for db_name in getattr(dcfg, 'databases', {}):
+                    source_to_domain[db_name] = fname
+                for api_name in getattr(dcfg, 'apis', {}):
+                    source_to_domain[api_name] = fname
+                for doc_name in getattr(dcfg, 'documents', {}):
+                    source_to_domain[doc_name] = fname
+
         # Calculate per-source limits (distribute evenly, favor tables)
         per_source_limit = max(3, limit // 3)
 
@@ -508,36 +520,24 @@ class SchemaDiscoveryTools:
                             if parent:
                                 entry["parent"] = parent.display_name
 
-                        # Connected resources via resolve_physical_resources
+                        # Entity lookup — skip session_id filter since glossary
+                        # terms are already session-scoped by the vector search.
+                        # Entities may have been created in a different session
+                        # (e.g. during initial API indexing) so the current
+                        # session_id won't match.
+                        entity = vs.find_entity_by_name(term.name)
+                        entity_sid = entity.session_id if entity else None
+
+                        # Connected resources — use entity's session_id
                         from constat.discovery.glossary_generator import resolve_physical_resources
-                        import logging as _logging
-                        _logger = _logging.getLogger(__name__)
 
                         active_domains = getattr(self.doc_tools, '_active_domain_ids', None)
-                        _logger.warning(
-                            f"[DISCOVER] term={term.name!r} session_id={self.session_id!r} "
-                            f"user_id={self.user_id!r} active_domains={active_domains!r}"
-                        )
-
-                        # Check entity lookup directly
-                        _ent = vs.find_entity_by_name(term.name, domain_ids=active_domains, session_id=self.session_id)
-                        _logger.warning(f"[DISCOVER] find_entity_by_name({term.name!r}) → {_ent}")
-                        if not _ent:
-                            # Try without any filters
-                            _ent_raw = vs.find_entity_by_name(term.name)
-                            _logger.warning(f"[DISCOVER] find_entity_by_name({term.name!r}, no filter) → {_ent_raw}")
-                            if _ent_raw:
-                                _logger.warning(
-                                    f"[DISCOVER] entity found but INVISIBLE: "
-                                    f"entity.session_id={_ent_raw.session_id!r} entity.domain_id={_ent_raw.domain_id!r}"
-                                )
-
+                        lookup_sid = entity_sid or self.session_id or ""
                         resources = resolve_physical_resources(
-                            term.name, self.session_id or "", vs,
+                            term.name, lookup_sid, vs,
                             domain_ids=active_domains,
                             user_id=self.user_id,
                         )
-                        _logger.warning(f"[DISCOVER] resolve_physical_resources → {len(resources)} resources: {resources}")
                         if resources:
                             entry["sources"] = [
                                 {
@@ -548,6 +548,50 @@ class SchemaDiscoveryTools:
                                     ],
                                 }
                                 for r in resources
+                            ]
+
+                        # Domain resolution:
+                        # 1. Explicit term.domain or entity.domain_id
+                        # 2. Trace entity→chunks→source→domain (can be multiple)
+                        # 3. "User" fallback for defined terms
+                        effective_domain = term.domain or (entity.domain_id if entity else None)
+                        if not effective_domain and entity and source_to_domain:
+                            domains_found: list[str] = []
+                            try:
+                                doc_rows = vs._conn.execute(
+                                    "SELECT DISTINCT em.document_name "
+                                    "FROM chunk_entities ce "
+                                    "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
+                                    "WHERE ce.entity_id = ? LIMIT 10",
+                                    [entity.id],
+                                ).fetchall()
+                                for (doc_name,) in doc_rows:
+                                    if ":" in doc_name:
+                                        src = doc_name.split(":")[1].split(".")[0]
+                                        if src in source_to_domain:
+                                            d = source_to_domain[src]
+                                            if d not in domains_found:
+                                                domains_found.append(d)
+                            except Exception:
+                                pass
+                            if len(domains_found) == 1:
+                                effective_domain = domains_found[0]
+                            elif len(domains_found) > 1:
+                                effective_domain = domains_found
+                        entry["domain"] = effective_domain or "User"
+
+                        # SVO relationships — use entity's session_id
+                        rels = vs.get_relationships_for_entity(term.name, lookup_sid)
+                        if not rels and entity:
+                            rels = vs.get_relationships_for_entity(entity.display_name, lookup_sid)
+                        if rels:
+                            entry["relationships"] = [
+                                {
+                                    "subject": r["subject_name"],
+                                    "verb": r["verb"],
+                                    "object": r["object_name"],
+                                }
+                                for r in rels
                             ]
 
                     else:

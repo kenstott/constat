@@ -112,71 +112,32 @@ def _infer_csv_schema(filepath: Path, sample_rows: int = 100) -> StructuredFileS
 
 
 def _infer_json_schema(filepath: Path, sample_docs: int = 100) -> StructuredFileSchema:
-    """Infer schema from a JSON file (array of objects or single object)."""
-    import json
+    """Infer schema from a JSON file using DuckDB."""
+    from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
 
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        try:
-            data = json.load(f)
-        except json.JSONDecodeError:
-            return StructuredFileSchema(
-                filename=filepath.name,
-                filepath=str(filepath),
-                file_format="json",
-                row_count=0,
-                columns=[],
-            )
-
-    # Handle array of objects vs single object
-    if isinstance(data, list):
-        docs = data[:sample_docs]
-        row_count = len(data)
-    elif isinstance(data, dict):
-        docs = [data]
-        row_count = 1
-    else:
+    try:
+        result = infer_json_schema_duckdb(str(filepath), sample_size=sample_docs, jsonl=False)
+    except Exception:
         return StructuredFileSchema(
             filename=filepath.name,
             filepath=str(filepath),
             file_format="json",
-            row_count=1,
+            row_count=0,
             columns=[],
         )
+
+    columns = [
+        {"name": c["name"], "type": c["type"], "sample_values": c["sample_values"]}
+        for c in result["columns"]
+    ]
 
     return StructuredFileSchema(
         filename=filepath.name,
         filepath=str(filepath),
         file_format="json",
-        row_count=row_count,
-        columns=_build_columns_from_docs(docs),
+        row_count=result["row_count"],
+        columns=columns,
     )
-
-
-def _build_columns_from_docs(docs: list[dict]) -> list[dict]:
-    """Collect keys/values from dicts and build column info with inferred types."""
-    key_values: dict[str, list] = {}
-    for doc in docs:
-        if isinstance(doc, dict):
-            for key, val in doc.items():
-                if key not in key_values:
-                    key_values[key] = []
-                key_values[key].append(val)
-
-    columns = []
-    for key, values in key_values.items():
-        col_type = _infer_json_value_type(values)
-        sample_values = []
-        for v in values[:10]:
-            if isinstance(v, (str, int, float, bool)) and v is not None:
-                sample_values.append(str(v) if not isinstance(v, str) else v)
-        unique_samples = list(set(sample_values))[:10]
-
-        columns.append({
-            'name': key,
-            'type': col_type,
-            'sample_values': unique_samples,
-        })
-    return columns
 
 
 def _infer_column_type(values: list[str]) -> str:
@@ -221,37 +182,6 @@ def _infer_column_type(values: list[str]) -> str:
     return "string"
 
 
-def _infer_json_value_type(values: list) -> str:
-    """Infer type from JSON values."""
-    if not values:
-        return "unknown"
-
-    types = set()
-    for v in values:
-        if v is None:
-            continue
-        elif isinstance(v, bool):
-            types.add("boolean")
-        elif isinstance(v, int):
-            types.add("integer")
-        elif isinstance(v, float):
-            types.add("float")
-        elif isinstance(v, str):
-            types.add("string")
-        elif isinstance(v, list):
-            types.add("array")
-        elif isinstance(v, dict):
-            types.add("object")
-
-    if len(types) == 0:
-        return "null"
-    if len(types) == 1:
-        return types.pop()
-    if types == {"integer", "float"}:
-        return "float"
-    return "mixed"
-
-
 def _infer_structured_schema(filepath: Path, description: Optional[str] = None) -> Optional[StructuredFileSchema]:
     """Infer schema for a structured file based on its extension."""
     suffix = filepath.suffix.lower()
@@ -271,25 +201,29 @@ def _infer_structured_schema(filepath: Path, description: Optional[str] = None) 
 
 
 def _infer_jsonl_schema(filepath: Path, sample_lines: int = 100) -> StructuredFileSchema:
-    """Infer schema from a JSON Lines file."""
-    import json
+    """Infer schema from a JSON Lines file using DuckDB."""
+    from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
 
-    docs = []
-    row_count = 0
+    try:
+        result = infer_json_schema_duckdb(str(filepath), sample_size=sample_lines, jsonl=True)
+    except Exception:
+        return StructuredFileSchema(
+            filename=filepath.name,
+            filepath=str(filepath),
+            file_format="jsonl",
+            row_count=0,
+            columns=[],
+        )
 
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        for i, line in enumerate(f):
-            row_count += 1
-            if i < sample_lines and line.strip():
-                try:
-                    docs.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+    columns = [
+        {"name": c["name"], "type": c["type"], "sample_values": c["sample_values"]}
+        for c in result["columns"]
+    ]
 
     return StructuredFileSchema(
         filename=filepath.name,
         filepath=str(filepath),
         file_format="jsonl",
-        row_count=row_count,
-        columns=_build_columns_from_docs(docs),
+        row_count=result["row_count"],
+        columns=columns,
     )

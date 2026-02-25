@@ -238,8 +238,9 @@ class _CoreMixin:
 
         backend = vs_config.backend if vs_config else "duckdb"
         db_path = vs_config.db_path if vs_config else None
+        reranker_model = vs_config.reranker_model if vs_config else None
 
-        return create_vector_store(backend=backend, db_path=db_path)
+        return create_vector_store(backend=backend, db_path=db_path, reranker_model=reranker_model)
 
     def _add_document_internal(
         self,

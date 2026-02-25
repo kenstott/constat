@@ -576,7 +576,7 @@ class APISchemaManager:
             meta = APIEndpointMetadata(
                 api_name=name,
                 endpoint_name=schema_name,
-                api_type="rest/schema",
+                api_type="openapi/model",
                 description=schema_def.get("description") or schema_def.get("title"),
                 fields=fields,
             )
@@ -715,7 +715,7 @@ class APISchemaManager:
             elif meta.api_type == "graphql_type":
                 endpoint_chunk_type = ChunkType.GRAPHQL_TYPE
                 field_chunk_type = ChunkType.GRAPHQL_FIELD
-            elif meta.api_type == "rest/schema":
+            elif meta.api_type == "openapi/model":
                 endpoint_chunk_type = ChunkType.API_SCHEMA
                 field_chunk_type = ChunkType.API_SCHEMA
             else:
@@ -854,7 +854,8 @@ class APISchemaManager:
         # Search API chunks by source
         # noinspection PyUnresolvedReferences
         results = self._vector_store.search_by_source(
-            query_embedding, source='api', limit=limit, min_similarity=min_similarity
+            query_embedding, source='api', limit=limit, min_similarity=min_similarity,
+            query_text=query,
         )
 
         # Transform results to match expected format using metadata cache
@@ -864,14 +865,18 @@ class APISchemaManager:
             full_name = chunk.document_name.removeprefix("api:")
             meta = self.metadata_cache.get(full_name)
             if meta:
-                output.append({
+                entry = {
                     "api_name": meta.api_name,
-                    "endpoint": meta.endpoint_name,
                     "type": meta.api_type,
                     "description": meta.description,
                     "fields": [f.name for f in meta.fields],
                     "similarity": similarity,
-                })
+                }
+                if meta.api_type == "openapi/model":
+                    entry["model"] = meta.endpoint_name
+                else:
+                    entry["endpoint"] = meta.endpoint_name
+                output.append(entry)
         return output
 
     def get_api_schema(self, api_name: str) -> list[APIEndpointMetadata]:

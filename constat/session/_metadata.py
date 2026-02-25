@@ -91,7 +91,8 @@ class MetadataMixin:
             if t.get("relevance", 0) >= min_similarity
         ]
 
-        # Find relevant documents
+        # Find relevant documents (exclude glossary/API entries — those are
+        # surfaced via their own categories, not as "documents")
         if self.doc_tools:
             docs = self.doc_tools.search_documents(query, limit=doc_limit)
             results["documents"] = [
@@ -104,6 +105,9 @@ class MetadataMixin:
                 }
                 for d in docs
                 if d.get("relevance", 0) >= min_similarity
+                and not d["document"].startswith("glossary:")
+                and not d["document"].startswith("api:")
+                and not d["document"].startswith("relationship:")
             ]
 
         # Find relevant APIs
@@ -113,13 +117,14 @@ class MetadataMixin:
             apis = self._cached_find_relevant_apis(query, limit=api_limit)
             logger.debug(f"[find_relevant_sources] API search for '{query[:50]}': {len(apis)} results, min_sim={min_similarity}")
             for a in apis[:3]:
-                logger.debug(f"[find_relevant_sources]   - {a.get('api_name')}.{a.get('endpoint')}: sim={a.get('similarity', 0):.3f}")
+                _ep = a.get('model') or a.get('endpoint')
+                logger.debug(f"[find_relevant_sources]   - {a.get('api_name')}.{_ep}: sim={a.get('similarity', 0):.3f}")
             results["apis"] = [
                 {
                     "source_type": "api",
-                    "name": f"{a['api_name']}.{a['endpoint']}",
+                    "name": f"{a['api_name']}.{a.get('model') or a.get('endpoint')}",
                     "api_name": a["api_name"],
-                    "endpoint": a["endpoint"],
+                    **({"model": a["model"]} if "model" in a else {"endpoint": a["endpoint"]}),
                     "type": a["type"],
                     "description": a.get("description"),
                     "fields": a.get("fields", []),

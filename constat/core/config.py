@@ -541,6 +541,11 @@ class VectorStoreConfig(BaseModel):
     # Default: ~/.constat/vectors.duckdb
     db_path: Optional[str] = None
 
+    # Cross-encoder model for reranking search results.
+    # When set, retrieves extra candidates then reranks with this model.
+    # Example: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_model: Optional[str] = None
+
 
 class StorageConfig(BaseModel):
     """Storage configuration for artifact store and vector store."""

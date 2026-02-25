@@ -205,16 +205,15 @@ class FileConnector:
         )
 
     def _infer_json_schema(self) -> FileMetadata:
-        """Infer schema from a JSON or JSONL file."""
-        import pandas as pd
+        """Infer schema from a JSON or JSONL file using DuckDB."""
+        from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
 
         try:
-            if self.file_type == FileType.JSONL:
-                df = pd.read_json(self.path, lines=True, nrows=self.sample_size)
-            else:
-                df = pd.read_json(self.path)
-                if len(df) > self.sample_size:
-                    df = df.head(self.sample_size)
+            result = infer_json_schema_duckdb(
+                self.path,
+                sample_size=self.sample_size,
+                jsonl=(self.file_type == FileType.JSONL),
+            )
         except Exception as e:
             return FileMetadata(
                 name=self.name,
@@ -224,29 +223,22 @@ class FileConnector:
                 description=f"Error reading file: {e}",
             )
 
-        columns = self._infer_columns_from_dataframe(df)
-
-        # Get row count
-        try:
-            if self.file_type == FileType.JSONL and not self._is_remote_path():
-                with open(self.path, 'r') as f:
-                    row_count = sum(1 for line in f if line.strip())
-            else:
-                # For regular JSON, re-read to get full count
-                full_df = pd.read_json(
-                    self.path,
-                    lines=(self.file_type == FileType.JSONL)
-                )
-                row_count = len(full_df)
-        except (OSError, ValueError):
-            row_count = len(df)
+        columns = [
+            ColumnInfo(
+                name=c["name"],
+                data_type=c["type"],
+                nullable=c["nullable"],
+                sample_values=c["sample_values"],
+            )
+            for c in result["columns"]
+        ]
 
         return FileMetadata(
             name=self.name,
             path=self.path,
             file_type=self.file_type,
             columns=columns,
-            row_count=row_count,
+            row_count=result["row_count"],
             description=self.description,
         )
 

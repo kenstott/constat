@@ -55,7 +55,7 @@ async def list_entities(
         "api_field": "api_field",
         "rest_field": "api_field",  # REST fields -> api_field
         "rest": "api_endpoint",     # REST endpoint -> api_endpoint
-        "rest/schema": "api_schema", # REST schema -> api_schema
+        "openapi/model": "api_schema", # REST schema -> api_schema
         "graphql_type": "graphql",
         "graphql_field": "graphql",
     }

@@ -1311,7 +1311,7 @@ class SchemaManager:
 
         # Search embeddings — fetch extra to filter for schema table chunks
         from constat.discovery.models import ChunkType
-        search_results = self._vector_store.search(query_embedding, limit=top_k * 10)
+        search_results = self._vector_store.search(query_embedding, limit=top_k * 10, query_text=query)
 
         # Filter to schema table chunks and deduplicate by table
         seen_tables: set[str] = set()

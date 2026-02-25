@@ -67,6 +67,16 @@ export const COMMANDS: CommandDef[] = [
   { command: '/learnings', description: 'Show learnings and rules', category: 'Analysis' },
   { command: '/compact-learnings', description: 'Promote similar learnings into rules', category: 'Analysis' },
 
+  // Diagnostics (LLM tool inspection)
+  { command: '/schema', description: 'Show detailed table schema (as LLM sees it)', category: 'Diagnostics', argType: 'table' },
+  { command: '/search-tables', description: 'Semantic search for relevant tables', category: 'Diagnostics', argType: 'text' },
+  { command: '/search-apis', description: 'Semantic search for relevant APIs', category: 'Diagnostics', argType: 'text' },
+  { command: '/search-docs', description: 'Semantic search for relevant documents', category: 'Diagnostics', argType: 'text' },
+  { command: '/lookup', description: 'Look up glossary term with full details', category: 'Diagnostics', argType: 'entity' },
+  { command: '/entity', description: 'Find entity across schema and documents', category: 'Diagnostics', argType: 'entity' },
+  { command: '/known-facts', description: 'List all known/cached facts (LLM view)', category: 'Diagnostics' },
+  { command: '/sources', description: 'Find relevant sources for a query', category: 'Diagnostics', argType: 'text' },
+
   // Exit
   { command: '/quit', description: 'Exit the session', category: 'Exit' },
   { command: '/q', description: 'Exit the session', category: 'Exit' },

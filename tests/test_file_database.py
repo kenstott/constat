@@ -49,9 +49,21 @@ def file_data_sources():
         with open(json_path, "w") as f:
             json.dump(events, f)
 
+        # Create JSONL file
+        jsonl_path = data_dir / "logs.jsonl"
+        logs = [
+            {"ts": "2024-01-15T10:00:00", "level": "INFO", "count": 1},
+            {"ts": "2024-01-15T10:01:00", "level": "ERROR", "count": 5},
+            {"ts": "2024-01-15T10:02:00", "level": "INFO", "count": 2},
+        ]
+        with open(jsonl_path, "w") as f:
+            for log in logs:
+                f.write(json.dumps(log) + "\n")
+
         yield {
             "csv_path": str(csv_path),
             "json_path": str(json_path),
+            "jsonl_path": str(jsonl_path),
         }
 
 
@@ -350,3 +362,48 @@ print(f"Purchase count: {len(df[df['type'] == 'purchase'])}")
         assert result.success, f"Execution failed: {result.error_message()}"
         assert "Events: 3" in result.stdout
         assert "Purchase count: 2" in result.stdout
+
+
+class TestDuckDBInference:
+    """Tests for the DuckDB-based schema inference utility."""
+
+    def test_json_inference(self, file_data_sources):
+        from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
+
+        result = infer_json_schema_duckdb(file_data_sources["json_path"], jsonl=False)
+
+        assert result["row_count"] == 3
+        col_names = [c["name"] for c in result["columns"]]
+        assert "event_id" in col_names
+        assert "type" in col_names
+        assert "amount" in col_names
+
+        # Check types are mapped
+        type_map = {c["name"]: c["type"] for c in result["columns"]}
+        assert type_map["event_id"] == "string"
+        assert type_map["amount"] == "float"
+
+    def test_jsonl_inference(self, file_data_sources):
+        from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
+
+        result = infer_json_schema_duckdb(file_data_sources["jsonl_path"], jsonl=True)
+
+        assert result["row_count"] == 3
+        col_names = [c["name"] for c in result["columns"]]
+        assert "ts" in col_names
+        assert "level" in col_names
+        assert "count" in col_names
+
+        type_map = {c["name"]: c["type"] for c in result["columns"]}
+        assert type_map["level"] == "string"
+        assert type_map["count"] in ("integer", "float")
+
+    def test_sample_values_present(self, file_data_sources):
+        from constat.catalog.file._duckdb_inference import infer_json_schema_duckdb
+
+        result = infer_json_schema_duckdb(file_data_sources["json_path"], jsonl=False)
+
+        for col in result["columns"]:
+            if col["name"] == "event_id":
+                assert len(col["sample_values"]) > 0
+                assert "E001" in col["sample_values"]
