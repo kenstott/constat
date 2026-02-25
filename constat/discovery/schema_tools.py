@@ -510,12 +510,34 @@ class SchemaDiscoveryTools:
 
                         # Connected resources via resolve_physical_resources
                         from constat.discovery.glossary_generator import resolve_physical_resources
+                        import logging as _logging
+                        _logger = _logging.getLogger(__name__)
+
                         active_domains = getattr(self.doc_tools, '_active_domain_ids', None)
+                        _logger.warning(
+                            f"[DISCOVER] term={term.name!r} session_id={self.session_id!r} "
+                            f"user_id={self.user_id!r} active_domains={active_domains!r}"
+                        )
+
+                        # Check entity lookup directly
+                        _ent = vs.find_entity_by_name(term.name, domain_ids=active_domains, session_id=self.session_id)
+                        _logger.warning(f"[DISCOVER] find_entity_by_name({term.name!r}) → {_ent}")
+                        if not _ent:
+                            # Try without any filters
+                            _ent_raw = vs.find_entity_by_name(term.name)
+                            _logger.warning(f"[DISCOVER] find_entity_by_name({term.name!r}, no filter) → {_ent_raw}")
+                            if _ent_raw:
+                                _logger.warning(
+                                    f"[DISCOVER] entity found but INVISIBLE: "
+                                    f"entity.session_id={_ent_raw.session_id!r} entity.domain_id={_ent_raw.domain_id!r}"
+                                )
+
                         resources = resolve_physical_resources(
                             term.name, self.session_id or "", vs,
                             domain_ids=active_domains,
                             user_id=self.user_id,
                         )
+                        _logger.warning(f"[DISCOVER] resolve_physical_resources → {len(resources)} resources: {resources}")
                         if resources:
                             entry["sources"] = [
                                 {
