@@ -2693,7 +2693,7 @@ function TermGraphInline({
               title="Export graph"
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path d="M12 5v14M5 12l7-7 7 7" />
+                <path d="M12 5v14M19 12l-7 7-7-7" />
               </svg>
             </button>
             {showExportMenu && (
@@ -2711,7 +2711,10 @@ function TermGraphInline({
             className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
             title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
-            <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
+            {fullscreen
+              ? <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
+              : <ArrowsPointingInIcon className="w-3.5 h-3.5" />
+            }
           </button>
         </div>
       </div>
