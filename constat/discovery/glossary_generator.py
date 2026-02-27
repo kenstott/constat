@@ -56,6 +56,16 @@ Build multi-level hierarchies where appropriate. A term's parent can itself
 have a parent. For example: "Base Salary" → "Compensation" → "Employee".
 Go as deep as the domain warrants — do not flatten to a single level.
 
+Relationship evidence may be provided for each entity. Use it to inform
+parent/child decisions — e.g., if relationships show X HAS_MANY Y or
+X CONTAINS Y, that suggests X is a parent of Y.
+
+If "Schema parent: column of <table>" is shown, the entity is a database column
+belonging to that table. The table entity should be its parent with HAS_ONE.
+
+If "Foreign keys to: <table>" is shown, this entity's table has a foreign key
+referencing that table, indicating a direct relationship between the two tables.
+
 For each entity, also provide:
 - A parent category — either an existing entity from the list, or a new grouping
   term you create (e.g., "Customer Tier" as parent of "Platinum", "Gold", "Bronze").
@@ -132,7 +142,7 @@ def _build_entity_context(
     vector_store,
     domain_ids: list[str] | None = None,
 ) -> str:
-    """Build context string for an entity (chunks + co-occurring entities)."""
+    """Build context string for an entity (chunks + co-occurring entities + relationships)."""
     entity = vector_store.find_entity_by_name(
         entity_name, domain_ids=domain_ids, session_id=session_id,
     )
@@ -143,12 +153,41 @@ def _build_entity_context(
     chunks = vector_store.get_chunks_for_entity(entity.id, domain_ids=domain_ids, limit=3)
     lines = [f"Entity: {entity_name} (type: {entity.semantic_type})"]
 
+    # Extract structural hints from schema chunks
+    parent_table = None
+    fk_targets: list[str] = []
     if chunks:
         lines.append("Referenced in:")
         for _chunk_id, chunk, _confidence in chunks:
             # Truncate long content
             content = chunk.content[:200].replace("\n", " ")
             lines.append(f"  [{chunk.document_name}] {content}")
+
+            if chunk.document_name.startswith("schema:"):
+                parts = chunk.document_name.split(".")
+                # schema:db.table.column → 3 parts = column chunk
+                if len(parts) == 3 and not parent_table:
+                    parent_table = parts[1]
+                # Extract FK targets from chunk content (format: "FK: col → table.col")
+                for line in chunk.content.split("\n"):
+                    if line.startswith("FK:") and "→" in line:
+                        target_part = line.split("→")[1].strip()
+                        target_table = target_part.split(".")[0]
+                        if target_table:
+                            fk_targets.append(target_table)
+
+    if parent_table:
+        lines.append(f"Schema parent: column of {parent_table} table")
+    if fk_targets:
+        lines.append(f"Foreign keys to: {', '.join(fk_targets)}")
+
+    # Add discovered relationships as context for taxonomy decisions
+    rels = vector_store.get_relationships_for_entity(entity_name, session_id)
+    if rels:
+        rel_strs = []
+        for r in rels[:8]:  # Limit to top 8 by confidence
+            rel_strs.append(f"{r['subject_name']} {r['verb']} {r['object_name']}")
+        lines.append("Relationships: " + ", ".join(rel_strs))
 
     return "\n".join(lines)
 

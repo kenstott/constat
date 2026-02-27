@@ -49,7 +49,6 @@ _NON_VERBS = frozenset({
 # All verbs use Cypher-standard UPPER_SNAKE_CASE:
 #   (Manager)-[:MANAGES]->(Employee)
 PREFERRED_VERBS: dict[str, set[str]] = {
-    "ownership": {"BELONGS_TO"},
     "hierarchy": {"MANAGES", "REPORTS_TO"},
     "action": {"CREATES", "PROCESSES", "APPROVES", "PLACES"},
     "flow": {"SENDS", "RECEIVES", "TRANSFERS"},
@@ -59,12 +58,39 @@ PREFERRED_VERBS: dict[str, set[str]] = {
 }
 # Verbs that overlap with the taxonomy (HAS_ONE, HAS_KIND, HAS_MANY).
 # Rejected from SVO only when the pair already has a parent-child edge.
-_HIERARCHY_VERBS = {"HAS", "HAS_ONE", "HAS_KIND", "HAS_MANY", "CONTAINS", "BELONGS_TO", "IS_TYPE_OF", "USES"}
+_HIERARCHY_VERBS = {"HAS", "HAS_ONE", "HAS_KIND", "HAS_MANY", "USES"}
 ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
 
 VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
 
 _CANONICAL_VERB_LIST = ", ".join(sorted(ALL_PREFERRED))
+
+# Bare "HAS" is never allowed — must be qualified
+_VERB_REPLACEMENTS = {
+    "HAS": "HAS_ONE",
+    "CONTAIN": "CONTAINS",
+    "CONTAINS": "HAS_MANY",
+    "BELONG_TO": "BELONGS_TO",
+    "BELONGS_TO": "HAS_ONE",
+    "IS_TYPE_OF": "HAS_KIND",
+}
+# Verbs whose direction is inverted (child→parent becomes parent→child after replacement)
+_SWAP_DIRECTION_VERBS = {"BELONGS_TO", "IS_TYPE_OF"}
+
+
+def _normalize_verb(verb: str) -> tuple[str, bool]:
+    """Normalize verb to UPPER_SNAKE_CASE, replacing disallowed bare forms.
+
+    Returns:
+        (normalized_verb, swap_direction) — swap_direction is True when
+        subject and object should be swapped (e.g. BELONGS_TO → HAS_ONE).
+    """
+    if "_" not in verb.lower():
+        verb = _to_third_person(verb.lower())
+    verb = verb.upper()
+    swap = verb in _SWAP_DIRECTION_VERBS
+    verb = _VERB_REPLACEMENTS.get(verb, verb)
+    return verb, swap
 
 
 def _to_third_person(verb: str) -> str:
@@ -109,6 +135,9 @@ Return a JSON array of relationships found. For each relationship:
 VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
 If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
 
+NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
+NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
+
 DIRECTION RULE — The subject performs the action on the object:
 - CORRECT: "Customer PLACES Order" (Customer is the actor)
 - WRONG: "Order RECEIVES Customer" (Order is not the actor)
@@ -123,7 +152,7 @@ Examples of good relationships:
 
 Rules:
 - Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
-- Avoid hierarchy/ownership verbs (HAS, CONTAINS, BELONGS_TO, IS_TYPE_OF) when the pair already has a parent-child relationship — these duplicate the taxonomy
+- Avoid hierarchy/ownership verbs (HAS_ONE, HAS_MANY, HAS_KIND) when the pair already has a parent-child relationship — these duplicate the taxonomy
 - Prefer spaCy suggestions when the verb is accurate; override when text supports a better verb
 - You may infer implicit relationships even if no sentence states them directly
   (e.g., "Employee" WORKS_IN "Department" can be inferred from organizational context)
@@ -340,13 +369,15 @@ def extract_svo_relationships(
                 lemma = verb.lemma_.lower()
                 if lemma in _NON_VERBS:
                     continue
-                verb_form = _to_third_person(lemma).upper()
+                verb_form, swap = _normalize_verb(lemma)
                 category = categorize_verb(verb_form)
                 confidence = 1.0 if verb_form in ALL_PREFERRED else 0.5
 
                 subject_name, object_name = determine_svo_direction(
                     span_a, span_b, verb, e1_name, e2_name,
                 )
+                if swap:
+                    subject_name, object_name = object_name, subject_name
 
                 rel_id = hashlib.sha256(
                     f"{subject_name}:{verb_form}:{object_name}:{session_id}".encode()
@@ -584,9 +615,7 @@ def refine_relationships_with_llm(
                 verb = item.get("verb", "").strip()
                 if not verb:
                     continue
-                if "_" not in verb.lower():
-                    verb = _to_third_person(verb.lower())
-                verb = verb.upper()
+                verb, swap = _normalize_verb(verb)
 
                 # Use LLM-provided category, fall back to our own categorization
                 verb_category = item.get("verb_category", "")
@@ -602,6 +631,8 @@ def refine_relationships_with_llm(
                 # (LLM might return slightly different casing)
                 subject_name = matched_pair["e1_name"] if subj.lower() == matched_pair["e1_name"].lower() else matched_pair["e2_name"]
                 object_name = matched_pair["e2_name"] if subject_name == matched_pair["e1_name"] else matched_pair["e1_name"]
+                if swap:
+                    subject_name, object_name = object_name, subject_name
 
                 rel_id = hashlib.sha256(
                     f"{subject_name}:{verb}:{object_name}:{session_id}".encode()
@@ -706,6 +737,9 @@ Infer **cross-cutting** relationships between terms based on their definitions a
 VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
 If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
 
+NEVER use bare "HAS" — always qualify as HAS_ONE (composition), HAS_MANY (collection), or HAS_KIND (taxonomy).
+NEVER use CONTAINS (use HAS_MANY), BELONGS_TO (use HAS_ONE with swapped direction), or IS_TYPE_OF (use HAS_KIND with swapped direction).
+
 DIRECTION RULE — The subject performs the action on the object:
 - CORRECT: "Customer PLACES Order" (Customer is the actor)
 - WRONG: "Order RECEIVES Customer" (Order is not the actor)
@@ -713,8 +747,8 @@ DIRECTION RULE — The subject performs the action on the object:
 IMPORTANT RULES:
 - Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
 - Do NOT return relationships that duplicate an existing parent-child edge between the same pair
-  (e.g., if "Order" is parent of "Line Item" with HAS_MANY, do not return "Order HAS Line Item")
-- Hierarchy/ownership verbs (HAS, CONTAINS, BELONGS_TO, IS_TYPE_OF) are fine between terms that are NOT in a parent-child relationship
+  (e.g., if "Order" is parent of "Line Item" with HAS_MANY, do not return "Order HAS_MANY Line Item")
+- Hierarchy/ownership verbs (HAS_ONE, HAS_MANY, HAS_KIND) are fine between terms that are NOT in a parent-child relationship
 - Focus on: action relationships, causation, temporal ordering, association between entities in different branches
 - Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES", "TRIGGERS", "APPROVES")
 - Use underscores for compound verbs (e.g., "BELONGS_TO", "WORKS_IN")
@@ -857,9 +891,9 @@ def infer_glossary_relationships(
                     continue
 
                 # Normalize verb to Cypher UPPER_SNAKE_CASE
-                if "_" not in verb.lower():
-                    verb = _to_third_person(verb.lower())
-                verb = verb.upper()
+                verb, swap = _normalize_verb(verb)
+                if swap:
+                    subj_lower, obj_lower = obj_lower, subj_lower
 
                 # Skip if this verb duplicates an existing parent-child edge
                 if verb in _HIERARCHY_VERBS:
@@ -943,10 +977,10 @@ def deduplicate_relationships(session_id: str, vector_store) -> int:
 
     rows = vector_store._conn.execute(
         """
-        SELECT id, subject_name, verb, object_name, confidence
+        SELECT id, subject_name, verb, object_name, confidence, user_edited
         FROM entity_relationships
         WHERE session_id = ?
-        ORDER BY confidence DESC
+        ORDER BY user_edited DESC, confidence DESC
         """,
         [session_id],
     ).fetchall()
@@ -955,16 +989,24 @@ def deduplicate_relationships(session_id: str, vector_store) -> int:
     best_by_pair: dict[tuple[str, str], tuple] = {}
     duplicates: list[str] = []
 
-    for rel_id, subj, verb, obj, confidence in rows:
+    for rel_id, subj, verb, obj, confidence, user_edited in rows:
         pair_key = tuple(sorted([subj.lower(), obj.lower()]))
         # Remove SVO relationships that duplicate a parent-child taxonomy edge
-        if pair_key in parent_child_pairs:
+        # but never delete user-edited relationships
+        if pair_key in parent_child_pairs and not user_edited:
             duplicates.append(rel_id)
             continue
         if pair_key not in best_by_pair:
             best_by_pair[pair_key] = (rel_id, confidence)
         else:
-            duplicates.append(rel_id)
+            # Never delete user-edited rows as duplicates
+            if user_edited:
+                # Evict the previous winner
+                old_id, _ = best_by_pair[pair_key]
+                duplicates.append(old_id)
+                best_by_pair[pair_key] = (rel_id, confidence)
+            else:
+                duplicates.append(rel_id)
 
     # Delete duplicates
     for rel_id in duplicates:
@@ -974,3 +1016,64 @@ def deduplicate_relationships(session_id: str, vector_store) -> int:
         logger.info(f"Deduplicated relationships for {session_id}: removed {len(duplicates)}, kept {len(best_by_pair)}")
 
     return len(duplicates)
+
+
+# ---------------------------------------------------------------------------
+# HAS_* promotion: convert orphan HAS relationships to taxonomy edges
+# ---------------------------------------------------------------------------
+
+_HAS_VERBS = {"HAS_ONE", "HAS_MANY", "HAS_KIND"}
+
+
+def promote_has_relationships(
+    session_id: str,
+    vector_store,
+    user_id: str | None = None,
+) -> int:
+    """Promote non-user-edited HAS_ONE/HAS_MANY/HAS_KIND relationships to taxonomy edges.
+
+    For each matching relationship where the object term has no parent,
+    sets the subject as its parent (with the HAS verb) and deletes the relationship.
+
+    Returns:
+        Number of relationships promoted.
+    """
+    rows = vector_store._conn.execute(
+        """
+        SELECT r.id, r.subject_name, r.verb, r.object_name
+        FROM entity_relationships r
+        WHERE r.session_id = ?
+          AND r.user_edited = FALSE
+          AND r.verb IN ('HAS_ONE', 'HAS_MANY', 'HAS_KIND')
+        """,
+        [session_id],
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    # Build lookup of glossary terms by lowercase name
+    terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
+    term_by_name: dict[str, object] = {t.name.lower(): t for t in terms}
+
+    promoted = 0
+    for rel_id, subject_name, verb, object_name in rows:
+        child = term_by_name.get(object_name.lower())
+        if not child or child.parent_id:
+            continue
+        parent = term_by_name.get(subject_name.lower())
+        if not parent:
+            continue
+
+        vector_store.update_glossary_term(
+            child.name, session_id,
+            {"parent_id": parent.id, "parent_verb": verb},
+            user_id=user_id,
+        )
+        vector_store.delete_entity_relationship(rel_id)
+        promoted += 1
+
+    if promoted:
+        logger.info(f"Promoted {promoted} HAS relationships to taxonomy edges for {session_id}")
+
+    return promoted

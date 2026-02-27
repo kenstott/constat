@@ -446,6 +446,13 @@ export async function updateRelationshipVerb(
   return put(`/sessions/${sessionId}/relationships/${relId}`, { verb })
 }
 
+export async function approveRelationship(
+  sessionId: string,
+  relId: string
+): Promise<{ status: string }> {
+  return put(`/sessions/${sessionId}/relationships/${relId}/approve`, {})
+}
+
 export async function deleteRelationship(
   sessionId: string,
   relId: string

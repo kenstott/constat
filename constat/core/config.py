@@ -662,6 +662,7 @@ class DocumentConfig(BaseModel):
     max_documents: int = 20  # Max documents to fetch via link following
     link_pattern: Optional[str] = None  # Regex to filter which links to follow
     same_domain_only: bool = True  # Only follow links to same domain
+    exclude_patterns: Optional[list[str]] = None  # Regex patterns for URLs to skip
 
 
 class APIConfig(BaseModel):

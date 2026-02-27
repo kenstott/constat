@@ -848,7 +848,14 @@ class _CoreMixin:
                 linked_type = user_type if user_type != "auto" else detect_type_from_source(
                     linked_result.source_path, linked_result.detected_mime
                 )
-                linked_content, linked_format = self._extract_content(linked_result, linked_type)
+                if is_binary_type(linked_type):
+                    logger.debug(f"Skipping binary linked doc: {url}")
+                    continue
+                try:
+                    linked_content, linked_format = self._extract_content(linked_result, linked_type)
+                except (UnicodeDecodeError, ValueError) as e:
+                    logger.debug(f"Skipping non-decodable linked doc {url}: {e}")
+                    continue
                 if linked_format == "html":
                     linked_content = _convert_html_to_markdown(linked_content)
                     linked_format = "markdown"
@@ -901,6 +908,77 @@ class _CoreMixin:
             sections=_extract_markdown_sections(content, doc_format),
             loaded_at=datetime.now().isoformat(),
         )
+
+    def add_document_from_config(
+        self,
+        name: str,
+        doc_config: DocumentConfig,
+        domain_id: str | None = None,
+        session_id: str | None = None,
+        skip_entity_extraction: bool = False,
+    ) -> tuple[bool, str]:
+        """Add a document from a DocumentConfig (supports URL, inline, etc.).
+
+        Temporarily registers the config so _resolve_doc_config can find it,
+        loads via _load_document (handles URL fetch, crawl, HTML->markdown),
+        then indexes all loaded docs with domain/session scoping.
+
+        Args:
+            name: Document name
+            doc_config: DocumentConfig with url, content, etc.
+            domain_id: Domain this document belongs to
+            session_id: Session this document was added in
+            skip_entity_extraction: If True, skip NER
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if self.config.documents is None:
+            self.config.documents = {}
+
+        # Temporarily register so _resolve_doc_config works
+        self.config.documents[name] = doc_config
+
+        try:
+            self._load_document(name)
+
+            # Collect all loaded docs (root + crawled sub-docs)
+            loaded_names = [
+                n for n in self._loaded_documents
+                if n == name or n.startswith(f"{name}:")
+            ]
+
+            total_chunks = 0
+            for doc_name in loaded_names:
+                doc = self._loaded_documents[doc_name]
+                chunks = self._chunk_document(doc_name, doc.content)
+                if not chunks:
+                    continue
+
+                texts = [c.content for c in chunks]
+                with self._model_lock:
+                    embeddings = self._model.encode(texts, convert_to_numpy=True)
+
+                self._vector_store.add_chunks(
+                    chunks, embeddings, source="document",
+                    domain_id=domain_id, session_id=session_id,
+                )
+                total_chunks += len(chunks)
+
+                if not skip_entity_extraction:
+                    if domain_id:
+                        self._extract_and_store_entities_domain(chunks, domain_id)
+                    elif session_id:
+                        self._extract_and_store_entities_session(chunks, session_id)
+                    else:
+                        self._extract_and_store_entities(chunks, self._schema_entities)
+
+            return True, f"Added {len(loaded_names)} document(s) from '{name}' ({total_chunks} chunks)"
+        except Exception as e:
+            return False, f"Failed to load document from config: {e}"
+        finally:
+            # Clean up temp config entry (doc_config is preserved in LoadedDocument)
+            self.config.documents.pop(name, None)
 
     def _load_file_directly(self, name: str, filepath: Path, doc_config: DocumentConfig) -> None:
         """Load a file directly from a path (for expanded glob/directory entries)."""

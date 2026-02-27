@@ -130,3 +130,25 @@ def detect_type_from_source(
 def is_binary_type(doc_type: str) -> bool:
     """Return True for types that are binary (PDF, Office docs)."""
     return doc_type.lower() in _BINARY_TYPES
+
+
+# MIME prefixes we can actually load (text/*, plus specific binary document types)
+_LOADABLE_MIME_PREFIXES = ("text/", "application/json", "application/xml",
+                           "application/pdf", "application/x-yaml", "application/x-ndjson",
+                           "application/vnd.openxmlformats",
+                           "application/msword",
+                           "application/vnd.ms-excel",
+                           "application/vnd.ms-powerpoint",
+                           "application/octet-stream")  # unknown binary — let downstream decide
+
+
+def is_loadable_mime(mime: str | None) -> bool:
+    """Return True if we can extract text from this MIME type.
+
+    Returns True for None (unknown MIME — let downstream handle it).
+    Returns False for images, audio, video, fonts, etc.
+    """
+    if mime is None:
+        return True
+    lower = mime.lower().split(";")[0].strip()
+    return any(lower.startswith(prefix) for prefix in _LOADABLE_MIME_PREFIXES)

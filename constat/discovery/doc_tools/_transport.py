@@ -104,12 +104,30 @@ def _fetch_file(config: "DocumentConfig", config_dir: str | None) -> FetchResult
     )
 
 
-def _fetch_http(config: "DocumentConfig") -> FetchResult:
-    """Fetch via HTTP/HTTPS."""
+_USER_AGENT = "Constat/1.0 (+https://github.com/constat)"
+
+# Module-level session for cookie persistence across requests
+# (Wikipedia and similar sites require cookies to avoid captcha/auth prompts)
+_http_session: "requests.Session | None" = None
+
+
+def _get_http_session() -> "requests.Session":
+    """Get or create a module-level requests session with cookie persistence."""
     import requests
 
-    headers = config.headers or {}
-    response = requests.get(config.url, headers=headers, timeout=30)
+    global _http_session
+    if _http_session is None:
+        _http_session = requests.Session()
+        _http_session.headers["User-Agent"] = _USER_AGENT
+    return _http_session
+
+
+def _fetch_http(config: "DocumentConfig") -> FetchResult:
+    """Fetch via HTTP/HTTPS using a persistent session."""
+    session = _get_http_session()
+
+    headers = dict(config.headers or {})
+    response = session.get(config.url, headers=headers, timeout=30)
     response.raise_for_status()
 
     content_type = response.headers.get("content-type")

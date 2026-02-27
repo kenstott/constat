@@ -11,12 +11,12 @@ server:
   permissions:
     $ref: ./permissions.yaml
 
-# Projects keyed by identifier (used for permissions)
-projects:
+# Domains keyed by identifier (used for permissions)
+domains:
   sales-analytics:
-    $ref: ./projects/sales-analytics.yaml
+    $ref: ./domains/sales-analytics.yaml
   hr-reporting:
-    $ref: ./projects/hr-reporting.yaml
+    $ref: ./domains/hr-reporting.yaml
 
 llm:
 #  provider: ollama

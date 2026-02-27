@@ -22,9 +22,18 @@ REPL_COMMANDS = [
     "/plans", "/replay", "/history", "/sessions", "/resume", "/restore",
     "/context", "/compact", "/facts", "/remember", "/forget",
     "/verbose", "/raw", "/insights", "/preferences", "/artifacts",
+    "/export", "/download-code",
     "/database", "/databases", "/db", "/file", "/files",
-    "/correct", "/learnings", "/compact-learnings", "/forget-learning",
+    "/doc", "/docs", "/documents", "/api", "/apis",
+    "/discover", "/correct", "/learnings", "/compact-learnings", "/forget-learning",
+    "/rule", "/rule-edit", "/rule-delete",
     "/audit", "/summarize", "/prove",
+    "/glossary", "/define", "/undefine", "/refine",
+    "/schema", "/search-tables", "/search-apis", "/search-docs", "/search-chunks",
+    "/lookup", "/entity", "/known-facts", "/sources",
+    "/agent", "/agents", "/agent-create", "/agent-edit", "/agent-delete", "/agent-draft",
+    "/skill", "/skills", "/skill-create", "/skill-edit", "/skill-delete",
+    "/skill-deactivate", "/skill-draft", "/skill-download",
     "/quit", "/exit", "/q"
 ]
 

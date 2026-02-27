@@ -143,6 +143,7 @@ def _compute_doc_resource_hash(doc_name: str, doc_config, config_dir: str | None
     data = {
         "name": doc_name,
         "path": doc_config.path or "",
+        "url": doc_config.url or "",
         "description": doc_config.description or "",
         "type": doc_config.type or "",
     }
@@ -377,6 +378,18 @@ def _warmup_vector_store(config: Config) -> None:
                             logger.warning(f"  Domain {filename}: failed to vectorize {doc_name}: {msg}")
                     else:
                         logger.warning(f"  Domain {filename}: file not found: {doc_path}")
+                elif doc_config.url:
+                    success, msg = doc_tools.add_document_from_config(
+                        doc_name, doc_config,
+                        domain_id=filename,
+                        skip_entity_extraction=True,
+                    )
+                    if success:
+                        vector_store.set_resource_hash(filename, "document", doc_name, resource_hash)
+                        indexed_count += 1
+                        logger.info(f"  Domain {filename}: vectorized {doc_name} (url)")
+                    else:
+                        logger.warning(f"  Domain {filename}: failed to vectorize {doc_name}: {msg}")
             except Exception as e:
                 logger.warning(f"  Domain {filename}: error indexing {doc_name}: {e}")
 

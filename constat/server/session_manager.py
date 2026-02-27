@@ -718,6 +718,9 @@ class SessionManager:
                     "stage": stage, "percent": pct,
                 })
 
+            # Early relationships: SVO + LLM before glossary (text-driven discovery)
+            self._run_early_relationships(session_id, managed, vector_store, on_progress=on_progress)
+
             terms = generate_glossary(
                 session_id=session_id,
                 vector_store=vector_store,
@@ -739,8 +742,8 @@ class SessionManager:
                 active_domains = getattr(managed, "active_domains", []) or []
                 self._embed_glossary_terms(terms, session_id, vector_store, session, active_domains)
 
-            # Relationship extraction (4 phases: FK, SVO, LLM refinement, glossary inference)
-            self._run_svo_extraction(session_id, managed, vector_store, on_progress=on_progress)
+            # Late relationships: FK + glossary inference (needs glossary)
+            self._run_late_relationships(session_id, managed, vector_store, on_progress=on_progress)
 
             # Rebuild clusters with new glossary terms
             if hasattr(vector_store, '_rebuild_clusters'):
@@ -794,22 +797,8 @@ class SessionManager:
             except Exception as e:
                 logger.warning(f"Failed to embed glossary chunks: {e}")
 
-    def _run_svo_extraction(
-        self,
-        session_id: str,
-        managed: "ManagedSession",
-        vector_store,
-        on_progress: Callable[[str, int], None] | None = None,
-    ) -> None:
-        """Run four-phase relationship extraction after glossary generation.
-
-        Phase 0: FK relationships (from schema foreign keys)
-        Phase 1: SpaCy SVO (optional — graceful skip if no spaCy)
-        Phase 2: LLM refinement (if router available)
-        Phase 3: Glossary-informed LLM inference (cross-cutting relationships)
-        """
-        session = managed.session
-
+    def _make_relationship_batch_callback(self, managed: "ManagedSession"):
+        """Create a reusable on_batch callback for relationship extraction phases."""
         def on_batch(batch_rels):
             rel_dicts = [
                 {
@@ -825,28 +814,33 @@ class SessionManager:
             self._push_event(managed, EventType.RELATIONSHIPS_EXTRACTED, {
                 "relationships": rel_dicts,
             })
+        return on_batch
 
-        # Phase 0: FK relationships
-        if on_progress:
-            on_progress("Extracting FK relationships", 85)
-        try:
-            from constat.discovery.relationship_extractor import store_fk_relationships
-            glossary_terms = vector_store.list_glossary_terms(session_id, user_id=managed.user_id)
-            if glossary_terms and session.schema_manager:
-                fk_rels = store_fk_relationships(
-                    session_id=session_id,
-                    glossary_terms=glossary_terms,
-                    schema_manager=session.schema_manager,
-                    vector_store=vector_store,
-                    on_batch=on_batch,
-                )
-                logger.info(f"Phase 0 FK relationships for {session_id}: {len(fk_rels)} relationships")
-        except Exception as e:
-            logger.exception(f"Phase 0 FK relationships for {session_id} failed: {e}")
+    def _run_early_relationships(
+        self,
+        session_id: str,
+        managed: "ManagedSession",
+        vector_store,
+        on_progress: Callable[[str, int], None] | None = None,
+    ) -> None:
+        """Run text-driven relationship extraction before glossary generation.
+
+        Phase 1: SpaCy SVO (optional — graceful skip if no spaCy)
+        Phase 2: LLM refinement (if router available)
+        Early dedup pass (no taxonomy pairs yet)
+        """
+        session = managed.session
+
+        # Clear non-user-edited relationships before regeneration
+        cleared = vector_store.clear_non_user_relationships(session_id)
+        if cleared:
+            logger.info(f"Cleared {cleared} non-user-edited relationships for {session_id}")
+
+        on_batch = self._make_relationship_batch_callback(managed)
 
         # Phase 1: spaCy SVO (optional)
         if on_progress:
-            on_progress("Extracting text relationships", 88)
+            on_progress("Extracting text relationships", 5)
         svo_rels = []
         try:
             from constat.discovery.entity_extractor import get_nlp
@@ -870,7 +864,7 @@ class SessionManager:
 
         # Phase 2: LLM refinement (if router available)
         if on_progress:
-            on_progress("Refining relationships", 92)
+            on_progress("Refining relationships", 12)
         if hasattr(session, 'router') and session.router:
             try:
                 from constat.discovery.relationship_extractor import (
@@ -893,9 +887,56 @@ class SessionManager:
         else:
             logger.debug(f"Session {session_id}: no router available, skipping Phase 2 LLM refinement")
 
+        # Early dedup pass (no taxonomy pairs yet — just pair-level dedup)
+        try:
+            from constat.discovery.relationship_extractor import deduplicate_relationships
+            removed = deduplicate_relationships(session_id, vector_store)
+            if removed:
+                logger.info(f"Early relationship dedup for {session_id}: removed {removed} duplicates")
+        except Exception as e:
+            logger.exception(f"Early relationship dedup for {session_id} failed: {e}")
+
+        if on_progress:
+            on_progress("Early relationships complete", 20)
+
+    def _run_late_relationships(
+        self,
+        session_id: str,
+        managed: "ManagedSession",
+        vector_store,
+        on_progress: Callable[[str, int], None] | None = None,
+    ) -> None:
+        """Run glossary-dependent relationship extraction after glossary generation.
+
+        Phase 0: FK relationships (needs glossary terms)
+        Phase 3: Glossary-informed LLM inference (needs term definitions)
+        Full dedup (now taxonomy edges exist for parent-child filtering)
+        Promote HAS_* to taxonomy
+        """
+        session = managed.session
+        on_batch = self._make_relationship_batch_callback(managed)
+
+        # Phase 0: FK relationships
+        if on_progress:
+            on_progress("Extracting FK relationships", 80)
+        try:
+            from constat.discovery.relationship_extractor import store_fk_relationships
+            glossary_terms = vector_store.list_glossary_terms(session_id, user_id=managed.user_id)
+            if glossary_terms and session.schema_manager:
+                fk_rels = store_fk_relationships(
+                    session_id=session_id,
+                    glossary_terms=glossary_terms,
+                    schema_manager=session.schema_manager,
+                    vector_store=vector_store,
+                    on_batch=on_batch,
+                )
+                logger.info(f"Phase 0 FK relationships for {session_id}: {len(fk_rels)} relationships")
+        except Exception as e:
+            logger.exception(f"Phase 0 FK relationships for {session_id} failed: {e}")
+
         # Phase 3: Glossary-informed LLM inference
         if on_progress:
-            on_progress("Inferring relationships", 96)
+            on_progress("Inferring relationships", 88)
         if hasattr(session, 'router') and session.router:
             try:
                 from constat.discovery.relationship_extractor import infer_glossary_relationships
@@ -910,7 +951,9 @@ class SessionManager:
             except Exception as e:
                 logger.exception(f"Phase 3 glossary inference for {session_id} failed: {e}")
 
-        # Final: deduplicate — keep only best relationship per entity pair
+        # Full dedup (now has taxonomy pairs for parent-child filtering)
+        if on_progress:
+            on_progress("Deduplicating relationships", 93)
         try:
             from constat.discovery.relationship_extractor import deduplicate_relationships
             removed = deduplicate_relationships(session_id, vector_store)
@@ -918,6 +961,17 @@ class SessionManager:
                 logger.info(f"Relationship dedup for {session_id}: removed {removed} duplicates")
         except Exception as e:
             logger.exception(f"Relationship dedup for {session_id} failed: {e}")
+
+        # Promote orphan HAS_* relationships to taxonomy edges
+        if on_progress:
+            on_progress("Promoting taxonomy", 96)
+        try:
+            from constat.discovery.relationship_extractor import promote_has_relationships
+            promoted = promote_has_relationships(session_id, vector_store, user_id=managed.user_id)
+            if promoted:
+                logger.info(f"Promoted {promoted} HAS relationships to taxonomy for {session_id}")
+        except Exception as e:
+            logger.exception(f"HAS promotion for {session_id} failed: {e}")
 
     @staticmethod
     def _push_event(managed: "ManagedSession", event_type: EventType, data: dict) -> None:

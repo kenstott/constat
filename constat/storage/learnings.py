@@ -543,6 +543,39 @@ class LearningStore:
             "rules_by_category": rules_by_category,
         }
 
+    # -------------------------------------------------------------------------
+    # Exemplar Runs
+    # -------------------------------------------------------------------------
+
+    def save_exemplar_run(self, stats: dict) -> str:
+        """Save a record of an exemplar generation run.
+
+        Args:
+            stats: Dict with coverage, counts, paths
+
+        Returns:
+            The run ID
+        """
+        data = self._load()
+        if "exemplar_runs" not in data:
+            data["exemplar_runs"] = []
+
+        run_id = self._generate_id("exrun")
+        record = {
+            "id": run_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **stats,
+        }
+        data["exemplar_runs"].append(record)
+        self._save()
+        return run_id
+
+    def get_exemplar_runs(self) -> list[dict]:
+        """Get all exemplar generation runs, newest first."""
+        data = self._load()
+        runs = data.get("exemplar_runs", [])
+        return sorted(runs, key=lambda r: r.get("timestamp", ""), reverse=True)
+
     def clear_all(self) -> dict:
         """Clear all learnings, rules, and archive.
 

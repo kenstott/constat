@@ -287,7 +287,8 @@ export function ArtifactPanel() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
   // Document viewer state
-  const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string } | null>(null)
+  const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string } | null>(null)
+  const [iframeBlocked, setIframeBlocked] = useState(false)
   const [loadingDocument, setLoadingDocument] = useState(false)
   // Results filter - persisted in localStorage
   const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
@@ -538,10 +539,12 @@ export function ArtifactPanel() {
       }
 
       // For content types (markdown, text), show in modal
+      setIframeBlocked(false)
       setViewingDocument({
         name: doc.name || documentName,
         content: doc.content || '',
-        format: doc.format
+        format: doc.format,
+        url: doc.url,
       })
     } catch (err) {
       console.error('Failed to load document:', err)
@@ -1211,7 +1214,9 @@ ${skill.body}`
       {/* Document Viewer Modal */}
       {(viewingDocument || loadingDocument) && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+          <div className={`bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full flex flex-col ${
+            viewingDocument?.url && !iframeBlocked ? 'max-w-5xl max-h-[90vh]' : 'max-w-3xl max-h-[80vh]'
+          }`}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
@@ -1221,6 +1226,16 @@ ${skill.body}`
                   <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">
                     {viewingDocument.format}
                   </span>
+                )}
+                {viewingDocument?.url && (
+                  <a
+                    href={viewingDocument.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded hover:underline"
+                  >
+                    Open in browser
+                  </a>
                 )}
               </div>
               <button
@@ -1235,6 +1250,26 @@ ${skill.body}`
                 <div className="flex items-center justify-center py-8">
                   <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
                 </div>
+              ) : viewingDocument?.url && !iframeBlocked ? (
+                <iframe
+                  src={viewingDocument.url}
+                  className="w-full h-[75vh] border-0 rounded"
+                  sandbox="allow-scripts allow-same-origin allow-popups"
+                  onError={() => setIframeBlocked(true)}
+                  onLoad={(e) => {
+                    // Detect X-Frame-Options blocking: iframe loads but content is blank
+                    try {
+                      const iframe = e.target as HTMLIFrameElement
+                      // Cross-origin iframes throw on contentDocument access
+                      // If it doesn't throw, check if it's a blank error page
+                      if (iframe.contentDocument?.title === '') {
+                        setIframeBlocked(true)
+                      }
+                    } catch {
+                      // Cross-origin = loaded successfully (can't inspect but content is there)
+                    }
+                  }}
+                />
               ) : viewingDocument?.content ? (
                 viewingDocument.format === 'markdown' ? (
                   <div className="prose prose-sm dark:prose-invert max-w-none">

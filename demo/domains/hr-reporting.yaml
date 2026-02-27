@@ -1,0 +1,30 @@
+# HR Reporting Domain
+# Provides access to HR and employee data
+
+name: HR Reporting
+description: Employee and performance data for HR analysis
+
+databases:
+  hr:
+    uri: sqlite:///data/hr.db
+    description: |
+      HR data with departments, employees, and performance reviews.
+      Ratings: 1-5 scale (5=exceptional, 1=unsatisfactory).
+
+documents:
+  compensation_policy:
+    path: docs/compensation_policy.pdf
+    description: Salary bands, merit increases, and bonus structure
+
+  hr_management:
+    url: https://en.wikipedia.org/wiki/Human_resource_management
+    follow_links: true
+    max_depth: 1
+    same_domain_only: true
+    exclude_patterns:
+      - "/wiki/(Special|Wikipedia|Talk|User|Help|File|Template|Category|Portal):"
+      - "/w/"
+      - "/api/"
+      - "auth\\.wikimedia\\.org"
+      - "\\.(png|jpg|jpeg|gif|svg|ico|css|js)(\\?|$)"
+    description: Human resource management concepts and practices

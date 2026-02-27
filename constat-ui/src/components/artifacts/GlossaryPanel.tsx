@@ -18,6 +18,7 @@ import {
   PencilIcon,
   EyeIcon,
   EyeSlashIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline'
 import { useGlossaryStore } from '@/store/glossaryStore'
 import { useUIStore } from '@/store/uiStore'
@@ -26,6 +27,7 @@ import {
   getGlossaryTerm,
   createRelationship,
   updateRelationshipVerb,
+  approveRelationship,
   deleteRelationship,
   updateGlossaryTerm,
   draftGlossaryDefinition,
@@ -186,11 +188,13 @@ function RelationshipRow({
   sessionId,
   onDeleted,
   onUpdated,
+  onApproved,
 }: {
-  rel: { id: string; subject: string; verb: string; object: string }
+  rel: { id: string; subject: string; verb: string; object: string; user_edited?: boolean }
   sessionId: string
   onDeleted: (id: string) => void
   onUpdated: (id: string, verb: string) => void
+  onApproved: (id: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [editVerb, setEditVerb] = useState(rel.verb)
@@ -209,6 +213,11 @@ function RelationshipRow({
   const handleDelete = async () => {
     await deleteRelationship(sessionId, rel.id)
     onDeleted(rel.id)
+  }
+
+  const handleApprove = async () => {
+    await approveRelationship(sessionId, rel.id)
+    onApproved(rel.id)
   }
 
   return (
@@ -239,6 +248,17 @@ function RelationshipRow({
         </button>
       )}
       <TermLink name={rel.object} displayName={rel.object} />
+      {rel.user_edited ? (
+        <CheckIcon className="ml-1 w-3 h-3 text-green-500 flex-shrink-0" title="Approved — preserved during regeneration" />
+      ) : hover && !editing ? (
+        <button
+          onClick={handleApprove}
+          className="ml-1 text-green-400 hover:text-green-500 flex-shrink-0"
+          title="Approve — preserve during regeneration"
+        >
+          <CheckIcon className="w-3 h-3" />
+        </button>
+      ) : null}
       {hover && !editing && (
         <button
           onClick={handleDelete}
@@ -547,7 +567,11 @@ function ConnectedResources({
               }))}
               onUpdated={(id, verb) => setDetail(prev => ({
                 ...prev,
-                relationships: prev.relationships.map(x => x.id === id ? { ...x, verb } : x),
+                relationships: prev.relationships.map(x => x.id === id ? { ...x, verb, user_edited: true } : x),
+              }))}
+              onApproved={(id) => setDetail(prev => ({
+                ...prev,
+                relationships: prev.relationships.map(x => x.id === id ? { ...x, user_edited: true } : x),
               }))}
             />
           ))}

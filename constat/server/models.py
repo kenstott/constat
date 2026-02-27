@@ -729,6 +729,18 @@ class LearningListResponse(BaseModel):
     rules: list[RuleInfo] = Field(default_factory=list, description="List of compacted rules")
 
 
+class ExemplarGenerateResponse(BaseModel):
+    """Response from exemplar generation."""
+
+    status: str = Field(description="Result status")
+    coverage: str = Field(description="Coverage level used")
+    rule_pairs: int = Field(description="Number of rule-derived pairs")
+    glossary_pairs: int = Field(description="Number of glossary-derived pairs")
+    relationship_pairs: int = Field(description="Number of relationship-derived pairs")
+    total: int = Field(description="Total exemplar pairs generated")
+    download_urls: dict[str, str] = Field(description="Format name to download URL")
+
+
 # ============================================================================
 # Entity Models
 # ============================================================================

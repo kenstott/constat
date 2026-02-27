@@ -14,5 +14,6 @@ This package provides:
 """
 
 from constat.learning.compactor import LearningCompactor, CompactionResult
+from constat.learning.exemplar_generator import ExemplarGenerator, ExemplarResult
 
-__all__ = ["LearningCompactor", "CompactionResult"]
+__all__ = ["LearningCompactor", "CompactionResult", "ExemplarGenerator", "ExemplarResult"]

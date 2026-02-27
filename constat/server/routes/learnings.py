@@ -29,6 +29,7 @@ from constat.server.models import (
     DomainInfo,
     DomainListResponse,
     DomainTreeNode,
+    ExemplarGenerateResponse,
     LearningCreateRequest,
     LearningInfo,
     LearningListResponse,
@@ -296,6 +297,83 @@ async def compact_learnings(
             "rules_created": 0,
             "learnings_archived": 0,
         }
+
+
+@router.post("/learnings/generate-exemplars", response_model=ExemplarGenerateResponse)
+async def generate_exemplars(
+    session_id: str,
+    user_id: CurrentUserId,
+    coverage: str = "standard",
+    config: Config = Depends(get_config),
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> ExemplarGenerateResponse:
+    """Generate fine-tuning exemplar pairs from rules, glossary, and relationships."""
+    if coverage not in ("minimal", "standard", "comprehensive"):
+        raise HTTPException(status_code=400, detail="coverage must be minimal, standard, or comprehensive")
+
+    managed = session_manager.get_session(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    # Get dependencies
+    from constat.storage.learnings import LearningStore
+    from constat.learning.exemplar_generator import ExemplarGenerator
+    from constat.providers import TaskRouter
+
+    store = LearningStore(user_id=user_id)
+    llm = TaskRouter(config.llm)
+
+    # Get vector store from session
+    session = managed.session
+    vs = None
+    if hasattr(session, "doc_tools") and session.doc_tools:
+        vs = session.doc_tools._vector_store
+    if not vs:
+        raise HTTPException(status_code=503, detail="Vector store not available")
+
+    generator = ExemplarGenerator(store, vs, llm, session_id, user_id)
+    result = generator.generate(coverage=coverage)
+
+    download_urls = {
+        fmt: f"/api/learnings/exemplars/download?format={fmt}&user_id={user_id}"
+        for fmt in result.output_paths
+    }
+
+    return ExemplarGenerateResponse(
+        status="success",
+        coverage=coverage,
+        rule_pairs=result.rule_pairs,
+        glossary_pairs=result.glossary_pairs,
+        relationship_pairs=result.relationship_pairs,
+        total=result.total,
+        download_urls=download_urls,
+    )
+
+
+@router.get("/learnings/exemplars/download")
+async def download_exemplars(
+    format: str,
+    user_id: CurrentUserId,
+):
+    """Download generated exemplar JSONL file."""
+    from fastapi.responses import FileResponse
+
+    filenames = {
+        "messages": "exemplars_messages.jsonl",
+        "alpaca": "exemplars_alpaca.jsonl",
+    }
+    if format not in filenames:
+        raise HTTPException(status_code=400, detail="format must be 'messages' or 'alpaca'")
+
+    path = Path(".constat") / user_id / filenames[format]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No exemplar file found. Generate exemplars first.")
+
+    return FileResponse(
+        path=str(path),
+        media_type="application/jsonl",
+        filename=filenames[format],
+    )
 
 
 @router.get("/config", response_model=ConfigResponse)

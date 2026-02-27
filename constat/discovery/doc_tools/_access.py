@@ -28,6 +28,8 @@ def _loaded_doc_to_result(doc) -> dict:
     }
     if hasattr(doc.config, 'path') and doc.config.path:
         result["path"] = doc.config.path
+    if hasattr(doc.config, 'url') and doc.config.url:
+        result["url"] = doc.config.url
     return result
 
 
@@ -126,17 +128,7 @@ class _AccessMixin:
         """
         # Check if already loaded
         if name in self._loaded_documents:
-            doc = self._loaded_documents[name]
-            result = {
-                "name": doc.name,
-                "content": doc.content,
-                "format": doc.format,
-                "sections": doc.sections,
-                "loaded_at": doc.loaded_at,
-            }
-            if hasattr(doc.config, 'path') and doc.config.path:
-                result["path"] = doc.config.path
-            return result
+            return _loaded_doc_to_result(self._loaded_documents[name])
 
         # Handle expanded names from glob/directory (format: "parent:filename")
         # But skip API-style document names (api:*, Database:*, Table:*, etc.)
@@ -215,19 +207,7 @@ class _AccessMixin:
         if not doc:
             return {"error": f"Document not loaded: {name}"}
 
-        result = {
-            "name": doc.name,
-            "content": doc.content,
-            "format": doc.format,
-            "sections": doc.sections,
-            "loaded_at": doc.loaded_at,
-        }
-
-        # Include path for file-based documents
-        if hasattr(doc.config, 'path') and doc.config.path:
-            result["path"] = doc.config.path
-
-        return result
+        return _loaded_doc_to_result(doc)
 
     def _reconstruct_from_chunks(self, name: str) -> dict:
         """Reconstruct document content from vector store chunks.

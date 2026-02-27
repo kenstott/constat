@@ -347,6 +347,7 @@ class EntityRelationship:
     confidence: float = 1.0
     verb_category: str = "other"
     session_id: str = ""
+    user_edited: bool = False
     created_at: Optional[datetime] = None
 
     def __post_init__(self):

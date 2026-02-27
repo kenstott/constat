@@ -426,6 +426,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 confidence FLOAT DEFAULT 1.0,
                 verb_category VARCHAR DEFAULT 'other',
                 session_id VARCHAR,
+                user_edited BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(subject_name, verb, object_name, session_id)
             )
@@ -536,6 +537,10 @@ class DuckDBVectorStore(VectorStoreBackend):
                 PRIMARY KEY (term_name, session_id)
             )
         """)
+        try:
+            self._conn.execute("ALTER TABLE entity_relationships ADD COLUMN user_edited BOOLEAN DEFAULT FALSE")
+        except Exception:
+            pass
 
     # =========================================================================
     # Visibility filters — single source of truth for scoping queries
@@ -2937,14 +2942,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             """
             INSERT INTO entity_relationships
                 (id, subject_name, verb, object_name,
-                 sentence, confidence, verb_category, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 sentence, confidence, verb_category, session_id, user_edited)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING
             """,
             [
                 rel.id, rel.subject_name, rel.verb,
                 rel.object_name, rel.sentence,
                 rel.confidence, rel.verb_category, rel.session_id,
+                getattr(rel, 'user_edited', False),
             ],
         )
 
@@ -2956,7 +2962,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         rows = self._conn.execute(
             """
             SELECT FIRST(r.id), r.subject_name, r.verb, r.object_name,
-                   MAX(r.confidence), FIRST(r.verb_category)
+                   MAX(r.confidence), FIRST(r.verb_category),
+                   BOOL_OR(r.user_edited)
             FROM entity_relationships r
             WHERE (LOWER(r.subject_name) = ? OR LOWER(r.object_name) = ?)
               AND r.session_id = ?
@@ -2973,6 +2980,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "object_name": r[3],
                 "confidence": r[4],
                 "verb_category": r[5],
+                "user_edited": r[6],
             }
             for r in rows
         ]
@@ -2981,6 +2989,14 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Delete all entity relationships for a session."""
         result = self._conn.execute(
             "DELETE FROM entity_relationships WHERE session_id = ? RETURNING id",
+            [session_id],
+        ).fetchall()
+        return len(result)
+
+    def clear_non_user_relationships(self, session_id: str) -> int:
+        """Delete all non-user-edited relationships for a session."""
+        result = self._conn.execute(
+            "DELETE FROM entity_relationships WHERE session_id = ? AND user_edited = FALSE RETURNING id",
             [session_id],
         ).fetchall()
         return len(result)
@@ -2994,12 +3010,12 @@ class DuckDBVectorStore(VectorStoreBackend):
         return len(result) > 0
 
     def update_entity_relationship_verb(self, rel_id: str, verb: str) -> bool:
-        """Update the verb and verb_category of a relationship."""
+        """Update the verb and verb_category of a relationship, marking as user-edited."""
         from constat.discovery.relationship_extractor import categorize_verb
         verb = verb.upper()
         verb_category = categorize_verb(verb)
         result = self._conn.execute(
-            "UPDATE entity_relationships SET verb = ?, verb_category = ? WHERE id = ? RETURNING id",
+            "UPDATE entity_relationships SET verb = ?, verb_category = ?, user_edited = TRUE WHERE id = ? RETURNING id",
             [verb, verb_category, rel_id],
         ).fetchall()
         return len(result) > 0

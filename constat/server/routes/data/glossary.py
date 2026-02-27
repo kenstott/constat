@@ -300,6 +300,7 @@ async def get_glossary_term(
             "verb": r["verb"],
             "object": r["object_name"],
             "confidence": r["confidence"],
+            "user_edited": r.get("user_edited", False),
         }
         for r in rels
     ]
@@ -424,6 +425,7 @@ async def create_relationship(
         confidence=1.0,
         verb_category=categorize_verb(verb.lower()),
         session_id=session_id,
+        user_edited=True,
     )
     vs.add_entity_relationship(rel)
 
@@ -457,6 +459,26 @@ async def update_relationship_verb(
         raise HTTPException(status_code=404, detail=f"Relationship '{rel_id}' not found")
 
     return {"status": "updated", "id": rel_id, "verb": verb}
+
+
+@router.put("/{session_id}/relationships/{rel_id}/approve", dependencies=[Depends(require_write("glossary"))])
+async def approve_relationship(
+    session_id: str,
+    rel_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Mark a relationship as user-approved (user_edited=TRUE)."""
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+
+    result = vs._conn.execute(
+        "UPDATE entity_relationships SET user_edited = TRUE WHERE id = ? RETURNING id",
+        [rel_id],
+    ).fetchall()
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Relationship '{rel_id}' not found")
+
+    return {"status": "approved", "id": rel_id}
 
 
 @router.delete("/{session_id}/relationships/{rel_id}", dependencies=[Depends(require_write("glossary"))])

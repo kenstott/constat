@@ -21,11 +21,27 @@ if TYPE_CHECKING:
     from constat.core.config import DocumentConfig
     from ._transport import FetchResult
 
+from ._mime import is_loadable_mime
+
 logger = logging.getLogger(__name__)
 
 # Regex patterns for link extraction
 _HTML_HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
 _MARKDOWN_LINK_RE = re.compile(r'\[([^\]]*)\]\(([^)]+)\)')
+
+# File extensions that are never crawlable content
+_BINARY_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp",
+    ".pdf", ".zip", ".gz", ".tar", ".mp3", ".mp4", ".wav", ".avi",
+    ".woff", ".woff2", ".ttf", ".eot", ".css", ".js",
+})
+
+# URL path segments that indicate non-content pages (login, auth, special)
+_SKIP_PATH_PREFIXES = (
+    "/wiki/Special:", "/wiki/Wikipedia:", "/wiki/Talk:",
+    "/wiki/User:", "/wiki/Help:", "/wiki/File:",
+    "/w/", "/api/",
+)
 
 
 def extract_links(content: str, doc_type: str, base_url: str | None) -> list[str]:
@@ -37,7 +53,7 @@ def extract_links(content: str, doc_type: str, base_url: str | None) -> list[str
         base_url: Base URL for resolving relative links
 
     Returns:
-        List of absolute URLs extracted from content
+        List of unique absolute URLs extracted from content (fragments stripped)
     """
     raw_links: list[str] = []
 
@@ -51,7 +67,10 @@ def extract_links(content: str, doc_type: str, base_url: str | None) -> list[str
         # Office docs / plain text: no crawlable links
         return []
 
+    base_normalized = _normalize_url(base_url) if base_url else None
+
     # Resolve relative URLs and filter
+    seen: set[str] = set()
     resolved = []
     for link in raw_links:
         # Skip anchors, javascript, mailto
@@ -59,10 +78,26 @@ def extract_links(content: str, doc_type: str, base_url: str | None) -> list[str
             continue
         if base_url:
             link = urljoin(base_url, link)
-        # Only keep http/https links
+        # Strip fragment — we only care about the page, not the anchor
         parsed = urlparse(link)
-        if parsed.scheme in ("http", "https"):
-            resolved.append(link)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        clean = parsed._replace(fragment="", query="").geturl()
+        # Skip binary file URLs
+        path_lower = parsed.path.lower()
+        if any(path_lower.endswith(ext) for ext in _BINARY_EXTENSIONS):
+            continue
+        # Skip non-content paths (login, auth, special pages, etc.)
+        if any(parsed.path.startswith(prefix) for prefix in _SKIP_PATH_PREFIXES):
+            continue
+        # Skip self-links (relative or absolute links back to the same page)
+        normalized = _normalize_url(clean)
+        if normalized == base_normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        resolved.append(clean)
 
     return resolved
 
@@ -89,6 +124,7 @@ def crawl_document(
     max_documents = config.max_documents
     link_pattern = re.compile(config.link_pattern) if config.link_pattern else None
     same_domain_only = config.same_domain_only
+    exclude_res = [re.compile(p) for p in (getattr(config, 'exclude_patterns', None) or [])]
 
     root_url = config.url
     root_domain = urlparse(root_url).netloc if root_url else None
@@ -130,6 +166,9 @@ def crawl_document(
                 continue
         if link_pattern and not link_pattern.search(url):
             continue
+        if any(ep.search(url) for ep in exclude_res):
+            logger.debug(f"Crawler: excluded by pattern: {url}")
+            continue
 
         # Fetch linked document
         linked_config = copy(config)
@@ -141,6 +180,11 @@ def crawl_document(
             result = fetch_fn(linked_config, config_dir)
         except Exception as e:
             logger.warning(f"Crawler: failed to fetch {url}: {e}")
+            continue
+
+        # Skip responses with unloadable MIME types (images, fonts, etc.)
+        if not is_loadable_mime(result.detected_mime):
+            logger.debug(f"Crawler: skipping unloadable mime {result.detected_mime} for {url}")
             continue
 
         results.append((url, result))

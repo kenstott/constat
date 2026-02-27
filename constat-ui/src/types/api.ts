@@ -272,6 +272,7 @@ export interface GlossaryTerm {
     verb: string
     object: string
     confidence: number
+    user_edited?: boolean
   }>
   cluster_siblings?: string[]
 }

@@ -76,6 +76,34 @@ export const COMMANDS: CommandDef[] = [
   { command: '/entity', description: 'Find entity across schema and documents', category: 'Diagnostics', argType: 'entity' },
   { command: '/known-facts', description: 'List all known/cached facts (LLM view)', category: 'Diagnostics' },
   { command: '/sources', description: 'Find relevant sources for a query', category: 'Diagnostics', argType: 'text' },
+  { command: '/search-chunks', description: 'Raw similarity search on all chunks', category: 'Diagnostics', argType: 'text' },
+
+  // Glossary
+  { command: '/glossary', description: 'Show glossary (all|defined|deprecated)', category: 'Glossary', argType: 'scope' },
+  { command: '/define', description: 'Add a glossary definition', category: 'Glossary', argType: 'text' },
+  { command: '/undefine', description: 'Remove a glossary definition', category: 'Glossary', argType: 'entity' },
+  { command: '/refine', description: 'AI-refine a glossary definition', category: 'Glossary', argType: 'entity' },
+
+  // Rules
+  { command: '/rule', description: 'Add a new rule directly', category: 'Analysis', argType: 'text' },
+  { command: '/rule-edit', description: 'Edit an existing rule', category: 'Analysis', argType: 'text' },
+  { command: '/rule-delete', description: 'Delete a rule', category: 'Analysis', argType: 'text' },
+
+  // Agents & Skills
+  { command: '/agent', description: 'Show or set current agent', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agents', description: 'List available agents', category: 'Agents & Skills' },
+  { command: '/agent-create', description: 'Create a new agent', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agent-edit', description: 'Edit an agent\'s prompt', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agent-delete', description: 'Delete an agent', category: 'Agents & Skills', argType: 'text' },
+  { command: '/agent-draft', description: 'Draft an agent using AI', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill', description: 'Show or activate a skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skills', description: 'List available skills', category: 'Agents & Skills' },
+  { command: '/skill-create', description: 'Create a new skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-edit', description: 'Edit a skill\'s content', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-delete', description: 'Delete a skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-deactivate', description: 'Deactivate a skill', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-draft', description: 'Draft a skill using AI', category: 'Agents & Skills', argType: 'text' },
+  { command: '/skill-download', description: 'Download skill as Claude Desktop zip', category: 'Agents & Skills', argType: 'text' },
 
   // Exit
   { command: '/quit', description: 'Exit the session', category: 'Exit' },
