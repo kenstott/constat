@@ -2712,8 +2712,8 @@ function TermGraphInline({
             title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
             {fullscreen
-              ? <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
-              : <ArrowsPointingInIcon className="w-3.5 h-3.5" />
+              ? <ArrowsPointingInIcon className="w-3.5 h-3.5" />
+              : <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
             }
           </button>
         </div>
