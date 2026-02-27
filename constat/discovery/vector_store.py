@@ -3168,10 +3168,17 @@ class DuckDBVectorStore(VectorStoreBackend):
             if key in seen:
                 continue
             seen.add(key)
-            self._conn.execute(
-                "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
-                [name, int(cluster_id), session_id],
-            )
+            try:
+                self._conn.execute(
+                    "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
+                    [name, int(cluster_id), session_id],
+                )
+            except Exception:
+                # Concurrent rebuild race — update instead
+                self._conn.execute(
+                    "UPDATE glossary_clusters SET cluster_id = ? WHERE term_name = ? AND session_id = ?",
+                    [int(cluster_id), name, session_id],
+                )
 
         self._clusters_dirty = False
 
