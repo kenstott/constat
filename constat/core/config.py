@@ -546,6 +546,15 @@ class VectorStoreConfig(BaseModel):
     # Example: "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_model: Optional[str] = None
 
+    # Store original chunk text in embeddings table (useful for diagnostics)
+    # When False, only embeddings are stored — reduces DB size for large datasets
+    store_chunk_text: bool = True
+
+    # Clustering parameters for glossary term grouping
+    cluster_min_terms: int = 2        # minimum terms to trigger clustering
+    cluster_divisor: int = 5          # k = max(2, n_terms // divisor)
+    cluster_max_k: Optional[int] = None  # optional cap on k
+
 
 class StorageConfig(BaseModel):
     """Storage configuration for artifact store and vector store."""
@@ -567,17 +576,15 @@ class DocumentConfig(BaseModel):
     Documents provide domain knowledge, business rules, API documentation,
     or any reference material the LLM should consider during analysis.
 
-    File Example:
+    File Example (type auto-detected from path/url/content):
         documents:
           business_rules:
-            type: file
             path: ./docs/business-rules.md
             description: "Revenue calculation rules and thresholds"
 
     HTTP Example (works for wiki pages, GitHub raw files, etc.):
         documents:
           wiki_page:
-            type: http
             url: https://wiki.example.com/api/v2/pages/12345/export/view
             headers:
               Authorization: Bearer ${WIKI_TOKEN}
@@ -586,7 +593,6 @@ class DocumentConfig(BaseModel):
     Confluence Example:
         documents:
           confluence:
-            type: confluence
             url: https://mycompany.atlassian.net
             space_key: ANALYTICS
             page_title: "Business Rules"
@@ -596,40 +602,49 @@ class DocumentConfig(BaseModel):
     Inline Example:
         documents:
           glossary:
-            type: inline
             content: |
               ## Key Terms
               - VIP: Customer with lifetime value > $100k
               - Churn: Customer inactive for 90+ days
             description: "Business glossary"
+
+    S3 Example:
+        documents:
+          data_dict:
+            url: s3://my-bucket/docs/data-dictionary.pdf
+            aws_profile: analytics
+            description: "Data dictionary from S3"
     """
-    # Acquisition type: file | http | inline | confluence | notion
-    type: str = "file"
+    # Content type: auto | pdf | html | markdown | text | docx | xlsx | pptx
+    # Also accepts full MIME: application/pdf, text/html, etc.
+    type: str = "auto"
 
-    # For type=file
+    # Source (transport inferred from field presence / URL scheme)
     path: Optional[str] = None  # Local file path (supports glob: ./docs/*.md)
-
-    # For type=http
-    url: Optional[str] = None  # URL to fetch
+    url: Optional[str] = None  # URL to fetch (http, https, s3, ftp, sftp)
+    content: Optional[str] = None  # Inline content
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP headers
 
-    # For type=confluence
+    # Credentials (all support ${ENV_VAR} via existing YAML substitution)
+    username: Optional[str] = None  # FTP/SFTP/Confluence
+    password: Optional[str] = None  # FTP/SFTP
+    port: Optional[int] = None  # FTP/SFTP custom port
+    key_path: Optional[str] = None  # SFTP SSH key path
+    aws_profile: Optional[str] = None  # S3 AWS profile
+    aws_region: Optional[str] = None  # S3 AWS region
+
+    # Confluence
     space_key: Optional[str] = None  # Confluence space key
     page_title: Optional[str] = None  # Page title to fetch
     page_id: Optional[str] = None  # Or page ID directly
-    username: Optional[str] = None  # Confluence username
     api_token: Optional[str] = None  # Confluence API token
 
-    # For type=notion
+    # Notion
     page_url: Optional[str] = None  # Notion page URL
     notion_token: Optional[str] = None  # Notion integration token
 
-    # For type=inline
-    content: Optional[str] = None  # Inline content
-
     # Metadata
     description: str = ""  # What this document contains
-    format: str = "auto"  # auto | markdown | text | html | pdf | docx | xlsx | pptx
     tags: list[str] = Field(default_factory=list)  # For categorization/search
 
     # PDF/Office extraction options

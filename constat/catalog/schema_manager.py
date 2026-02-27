@@ -936,11 +936,18 @@ class SchemaManager:
             table_name = table_meta.name
             col_names = [c.name for c in table_meta.columns]
 
-            # Table chunk - use description if available, otherwise structured text
+            # Table chunk - enriched with row count, FKs, referenced_by
             if table_meta.comment:
                 table_content = f"{table_name} table: {table_meta.comment}"
             else:
-                table_content = f"{table_name} table in {db_name} database with columns: {', '.join(col_names)}"
+                row_info = f" ({table_meta.row_count} rows)" if table_meta.row_count else ""
+                table_content = f"{table_name} table in {db_name} database{row_info}"
+                table_content += f"\nColumns: {', '.join(col_names)}"
+                if table_meta.foreign_keys:
+                    fk_strs = [f"{fk.from_column} → {fk.to_table}" for fk in table_meta.foreign_keys]
+                    table_content += f"\nForeign keys: {', '.join(fk_strs)}"
+                if table_meta.referenced_by:
+                    table_content += f"\nReferenced by: {', '.join(table_meta.referenced_by)}"
 
             chunks.append(DocumentChunk(
                 document_name=f"schema:{full_name}",
@@ -951,17 +958,35 @@ class SchemaManager:
                 chunk_type=ChunkType.DB_TABLE,
             ))
 
-            # Column chunks
+            # Build FK lookup for columns
+            col_fk_map: dict[str, ForeignKey] = {
+                fk.from_column: fk for fk in table_meta.foreign_keys
+            }
+
+            # Column chunks - enriched with db name, table context, FK, constraints, samples
             for i, col in enumerate(table_meta.columns):
                 if col.comment:
                     col_content = f"{col.name} column in {table_name}: {col.comment}"
                 else:
                     col_type = col.type if col.type else "unknown type"
-                    col_content = f"{col.name} column ({col_type}) in {table_name} table"
+                    col_content = f"{col.name} column ({col_type}) in {table_name} table ({db_name})"
+
+                lines: list[str] = [col_content]
+                if table_meta.comment:
+                    lines.append(f"Table context: {table_meta.comment[:80]}")
+                if col.name in col_fk_map:
+                    fk = col_fk_map[col.name]
+                    lines.append(f"FK: {col.name} → {fk.to_table}.{fk.to_column}")
+                if col.primary_key:
+                    lines.append("Primary key: yes")
+                if not col.nullable:
+                    lines.append("Nullable: no")
+                if col.sample_values:
+                    lines.append(f"Sample values: {', '.join(str(v) for v in col.sample_values[:5])}")
 
                 chunks.append(DocumentChunk(
                     document_name=f"schema:{full_name}.{col.name}",
-                    content=col_content,
+                    content="\n".join(lines),
                     section="column_description",
                     chunk_index=i,
                     source="schema",

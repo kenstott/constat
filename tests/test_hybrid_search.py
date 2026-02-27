@@ -248,7 +248,12 @@ class TestClustering:
         from constat.discovery.models import GlossaryTerm
 
         session_id = "test_session"
-        # Add two glossary terms with embeddings
+        # Add two glossary terms with matching glossary_terms rows
+        for tid, name in [("term_a", "customer"), ("term_b", "order")]:
+            store.add_glossary_term(GlossaryTerm(
+                id=tid, name=name, display_name=name.title(),
+                definition=f"A {name}", session_id=session_id,
+            ))
         chunks = [
             DocumentChunk(
                 document_name="glossary:term_a",
@@ -293,8 +298,16 @@ class TestClustering:
 
     def test_cluster_siblings(self, store):
         """Siblings query returns correct cluster members."""
+        from constat.discovery.models import GlossaryTerm
+
         session_id = "test_session"
-        # Create 4 chunks — with deterministic embeddings so clustering is predictable
+        # Create glossary_terms rows so get_cluster_siblings can join id→name
+        for tid, name in [("a", "alpha"), ("b", "beta"), ("c", "gamma"), ("d", "delta")]:
+            store.add_glossary_term(GlossaryTerm(
+                id=tid, name=name, display_name=name.title(),
+                definition=f"Term {name}", session_id=session_id,
+            ))
+
         # Two similar pairs: (a, b) and (c, d)
         base_a = np.ones(DuckDBVectorStore.EMBEDDING_DIM, dtype=np.float32)
         base_b = np.ones(DuckDBVectorStore.EMBEDDING_DIM, dtype=np.float32) * 0.99
@@ -314,12 +327,71 @@ class TestClustering:
         embeddings = np.vstack([base_a, base_b, base_c, base_d])
         store.add_chunks(chunks, embeddings, session_id=session_id)
 
-        siblings = store.get_cluster_siblings("a", session_id)
-        # "a" and "b" should be in the same cluster
-        assert "b" in siblings
-        # "c" and "d" should NOT be siblings of "a"
-        assert "c" not in siblings
-        assert "d" not in siblings
+        siblings = store.get_cluster_siblings("alpha", session_id)
+        # "alpha" and "beta" should be in the same cluster
+        assert "beta" in siblings
+        # "gamma" and "delta" should NOT be siblings of "alpha"
+        assert "gamma" not in siblings
+        assert "delta" not in siblings
+
+    def test_cluster_config_params(self, tmp_path):
+        """Config params (min_terms, divisor, max_k) flow through to clustering."""
+        from constat.discovery.models import GlossaryTerm
+
+        # Store with min_terms=3 should NOT cluster when only 2 terms exist
+        store = DuckDBVectorStore(
+            db_path=str(tmp_path / "cfg.duckdb"),
+            cluster_min_terms=3,
+            cluster_divisor=5,
+            cluster_max_k=None,
+        )
+        session_id = "cfg_test"
+        for tid in ["x", "y"]:
+            store.add_glossary_term(GlossaryTerm(
+                id=tid, name=tid, display_name=tid, definition=tid, session_id=session_id,
+            ))
+        chunks = [
+            DocumentChunk(document_name="glossary:x", content="X", section="glossary",
+                          chunk_index=0, source="document", chunk_type=ChunkType.GLOSSARY_TERM),
+            DocumentChunk(document_name="glossary:y", content="Y", section="glossary",
+                          chunk_index=0, source="document", chunk_type=ChunkType.GLOSSARY_TERM),
+        ]
+        embeddings = np.random.randn(2, DuckDBVectorStore.EMBEDDING_DIM).astype(np.float32)
+        store.add_chunks(chunks, embeddings, session_id=session_id)
+        store._rebuild_clusters(session_id)
+        # With min_terms=3 and only 2 terms, clusters should be empty
+        rows = store._conn.execute(
+            "SELECT COUNT(*) FROM glossary_clusters WHERE session_id = ?", [session_id],
+        ).fetchone()[0]
+        assert rows == 0
+
+        # Store with max_k=2 should cap clusters at 2
+        store2 = DuckDBVectorStore(
+            db_path=str(tmp_path / "cfg2.duckdb"),
+            cluster_min_terms=2,
+            cluster_divisor=2,
+            cluster_max_k=2,
+        )
+        # Add 10 terms — without cap, k = max(2, 10//2) = 5; with max_k=2, k = 2
+        for i in range(10):
+            store2.add_glossary_term(GlossaryTerm(
+                id=f"t{i}", name=f"term{i}", display_name=f"Term {i}",
+                definition=f"Term {i}", session_id=session_id,
+            ))
+        chunks2 = [
+            DocumentChunk(document_name=f"glossary:t{i}", content=f"Term {i}", section="glossary",
+                          chunk_index=0, source="document", chunk_type=ChunkType.GLOSSARY_TERM)
+            for i in range(10)
+        ]
+        embeddings2 = np.random.randn(10, DuckDBVectorStore.EMBEDDING_DIM).astype(np.float32)
+        store2.add_chunks(chunks2, embeddings2, session_id=session_id)
+        store2._rebuild_clusters(session_id)
+        cluster_ids = store2._conn.execute(
+            "SELECT DISTINCT cluster_id FROM glossary_clusters WHERE session_id = ?", [session_id],
+        ).fetchall()
+        assert len(cluster_ids) == 2
+        store.close()
+        store2.close()
 
 
 class TestBM25Search:

@@ -74,7 +74,16 @@ class MetadataMixin:
             "tables": [],
             "documents": [],
             "apis": [],
+            "cluster": [],
         }
+
+        # Vector store for cluster lookups
+        # Entities/clusters are stored under server_session_id (UUID),
+        # not session_id (which becomes the history timestamp after first query)
+        vs = None
+        entity_session_id = getattr(self, 'server_session_id', None) or self.session_id
+        if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and entity_session_id:
+            vs = self.doc_tools._vector_store
 
         # Find relevant tables (with doc enrichment)
         tables = self._cached_find_relevant_tables(query, top_k=table_limit)
@@ -94,6 +103,8 @@ class MetadataMixin:
         # Find relevant documents (exclude glossary/API entries — those are
         # surfaced via their own categories, not as "documents")
         if self.doc_tools:
+            logger.debug(f"[find_relevant_sources] doc_tools._active_domain_ids={self.doc_tools._active_domain_ids}")
+            logger.debug(f"[find_relevant_sources] vector_store chunk count={self.doc_tools._vector_store.count()}")
             docs = self.doc_tools.search_documents(query, limit=doc_limit)
             results["documents"] = [
                 {
@@ -134,34 +145,40 @@ class MetadataMixin:
                 if a.get("similarity", 0) >= min_similarity
             ]
 
-        # Supplement with glossary physical resource mappings
+        # Supplement with glossary (terms + entities) physical resource mappings and clusters
         if self.doc_tools and hasattr(self.doc_tools, '_vector_store') and self.session_id:
             try:
                 vs = self.doc_tools._vector_store
-                terms = vs.list_glossary_terms(self.session_id, user_id=self.user_id)
+                # Unified glossary = entities + glossary terms
+                active_domains = getattr(self.doc_tools, '_active_domain_ids', None)
+                glossary = vs.get_unified_glossary(
+                    self.session_id, active_domains=active_domains,
+                    user_id=self.user_id,
+                )
                 query_lower = query.lower()
                 existing_table_names = {t["name"] for t in results["tables"]}
 
                 from constat.discovery.glossary_generator import resolve_physical_resources
 
-                for gt in terms:
-                    # Check if term name or alias appears in query
-                    matched = gt.name.lower() in query_lower
+                for entry in glossary:
+                    if entry.get("ignored"):
+                        continue
+                    name = entry["name"]
+                    # Check if term/entity name or alias appears in query
+                    matched = len(name) > 3 and name.lower() in query_lower
                     if not matched:
-                        for alias in (gt.aliases or []):
+                        for alias in (entry.get("aliases") or []):
                             if len(alias) > 3 and alias.lower() in query_lower:
                                 matched = True
                                 break
                     if not matched:
                         continue
 
-                    resources = resolve_physical_resources(gt.name, self.session_id, vs, user_id=self.user_id)
+                    resources = resolve_physical_resources(name, self.session_id, vs, user_id=self.user_id)
                     for res in resources:
                         for src in res.get("sources", []):
                             doc_name = src.get("document_name", "")
-                            # doc_name for schema sources looks like "db.table"
                             if doc_name and doc_name not in existing_table_names:
-                                # Check if this is a real table in our schema
                                 table_meta = self.schema_manager.metadata_cache.get(doc_name)
                                 if table_meta:
                                     results["tables"].append({
@@ -173,6 +190,35 @@ class MetadataMixin:
                                         "documentation": [],
                                     })
                                     existing_table_names.add(doc_name)
+
+                    # Cluster: include matched term/entity + siblings
+                    if hasattr(vs, "get_cluster_siblings"):
+                        siblings = vs.get_cluster_siblings(name, entity_session_id)
+                        if siblings:
+                            results["cluster"].append({
+                                "term": name,
+                                "siblings": siblings,
+                            })
+                            # Pull in siblings' physical resources at lower relevance
+                            for sib_name in siblings:
+                                sib_resources = resolve_physical_resources(
+                                    sib_name, self.session_id, vs, user_id=self.user_id,
+                                )
+                                for sib_res in sib_resources:
+                                    for src in sib_res.get("sources", []):
+                                        doc_name = src.get("document_name", "")
+                                        if doc_name and doc_name not in existing_table_names:
+                                            table_meta = self.schema_manager.metadata_cache.get(doc_name)
+                                            if table_meta:
+                                                results["tables"].append({
+                                                    "source_type": "table",
+                                                    "name": doc_name,
+                                                    "database": table_meta.database,
+                                                    "summary": table_meta.summary or "",
+                                                    "relevance": 0.5,
+                                                    "documentation": [],
+                                                })
+                                                existing_table_names.add(doc_name)
             except Exception as e:
                 logger.debug(f"Glossary resource supplement failed: {e}")
 

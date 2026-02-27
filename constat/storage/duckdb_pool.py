@@ -30,6 +30,7 @@ The pool automatically:
 - Handles cleanup on close()
 """
 
+import atexit
 import logging
 import threading
 from contextlib import contextmanager
@@ -55,6 +56,57 @@ def close_all_pools() -> None:
         try:
             pool.close()
         except Exception:
+            pass
+
+
+# Release DuckDB file locks on interpreter exit (crash, SIGTERM, etc.)
+atexit.register(close_all_pools)
+
+
+def _try_kill_orphan_lock_holder(error_msg: str) -> None:
+    """Parse PID from DuckDB lock error and kill if it's an orphaned child process.
+
+    sentence-transformers/torch can spawn multiprocessing children that inherit
+    the DuckDB file handle and survive parent process termination.
+    """
+    import os
+    import re
+    import signal
+
+    match = re.search(r"\(PID (\d+)\)", error_msg)
+    if not match:
+        return
+    pid = int(match.group(1))
+    if pid == os.getpid():
+        return
+    try:
+        # Check if process exists
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        return
+
+    # Read the process cmdline to verify it's an orphaned multiprocessing spawn
+    try:
+        with open(f"/proc/{pid}/cmdline", "r") as f:
+            cmdline = f.read()
+    except FileNotFoundError:
+        # macOS: use ps instead
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        )
+        cmdline = result.stdout.strip()
+
+    if "multiprocessing" in cmdline or "resource_tracker" in cmdline:
+        logger.warning(f"Killing orphaned multiprocessing child PID {pid}")
+        try:
+            os.kill(pid, signal.SIGKILL)
+            import time
+            time.sleep(0.5)
+        except OSError:
             pass
 
 
@@ -92,11 +144,28 @@ class DuckDBConnectionPool:
         self._closed = False
 
         # Single shared connection — all cursors derive from this
-        self._shared_conn = duckdb.connect(
-            self._db_path,
-            read_only=self._read_only,
-            config=self._config,
-        )
+        # Retry on lock conflict (previous process may still be releasing)
+        import time
+        last_err = None
+        for attempt in range(5):
+            try:
+                self._shared_conn = duckdb.connect(
+                    self._db_path,
+                    read_only=self._read_only,
+                    config=self._config,
+                )
+                last_err = None
+                break
+            except duckdb.IOException as e:
+                if "Could not set lock" in str(e) and attempt < 4:
+                    last_err = e
+                    _try_kill_orphan_lock_holder(str(e))
+                    logger.warning(f"DuckDB lock conflict, retrying in {attempt + 1}s...")
+                    time.sleep(attempt + 1)
+                else:
+                    raise
+        if last_err is not None:
+            raise last_err
         _all_pools.add(self)
 
     @property

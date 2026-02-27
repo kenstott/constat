@@ -25,6 +25,14 @@ llm:
    model: claude-sonnet-4-20250514
    api_key: ${ANTHROPIC_API_KEY}
 
+# Vector store and clustering
+storage:
+  vector_store:
+    # store_chunk_text: true    # store original text in embeddings (disable for large datasets)
+    # cluster_min_terms: 2     # minimum terms to trigger clustering
+    # cluster_divisor: 5       # k = max(2, n_terms // divisor)
+    # cluster_max_k: null      # optional cap on k
+
 # Email configuration for send_email() in generated code
 email:
   smtp_host: ${SMTP_HOST}

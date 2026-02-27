@@ -68,6 +68,10 @@ dynamodb = ["boto3>=1.42.44"]
 cosmosdb = ["azure-cosmos>=4.14.6"]
 firestore = ["google-cloud-firestore>=2.23.0"]
 
+# Document transports
+s3 = ["boto3>=1.42.44"]
+sftp = ["paramiko>=3.4.0"]
+
 # Additional LLM providers
 openai = ["openai>=2.17.0"]
 
@@ -98,6 +102,7 @@ dev = [
 all = [
     "constat[mysql]",
     "constat[mongodb,cassandra,elasticsearch,dynamodb,cosmosdb,firestore]",
+    "constat[s3,sftp]",
     "constat[openai]",
     "constat[email]",
     "constat[extras]",

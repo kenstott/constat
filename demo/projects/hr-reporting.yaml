@@ -13,6 +13,5 @@ databases:
 
 documents:
   compensation_policy:
-    type: file
     path: docs/compensation_policy.pdf
     description: Salary bands, merit increases, and bonus structure

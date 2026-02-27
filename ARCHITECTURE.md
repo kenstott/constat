@@ -747,13 +747,20 @@ Provides on-demand schema, API, and document discovery via tool calling.
 |--------|---------|
 | `schema_tools.py` | SchemaDiscoveryTools for database schema |
 | `api_tools.py` | APIDiscoveryTools for external APIs |
-| `doc_tools.py` | DocumentDiscoveryTools with incremental refresh and vector search |
+| `doc_tools/` | DocumentDiscoveryTools package (see sub-modules below) |
+| `doc_tools/_core.py` | Document loading, chunking, and refresh orchestration |
+| `doc_tools/_access.py` | Document listing and access (list_documents, get_document, search_documents) |
+| `doc_tools/_transport.py` | Transport abstraction: file, HTTP, S3, FTP, SFTP, inline |
+| `doc_tools/_mime.py` | MIME type detection and normalization |
+| `doc_tools/_crawler.py` | BFS link-following crawler for HTML/markdown documents |
+| `doc_tools/_file_extractors.py` | Binary format extraction: PDF, DOCX, XLSX, PPTX |
 | `fact_tools.py` | FactResolutionTools |
 | `skill_tools.py` | SkillManager for skill discovery |
 | `unified_discovery.py` | Unified discovery interface |
-| `vector_store.py` | DuckDB VSS vector embeddings for semantic search |
+| `vector_store.py` | DuckDB VSS vector embeddings, entity storage, glossary, clustering |
+| `glossary_generator.py` | LLM-powered glossary generation + physical resource resolution |
 | `concept_detector.py` | Concept detection in queries |
-| `entity_extractor.py` | Named entity extraction |
+| `entity_extractor.py` | Named entity extraction (spaCy NER + schema/API patterns) |
 
 ### SkillManager (`discovery/skill_tools.py`, `core/skills.py`)
 

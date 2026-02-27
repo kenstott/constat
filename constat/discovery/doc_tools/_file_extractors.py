@@ -251,28 +251,148 @@ def _extract_pptx_text_from_bytes(pptx_bytes: bytes) -> str:
     return _extract_pptx_content(Presentation(BytesIO(pptx_bytes)))
 
 
+def _convert_html_to_markdown(html: str) -> str:
+    """Convert HTML to markdown, preserving heading structure.
+
+    Uses stdlib html.parser — no external dependencies.
+    Handles: headings, paragraphs, lists (ul/ol/li), <br>, <pre>/<code>,
+    bold, italic, links, and tables.
+    """
+    from html.parser import HTMLParser
+    import re
+
+    class _MarkdownConverter(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._output: list[str] = []
+            self._tag_stack: list[str] = []
+            self._list_stack: list[str] = []  # "ul" or "ol"
+            self._ol_counters: list[int] = []
+            self._in_pre = False
+            self._href: str | None = None
+            self._link_text: list[str] = []
+            self._in_link = False
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
+            tag = tag.lower()
+            self._tag_stack.append(tag)
+            if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                self._output.append("\n\n")
+            elif tag == "p":
+                self._output.append("\n\n")
+            elif tag == "br":
+                self._output.append("\n")
+            elif tag == "pre":
+                self._in_pre = True
+                self._output.append("\n\n```\n")
+            elif tag == "ul":
+                self._list_stack.append("ul")
+            elif tag == "ol":
+                self._list_stack.append("ol")
+                self._ol_counters.append(0)
+            elif tag == "li":
+                indent = "  " * (len(self._list_stack) - 1)
+                if self._list_stack and self._list_stack[-1] == "ol":
+                    self._ol_counters[-1] += 1
+                    self._output.append(f"\n{indent}{self._ol_counters[-1]}. ")
+                else:
+                    self._output.append(f"\n{indent}- ")
+            elif tag == "strong" or tag == "b":
+                self._output.append("**")
+            elif tag == "em" or tag == "i":
+                self._output.append("*")
+            elif tag == "a":
+                attr_dict = dict(attrs)
+                self._href = attr_dict.get("href")
+                self._in_link = True
+                self._link_text = []
+            elif tag == "tr":
+                self._output.append("\n|")
+            elif tag in ("td", "th"):
+                self._output.append(" ")
+
+        def handle_endtag(self, tag: str):
+            tag = tag.lower()
+            if self._tag_stack and self._tag_stack[-1] == tag:
+                self._tag_stack.pop()
+            if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                level = int(tag[1])
+                prefix = "#" * level + " "
+                # Find the heading text — scan back for the last \n\n
+                text_parts: list[str] = []
+                while self._output and self._output[-1] != "\n\n":
+                    text_parts.append(self._output.pop())
+                text = "".join(reversed(text_parts)).strip()
+                self._output.append(f"{prefix}{text}\n\n")
+            elif tag == "p":
+                self._output.append("\n")
+            elif tag == "pre":
+                self._in_pre = False
+                self._output.append("\n```\n\n")
+            elif tag == "ul":
+                if self._list_stack:
+                    self._list_stack.pop()
+                self._output.append("\n")
+            elif tag == "ol":
+                if self._list_stack:
+                    self._list_stack.pop()
+                if self._ol_counters:
+                    self._ol_counters.pop()
+                self._output.append("\n")
+            elif tag == "strong" or tag == "b":
+                self._output.append("**")
+            elif tag == "em" or tag == "i":
+                self._output.append("*")
+            elif tag == "a":
+                link_text = "".join(self._link_text).strip()
+                if self._href and link_text:
+                    self._output.append(f"[{link_text}]({self._href})")
+                else:
+                    self._output.append(link_text)
+                self._in_link = False
+                self._href = None
+                self._link_text = []
+            elif tag in ("td", "th"):
+                self._output.append(" |")
+            elif tag == "thead":
+                # Add separator row after header
+                self._output.append("\n|---|")
+
+        def handle_data(self, data: str):
+            if self._in_link:
+                self._link_text.append(data)
+                return
+            if self._in_pre:
+                self._output.append(data)
+            else:
+                self._output.append(data)
+
+        def get_markdown(self) -> str:
+            text = "".join(self._output)
+            # Collapse excessive blank lines
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
+    converter = _MarkdownConverter()
+    converter.feed(html)
+    return converter.get_markdown()
+
+
 def _detect_format(suffix: str) -> str:
-    """Detect document format from file extension."""
-    format_map = {
-        ".md": "markdown",
-        ".markdown": "markdown",
-        ".txt": "text",
-        ".html": "html",
-        ".htm": "html",
-        ".pdf": "pdf",
-        ".docx": "docx",
-        ".xlsx": "xlsx",
-        ".pptx": "pptx",
-    }
-    return format_map.get(suffix.lower(), "text")
+    """Detect document format from file extension.
+
+    DEPRECATED: Use _mime.detect_type_from_source() instead.
+    Kept for backward compatibility with external callers.
+    """
+    from ._mime import EXTENSION_TO_SHORT
+    return EXTENSION_TO_SHORT.get(suffix.lower(), "text")
 
 
 def _detect_format_from_content_type(content_type: str) -> str:
-    """Detect document format from HTTP content-type."""
-    if "markdown" in content_type:
-        return "markdown"
-    if "html" in content_type:
-        return "html"
-    if "pdf" in content_type:
-        return "pdf"
-    return "text"
+    """Detect document format from HTTP content-type.
+
+    DEPRECATED: Use _mime.detect_type_from_source() instead.
+    Kept for backward compatibility with external callers.
+    """
+    from ._mime import detect_type_from_source
+    return detect_type_from_source(None, content_type)

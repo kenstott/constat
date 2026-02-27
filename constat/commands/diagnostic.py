@@ -165,3 +165,22 @@ def sources_command(ctx: CommandContext) -> CommandResult:
         data=result,
         footer=f"{total} source(s) found",
     )
+
+
+def search_chunks_command(ctx: CommandContext) -> CommandResult:
+    """Raw similarity search returning enriched chunk text."""
+    query = ctx.args.strip()
+    if not query:
+        return ErrorResult(error="Usage: /search-chunks <query>\nExample: /search-chunks inventory warehouse")
+
+    doc_tools = getattr(ctx.session, 'doc_tools', None)
+    if not doc_tools:
+        return ErrorResult(error="No document tools available.")
+
+    session_id = getattr(ctx.session, 'session_id', None)
+    result = doc_tools.search_chunks_raw(query, limit=10, session_id=session_id)
+    return JsonResult(
+        title=f"Chunk search: {query}",
+        data=result,
+        footer=f"{len(result)} chunk(s) found",
+    )

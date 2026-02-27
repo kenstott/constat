@@ -275,7 +275,7 @@ class CoreMixin:
                 self.resources.add_document(
                     name=name,
                     description=doc_config.description or "",
-                    doc_type=doc_config.type or "file",
+                    doc_type=doc_config.type or "auto",
                     source="config",
                 )
 

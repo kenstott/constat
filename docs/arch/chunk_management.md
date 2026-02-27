@@ -30,7 +30,7 @@ Each layer must be **fully functional independently**:
 
 | Event | Action |
 |-------|--------|
-| Server start | Build/rebuild chunks for base + all projects (hash-based invalidation) |
+| Server start | Build/rebuild chunks for base + all domains (hash-based invalidation) |
 | Source add | Incrementally add chunks for that source |
 | Source delete | Incrementally delete chunks for that source |
 
@@ -38,13 +38,13 @@ Each layer must be **fully functional independently**:
 
 | Event | Action |
 |-------|--------|
-| New session | Extract entities for base + active projects |
-| Project add | Incrementally add entities for project's chunks |
-| Project delete | Incrementally delete entities for that project |
+| New session | Extract entities for base + active domains |
+| Domain add | Incrementally add entities for domain's chunks |
+| Domain remove | Incrementally delete entities for that domain |
 | Source add | Incrementally add entities for new source's chunks |
 | Source delete | Incrementally delete entities for that source |
 
-**Key distinction**: Projects are pre-built collections of sources. Activating/deactivating a project changes entity visibility but not chunks (they already exist from server start).
+**Key distinction**: Domains are pre-built collections of sources. Activating/deactivating a domain changes entity visibility but not chunks (they already exist from server start).
 
 ## Data Model
 
@@ -59,7 +59,7 @@ Chunks are text segments with vector embeddings stored in DuckDB.
 | `chunk_type` | Granular type (see below) |
 | `content` | Full original text that was vectorized |
 | `embedding` | Vector embedding (1024 dimensions) |
-| `project_id` | Scope: `__base__` for base config, project filename for projects |
+| `project_id` | Scope: `__base__` for base config, domain filename for domains |
 | `session_id` | Scope: Session ID for session-added sources (NULL for server-built) |
 
 #### Chunk Scope
@@ -67,7 +67,7 @@ Chunks are text segments with vector embeddings stored in DuckDB.
 | Scope | `project_id` | `session_id` | Created |
 |-------|--------------|--------------|---------|
 | Base | `__base__` or NULL | NULL | Server start |
-| Project | project filename | NULL | Server start |
+| Domain | domain filename | NULL | Server start |
 | Session | NULL | session ID | Mid-session (add_document) |
 
 #### Chunk Types and Boundaries
@@ -99,7 +99,7 @@ Entities are extracted via **single-pass NER** using spaCy with custom patterns.
 | `semantic_type` | Linguistic role (see below) |
 | `ner_type` | spaCy NER type (NULL if not from spaCy) |
 | `session_id` | Session that owns this entity (required) |
-| `project_id` | Project this entity came from |
+| `project_id` | Domain this entity came from |
 
 #### Semantic Types
 
@@ -152,7 +152,7 @@ Schema and API names are normalized before pattern matching:
 Term searches execute as **similarity search across embeddings**, scoped to visible chunks:
 - Base config chunks (`project_id` = `__base__` or NULL)
 - Session-added chunks (`session_id` = current session)
-- Active project chunks (`project_id` IN active projects)
+- Active domain chunks (`project_id` IN active domains)
 
 Results include:
 1. **Matching chunks**: All chunks above similarity threshold (e.g., 0.4), ordered by score
@@ -162,11 +162,11 @@ This entity-based expansion surfaces related context (e.g., finding a table also
 
 ### Source Hashes (source_hashes table)
 
-Centralized hash storage for cache invalidation at the **source level** (base config or project).
+Centralized hash storage for cache invalidation at the **source level** (base config or domain).
 
 | Column | Description |
 |--------|-------------|
-| `source_id` | `__base__` or project filename |
+| `source_id` | `__base__` or domain filename |
 | `db_hash` | Hash of all database configs combined |
 | `api_hash` | Hash of all API configs combined |
 | `doc_hash` | Hash of all document configs combined |
@@ -180,18 +180,18 @@ Per-resource hash storage for **incremental updates** within a source.
 | `resource_id` | Unique identifier: `{source_id}:{type}:{name}` |
 | `resource_type` | Type: `database`, `api`, `document` |
 | `resource_name` | Name of the resource (e.g., "chinook", "petstore", "guide.md") |
-| `source_id` | Parent source (`__base__` or project filename) |
+| `source_id` | Parent source (`__base__` or domain filename) |
 | `content_hash` | Hash of the resource's content/config |
 | `updated_at` | Last update timestamp |
 
 **Examples of `resource_id`:**
 - `__base__:database:chinook` - Database "chinook" from base config
-- `myproject:api:petstore` - API "petstore" from project "myproject"
+- `mydomain:api:petstore` - API "petstore" from domain "mydomain"
 - `__base__:document:guide.md` - Document "guide.md" from base config
 
 #### Incremental Update Flow
 
-When a source (base or project) is checked at server start:
+When a source (base or domain) is checked at server start:
 
 ```
 1. Compute source-level hashes (db_hash, api_hash, doc_hash)
@@ -232,7 +232,7 @@ For file-based documents, use file modification time + content hash for fast det
 
 #### Server Start
 ```
-For each source (base + projects):
+For each source (base + domains):
   1. Compute db_hash, api_hash, doc_hash from config
   2. Compare with stored hashes in source_hashes table
   3. If source hash unchanged → skip entirely
@@ -276,19 +276,19 @@ On session creation:
   3. Store entities with session_id
 ```
 
-#### Project Add
+#### Domain Add
 ```
-When a project is activated via set_active_projects:
+When a domain is activated via set_active_domains:
   1. Chunks already exist (from server start)
-  2. Extract entities from project's chunks
-  3. Store entities with session_id + project_id
+  2. Extract entities from domain's chunks
+  3. Store entities with session_id + domain_id
 ```
 
-#### Project Delete
+#### Domain Remove
 ```
-When a project is deactivated via set_active_projects:
+When a domain is deactivated via set_active_domains:
   1. Chunks remain (pre-built, may be used by other sessions)
-  2. Delete entities for that project in this session
+  2. Delete entities for that domain in this session
 ```
 
 #### Source Add
@@ -313,13 +313,17 @@ When a source is deleted mid-session:
 | Method | Purpose |
 |--------|---------|
 | `add_chunks()` | Add chunks with embeddings |
-| `clear_project_embeddings(project_id)` | Delete all chunks + entities for a project |
+| `clear_project_embeddings(project_id)` | Delete all chunks + entities for a domain |
 | `get_source_hash(source_id, hash_type)` | Get stored hash for invalidation check |
 | `set_source_hash(source_id, hash_type, hash)` | Update stored hash |
 | `extract_entities_for_session(session_id, ...)` | Full NER for session (clears first) |
-| `extract_entities_for_project(session_id, project_id, ...)` | Incremental NER for one project |
-| `clear_project_session_entities(session_id, project_id)` | Remove entities for deactivated project |
+| `extract_entities_for_project(session_id, project_id, ...)` | Incremental NER for one domain |
+| `clear_project_session_entities(session_id, project_id)` | Remove entities for deactivated domain |
 | `clear_session_entities(session_id)` | Remove all entities for a session |
+| `list_glossary_terms(session_id, ...)` | List glossary terms (glossary_terms table only) |
+| `get_unified_glossary(session_id, ...)` | Unified glossary: entities + terms union |
+| `get_cluster_siblings(term_name, session_id)` | Other terms in the same KMeans cluster |
+| `find_matching_clusters(query, session_id)` | Find clusters matching query text |
 
 ### Server Startup (app.py)
 
@@ -349,6 +353,133 @@ Supports documents added during a session via the `add_document` tool. These are
 ### Why entities are session-scoped
 
 Entity extraction uses session-specific patterns (schema terms vary by active databases). Each session may have different active sources, so entities must be scoped to the session.
+
+## Document Ingestion Pipeline
+
+Document loading uses a three-layer architecture: **transport** (fetch raw bytes), **MIME detection** (determine document type), and **content extraction** (convert bytes to text).
+
+### Transport Abstraction (`doc_tools/_transport.py`)
+
+Transport is inferred from field presence on `DocumentConfig`, never configured explicitly:
+
+| Field Set | Transport | Protocol |
+|-----------|-----------|----------|
+| `content` | inline | N/A — content is already in memory |
+| `path` | file | Local filesystem read |
+| `url` (http/https) | http | `requests.get()` with configurable headers |
+| `url` (s3://) | s3 | `boto3` S3 client (optional dep) |
+| `url` (ftp://) | ftp | `ftplib.FTP` |
+| `url` (sftp://) | sftp | `paramiko.SSHClient` (optional dep) |
+
+```python
+@dataclass
+class FetchResult:
+    data: bytes                    # Raw document bytes
+    detected_mime: str | None      # Content-Type from transport (HTTP, S3)
+    source_path: str | None        # Resolved path/URL for extension detection
+
+def fetch_document(config: DocumentConfig, config_dir: str | None) -> FetchResult:
+    """Fetch raw bytes via appropriate transport."""
+```
+
+Credential fields on `DocumentConfig` support `${ENV_VAR}` substitution via existing YAML processing:
+- `username`, `password`, `port` — FTP/SFTP
+- `key_path` — SFTP SSH key
+- `aws_profile`, `aws_region` — S3
+
+### MIME Type Detection (`doc_tools/_mime.py`)
+
+Document type is determined by a priority chain, not by the `type` field on `DocumentConfig`:
+
+```
+1. Explicit type (if user sets type != "auto"): normalize_type(user_type)
+2. HTTP Content-Type header (from transport): "application/pdf" → "pdf"
+3. File extension: ".docx" → "docx", ".md" → "markdown"
+4. Fallback: "text"
+```
+
+The `type` field on `DocumentConfig` defaults to `"auto"`. Legacy transport values (`file`, `http`, `inline`) are accepted for backward compatibility and treated as `"auto"`.
+
+Supported short types: `pdf`, `html`, `markdown`, `text`, `docx`, `xlsx`, `pptx`, `csv`, `json`, `yaml`.
+
+### Document Crawler (`doc_tools/_crawler.py`)
+
+When `follow_links: true` is set on a document config with a URL, the crawler performs BFS link extraction:
+
+```
+Root URL → fetch → extract links → filter → fetch children → ...
+```
+
+**Link extraction** by document type:
+- **HTML**: regex for `href="..."` attributes
+- **Markdown**: regex for `[text](url)` links
+- **Office docs**: not crawlable (text extractors strip hyperlinks)
+
+**Constraints** (from `DocumentConfig`):
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `max_depth` | 2 | Maximum crawl depth from root |
+| `max_documents` | 10 | Maximum total documents to fetch |
+| `link_pattern` | None | Regex filter on URLs (only follow matching links) |
+| `same_domain_only` | True | Restrict to same netloc as root URL |
+
+**Deduplication**: URLs are normalized (sorted query params, stripped fragments) before comparison.
+
+### DocumentConfig
+
+```python
+class DocumentConfig(BaseModel):
+    # Content type: auto | pdf | html | markdown | text | docx | xlsx | pptx
+    # Also accepts full MIME: application/pdf, text/html, etc.
+    type: str = "auto"
+
+    # Source (transport inferred from field presence)
+    path: Optional[str] = None          # Local file → file transport
+    url: Optional[str] = None           # URL → http/s3/ftp/sftp transport
+    content: Optional[str] = None       # Inline → inline transport
+    headers: dict[str, str] = {}        # HTTP headers
+
+    # Credentials
+    username: Optional[str] = None      # FTP/SFTP
+    password: Optional[str] = None      # FTP/SFTP
+    port: Optional[int] = None          # FTP/SFTP
+    key_path: Optional[str] = None      # SFTP SSH key
+    aws_profile: Optional[str] = None   # S3
+    aws_region: Optional[str] = None    # S3
+
+    # Crawler
+    follow_links: bool = False
+    max_depth: int = 2
+    max_documents: int = 10
+    link_pattern: Optional[str] = None
+    same_domain_only: bool = True
+```
+
+### Ingestion Flow
+
+```
+DocumentConfig
+    │
+    ├── infer_transport() → "file" | "http" | "s3" | ...
+    ├── fetch_document()  → FetchResult(data, detected_mime, source_path)
+    │
+    ├── normalize_type(config.type) → "auto" | "pdf" | "html" | ...
+    ├── detect_type_from_source(source_path, detected_mime) → resolved type
+    │
+    ├── if follow_links: crawl_document() → [(url, FetchResult), ...]
+    │
+    ├── _extract_content(result, doc_type) → text
+    │   ├── pdf  → _extract_pdf_text_from_bytes
+    │   ├── docx → _extract_docx_text_from_bytes
+    │   ├── xlsx → _extract_xlsx_text_from_bytes
+    │   ├── pptx → _extract_pptx_text_from_bytes
+    │   └── *    → bytes.decode("utf-8")
+    │
+    ├── if html: _convert_html_to_markdown → markdown
+    │
+    └── chunk + embed → store in vector_store
+```
 
 ## Configuration
 

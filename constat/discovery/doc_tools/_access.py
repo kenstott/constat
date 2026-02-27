@@ -11,9 +11,7 @@
 
 import logging
 
-from ._file_extractors import (
-    _detect_format,
-)
+from ._mime import detect_type_from_source
 from ._schema_inference import _expand_file_paths
 
 logger = logging.getLogger(__name__)
@@ -53,8 +51,8 @@ class _AccessMixin:
             # Skip documents not allowed by permissions
             if not self._is_document_allowed(doc_name):
                 continue
-            # For file types, check if it's a glob/directory that needs expansion
-            if doc_config.type == "file" and doc_config.path:
+            # For file-based documents, check if it's a glob/directory that needs expansion
+            if doc_config.path:
                 expanded = _expand_file_paths(doc_config.path)
 
                 if len(expanded) > 1:
@@ -66,7 +64,7 @@ class _AccessMixin:
                             "name": full_name,
                             "type": doc_config.type,
                             "description": f"File in collection. Collection description: {collection_desc}",
-                            "format": doc_config.format or _detect_format(filepath.suffix),
+                            "format": detect_type_from_source(str(filepath), None),
                             "tags": doc_config.tags,
                             "path": str(filepath),
                             "collection": doc_name,
@@ -80,7 +78,7 @@ class _AccessMixin:
                         "name": doc_name,
                         "type": doc_config.type,
                         "description": doc_config.description or f"File: {filename}",
-                        "format": doc_config.format or _detect_format(filepath.suffix),
+                        "format": detect_type_from_source(str(filepath), None),
                         "tags": doc_config.tags,
                         "path": str(filepath),
                         "loaded": doc_name in self._loaded_documents,
@@ -91,7 +89,7 @@ class _AccessMixin:
                         "name": doc_name,
                         "type": doc_config.type,
                         "description": doc_config.description or f"Document: {doc_name}",
-                        "format": doc_config.format,
+                        "format": doc_config.type,
                         "tags": doc_config.tags,
                         "path": doc_config.path,
                         "loaded": doc_name in self._loaded_documents,
@@ -102,14 +100,14 @@ class _AccessMixin:
                     "name": doc_name,
                     "type": doc_config.type,
                     "description": doc_config.description or f"Document: {doc_name}",
-                    "format": doc_config.format,
+                    "format": doc_config.type,
                     "tags": doc_config.tags,
                     "loaded": doc_name in self._loaded_documents,
                 }
                 # Include source location where applicable
-                if doc_config.type == "http" and doc_config.url:
+                if doc_config.url:
                     entry["url"] = doc_config.url
-                elif doc_config.type == "inline":
+                elif doc_config.content is not None:
                     entry["source"] = "inline content"
                 results.append(entry)
 
@@ -162,7 +160,7 @@ class _AccessMixin:
             if not doc_config:
                 return {"error": f"Document config not found: {parent_name}"}
 
-            if doc_config.type != "file" or not doc_config.path:
+            if not doc_config.path:
                 return {"error": f"Document {parent_name} is not a file type"}
 
             # Find the specific file in the expanded paths
@@ -386,6 +384,53 @@ class _AccessMixin:
 
         # Fall back to regular search
         return self.search_documents(query, limit, session_id)
+
+    def search_chunks_raw(
+        self,
+        query: str,
+        limit: int = 10,
+        session_id: str | None = None,
+    ) -> list[dict]:
+        """Raw similarity search returning enriched chunk text.
+
+        Unlike search_documents, this returns ALL chunk types (schema, API,
+        glossary, document) unfiltered — a diagnostic view of what the
+        vector store actually contains and how it scores against a query.
+
+        Args:
+            query: Natural language query
+            limit: Maximum results to return
+            session_id: Session ID to include
+
+        Returns:
+            List of dicts with chunk_id, document, content, relevance,
+            section, chunk_type, and source
+        """
+        if self._model is None:
+            return []
+
+        with self._model_lock:
+            query_embedding = self._model.encode([query], convert_to_numpy=True)
+            search_results = self._vector_store.search(
+                query_embedding,
+                limit=limit,
+                domain_ids=self._active_domain_ids,
+                session_id=session_id,
+                query_text=query,
+            )
+
+        results = []
+        for chunk_id, similarity, chunk in search_results:
+            results.append({
+                "chunk_id": chunk_id,
+                "document": chunk.document_name,
+                "content": chunk.content,
+                "relevance": round(similarity, 3),
+                "section": chunk.section,
+                "chunk_type": chunk.chunk_type.value if hasattr(chunk.chunk_type, 'value') else str(chunk.chunk_type),
+                "source": chunk.source,
+            })
+        return results
 
     def explore_entity(
         self,

@@ -722,36 +722,47 @@ class APISchemaManager:
                 endpoint_chunk_type = ChunkType.API_ENDPOINT
                 field_chunk_type = ChunkType.API_ENDPOINT
 
-            # Endpoint chunk - use description if available, otherwise structured text
+            # Endpoint chunk - always include all available context
+            endpoint_lines: list[str] = []
+            header = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
+            if meta.http_method and meta.http_path:
+                header += f" ({meta.http_method} {meta.http_path})"
+            endpoint_lines.append(header)
             if meta.description:
-                endpoint_content = f"{meta.endpoint_name} endpoint: {meta.description}"
-            else:
-                endpoint_content = f"{meta.endpoint_name} endpoint in {meta.api_name} API"
-                if meta.http_method and meta.http_path:
-                    endpoint_content += f" ({meta.http_method} {meta.http_path})"
-                if field_names:
-                    endpoint_content += f" with fields: {', '.join(field_names)}"
+                endpoint_lines.append(meta.description)
+            if meta.return_type:
+                endpoint_lines.append(f"Returns: {meta.return_type}")
+            if field_names:
+                endpoint_lines.append(f"Fields: {', '.join(field_names)}")
 
             chunks.append(DocumentChunk(
                 document_name=f"api:{full_name}",
-                content=endpoint_content,
+                content="\n".join(endpoint_lines),
                 section=meta.api_type,
                 chunk_index=0,
                 source="api",
                 chunk_type=endpoint_chunk_type,
             ))
 
-            # Field chunks
+            # Field chunks - enriched with API context
             for i, field_meta in enumerate(meta.fields):
+                field_type = field_meta.type if field_meta.type else "unknown type"
+                field_header = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint ({meta.api_name} API"
+                if meta.http_method and meta.http_path:
+                    field_header += f", {meta.http_method} {meta.http_path}"
+                field_header += ")"
+
+                field_lines: list[str] = [field_header]
+                if meta.description:
+                    field_lines.append(f"Endpoint: {meta.description[:80]}")
                 if field_meta.description:
-                    field_content = f"{field_meta.name} field in {meta.endpoint_name}: {field_meta.description}"
-                else:
-                    field_type = field_meta.type if field_meta.type else "unknown type"
-                    field_content = f"{field_meta.name} field ({field_type}) in {meta.endpoint_name} endpoint"
+                    field_lines.append(field_meta.description)
+                if field_meta.is_required:
+                    field_lines.append("Required: yes")
 
                 chunks.append(DocumentChunk(
                     document_name=f"api:{full_name}.{field_meta.name}",
-                    content=field_content,
+                    content="\n".join(field_lines),
                     section=meta.api_type,
                     chunk_index=i,
                     source="api",
@@ -841,8 +852,14 @@ class APISchemaManager:
             List of dicts with api_name, endpoint, type, description, fields, similarity
         """
         # noinspection PyUnresolvedReferences
-        if self._vector_store is None or self._vector_store.count(source='api') == 0:
+        if self._vector_store is None:
+            logger.warning("[find_relevant_apis] _vector_store is None")
             return []
+        api_chunk_count = self._vector_store.count(source='api')
+        if api_chunk_count == 0:
+            logger.warning("[find_relevant_apis] No API chunks in vector store (count=0)")
+            return []
+        logger.debug(f"[find_relevant_apis] {api_chunk_count} API chunks, {len(self.metadata_cache)} metadata entries")
 
         # Lazy load model if needed
         if self._model is None:
@@ -860,10 +877,13 @@ class APISchemaManager:
 
         # Transform results to match expected format using metadata cache
         output = []
+        logger.debug(f"[find_relevant_apis] search returned {len(results)} results")
         for _chunk_id, similarity, chunk in results:
             # document_name is "api:{full_name}", extract full_name
             full_name = chunk.document_name.removeprefix("api:")
             meta = self.metadata_cache.get(full_name)
+            if not meta:
+                logger.debug(f"[find_relevant_apis] metadata miss for '{full_name}' (cache keys: {list(self.metadata_cache.keys())[:5]})")
             if meta:
                 entry = {
                     "api_name": meta.api_name,

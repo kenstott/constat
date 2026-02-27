@@ -43,9 +43,10 @@ from ._file_extractors import (
     _extract_xlsx_text_from_bytes,
     _extract_pptx_text,
     _extract_pptx_text_from_bytes,
-    _detect_format,
-    _detect_format_from_content_type,
+    _convert_html_to_markdown,
 )
+from ._mime import normalize_type, detect_type_from_source, is_binary_type
+from ._transport import fetch_document, infer_transport, FetchResult
 from ._schema_inference import _expand_file_paths, _infer_structured_schema
 
 logger = logging.getLogger(__name__)
@@ -239,8 +240,20 @@ class _CoreMixin:
         backend = vs_config.backend if vs_config else "duckdb"
         db_path = vs_config.db_path if vs_config else None
         reranker_model = vs_config.reranker_model if vs_config else None
+        cluster_min_terms = vs_config.cluster_min_terms if vs_config else 2
+        cluster_divisor = vs_config.cluster_divisor if vs_config else 5
+        cluster_max_k = vs_config.cluster_max_k if vs_config else None
+        store_chunk_text = vs_config.store_chunk_text if vs_config else True
 
-        return create_vector_store(backend=backend, db_path=db_path, reranker_model=reranker_model)
+        return create_vector_store(
+            backend=backend,
+            db_path=db_path,
+            reranker_model=reranker_model,
+            cluster_min_terms=cluster_min_terms,
+            cluster_divisor=cluster_divisor,
+            cluster_max_k=cluster_max_k,
+            store_chunk_text=store_chunk_text,
+        )
 
     def _add_document_internal(
         self,
@@ -277,11 +290,15 @@ class _CoreMixin:
 
         # Create a minimal config for the document
         doc_config = DocumentConfig(
-            type="inline",
+            type=doc_format if doc_format != "auto" else "text",
             content=content,
             description=description or "",
-            format=doc_format,
         )
+
+        # Convert HTML to markdown so heading structure is preserved for chunking
+        if doc_format == "html":
+            content = _convert_html_to_markdown(content)
+            doc_format = "markdown"
 
         # Store the loaded document
         self._loaded_documents[name] = LoadedDocument(
@@ -559,7 +576,7 @@ class _CoreMixin:
         result = {}
 
         for doc_name, doc_config in self.config.documents.items():
-            if doc_config.type == "file" and doc_config.path:
+            if doc_config.path:
                 expanded = _expand_file_paths(doc_config.path)
                 if len(expanded) > 1:
                     # Multiple files - each gets its own entry
@@ -682,7 +699,7 @@ class _CoreMixin:
         A chunk may exceed CHUNK_SIZE if a single paragraph is larger (we don't split it).
         """
         chunks = []
-        current_section = None
+        heading_stack: list[tuple[int, str]] = []  # (level, text)
 
         # Determine paragraph separator based on content
         # Use double newline if present, otherwise single newline
@@ -695,15 +712,48 @@ class _CoreMixin:
 
         chunk_index = 0
         current_chunk = ""
+        current_section: str | None = None
+
+        prev_heading_level: int | None = None
 
         for para in paragraphs:
             para = para.strip()
             if not para:
                 continue
 
-            # Track sections from markdown headers
+            # Detect heading level changes that should force a chunk break
+            force_break = False
+            prev_section = current_section
+
+            # Track heading hierarchy as breadcrumbs
             if para.startswith("#"):
-                current_section = para.lstrip("#").strip()
+                level = len(para) - len(para.lstrip("#"))
+                text = para.lstrip("#").strip()
+                # Force chunk break on same-or-higher level heading (sibling/parent)
+                if prev_heading_level is not None and level <= prev_heading_level and current_chunk:
+                    force_break = True
+                prev_heading_level = level
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+                heading_stack.append((level, text))
+                current_section = " > ".join(t for _, t in heading_stack)
+            elif para.startswith("[Sheet:") and para.endswith("]"):
+                if current_chunk:
+                    force_break = True
+                sheet_name = para[len("[Sheet:"):-1].strip()
+                heading_stack = [(0, sheet_name)]
+                current_section = sheet_name
+                prev_heading_level = 0
+
+            if force_break:
+                chunks.append(DocumentChunk(
+                    document_name=name,
+                    content=current_chunk,
+                    section=prev_section,
+                    chunk_index=chunk_index,
+                ))
+                chunk_index += 1
+                current_chunk = ""
 
             # Check if adding this paragraph would exceed chunk size
             potential_chunk = (current_chunk + separator + para).strip() if current_chunk else para
@@ -736,25 +786,14 @@ class _CoreMixin:
 
         return chunks
 
-    def _load_document(self, name: str) -> dict | None:
-        """Load a document from its configured source.
-
-        Returns:
-            None for text documents (stored in _loaded_documents)
-            dict for binary files (PDF, Office) to be returned directly
-        """
-        from datetime import datetime
-
-        # Check base config first
+    def _resolve_doc_config(self, name: str) -> DocumentConfig:
+        """Resolve a DocumentConfig by name from base config or domains."""
         doc_config = self.config.documents.get(name)
-
-        # Check domain documents if not in base
         if not doc_config:
             for domain in self.config.domains.values():
                 if domain.documents and name in domain.documents:
                     doc_config = domain.documents[name]
                     break
-
         if not doc_config:
             configured = list(self.config.documents.keys())
             raise ValueError(
@@ -763,149 +802,96 @@ class _CoreMixin:
                 f"doc_read() is ONLY for configured reference documents. "
                 f"If the data is in a datastore table, use store.query() instead."
             )
-        content = ""
-        doc_format = doc_config.format
+        return doc_config
 
-        if doc_config.type == "inline":
-            content = doc_config.content or ""
-            if doc_format == "auto":
-                doc_format = "text"
+    def _extract_content(self, result: FetchResult, doc_type: str) -> tuple[str, str]:
+        """Extract text content from FetchResult bytes based on doc_type.
 
-        elif doc_config.type == "file":
-            if doc_config.path:
-                path = Path(doc_config.path)
-                # Resolve relative paths from config directory
-                if not path.is_absolute() and self.config.config_dir:
-                    path = (Path(self.config.config_dir) / doc_config.path).resolve()
-                if path.exists():
-                    suffix = path.suffix.lower()
-
-                    # Binary document formats - extract text content
-                    if suffix == ".pdf":
-                        content = _extract_pdf_text(path)
-                        doc_format = "text"
-                    elif suffix == ".docx":
-                        content = _extract_docx_text(path)
-                        doc_format = "text"
-                    elif suffix == ".xlsx":
-                        content = _extract_xlsx_text(path)
-                        doc_format = "text"
-                    elif suffix == ".pptx":
-                        content = _extract_pptx_text(path)
-                        doc_format = "text"
-                    else:
-                        # Check for structured data files - use schema metadata
-                        schema = _infer_structured_schema(path, doc_config.description)
-                        if schema:
-                            content = schema.to_metadata_doc()
-                            doc_format = schema.file_format
-                        # Text-based files - return content for rendering
-                        else:
-                            content = path.read_text()
-                            if doc_format == "auto":
-                                doc_format = _detect_format(suffix)
-                else:
-                    raise FileNotFoundError(f"Document file not found: {doc_config.path}")
-
-        elif doc_config.type == "http":
-            if doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-
-                # Check content type and URL extension for binary formats
-                content_type = response.headers.get("content-type", "")
-                url_lower = doc_config.url.lower() if doc_config.url else ""
-
-                if "pdf" in content_type or url_lower.endswith(".pdf"):
-                    content = _extract_pdf_text_from_bytes(response.content)
-                    doc_format = "text"
-                elif "wordprocessingml" in content_type or url_lower.endswith(".docx"):
-                    content = _extract_docx_text_from_bytes(response.content)
-                    doc_format = "text"
-                elif "spreadsheetml" in content_type or url_lower.endswith(".xlsx"):
-                    content = _extract_xlsx_text_from_bytes(response.content)
-                    doc_format = "text"
-                elif "presentationml" in content_type or url_lower.endswith(".pptx"):
-                    content = _extract_pptx_text_from_bytes(response.content)
-                    doc_format = "text"
-                else:
-                    content = response.text
-                    if doc_format == "auto":
-                        doc_format = _detect_format_from_content_type(content_type)
-
-        elif doc_config.type == "pdf":
-            # Direct PDF type - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = _extract_pdf_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"PDF file not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = _extract_pdf_text_from_bytes(response.content)
-                doc_format = "text"
-
-        elif doc_config.type == "docx":
-            # Word document - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = _extract_docx_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"Word document not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = _extract_docx_text_from_bytes(response.content)
-                doc_format = "text"
-
-        elif doc_config.type == "xlsx":
-            # Excel spreadsheet - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = _extract_xlsx_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"Excel file not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = _extract_xlsx_text_from_bytes(response.content)
-                doc_format = "text"
-
-        elif doc_config.type == "pptx":
-            # PowerPoint presentation - load from path or url
-            if doc_config.path:
-                path = Path(doc_config.path)
-                if path.exists():
-                    content = _extract_pptx_text(path)
-                    doc_format = "text"
-                else:
-                    raise FileNotFoundError(f"PowerPoint file not found: {doc_config.path}")
-            elif doc_config.url:
-                import requests
-                headers = doc_config.headers or {}
-                response = requests.get(doc_config.url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = _extract_pptx_text_from_bytes(response.content)
-                doc_format = "text"
-
-        # TODO: Implement confluence, notion loaders
+        Returns (content, doc_format) tuple.
+        """
+        if doc_type == "pdf":
+            return _extract_pdf_text_from_bytes(result.data), "text"
+        elif doc_type == "docx":
+            return _extract_docx_text_from_bytes(result.data), "text"
+        elif doc_type == "xlsx":
+            return _extract_xlsx_text_from_bytes(result.data), "text"
+        elif doc_type == "pptx":
+            return _extract_pptx_text_from_bytes(result.data), "text"
         else:
-            raise NotImplementedError(f"Document type not yet implemented: {doc_config.type}")
+            return result.data.decode("utf-8"), doc_type
+
+    def _load_document(self, name: str) -> dict | None:
+        """Load a document from its configured source.
+
+        Returns:
+            None for text documents (stored in _loaded_documents)
+            dict for binary files (PDF, Office) to be returned directly
+        """
+        from datetime import datetime
+        from ._crawler import crawl_document as _crawl_document
+
+        doc_config = self._resolve_doc_config(name)
+        user_type = normalize_type(doc_config.type)
+        transport = infer_transport(doc_config)
+
+        # Fetch via transport (or crawl if follow_links)
+        if doc_config.follow_links and doc_config.url:
+            results = _crawl_document(doc_config, self.config.config_dir, fetch_document)
+            # Use root document as primary
+            if not results:
+                raise ValueError(f"Crawler returned no results for {name}")
+            _, root_result = results[0]
+            result = root_result
+
+            # Store linked docs as sub-documents
+            for i, (url, linked_result) in enumerate(results[1:], 1):
+                linked_type = user_type if user_type != "auto" else detect_type_from_source(
+                    linked_result.source_path, linked_result.detected_mime
+                )
+                linked_content, linked_format = self._extract_content(linked_result, linked_type)
+                if linked_format == "html":
+                    linked_content = _convert_html_to_markdown(linked_content)
+                    linked_format = "markdown"
+                sub_name = f"{name}:crawled_{i}"
+                self._loaded_documents[sub_name] = LoadedDocument(
+                    name=sub_name,
+                    config=doc_config,
+                    content=linked_content,
+                    format=linked_format,
+                    sections=_extract_markdown_sections(linked_content, linked_format),
+                    loaded_at=datetime.now().isoformat(),
+                )
+        else:
+            result = fetch_document(doc_config, self.config.config_dir)
+
+        # Resolve type
+        doc_type = user_type if user_type != "auto" else detect_type_from_source(
+            result.source_path, result.detected_mime
+        )
+
+        # Structured schema check for local files
+        if transport == "file" and not is_binary_type(doc_type) and result.source_path:
+            schema = _infer_structured_schema(Path(result.source_path), doc_config.description)
+            if schema:
+                content = schema.to_metadata_doc()
+                doc_format = schema.file_format
+                self._loaded_documents[name] = LoadedDocument(
+                    name=name,
+                    config=doc_config,
+                    content=content,
+                    format=doc_format,
+                    sections=["Schema", "Columns"],
+                    loaded_at=datetime.now().isoformat(),
+                )
+                return None
+
+        # Extract content from bytes
+        content, doc_format = self._extract_content(result, doc_type)
+
+        # HTML -> markdown conversion
+        if doc_format == "html":
+            content = _convert_html_to_markdown(content)
+            doc_format = "markdown"
 
         self._loaded_documents[name] = LoadedDocument(
             name=name,
@@ -920,23 +906,15 @@ class _CoreMixin:
         """Load a file directly from a path (for expanded glob/directory entries)."""
         from datetime import datetime
 
-        suffix = filepath.suffix.lower()
-        doc_format = doc_config.format
-
         # Check if it's a structured data file - use schema metadata instead of raw content
         schema = _infer_structured_schema(filepath, doc_config.description)
         if schema:
-            # For structured files, index the metadata, not the raw data
             content = schema.to_metadata_doc()
             doc_format = schema.file_format
-            sections = ["Schema", "Columns"]
 
-            # Store schema for later reference
             file_config = DocumentConfig(
-                type="file",
                 path=str(filepath),
                 description=doc_config.description,
-                format=doc_format,
                 tags=doc_config.tags,
             )
 
@@ -945,35 +923,35 @@ class _CoreMixin:
                 config=file_config,
                 content=content,
                 format=doc_format,
-                sections=sections,
+                sections=["Schema", "Columns"],
                 loaded_at=datetime.now().isoformat(),
             )
             return
 
-        # Handle other file types
-        if suffix == ".pdf":
-            content = _extract_pdf_text(filepath)
-            doc_format = "text"
-        elif suffix == ".docx":
-            content = _extract_docx_text(filepath)
-            doc_format = "text"
-        elif suffix == ".xlsx":
-            content = _extract_xlsx_text(filepath)
-            doc_format = "text"
-        elif suffix == ".pptx":
-            content = _extract_pptx_text(filepath)
-            doc_format = "text"
-        else:
-            content = filepath.read_text()
-            if doc_format == "auto" or not doc_format:
-                doc_format = _detect_format(suffix)
+        # Use transport to read file bytes
+        file_result = FetchResult(
+            data=filepath.read_bytes(),
+            detected_mime=None,
+            source_path=str(filepath),
+        )
 
-        # Create a modified config with the actual path
+        # Resolve type from user config or auto-detect
+        user_type = normalize_type(doc_config.type)
+        doc_type = user_type if user_type != "auto" else detect_type_from_source(
+            str(filepath), None
+        )
+
+        # Extract content
+        content, doc_format = self._extract_content(file_result, doc_type)
+
+        # Convert HTML to markdown
+        if doc_format == "html":
+            content = _convert_html_to_markdown(content)
+            doc_format = "markdown"
+
         file_config = DocumentConfig(
-            type="file",
             path=str(filepath),
             description=doc_config.description,
-            format=doc_format,
             tags=doc_config.tags,
         )
 

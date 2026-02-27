@@ -15,6 +15,7 @@ EXTRA_ARGS="$@"
 MAX_RESTARTS=10
 RESTART_DELAY=2
 restart_count=0
+SERVER_PID=""
 
 echo "Constat Server Auto-Restart Wrapper"
 echo "===================================="
@@ -22,9 +23,21 @@ echo "Config: $CONFIG_FILE"
 echo "Extra args: $EXTRA_ARGS"
 echo ""
 
+kill_server_tree() {
+    if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "Killing server process tree (PID $SERVER_PID)..."
+        # Kill the entire process group to catch uvicorn reloader children
+        kill -- -"$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
+        # Wait briefly for processes to release file locks
+        sleep 1
+    fi
+    SERVER_PID=""
+}
+
 cleanup() {
     echo ""
     echo "Received shutdown signal, stopping server..."
+    kill_server_tree
     exit 0
 }
 
@@ -33,10 +46,14 @@ trap cleanup SIGINT SIGTERM
 while true; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting constat server (attempt $((restart_count + 1)))..."
 
-    # Run the server
+    # Run the server in a new process group so we can kill it cleanly
     set +e
-    constat serve -c "$CONFIG_FILE" $EXTRA_ARGS
+    set -m  # Enable job control for process groups
+    constat serve -c "$CONFIG_FILE" $EXTRA_ARGS &
+    SERVER_PID=$!
+    wait "$SERVER_PID"
     EXIT_CODE=$?
+    set +m
     set -e
 
     # Check exit code
@@ -45,10 +62,12 @@ while true; do
         break
     fi
 
-    # Handle crash
-    restart_count=$((restart_count + 1))
+    # Handle crash — kill any lingering child processes
     echo ""
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Server crashed with exit code $EXIT_CODE"
+    kill_server_tree
+
+    restart_count=$((restart_count + 1))
 
     # Check if we've exceeded max restarts
     if [ $restart_count -ge $MAX_RESTARTS ]; then

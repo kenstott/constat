@@ -64,6 +64,7 @@ from constat.commands.diagnostic import (
     search_tables_command,
     search_apis_command,
     search_docs_command,
+    search_chunks_command,
     lookup_command,
     entity_command,
     known_facts_command,
@@ -132,6 +133,7 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/entity",), entity_command, _cmd_desc["entity"]),
     (("/known-facts",), known_facts_command, _cmd_desc["known-facts"]),
     (("/sources",), sources_command, _cmd_desc["sources"]),
+    (("/search-chunks", "/chunks"), search_chunks_command, _cmd_desc["search-chunks"]),
 ]
 
 # Build lookup dict for fast access

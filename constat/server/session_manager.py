@@ -575,6 +575,14 @@ class SessionManager:
                 logger.warning(f"Session {session_id}: NO entity links created (link_count={link_count})")
             # Cache fingerprint on successful extraction
             update_ner_fingerprint(session_id, fingerprint)
+
+            # Rebuild clusters eagerly so they're ready for the glossary panel
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                vs = session.doc_tools._vector_store
+                if hasattr(vs, '_rebuild_clusters'):
+                    vs._clusters_dirty = True
+                    vs._rebuild_clusters(session_id)
+                    logger.info(f"Session {session_id}: rebuilt clusters after entity extraction")
         except Exception as e:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
 
@@ -726,6 +734,12 @@ class SessionManager:
 
             # Relationship extraction (4 phases: FK, SVO, LLM refinement, glossary inference)
             self._run_svo_extraction(session_id, managed, vector_store, on_progress=on_progress)
+
+            # Rebuild clusters with new glossary terms
+            if hasattr(vector_store, '_rebuild_clusters'):
+                vector_store._clusters_dirty = True
+                vector_store._rebuild_clusters(session_id)
+                logger.info(f"Session {session_id}: rebuilt clusters after glossary generation")
 
             on_progress("Complete", 100)
             duration_ms = int((time.time() - t0) * 1000)

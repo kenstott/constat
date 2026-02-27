@@ -273,6 +273,7 @@ export interface GlossaryTerm {
     object: string
     confidence: number
   }>
+  cluster_siblings?: string[]
 }
 
 export interface GlossaryListResponse {

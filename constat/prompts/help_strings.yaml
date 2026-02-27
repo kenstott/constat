@@ -84,6 +84,7 @@ help_commands:
   - ["/entity <name>", "Find entity across schema and documents", "Diagnostics"]
   - ["/known-facts", "List all known/cached facts (LLM view)", "Diagnostics"]
   - ["/sources <query>", "Find relevant sources for a query (LLM context)", "Diagnostics"]
+  - ["/search-chunks <query>", "Raw similarity search on all chunks", "Diagnostics"]
   # Exit
   - ["/quit, /q", "Exit the session", "Exit"]
 
@@ -151,3 +152,4 @@ command_descriptions:
   entity: "Find entity across sources"
   known-facts: "List known facts"
   sources: "Find relevant sources"
+  search-chunks: "Raw similarity search on chunks"

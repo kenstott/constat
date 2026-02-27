@@ -221,13 +221,25 @@ class DuckDBVectorStore(VectorStoreBackend):
     - HNSW indexing for O(log n) approximate search (on supported versions)
     """
 
-    def __init__(self, db_path: Optional[str] = None, reranker_model: str | None = None):
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        reranker_model: str | None = None,
+        cluster_min_terms: int = 2,
+        cluster_divisor: int = 5,
+        cluster_max_k: int | None = None,
+        store_chunk_text: bool = True,
+    ):
         """Initialize DuckDB vector store.
 
         Args:
             db_path: Path to DuckDB database file. If None, uses
                      ~/.constat/vectors.duckdb or CONSTAT_VECTOR_STORE_PATH env var
             reranker_model: Cross-encoder model name for reranking. None disables reranking.
+            cluster_min_terms: Minimum glossary terms to trigger clustering.
+            cluster_divisor: k = max(2, n_terms // divisor).
+            cluster_max_k: Optional cap on k.
+            store_chunk_text: Store original chunk text alongside embeddings.
         """
         import os
         from constat.storage.duckdb_pool import ThreadLocalDuckDB
@@ -252,6 +264,10 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._fts_dirty = True
         self._clusters_dirty = True
         self._reranker_model = reranker_model
+        self._cluster_min_terms = cluster_min_terms
+        self._cluster_divisor = cluster_divisor
+        self._cluster_max_k = cluster_max_k
+        self._store_chunk_text = store_chunk_text
         if reranker_model:
             from constat.reranker_loader import RerankerModelLoader
             RerankerModelLoader.get_instance().start_loading(reranker_model)
@@ -272,7 +288,9 @@ class DuckDBVectorStore(VectorStoreBackend):
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'embeddings'"
             ).fetchone()[0]
             if exists:
-                return  # Schema already initialized, skip checkpoint and DDL
+                # Ensure newer tables exist even on pre-existing databases
+                self._ensure_incremental_schema()
+                return
         except Exception:
             pass
         try:
@@ -499,6 +517,17 @@ class DuckDBVectorStore(VectorStoreBackend):
             logger.debug(f"Index creation skipped: {e}")
 
         # Glossary clustering table
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS glossary_clusters (
+                term_name VARCHAR NOT NULL,
+                cluster_id INTEGER NOT NULL,
+                session_id VARCHAR NOT NULL,
+                PRIMARY KEY (term_name, session_id)
+            )
+        """)
+
+    def _ensure_incremental_schema(self) -> None:
+        """Create tables added after initial schema, for pre-existing databases."""
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS glossary_clusters (
                 term_name VARCHAR NOT NULL,
@@ -1057,7 +1086,7 @@ class DuckDBVectorStore(VectorStoreBackend):
                 chunk_type_str,
                 chunk.section,
                 chunk.chunk_index,
-                chunk.content,
+                chunk.content if self._store_chunk_text else "",
                 embedding,
                 session_id,
                 domain_id,
@@ -1928,6 +1957,7 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         self._conn.execute("DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)", [session_id])
         self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
+        self._clusters_dirty = True
 
         logger.info(f"clear_session_entities({session_id[:8]}): deleted {link_count} links, {entity_count} entities")
         return link_count, entity_count
@@ -2844,6 +2874,7 @@ class DuckDBVectorStore(VectorStoreBackend):
             moved.append({"name": name, "from_domain": old_domain, "to_domain": new_domain})
 
         if moved:
+            self._clusters_dirty = True
             logger.info(f"reconcile_glossary_domains: moved {len(moved)} terms: {moved}")
 
         return moved
@@ -2867,6 +2898,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 [session_id],
             ).fetchall()
         count = len(result)
+        if count:
+            self._clusters_dirty = True
         logger.debug(f"clear_session_glossary({session_id}, user_id={user_id}): deleted {count} terms")
         return count
 
@@ -2889,6 +2922,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 [session_id, status],
             ).fetchall()
         count = len(result)
+        if count:
+            self._clusters_dirty = True
         logger.debug(f"delete_glossary_by_status({status}, user_id={user_id}): deleted {count} terms")
         return count
 
@@ -3049,21 +3084,55 @@ class DuckDBVectorStore(VectorStoreBackend):
     # =========================================================================
 
     def _rebuild_clusters(self, session_id: str) -> None:
-        """Lazily rebuild glossary term clusters from embeddings using KMeans."""
+        """Lazily rebuild clusters from entity + glossary term embeddings using KMeans.
+
+        Gathers embeddings from two sources:
+        1. Entities: average of linked chunk embeddings (via chunk_entities)
+        2. Glossary terms: dedicated glossary:<id> embeddings
+
+        Stores term/entity **name** in glossary_clusters.term_name so
+        get_cluster_siblings can look up directly without joins.
+        """
         if not self._clusters_dirty:
             return
 
-        rows = self._conn.execute(
+        name_to_vec: dict[str, np.ndarray] = {}
+
+        # 1. Entity embeddings — average of linked chunk embeddings
+        entity_rows = self._conn.execute(
             """
-            SELECT e.document_name, e.embedding
-            FROM embeddings e
-            WHERE e.document_name LIKE 'glossary:%'
-              AND (e.session_id = ? OR e.session_id IS NULL)
+            SELECT ent.name, e.embedding
+            FROM chunk_entities ce
+            JOIN entities ent ON ce.entity_id = ent.id
+            JOIN embeddings e ON ce.chunk_id = e.chunk_id
+            WHERE ent.session_id = ?
             """,
             [session_id],
         ).fetchall()
 
-        if len(rows) < 2:
+        # Accumulate per entity name
+        accum: dict[str, list[np.ndarray]] = {}
+        for ent_name, embedding in entity_rows:
+            accum.setdefault(ent_name, []).append(np.array(embedding, dtype=np.float32))
+        for ent_name, vecs in accum.items():
+            name_to_vec[ent_name] = np.mean(vecs, axis=0)
+        logger.debug(f"[_rebuild_clusters] {len(entity_rows)} entity-chunk rows -> {len(name_to_vec)} unique entity vectors")
+
+        # 2. Glossary term embeddings — override entity vectors with richer ones
+        glossary_rows = self._conn.execute(
+            """
+            SELECT gt.name, e.embedding
+            FROM embeddings e
+            JOIN glossary_terms gt ON e.document_name = 'glossary:' || gt.id
+            WHERE (e.session_id = ? OR e.session_id IS NULL)
+            """,
+            [session_id],
+        ).fetchall()
+        for gt_name, embedding in glossary_rows:
+            name_to_vec[gt_name] = np.array(embedding, dtype=np.float32)
+        logger.debug(f"[_rebuild_clusters] {len(glossary_rows)} glossary rows, total vectors: {len(name_to_vec)}")
+
+        if len(name_to_vec) < self._cluster_min_terms:
             self._conn.execute(
                 "DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]
             )
@@ -3072,15 +3141,11 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         from sklearn.cluster import KMeans
 
-        term_names = []
-        vectors = []
-        for doc_name, embedding in rows:
-            # Extract term name from "glossary:<term_id>"
-            term_names.append(doc_name.replace("glossary:", "", 1))
-            vectors.append(np.array(embedding, dtype=np.float32))
-
-        X = np.vstack(vectors)
-        k = max(2, len(term_names) // 5)
+        term_names = list(name_to_vec.keys())
+        X = np.vstack([name_to_vec[n] for n in term_names])
+        k = max(2, len(term_names) // self._cluster_divisor)
+        if self._cluster_max_k is not None:
+            k = min(k, self._cluster_max_k)
         kmeans = KMeans(n_clusters=k, n_init="auto", random_state=42)
         labels = kmeans.fit_predict(X)
 
@@ -3098,7 +3163,7 @@ class DuckDBVectorStore(VectorStoreBackend):
     def get_cluster_siblings(
         self, term_name: str, session_id: str, limit: int = 10,
     ) -> list[str]:
-        """Return other glossary term names in the same cluster."""
+        """Return other term/entity names in the same cluster."""
         self._rebuild_clusters(session_id)
 
         row = self._conn.execute(
@@ -3119,6 +3184,59 @@ class DuckDBVectorStore(VectorStoreBackend):
         ).fetchall()
         return [r[0] for r in rows]
 
+    def find_matching_clusters(
+        self, query: str, session_id: str, limit: int = 5,
+    ) -> list[dict]:
+        """Find clusters containing terms that appear in the query.
+
+        Searches cluster term_names against the query text (case-insensitive).
+        Returns cluster groups with matched term + siblings.
+
+        Args:
+            query: User query text
+            session_id: Session ID for cluster scope
+            limit: Max clusters to return
+
+        Returns:
+            List of dicts: {"term": matched_name, "siblings": [sibling_names]}
+        """
+        self._rebuild_clusters(session_id)
+
+        rows = self._conn.execute(
+            "SELECT DISTINCT term_name, cluster_id FROM glossary_clusters WHERE session_id = ?",
+            [session_id],
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        query_lower = query.lower()
+        results = []
+        seen_clusters = set()
+
+        for term_name, cluster_id in rows:
+            if cluster_id in seen_clusters:
+                continue
+            # Match term name in query (only terms with 3+ chars to avoid noise)
+            if len(term_name) > 3 and term_name.lower() in query_lower:
+                siblings = self._conn.execute(
+                    """
+                    SELECT term_name FROM glossary_clusters
+                    WHERE cluster_id = ? AND session_id = ? AND term_name != ?
+                    LIMIT 10
+                    """,
+                    [cluster_id, session_id, term_name],
+                ).fetchall()
+                results.append({
+                    "term": term_name,
+                    "siblings": [r[0] for r in siblings],
+                })
+                seen_clusters.add(cluster_id)
+                if len(results) >= limit:
+                    break
+
+        return results
+
     def close(self) -> None:
         """Close the database connection."""
         if hasattr(self, "_conn"):
@@ -3133,6 +3251,10 @@ def create_vector_store(
     backend: str = "duckdb",
     db_path: Optional[str] = None,
     reranker_model: str | None = None,
+    cluster_min_terms: int = 2,
+    cluster_divisor: int = 5,
+    cluster_max_k: int | None = None,
+    store_chunk_text: bool = True,
 ) -> VectorStoreBackend:
     """Factory function to create a vector store backend.
 
@@ -3140,6 +3262,10 @@ def create_vector_store(
         backend: Backend type - "duckdb" or "numpy"
         db_path: Path to DuckDB database file (only for duckdb backend)
         reranker_model: Cross-encoder model name for reranking (only for duckdb backend)
+        cluster_min_terms: Minimum glossary terms to trigger clustering.
+        cluster_divisor: k = max(2, n_terms // divisor).
+        cluster_max_k: Optional cap on k.
+        store_chunk_text: Store original chunk text alongside embeddings.
 
     Returns:
         VectorStoreBackend instance
@@ -3149,7 +3275,14 @@ def create_vector_store(
         ValueError: If unknown backend type is specified
     """
     if backend == "duckdb":
-        return DuckDBVectorStore(db_path=db_path, reranker_model=reranker_model)
+        return DuckDBVectorStore(
+            db_path=db_path,
+            reranker_model=reranker_model,
+            cluster_min_terms=cluster_min_terms,
+            cluster_divisor=cluster_divisor,
+            cluster_max_k=cluster_max_k,
+            store_chunk_text=store_chunk_text,
+        )
     elif backend == "numpy":
         return NumpyVectorStore()
     else:

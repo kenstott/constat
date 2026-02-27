@@ -562,6 +562,7 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
             reload_dirs=["constat", "."],
             reload_includes=reload_includes,
             log_level=log_level,
+            timeout_graceful_shutdown=5,
         )
     else:
         # For production mode, create app directly

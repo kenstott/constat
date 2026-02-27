@@ -377,6 +377,10 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             managed.session.set_clarification_callback(clarification_callback)
             logger.debug(f"Registered clarification callback for session {managed.session_id}")
 
+        # Sync active domains to doc_tools before query execution
+        if managed.session.doc_tools and hasattr(managed, 'active_domains'):
+            managed.session.doc_tools._active_domain_ids = managed.active_domains or []
+
         # Auto-detect follow-up: if session already has datastore tables, treat as follow-up
         if not is_followup and managed.session.datastore and managed.session.datastore.list_tables():
             logger.info(f"Auto-detected follow-up for session {managed.session_id} (existing tables found)")

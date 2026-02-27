@@ -9,6 +9,7 @@
 
 """FastAPI application factory for the Constat API server."""
 
+import asyncio
 import logging
 import warnings
 from contextlib import asynccontextmanager
@@ -91,7 +92,7 @@ def _compute_doc_config_hash(documents: dict) -> str:
             doc_data[doc_name] = {
                 "path": doc_config.path or "",
                 "description": doc_config.description or "",
-                "format": doc_config.format or "",
+                "type": doc_config.type or "",
             }
     return _compute_config_hash(doc_data)
 
@@ -143,7 +144,7 @@ def _compute_doc_resource_hash(doc_name: str, doc_config, config_dir: str | None
         "name": doc_name,
         "path": doc_config.path or "",
         "description": doc_config.description or "",
-        "format": doc_config.format or "",
+        "type": doc_config.type or "",
     }
 
     # Add file mtime for change detection
@@ -392,6 +393,14 @@ def _warmup_vector_store(config: Config) -> None:
     logger.info("  Pre-indexing complete")
 
 
+async def _shutdown_tasks(session_manager) -> None:
+    """Run shutdown tasks with a bounded time budget."""
+    await shutdown_executor_async()
+    await session_manager.stop_cleanup_task()
+    for managed in session_manager.list_sessions():
+        session_manager.delete_session(managed.session_id)
+
+
 def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -435,14 +444,16 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         # Shutdown: Stop cleanup task and cleanup sessions
         try:
             logger.info("Shutting down Constat API server...")
-            await shutdown_executor_async()  # Stop thread pool to allow clean exit
-            await session_manager.stop_cleanup_task()
-            for managed in session_manager.list_sessions():
-                session_manager.delete_session(managed.session_id)
+            await asyncio.wait_for(_shutdown_tasks(session_manager), timeout=5.0)
             logger.info("Constat API server stopped cleanly")
+        except asyncio.TimeoutError:
+            logger.warning("Shutdown timed out after 5s, forcing exit")
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
             logger.exception("Shutdown error traceback:")
+        finally:
+            from constat.storage.duckdb_pool import close_all_pools
+            close_all_pools()
 
     fastapi_app = FastAPI(
         title="Constat API",

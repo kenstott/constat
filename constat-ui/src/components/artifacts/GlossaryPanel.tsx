@@ -464,9 +464,10 @@ function ConnectedResources({
     parent_verb: string
     children: Array<{ name: string; display_name: string; parent_verb?: string }>
     relationships: Array<{ id: string; subject: string; verb: string; object: string; confidence: number }>
+    cluster_siblings: string[]
     domain: string | null
     domain_path: string | null
-  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], domain: null, domain_path: null })
+  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], domain: null, domain_path: null })
   const [loaded, setLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -482,6 +483,7 @@ function ConnectedResources({
           parent_verb: data.parent_verb || 'HAS_KIND',
           children: data.children || [],
           relationships: data.relationships || [],
+          cluster_siblings: data.cluster_siblings || [],
           domain: data.domain || null,
           domain_path: data.domain_path || null,
         })
@@ -496,8 +498,8 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
-  const { resources, parent, parent_verb, children, relationships, domain, domain_path } = detail
-  const hasConnections = !!(parent || children.length > 0 || relationships.length > 0)
+  const { resources, parent, parent_verb, children, relationships, cluster_siblings, domain, domain_path } = detail
+  const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
   const hasContent = resources.length > 0 || hasConnections || !!domain
   if (!hasContent) return null
 
@@ -559,6 +561,19 @@ function ConnectedResources({
           relationships: [...prev.relationships, rel],
         }))}
       />
+      {cluster_siblings.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">Cluster</div>
+          <div className="text-xs ml-2 flex flex-wrap gap-x-0.5">
+            {cluster_siblings.map((name, i) => (
+              <span key={i}>
+                <TermLink name={name} displayName={name} />
+                {i < cluster_siblings.length - 1 && <span className="text-gray-400">, </span>}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       {resources.length > 0 && (
         <div>
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">Connected Resources</div>
@@ -1467,7 +1482,7 @@ function DomainPromotePicker({
 interface PositionedNode {
   id: string
   label: string
-  type: 'focal' | 'parent' | 'child' | 'relationship'
+  type: 'focal' | 'parent' | 'child' | 'relationship' | 'sibling'
   depth: number
   domain?: string | null
   x: number
@@ -1478,7 +1493,7 @@ interface PositionedEdge {
   sourceId: string
   targetId: string
   label: string
-  type: 'parent' | 'child' | 'relationship'
+  type: 'parent' | 'child' | 'relationship' | 'sibling'
 }
 
 const NODE_STYLES: Record<string, { fill: string; r: number }> = {
@@ -1486,6 +1501,7 @@ const NODE_STYLES: Record<string, { fill: string; r: number }> = {
   parent: { fill: '#a855f7', r: 18 },
   child: { fill: '#22c55e', r: 16 },
   relationship: { fill: '#9ca3af', r: 16 },
+  sibling: { fill: '#f59e0b', r: 14 },
 }
 
 // Convex hull (Graham scan) for cluster backgrounds
@@ -2294,17 +2310,16 @@ function TermGraphInline({
           className={`overflow-hidden border border-gray-200 dark:border-gray-700 rounded ${fullscreen ? 'flex-1 min-h-0' : ''}`}
           style={fullscreen ? undefined : { height: '300px' }}
         >
-          <svg width="100%" height="100%" className="select-none">
-            <g transform={`translate(50%,50%)`}>
-              <circle cx="0" cy="0" r={24} fill="#3b82f6" />
-              <text
-                textAnchor="middle"
-                dominantBaseline="central"
-                className="text-[10px] fill-white font-semibold pointer-events-none"
-              >
-                {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
-              </text>
-            </g>
+          <svg width="100%" height="100%" viewBox="0 0 200 200" className="select-none">
+            <circle cx="100" cy="100" r={24} fill="#3b82f6" />
+            <text
+              x="100" y="100"
+              textAnchor="middle"
+              dominantBaseline="central"
+              className="text-[10px] fill-white font-semibold pointer-events-none"
+            >
+              {termName.length > 10 ? termName.slice(0, 8) + '..' : termName}
+            </text>
           </svg>
         </div>
       ) : (

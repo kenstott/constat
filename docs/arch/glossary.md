@@ -1,6 +1,6 @@
 # Glossary Architecture
 
-> **Status:** Design. No implementation yet.
+> **Status:** Implemented. Phases 1a–1h and 2a are complete. Phase 2b (inline editing), Phase 2R (REPL commands), and Phase 3 (semantic model export) are in progress or future.
 
 ## Problem
 
@@ -59,89 +59,57 @@ Entity name as natural key means multiple entities named "customer" from differe
 
 ### Existing Table: `entities` (unchanged)
 
-The automated NER extraction layer. Cleared and rebuilt freely on session start, project add/remove. No curated data here.
+The automated NER extraction layer. Cleared and rebuilt freely on session start, domain add/remove. No curated data here.
 
-### New Table: `glossary_terms`
+### Table: `glossary_terms`
 
 ```sql
 CREATE TABLE glossary_terms (
     id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,              -- Singular canonical form (matches entity.name)
     display_name VARCHAR NOT NULL,      -- Title case singular for UI
-    definition TEXT NOT NULL,           -- Business meaning (the whole point)
+    definition TEXT,                    -- Business meaning (NULL for self-describing)
     domain VARCHAR,                     -- Owning domain (null = system-level)
     parent_id VARCHAR,                  -- Taxonomy parent (self-referential)
+    parent_verb VARCHAR DEFAULT 'HAS_KIND',  -- Relationship verb to parent
     aliases TEXT,                       -- JSON array of alternate names
     semantic_type VARCHAR,              -- CONCEPT, ATTRIBUTE, ACTION, TERM
     cardinality VARCHAR DEFAULT 'many', -- many | distinct | singular
     plural VARCHAR,                     -- Irregular plural form (person->people)
-    list_of VARCHAR,                    -- Glossary term ID if collection
     tags TEXT,                          -- JSON map of tags (no arrays rule)
     owner VARCHAR,                      -- Term-level owner (domain has default owner)
     status VARCHAR DEFAULT 'draft',     -- draft | reviewed | approved
-    provenance VARCHAR DEFAULT 'llm',   -- llm | human | hybrid
+    provenance VARCHAR DEFAULT 'llm',   -- llm | human | hybrid | learning
+    ignored BOOLEAN DEFAULT FALSE,      -- Admin exclusion from glossary display
     session_id VARCHAR NOT NULL,
+    user_id VARCHAR,                    -- User-scoped glossary (overrides session_id scope)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (parent_id) REFERENCES glossary_terms(id),
-    FOREIGN KEY (list_of) REFERENCES glossary_terms(id)
+    FOREIGN KEY (parent_id) REFERENCES glossary_terms(id)
 );
 
 CREATE INDEX idx_glossary_name ON glossary_terms(name);
 CREATE INDEX idx_glossary_domain ON glossary_terms(domain);
 CREATE INDEX idx_glossary_parent ON glossary_terms(parent_id);
 CREATE INDEX idx_glossary_session ON glossary_terms(session_id);
+CREATE INDEX idx_glossary_user ON glossary_terms(user_id);
 CREATE INDEX idx_glossary_status ON glossary_terms(status);
 ```
 
-No junction table. The join key is `(name, session_id)` between `entities` and `glossary_terms`.
+No junction table. The join key is `LOWER(name)` between `entities` and `glossary_terms`. Glossary terms are scoped by `user_id` when provided (user-scoped glossary persists across sessions), falling back to `session_id` for backward compat.
 
-### Unified Glossary View
+### Unified Glossary (`get_unified_glossary`)
 
-```sql
--- The main glossary: all entities, with definitions where they exist.
--- A session may load multiple domains. An entity can have 0..N glossary
--- entries (one per domain that defines it). Entities with no glossary
--- entry in any loaded domain are self-describing.
-CREATE VIEW unified_glossary AS
-SELECT
-    e.id AS entity_id,
-    e.name,
-    COALESCE(g.display_name, e.display_name) AS display_name,
-    e.semantic_type,
-    e.ner_type,
-    e.session_id,
-    g.id AS glossary_id,
-    g.domain,
-    g.definition,
-    g.parent_id,
-    g.aliases,
-    g.cardinality,
-    g.plural,
-    g.list_of,
-    g.status,
-    g.provenance,
-    CASE
-        WHEN g.id IS NOT NULL THEN 'defined'
-        ELSE 'self_describing'
-    END AS glossary_status
-FROM entities e
-LEFT JOIN glossary_terms g
-    ON e.name = g.name
-    AND e.session_id = g.session_id;
+Implemented as a method on `VectorStore` (not a SQL view) because it requires domain visibility filtering that varies per session. The query is a two-part UNION:
 
--- Deprecated: glossary terms whose physical grounding was lost
-CREATE VIEW deprecated_glossary AS
-SELECT g.*
-FROM glossary_terms g
-LEFT JOIN entities e
-    ON g.name = e.name
-    AND g.session_id = e.session_id
-WHERE e.id IS NULL;
-```
+**Part 1: Entities with optional glossary terms** — LEFT JOIN entities to glossary_terms on `LOWER(name)`. Uses `entity_visibility_filter()` with `cross_session=True` so the user-scoped glossary sees entities from any session. Grounding filter requires at least one of: a glossary term match, non-glossary chunk links, or being a parent of another glossary term.
 
-When two loaded domains both define the same term, the LEFT JOIN produces one row per domain definition. The UI groups them under the entity name and shows domain badges to distinguish:
+**Part 2: Glossary terms with no matching entity** — only includes terms that are either `provenance='learning'` (user-created) or are parents of other in-scope terms (taxonomy categories). All other orphaned glossary terms are excluded.
+
+Post-processing deduplicates by `LOWER(name)` (preferring rows with glossary terms), suppresses self-describing entities whose name is an alias of a defined term, and returns unified dicts.
+
+When two loaded domains both define the same term, the JOIN produces one row per domain definition. The UI groups them under the entity name and shows domain badges to distinguish:
 
 ```
 ▼ Customer                                    CONCEPT
@@ -158,19 +126,20 @@ class GlossaryTerm:
     id: str
     name: str                                       # Singular canonical form
     display_name: str                               # Title case singular
-    definition: str
+    definition: Optional[str] = None                # Business meaning (None = self-describing)
     domain: Optional[str] = None                    # Owning domain (None = system-level)
     parent_id: Optional[str] = None
+    parent_verb: str = "HAS_KIND"                   # Relationship verb to parent
     aliases: list[str] = field(default_factory=list)
     semantic_type: Optional[str] = None
     cardinality: str = "many"                       # many | distinct | singular
     plural: Optional[str] = None                    # Irregular plural (person->people)
-    list_of: Optional[str] = None                   # Glossary term ID if collection
-    tags: dict[str, dict] = field(default_factory=dict)  # Tags (map, no arrays)
     owner: Optional[str] = None                     # Term-level owner
     status: str = "draft"                           # draft | reviewed | approved
-    provenance: str = "llm"                         # llm | human | hybrid
+    provenance: str = "llm"                         # llm | human | hybrid | learning
+    ignored: bool = False                           # Admin exclusion from display
     session_id: str = ""
+    user_id: Optional[str] = None                   # User-scoped persistence
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 ```
@@ -644,6 +613,77 @@ Extract SVO triples from document chunks where both subject and object match glo
 
 **UI:** Relationship suggestions appear in the GlossaryPanel (Phase 2a) as a "Suggested Relationships" section when viewing a term's detail. Confirm/edit/discard per suggestion.
 
+### 1i: Semantic Clustering
+
+Entities and glossary terms are clustered using KMeans on their vector embeddings. Clustering groups semantically related terms together, enabling the agent to discover related concepts even when they don't share explicit taxonomy relationships.
+
+**Two embedding sources:**
+
+1. **Entity embeddings** — average of linked chunk embeddings (via `chunk_entities` join). Available immediately after entity extraction.
+2. **Glossary term embeddings** — dedicated `glossary:<id>` embeddings from glossary generation. Override entity vectors with richer semantic content when available.
+
+```
+Entity extraction → entity embeddings → clustering (pass 1)
+Glossary generation → glossary embeddings → clustering (pass 2, enriched)
+```
+
+Clustering is available after entity extraction alone — glossary generation enriches but is not required.
+
+**Algorithm:**
+
+```python
+def _rebuild_clusters(self, session_id: str) -> None:
+    """KMeans clustering on entity + glossary term embeddings.
+
+    Stores term/entity name in glossary_clusters.term_name for
+    direct lookup without joins.
+    """
+    name_to_vec: dict[str, np.ndarray] = {}
+
+    # 1. Entity embeddings — average of linked chunk embeddings
+    for ent_name, vecs in entity_chunk_embeddings(session_id):
+        name_to_vec[ent_name] = np.mean(vecs, axis=0)
+
+    # 2. Glossary term embeddings — override with richer vectors
+    for gt_name, embedding in glossary_embeddings(session_id):
+        name_to_vec[gt_name] = embedding
+
+    k = max(2, len(name_to_vec) // cluster_divisor)
+    kmeans = KMeans(n_clusters=k, n_init="auto", random_state=42)
+    labels = kmeans.fit_predict(X)
+    # Store (term_name, cluster_id, session_id) in glossary_clusters
+```
+
+**Storage:**
+
+```sql
+CREATE TABLE glossary_clusters (
+    term_name VARCHAR NOT NULL,
+    cluster_id INTEGER NOT NULL,
+    session_id VARCHAR NOT NULL
+);
+CREATE INDEX idx_gc_session ON glossary_clusters(session_id);
+CREATE INDEX idx_gc_term ON glossary_clusters(term_name);
+```
+
+**Lazy rebuild** — clusters are rebuilt only when `_clusters_dirty` is set (after entity extraction or glossary generation). First access triggers the rebuild.
+
+**Lookup methods:**
+
+| Method | Purpose |
+|--------|---------|
+| `get_cluster_siblings(term_name, session_id)` | Return other terms in the same cluster |
+| `find_matching_clusters(query, session_id)` | Find clusters containing terms that appear in the query text |
+
+**Integration with `find_relevant_sources`:**
+
+The `find_relevant_sources` method iterates over the unified glossary (entities + terms) and matches names/aliases against the query text. For each match, it:
+1. Resolves physical resources via `resolve_physical_resources`
+2. Looks up cluster siblings via `get_cluster_siblings`
+3. Resolves siblings' physical resources at lower relevance (0.5 vs 0.7)
+
+This means a query mentioning "customer" will also surface tables related to sibling terms like "order", "account", etc. — based on semantic proximity, not explicit relationships.
+
 ## Phase 2: Unified Glossary UI
 
 ### 2a: Glossary Browser (replaces EntityAccordion)
@@ -935,24 +975,25 @@ This phase connects the glossary back to the book's vision: curated business def
 
 ## Implementation Order
 
-| Phase | Scope | Depends On |
-|-------|-------|------------|
-| 1a | `glossary_terms` table + `GlossaryTerm` dataclass | Nothing |
-| 1b | `unified_glossary` + `deprecated_glossary` views | 1a |
-| 1c | LLM glossary generation as follow-on to entity extraction | 1a |
-| 1d | Glossary embedding with physical resources in chunk content | 1a, 1c |
-| 1e | Physical resource resolution (multi-hop walk, ungrounded pruning) | 1d |
-| 1f | Unified search tool (single tool, chunk-type-based resolution) | 1e |
-| 1g | API endpoints (unified glossary, CRUD, deprecation) | 1b |
-| 1h | Relationship suggestions (FK-derived, co-occurrence, SVO) | 1a, 1c |
-| 2a | Unified GlossaryPanel (replaces EntityAccordion) | 1g |
-| 2b | `[+ Define]`, inline editing, status workflow, re-embedding | 2a |
-| 2c | Deprecation queue UI | 2a |
-| 2d | AI editing assistance (refine, suggest taxonomy, suggest aliases) | 2b |
-| 2Ra | REPL `/glossary` list + `/glossary <name>` detail + `/glossary deprecated` | 1g |
-| 2Rb | REPL `/define`, `/undefine` commands | 2Ra |
-| 2Rc | REPL `/refine` with background thread + `GlossaryRefineComplete` message | 2Rb |
-| 3  | Semantic model YAML export | 2b |
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1a | `glossary_terms` table + `GlossaryTerm` dataclass | **Done** |
+| 1b | `get_unified_glossary` method (entities + terms union) | **Done** |
+| 1c | LLM glossary generation as follow-on to entity extraction | **Done** |
+| 1d | Glossary embedding with physical resources in chunk content | **Done** |
+| 1e | Physical resource resolution (multi-hop walk, ungrounded pruning) | **Done** |
+| 1f | Unified search tool (single tool, chunk-type-based resolution) | **Done** |
+| 1g | API endpoints (unified glossary, CRUD) | **Done** |
+| 1h | Relationship suggestions (co-occurrence) | **Done** (FK and SVO: future) |
+| 1i | Semantic clustering (KMeans on entity + glossary embeddings) | **Done** |
+| 2a | Unified GlossaryPanel (replaces EntityAccordion) | **Done** |
+| 2b | `[+ Define]`, inline editing, status workflow, re-embedding | Partial |
+| 2c | Deprecation queue UI | Future |
+| 2d | AI editing assistance (refine, suggest taxonomy, suggest aliases) | Future |
+| 2Ra | REPL `/glossary` list + `/glossary <name>` detail | Partial |
+| 2Rb | REPL `/define`, `/undefine` commands | Future |
+| 2Rc | REPL `/refine` with background thread | Future |
+| 3  | Semantic model YAML export | Future |
 
 ## The Grounding Constraint
 

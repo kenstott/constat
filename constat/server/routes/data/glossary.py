@@ -305,6 +305,13 @@ async def get_glossary_term(
     ]
     logger.debug(f"get_glossary_term({name}): {len(relationships)} relationships, parent={bool(parent_info)}, children={len(children)}")
 
+    cluster_siblings: list[str] = []
+    if hasattr(vs, "get_cluster_siblings"):
+        try:
+            cluster_siblings = vs.get_cluster_siblings(lookup_name, session_id)
+        except Exception:
+            logger.debug(f"get_glossary_term({name}): cluster siblings lookup failed", exc_info=True)
+
     if term:
         effective_domain = (
             term.domain
@@ -333,6 +340,7 @@ async def get_glossary_term(
             "connected_resources": resources,
             "children": children,
             "relationships": relationships,
+            "cluster_siblings": cluster_siblings,
             "ignored": term.ignored,
         }
 
@@ -351,6 +359,7 @@ async def get_glossary_term(
             "connected_resources": resources,
             "children": children,
             "relationships": relationships,
+            "cluster_siblings": cluster_siblings,
         }
 
     raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
