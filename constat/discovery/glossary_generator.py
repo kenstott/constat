@@ -242,7 +242,20 @@ def generate_glossary(
         logger.info(f"No entities found for session {session_id}, skipping glossary generation")
         return []
 
-    # Build candidate list (pre-filter obvious non-candidates)
+    # Load existing glossary state before filtering candidates
+    existing_terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
+    existing_defined: set[str] = set()  # terms with definitions — don't regenerate
+    claimed_aliases: set[str] = set()
+    all_term_names: set[str] = set()
+    for et in existing_terms:
+        all_term_names.add(et.name.lower())
+        if et.definition:
+            existing_defined.add(et.name.lower())
+        for a in (et.aliases or []):
+            if a:
+                claimed_aliases.add(a.strip().lower())
+
+    # Build candidate list (pre-filter obvious non-candidates and already-defined terms)
     candidates = []
     for row in rows:
         entity_id, name, display_name, semantic_type, ner_type, ref_count, source_count = row
@@ -255,32 +268,23 @@ def generate_glossary(
             "ref_count": ref_count,
             "source_count": source_count,
         }
-        if _is_candidate(entity_data):
-            candidates.append(entity_data)
+        if not _is_candidate(entity_data):
+            continue
+        if name.lower() in existing_defined:
+            continue  # Already has a definition — skip
+        candidates.append(entity_data)
 
     if not candidates:
         logger.info(f"No candidates for glossary generation in session {session_id}")
         return []
 
-    logger.info(f"Glossary generation: {len(candidates)} candidates from {len(rows)} entities")
+    logger.info(f"Glossary generation: {len(candidates)} candidates from {len(rows)} entities ({len(existing_defined)} already defined)")
 
     # Batch candidates and call LLM
     generated_terms: list[GlossaryTerm] = []
     batches = _batch_entities(candidates)
 
-    # Track claimed aliases across all batches to prevent duplicates
-    # An alias cannot be: another term's primary name, or claimed by another term
-    claimed_aliases: set[str] = set()  # all aliases assigned so far
     entity_names: set[str] = {r[1].lower() for r in rows}  # entity names (for alias dedup only)
-    all_term_names: set[str] = set()  # tracks existing glossary + cross-batch dedup
-
-    # Include existing glossary term names and their aliases
-    existing_terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
-    for et in existing_terms:
-        all_term_names.add(et.name.lower())
-        for a in (et.aliases or []):
-            if a:
-                claimed_aliases.add(a.strip().lower())
 
     for batch_idx, batch in enumerate(batches):
         if cancelled and cancelled():

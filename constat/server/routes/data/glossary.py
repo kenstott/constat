@@ -485,12 +485,8 @@ async def generate_glossary(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    # Cancel any in-progress generation before clearing and restarting
+    # Cancel any in-progress generation (additive — does not clear existing)
     managed._glossary_cancelled.set()
-
-    # Clear existing LLM-generated terms and relationships (user-scoped)
-    vs.clear_session_glossary(session_id, user_id=managed.user_id)
-    vs.clear_session_relationships(session_id)
 
     # Run LLM glossary generation in background
     import threading
