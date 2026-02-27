@@ -99,6 +99,7 @@ ner_stop_list:
   - integer
   - graphql
   - JSON
+  - code
 
 # External APIs (examples - these are public demo APIs)
 apis:

@@ -547,6 +547,13 @@ class SessionManager:
                 pass
         fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms)
         if should_skip_ner(session_id, fingerprint):
+            # Even when NER is skipped, always rebuild clusters (in-memory state lost on restart)
+            if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
+                vs = session.doc_tools._vector_store
+                if hasattr(vs, '_rebuild_clusters'):
+                    vs._clusters_dirty = True
+                    vs._rebuild_clusters(session_id)
+                    logger.info(f"Session {session_id}: rebuilt clusters (NER skipped)")
             return
 
         # Run entity extraction

@@ -171,7 +171,7 @@ def glossary_term_to_chunk(
             parts.append(f"  - {source}")
 
     if relationships:
-        hierarchy_verbs = {"HAS_A", "HAS_KIND", "HAS_MANY"}
+        hierarchy_verbs = {"HAS_ONE", "HAS_KIND", "HAS_MANY"}
         parent_name = term.parent_id.lower() if term.parent_id else None
 
         rel_lines = []

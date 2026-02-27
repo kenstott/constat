@@ -280,7 +280,7 @@ async def get_glossary_term(
     # Resolve children — parent_id can be glossary_id or entity_id
     children = []
     lookup_name = term.name if term else name
-    entity = vs.find_entity_by_name(lookup_name, session_id=session_id)
+    entity = vs.find_entity_by_name(lookup_name, domain_ids=active_domains, session_id=session_id)
     candidate_ids = []
     if term:
         candidate_ids.append(term.id)
@@ -924,11 +924,11 @@ async def suggest_taxonomy(
         "You are organizing business glossary terms into a hierarchy. "
         "Suggest parent-child relationships between terms. "
         "Each relationship must be one of two types (from the parent's perspective):\n"
-        "- HAS_A (composition): parent is composed of child. Example: Order HAS_A Line Item\n"
+        "- HAS_ONE (composition): parent is composed of child. Example: Order HAS_ONE Line Item\n"
         "- HAS_KIND (taxonomy): child is a kind of parent. Example: Account HAS_KIND Savings Account\n"
         "- HAS_MANY (collection): parent contains many of child. Example: Team HAS_MANY Employee\n"
-        "Only suggest relationships where a clear HAS_A, HAS_KIND, or HAS_MANY relationship exists. "
-        "Respond as a JSON array: [{\"child\": \"...\", \"parent\": \"...\", \"parent_verb\": \"HAS_A\" or \"HAS_KIND\" or \"HAS_MANY\", \"confidence\": \"high|medium|low\", \"reason\": \"...\"}]"
+        "Only suggest relationships where a clear HAS_ONE, HAS_KIND, or HAS_MANY relationship exists. "
+        "Respond as a JSON array: [{\"child\": \"...\", \"parent\": \"...\", \"parent_verb\": \"HAS_ONE\" or \"HAS_KIND\" or \"HAS_MANY\", \"confidence\": \"high|medium|low\", \"reason\": \"...\"}]"
     )
     user_msg = f"Terms:\n{term_descriptions}"
 
@@ -953,7 +953,7 @@ async def suggest_taxonomy(
         parent = item.get("parent", "")
         if child and parent:
             verb = item.get("parent_verb", "HAS_KIND")
-            if verb not in ("HAS_A", "HAS_KIND", "HAS_MANY"):
+            if verb not in ("HAS_ONE", "HAS_KIND", "HAS_MANY"):
                 verb = "HAS_KIND"
             suggestions.append({
                 "child": child,

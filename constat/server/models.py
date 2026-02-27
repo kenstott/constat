@@ -765,7 +765,7 @@ class GlossaryTermResponse(BaseModel):
     domain: Optional[str] = Field(default=None, description="Owning domain")
     domain_path: Optional[str] = Field(default=None, description="Full domain hierarchy path")
     parent_id: Optional[str] = Field(default=None, description="Parent term ID")
-    parent_verb: str = Field(default="HAS_KIND", description="Hierarchy type: HAS_A (composition), HAS_KIND (taxonomy), HAS_MANY (collection)")
+    parent_verb: str = Field(default="HAS_KIND", description="Hierarchy type: HAS_ONE (composition), HAS_KIND (taxonomy), HAS_MANY (collection)")
     aliases: list[str] = Field(default_factory=list, description="Alternate names")
     semantic_type: Optional[str] = Field(default=None, description="Semantic type")
     cardinality: str = Field(default="many", description="Cardinality")

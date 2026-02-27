@@ -1193,7 +1193,7 @@ function DeprecatedSection({
   const { deprecatedTerms, deleteTerm, reconnectTerm, terms: allTerms } = useGlossaryStore()
   const [reconnecting, setReconnecting] = useState<string | null>(null)
   const [selectedParent, setSelectedParent] = useState('')
-  const [reconnectVerb, setReconnectVerb] = useState<'HAS_A' | 'HAS_KIND' | 'HAS_MANY'>('HAS_KIND')
+  const [reconnectVerb, setReconnectVerb] = useState<'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY'>('HAS_KIND')
 
   if (deprecatedTerms.length === 0) return null
 
@@ -1238,10 +1238,10 @@ function DeprecatedSection({
             <div className="flex items-center gap-1 mt-1">
               <select
                 value={reconnectVerb}
-                onChange={(e) => setReconnectVerb(e.target.value as 'HAS_A' | 'HAS_KIND' | 'HAS_MANY')}
+                onChange={(e) => setReconnectVerb(e.target.value as 'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY')}
                 className="text-xs py-0.5 px-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 w-20"
               >
-                <option value="HAS_A">HAS_A</option>
+                <option value="HAS_ONE">HAS_ONE</option>
                 <option value="HAS_KIND">HAS_KIND</option>
                 <option value="HAS_MANY">HAS_MANY</option>
               </select>
@@ -1689,18 +1689,44 @@ function TermGraphInline({
   sessionId: string
   termName: string
 }) {
+  // Persist graph settings to localStorage
+  const GRAPH_STORAGE_KEY = 'constat-graph-settings'
+  const loadSetting = <T,>(key: string, fallback: T): T => {
+    try {
+      const raw = localStorage.getItem(GRAPH_STORAGE_KEY)
+      if (raw) { const obj = JSON.parse(raw); if (key in obj) return obj[key] as T }
+    } catch { /* ignore */ }
+    return fallback
+  }
+  const saveSetting = (key: string, value: unknown) => {
+    try {
+      const raw = localStorage.getItem(GRAPH_STORAGE_KEY)
+      const obj = raw ? JSON.parse(raw) : {}
+      obj[key] = value
+      localStorage.setItem(GRAPH_STORAGE_KEY, JSON.stringify(obj))
+    } catch { /* ignore */ }
+  }
+
   const [graph, setGraph] = useState<{ nodes: PositionedNode[]; edges: PositionedEdge[] } | null>(null)
   const [loading, setLoading] = useState(true)
   const [empty, setEmpty] = useState(false)
-  const [depth, setDepth] = useState(1)
+  const [depth, setDepth] = useState(() => loadSetting('depth', 1))
   const [fullscreen, setFullscreen] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const [layout, setLayout] = useState<'force' | 'tree-v' | 'tree-h'>('force')
-  const [nodeSpacing, setNodeSpacing] = useState(100)
-  const [showLeaves, setShowLeaves] = useState(true)
+  const [layout, setLayout] = useState<'force' | 'tree-v' | 'tree-h'>(() => loadSetting('layout', 'force'))
+  const [nodeSpacing, setNodeSpacing] = useState(() => loadSetting('nodeSpacing', 100))
+  const [showLeaves, setShowLeaves] = useState(() => loadSetting('showLeaves', true))
+  const [showClusters, setShowClusters] = useState(() => loadSetting('showClusters', true))
+  const [showDomains, setShowDomains] = useState(() => loadSetting('showDomains', true))
+  const [forceIterations, setForceIterations] = useState(() => loadSetting('forceIterations', 200))
+  const [graphHeight, setGraphHeight] = useState(() => loadSetting('graphHeight', 300))
+  const simRef = useRef<ReturnType<typeof forceSimulation> | null>(null)
+  const animFrameRef = useRef<number>(0)
+  const shouldAnimateRef = useRef(false)
+  const pinnedNodesRef = useRef<Map<string, { fx: number; fy: number }>>(new Map())
   const [graphDomains, setGraphDomains] = useState<string[]>([])
   const [graphDomainFilter, setGraphDomainFilter] = useState<Set<string> | null>(null)
   const [hoverNode, setHoverNode] = useState<{ name: string; x: number; y: number } | null>(null)
@@ -1708,6 +1734,17 @@ function TermGraphInline({
   const svgRef = useRef<SVGSVGElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+
+  // Persist settings to localStorage on change
+  useEffect(() => { saveSetting('depth', depth) }, [depth])
+  useEffect(() => { saveSetting('layout', layout) }, [layout])
+  useEffect(() => { saveSetting('nodeSpacing', nodeSpacing) }, [nodeSpacing])
+  useEffect(() => { saveSetting('showLeaves', showLeaves) }, [showLeaves])
+  useEffect(() => { saveSetting('showClusters', showClusters) }, [showClusters])
+  useEffect(() => { saveSetting('showDomains', showDomains) }, [showDomains])
+  useEffect(() => { saveSetting('forceIterations', forceIterations) }, [forceIterations])
+  useEffect(() => { saveSetting('graphHeight', graphHeight) }, [graphHeight])
 
   // Track container size with ResizeObserver — debounced to avoid render loops
   useEffect(() => {
@@ -1737,9 +1774,12 @@ function TermGraphInline({
   // BFS fetch neighborhood up to `depth` levels, then simulate layout
   useEffect(() => {
     let cancelled = false
+    cancelAnimationFrame(animFrameRef.current)
     setLoading(true)
     setEmpty(false)
     setGraph(null)
+    graphIdRef.current += 1
+    needsFitRef.current = true
 
     async function fetchNeighborhood() {
       const nodeMap = new Map<string, { id: string; label: string; type: PositionedNode['type']; depth: number; domain?: string | null }>()
@@ -1825,7 +1865,7 @@ function TermGraphInline({
           }
 
           // Cluster siblings — only for the focal node (depth 0)
-          if (d === 0) {
+          if (d === 0 && showClusters) {
             for (const sib of data.cluster_siblings || []) {
               if (!nodeMap.has(sib)) {
                 nodeMap.set(sib, { id: sib, label: sib, type: 'sibling', depth: 1, domain: data.domain })
@@ -1889,8 +1929,10 @@ function TermGraphInline({
       if (layout === 'force') {
         // Force-directed layout
         const nodeCount = nodeArr.length
+        const edgeCount = rawEdges.length
+        const density = edgeCount / Math.max(nodeCount, 1)
         const linkDist = nodeSpacing * (nodeCount > 15 ? 0.67 : 1)
-        const chargeStr = -(nodeSpacing * (nodeCount > 15 ? 2 : 3.3))
+        const chargeStr = -(nodeSpacing * (density > 2 ? 5 : nodeCount > 15 ? 3 : 3.3))
         const collideExtra = nodeCount > 15 ? 8 : 12
 
         interface SimNode {
@@ -1943,7 +1985,21 @@ function TermGraphInline({
           }))
         if (clusterForce) sim.force('cluster', clusterForce)
         sim.stop()
-        for (let i = 0; i < 200; i++) sim.tick()
+
+        // Restore pinned node positions from previous layout
+        const pinned = pinnedNodesRef.current
+        if (pinned.size > 0) {
+          for (const n of simNodes) {
+            const p = pinned.get(n.id)
+            if (p) { n.x = p.fx; n.y = p.fy; n.fx = p.fx; n.fy = p.fy }
+          }
+        }
+
+        sim.tick() // single tick for initial positions
+
+        // Store simulation and trigger animation
+        simRef.current = sim as any
+        shouldAnimateRef.current = true
 
         posNodes = simNodes.map((n) => ({
           id: n.id, label: n.label, type: n.type, depth: n.depth, domain: n.domain,
@@ -2023,53 +2079,220 @@ function TermGraphInline({
       if (!cancelled) setLoading(false)
     })
 
-    return () => { cancelled = true }
-  }, [sessionId, termName, depth, fullscreen, layout, nodeSpacing, gw, gh, showLeaves, graphDomainFilter])
+    return () => { cancelled = true; cancelAnimationFrame(animFrameRef.current) }
+  }, [sessionId, termName, depth, fullscreen, layout, nodeSpacing, showLeaves, showClusters, graphDomainFilter])
 
-  // Compute viewBox from node bounds so nothing is clipped
-  const svgViewBox = useMemo(() => {
-    if (!graph || graph.nodes.length === 0) return `0 0 ${gw} ${gh}`
-    const pad = 40
+  // Fit-to-window after force animation completes (or immediately for tree layouts)
+  const needsFitRef = useRef(false)
+  const graphIdRef = useRef(0)
+  const lastFitId = useRef(0)
+
+  // For tree layouts: fit immediately when graph appears
+  useEffect(() => {
+    if (layout === 'force') return
+    if (!graph || graph.nodes.length === 0 || !containerRef.current) return
+    if (lastFitId.current === graphIdRef.current) return
+    lastFitId.current = graphIdRef.current
+    const padding = 60
     const xs = graph.nodes.map(n => n.x)
     const ys = graph.nodes.map(n => n.y)
-    const minX = Math.min(0, Math.min(...xs) - pad)
-    const minY = Math.min(0, Math.min(...ys) - pad)
-    const maxX = Math.max(gw, Math.max(...xs) + pad)
-    const maxY = Math.max(gh, Math.max(...ys) + pad)
-    return `${minX} ${minY} ${maxX - minX} ${maxY - minY}`
-  }, [graph, gw, gh])
+    const minX = Math.min(...xs) - padding, maxX = Math.max(...xs) + padding
+    const minY = Math.min(...ys) - padding, maxY = Math.max(...ys) + padding
+    const cw = containerRef.current.clientWidth
+    const ch = containerRef.current.clientHeight
+    const newZoom = Math.min(cw / (maxX - minX), ch / (maxY - minY), 2)
+    const gcx = (minX + maxX) / 2, gcy = (minY + maxY) / 2
+    setZoom(newZoom)
+    setPan({ x: (cw / 2) - gcx * newZoom, y: (ch / 2) - gcy * newZoom })
+  }, [graph, layout])
 
-  // Reset zoom/pan when graph changes
+  // Extract current positions from simulation into graph state
+  const syncSimToGraph = useCallback(() => {
+    const sim = simRef.current
+    if (!sim) return
+    const nodes = (sim as any).nodes() as Array<{ id: string; x: number; y: number; label: string; type: PositionedNode['type']; depth: number; domain?: string | null }>
+    setGraph(prev => prev ? {
+      ...prev,
+      nodes: nodes.map(n => ({ id: n.id, label: n.label, type: n.type, depth: n.depth, domain: n.domain, x: n.x, y: n.y })),
+    } : prev)
+  }, [])
+
+  // Auto-animate force layout whenever a new graph is created
   useEffect(() => {
-    setZoom(1)
-    setPan({ x: 0, y: 0 })
+    if (!shouldAnimateRef.current || !simRef.current || !graph) return
+    shouldAnimateRef.current = false
+    const sim = simRef.current
+    const doFit = needsFitRef.current
+    needsFitRef.current = false
+    sim.alpha(1).restart()
+    const tick = () => {
+      if (sim.alpha() < 0.001) {
+        sim.stop()
+        syncSimToGraph()
+        // Fit-to-window after animation converges
+        if (doFit && containerRef.current) {
+          const simNodes = (sim as any).nodes() as Array<{ x: number; y: number }>
+          const padding = 60
+          const xs = simNodes.map(n => n.x), ys = simNodes.map(n => n.y)
+          const minX = Math.min(...xs) - padding, maxX = Math.max(...xs) + padding
+          const minY = Math.min(...ys) - padding, maxY = Math.max(...ys) + padding
+          const cw = containerRef.current.clientWidth
+          const ch = containerRef.current.clientHeight
+          const newZoom = Math.min(cw / (maxX - minX), ch / (maxY - minY), 2)
+          const gcx = (minX + maxX) / 2, gcy = (minY + maxY) / 2
+          setZoom(newZoom)
+          setPan({ x: (cw / 2) - gcx * newZoom, y: (ch / 2) - gcy * newZoom })
+        }
+        return
+      }
+      syncSimToGraph()
+      animFrameRef.current = requestAnimationFrame(tick)
+    }
+    animFrameRef.current = requestAnimationFrame(tick)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph])
 
-  const handleNodeClick = (name: string) => {
+  // Refine: animate N more iterations from current positions
+  const refineLayout = useCallback(() => {
+    const sim = simRef.current
+    if (!sim) return
+    sim.alpha(0.3).restart()
+    const tick = () => {
+      if (sim.alpha() < 0.001) {
+        sim.stop()
+        syncSimToGraph()
+        return
+      }
+      syncSimToGraph()
+      animFrameRef.current = requestAnimationFrame(tick)
+    }
+    animFrameRef.current = requestAnimationFrame(tick)
+  }, [syncSimToGraph])
+
+  // Cleanup animation on unmount
+  useEffect(() => () => cancelAnimationFrame(animFrameRef.current), [])
+
+  // Node drag state
+  const [dragNode, setDragNode] = useState<string | null>(null)
+  const dragNodeStart = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+  const dragNodeMoved = useRef(false)
+
+  const handleNodeDragStart = useCallback((nodeId: string, e: React.PointerEvent) => {
+    e.stopPropagation()
+    ;(e.target as Element).setPointerCapture(e.pointerId)
+    setDragNode(nodeId)
+    dragNodeStart.current = { x: e.clientX, y: e.clientY }
+    dragNodeMoved.current = false
+  }, [])
+
+  const handleNodeDragMove = useCallback((e: React.PointerEvent) => {
+    if (!dragNode || !graph) return
+    e.stopPropagation()
+    const dx = (e.clientX - dragNodeStart.current.x) / zoom
+    const dy = (e.clientY - dragNodeStart.current.y) / zoom
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) dragNodeMoved.current = true
+    dragNodeStart.current = { x: e.clientX, y: e.clientY }
+    setGraph(prev => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        nodes: prev.nodes.map(n => n.id === dragNode ? { ...n, x: n.x + dx, y: n.y + dy } : n),
+      }
+    })
+    // Update simulation node position and fix it
+    const sim = simRef.current
+    if (sim) {
+      const simNodes = (sim as any).nodes() as Array<{ id: string; x: number; y: number; fx: number | null; fy: number | null }>
+      const sn = simNodes.find(n => n.id === dragNode)
+      if (sn) {
+        sn.x += dx; sn.y += dy; sn.fx = sn.x; sn.fy = sn.y
+        // Persist pin so it survives graph re-renders
+        pinnedNodesRef.current.set(dragNode, { fx: sn.x, fy: sn.y })
+      }
+    }
+  }, [dragNode, graph, zoom])
+
+  const handleNodeDragEnd = useCallback(() => {
+    setDragNode(null)
+  }, [])
+
+  const handleNodeClick = useCallback((name: string) => {
+    if (dragNodeMoved.current) return
     navigateToTerm(name)
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const fitToWindow = useCallback(() => {
     if (!graph || graph.nodes.length === 0 || !containerRef.current) return
     const padding = 60
     const xs = graph.nodes.map(n => n.x)
     const ys = graph.nodes.map(n => n.y)
-    const minX = Math.min(...xs) - padding
-    const maxX = Math.max(...xs) + padding
-    const minY = Math.min(...ys) - padding
-    const maxY = Math.max(...ys) + padding
-    const contentW = maxX - minX
-    const contentH = maxY - minY
-    const containerW = containerRef.current.clientWidth
-    const containerH = containerRef.current.clientHeight
-    const scaleX = containerW / contentW
-    const scaleY = containerH / contentH
-    const newZoom = Math.min(scaleX, scaleY, 2)
-    const cx = (minX + maxX) / 2
-    const cy = (minY + maxY) / 2
-    setPan({ x: (containerW / 2) - cx * newZoom, y: (containerH / 2) - cy * newZoom })
+    const minX = Math.min(...xs) - padding, maxX = Math.max(...xs) + padding
+    const minY = Math.min(...ys) - padding, maxY = Math.max(...ys) + padding
+    const cw = containerRef.current.clientWidth
+    const ch = containerRef.current.clientHeight
+    const newZoom = Math.min(cw / (maxX - minX), ch / (maxY - minY), 2)
+    const gcx = (minX + maxX) / 2, gcy = (minY + maxY) / 2
     setZoom(newZoom)
+    setPan({ x: (cw / 2) - gcx * newZoom, y: (ch / 2) - gcy * newZoom })
   }, [graph])
+
+  const centerGraph = useCallback(() => {
+    if (!graph || graph.nodes.length === 0 || !containerRef.current) return
+    const xs = graph.nodes.map(n => n.x)
+    const ys = graph.nodes.map(n => n.y)
+    const gcx = (Math.min(...xs) + Math.max(...xs)) / 2
+    const gcy = (Math.min(...ys) + Math.max(...ys)) / 2
+    const cw = containerRef.current.clientWidth
+    const ch = containerRef.current.clientHeight
+    setPan({ x: (cw / 2) - gcx * zoom, y: (ch / 2) - gcy * zoom })
+  }, [graph, zoom])
+
+  const exportGraph = useCallback((format: 'svg' | 'png' | 'jpeg') => {
+    const svg = svgRef.current
+    if (!svg) return
+    setShowExportMenu(false)
+    const svgData = new XMLSerializer().serializeToString(svg)
+    if (format === 'svg') {
+      const blob = new Blob([svgData], { type: 'image/svg+xml' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = `graph-${termName}.svg`; a.click()
+      URL.revokeObjectURL(url)
+      return
+    }
+    // Rasterize to canvas for PNG/JPEG
+    const canvas = document.createElement('canvas')
+    const rect = svg.getBoundingClientRect()
+    const scale = 2 // 2x for retina
+    canvas.width = rect.width * scale; canvas.height = rect.height * scale
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.scale(scale, scale)
+    const img = new Image()
+    const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    img.onload = () => {
+      if (format === 'jpeg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height) }
+      ctx.drawImage(img, 0, 0, rect.width, rect.height)
+      URL.revokeObjectURL(url)
+      const mime = format === 'png' ? 'image/png' : 'image/jpeg'
+      canvas.toBlob(b => {
+        if (!b) return
+        const dl = URL.createObjectURL(b)
+        const a = document.createElement('a'); a.href = dl; a.download = `graph-${termName}.${format}`; a.click()
+        URL.revokeObjectURL(dl)
+      }, mime, 0.95)
+    }
+    img.src = url
+  }, [termName])
+
+  // Close export menu on outside click
+  useEffect(() => {
+    if (!showExportMenu) return
+    const close = () => setShowExportMenu(false)
+    const timer = setTimeout(() => document.addEventListener('click', close), 0)
+    return () => { clearTimeout(timer); document.removeEventListener('click', close) }
+  }, [showExportMenu])
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
@@ -2095,11 +2318,12 @@ function TermGraphInline({
   }, [pan])
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (dragNode) { handleNodeDragMove(e); return }
     if (!dragging) return
     setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y })
-  }, [dragging, dragStart])
+  }, [dragging, dragStart, dragNode, handleNodeDragMove])
 
-  const handlePointerUp = useCallback(() => setDragging(false), [])
+  const handlePointerUp = useCallback(() => { setDragging(false); if (dragNode) handleNodeDragEnd() }, [dragNode, handleNodeDragEnd])
 
   // Build a position lookup for edge rendering
   const posMap = useMemo(() => {
@@ -2120,19 +2344,32 @@ function TermGraphInline({
     }
     const hulls: { domain: string; path: string; fill: string; stroke: string; cx: number; cy: number }[] = []
 
-    // Domain hulls — only when multiple domains
-    if (byDomain.size > 1) {
+    // Domain hulls — when enabled
+    if (showDomains) {
       const domains = Array.from(byDomain.keys()).sort()
       for (let i = 0; i < domains.length; i++) {
         const domain = domains[i]
         const nodes = byDomain.get(domain)!
         if (nodes.length < 2) continue
-        const points = nodes.map(n => ({ x: n.x, y: n.y }))
-        const hull = convexHull(points)
-        const expanded = expandHull(hull, 30)
-        const pathD = expanded.length > 0
-          ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
-          : ''
+        let pathD: string
+        if (nodes.length === 2) {
+          const centX = (nodes[0].x + nodes[1].x) / 2
+          const centY = (nodes[0].y + nodes[1].y) / 2
+          const ddx = nodes[1].x - nodes[0].x
+          const ddy = nodes[1].y - nodes[0].y
+          const halfDist = Math.sqrt(ddx * ddx + ddy * ddy) / 2
+          const rx = halfDist + 30
+          const ry = 30
+          const angle = Math.atan2(ddy, ddx) * (180 / Math.PI)
+          pathD = `M ${centX - rx},${centY} A ${rx},${ry} ${angle} 1,0 ${centX + rx},${centY} A ${rx},${ry} ${angle} 1,0 ${centX - rx},${centY} Z`
+        } else {
+          const points = nodes.map(n => ({ x: n.x, y: n.y }))
+          const hull = convexHull(points)
+          const expanded = expandHull(hull, 30)
+          pathD = expanded.length > 0
+            ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
+            : ''
+        }
         hulls.push({
           domain: domain === '__none__' ? 'System' : domain,
           path: pathD,
@@ -2147,34 +2384,54 @@ function TermGraphInline({
     // Sibling cluster hull: focal node + all sibling nodes
     const focalNode = graph.nodes.find(n => n.type === 'focal')
     const siblingNodes = graph.nodes.filter(n => n.type === 'sibling')
-    if (focalNode && siblingNodes.length > 0) {
+    if (showClusters && focalNode && siblingNodes.length > 0) {
       const hullNodes = [focalNode, ...siblingNodes]
-      if (hullNodes.length >= 3) {
+      const centX = hullNodes.reduce((s, n) => s + n.x, 0) / hullNodes.length
+      const centY = hullNodes.reduce((s, n) => s + n.y, 0) / hullNodes.length
+      let pathD: string
+      if (hullNodes.length === 2) {
+        // 2 points: draw an ellipse around them
+        const dx = hullNodes[1].x - hullNodes[0].x
+        const dy = hullNodes[1].y - hullNodes[0].y
+        const halfDist = Math.sqrt(dx * dx + dy * dy) / 2
+        const rx = halfDist + 30
+        const ry = 30
+        const angle = Math.atan2(dy, dx) * (180 / Math.PI)
+        pathD = `M ${centX - rx},${centY} A ${rx},${ry} ${angle} 1,0 ${centX + rx},${centY} A ${rx},${ry} ${angle} 1,0 ${centX - rx},${centY} Z`
+      } else {
         const points = hullNodes.map(n => ({ x: n.x, y: n.y }))
         const hull = convexHull(points)
         const expanded = expandHull(hull, 30)
-        const pathD = expanded.length > 0
+        pathD = expanded.length > 0
           ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
           : ''
+      }
+      if (pathD) {
         hulls.push({
           domain: 'cluster',
           path: pathD,
           fill: 'rgba(245,158,11,0.06)',
           stroke: 'rgba(245,158,11,0.2)',
-          cx: hullNodes.reduce((s, n) => s + n.x, 0) / hullNodes.length,
+          cx: centX,
           cy: Math.min(...hullNodes.map(n => n.y)) - 20,
         })
       }
     }
 
     return hulls
-  }, [graph])
+  }, [graph, showDomains, showClusters])
 
   const svgContent = graph && !empty ? (
     <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
       <defs>
         <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
           <polygon points="0 0, 8 3, 0 6" fill="#9ca3af" />
+        </marker>
+        <marker id="arrowhead-parent" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#a855f7" />
+        </marker>
+        <marker id="arrowhead-child" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#22c55e" />
         </marker>
       </defs>
       {/* Cluster hulls */}
@@ -2191,54 +2448,95 @@ function TermGraphInline({
         </g>
       ))}
       {/* Edges */}
-      {graph.edges.map((e, i) => {
-        const src = posMap.get(e.sourceId)
-        const tgt = posMap.get(e.targetId)
-        if (!src || !tgt) return null
+      {(() => {
+        // Count parallel edges between each node pair so we can curve them
+        const pairCount = new Map<string, number>()
+        const pairIndex = new Map<string, number>()
+        for (const e of graph.edges) {
+          const key = [e.sourceId, e.targetId].sort().join('|')
+          pairCount.set(key, (pairCount.get(key) || 0) + 1)
+        }
+        return graph.edges.map((e, i) => {
+          const src = posMap.get(e.sourceId)
+          const tgt = posMap.get(e.targetId)
+          if (!src || !tgt) return null
 
-        const srcR = Math.max(10, (NODE_STYLES[src.type]?.r || 16) - (src.depth * 2))
-        const tgtR = Math.max(10, (NODE_STYLES[tgt.type]?.r || 16) - (tgt.depth * 2))
-        const dx = tgt.x - src.x
-        const dy = tgt.y - src.y
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        const startX = src.x + (dx / dist) * srcR
-        const startY = src.y + (dy / dist) * srcR
-        const endX = tgt.x - (dx / dist) * tgtR
-        const endY = tgt.y - (dy / dist) * tgtR
-        const midX = (src.x + tgt.x) / 2
-        const midY = (src.y + tgt.y) / 2
+          const pairKey = [e.sourceId, e.targetId].sort().join('|')
+          const total = pairCount.get(pairKey) || 1
+          const idx = pairIndex.get(pairKey) || 0
+          pairIndex.set(pairKey, idx + 1)
 
-        return (
-          <g key={i}>
-            <line
-              x1={startX} y1={startY} x2={endX} y2={endY}
-              stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : e.type === 'sibling' ? '#f59e0b' : '#9ca3af'}
-              strokeWidth={1.5}
-              strokeDasharray={e.type === 'sibling' ? '2 3' : e.type === 'relationship' ? undefined : '4 3'}
-              markerEnd={e.type === 'relationship' ? 'url(#arrowhead)' : undefined}
-            />
-            {e.type !== 'sibling' && (
-            <text
-              x={midX} y={midY - 5}
-              textAnchor="middle"
-              className="text-[9px] fill-gray-400 dark:fill-gray-500 pointer-events-none"
-            >
-              {e.label}
-            </text>
-            )}
-          </g>
-        )
-      })}
+          const srcR = Math.max(10, (NODE_STYLES[src.type]?.r || 16) - (src.depth * 2))
+          const tgtR = Math.max(10, (NODE_STYLES[tgt.type]?.r || 16) - (tgt.depth * 2))
+          const dx = tgt.x - src.x
+          const dy = tgt.y - src.y
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1
+
+          // Perpendicular offset for parallel edges
+          const curvature = total > 1 ? (idx - (total - 1) / 2) * 30 : 0
+          const nx = -dy / dist  // perpendicular unit vector
+          const ny = dx / dist
+
+          const startX = src.x + (dx / dist) * srcR
+          const startY = src.y + (dy / dist) * srcR
+          const endX = tgt.x - (dx / dist) * tgtR
+          const endY = tgt.y - (dy / dist) * tgtR
+          // Control point for quadratic bezier
+          const cpX = (src.x + tgt.x) / 2 + nx * curvature
+          const cpY = (src.y + tgt.y) / 2 + ny * curvature
+          // Label position: point on the bezier at t=0.5
+          const labelX = 0.25 * startX + 0.5 * cpX + 0.25 * endX
+          const labelY = 0.25 * startY + 0.5 * cpY + 0.25 * endY
+
+          const strokeColor = e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : e.type === 'sibling' ? '#f59e0b' : '#9ca3af'
+          const isHierarchy = e.type === 'parent' || e.type === 'child'
+          const dashArray = e.type === 'sibling' ? '2 3' : undefined
+          const marker = isHierarchy
+            ? `url(#arrowhead-${e.type})`
+            : e.type === 'relationship' ? 'url(#arrowhead)' : undefined
+
+          return (
+            <g key={i}>
+              {curvature === 0 ? (
+                <line
+                  x1={startX} y1={startY} x2={endX} y2={endY}
+                  stroke={strokeColor} strokeWidth={1.5} strokeDasharray={dashArray}
+                  markerEnd={marker}
+                />
+              ) : (
+                <path
+                  d={`M ${startX},${startY} Q ${cpX},${cpY} ${endX},${endY}`}
+                  fill="none" stroke={strokeColor} strokeWidth={1.5} strokeDasharray={dashArray}
+                  markerEnd={marker}
+                />
+              )}
+              {e.type !== 'sibling' && (
+              <text
+                x={labelX} y={labelY - 5}
+                textAnchor="middle"
+                className="text-[8px] fill-gray-400 dark:fill-gray-500 pointer-events-none"
+              >
+                {e.label}
+              </text>
+              )}
+            </g>
+          )
+        })
+      })()}
       {/* Nodes */}
       {graph.nodes.map((n) => {
         const style = NODE_STYLES[n.type]
         const r = Math.max(10, style.r - (n.depth * 2))
+        const isPinned = n.type !== 'focal' && pinnedNodesRef.current.has(n.id)
         return (
           <g
             key={n.id}
             transform={`translate(${n.x},${n.y})`}
-            className="cursor-pointer"
+            className="cursor-grab active:cursor-grabbing"
             onClick={() => handleNodeClick(n.id)}
+            onPointerDown={(e) => handleNodeDragStart(n.id, e)}
+            onPointerMove={dragNode === n.id ? handleNodeDragMove : undefined}
+            onPointerUp={dragNode === n.id ? handleNodeDragEnd : undefined}
             onMouseEnter={(e) => {
               if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
               setHoverNode({ name: n.id, x: e.clientX + 12, y: e.clientY - 10 })
@@ -2247,7 +2545,7 @@ function TermGraphInline({
               hoverTimeout.current = setTimeout(() => setHoverNode(null), 150)
             }}
           >
-            <circle r={r} fill={style.fill} className="hover:stroke-amber-400 hover:stroke-2" />
+            <circle r={r} fill={style.fill} className="hover:stroke-amber-400 hover:stroke-2" stroke={isPinned ? '#ef4444' : undefined} strokeWidth={isPinned ? 2 : undefined} />
             <text
               y={r + 12}
               textAnchor="middle"
@@ -2293,6 +2591,40 @@ function TermGraphInline({
           <option value="tree-v">Tree ↓</option>
           <option value="tree-h">Tree →</option>
         </select>
+        {layout === 'force' && (
+          <>
+            <select
+              value={forceIterations}
+              onChange={(e) => setForceIterations(Number(e.target.value))}
+              className="text-[10px] py-0.5 px-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+              title="Force iterations"
+            >
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={200}>200</option>
+              <option value={400}>400</option>
+              <option value={800}>800</option>
+            </select>
+            <button
+              onClick={refineLayout}
+              disabled={!simRef.current}
+              className="text-[10px] px-1 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 disabled:opacity-30"
+              title="Refine layout (run more iterations)"
+            >
+              ⟳
+            </button>
+          </>
+        )}
+        <button
+          onClick={centerGraph}
+          className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          title="Center graph"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+          </svg>
+        </button>
         <button
           onClick={fitToWindow}
           className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
@@ -2328,6 +2660,24 @@ function TermGraphInline({
           />
           Leaves
         </label>
+        <label className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 select-none ml-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showClusters}
+            onChange={(e) => setShowClusters(e.target.checked)}
+            className="w-3 h-3 accent-amber-500"
+          />
+          Clusters
+        </label>
+        <label className="flex items-center gap-0.5 text-[10px] text-gray-500 dark:text-gray-400 select-none ml-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showDomains}
+            onChange={(e) => setShowDomains(e.target.checked)}
+            className="w-3 h-3 accent-purple-500"
+          />
+          Domains
+        </label>
         {graphDomains.length > 1 && (
           <GraphDomainFilter
             domains={graphDomains}
@@ -2335,13 +2685,35 @@ function TermGraphInline({
             onChange={setGraphDomainFilter}
           />
         )}
-        <button
-          onClick={() => setFullscreen(!fullscreen)}
-          className="ml-auto p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-          title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-        >
-          <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
-        </button>
+        <div className="ml-auto flex items-center gap-1">
+          <div className="relative">
+            <button
+              onClick={() => setShowExportMenu(v => !v)}
+              className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              title="Export graph"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M12 5v14M5 12l7-7 7 7" />
+              </svg>
+            </button>
+            {showExportMenu && (
+              <div className="absolute right-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg z-50 py-1 min-w-[80px]">
+                {(['svg', 'png', 'jpeg'] as const).map(fmt => (
+                  <button key={fmt} onClick={() => exportGraph(fmt)} className="block w-full text-left px-3 py-1 text-[11px] text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                    {fmt.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => setFullscreen(!fullscreen)}
+            className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+            title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
       {loading ? (
         <div className="text-xs text-gray-400 py-4 text-center">Loading graph...</div>
@@ -2349,7 +2721,7 @@ function TermGraphInline({
         <div
           ref={containerRef}
           className={`overflow-hidden border border-gray-200 dark:border-gray-700 rounded ${fullscreen ? 'flex-1 min-h-0' : ''}`}
-          style={fullscreen ? undefined : { height: '300px' }}
+          style={fullscreen ? undefined : { height: `${graphHeight}px` }}
         >
           <svg width="100%" height="100%" viewBox="0 0 200 200" className="select-none">
             <circle cx="100" cy="100" r={24} fill="#3b82f6" />
@@ -2368,17 +2740,37 @@ function TermGraphInline({
           <div
             ref={containerRef}
             className={`overflow-hidden border border-gray-200 dark:border-gray-700 rounded cursor-grab active:cursor-grabbing ${fullscreen ? 'flex-1 min-h-0' : ''}`}
-            style={fullscreen ? undefined : { height: '300px' }}
+            style={fullscreen ? undefined : { height: `${graphHeight}px` }}
             onWheel={handleWheel}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerUp}
           >
-            <svg ref={svgRef} width="100%" height="100%" viewBox={svgViewBox} className="select-none">
+            <svg ref={svgRef} width="100%" height="100%" className="select-none">
               {svgContent}
             </svg>
           </div>
+          {/* Resize handle */}
+          {!fullscreen && (
+            <div
+              className="h-1.5 cursor-ns-resize flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 rounded-b"
+              onPointerDown={(e) => {
+                e.preventDefault()
+                const startY = e.clientY
+                const startH = graphHeight
+                const onMove = (ev: PointerEvent) => {
+                  const newH = Math.max(150, Math.min(800, startH + (ev.clientY - startY)))
+                  setGraphHeight(newH)
+                }
+                const onUp = () => { document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp) }
+                document.addEventListener('pointermove', onMove)
+                document.addEventListener('pointerup', onUp)
+              }}
+            >
+              <div className="w-8 h-0.5 bg-gray-300 dark:bg-gray-600 rounded" />
+            </div>
+          )}
           {hoverNode && (
             <div
               className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-2 pointer-events-none"
@@ -2394,6 +2786,7 @@ function TermGraphInline({
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-400" /> child</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-gray-400" /> relationship</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-amber-500" /> sibling</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full border-2 border-red-500 bg-transparent" /> pinned</span>
           </div>
         </>
       )}

@@ -248,7 +248,7 @@ export interface GlossaryTerm {
   domain?: string | null
   domain_path?: string | null
   parent_id?: string | null
-  parent_verb?: 'HAS_A' | 'HAS_KIND' | 'HAS_MANY'
+  parent_verb?: 'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY'
   parent?: { name: string; display_name: string } | null
   aliases: string[]
   semantic_type?: string | null
@@ -265,7 +265,7 @@ export interface GlossaryTerm {
     entity_type: string
     sources: Array<{ document_name: string; source: string; section?: string }>
   }>
-  children?: Array<{ name: string; display_name: string; parent_verb?: 'HAS_A' | 'HAS_KIND' | 'HAS_MANY' }>
+  children?: Array<{ name: string; display_name: string; parent_verb?: 'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY' }>
   relationships?: Array<{
     id: string
     subject: string

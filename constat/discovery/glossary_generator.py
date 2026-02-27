@@ -62,8 +62,8 @@ For each entity, also provide:
   Include any new parent terms as entries in the output with their own definitions.
   Every term must ultimately ground to a physical entity through the hierarchy.
 - parent_verb — the type of hierarchy relationship (from parent's perspective):
-  - "HAS_A" for composition (parent is composed of child).
-    Example: Order HAS_A Line Item, Employee HAS_A Compensation
+  - "HAS_ONE" for composition (parent is composed of child).
+    Example: Order HAS_ONE Line Item, Employee HAS_ONE Compensation
   - "HAS_KIND" for taxonomy/classification (child is a kind of parent).
     Example: Account HAS_KIND Savings Account, Customer Tier HAS_KIND Gold
   - "HAS_MANY" for collection (parent contains many of child).
@@ -81,7 +81,7 @@ Respond as a JSON array with one entry per entity (plus any new parent terms):
   "name": "...",
   "definition": "...",
   "parent": "..." or null,
-  "parent_verb": "HAS_A" or "HAS_KIND" or "HAS_MANY",
+  "parent_verb": "HAS_ONE" or "HAS_KIND" or "HAS_MANY",
   "aliases": ["..."],
   "confidence": "high|medium|low"
 }]"""
@@ -405,7 +405,7 @@ def generate_glossary(
                 parent_name = item.get("parent")
                 if parent_name:
                     verb = item.get("parent_verb", "HAS_KIND")
-                    if verb not in ("HAS_A", "HAS_KIND", "HAS_MANY"):
+                    if verb not in ("HAS_ONE", "HAS_KIND", "HAS_MANY"):
                         verb = "HAS_KIND"
                     term.tags = {"_suggested_parent": {"name": parent_name, "verb": verb}}
 
@@ -735,7 +735,7 @@ def resolve_physical_resources(
 
     Handles two grounding paths:
     1. Direct: term name matches entities -> return their sources
-    2. Hierarchy: term.children (HAS_A/HAS_KIND/HAS_MANY) -> resolve recursively
+    2. Hierarchy: term.children (HAS_ONE/HAS_KIND/HAS_MANY) -> resolve recursively
     """
     if _visited is None:
         _visited = set()

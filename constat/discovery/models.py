@@ -382,7 +382,7 @@ class GlossaryTerm:
     definition: str
     domain: Optional[str] = None
     parent_id: Optional[str] = None
-    parent_verb: str = "HAS_KIND"  # HAS_A (composition), HAS_KIND (taxonomy), HAS_MANY (collection)
+    parent_verb: str = "HAS_KIND"  # HAS_ONE (composition), HAS_KIND (taxonomy), HAS_MANY (collection)
     aliases: list[str] = field(default_factory=list)
     semantic_type: Optional[str] = None
     cardinality: str = "many"

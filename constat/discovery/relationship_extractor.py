@@ -49,17 +49,17 @@ _NON_VERBS = frozenset({
 # All verbs use Cypher-standard UPPER_SNAKE_CASE:
 #   (Manager)-[:MANAGES]->(Employee)
 PREFERRED_VERBS: dict[str, set[str]] = {
-    "ownership": {"CONTAINS", "HAS", "BELONGS_TO"},
-    "hierarchy": {"MANAGES", "REPORTS_TO", "IS_TYPE_OF"},
+    "ownership": {"BELONGS_TO"},
+    "hierarchy": {"MANAGES", "REPORTS_TO"},
     "action": {"CREATES", "PROCESSES", "APPROVES", "PLACES"},
     "flow": {"SENDS", "RECEIVES", "TRANSFERS"},
     "causation": {"DRIVES", "REQUIRES", "ENABLES"},
     "temporal": {"PRECEDES", "FOLLOWS", "TRIGGERS"},
-    "association": {"REFERENCES", "WORKS_IN", "PARTICIPATES_IN", "USES"},
+    "association": {"REFERENCES", "WORKS_IN", "PARTICIPATES_IN"},
 }
-# Verbs that overlap with the taxonomy (HAS_A, HAS_KIND, HAS_MANY).
+# Verbs that overlap with the taxonomy (HAS_ONE, HAS_KIND, HAS_MANY).
 # Rejected from SVO only when the pair already has a parent-child edge.
-_HIERARCHY_VERBS = {"HAS", "HAS_A", "HAS_KIND", "HAS_MANY", "CONTAINS", "BELONGS_TO", "IS_TYPE_OF"}
+_HIERARCHY_VERBS = {"HAS", "HAS_ONE", "HAS_KIND", "HAS_MANY", "CONTAINS", "BELONGS_TO", "IS_TYPE_OF", "USES"}
 ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
 
 VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
@@ -665,7 +665,7 @@ def store_fk_relationships(
         target = s["target"]
 
         rel_id = hashlib.sha256(
-            f"{source}:HAS_A:{target}:{session_id}".encode()
+            f"{source}:HAS_ONE:{target}:{session_id}".encode()
         ).hexdigest()[:16]
 
         # Build evidence from FK metadata
@@ -674,7 +674,7 @@ def store_fk_relationships(
         rel = EntityRelationship(
             id=rel_id,
             subject_name=source,
-            verb="HAS_A",
+            verb="HAS_ONE",
             object_name=target,
             sentence=evidence,
             confidence=0.95,
