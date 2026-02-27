@@ -2575,7 +2575,7 @@ function TermGraphInline({
         <input
           type="range"
           min={1}
-          max={4}
+          max={10}
           value={depth}
           onChange={(e) => setDepth(Number(e.target.value))}
           disabled={loading}
