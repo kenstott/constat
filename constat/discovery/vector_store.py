@@ -3111,12 +3111,15 @@ class DuckDBVectorStore(VectorStoreBackend):
             [session_id],
         ).fetchall()
 
-        # Accumulate per entity name
+        # Accumulate per entity name (lowercased to avoid case-duplicate clusters)
         accum: dict[str, list[np.ndarray]] = {}
+        name_display: dict[str, str] = {}  # lowercase → original casing
         for ent_name, embedding in entity_rows:
-            accum.setdefault(ent_name, []).append(np.array(embedding, dtype=np.float32))
-        for ent_name, vecs in accum.items():
-            name_to_vec[ent_name] = np.mean(vecs, axis=0)
+            key = ent_name.lower()
+            accum.setdefault(key, []).append(np.array(embedding, dtype=np.float32))
+            name_display.setdefault(key, ent_name)
+        for key, vecs in accum.items():
+            name_to_vec[name_display[key]] = np.mean(vecs, axis=0)
         logger.debug(f"[_rebuild_clusters] {len(entity_rows)} entity-chunk rows -> {len(name_to_vec)} unique entity vectors")
 
         # 2. Glossary term embeddings — override entity vectors with richer ones
@@ -3130,6 +3133,11 @@ class DuckDBVectorStore(VectorStoreBackend):
             [session_id],
         ).fetchall()
         for gt_name, embedding in glossary_rows:
+            # Remove any case-variant entity entry before adding glossary entry
+            key = gt_name.lower()
+            for existing in list(name_to_vec.keys()):
+                if existing.lower() == key and existing != gt_name:
+                    del name_to_vec[existing]
             name_to_vec[gt_name] = np.array(embedding, dtype=np.float32)
         logger.debug(f"[_rebuild_clusters] {len(glossary_rows)} glossary rows, total vectors: {len(name_to_vec)}")
 
@@ -3153,7 +3161,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         self._conn.execute(
             "DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]
         )
+        # Deduplicate by lowercased name (entities and glossary terms may differ in casing)
+        seen: set[str] = set()
         for name, cluster_id in zip(term_names, labels):
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
             self._conn.execute(
                 "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
                 [name, int(cluster_id), session_id],
