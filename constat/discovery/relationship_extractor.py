@@ -57,8 +57,8 @@ PREFERRED_VERBS: dict[str, set[str]] = {
     "temporal": {"PRECEDES", "FOLLOWS", "TRIGGERS"},
     "association": {"REFERENCES", "WORKS_IN", "PARTICIPATES_IN", "USES"},
 }
-# Verbs that duplicate the taxonomy hierarchy (HAS_A, HAS_KIND, HAS_MANY)
-# and should be rejected from SVO relationships:
+# Verbs that overlap with the taxonomy (HAS_A, HAS_KIND, HAS_MANY).
+# Rejected from SVO only when the pair already has a parent-child edge.
 _HIERARCHY_VERBS = {"HAS", "HAS_A", "HAS_KIND", "HAS_MANY", "CONTAINS", "BELONGS_TO", "IS_TYPE_OF"}
 ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
 
@@ -102,7 +102,7 @@ Return a JSON array of relationships found. For each relationship:
 - subject: must be exactly one of the two entity names provided
 - object: must be the other entity name
 - verb: Cypher-standard UPPER_SNAKE_CASE (e.g., "MANAGES", "WORKS_IN", "TRIGGERS")
-- verb_category: one of: hierarchy, action, flow, causation, temporal, association, other
+- verb_category: one of: ownership, hierarchy, action, flow, causation, temporal, association, other
 - evidence: brief quote or paraphrase from the excerpt supporting this relationship
 - confidence: high, medium, or low
 
