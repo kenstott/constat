@@ -1823,6 +1823,16 @@ function TermGraphInline({
             )
             if (d + 1 < depth) queue.push([partner, d + 1])
           }
+
+          // Cluster siblings — only for the focal node (depth 0)
+          if (d === 0) {
+            for (const sib of data.cluster_siblings || []) {
+              if (!nodeMap.has(sib)) {
+                nodeMap.set(sib, { id: sib, label: sib, type: 'sibling', depth: 1, domain: data.domain })
+              }
+              addEdge(name, sib, 'cluster', 'sibling')
+            }
+          }
         }
       }
 
@@ -2108,27 +2118,56 @@ function TermGraphInline({
       if (!byDomain.has(d)) byDomain.set(d, [])
       byDomain.get(d)!.push(n)
     }
-    // Only show hulls if there are multiple domains
-    if (byDomain.size <= 1) return []
-    const domains = Array.from(byDomain.keys()).sort()
-    return domains.map((domain, i) => {
-      const nodes = byDomain.get(domain)!
-      if (nodes.length < 2) return null
-      const points = nodes.map(n => ({ x: n.x, y: n.y }))
-      const hull = convexHull(points)
-      const expanded = expandHull(hull, 30)
-      const pathD = expanded.length > 0
-        ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
-        : ''
-      return {
-        domain: domain === '__none__' ? 'System' : domain,
-        path: pathD,
-        fill: CLUSTER_COLORS[i % CLUSTER_COLORS.length],
-        stroke: CLUSTER_STROKES[i % CLUSTER_STROKES.length],
-        cx: nodes.reduce((s, n) => s + n.x, 0) / nodes.length,
-        cy: Math.min(...nodes.map(n => n.y)) - 20,
+    const hulls: { domain: string; path: string; fill: string; stroke: string; cx: number; cy: number }[] = []
+
+    // Domain hulls — only when multiple domains
+    if (byDomain.size > 1) {
+      const domains = Array.from(byDomain.keys()).sort()
+      for (let i = 0; i < domains.length; i++) {
+        const domain = domains[i]
+        const nodes = byDomain.get(domain)!
+        if (nodes.length < 2) continue
+        const points = nodes.map(n => ({ x: n.x, y: n.y }))
+        const hull = convexHull(points)
+        const expanded = expandHull(hull, 30)
+        const pathD = expanded.length > 0
+          ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
+          : ''
+        hulls.push({
+          domain: domain === '__none__' ? 'System' : domain,
+          path: pathD,
+          fill: CLUSTER_COLORS[i % CLUSTER_COLORS.length],
+          stroke: CLUSTER_STROKES[i % CLUSTER_STROKES.length],
+          cx: nodes.reduce((s, n) => s + n.x, 0) / nodes.length,
+          cy: Math.min(...nodes.map(n => n.y)) - 20,
+        })
       }
-    }).filter(Boolean) as { domain: string; path: string; fill: string; stroke: string; cx: number; cy: number }[]
+    }
+
+    // Sibling cluster hull: focal node + all sibling nodes
+    const focalNode = graph.nodes.find(n => n.type === 'focal')
+    const siblingNodes = graph.nodes.filter(n => n.type === 'sibling')
+    if (focalNode && siblingNodes.length > 0) {
+      const hullNodes = [focalNode, ...siblingNodes]
+      if (hullNodes.length >= 3) {
+        const points = hullNodes.map(n => ({ x: n.x, y: n.y }))
+        const hull = convexHull(points)
+        const expanded = expandHull(hull, 30)
+        const pathD = expanded.length > 0
+          ? `M ${expanded.map(p => `${p.x},${p.y}`).join(' L ')} Z`
+          : ''
+        hulls.push({
+          domain: 'cluster',
+          path: pathD,
+          fill: 'rgba(245,158,11,0.06)',
+          stroke: 'rgba(245,158,11,0.2)',
+          cx: hullNodes.reduce((s, n) => s + n.x, 0) / hullNodes.length,
+          cy: Math.min(...hullNodes.map(n => n.y)) - 20,
+        })
+      }
+    }
+
+    return hulls
   }, [graph])
 
   const svgContent = graph && !empty ? (
@@ -2173,11 +2212,12 @@ function TermGraphInline({
           <g key={i}>
             <line
               x1={startX} y1={startY} x2={endX} y2={endY}
-              stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : '#9ca3af'}
+              stroke={e.type === 'parent' ? '#a855f7' : e.type === 'child' ? '#22c55e' : e.type === 'sibling' ? '#f59e0b' : '#9ca3af'}
               strokeWidth={1.5}
-              strokeDasharray={e.type === 'relationship' ? undefined : '4 3'}
+              strokeDasharray={e.type === 'sibling' ? '2 3' : e.type === 'relationship' ? undefined : '4 3'}
               markerEnd={e.type === 'relationship' ? 'url(#arrowhead)' : undefined}
             />
+            {e.type !== 'sibling' && (
             <text
               x={midX} y={midY - 5}
               textAnchor="middle"
@@ -2185,6 +2225,7 @@ function TermGraphInline({
             >
               {e.label}
             </text>
+            )}
           </g>
         )
       })}
@@ -2352,6 +2393,7 @@ function TermGraphInline({
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-purple-400" /> parent</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-400" /> child</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-gray-400" /> relationship</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-amber-500" /> sibling</span>
           </div>
         </>
       )}

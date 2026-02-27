@@ -46,17 +46,20 @@ _NON_VERBS = frozenset({
 })
 
 # Canonical verb vocabulary — small, constrained set for graph consistency.
-# All verbs use third-person singular present tense:
-#   "Manager" -[manages]-> "Employee"
+# All verbs use Cypher-standard UPPER_SNAKE_CASE:
+#   (Manager)-[:MANAGES]->(Employee)
 PREFERRED_VERBS: dict[str, set[str]] = {
-    "ownership": {"contains", "has", "belongs_to"},
-    "hierarchy": {"manages", "reports_to", "is_type_of"},
-    "action": {"creates", "processes", "approves", "places"},
-    "flow": {"sends", "receives", "transfers"},
-    "causation": {"drives", "requires", "enables"},
-    "temporal": {"precedes", "follows", "triggers"},
-    "association": {"references", "works_in", "participates_in", "uses"},
+    "ownership": {"CONTAINS", "HAS", "BELONGS_TO"},
+    "hierarchy": {"MANAGES", "REPORTS_TO", "IS_TYPE_OF"},
+    "action": {"CREATES", "PROCESSES", "APPROVES", "PLACES"},
+    "flow": {"SENDS", "RECEIVES", "TRANSFERS"},
+    "causation": {"DRIVES", "REQUIRES", "ENABLES"},
+    "temporal": {"PRECEDES", "FOLLOWS", "TRIGGERS"},
+    "association": {"REFERENCES", "WORKS_IN", "PARTICIPATES_IN", "USES"},
 }
+# Verbs that duplicate the taxonomy hierarchy (HAS_A, HAS_KIND, HAS_MANY)
+# and should be rejected from SVO relationships:
+_HIERARCHY_VERBS = {"HAS", "HAS_A", "HAS_KIND", "HAS_MANY", "CONTAINS", "BELONGS_TO", "IS_TYPE_OF"}
 ALL_PREFERRED = set().union(*PREFERRED_VERBS.values())
 
 VERB_CATEGORIES = list(PREFERRED_VERBS.keys()) + ["other"]
@@ -98,34 +101,34 @@ For each pair of entities, you receive:
 Return a JSON array of relationships found. For each relationship:
 - subject: must be exactly one of the two entity names provided
 - object: must be the other entity name
-- verb: third-person singular present tense (e.g., "manages", "contains", "belongs_to")
-- verb_category: one of: ownership, hierarchy, action, flow, causation, temporal, association, other
+- verb: Cypher-standard UPPER_SNAKE_CASE (e.g., "MANAGES", "WORKS_IN", "TRIGGERS")
+- verb_category: one of: hierarchy, action, flow, causation, temporal, association, other
 - evidence: brief quote or paraphrase from the excerpt supporting this relationship
 - confidence: high, medium, or low
 
 VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
-If none of these accurately describes the relationship, you may use a different third-person singular verb, but strongly prefer the canonical list.
+If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
 
 DIRECTION RULE — The subject performs the action on the object:
-- CORRECT: "Customer places Order" (Customer is the actor)
-- WRONG: "Order receives Customer" (Order is not the actor)
+- CORRECT: "Customer PLACES Order" (Customer is the actor)
+- WRONG: "Order RECEIVES Customer" (Order is not the actor)
 
 Examples of good relationships:
-- {{"subject": "Manager", "verb": "manages", "object": "Employee", "verb_category": "hierarchy"}}
-- {{"subject": "Department", "verb": "contains", "object": "Team", "verb_category": "ownership"}}
-- {{"subject": "Employee", "verb": "works_in", "object": "Department", "verb_category": "association"}}
-- {{"subject": "Employee", "verb": "reports_to", "object": "Manager", "verb_category": "hierarchy"}}
-- {{"subject": "Order", "verb": "contains", "object": "LineItem", "verb_category": "ownership"}}
-- {{"subject": "Customer", "verb": "places", "object": "Order", "verb_category": "action"}}
-- {{"subject": "Invoice", "verb": "triggers", "object": "Payment", "verb_category": "temporal"}}
+- {{"subject": "Manager", "verb": "MANAGES", "object": "Employee", "verb_category": "hierarchy"}}
+- {{"subject": "Employee", "verb": "WORKS_IN", "object": "Department", "verb_category": "association"}}
+- {{"subject": "Employee", "verb": "REPORTS_TO", "object": "Manager", "verb_category": "hierarchy"}}
+- {{"subject": "Customer", "verb": "PLACES", "object": "Order", "verb_category": "action"}}
+- {{"subject": "Invoice", "verb": "TRIGGERS", "object": "Payment", "verb_category": "temporal"}}
+- {{"subject": "Policy", "verb": "REQUIRES", "object": "Approval", "verb_category": "causation"}}
 
 Rules:
 - Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
+- Avoid hierarchy/ownership verbs (HAS, CONTAINS, BELONGS_TO, IS_TYPE_OF) when the pair already has a parent-child relationship — these duplicate the taxonomy
 - Prefer spaCy suggestions when the verb is accurate; override when text supports a better verb
 - You may infer implicit relationships even if no sentence states them directly
-  (e.g., "employee" works_in "department" can be inferred from organizational context)
-- Use third-person singular present tense (e.g., "manages" not "manage", "contains" not "contain")
-- Use underscores for compound verbs (e.g., "belongs_to", "reports_to", "is_type_of")
+  (e.g., "Employee" WORKS_IN "Department" can be inferred from organizational context)
+- Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES" not "manages")
+- Use underscores for compound verbs (e.g., "REPORTS_TO", "WORKS_IN")
 - subject and object must be exactly the entity names provided (no modifications)
 
 Respond ONLY with a JSON array:
@@ -136,8 +139,9 @@ Return [] if no relationships can be determined."""
 
 def categorize_verb(verb: str) -> str:
     """Return the verb category name or 'other'."""
+    v = verb.upper()
     for category, verbs in PREFERRED_VERBS.items():
-        if verb in verbs:
+        if v in verbs:
             return category
     return "other"
 
@@ -336,7 +340,7 @@ def extract_svo_relationships(
                 lemma = verb.lemma_.lower()
                 if lemma in _NON_VERBS:
                     continue
-                verb_form = _to_third_person(lemma)
+                verb_form = _to_third_person(lemma).upper()
                 category = categorize_verb(verb_form)
                 confidence = 1.0 if verb_form in ALL_PREFERRED else 0.5
 
@@ -577,11 +581,12 @@ def refine_relationships_with_llm(
                 if not matched_pair:
                     continue
 
-                verb = item.get("verb", "").lower().strip()
+                verb = item.get("verb", "").strip()
                 if not verb:
                     continue
-                if "_" not in verb:
-                    verb = _to_third_person(verb)
+                if "_" not in verb.lower():
+                    verb = _to_third_person(verb.lower())
+                verb = verb.upper()
 
                 # Use LLM-provided category, fall back to our own categorization
                 verb_category = item.get("verb_category", "")
@@ -660,7 +665,7 @@ def store_fk_relationships(
         target = s["target"]
 
         rel_id = hashlib.sha256(
-            f"{source}:has:{target}:{session_id}".encode()
+            f"{source}:HAS_A:{target}:{session_id}".encode()
         ).hexdigest()[:16]
 
         # Build evidence from FK metadata
@@ -669,7 +674,7 @@ def store_fk_relationships(
         rel = EntityRelationship(
             id=rel_id,
             subject_name=source,
-            verb="has",
+            verb="HAS_A",
             object_name=target,
             sentence=evidence,
             confidence=0.95,
@@ -699,28 +704,30 @@ For each group of terms below, you receive:
 Infer **cross-cutting** relationships between terms based on their definitions and business semantics.
 
 VERB SELECTION — Choose from this canonical list: {_CANONICAL_VERB_LIST}
-If none of these accurately describes the relationship, you may use a different third-person singular verb, but strongly prefer the canonical list.
+If none of these accurately describes the relationship, you may use a different UPPER_SNAKE_CASE verb, but strongly prefer the canonical list.
 
 DIRECTION RULE — The subject performs the action on the object:
-- CORRECT: "Customer places Order" (Customer is the actor)
-- WRONG: "Order receives Customer" (Order is not the actor)
+- CORRECT: "Customer PLACES Order" (Customer is the actor)
+- WRONG: "Order RECEIVES Customer" (Order is not the actor)
 
 IMPORTANT RULES:
 - Return EXACTLY ONE relationship per entity pair — pick the most specific, meaningful verb
-- Do NOT return parent-child or hierarchy relationships — those are already captured in the taxonomy
+- Do NOT return relationships that duplicate an existing parent-child edge between the same pair
+  (e.g., if "Order" is parent of "Line Item" with HAS_MANY, do not return "Order HAS Line Item")
+- Hierarchy/ownership verbs (HAS, CONTAINS, BELONGS_TO, IS_TYPE_OF) are fine between terms that are NOT in a parent-child relationship
 - Focus on: action relationships, causation, temporal ordering, association between entities in different branches
-- Use third-person singular present tense verbs (e.g., "manages", "triggers", "contains")
-- Use underscores for compound verbs (e.g., "belongs_to", "works_in")
+- Use Cypher-standard UPPER_SNAKE_CASE for all verbs (e.g., "MANAGES", "TRIGGERS", "APPROVES")
+- Use underscores for compound verbs (e.g., "BELONGS_TO", "WORKS_IN")
 - Only return relationships where you have reasonable confidence from the definitions
 
 Examples of good cross-cutting relationships:
-- {{"subject": "Employee", "verb": "works_in", "object": "Department", "verb_category": "association"}}
-- {{"subject": "Invoice", "verb": "triggers", "object": "Payment", "verb_category": "temporal"}}
-- {{"subject": "Customer", "verb": "places", "object": "Order", "verb_category": "action"}}
-- {{"subject": "Manager", "verb": "approves", "object": "Expense", "verb_category": "action"}}
-- {{"subject": "Policy", "verb": "requires", "object": "Claim", "verb_category": "causation"}}
+- {{"subject": "Employee", "verb": "WORKS_IN", "object": "Department", "verb_category": "association"}}
+- {{"subject": "Invoice", "verb": "TRIGGERS", "object": "Payment", "verb_category": "temporal"}}
+- {{"subject": "Customer", "verb": "PLACES", "object": "Order", "verb_category": "action"}}
+- {{"subject": "Manager", "verb": "APPROVES", "object": "Expense", "verb_category": "action"}}
+- {{"subject": "Policy", "verb": "REQUIRES", "object": "Claim", "verb_category": "causation"}}
 
-verb_category must be one of: ownership, hierarchy, action, flow, causation, temporal, association, other
+verb_category must be one of: hierarchy, action, flow, causation, temporal, association, other
 
 Respond ONLY with a JSON array:
 [{{"subject": "...", "verb": "...", "object": "...", "verb_category": "...", "evidence": "...", "confidence": "high|medium|low"}}]
@@ -750,6 +757,15 @@ def infer_glossary_relationships(
     # Build term lookup and name set
     term_names = {t.name.lower() for t in terms}
     term_by_name = {t.name.lower(): t for t in terms}
+    term_by_id = {t.id: t for t in terms}
+
+    # Build parent-child verb lookup: (child_name_lower, parent_name_lower) -> parent_verb
+    # Used to skip SVO relationships that duplicate the taxonomy edge
+    _parent_child_verbs: dict[tuple[str, str], str] = {}
+    for t in terms:
+        if t.parent_id and t.parent_id in term_by_id:
+            parent = term_by_id[t.parent_id]
+            _parent_child_verbs[(t.name.lower(), parent.name.lower())] = t.parent_verb.upper()
 
     # Group terms into batches of ~12, preferring related terms together
     # Build parent -> children map
@@ -830,7 +846,7 @@ def infer_glossary_relationships(
             for item in items:
                 subj = item.get("subject", "").strip()
                 obj = item.get("object", "").strip()
-                verb = item.get("verb", "").lower().strip()
+                verb = item.get("verb", "").strip()
                 if not (subj and obj and verb):
                     continue
 
@@ -840,9 +856,16 @@ def infer_glossary_relationships(
                 if subj_lower not in term_names or obj_lower not in term_names:
                     continue
 
-                # Normalize verb
-                if "_" not in verb:
-                    verb = _to_third_person(verb)
+                # Normalize verb to Cypher UPPER_SNAKE_CASE
+                if "_" not in verb.lower():
+                    verb = _to_third_person(verb.lower())
+                verb = verb.upper()
+
+                # Skip if this verb duplicates an existing parent-child edge
+                if verb in _HIERARCHY_VERBS:
+                    pc_verb = _parent_child_verbs.get((subj_lower, obj_lower)) or _parent_child_verbs.get((obj_lower, subj_lower))
+                    if pc_verb:
+                        continue
 
                 verb_category = item.get("verb_category", "")
                 if verb_category not in VERB_CATEGORIES:

@@ -2996,7 +2996,8 @@ class DuckDBVectorStore(VectorStoreBackend):
     def update_entity_relationship_verb(self, rel_id: str, verb: str) -> bool:
         """Update the verb and verb_category of a relationship."""
         from constat.discovery.relationship_extractor import categorize_verb
-        verb_category = categorize_verb(verb.lower())
+        verb = verb.upper()
+        verb_category = categorize_verb(verb)
         result = self._conn.execute(
             "UPDATE entity_relationships SET verb = ?, verb_category = ? WHERE id = ? RETURNING id",
             [verb, verb_category, rel_id],
