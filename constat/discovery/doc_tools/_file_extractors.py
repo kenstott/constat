@@ -272,11 +272,14 @@ def _strip_html_chrome(html: str) -> str:
         r"(?:sidebar|navbox|navbar|navigation|toc\b|catlinks"
         r"|mw-panel|mw-head|mw-editsection"
         r"|menu|breadcrumb|noprint"
-        r"|portal|sister-?project|interlanguage|authority-control)"
+        r"|portal|sister-?project|interlanguage|authority-control"
+        r"|reflist|references|footnotes|mw-references-wrap|citation)"
         r"[^\"']*?[\"'][^>]*>.*?</\1>",
         re.DOTALL | re.IGNORECASE,
     )
     html = _NAV_ATTR_RE.sub("", html)
+    # Strip inline citation markers (<sup class="reference">[1]</sup>)
+    html = re.sub(r"<sup[^>]*class=[\"'][^\"']*reference[^\"']*[\"'][^>]*>.*?</sup>", "", html, flags=re.DOTALL | re.IGNORECASE)
     return html
 
 
