@@ -3415,7 +3415,8 @@ class DuckDBVectorStore(VectorStoreBackend):
         term_names = list(name_to_vec.keys())
         X = np.vstack([name_to_vec[n] for n in term_names])
         k = max(2, len(term_names) // self._cluster_divisor)
-        k = min(k, self._cluster_max_k)
+        if self._cluster_max_k is not None:
+            k = min(k, self._cluster_max_k)
         kmeans = MiniBatchKMeans(n_clusters=k, random_state=42, batch_size=1024)
         labels = kmeans.fit_predict(X)
 
@@ -3533,7 +3534,7 @@ def create_vector_store(
     reranker_model: str | None = None,
     cluster_min_terms: int = 2,
     cluster_divisor: int = 5,
-    cluster_max_k: int | None = None,
+    cluster_max_k: int = 500,
     store_chunk_text: bool = True,
 ) -> VectorStoreBackend:
     """Factory function to create a vector store backend.
