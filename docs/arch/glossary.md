@@ -684,6 +684,10 @@ The `find_relevant_sources` method iterates over the unified glossary (entities 
 
 This means a query mentioning "customer" will also surface tables related to sibling terms like "order", "account", etc. — based on semantic proximity, not explicit relationships.
 
+**Term graph visualization:**
+
+The GlossaryPanel's `TermGraphInline` component renders cluster siblings as nodes connected to the focal term with dashed amber edges (`type: 'sibling'`). A convex hull in `rgba(245,158,11,0.06)` encloses the focal node and its siblings, visually grouping the cluster. Sibling edges are unlabeled to reduce visual noise. This appears alongside parent/child (purple dashed) and relationship (green solid) edges.
+
 ## Phase 2: Unified Glossary UI
 
 ### 2a: Glossary Browser (replaces EntityAccordion)

@@ -39,6 +39,17 @@ def _retry_on_conflict(fn, max_retries=3):
 # Generic actions that never need definitions
 SKIP_ACTIONS = {"get", "create", "update", "delete", "list", "set", "post", "put", "patch"}
 
+
+def _resolve_threshold(value) -> float:
+    """Normalize generate_definitions config to a float threshold."""
+    if value == "auto":
+        return 0.5
+    if value is True:
+        return 0.0
+    if value is False:
+        return float('inf')
+    return float(value)
+
 GLOSSARY_SYSTEM_PROMPT = """You are building a business glossary from extracted entities.
 Write a business definition for each entity below. Definitions describe what the
 concept means in business terms — not where it is stored or what system it comes from.
@@ -235,6 +246,8 @@ def generate_glossary(
     on_progress: Callable[[str, int], None] | None = None,
     user_id: str | None = None,
     cancelled: Callable[[], bool] | None = None,
+    doc_configs: dict | None = None,
+    domain_descriptions: list[str] | None = None,
 ) -> list[GlossaryTerm]:
     """Generate glossary definitions for entities that need them.
 
@@ -266,13 +279,23 @@ def generate_glossary(
     )
 
     rows = vector_store._conn.execute(f"""
+        WITH entity_stats AS (
+            SELECT
+                ce.entity_id,
+                COUNT(*) as ref_count,
+                COUNT(DISTINCT em.source) as source_count,
+                LIST(DISTINCT CASE WHEN em.source = 'document' THEN em.document_name END) as doc_names
+            FROM chunk_entities ce
+            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            GROUP BY ce.entity_id
+        )
         SELECT
             e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-            (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count,
-            (SELECT COUNT(DISTINCT em.source) FROM chunk_entities ce
-             JOIN embeddings em ON ce.chunk_id = em.chunk_id
-             WHERE ce.entity_id = e.id) as source_count
+            COALESCE(es.ref_count, 0) as ref_count,
+            COALESCE(es.source_count, 0) as source_count,
+            es.doc_names
         FROM entities e
+        LEFT JOIN entity_stats es ON es.entity_id = e.id
         WHERE {entity_where}
         ORDER BY e.name
     """, params).fetchall()
@@ -280,6 +303,40 @@ def generate_glossary(
     if not rows:
         logger.info(f"No entities found for session {session_id}, skipping glossary generation")
         return []
+
+    logger.info(f"Collected {len(rows)} entities for glossary generation")
+    if on_progress:
+        on_progress("Filtering candidates", 5)
+
+    # Build threshold gating if doc_configs provided
+    has_gating = bool(doc_configs)
+    domain_embedding = None
+    embedding_model = None
+    if has_gating:
+        # Check if any config actually gates (non-True value)
+        any_gated = any(
+            getattr(cfg, 'generate_definitions', True) is not True
+            for cfg in doc_configs.values()
+        )
+        if any_gated:
+            try:
+                from constat.embedding_loader import EmbeddingModelLoader
+                import numpy as np
+                embedding_model = EmbeddingModelLoader.get_instance().get_model()
+                # Concat domain descriptions + data source descriptions
+                text_parts = list(domain_descriptions or [])
+                text_parts.extend(
+                    cfg.description for cfg in doc_configs.values()
+                    if hasattr(cfg, 'description') and cfg.description
+                )
+                if text_parts:
+                    domain_text = " ".join(text_parts)
+                    domain_embedding = embedding_model.encode(domain_text, normalize_embeddings=True)
+                else:
+                    has_gating = False
+            except Exception as e:
+                logger.warning(f"Could not load embedding model for definition gating: {e}")
+                has_gating = False
 
     # Load existing glossary state before filtering candidates
     existing_terms = vector_store.list_glossary_terms(session_id, user_id=user_id)
@@ -296,8 +353,9 @@ def generate_glossary(
 
     # Build candidate list (pre-filter obvious non-candidates and already-defined terms)
     candidates = []
+    gated_count = 0
     for row in rows:
-        entity_id, name, display_name, semantic_type, ner_type, ref_count, source_count = row
+        entity_id, name, display_name, semantic_type, ner_type, ref_count, source_count, doc_names = row
         entity_data = {
             "id": entity_id,
             "name": name,
@@ -311,13 +369,43 @@ def generate_glossary(
             continue
         if name.lower() in existing_defined:
             continue  # Already has a definition — skip
+
+        # Threshold gating: check if entity passes similarity threshold
+        if has_gating and doc_configs and domain_embedding is not None and embedding_model is not None:
+            import numpy as np
+            entity_doc_names = doc_names or []
+            # Find lowest threshold across source documents (most permissive)
+            threshold = float('inf')
+            for doc_name in entity_doc_names:
+                if not doc_name:
+                    continue
+                # Strip prefix (e.g. "schema:db.table" -> "db")
+                base_name = doc_name.split(":")[0] if ":" not in doc_name else doc_name.split(":")[1].split(".")[0]
+                # Also try the raw doc_name and crawled parent
+                candidates_keys = [doc_name, base_name]
+                if ":crawled_" in doc_name:
+                    candidates_keys.append(doc_name.split(":crawled_")[0])
+                for key in candidates_keys:
+                    if key in doc_configs:
+                        t = _resolve_threshold(getattr(doc_configs[key], 'generate_definitions', True))
+                        threshold = min(threshold, t)
+                        break
+            if threshold == float('inf'):
+                threshold = 0.0  # No config found — allow by default
+            if threshold > 0.0:
+                entity_emb = embedding_model.encode(display_name or name, normalize_embeddings=True)
+                similarity = float(np.dot(entity_emb, domain_embedding))
+                if similarity < threshold:
+                    gated_count += 1
+                    continue
+
         candidates.append(entity_data)
 
     if not candidates:
         logger.info(f"No candidates for glossary generation in session {session_id}")
         return []
 
-    logger.info(f"Glossary generation: {len(candidates)} candidates from {len(rows)} entities ({len(existing_defined)} already defined)")
+    logger.info(f"Glossary generation: {len(candidates)} candidates from {len(rows)} entities ({len(existing_defined)} already defined, {gated_count} gated by threshold)")
 
     # Batch candidates and call LLM
     generated_terms: list[GlossaryTerm] = []
@@ -773,6 +861,7 @@ def resolve_physical_resources(
     _visited: set | None = None,
     *,
     user_id: str | None = None,
+    doc_tools=None,
 ) -> list[dict]:
     """Walk from glossary term to physical resources, pruning ungrounded paths.
 
@@ -800,11 +889,25 @@ def resolve_physical_resources(
             if chunk.document_name in seen_docs:
                 continue
             seen_docs.add(chunk.document_name)
-            sources.append({
+            entry = {
                 "document_name": chunk.document_name,
                 "source": chunk.source,
                 "section": chunk.section,
-            })
+            }
+            # Look up source_url for crawled documents
+            if ":crawled_" in chunk.document_name:
+                url = None
+                # Try in-memory loaded documents first
+                if doc_tools:
+                    loaded = doc_tools._loaded_documents.get(chunk.document_name)
+                    if loaded and getattr(loaded, "source_url", None):
+                        url = loaded.source_url
+                # Fall back to persisted URL in vector store
+                if not url and hasattr(vector_store, 'get_document_url'):
+                    url = vector_store.get_document_url(chunk.document_name)
+                if url:
+                    entry["url"] = url
+            sources.append(entry)
         return sources
 
     # Direct match — concrete term

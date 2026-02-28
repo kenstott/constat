@@ -263,7 +263,7 @@ export interface GlossaryTerm {
   connected_resources: Array<{
     entity_name: string
     entity_type: string
-    sources: Array<{ document_name: string; source: string; section?: string }>
+    sources: Array<{ document_name: string; source: string; section?: string; url?: string }>
   }>
   children?: Array<{ name: string; display_name: string; parent_verb?: 'HAS_ONE' | 'HAS_KIND' | 'HAS_MANY' }>
   relationships?: Array<{

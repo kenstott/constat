@@ -80,6 +80,8 @@ constat/
 ├── execution/      # Planning and code execution
 ├── catalog/        # Schema introspection
 ├── discovery/      # On-demand tools for LLM
+│   └── doc_tools/  # Document ingestion (transport, MIME, crawler, extractors)
+├── learning/       # Exemplar generation for fine-tuning
 ├── providers/      # LLM integrations
 ├── storage/        # Persistence layer
 ├── server/         # FastAPI backend
@@ -112,9 +114,16 @@ This is the **primary discovery mechanism**. The LLM calls `search_all` first, t
 |------|----------------|
 | `tools.py` | Unified tool registry, routes LLM tool calls |
 | `schema_tools.py` | `search_all`, `search_tables`, `find_entity` |
-| `doc_tools.py` | `search_documents` with vector embeddings |
+| `doc_tools/_core.py` | `search_documents` with vector embeddings |
+| `doc_tools/_transport.py` | Transport abstraction (file, HTTP, S3, FTP, SFTP) |
+| `doc_tools/_mime.py` | MIME type detection and normalization |
+| `doc_tools/_crawler.py` | BFS link crawler for `follow_links` documents |
+| `doc_tools/_file_extractors.py` | PDF, DOCX, XLSX, PPTX, HTML extraction |
+| `doc_tools/_access.py` | Document access control and resolution |
 | `api_tools.py` | `search_operations` for API discovery |
 | `vector_store.py` | DuckDB VSS backend for embedding storage/search |
+| `relationship_extractor.py` | Two-phase SVO extraction (spaCy + LLM) |
+| `glossary_generator.py` | LLM-powered glossary term generation |
 
 **Vector Store Architecture:**
 - Backend: DuckDB with VSS extension
@@ -202,7 +211,8 @@ Persistence across steps and sessions.
 |------|----------------|
 | `datastore.py` | DataFrame storage (SQLite/DuckDB/PostgreSQL) |
 | `history.py` | Session history for `/resume` |
-| `learnings.py` | Error-to-fix patterns for improvement |
+| `learnings.py` | Error-to-fix patterns, rules, exemplar run tracking |
+| `duckdb_pool.py` | DuckDB connection pooling with lifecycle management |
 
 ### server/
 
@@ -214,6 +224,7 @@ FastAPI backend for the web UI.
 | `session_manager.py` | Session lifecycle, cleanup, user isolation |
 | `routes/queries.py` | Query execution (REST + WebSocket) |
 | `routes/sessions.py` | Session CRUD |
+| `routes/learnings.py` | Learnings, rules, exemplar generation endpoints |
 | `auth.py` | Firebase authentication (optional) |
 
 ## Session Flow
@@ -417,6 +428,24 @@ Fix: "Use fully qualified name: orders.date"
 ```
 
 Learnings are stored per-user and loaded into the prompt for future queries. Over time, similar learnings are compacted into general rules.
+
+### Exemplar Generation
+
+The learning pipeline extends to fine-tuning dataset generation via the `ExemplarGenerator`:
+
+```
+Learnings → Rules (compaction) → Exemplars (fine-tuning pairs)
+```
+
+Three coverage levels control what gets exported:
+
+| Level | Sources | Use Case |
+|-------|---------|----------|
+| **minimal** | High-confidence, high-applied rules only | Frontier models (small targeted set) |
+| **standard** | All rules + approved/human glossary terms | Mid-tier models |
+| **comprehensive** | Everything: rules + all glossary + relationships | Small models (maximum data) |
+
+Outputs both OpenAI messages JSONL and Alpaca JSONL formats. Exemplar runs are tracked in `LearningStore` for reproducibility.
 
 ## UX Architecture
 

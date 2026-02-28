@@ -111,6 +111,9 @@ interface SessionState {
   // Session creation state (for disabling input during new query)
   isCreatingSession: boolean
 
+  // Glossary timeout (cleared on entity_rebuild_complete)
+  _glossaryTimeout: ReturnType<typeof setTimeout> | null
+
   // Actions
   createSession: (userId?: string, forceNew?: boolean) => Promise<void>
   setSession: (session: Session | null, options?: { preserveMessages?: boolean }) => void
@@ -157,6 +160,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   currentAgent: null,
   queryContext: null,
   isCreatingSession: false,
+  _glossaryTimeout: null,
 
   createSession: async (userId = 'default', forceNew = false) => {
     // Mark session as being created (disables input)
@@ -174,11 +178,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Create session on server with client-provided session ID
     const session = await sessionsApi.createSession(userId, sessionId)
 
-    // Try to restore messages if reconnecting to existing session
+    // Try to restore messages, facts, and codes in parallel if reconnecting
     let restoredMessages: Message[] = []
     if (!forceNew) {
-      try {
-        const { messages: storedMessages } = await sessionsApi.getMessages(sessionId)
+      const [messagesRes, factsRes, _codesRes] = await Promise.allSettled([
+        sessionsApi.getMessages(sessionId),
+        sessionsApi.getProofFacts(sessionId),
+        Promise.all([
+          useArtifactStore.getState().fetchStepCodes(sessionId),
+          useArtifactStore.getState().fetchInferenceCodes(sessionId),
+        ]),
+      ])
+
+      // Extract restored messages
+      if (messagesRes.status === 'fulfilled') {
+        const { messages: storedMessages } = messagesRes.value
         if (storedMessages && storedMessages.length > 0) {
           restoredMessages = storedMessages.map(m => ({
             id: m.id,
@@ -190,31 +204,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }))
           console.log('[createSession] Restored', restoredMessages.length, 'messages')
         }
-      } catch (err) {
-        console.warn('[createSession] Could not restore messages:', err)
+      } else {
+        console.warn('[createSession] Could not restore messages:', messagesRes.reason)
       }
 
-      // Also try to restore proof facts
-      try {
-        const { facts: storedFacts, summary } = await sessionsApi.getProofFacts(sessionId)
+      // Extract restored proof facts
+      if (factsRes.status === 'fulfilled') {
+        const { facts: storedFacts, summary } = factsRes.value
         if (storedFacts && storedFacts.length > 0) {
           useProofStore.getState().importFacts(storedFacts, summary)
           console.log('[createSession] Restored', storedFacts.length, 'proof facts')
         }
-      } catch (err) {
-        console.warn('[createSession] Could not restore proof facts:', err)
+      } else {
+        console.warn('[createSession] Could not restore proof facts:', factsRes.reason)
       }
 
-      // Restore step codes and inference codes (code snippets shown in artifact panel)
-      try {
-        const artifactStore = useArtifactStore.getState()
-        await Promise.all([
-          artifactStore.fetchStepCodes(sessionId),
-          artifactStore.fetchInferenceCodes(sessionId),
-        ])
+      if (_codesRes.status === 'fulfilled') {
         console.log('[createSession] Restored step and inference codes')
-      } catch (err) {
-        console.warn('[createSession] Could not restore codes:', err)
+      } else {
+        console.warn('[createSession] Could not restore codes:', _codesRes.reason)
       }
     }
 
@@ -243,6 +251,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     wsManager.connect(session.session_id)
     wsManager.onStatus((connected) => set({ wsConnected: connected }))
     wsManager.onEvent((event) => get().handleWSEvent(event))
+
+    // Glossary safety timeout — fetch glossary if entity_rebuild_complete never arrives
+    const prevTimeout = get()._glossaryTimeout
+    if (prevTimeout) clearTimeout(prevTimeout)
+    const glossaryTimeout = setTimeout(() => {
+      const { session: s } = get()
+      if (s) {
+        console.log('[createSession] Glossary timeout — fetching glossary as fallback')
+        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+          const store = useGlossaryStore.getState()
+          if (!store.terms || store.terms.length === 0) {
+            store.fetchTerms(s.session_id)
+          }
+        })
+      }
+    }, 90_000)
+    set({ _glossaryTimeout: glossaryTimeout })
   },
 
   setSession: (session, options?: { preserveMessages?: boolean }) => {
@@ -1166,18 +1191,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       case 'entity_rebuild_complete': {
         // Entity extraction finished in background — refresh entities + glossary
+        const glossaryTimer = get()._glossaryTimeout
+        if (glossaryTimer) {
+          clearTimeout(glossaryTimer)
+          set({ _glossaryTimeout: null })
+        }
         const { session: s } = get()
         if (s) {
           useArtifactStore.getState().fetchEntities(s.session_id)
           import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
-            useGlossaryStore.getState().fetchTerms(s.session_id)
+            const store = useGlossaryStore.getState()
+            store.setEntityRebuilding(false)
+            store.fetchTerms(s.session_id)
           })
         }
         break
       }
 
       case 'entity_rebuild_start':
-        // Could show a loading indicator if desired
+        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+          useGlossaryStore.getState().setEntityRebuilding(true)
+        })
         break
 
       case 'glossary_terms_added': {
@@ -1213,8 +1247,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
-      case 'relationships_extracted':
+      case 'relationships_extracted': {
+        import('@/store/glossaryStore').then(({ useGlossaryStore }) => {
+          useGlossaryStore.setState((s) => ({ refreshKey: s.refreshKey + 1 }))
+        })
         break
+      }
     }
   },
 

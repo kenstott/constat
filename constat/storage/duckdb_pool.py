@@ -9,25 +9,20 @@
 
 """Thread-safe DuckDB connection management.
 
-Uses a single shared connection with per-thread cursors. DuckDB cursors
-created from a single connection share the same database instance and
-can be used concurrently from different threads.
+Uses a single shared connection protected by a reentrant lock.
+All threads serialize access through the lock — DuckDB's C++ engine
+is not safe for concurrent cursor access from a single connection.
 
 Usage:
     pool = DuckDBConnectionPool("/path/to/db.duckdb")
 
-    # Get a cursor for the current thread
-    with pool.connection() as conn:
-        conn.execute("SELECT * FROM table")
-
-    # Or use directly
+    # Get the shared connection (caller must not hold it across awaits)
     conn = pool.get_connection()
     conn.execute("SELECT * FROM table")
 
-The pool automatically:
-- Creates one cursor per thread (thread-local)
-- Reuses cursors within the same thread
-- Handles cleanup on close()
+    # Or use the context manager
+    with pool.connection() as conn:
+        conn.execute("SELECT * FROM table")
 """
 
 import atexit
@@ -80,19 +75,16 @@ def _try_kill_orphan_lock_holder(error_msg: str) -> None:
     if pid == os.getpid():
         return
     try:
-        # Check if process exists
         os.kill(pid, 0)
     except ProcessLookupError:
         return
     except PermissionError:
         return
 
-    # Read the process cmdline to verify it's an orphaned multiprocessing spawn
     try:
         with open(f"/proc/{pid}/cmdline", "r") as f:
             cmdline = f.read()
     except FileNotFoundError:
-        # macOS: use ps instead
         import subprocess
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
@@ -111,11 +103,11 @@ def _try_kill_orphan_lock_holder(error_msg: str) -> None:
 
 
 class DuckDBConnectionPool:
-    """Thread-safe DuckDB connection pool using a single shared connection.
+    """Thread-safe DuckDB access using a single serialized connection.
 
-    A single duckdb.connect() is created at init. Each thread gets a cursor
-    from that connection via conn.cursor(). Cursors share the database state
-    (tables, extensions, ATTACHed databases) and can execute concurrently.
+    One duckdb.connect() is created at init. All threads share this
+    single connection. Access is not locked here — callers that need
+    atomicity across multiple statements should use their own locking.
 
     Attributes:
         _db_path: Path to the DuckDB database file
@@ -128,23 +120,12 @@ class DuckDBConnectionPool:
         read_only: bool = False,
         config: Optional[dict] = None,
     ):
-        """Initialize the connection pool.
-
-        Args:
-            db_path: Path to DuckDB database file (or ":memory:" for in-memory)
-            read_only: Open connection in read-only mode
-            config: Optional DuckDB configuration dict
-        """
         self._db_path = str(db_path)
         self._read_only = read_only
         self._config = config or {}
-        self._local = threading.local()
-        self._cursors: dict[int, duckdb.DuckDBPyConnection] = {}
-        self._lock = threading.Lock()
         self._closed = False
 
-        # Single shared connection — all cursors derive from this
-        # Retry on lock conflict (previous process may still be releasing)
+        # Single connection — retry on lock conflict
         import time
         last_err = None
         for attempt in range(5):
@@ -170,89 +151,35 @@ class DuckDBConnectionPool:
 
     @property
     def db_path(self) -> str:
-        """Get the database path."""
         return self._db_path
 
     def get_connection(self) -> duckdb.DuckDBPyConnection:
-        """Get or create a cursor for the current thread.
+        """Get the single shared connection.
 
         Returns:
-            DuckDB cursor for the current thread
+            The shared DuckDB connection
 
         Raises:
             RuntimeError: If the pool has been closed
         """
         if self._closed:
             raise RuntimeError("Connection pool has been closed")
-
-        thread_id = threading.get_ident()
-
-        # Check thread-local cache first (fast path)
-        cursor = getattr(self._local, 'connection', None)
-        if cursor is not None:
-            try:
-                # Verify cursor is still valid
-                cursor.execute("SELECT 1")
-                return cursor
-            except duckdb.Error:
-                # Cursor is dead, remove it
-                logger.debug(f"Thread {thread_id}: cursor dead, creating new one")
-                self._remove_connection(thread_id)
-
-        # Create new cursor from shared connection (slow path)
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Connection pool has been closed")
-
-            cursor = self._shared_conn.cursor()
-            self._local.connection = cursor
-            self._cursors[thread_id] = cursor
-            logger.debug(f"Thread {thread_id}: created new DuckDB cursor")
-            return cursor
-
-    def _remove_connection(self, thread_id: int) -> None:
-        """Remove a cursor from tracking."""
-        with self._lock:
-            if thread_id in self._cursors:
-                try:
-                    self._cursors[thread_id].close()
-                except duckdb.Error:
-                    pass
-                del self._cursors[thread_id]
-            if hasattr(self._local, 'connection'):
-                delattr(self._local, 'connection')
+        return self._shared_conn
 
     @contextmanager
     def connection(self) -> Generator[duckdb.DuckDBPyConnection, None, None]:
-        """Context manager for getting a thread-local cursor.
-
-        Yields:
-            DuckDB cursor for the current thread
-
-        Example:
-            with pool.connection() as conn:
-                result = conn.execute("SELECT * FROM table").fetchall()
-        """
+        """Context manager for the shared connection."""
         yield self.get_connection()
 
     def close(self) -> None:
-        """Close all cursors and the shared connection.
-
-        After calling close(), the pool cannot be used again.
-        """
-        with self._lock:
-            self._closed = True
-            for thread_id, cursor in list(self._cursors.items()):
-                try:
-                    cursor.close()
-                    logger.debug(f"Thread {thread_id}: closed DuckDB cursor")
-                except Exception as e:
-                    logger.warning(f"Error closing cursor for thread {thread_id}: {e}")
-            self._cursors.clear()
-            try:
-                self._shared_conn.close()
-            except Exception as e:
-                logger.warning(f"Error closing shared DuckDB connection: {e}")
+        """Close the shared connection."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._shared_conn.close()
+        except Exception as e:
+            logger.warning(f"Error closing DuckDB connection: {e}")
 
     def __enter__(self) -> "DuckDBConnectionPool":
         return self
@@ -262,29 +189,23 @@ class DuckDBConnectionPool:
 
     @property
     def active_connections(self) -> int:
-        """Get the number of active cursors."""
-        with self._lock:
-            return len(self._cursors)
+        return 0 if self._closed else 1
 
-    # Backward compat: _connections used by ThreadLocalDuckDB.run_on_all_connections
+    # Backward compat
     @property
     def _connections(self) -> dict[int, duckdb.DuckDBPyConnection]:
-        return self._cursors
+        return {}
 
 
 class ThreadLocalDuckDB:
-    """Simpler interface for single-database thread-local cursors.
+    """Wrapper providing a single DuckDB connection with init_sql support.
 
-    This is a convenience wrapper that provides a connection property
-    that automatically returns the correct cursor for the current thread.
+    Despite the name (kept for backward compatibility), this now uses
+    a single shared connection — no per-thread cursors.
 
     Usage:
         db = ThreadLocalDuckDB("/path/to/db.duckdb")
-        db.conn.execute("SELECT * FROM table")  # Thread-safe
-
-        # Or with the pool directly
-        with db.pool.connection() as conn:
-            conn.execute("...")
+        db.conn.execute("SELECT * FROM table")
     """
 
     def __init__(
@@ -294,20 +215,11 @@ class ThreadLocalDuckDB:
         config: Optional[dict] = None,
         init_sql: Optional[list[str]] = None,
     ):
-        """Initialize thread-local DuckDB wrapper.
-
-        Args:
-            db_path: Path to DuckDB database file
-            read_only: Open connection in read-only mode
-            config: Optional DuckDB configuration dict
-            init_sql: SQL statements to run on the shared connection
-        """
         self._pool = DuckDBConnectionPool(db_path, read_only, config)
         self._init_sql = init_sql or []
-        self._initialized_threads: set[int] = set()
         self._init_lock = threading.Lock()
 
-        # Run init_sql on the shared connection (extensions, ATTACHes, etc.)
+        # Run init_sql on the shared connection
         for sql in self._init_sql:
             try:
                 self._pool._shared_conn.execute(sql)
@@ -316,53 +228,43 @@ class ThreadLocalDuckDB:
 
     @property
     def pool(self) -> DuckDBConnectionPool:
-        """Get the underlying connection pool."""
         return self._pool
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
-        """Get the cursor for the current thread."""
+        """Get the single shared connection."""
         return self._pool.get_connection()
 
     def execute(self, sql: str, params=None):
-        """Execute SQL on the current thread's cursor."""
         if params:
             return self.conn.execute(sql, params)
         return self.conn.execute(sql)
 
     def add_init_sql(self, sql: str) -> None:
-        """Run SQL on the shared connection (visible to all cursors)."""
+        """Run SQL on the shared connection."""
         with self._init_lock:
             self._init_sql.append(sql)
-        # Execute on shared connection — all cursors see the result
         try:
             self._pool._shared_conn.execute(sql)
         except Exception as e:
             logger.debug(f"add_init_sql failed: {e}")
 
     def remove_init_sql(self, predicate) -> None:
-        """Remove init_sql entries where predicate(sql) is True."""
         with self._init_lock:
             self._init_sql = [s for s in self._init_sql if not predicate(s)]
 
     def run_on_all_connections(self, sql: str) -> None:
-        """Execute SQL on all cursors and the shared connection.
+        """Execute SQL on the shared connection.
 
-        Cursors hold their own file handles for ATTACHed databases,
-        so operations like DETACH must run on cursors too.
+        Kept for backward compat — with a single connection,
+        this just runs on the shared connection.
         """
-        for tid, cursor in list(self._pool._cursors.items()):
-            try:
-                cursor.execute(sql)
-            except Exception:
-                pass
         try:
             self._pool._shared_conn.execute(sql)
         except Exception as e:
             logger.debug(f"run_on_all_connections failed: {e}")
 
     def close(self) -> None:
-        """Close all cursors and the shared connection."""
         self._pool.close()
 
     def __enter__(self) -> "ThreadLocalDuckDB":

@@ -1,26 +1,25 @@
 # Relationship Extraction Architecture
 
-> **Status:** Pass 1 (co-occurrence) is implemented and used in production. Pass 2 (SVO extraction) is **future work** — too noisy for automated relationship creation. SVO extraction is viable as a **suggestion method**: extract candidate triples, surface in UI, user confirms or discards, confirmed relationships persist to the curated `relationships` config (see `config_merge.md` section 6). Same pattern as glossary auto-suggest bindings.
+> **Status:** Implemented. Two-phase extraction (spaCy + LLM refinement) is in production. Relationships are extracted during session initialization and stored in `entity_relationships`.
 
 ## Overview
 
-Extract semantic relationships between entities using a two-pass approach:
-1. **Pass 1 (cheap)**: Co-occurrence detection via shared chunks — **automated, reliable**
-2. **Pass 2 (targeted)**: SVO extraction scoped to co-occurring pairs — **suggestion-only, user confirms**
+Extract semantic relationships between entities using a two-phase approach:
+1. **Phase 1 (spaCy)**: SVO candidate extraction from co-occurring entity pairs — fast, cheap
+2. **Phase 2 (LLM)**: Validates/rejects candidates, fixes verbs, infers implicit relationships — accurate
 
-This approach avoids expensive full-text parsing by using co-occurrence as a filter.
+Co-occurrence acts as a filter: only entity pairs sharing chunks are considered.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Document Indexing                         │
 ├─────────────────────────────────────────────────────────────┤
-│  Chunks  ──►  Entities  ──►  Co-occurrence  ──►  Relations  │
-│  (text)      (NER/regex)    (chunk_entities)   (SVO parse)  │
+│  Chunks  ──►  Entities  ──►  Co-occurrence  ──►  spaCy SVO │
+│  (text)      (NER/regex)    (chunk_entities)      │         │
+│                                                    ▼         │
+│                                              LLM Refinement  │
+│                                              (batch verify)  │
 └─────────────────────────────────────────────────────────────┘
-                                    │
-                              Scopes Pass 2
-                              (only parse pairs
-                               that co-occur)
 ```
 
 ## Data Model
@@ -202,110 +201,65 @@ def determine_svo_direction(
 
 ## Execution Strategy
 
-### Option A: Lazy Extraction (Recommended)
+Relationships are extracted during session initialization via `extract_relationships()`:
 
-Extract relationships on-demand when user views entity details.
+1. Find co-occurring entity pairs (shared chunks)
+2. For top pairs (up to `MAX_CO_OCCURRING_PAIRS=50`), run spaCy SVO extraction
+3. Batch pairs to LLM for refinement (up to `MAX_LLM_PAIRS=75`, batches of `LLM_BATCH_SIZE=8`)
+4. Store validated relationships in `entity_relationships`
 
-| Pros | Cons |
-|------|------|
-| Fast indexing | First view is slow |
-| Only compute what's needed | Repeated computation if not cached |
-| Memory efficient | |
-
-```python
-@router.get("/{session_id}/entities/{entity_id}/relationships")
-async def get_entity_relationships(session_id: str, entity_id: str):
-    # Check cache first
-    cached = get_cached_relationships(entity_id)
-    if cached:
-        return cached
-
-    # Get co-occurring entities (Pass 1 - already computed)
-    co_occurring = get_co_occurring_entities(entity_id)
-
-    # Extract relationships (Pass 2 - on demand)
-    relationships = []
-    for other_entity, shared_chunks in co_occurring:
-        rels = extract_relationships_for_pair(
-            entity_id, other_entity, shared_chunks
-        )
-        relationships.extend(rels)
-
-    # Cache and return
-    cache_relationships(entity_id, relationships)
-    return relationships
-```
-
-### Option B: Background Extraction
-
-Extract relationships in background after session starts.
+### Limits
 
 ```python
-async def extract_all_relationships_background(session_id: str):
-    """Run as background task after session initialization."""
-    entities = get_session_entities(session_id)
-
-    for entity in entities:
-        co_occurring = get_co_occurring_entities(entity.id)
-        for other, chunks in co_occurring:
-            # Skip if already extracted (bidirectional)
-            if relationship_exists(entity.id, other.id):
-                continue
-
-            rels = extract_relationships_for_pair(entity.id, other, chunks)
-            store_relationships(rels)
-```
-
-### Option C: Index-Time Extraction
-
-Extract during document indexing (highest latency, most complete).
-
-```python
-def index_document(document: Document):
-    # Existing: chunk and extract entities
-    chunks = chunk_document(document)
-    entities = extract_entities(chunks)
-    link_chunk_entities(chunks, entities)
-
-    # New: extract relationships for this document's entities
-    for chunk in chunks:
-        chunk_entities = get_entities_in_chunk(chunk.id)
-        for i, entity_a in enumerate(chunk_entities):
-            for entity_b in chunk_entities[i+1:]:
-                rels = extract_relationships_for_pair(
-                    entity_a, entity_b, [chunk.id]
-                )
-                store_relationships(rels)
+MAX_RELATIONSHIPS_PER_ENTITY = 50
+MAX_CO_OCCURRING_PAIRS = 50
+MAX_CHUNKS_PER_PAIR = 10
+LLM_BATCH_SIZE = 8
+MAX_LLM_PAIRS = 75
+MAX_EXCERPTS_PER_PAIR = 5
+MAX_EXCERPT_LENGTH = 500
 ```
 
 ## Relationship Types
 
+### Verb Vocabulary
+
+All verbs use Cypher-standard UPPER_SNAKE_CASE for graph consistency:
+
+```
+(Manager)-[:MANAGES]->(Employee)
+```
+
 ### Verb Categories
 
-Group verbs into semantic categories for UI display:
+| Category | Preferred Verbs | Example |
+|----------|----------------|---------|
+| **hierarchy** | MANAGES, REPORTS_TO | Manager MANAGES Employee |
+| **action** | CREATES, PROCESSES, APPROVES, PLACES | Manager APPROVES Raise |
+| **flow** | SENDS, RECEIVES, TRANSFERS | System SENDS Notification |
+| **causation** | DRIVES, REQUIRES, ENABLES | Rating DRIVES Merit Increase |
+| **temporal** | PRECEDES, FOLLOWS, TRIGGERS | Review PRECEDES Compensation Decision |
+| **association** | REFERENCES, WORKS_IN, PARTICIPATES_IN | Employee WORKS_IN Department |
+| **ownership** | (LLM prompt category) | Employee HAS_ONE Performance Review |
+| **other** | Anything not in preferred set | |
 
-| Category | Verbs | Example |
-|----------|-------|---------|
-| **Ownership** | own, have, contain, include | Employee **has** Performance Review |
-| **Action** | receive, submit, approve, reject | Manager **approves** Raise |
-| **Causation** | determine, affect, influence, cause | Rating **determines** Merit Increase |
-| **Temporal** | precede, follow, trigger | Review **precedes** Compensation Decision |
-| **Association** | relate, associate, link, connect | Salary Band **relates to** Job Level |
+### Hierarchy Verb Filtering
+
+Verbs that overlap with the taxonomy are filtered when the pair already has a parent-child edge:
 
 ```python
-VERB_CATEGORIES = {
-    "ownership": {"own", "have", "contain", "include", "hold", "possess"},
-    "action": {"receive", "submit", "approve", "reject", "send", "create", "update", "delete"},
-    "causation": {"determine", "affect", "influence", "cause", "drive", "impact"},
-    "temporal": {"precede", "follow", "trigger", "initiate", "complete"},
-    "association": {"relate", "associate", "link", "connect", "correspond"},
-}
+_HIERARCHY_VERBS = {"HAS", "HAS_ONE", "HAS_KIND", "HAS_MANY", "USES"}
+```
 
-def categorize_verb(verb_lemma: str) -> str:
-    for category, verbs in VERB_CATEGORIES.items():
-        if verb_lemma in verbs:
-            return category
-    return "other"
+Bare `HAS` is never allowed — it must be qualified via replacement:
+
+```python
+_VERB_REPLACEMENTS = {
+    "HAS": "HAS_ONE",
+    "CONTAINS": "HAS_MANY",
+    "BELONGS_TO": "HAS_ONE",    # direction swapped
+    "IS_TYPE_OF": "HAS_KIND",   # direction swapped
+}
 ```
 
 ## API Response
@@ -355,68 +309,29 @@ Relationships:
 └─────────────┴──────────────┴───────────────────┴───────┘
 ```
 
-## Implementation Plan
+## LLM Refinement
 
-### Phase 1: Schema and Storage
+The LLM sees co-occurring pairs with text excerpts and returns validated relationships:
 
-1. Add `entity_relationships` table to `vector_store.py`
-2. Add relationship CRUD methods
-3. Add migration for existing databases
+```
+For each pair of entities, analyze the excerpts and identify relationships.
 
-### Phase 2: Extraction Logic
-
-1. Implement `find_connecting_verb()` in `discovery/relationship_extractor.py`
-2. Implement `determine_svo_direction()`
-3. Implement `extract_relationships_for_pair()`
-4. Add verb categorization
-
-### Phase 3: API Integration
-
-1. Add lazy extraction endpoint
-2. Add caching layer
-3. Update entity detail response to include relationships
-
-### Phase 4: UI Integration
-
-1. Update EntityAccordion to show relationships
-2. Add relationship table/graph visualization
-3. Enable click-through to related entities
-
-## Performance Considerations
-
-| Operation | Cost | Mitigation |
-|-----------|------|------------|
-| Co-occurrence query | O(chunks) | Already indexed, fast |
-| SVO parsing | O(sentences) | Scope to shared chunks only |
-| spaCy load | ~500MB RAM | Already loaded for NER |
-| Relationship storage | O(pairs) | Deduplicate, limit per pair |
-
-### Limits
-
-```python
-MAX_RELATIONSHIPS_PER_ENTITY = 50      # Cap stored relationships
-MAX_CO_OCCURRING_PAIRS = 20            # Only process top N pairs
-MAX_CHUNKS_PER_PAIR = 10               # Limit chunks to parse per pair
+Return JSON array with:
+- subject: one of the two entity names
+- object: the other entity name
+- verb: Cypher UPPER_SNAKE_CASE (e.g., "MANAGES", "WORKS_IN")
+- verb_category: ownership | hierarchy | action | flow | causation | temporal | association | other
+- evidence: brief quote from excerpt
+- confidence: high | medium | low
 ```
 
-## Testing
+Confidence maps: `high=0.95, medium=0.8, low=0.6`.
+
+### Non-Verb Filtering
+
+Technical nouns that spaCy mis-tags as verbs are filtered:
 
 ```python
-def test_svo_extraction():
-    text = "The manager approves the performance review for the employee."
-
-    relationships = extract_relationships(text, ["manager", "performance review", "employee"])
-
-    assert len(relationships) == 2
-    assert relationships[0] == ("manager", "approve", "performance review")
-    assert relationships[1] == ("performance review", "for", "employee")  # prepositional
-
-
-def test_passive_voice():
-    text = "The raise was approved by the manager."
-
-    relationships = extract_relationships(text, ["raise", "manager"])
-
-    # Should correctly identify manager as subject despite passive voice
-    assert relationships[0] == ("manager", "approve", "raise")
+_NON_VERBS = {"endpoint", "api", "query", "type", "field", "schema", "table",
+              "column", "database", "server", "client", "model", ...}
 ```

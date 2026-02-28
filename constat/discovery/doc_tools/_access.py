@@ -28,7 +28,9 @@ def _loaded_doc_to_result(doc) -> dict:
     }
     if hasattr(doc.config, 'path') and doc.config.path:
         result["path"] = doc.config.path
-    if hasattr(doc.config, 'url') and doc.config.url:
+    if hasattr(doc, 'source_url') and doc.source_url:
+        result["url"] = doc.source_url
+    elif hasattr(doc.config, 'url') and doc.config.url:
         result["url"] = doc.config.url
     return result
 

@@ -488,6 +488,7 @@ class LoadedDocument:
     loaded_at: Optional[str] = None
     file_mtime: Optional[float] = None  # File modification time for change detection
     content_hash: Optional[str] = None  # Hash of content for change detection
+    source_url: Optional[str] = None  # Original URL for crawled sub-documents
 
 
 @dataclass

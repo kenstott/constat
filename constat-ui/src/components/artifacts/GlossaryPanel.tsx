@@ -112,7 +112,7 @@ function buildTree(terms: GlossaryTerm[]): { roots: TreeNode[]; orphans: Glossar
     return { roots: domainRoots.get(domains[0] || '(user)') || [], orphans }
   }
 
-  const bucketLabel = (d: string) => d === '(system)' ? 'System' : d === '(user)' ? 'User' : d
+  const bucketLabel = (d: string) => d === '(system)' ? 'System' : d === '(user)' ? 'User' : d === 'cross-domain' ? 'Cross-domain' : d
 
   // Multiple domains: create domain folder nodes
   const roots: TreeNode[] = domains.sort().map(domain => ({
@@ -150,12 +150,29 @@ function TermLink({ name, displayName }: { name: string; displayName: string }) 
 }
 
 // Clickable source link — deep links to tables, documents, and APIs
-function SourceLink({ source, documentName, section }: { source: string; documentName: string; section?: string }) {
+function SourceLink({ source, documentName, section, url }: { source: string; documentName: string; section?: string; url?: string }) {
   const label = `${documentName}${section ? ` > ${section}` : ''}`
   const { navigateTo } = useUIStore.getState()
 
-  // Strip source prefix (e.g., "schema:chinook.Track" → "chinook.Track", "api:countries.Breed" → "countries.Breed")
-  const stripped = documentName.includes(':') ? documentName.split(':').slice(1).join(':') : documentName
+  // External URL for crawled docs — open in new tab
+  if (url) {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+      >
+        {label}
+      </a>
+    )
+  }
+
+  // Strip source-type prefix for schema/api (e.g., "schema:chinook.Track" → "chinook.Track")
+  // Document names keep their full form (e.g., "hr_management:crawled_8" is the actual name)
+  const stripped = (source === 'schema' || source === 'api') && documentName.includes(':')
+    ? documentName.split(':').slice(1).join(':')
+    : documentName
 
   const handleClick = () => {
     console.log('[deep-link] SourceLink clicked:', { source, documentName, stripped })
@@ -165,7 +182,7 @@ function SourceLink({ source, documentName, section }: { source: string; documen
         navigateTo({ type: 'table', dbName: parts[0], tableName: parts[1] })
       }
     } else if (source === 'document') {
-      navigateTo({ type: 'document', documentName: stripped })
+      navigateTo({ type: 'document', documentName })
     } else if (source === 'api') {
       const parts = stripped.split('.')
       navigateTo({ type: 'api', apiName: parts[0] })
@@ -487,7 +504,8 @@ function ConnectedResources({
     cluster_siblings: string[]
     domain: string | null
     domain_path: string | null
-  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], domain: null, domain_path: null })
+    spanning_domains: string[]
+  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], domain: null, domain_path: null, spanning_domains: [] })
   const [loaded, setLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -506,6 +524,7 @@ function ConnectedResources({
           cluster_siblings: data.cluster_siblings || [],
           domain: data.domain || null,
           domain_path: data.domain_path || null,
+          spanning_domains: data.spanning_domains || [],
         })
         setLoaded(true)
       }
@@ -518,7 +537,7 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
-  const { resources, parent, parent_verb, children, relationships, cluster_siblings, domain, domain_path } = detail
+  const { resources, parent, parent_verb, children, relationships, cluster_siblings, domain, domain_path, spanning_domains } = detail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
   const hasContent = resources.length > 0 || hasConnections || !!domain
   if (!hasContent) return null
@@ -527,7 +546,7 @@ function ConnectedResources({
     <div className="mt-1.5 space-y-1.5">
       {domain && (
         <div className="text-xs text-gray-400 dark:text-gray-500">
-          Domain: {domain_path || domain}
+          Domain: {spanning_domains.length > 0 ? spanning_domains.join(', ') : (domain_path || domain)}
         </div>
       )}
       {parent && (
@@ -607,7 +626,7 @@ function ConnectedResources({
               <span className="text-gray-400"> ({r.entity_type})</span>
               {r.sources.map((s, j) => (
                 <div key={j} className="ml-2">
-                  <SourceLink source={s.source} documentName={s.document_name} section={s.section} />
+                  <SourceLink source={s.source} documentName={s.document_name} section={s.section} url={s.url} />
                 </div>
               ))}
             </div>
@@ -3115,6 +3134,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     generating,
     generationStage,
     generationPercent,
+    entityRebuilding,
     setFilter,
     setViewMode,
   } = useGlossaryStore()
@@ -3323,6 +3343,14 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
       {/* Terms list or tree */}
       {loading ? (
         <div className="text-xs text-gray-400 py-4 text-center">Loading glossary...</div>
+      ) : displayTerms.length === 0 && entityRebuilding ? (
+        <div className="flex flex-col items-center gap-2 py-6 text-xs text-gray-400">
+          <svg className="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span>Extracting entities...</span>
+        </div>
       ) : displayTerms.length === 0 ? (
         <div className="text-xs text-gray-400 py-4 text-center">
           {search ? 'No matching terms' : 'No glossary terms'}

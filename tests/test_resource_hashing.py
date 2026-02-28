@@ -256,6 +256,8 @@ class TestResourceHashComputation:
             path = test_file
             description = "Test doc"
             format = "markdown"
+            url = None
+            type = "markdown"
 
         # Compute hash
         hash1 = _compute_doc_resource_hash("test_doc", MockDocConfig(), temp_dir)
@@ -287,6 +289,8 @@ class TestResourceHashComputation:
             path = test_file
             description = "Stable doc"
             format = "markdown"
+            url = None
+            type = "markdown"
 
         # Compute hash twice without changes
         hash1 = _compute_doc_resource_hash("stable_doc", MockDocConfig(), temp_dir)

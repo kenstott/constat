@@ -66,6 +66,23 @@ class EntityExtractor:
     # Noise patterns to filter out
     NOISE_PATTERN = re.compile(r'^[\s#*_\-=`~\[\](){}|\\/<>@!$%^&+]+$')
 
+    # Markdown/wiki noise patterns
+    URL_ENCODED_RE = re.compile(r'%[0-9A-Fa-f]{2}')
+    WIKI_NOISE_RE = re.compile(r'=Edit|#Cite|Citeref|Redlink|/[Ww]iki/', re.I)
+    DATE_RE = re.compile(r'^\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}$|^\d{1,2}\s+\w+\s+\d{4}$')
+    BARE_NUMBER_RE = re.compile(r'^\d+$')
+    PAREN_URL_RE = re.compile(r'^\(/')
+    CSS_HTML_RE = re.compile(r'[;{}]|!Important|@Media', re.I)
+    CHAPTER_SECTION_RE = re.compile(r'^(Chapter|Section|Article|Title|Page)\s+\d', re.I)
+    LEADING_ARTICLE_RE = re.compile(r'^(the|a|an)\s+', re.I)
+    STARTS_WITH_DIGIT_RE = re.compile(r'^\d+\s')
+    TRAILING_FRAGMENT_RE = re.compile(r'\s+(of|de|du|des|di|s|the|and|&|for|in|on|to|vs|v)\s*$', re.I)
+    UNMATCHED_PAREN_RE = re.compile(r'\([^)]*$|^[^(]*\)')
+    WIKI_SITE_TERMS = frozenset({
+        'wikipedia', 'wikidata', 'wikimedia', 'wikisource',
+        'wikiversity', 'wikivoyage', 'wiktionary', 'wikibook', 'wiki project',
+    })
+
     # Common noise words
     NOISE_WORDS = {
         'level', 'type', 'status', 'category', 'name', 'email', 'phone',
@@ -184,9 +201,38 @@ class EntityExtractor:
     # Hex hash pattern (8+ hex chars, no spaces)
     HEX_PATTERN = re.compile(r'^[0-9a-fA-F]{8,}$')
 
+    @staticmethod
+    def _clean_for_ner(text: str) -> str:
+        """Strip markdown/wiki syntax from text before NER processing."""
+        # Remove wiki templates: {{...}}
+        text = re.sub(r'\{\{[^}]*\}\}', '', text)
+        # Remove HTML tags: <ref>...</ref>, <sup>, etc.
+        text = re.sub(r'<[^>]+>', '', text)
+        # Remove wiki-style links: [[display|target]] → display, [[text]] → text
+        text = re.sub(r'\[\[([^|\]]*)\|([^\]]*)\]\]', r'\1', text)
+        text = re.sub(r'\[\[([^\]]*)\]\]', r'\1', text)
+        # Remove images: ![alt](url)
+        text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
+        # Remove links: [text](url) → text
+        text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)
+        # Remove bare bracketed URLs: [url] (no display text pattern)
+        text = re.sub(r'\[https?://[^\]]*\]', '', text)
+        # Remove bold/italic: **text** or *text* or __text__ or _text_
+        text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+        text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)
+        # Remove headings: # Heading → Heading
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        # Remove backtick code spans: `code` → code
+        text = re.sub(r'`([^`]*)`', r'\1', text)
+        # Remove ≈ comparison markers from wiki tables
+        text = re.sub(r'≈\s*', '', text)
+        return text
+
     def _is_noise(self, text: str) -> bool:
         """Check if text is noise (symbols, too short, etc.)."""
-        if len(text) < 2:
+        # Require at least 2 ASCII alpha characters (filters non-English fragments)
+        ascii_alpha = sum(1 for c in text if c.isascii() and c.isalpha())
+        if ascii_alpha < 2:
             return True
         if self.NOISE_PATTERN.search(text):
             return True
@@ -195,8 +241,79 @@ class EntityExtractor:
         if text.lower() in self._stop_list:
             return True
         # Skip if mostly non-alphanumeric
-        alpha_count = sum(1 for c in text if c.isalnum())
-        if alpha_count < len(text) * 0.5:
+        alnum_count = sum(1 for c in text if c.isalnum())
+        if alnum_count < len(text) * 0.5:
+            return True
+        # URL-encoded strings
+        if self.URL_ENCODED_RE.search(text):
+            return True
+        # Wiki noise fragments
+        if self.WIKI_NOISE_RE.search(text):
+            return True
+        # Bare dates
+        if self.DATE_RE.match(text):
+            return True
+        # Bare numbers
+        if self.BARE_NUMBER_RE.match(text):
+            return True
+        # Citation anchors
+        if text.startswith('^'):
+            return True
+        # Parenthesized URL paths
+        if self.PAREN_URL_RE.match(text):
+            return True
+        # CSS/HTML fragments (font declarations, cursor styles, media queries)
+        if self.CSS_HTML_RE.search(text):
+            return True
+        # Wikipedia site references
+        text_lower = text.lower()
+        if any(w in text_lower for w in self.WIKI_SITE_TERMS):
+            return True
+        # Wikipedia template parameter separators
+        if '","' in text:
+            return True
+        # Starts with ≈ (wiki table comparison markers)
+        if text.startswith('≈'):
+            return True
+        # Leading/trailing quotes (broken markdown fragments)
+        if text.startswith('"') or text.startswith('\\"') or text.endswith('"'):
+            return True
+        # Wiki action links
+        if '&action' in text_lower:
+            return True
+        # Chapter/Section/Article + number references
+        if self.CHAPTER_SECTION_RE.match(text):
+            return True
+        # Trailing asterisk (footnote markers)
+        if text.endswith('*'):
+            return True
+        # Trailing single quote (possessive fragments)
+        if text.endswith("'"):
+            return True
+        # Wrapped in single quotes
+        if text.startswith("'") and text.endswith("'"):
+            return True
+        # Starts with & (markup fragments)
+        if text.startswith('&'):
+            return True
+        # Starts with digit + space (e.g., "5 Type of Company Merger")
+        if self.STARTS_WITH_DIGIT_RE.match(text):
+            return True
+        # Contains pipe (wiki table remnants)
+        if '|' in text:
+            return True
+        # Contains slash (wiki paths, hybrid terms) — checked separately for non-API entities
+        # Contains backslash
+        if '\\' in text:
+            return True
+        # Contains › (wiki breadcrumb separator)
+        if '›' in text:
+            return True
+        # Trailing preposition/conjunction (truncated phrases)
+        if self.TRAILING_FRAGMENT_RE.search(text):
+            return True
+        # Unmatched parentheses (truncated references)
+        if self.UNMATCHED_PAREN_RE.search(text):
             return True
         # Dot-notation schema paths (e.g., "Countries.Language.Rtl")
         if '.' in text:
@@ -288,7 +405,8 @@ class EntityExtractor:
         Returns:
             List of (Entity, ChunkEntity) tuples
         """
-        doc = self._nlp(chunk.content)
+        clean = self._clean_for_ner(chunk.content)
+        doc = self._nlp(clean)
         chunk_id = self._generate_chunk_id(chunk)
 
         results: list[tuple[Entity, ChunkEntity]] = []
@@ -297,12 +415,23 @@ class EntityExtractor:
         for ent in doc.ents:
             text = ent.text.strip()
 
+            # Strip leading articles (the/a/an) from entity text
+            text = self.LEADING_ARTICLE_RE.sub('', text).strip()
+
             # Skip noise
             if self._is_noise(text):
                 continue
 
             # Only keep relevant entity types
             if ent.label_ not in self.KEEP_SPACY_TYPES and ent.label_ not in {'SCHEMA', 'API', 'TERM'}:
+                continue
+
+            # Single-word PERSON entities are almost always noise (first name only)
+            if ent.label_ == 'PERSON' and ' ' not in text:
+                continue
+
+            # Slash in non-API entities (wiki paths, hybrid terms)
+            if '/' in text and ent.label_ not in {'API', 'SCHEMA', 'TERM'}:
                 continue
 
             # Split dot-notation names into individual entities

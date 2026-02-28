@@ -13,7 +13,7 @@ import glob
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import yaml
 from dotenv import load_dotenv
@@ -350,6 +350,9 @@ class DatabaseConfig(BaseModel):
         """Check if this is a file-based data source."""
         return self.type in ("csv", "json", "jsonl", "parquet", "arrow", "feather")
 
+    # Glossary generation gating
+    generate_definitions: Union[bool, float, str] = True  # True/False/float threshold/"auto"
+
 
 class ModelSpec(BaseModel):
     """Specification for a model in a routing chain.
@@ -664,6 +667,9 @@ class DocumentConfig(BaseModel):
     same_domain_only: bool = True  # Only follow links to same domain
     exclude_patterns: Optional[list[str]] = None  # Regex patterns for URLs to skip
 
+    # Glossary generation gating
+    generate_definitions: Union[bool, float, str] = "auto"  # True/False/float threshold/"auto" (0.5)
+
 
 class APIConfig(BaseModel):
     """External API configuration (GraphQL or OpenAPI).
@@ -744,6 +750,9 @@ class APIConfig(BaseModel):
     # Schema introspection (GraphQL introspection or OpenAPI spec parsing)
     introspect: bool = True  # Fetch and cache schema at startup
     _schema_cache: Optional[dict] = None  # Cached schema (internal, not serialized)
+
+    # Glossary generation gating
+    generate_definitions: Union[bool, float, str] = True  # True/False/float threshold/"auto"
 
 
 class ExecutionConfig(BaseModel):

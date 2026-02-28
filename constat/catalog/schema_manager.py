@@ -167,12 +167,14 @@ class SchemaManager:
     EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
     def __init__(self, config: Config):
+        import threading
         self.config = config
         self.connections: dict[str, Union[Engine, TranspilingConnection]] = {}  # SQL connections
         self.nosql_connections: dict[str, NoSQLConnector] = {}  # NoSQL connections
         self.file_connections: dict[str, FileConnector] = {}  # File data sources
         self.metadata_cache: dict[str, TableMetadata] = {}  # key: "db.table"
         self._read_only_databases: set[str] = set()  # Databases with read_only=True
+        self._metadata_lock = threading.Lock()  # Guards metadata_cache for parallel add_database_dynamic
 
         # Vector store for embeddings (shared DuckDB)
         from constat.discovery.vector_store import DuckDBVectorStore
@@ -267,8 +269,8 @@ class SchemaManager:
     def add_database_dynamic(self, db_name: str, db_config: DatabaseConfig) -> bool:
         """Dynamically add and introspect a database after initialization.
 
-        This allows adding domain databases at runtime without reinitializing
-        the entire schema manager.
+        Thread-safe: metadata_cache mutations are protected by _metadata_lock
+        to allow parallel calls from domain loading.
 
         Args:
             db_name: Name for the database
@@ -278,15 +280,16 @@ class SchemaManager:
             True if successfully added
         """
         try:
-            # Connect based on type
+            # Connect and introspect (I/O-heavy, runs without lock)
             source_type = db_config.type or "sql"
             logger.info(f"add_database_dynamic: {db_name}, type={source_type}, uri={db_config.uri}")
             logger.info(f"  is_file_source={db_config.is_file_source()}, is_nosql={db_config.is_nosql()}")
 
+            new_metas: dict[str, TableMetadata] = {}
+
             if db_config.is_file_source():
                 logger.info(f"  Connecting as file source")
                 self._connect_file(db_name, db_config)
-                # Introspect file source
                 connector = self.file_connections.get(db_name)
                 if connector:
                     table_meta = TableMetadata(
@@ -295,7 +298,6 @@ class SchemaManager:
                         comment=db_config.description,
                         database_type=source_type,
                     )
-                    # Get columns from file metadata
                     try:
                         file_metadata = connector.get_metadata()
                         table_meta.columns = [
@@ -308,12 +310,11 @@ class SchemaManager:
                         logger.warning(f"  Failed to get columns: {e}")
                         import traceback
                         logger.warning(f"  Traceback: {traceback.format_exc()}")
-                    self.metadata_cache[f"{db_name}.{db_name}"] = table_meta
+                    new_metas[f"{db_name}.{db_name}"] = table_meta
                     logger.info(f"  Added to metadata_cache: {db_name}.{db_name}")
             elif db_config.is_nosql():
                 logger.info(f"  Connecting as NoSQL")
                 self._connect_nosql(db_name, db_config)
-                # Introspect NoSQL
                 connector = self.nosql_connections.get(db_name)
                 if connector:
                     # noinspection PyUnresolvedReferences
@@ -323,9 +324,8 @@ class SchemaManager:
                         # noinspection PyUnresolvedReferences
                         collection_meta = connector.get_collection_schema(coll_name)
                         table_meta = self._convert_nosql_metadata(db_name, connector, collection_meta)
-                        self.metadata_cache[table_meta.full_name] = table_meta
+                        new_metas[table_meta.full_name] = table_meta
             else:
-                # SQL database
                 logger.info(f"  Connecting as SQL database")
                 self._connect_sql(db_name, db_config)
                 conn = self.connections.get(db_name)
@@ -336,33 +336,25 @@ class SchemaManager:
                     logger.info(f"  SQL database has {len(table_names)} tables: {table_names}")
                     for table_name in table_names:
                         table_meta = self._introspect_table(db_name, engine, inspector, table_name)
-                        self.metadata_cache[table_meta.full_name] = table_meta
+                        new_metas[table_meta.full_name] = table_meta
                         logger.info(f"  Introspected table: {db_name}.{table_name}")
                 else:
                     logger.warning(f"  No engine created for {db_name}")
 
-            logger.info(f"  metadata_cache now has {len(self.metadata_cache)} entries")
+            # Merge metadata + build chunks under lock
+            # (DB introspection above runs without lock for parallelism)
+            with self._metadata_lock:
+                self.metadata_cache.update(new_metas)
 
-            # Build chunks for semantic search
-            # Initialize model and vector_store if not already done
-            logger.info(f"  Initializing vector_store and model for chunks...")
-            logger.info(f"  _vector_store is None: {self._vector_store is None}")
-            logger.info(f"  _model is None: {self._model is None}")
+                if self._vector_store is None:
+                    from constat.discovery.vector_store import DuckDBVectorStore
+                    self._vector_store = DuckDBVectorStore()
+                if self._model is None:
+                    self._model = EmbeddingModelLoader.get_instance().get_model()
 
-            if self._vector_store is None:
-                from constat.discovery.vector_store import DuckDBVectorStore
-                self._vector_store = DuckDBVectorStore()
-                logger.info(f"  Created DuckDBVectorStore")
-            if self._model is None:
-                self._model = EmbeddingModelLoader.get_instance().get_model()
-                logger.info(f"  Loaded embedding model: {self._model is not None}")
-
-            if self._model is not None and self._vector_store is not None:
-                logger.info(f"  Calling _add_chunks_for_database({db_name})...")
-                self._add_chunks_for_database(db_name)
-                logger.info(f"  Built chunks for database: {db_name}")
-            else:
-                logger.warning(f"  SKIPPING chunks: model={self._model is not None}, vector_store={self._vector_store is not None}")
+                if self._model is not None and self._vector_store is not None:
+                    self._add_chunks_for_database(db_name)
+                    logger.info(f"  Built chunks for database: {db_name}")
 
             logger.info(f"Dynamically added database: {db_name} ({source_type})")
             return True

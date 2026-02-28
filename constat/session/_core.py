@@ -72,18 +72,21 @@ class CoreMixin:
         # This allows the model to load while other initialization happens
         EmbeddingModelLoader.get_instance().start_loading()
 
-        # Initialize components with timing
+        # Initialize components with timing — parallel when both have work
+        from concurrent.futures import ThreadPoolExecutor
         t0 = time.time()
         self.schema_manager = SchemaManager(config)
-        self.schema_manager.initialize(progress_callback=progress_callback)
-        logger.debug(f"Session init: SchemaManager took {time.time() - t0:.2f}s")
-
-        # API schema manager (GraphQL introspection, REST metadata)
-        t0 = time.time()
         self.api_schema_manager = APISchemaManager(config)
+
         if config.apis:
-            self.api_schema_manager.initialize(progress_callback=progress_callback)
-        logger.debug(f"Session init: APISchemaManager took {time.time() - t0:.2f}s")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                schema_future = pool.submit(self.schema_manager.initialize, progress_callback=progress_callback)
+                api_future = pool.submit(self.api_schema_manager.initialize, progress_callback=progress_callback)
+                schema_future.result()
+                api_future.result()
+        else:
+            self.schema_manager.initialize(progress_callback=progress_callback)
+        logger.debug(f"Session init: SchemaManager + APISchemaManager took {time.time() - t0:.2f}s")
 
         # Metadata preload cache for faster context loading
         t0 = time.time()
@@ -215,11 +218,8 @@ class CoreMixin:
         self._proof_user_validations: list[dict] = []
         self._proof_step_hints: list = []
 
-        # Concept detector for conditional prompt injection
-        t0 = time.time()
+        # Concept detector for conditional prompt injection (lazy init on first use)
         self._concept_detector = ConceptDetector()
-        self._concept_detector.initialize()
-        logger.debug(f"Session init: ConceptDetector took {time.time() - t0:.2f}s")
 
         # Phase 3: Conversation state and intent classifier
         # Initialize conversation state with idle phase

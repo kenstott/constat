@@ -164,20 +164,34 @@ def _load_domains_into_session(
     previously_loaded = getattr(managed, "_domain_databases", set())
     newly_loaded = set()
 
-    # Phase 1: Load all databases from all domains
+    # Phase 1: Load all databases from all domains (parallel)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    to_load: list[tuple[str, str, object]] = []  # (name, filename, db_config)
     for filename, domain in valid_domains:
         for name, db_config in domain.databases.items():
             if name not in previously_loaded:
-                try:
-                    if managed.session.schema_manager:
-                        success = managed.session.schema_manager.add_database_dynamic(name, db_config)
-                        if success:
-                            newly_loaded.add(name)
-                            logger.info(f"Loaded domain database: {name} from {filename}")
-                except Exception as e:
-                    logger.exception(f"Exception loading domain database {name}: {e}")
+                to_load.append((name, filename, db_config))
             else:
                 newly_loaded.add(name)
+
+    if to_load and managed.session.schema_manager:
+        def _load_db(item: tuple) -> tuple[str, str, bool]:
+            name, filename, db_config = item
+            try:
+                success = managed.session.schema_manager.add_database_dynamic(name, db_config)
+                return name, filename, success
+            except Exception as e:
+                logger.exception(f"Exception loading domain database {name}: {e}")
+                return name, filename, False
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_load_db, item) for item in to_load]
+            for future in as_completed(futures):
+                name, filename, success = future.result()
+                if success:
+                    newly_loaded.add(name)
+                    logger.info(f"Loaded domain database: {name} from {filename}")
 
     # Phase 2: Documents are already indexed during server warmup with domain_id
     # No need to re-index here - just log what's available

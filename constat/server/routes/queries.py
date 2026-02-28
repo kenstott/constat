@@ -760,6 +760,26 @@ async def websocket_endpoint(
         },
     })
 
+    # Replay entity_rebuild_complete if it fired before WS connected
+    # (scope cache restore finishes in <100ms, often before WS handshake)
+    if managed._entity_rebuild_event:
+        await websocket.send_json({
+            "type": "event",
+            "payload": managed._entity_rebuild_event,
+        })
+        managed._entity_rebuild_event = None
+        # Drain stale entity rebuild events from queue to avoid duplicates
+        kept: list = []
+        while not managed.event_queue.empty():
+            try:
+                item = managed.event_queue.get_nowait()
+                if item.get("event_type") not in ("entity_rebuild_start", "entity_rebuild_complete"):
+                    kept.append(item)
+            except asyncio.QueueEmpty:
+                break
+        for item in kept:
+            managed.event_queue.put_nowait(item)
+
     try:
         # Create tasks for sending events and receiving commands
         async def send_events():

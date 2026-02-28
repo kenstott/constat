@@ -215,6 +215,9 @@ class _CoreMixin:
             doc_chunks = self._chunk_document(name, doc.content)
             print(f"[DOC_INDEX] {name}: {len(doc_chunks)} chunks")
             chunks.extend(doc_chunks)
+            # Persist source_url for crawled sub-documents
+            if getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
+                self._vector_store.store_document_url(name, doc.source_url)
 
         if not chunks:
             print("[DOC_INDEX] No chunks to index!")
@@ -867,6 +870,7 @@ class _CoreMixin:
                     format=linked_format,
                     sections=_extract_markdown_sections(linked_content, linked_format),
                     loaded_at=datetime.now().isoformat(),
+                    source_url=url,
                 )
         else:
             result = fetch_document(doc_config, self.config.config_dir)
@@ -964,6 +968,10 @@ class _CoreMixin:
                     domain_id=domain_id, session_id=session_id,
                 )
                 total_chunks += len(chunks)
+
+                # Persist source_url for crawled sub-documents
+                if getattr(doc, 'source_url', None) and hasattr(self._vector_store, 'store_document_url'):
+                    self._vector_store.store_document_url(doc_name, doc.source_url)
 
                 if not skip_entity_extraction:
                     if domain_id:

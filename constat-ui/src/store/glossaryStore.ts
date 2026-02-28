@@ -29,6 +29,7 @@ interface GlossaryState {
   generating: boolean
   generationStage: string | null
   generationPercent: number
+  entityRebuilding: boolean
   refreshKey: number
   error: string | null
 
@@ -52,6 +53,7 @@ interface GlossaryState {
   setViewMode: (mode: 'tree' | 'list') => void
   setGenerating: (generating: boolean) => void
   setProgress: (stage: string, percent: number) => void
+  setEntityRebuilding: (rebuilding: boolean) => void
 }
 
 export const useGlossaryStore = create<GlossaryState>((set, get) => ({
@@ -67,6 +69,7 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   generating: false,
   generationStage: null,
   generationPercent: 0,
+  entityRebuilding: false,
   refreshKey: 0,
   error: null,
 
@@ -225,4 +228,6 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   })),
 
   setProgress: (stage, percent) => set({ generationStage: stage, generationPercent: percent }),
+
+  setEntityRebuilding: (rebuilding) => set({ entityRebuilding: rebuilding }),
 }))

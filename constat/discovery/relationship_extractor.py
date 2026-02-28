@@ -469,21 +469,30 @@ def _parse_llm_response(content: str) -> list[dict]:
         content = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
         content = content.strip()
 
+    raw = None
     try:
-        result = json.loads(content)
-        if isinstance(result, list):
-            return result
+        raw = json.loads(content)
     except json.JSONDecodeError:
         start = content.find("[")
         end = content.rfind("]")
         if start >= 0 and end > start:
             try:
-                return json.loads(content[start:end + 1])
+                raw = json.loads(content[start:end + 1])
             except json.JSONDecodeError:
                 pass
 
-    logger.warning(f"Failed to parse relationship LLM response: {content[:200]}")
-    return []
+    if not isinstance(raw, list):
+        logger.warning(f"Failed to parse relationship LLM response: {content[:200]}")
+        return []
+
+    # Flatten nested lists (LLM sometimes returns [[{...}], [{...}]])
+    flat: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            flat.append(item)
+        elif isinstance(item, list):
+            flat.extend(i for i in item if isinstance(i, dict))
+    return flat
 
 
 def _validate_relationship(item: dict, e1_name: str, e2_name: str) -> bool:

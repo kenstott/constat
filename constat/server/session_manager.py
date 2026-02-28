@@ -64,6 +64,10 @@ class ManagedSession:
     # Event queue for WebSocket bridging (sync Session events -> async WebSocket)
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
 
+    # Last entity_rebuild_complete event — replayed on WS connect
+    # (scope cache may finish before WS connects, losing the event)
+    _entity_rebuild_event: Optional[dict] = None
+
     # Cancellation flag for background glossary generation
     _glossary_cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -546,6 +550,19 @@ class SessionManager:
             except Exception:
                 pass
         fingerprint = compute_ner_fingerprint(chunk_ids, schema_entities, api_entities, business_terms)
+        logger.info(f"Session {session_id}: NER fingerprint={fingerprint} ({len(chunk_ids)} chunks, {len(schema_entities)} schema, {len(api_entities)} API, {len(business_terms)} business)")
+
+        # Try scope-level cache (cross-session, persisted in DuckDB)
+        vs = session.doc_tools._vector_store if hasattr(session.doc_tools, '_vector_store') else None
+        if vs and hasattr(vs, 'has_ner_scope_cache') and vs.has_ner_scope_cache(fingerprint):
+            try:
+                count = vs.restore_ner_scope_cache(fingerprint, session_id)
+                update_ner_fingerprint(session_id, fingerprint)
+                logger.info(f"Session {session_id}: NER scope cache hit — restored {count} entities")
+                return
+            except Exception as e:
+                logger.warning(f"Session {session_id}: NER scope cache restore failed, running full NER: {e}")
+
         if should_skip_ner(session_id, fingerprint):
             # Even when NER is skipped, always rebuild clusters (in-memory state lost on restart)
             if hasattr(session.doc_tools, '_vector_store') and session.doc_tools._vector_store:
@@ -590,6 +607,14 @@ class SessionManager:
                     vs._clusters_dirty = True
                     vs._rebuild_clusters(session_id)
                     logger.info(f"Session {session_id}: rebuilt clusters after entity extraction")
+
+                # Store into scope cache for future sessions
+                if hasattr(vs, 'store_ner_scope_cache'):
+                    try:
+                        vs.store_ner_scope_cache(fingerprint, session_id)
+                        vs.evict_ner_scope_cache()
+                    except Exception as cache_err:
+                        logger.warning(f"Session {session_id}: failed to store NER scope cache: {cache_err}")
         except Exception as e:
             logger.exception(f"Session {session_id}: entity extraction failed: {e}")
 
@@ -643,6 +668,12 @@ class SessionManager:
                 logger.info(f"refresh_entities_async({session_id}): complete in {duration_ms}ms")
             except Exception as e:
                 logger.exception(f"refresh_entities_async({session_id}): failed: {e}")
+                duration_ms = int((time.time() - t0) * 1000)
+                self._push_event(managed, EventType.ENTITY_REBUILD_COMPLETE, {
+                    "session_id": session_id,
+                    "duration_ms": duration_ms,
+                    "error": str(e),
+                })
 
         import threading
         thread = threading.Thread(target=_run, name=f"entity-rebuild-{session_id}", daemon=True)
@@ -721,6 +752,19 @@ class SessionManager:
             # Early relationships: SVO + LLM before glossary (text-driven discovery)
             self._run_early_relationships(session_id, managed, vector_store, on_progress=on_progress)
 
+            # Build doc_configs and domain descriptions for definition gating
+            doc_configs: dict = {}
+            doc_configs.update(session.config.documents)
+            doc_configs.update(session.config.databases)
+            doc_configs.update(session.config.apis)
+            domain_descriptions: list[str] = []
+            for _dname, dcfg in session.config.domains.items():
+                if dcfg.description:
+                    domain_descriptions.append(dcfg.description)
+                doc_configs.update(dcfg.documents)
+                doc_configs.update(dcfg.databases)
+                doc_configs.update(dcfg.apis)
+
             terms = generate_glossary(
                 session_id=session_id,
                 vector_store=vector_store,
@@ -730,6 +774,8 @@ class SessionManager:
                 on_progress=on_progress,
                 user_id=managed.user_id,
                 cancelled=managed._glossary_cancelled.is_set,
+                doc_configs=doc_configs,
+                domain_descriptions=domain_descriptions,
             )
 
             # Reconcile alias entities (rename "platinum" → "platinum tier")
@@ -761,6 +807,13 @@ class SessionManager:
             logger.info(f"Glossary generation for {session_id}: {len(terms)} terms in {duration_ms}ms")
         except Exception as e:
             logger.exception(f"Glossary generation for {session_id} failed: {e}")
+            duration_ms = int((time.time() - t0) * 1000)
+            self._push_event(managed, EventType.GLOSSARY_REBUILD_COMPLETE, {
+                "session_id": session_id,
+                "terms_count": 0,
+                "duration_ms": duration_ms,
+                "error": str(e),
+            })
 
     @staticmethod
     def _embed_glossary_terms(
@@ -985,7 +1038,16 @@ class SessionManager:
                 timestamp=datetime.now(timezone.utc),
                 data=data,
             )
-            managed.event_queue.put_nowait(ws_event.model_dump(mode="json"))
+            event_dict = ws_event.model_dump(mode="json")
+
+            # Store entity rebuild events for WS replay
+            # (scope cache may finish before WS connects)
+            if event_type == EventType.ENTITY_REBUILD_COMPLETE:
+                managed._entity_rebuild_event = event_dict
+            elif event_type == EventType.ENTITY_REBUILD_START:
+                managed._entity_rebuild_event = None
+
+            managed.event_queue.put_nowait(event_dict)
         except asyncio.QueueFull:
             logger.warning(f"Event queue full for session {managed.session_id}, dropping {event_type}")
 

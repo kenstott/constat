@@ -761,6 +761,7 @@ Provides on-demand schema, API, and document discovery via tool calling.
 | `glossary_generator.py` | LLM-powered glossary generation + physical resource resolution |
 | `concept_detector.py` | Concept detection in queries |
 | `entity_extractor.py` | Named entity extraction (spaCy NER + schema/API patterns) |
+| `relationship_extractor.py` | Two-phase SVO extraction: spaCy candidates → LLM refinement with Cypher verb vocabulary |
 
 ### SkillManager (`discovery/skill_tools.py`, `core/skills.py`)
 
@@ -941,9 +942,9 @@ session.provide_facts("There were 1 million people at the march")
 
 REPL commands: `/unresolved` to view missing facts, `/facts <text>` to provide them.
 
-### Learning System (`learning/compactor.py`, `storage/learnings.py`)
+### Learning System (`learning/compactor.py`, `learning/exemplar_generator.py`, `storage/learnings.py`)
 
-Accumulates raw learnings from user corrections and promotes them to rules.
+Accumulates raw learnings from user corrections, promotes them to rules, and generates fine-tuning exemplars.
 
 **LearningCompactor:**
 - Analyzes patterns in raw learnings
@@ -953,6 +954,13 @@ Accumulates raw learnings from user corrections and promotes them to rules.
 - `rules_created`, `rules_strengthened`, `rules_merged`
 - `learnings_archived`, `learnings_expired`
 - `groups_found`, `skipped_low_confidence`, `errors`
+
+**ExemplarGenerator:**
+- Generates fine-tuning conversation pairs from rules, glossary terms, and relationships
+- Three coverage levels: `minimal` (high-confidence rules), `standard` (+ approved glossary), `comprehensive` (+ all relationships)
+- Outputs OpenAI messages JSONL and Alpaca JSONL formats
+- Batch sizes: rules=10, glossary=10, relationships=15
+- Exemplar run metadata tracked in `LearningStore`
 
 **Configuration:**
 - `CONFIDENCE_THRESHOLD`: 0.60

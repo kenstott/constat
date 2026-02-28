@@ -96,35 +96,47 @@ def _build_domain_maps(config, session=None) -> tuple[dict[str, str], dict[str, 
     return domain_path_map, source_to_domain
 
 
-def _resolve_entity_domain(entity_id: str | None, vs, source_to_domain: dict[str, str]) -> str | None:
-    """Resolve domain for an entity by tracing its chunk document sources.
+def _resolve_entity_domains(entity_id: str | None, vs, source_to_domain: dict[str, str]) -> list[str]:
+    """Resolve all domains for an entity by tracing its chunk document sources.
 
-    Looks up which document_name(s) the entity's chunks came from, then maps
-    the database/api/document name back to a domain via source_to_domain.
+    Returns a deduplicated list of domain names the entity's chunks map to.
     """
     if not entity_id:
-        return None
+        return []
     try:
         doc_rows = vs._conn.execute(
             "SELECT DISTINCT em.document_name FROM chunk_entities ce "
             "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
-            "WHERE ce.entity_id = ? LIMIT 5",
+            "WHERE ce.entity_id = ? LIMIT 20",
             [entity_id],
         ).fetchall()
     except Exception:
-        return None
+        return []
+    domains: list[str] = []
+    seen: set[str] = set()
     for (doc_name,) in doc_rows:
+        matched: str | None = None
         if doc_name.startswith("schema:"):
             db_name = doc_name.split(":")[1].split(".")[0]
-            if db_name in source_to_domain:
-                return source_to_domain[db_name]
+            matched = source_to_domain.get(db_name)
         elif doc_name.startswith("api:"):
             api_name = doc_name.split(":")[1].split(".")[0]
-            if api_name in source_to_domain:
-                return source_to_domain[api_name]
-        # Try full document name (for documents indexed with their config key as name)
-        if doc_name in source_to_domain:
-            return source_to_domain[doc_name]
+            matched = source_to_domain.get(api_name)
+        if not matched:
+            matched = source_to_domain.get(doc_name)
+        if matched and matched not in seen:
+            seen.add(matched)
+            domains.append(matched)
+    return domains
+
+
+def _resolve_entity_domain(entity_id: str | None, vs, source_to_domain: dict[str, str]) -> str | None:
+    """Resolve effective domain for an entity. Returns 'cross-domain' when it spans multiple."""
+    domains = _resolve_entity_domains(entity_id, vs, source_to_domain)
+    if len(domains) > 1:
+        return "cross-domain"
+    if len(domains) == 1:
+        return domains[0]
     return None
 
 
@@ -156,37 +168,40 @@ async def list_glossary(
             return d
         return _resolve_entity_domain(row.get("entity_id"), vs, source_to_domain)
 
+    # Pre-resolve effective domain per row so filtering can see cross-domain status
+    for row in rows:
+        row["_effective_domain"] = _resolve_domain(row)
+
     # Optionally filter by domain (comma-separated list)
     # A term "belongs" to a domain if:
-    #   - Its glossary_term.domain matches (explicitly promoted), OR
-    #   - Its entity.domain_id matches (source-based origin)
+    #   - Its effective domain matches (explicitly promoted, entity source, or cross-domain)
     # "system" = root-level terms with no domain assignment and no entity domain
     if domain:
         domain_set = set(domain.split(","))
         include_system = "system" in domain_set
+        include_cross = "cross-domain" in domain_set
         # Expand each domain to both with and without .yaml suffix
         explicit_domains: set[str] = set()
-        for d in domain_set - {"system"}:
+        for d in domain_set - {"system", "cross-domain"}:
             explicit_domains.add(d)
             explicit_domains.add(d.removesuffix(".yaml"))
             if not d.endswith(".yaml"):
                 explicit_domains.add(d + ".yaml")
 
-
         def _matches_domain(r: dict) -> bool:
-            term_domain = r.get("domain")
-            entity_domain = r.get("entity_domain_id")
-            has_domain = bool(term_domain) or bool(entity_domain)
-            if include_system and not has_domain:
+            eff = r.get("_effective_domain")
+            if eff == "cross-domain":
+                return include_cross
+            if include_system and not eff:
                 return True
-            if term_domain in explicit_domains or entity_domain in explicit_domains:
+            if eff in explicit_domains:
                 return True
             return False
         rows = [r for r in rows if _matches_domain(r)]
 
     terms = []
     for row in sorted(rows, key=lambda r: r["name"]):
-        effective_domain = _resolve_domain(row)
+        effective_domain = row["_effective_domain"]
         terms.append(GlossaryTermResponse(
             name=row["name"],
             display_name=row["display_name"],
@@ -263,7 +278,8 @@ async def get_glossary_term(
     # Build response from unified view or just entity
     from constat.discovery.glossary_generator import resolve_physical_resources, is_grounded
 
-    resources = resolve_physical_resources(name, session_id, vs, domain_ids=active_domains, user_id=managed.user_id)
+    doc_tools = getattr(managed.session, "doc_tools", None)
+    resources = resolve_physical_resources(name, session_id, vs, domain_ids=active_domains, user_id=managed.user_id, doc_tools=doc_tools)
     grounded = is_grounded(name, session_id, vs, user_id=managed.user_id)
 
     # Resolve parent — parent_id can be glossary_id or entity_id
@@ -319,7 +335,7 @@ async def get_glossary_term(
             or (entity.domain_id if entity else None)
             or _resolve_entity_domain(entity.id if entity else None, vs, source_to_domain)
         )
-        return {
+        result = {
             "name": term.name,
             "display_name": term.display_name,
             "definition": term.definition,
@@ -344,11 +360,16 @@ async def get_glossary_term(
             "cluster_siblings": cluster_siblings,
             "ignored": term.ignored,
         }
+        if effective_domain == "cross-domain":
+            result["spanning_domains"] = _resolve_entity_domains(
+                entity.id if entity else None, vs, source_to_domain
+            )
+        return result
 
     # No glossary term — check if entity exists (self-describing)
     if entity:
         effective_domain = entity.domain_id or _resolve_entity_domain(entity.id, vs, source_to_domain)
-        return {
+        result = {
             "name": entity.name,
             "display_name": entity.display_name,
             "definition": None,
@@ -362,6 +383,9 @@ async def get_glossary_term(
             "relationships": relationships,
             "cluster_siblings": cluster_siblings,
         }
+        if effective_domain == "cross-domain":
+            result["spanning_domains"] = _resolve_entity_domains(entity.id, vs, source_to_domain)
+        return result
 
     raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
 
@@ -586,7 +610,24 @@ async def update_definition(
 
     existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
     if not existing:
-        raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
+        # Self-describing term (entity-only, no glossary row) — create companion term
+        active_domains = getattr(managed, "active_domains", []) or []
+        entity = vs.find_entity_by_name(name, domain_ids=active_domains, session_id=session_id)
+        if not entity:
+            raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
+        companion = GlossaryTerm(
+            id=_make_term_id(name, managed.user_id),
+            name=name.lower(),
+            display_name=display_entity_name(name),
+            definition="",
+            semantic_type=entity.semantic_type,
+            status="draft",
+            provenance="human",
+            session_id=session_id,
+            user_id=managed.user_id,
+        )
+        vs.add_glossary_term(companion)
+        existing = companion
 
     updates = {}
     if request.definition is not None:

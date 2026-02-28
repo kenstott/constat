@@ -227,7 +227,7 @@ class DuckDBVectorStore(VectorStoreBackend):
         reranker_model: str | None = None,
         cluster_min_terms: int = 2,
         cluster_divisor: int = 5,
-        cluster_max_k: int | None = None,
+        cluster_max_k: int = 500,
         store_chunk_text: bool = True,
     ):
         """Initialize DuckDB vector store.
@@ -343,6 +343,14 @@ class DuckDBVectorStore(VectorStoreBackend):
                 entity_id VARCHAR NOT NULL,
                 confidence FLOAT DEFAULT 1.0,
                 PRIMARY KEY (chunk_id, entity_id)
+            )
+        """)
+
+        # Store source URLs for crawled sub-documents (persisted across restarts)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS document_urls (
+                document_name VARCHAR PRIMARY KEY,
+                source_url VARCHAR NOT NULL
             )
         """)
 
@@ -527,6 +535,52 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
+        # NER scope cache tables
+        self._create_ner_scope_cache_tables()
+
+    def _create_ner_scope_cache_tables(self) -> None:
+        """Create NER scope cache tables for cross-session entity caching."""
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS ner_scope_cache (
+                fingerprint VARCHAR PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                entity_count INTEGER DEFAULT 0
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS ner_cached_entities (
+                fingerprint VARCHAR NOT NULL,
+                id VARCHAR NOT NULL,
+                name VARCHAR NOT NULL,
+                display_name VARCHAR NOT NULL,
+                semantic_type VARCHAR NOT NULL,
+                ner_type VARCHAR,
+                domain_id VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS ner_cached_chunk_entities (
+                fingerprint VARCHAR NOT NULL,
+                chunk_id VARCHAR NOT NULL,
+                entity_id VARCHAR NOT NULL,
+                confidence FLOAT DEFAULT 1.0
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS ner_cached_clusters (
+                fingerprint VARCHAR NOT NULL,
+                term_name VARCHAR NOT NULL,
+                cluster_id INTEGER NOT NULL
+            )
+        """)
+        try:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_ent_fp ON ner_cached_entities(fingerprint)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_ce_fp ON ner_cached_chunk_entities(fingerprint)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_ner_cache_cl_fp ON ner_cached_clusters(fingerprint)")
+        except Exception:
+            pass
+
     def _ensure_incremental_schema(self) -> None:
         """Create tables added after initial schema, for pre-existing databases."""
         self._conn.execute("""
@@ -537,10 +591,170 @@ class DuckDBVectorStore(VectorStoreBackend):
                 PRIMARY KEY (term_name, session_id)
             )
         """)
+        self._create_ner_scope_cache_tables()
         try:
             self._conn.execute("ALTER TABLE entity_relationships ADD COLUMN user_edited BOOLEAN DEFAULT FALSE")
         except Exception:
             pass
+
+    # =========================================================================
+    # NER Scope Cache
+    # =========================================================================
+
+    def has_ner_scope_cache(self, fingerprint: str) -> bool:
+        """Check if a valid scope cache entry exists for the given fingerprint."""
+        row = self._conn.execute(
+            "SELECT entity_count FROM ner_scope_cache WHERE fingerprint = ?",
+            [fingerprint],
+        ).fetchone()
+        if row is None:
+            return False
+        if row[0] == 0:
+            # Stale cache with 0 entities — evict and treat as miss
+            self._evict_ner_scope_fingerprint(fingerprint)
+            logger.info(f"Evicted empty NER scope cache for fingerprint {fingerprint[:12]}...")
+            return False
+        return True
+
+    def restore_ner_scope_cache(self, fingerprint: str, session_id: str) -> int:
+        """Restore cached NER results into session tables.
+
+        Returns:
+            Number of entities restored.
+        """
+        # Clear any stale entities with IDs we're about to restore
+        # (old session entities persist in DuckDB after server restart)
+        self._conn.execute(
+            """
+            DELETE FROM chunk_entities WHERE entity_id IN (
+                SELECT id FROM ner_cached_entities WHERE fingerprint = ?
+            )
+            """,
+            [fingerprint],
+        )
+        self._conn.execute(
+            """
+            DELETE FROM entities WHERE id IN (
+                SELECT id FROM ner_cached_entities WHERE fingerprint = ?
+            )
+            """,
+            [fingerprint],
+        )
+
+        # Also clear any existing entities for this new session (should be empty, but be safe)
+        self._conn.execute(
+            "DELETE FROM chunk_entities WHERE entity_id IN (SELECT id FROM entities WHERE session_id = ?)",
+            [session_id],
+        )
+        self._conn.execute("DELETE FROM entities WHERE session_id = ?", [session_id])
+        self._conn.execute("DELETE FROM glossary_clusters WHERE session_id = ?", [session_id])
+
+        # Copy entities
+        self._conn.execute(
+            """
+            INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
+            SELECT id, name, display_name, semantic_type, ner_type, ?, domain_id, created_at
+            FROM ner_cached_entities WHERE fingerprint = ?
+            """,
+            [session_id, fingerprint],
+        )
+        entity_count = self._conn.execute(
+            "SELECT COUNT(*) FROM ner_cached_entities WHERE fingerprint = ?",
+            [fingerprint],
+        ).fetchone()[0]
+
+        # Copy chunk_entity links
+        self._conn.execute(
+            """
+            INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
+            SELECT chunk_id, entity_id, confidence
+            FROM ner_cached_chunk_entities WHERE fingerprint = ?
+            """,
+            [fingerprint],
+        )
+
+        # Copy cluster assignments
+        self._conn.execute(
+            """
+            INSERT INTO glossary_clusters (term_name, cluster_id, session_id)
+            SELECT term_name, cluster_id, ?
+            FROM ner_cached_clusters WHERE fingerprint = ?
+            """,
+            [session_id, fingerprint],
+        )
+
+        self._clusters_dirty = False
+        logger.info(f"Restored NER scope cache: {entity_count} entities for fingerprint {fingerprint[:12]}...")
+        return entity_count
+
+    def store_ner_scope_cache(self, fingerprint: str, session_id: str) -> None:
+        """Store current session NER results into scope cache."""
+        entity_count = self._conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE session_id = ?",
+            [session_id],
+        ).fetchone()[0]
+
+        if entity_count == 0:
+            logger.warning(f"Not caching NER scope with 0 entities for fingerprint {fingerprint[:12]}...")
+            return
+
+        # Remove any existing cache for this fingerprint
+        self._evict_ner_scope_fingerprint(fingerprint)
+
+        self._conn.execute(
+            "INSERT INTO ner_scope_cache (fingerprint, entity_count) VALUES (?, ?)",
+            [fingerprint, entity_count],
+        )
+
+        # Copy entities (without session_id — it's scope-level)
+        self._conn.execute(
+            """
+            INSERT INTO ner_cached_entities (fingerprint, id, name, display_name, semantic_type, ner_type, domain_id, created_at)
+            SELECT ?, id, name, display_name, semantic_type, ner_type, domain_id, created_at
+            FROM entities WHERE session_id = ?
+            """,
+            [fingerprint, session_id],
+        )
+
+        # Copy chunk_entity links
+        self._conn.execute(
+            """
+            INSERT INTO ner_cached_chunk_entities (fingerprint, chunk_id, entity_id, confidence)
+            SELECT ?, ce.chunk_id, ce.entity_id, ce.confidence
+            FROM chunk_entities ce
+            JOIN entities e ON ce.entity_id = e.id
+            WHERE e.session_id = ?
+            """,
+            [fingerprint, session_id],
+        )
+
+        # Copy cluster assignments
+        self._conn.execute(
+            """
+            INSERT INTO ner_cached_clusters (fingerprint, term_name, cluster_id)
+            SELECT ?, term_name, cluster_id
+            FROM glossary_clusters WHERE session_id = ?
+            """,
+            [fingerprint, session_id],
+        )
+
+        logger.info(f"Stored NER scope cache: {entity_count} entities for fingerprint {fingerprint[:12]}...")
+
+    def evict_ner_scope_cache(self, keep: int = 10) -> None:
+        """Evict oldest scope cache entries beyond the keep limit."""
+        rows = self._conn.execute(
+            "SELECT fingerprint FROM ner_scope_cache ORDER BY created_at DESC OFFSET ?",
+            [keep],
+        ).fetchall()
+        for (fp,) in rows:
+            self._evict_ner_scope_fingerprint(fp)
+
+    def _evict_ner_scope_fingerprint(self, fingerprint: str) -> None:
+        """Remove a single scope cache entry and all associated data."""
+        self._conn.execute("DELETE FROM ner_cached_clusters WHERE fingerprint = ?", [fingerprint])
+        self._conn.execute("DELETE FROM ner_cached_chunk_entities WHERE fingerprint = ?", [fingerprint])
+        self._conn.execute("DELETE FROM ner_cached_entities WHERE fingerprint = ?", [fingerprint])
+        self._conn.execute("DELETE FROM ner_scope_cache WHERE fingerprint = ?", [fingerprint])
 
     # =========================================================================
     # Visibility filters — single source of truth for scoping queries
@@ -1418,6 +1632,21 @@ class DuckDBVectorStore(VectorStoreBackend):
             result = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
         return result[0] if result else 0
 
+    def store_document_url(self, document_name: str, source_url: str) -> None:
+        """Persist a source URL for a crawled sub-document."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO document_urls (document_name, source_url) VALUES (?, ?)",
+            [document_name, source_url],
+        )
+
+    def get_document_url(self, document_name: str) -> str | None:
+        """Get the persisted source URL for a document."""
+        row = self._conn.execute(
+            "SELECT source_url FROM document_urls WHERE document_name = ?",
+            [document_name],
+        ).fetchone()
+        return row[0] if row else None
+
     def search_by_source(
         self,
         query_embedding: np.ndarray,
@@ -1593,20 +1822,28 @@ class DuckDBVectorStore(VectorStoreBackend):
                     entity.created_at,
                 ))
 
-        # Insert entities one at a time, skipping duplicates
         conn = self._conn
-        for record in records:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    record,
-                )
-            except Exception:
-                # Entity already exists, skip
-                pass
+        try:
+            conn.executemany(
+                """
+                INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                records,
+            )
+        except Exception:
+            # Batch failed (likely duplicate key) — fall back to row-by-row
+            for record in records:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO entities (id, name, display_name, semantic_type, ner_type, session_id, domain_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        record,
+                    )
+                except Exception:
+                    pass
         self._clusters_dirty = True
 
     def link_chunk_entities(
@@ -1632,20 +1869,28 @@ class DuckDBVectorStore(VectorStoreBackend):
 
         logger.debug(f"link_chunk_entities: inserting {len(unique_records)} links")
 
-        # Insert links one at a time, skipping duplicates
         conn = self._conn
-        for record in unique_records:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
-                    VALUES (?, ?, ?)
-                    """,
-                    record,
-                )
-            except Exception:
-                # Link already exists, skip
-                pass
+        try:
+            conn.executemany(
+                """
+                INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
+                VALUES (?, ?, ?)
+                """,
+                unique_records,
+            )
+        except Exception:
+            # Batch failed (likely duplicate key) — fall back to row-by-row
+            for record in unique_records:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO chunk_entities (chunk_id, entity_id, confidence)
+                        VALUES (?, ?, ?)
+                        """,
+                        record,
+                    )
+                except Exception:
+                    pass
 
     def get_entities_for_chunk(
         self,
@@ -3148,13 +3393,14 @@ class DuckDBVectorStore(VectorStoreBackend):
             """,
             [session_id],
         ).fetchall()
+        lower_to_key = {k.lower(): k for k in name_to_vec}
         for gt_name, embedding in glossary_rows:
-            # Remove any case-variant entity entry before adding glossary entry
             key = gt_name.lower()
-            for existing in list(name_to_vec.keys()):
-                if existing.lower() == key and existing != gt_name:
-                    del name_to_vec[existing]
+            existing = lower_to_key.get(key)
+            if existing and existing != gt_name:
+                del name_to_vec[existing]
             name_to_vec[gt_name] = np.array(embedding, dtype=np.float32)
+            lower_to_key[key] = gt_name
         logger.debug(f"[_rebuild_clusters] {len(glossary_rows)} glossary rows, total vectors: {len(name_to_vec)}")
 
         if len(name_to_vec) < self._cluster_min_terms:
@@ -3164,14 +3410,13 @@ class DuckDBVectorStore(VectorStoreBackend):
             self._clusters_dirty = False
             return
 
-        from sklearn.cluster import KMeans
+        from sklearn.cluster import MiniBatchKMeans
 
         term_names = list(name_to_vec.keys())
         X = np.vstack([name_to_vec[n] for n in term_names])
         k = max(2, len(term_names) // self._cluster_divisor)
-        if self._cluster_max_k is not None:
-            k = min(k, self._cluster_max_k)
-        kmeans = KMeans(n_clusters=k, n_init="auto", random_state=42)
+        k = min(k, self._cluster_max_k)
+        kmeans = MiniBatchKMeans(n_clusters=k, random_state=42, batch_size=1024)
         labels = kmeans.fit_predict(X)
 
         self._conn.execute(
@@ -3179,22 +3424,19 @@ class DuckDBVectorStore(VectorStoreBackend):
         )
         # Deduplicate by lowercased name (entities and glossary terms may differ in casing)
         seen: set[str] = set()
+        batch = []
         for name, cluster_id in zip(term_names, labels):
             key = name.lower()
             if key in seen:
                 continue
             seen.add(key)
-            try:
-                self._conn.execute(
-                    "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
-                    [name, int(cluster_id), session_id],
-                )
-            except Exception:
-                # Concurrent rebuild race — update instead
-                self._conn.execute(
-                    "UPDATE glossary_clusters SET cluster_id = ? WHERE term_name = ? AND session_id = ?",
-                    [int(cluster_id), name, session_id],
-                )
+            batch.append((name, int(cluster_id), session_id))
+
+        if batch:
+            self._conn.executemany(
+                "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
+                batch,
+            )
 
         self._clusters_dirty = False
 
