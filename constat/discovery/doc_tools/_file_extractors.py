@@ -257,9 +257,23 @@ def _convert_html_to_markdown(html: str) -> str:
     Uses stdlib html.parser — no external dependencies.
     Handles: headings, paragraphs, lists (ul/ol/li), <br>, <pre>/<code>,
     bold, italic, links, and tables.
+    Strips navigation chrome (nav, aside, sidebar, navbox, etc.) — link-heavy
+    regions are the crawler's job, not NER input.
     """
     from html.parser import HTMLParser
     import re
+
+    # Tags whose content is navigation chrome, not article content
+    _SKIP_TAGS = frozenset({"nav", "aside", "noscript", "script", "style"})
+
+    # CSS class/id/role patterns indicating non-content regions
+    _SKIP_ATTR_RE = re.compile(
+        r"sidebar|navbox|navbar|navigation|toc\b|catlinks"
+        r"|mw-panel|mw-head|mw-editsection"
+        r"|menu|breadcrumb|noprint"
+        r"|portal|sister-?project|interlanguage|authority-control",
+        re.IGNORECASE,
+    )
 
     class _MarkdownConverter(HTMLParser):
         def __init__(self):
@@ -272,9 +286,27 @@ def _convert_html_to_markdown(html: str) -> str:
             self._href: str | None = None
             self._link_text: list[str] = []
             self._in_link = False
+            self._skip_depth = 0  # >0 means inside a skipped element
+
+        def _should_skip(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+            if tag in _SKIP_TAGS:
+                return True
+            attr_dict = dict(attrs)
+            for val in (attr_dict.get("class", ""), attr_dict.get("id", "")):
+                if val and _SKIP_ATTR_RE.search(val):
+                    return True
+            if attr_dict.get("role") in ("navigation", "banner", "contentinfo"):
+                return True
+            return False
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
             tag = tag.lower()
+            if self._skip_depth > 0:
+                self._skip_depth += 1
+                return
+            if self._should_skip(tag, attrs):
+                self._skip_depth = 1
+                return
             self._tag_stack.append(tag)
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 self._output.append("\n\n")
@@ -313,6 +345,9 @@ def _convert_html_to_markdown(html: str) -> str:
 
         def handle_endtag(self, tag: str):
             tag = tag.lower()
+            if self._skip_depth > 0:
+                self._skip_depth -= 1
+                return
             if self._tag_stack and self._tag_stack[-1] == tag:
                 self._tag_stack.pop()
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
@@ -359,6 +394,8 @@ def _convert_html_to_markdown(html: str) -> str:
                 self._output.append("\n|---|")
 
         def handle_data(self, data: str):
+            if self._skip_depth > 0:
+                return
             if self._in_link:
                 self._link_text.append(data)
                 return
