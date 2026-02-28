@@ -251,6 +251,35 @@ def _extract_pptx_text_from_bytes(pptx_bytes: bytes) -> str:
     return _extract_pptx_content(Presentation(BytesIO(pptx_bytes)))
 
 
+def _strip_html_chrome(html: str) -> str:
+    """Pre-strip navigation chrome tags from raw HTML.
+
+    Removes <nav>, <aside>, <noscript>, <script>, <style> and elements
+    with navigation-related CSS classes/IDs. Uses regex on raw HTML
+    since html.parser can't handle unclosed tags reliably.
+    """
+    import re
+    # Strip well-known chrome tags — require closing tag (skip unclosed)
+    for tag in ("nav", "aside", "noscript", "script", "style"):
+        html = re.sub(
+            rf"<{tag}[\s>].*?</{tag}>",
+            "", html, flags=re.DOTALL | re.IGNORECASE,
+        )
+    # Strip divs/sections with navigation-related class/id attributes
+    _NAV_ATTR_RE = re.compile(
+        r"<(div|section|ul|table)[^>]*?"
+        r"(?:class|id|role)\s*=\s*[\"'][^\"']*?"
+        r"(?:sidebar|navbox|navbar|navigation|toc\b|catlinks"
+        r"|mw-panel|mw-head|mw-editsection"
+        r"|menu|breadcrumb|noprint"
+        r"|portal|sister-?project|interlanguage|authority-control)"
+        r"[^\"']*?[\"'][^>]*>.*?</\1>",
+        re.DOTALL | re.IGNORECASE,
+    )
+    html = _NAV_ATTR_RE.sub("", html)
+    return html
+
+
 def _convert_html_to_markdown(html: str) -> str:
     """Convert HTML to markdown, preserving heading structure.
 
@@ -263,17 +292,7 @@ def _convert_html_to_markdown(html: str) -> str:
     from html.parser import HTMLParser
     import re
 
-    # Tags whose content is navigation chrome, not article content
-    _SKIP_TAGS = frozenset({"nav", "aside", "noscript", "script", "style"})
-
-    # CSS class/id/role patterns indicating non-content regions
-    _SKIP_ATTR_RE = re.compile(
-        r"sidebar|navbox|navbar|navigation|toc\b|catlinks"
-        r"|mw-panel|mw-head|mw-editsection"
-        r"|menu|breadcrumb|noprint"
-        r"|portal|sister-?project|interlanguage|authority-control",
-        re.IGNORECASE,
-    )
+    html = _strip_html_chrome(html)
 
     class _MarkdownConverter(HTMLParser):
         def __init__(self):
@@ -286,27 +305,9 @@ def _convert_html_to_markdown(html: str) -> str:
             self._href: str | None = None
             self._link_text: list[str] = []
             self._in_link = False
-            self._skip_depth = 0  # >0 means inside a skipped element
-
-        def _should_skip(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
-            if tag in _SKIP_TAGS:
-                return True
-            attr_dict = dict(attrs)
-            for val in (attr_dict.get("class", ""), attr_dict.get("id", "")):
-                if val and _SKIP_ATTR_RE.search(val):
-                    return True
-            if attr_dict.get("role") in ("navigation", "banner", "contentinfo"):
-                return True
-            return False
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
             tag = tag.lower()
-            if self._skip_depth > 0:
-                self._skip_depth += 1
-                return
-            if self._should_skip(tag, attrs):
-                self._skip_depth = 1
-                return
             self._tag_stack.append(tag)
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 self._output.append("\n\n")
@@ -345,9 +346,6 @@ def _convert_html_to_markdown(html: str) -> str:
 
         def handle_endtag(self, tag: str):
             tag = tag.lower()
-            if self._skip_depth > 0:
-                self._skip_depth -= 1
-                return
             if self._tag_stack and self._tag_stack[-1] == tag:
                 self._tag_stack.pop()
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
@@ -394,8 +392,6 @@ def _convert_html_to_markdown(html: str) -> str:
                 self._output.append("\n|---|")
 
         def handle_data(self, data: str):
-            if self._skip_depth > 0:
-                return
             if self._in_link:
                 self._link_text.append(data)
                 return
