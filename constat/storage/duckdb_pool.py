@@ -102,12 +102,33 @@ def _try_kill_orphan_lock_holder(error_msg: str) -> None:
             pass
 
 
+class _LockedConnection:
+    """Proxy that serializes execute/executemany calls through a lock."""
+
+    __slots__ = ("_conn", "_lock")
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, lock: threading.RLock):
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, *args, **kwargs):
+        with self._lock:
+            return self._conn.execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        with self._lock:
+            return self._conn.executemany(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 class DuckDBConnectionPool:
     """Thread-safe DuckDB access using a single serialized connection.
 
     One duckdb.connect() is created at init. All threads share this
-    single connection. Access is not locked here — callers that need
-    atomicity across multiple statements should use their own locking.
+    single connection protected by a reentrant lock. The lock serializes
+    all access — DuckDB's C++ engine crashes on concurrent cursor access.
 
     Attributes:
         _db_path: Path to the DuckDB database file
@@ -124,6 +145,7 @@ class DuckDBConnectionPool:
         self._read_only = read_only
         self._config = config or {}
         self._closed = False
+        self._lock = threading.RLock()
 
         # Single connection — retry on lock conflict
         import time
@@ -153,23 +175,24 @@ class DuckDBConnectionPool:
     def db_path(self) -> str:
         return self._db_path
 
-    def get_connection(self) -> duckdb.DuckDBPyConnection:
-        """Get the single shared connection.
+    def get_connection(self) -> "_LockedConnection":
+        """Get the single shared connection wrapped in a locking proxy.
 
         Returns:
-            The shared DuckDB connection
+            Locked proxy that serializes execute/executemany calls
 
         Raises:
             RuntimeError: If the pool has been closed
         """
         if self._closed:
             raise RuntimeError("Connection pool has been closed")
-        return self._shared_conn
+        return _LockedConnection(self._shared_conn, self._lock)
 
     @contextmanager
     def connection(self) -> Generator[duckdb.DuckDBPyConnection, None, None]:
-        """Context manager for the shared connection."""
-        yield self.get_connection()
+        """Context manager for the shared connection (holds lock for duration)."""
+        with self._lock:
+            yield self.get_connection()
 
     def close(self) -> None:
         """Close the shared connection."""
