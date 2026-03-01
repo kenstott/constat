@@ -279,42 +279,59 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
 
 
 def _create_event_handler(managed: ManagedSession):
-    """Create an event handler that queues events for WebSocket delivery."""
+    """Create an event handler that queues events for WebSocket delivery.
+
+    The handler is called from a thread-pool thread (run_in_executor), so
+    we use loop.call_soon_threadsafe to schedule the queue put on the
+    event loop.  This ensures the asyncio.Queue wakes up immediately
+    rather than waiting until the executor future resolves.
+    """
+    loop = asyncio.get_event_loop()
+
+    # Map session event types to API event types
+    event_type_map = {
+        "step_start": EventType.STEP_START,
+        "generating": EventType.STEP_GENERATING,
+        "executing": EventType.STEP_EXECUTING,
+        "step_complete": EventType.STEP_COMPLETE,
+        "step_error": EventType.STEP_ERROR,
+        "step_failed": EventType.STEP_FAILED,
+        "facts_extracted": EventType.FACTS_EXTRACTED,
+        "progress": EventType.PROGRESS,
+        "dynamic_context": EventType.DYNAMIC_CONTEXT,
+        "planning_start": EventType.PLANNING_START,
+        "proof_start": EventType.PROOF_START,
+        "replanning": EventType.REPLANNING,
+        "synthesizing": EventType.SYNTHESIZING,
+        "generating_insights": EventType.GENERATING_INSIGHTS,
+        # Fact resolution events (for proof DAG)
+        "fact_start": EventType.FACT_START,
+        "fact_planning": EventType.FACT_PLANNING,
+        "fact_executing": EventType.FACT_EXECUTING,
+        "fact_resolved": EventType.FACT_RESOLVED,
+        "fact_failed": EventType.FACT_FAILED,
+        "dag_execution_start": EventType.DAG_EXECUTION_START,
+        "inference_code": EventType.INFERENCE_CODE,
+        "premise_resolving": EventType.PREMISE_RESOLVING,
+        "premise_resolved": EventType.PREMISE_RESOLVED,
+        "inference_executing": EventType.INFERENCE_EXECUTING,
+        "inference_complete": EventType.INFERENCE_COMPLETE,
+        "proof_complete": EventType.PROOF_COMPLETE,
+        "proof_summary_ready": EventType.PROOF_SUMMARY_READY,
+    }
+
+    def _enqueue(payload: dict) -> None:
+        """Put event on queue from any thread."""
+        try:
+            managed.event_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            logger.warning(f"Event queue full for session {managed.session_id}")
 
     def handle_event(event: StepEvent) -> None:
         """Handle session events by queuing them."""
         try:
-            # Log dynamic_context events for debugging
             if event.event_type == "dynamic_context":
                 logger.info(f"[EVENT_HANDLER] Received dynamic_context event: {event.data}")
-
-            # Map session event types to API event types
-            event_type_map = {
-                "step_start": EventType.STEP_START,
-                "generating": EventType.STEP_GENERATING,
-                "executing": EventType.STEP_EXECUTING,
-                "step_complete": EventType.STEP_COMPLETE,
-                "step_error": EventType.STEP_ERROR,
-                "step_failed": EventType.STEP_FAILED,
-                "facts_extracted": EventType.FACTS_EXTRACTED,
-                "progress": EventType.PROGRESS,
-                "dynamic_context": EventType.DYNAMIC_CONTEXT,
-                "planning_start": EventType.PLANNING_START,
-                "proof_start": EventType.PROOF_START,
-                "replanning": EventType.REPLANNING,
-                "synthesizing": EventType.SYNTHESIZING,
-                "generating_insights": EventType.GENERATING_INSIGHTS,
-                # Fact resolution events (for proof DAG)
-                "fact_start": EventType.FACT_START,
-                "fact_planning": EventType.FACT_PLANNING,
-                "fact_executing": EventType.FACT_EXECUTING,
-                "fact_resolved": EventType.FACT_RESOLVED,
-                "fact_failed": EventType.FACT_FAILED,
-                "dag_execution_start": EventType.DAG_EXECUTION_START,
-                "inference_code": EventType.INFERENCE_CODE,
-                "proof_complete": EventType.PROOF_COMPLETE,
-                "proof_summary_ready": EventType.PROOF_SUMMARY_READY,
-            }
 
             api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)
 
@@ -337,11 +354,15 @@ def _create_event_handler(managed: ManagedSession):
                 data=safe_data,
             )
 
-            # Put event on queue (non-blocking)
+            payload = ws_event.model_dump(mode="json")
+
+            # Schedule on event loop so asyncio.Queue wakes up immediately,
+            # even when called from a worker thread.
             try:
-                managed.event_queue.put_nowait(ws_event.model_dump(mode="json"))
-            except asyncio.QueueFull:
-                logger.warning(f"Event queue full for session {managed.session_id}")
+                loop.call_soon_threadsafe(_enqueue, payload)
+            except RuntimeError:
+                # Loop closed — fall back to direct put
+                _enqueue(payload)
 
         except Exception as e:
             logger.error(f"Error handling event: {e}")
@@ -380,6 +401,21 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
         # Sync active domains to doc_tools before query execution
         if managed.session.doc_tools and hasattr(managed, 'active_domains'):
             managed.session.doc_tools._active_domain_ids = managed.active_domains or []
+
+        # Slash commands that need the async pipeline (for real-time event delivery)
+        stripped = problem.strip()
+        if stripped.startswith("/"):
+            from constat.commands.registry import is_command
+            if is_command(stripped):
+                result = managed.session._handle_slash_command(stripped)
+                output = result.get("output", "")
+                success = result.get("success", True)
+                return {
+                    "success": success,
+                    "output": output,
+                    "final_answer": output,
+                    "error": result.get("error") if not success else None,
+                }
 
         # Auto-detect follow-up: if session already has datastore tables, treat as follow-up
         if not is_followup and managed.session.datastore and managed.session.datastore.list_tables():
@@ -528,8 +564,11 @@ async def submit_query(
 
     # Fast path: slash commands bypass async execution pipeline
     # Run synchronously and emit result directly to event queue
+    # Exception: /prove needs the async pipeline for real-time event delivery
     stripped = body.problem.strip()
-    if stripped.startswith("/") and not stripped.lower().startswith("/redo"):
+    _lower = stripped.lower()
+    _async_commands = ("/redo", "/prove")
+    if stripped.startswith("/") and not any(_lower.startswith(c) for c in _async_commands):
         try:
             from constat.commands.registry import is_command
             if is_command(stripped):
