@@ -149,19 +149,7 @@ class ExemplarGenerator:
     def _select_relationships(self, coverage: str):
         if coverage != "comprehensive":
             return []
-        rows = self.vector_store._conn.execute(
-            "SELECT id, subject_name, verb, object_name, sentence, confidence "
-            "FROM entity_relationships WHERE session_id = ? "
-            "ORDER BY confidence DESC",
-            [self.session_id],
-        ).fetchall()
-        return [
-            {
-                "id": r[0], "subject_name": r[1], "verb": r[2],
-                "object_name": r[3], "sentence": r[4] or "", "confidence": r[5],
-            }
-            for r in rows
-        ]
+        return self.vector_store.list_session_relationships(self.session_id)
 
     # ------------------------------------------------------------------
     # LLM generation (batched)

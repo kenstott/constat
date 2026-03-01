@@ -1089,31 +1089,13 @@ class SchemaManager:
 
         # Also delete by pattern matching on document_name (fallback for edge cases)
         # This catches chunks where metadata_cache doesn't have entries
-        if hasattr(self._vector_store, '_conn'):
+        if hasattr(self._vector_store, 'delete_chunks_by_pattern'):
             try:
                 pattern = f"schema:{db_name}.%"
-                # First get chunk_ids for deleting chunk_entities
-                chunk_ids = self._vector_store._conn.execute(
-                    "SELECT chunk_id FROM embeddings WHERE document_name LIKE ?",
-                    [pattern]
-                ).fetchall()
-                chunk_ids = [row[0] for row in chunk_ids]
-
-                if chunk_ids:
-                    # Delete chunk_entities links
-                    placeholders = ",".join(["?" for _ in chunk_ids])
-                    self._vector_store._conn.execute(
-                        f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
-                        chunk_ids
-                    )
-
-                    # Delete embeddings
-                    self._vector_store._conn.execute(
-                        f"DELETE FROM embeddings WHERE chunk_id IN ({placeholders})",
-                        chunk_ids
-                    )
-                    total_deleted += len(chunk_ids)
-                    logger.info(f"_remove_chunks_for_database({db_name}): deleted {len(chunk_ids)} additional chunks by pattern")
+                deleted = self._vector_store.delete_chunks_by_pattern(pattern)
+                total_deleted += deleted
+                if deleted:
+                    logger.info(f"_remove_chunks_for_database({db_name}): deleted {deleted} additional chunks by pattern")
             except Exception as e:
                 logger.warning(f"_remove_chunks_for_database({db_name}): pattern delete failed: {e}")
 

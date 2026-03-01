@@ -199,30 +199,10 @@ class UnifiedDiscovery:
         if not chunks:
             return []
 
-        chunk_ids = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
-        if not chunk_ids:
-            return []
-
         try:
-            placeholders = ",".join(["?" for _ in chunk_ids])
-            result = self._vector_store._conn.execute(
-                f"""
-                SELECT DISTINCT e.name, e.type, COUNT(*) as co_occurrences
-                FROM chunk_entities ce
-                JOIN entities e ON ce.entity_id = e.id
-                WHERE ce.chunk_id IN ({placeholders})
-                  AND e.id != ?
-                GROUP BY e.id, e.name, e.type
-                ORDER BY co_occurrences DESC
-                LIMIT 5
-                """,
-                chunk_ids + [entity_id],
-            ).fetchall()
-
-            return [
-                {"name": row[0], "type": row[1], "co_occurrences": row[2]}
-                for row in result
-            ]
+            return self._vector_store.get_cooccurring_entities(
+                entity_id, self._session_id or "", limit=5,
+            )
         except Exception as e:
             logger.warning(f"Error finding co-occurring entities: {e}")
             return []

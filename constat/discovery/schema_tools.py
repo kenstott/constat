@@ -558,14 +558,8 @@ class SchemaDiscoveryTools:
                         if not effective_domain and entity and source_to_domain:
                             domains_found: list[str] = []
                             try:
-                                doc_rows = vs._conn.execute(
-                                    "SELECT DISTINCT em.document_name "
-                                    "FROM chunk_entities ce "
-                                    "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
-                                    "WHERE ce.entity_id = ? LIMIT 10",
-                                    [entity.id],
-                                ).fetchall()
-                                for (doc_name,) in doc_rows:
+                                doc_names = vs.get_entity_document_names(entity.id, limit=10)
+                                for doc_name in doc_names:
                                     if ":" in doc_name:
                                         src = doc_name.split(":")[1].split(".")[0]
                                         if src in source_to_domain:

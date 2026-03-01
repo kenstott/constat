@@ -128,13 +128,12 @@ class _EntityMixin:
         if not chunks:
             logger.warning(f"extract_entities_for_session({session_id}): no visible chunks found!")
             # Debug: check what's in the database
-            if hasattr(self._vector_store, '_conn'):
-                try:
-                    count = self._vector_store._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
-                    by_domain = self._vector_store._conn.execute("SELECT domain_id, COUNT(*) FROM embeddings GROUP BY domain_id").fetchall()
-                    logger.warning(f"extract_entities_for_session: total embeddings={count}, by_domain={by_domain}")
-                except Exception as e:
-                    logger.warning(f"extract_entities_for_session: failed to check embeddings: {e}")
+            try:
+                count = self._vector_store.count()
+                by_domain = self._vector_store.count_by_domain()
+                logger.warning(f"extract_entities_for_session: total embeddings={count}, by_domain={by_domain}")
+            except Exception as e:
+                logger.warning(f"extract_entities_for_session: failed to check embeddings: {e}")
             return 0
 
         logger.info(f"extract_entities_for_session({session_id}): extracting from {len(chunks)} chunks")
@@ -187,21 +186,14 @@ class _EntityMixin:
         Returns:
             List of DocumentChunk objects
         """
-        if not hasattr(self._vector_store, '_conn'):
+        if not hasattr(self._vector_store, 'get_visible_chunks_with_metadata'):
             return self._vector_store.get_chunks()
 
         from constat.discovery.vector_store import DuckDBVectorStore
 
         chunk_filter, params = DuckDBVectorStore.chunk_visibility_filter(domain_ids)
 
-        result = self._vector_store._conn.execute(
-            f"""
-            SELECT chunk_id, document_name, content, section, chunk_index, domain_id
-            FROM embeddings
-            WHERE {chunk_filter}
-            """,
-            params,
-        ).fetchall()
+        result = self._vector_store.get_visible_chunks_with_metadata(chunk_filter, params)
 
         chunks = []
         for row in result:

@@ -182,14 +182,8 @@ class _CoreMixin:
 
         # Get document names that already have chunks in the vector store
         try:
-            result = self._vector_store._conn.execute("""
-                SELECT DISTINCT document_name
-                FROM embeddings
-                WHERE source = 'document'
-            """).fetchall()
-            indexed_docs = {row[0] for row in result}
+            indexed_docs = set(self._vector_store.get_indexed_document_names(source='document'))
         except Exception:
-            # If query fails, assume nothing is indexed
             indexed_docs = set()
 
         # Return documents in config that are not yet indexed
@@ -481,13 +475,8 @@ class _CoreMixin:
 
             # Clear only DOCUMENT chunks, preserve schema:* and api:* from other managers
             try:
-                self._vector_store._conn.execute("""
-                    DELETE FROM embeddings
-                    WHERE document_name NOT LIKE 'schema:%'
-                      AND document_name NOT LIKE 'api:%'
-                """)
-            except Exception:
-                # Fallback for non-DuckDB backends - this will clear everything
+                self._vector_store.clear_document_chunks()
+            except (AttributeError, Exception):
                 logger.warning("refresh: falling back to full clear (non-DuckDB backend)")
                 self._vector_store.clear()
 
@@ -641,13 +630,8 @@ class _CoreMixin:
         """
         # Clear DOCUMENT chunks only (preserve schema:* and api:* from other managers)
         try:
-            self._vector_store._conn.execute("""
-                DELETE FROM embeddings
-                WHERE document_name NOT LIKE 'schema:%'
-                  AND document_name NOT LIKE 'api:%'
-            """)
-        except Exception:
-            # Fallback for non-DuckDB backends
+            self._vector_store.clear_document_chunks()
+        except (AttributeError, Exception):
             self._vector_store.clear()
 
         # Clear document-sourced entities only

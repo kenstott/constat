@@ -804,6 +804,85 @@ class DuckDBVectorStore(VectorStoreBackend):
     def evict_ner_scope_cache(self, *a, **kw):
         return self._relational.evict_ner_scope_cache(*a, **kw)
 
+    # Phase 2 relational delegations
+
+    def get_entity_document_names(self, *a, **kw):
+        return self._relational.get_entity_document_names(*a, **kw)
+
+    def get_cooccurring_entities(self, *a, **kw):
+        return self._relational.get_cooccurring_entities(*a, **kw)
+
+    def get_cooccurrence_pairs(self, *a, **kw):
+        return self._relational.get_cooccurrence_pairs(*a, **kw)
+
+    def get_cooccurrence_pairs_by_name(self, *a, **kw):
+        return self._relational.get_cooccurrence_pairs_by_name(*a, **kw)
+
+    def get_shared_chunk_ids(self, *a, **kw):
+        return self._relational.get_shared_chunk_ids(*a, **kw)
+
+    def get_entities_with_stats(self, *a, **kw):
+        return self._relational.get_entities_with_stats(*a, **kw)
+
+    def get_visible_entity_names(self, *a, **kw):
+        return self._relational.get_visible_entity_names(*a, **kw)
+
+    def update_entity_name(self, *a, **kw):
+        return self._relational.update_entity_name(*a, **kw)
+
+    def mark_relationship_user_edited(self, *a, **kw):
+        return self._relational.mark_relationship_user_edited(*a, **kw)
+
+    def list_session_relationships(self, *a, **kw):
+        return self._relational.list_session_relationships(*a, **kw)
+
+    def get_promotable_relationships(self, *a, **kw):
+        return self._relational.get_promotable_relationships(*a, **kw)
+
+    def get_glossary_parent_child_pairs(self, *a, **kw):
+        return self._relational.get_glossary_parent_child_pairs(*a, **kw)
+
+    def list_entities_with_refcount(self, *a, **kw):
+        return self._relational.list_entities_with_refcount(*a, **kw)
+
+    def get_entity_references(self, *a, **kw):
+        return self._relational.get_entity_references(*a, **kw)
+
+    def count_session_links(self, *a, **kw):
+        return self._relational.count_session_links(*a, **kw)
+
+    def entity_exists(self, *a, **kw):
+        return self._relational.entity_exists(*a, **kw)
+
+    def get_non_ignored_entities_for_chunk(self, *a, **kw):
+        return self._relational.get_non_ignored_entities_for_chunk(*a, **kw)
+
+    # Phase 2 vector delegations
+
+    def get_indexed_document_names(self, *a, **kw):
+        return self._vector.get_indexed_document_names(*a, **kw)
+
+    def clear_document_chunks(self, *a, **kw):
+        return self._vector.clear_document_chunks(*a, **kw)
+
+    def get_chunks_by_document(self, *a, **kw):
+        return self._vector.get_chunks_by_document(*a, **kw)
+
+    def get_chunk_content(self, *a, **kw):
+        return self._vector.get_chunk_content(*a, **kw)
+
+    def get_shared_chunk_content(self, *a, **kw):
+        return self._vector.get_shared_chunk_content(*a, **kw)
+
+    def get_visible_chunks_with_metadata(self, *a, **kw):
+        return self._vector.get_visible_chunks_with_metadata(*a, **kw)
+
+    def delete_chunks_by_pattern(self, *a, **kw):
+        return self._vector.delete_chunks_by_pattern(*a, **kw)
+
+    def count_by_domain(self, *a, **kw):
+        return self._vector.count_by_domain(*a, **kw)
+
     @staticmethod
     def entity_visibility_filter(*a, **kw):
         return RelationalStore.entity_visibility_filter(*a, **kw)

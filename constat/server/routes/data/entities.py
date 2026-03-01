@@ -94,24 +94,7 @@ async def list_entities(
             return related_entities_cache[ent_id_param]
 
         try:
-            # Find chunks where this entity appears, then find other entities in those chunks
-            co_occurrence_result = vector_store._conn.execute("""
-                SELECT e2.name, e2.semantic_type, COUNT(*) as co_occurrences
-                FROM chunk_entities ce1
-                JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
-                JOIN entities e2 ON ce2.entity_id = e2.id
-                WHERE ce1.entity_id = ?
-                  AND ce2.entity_id != ce1.entity_id
-                  AND (e2.session_id IS NULL OR e2.session_id = ?)
-                GROUP BY e2.id, e2.name, e2.semantic_type
-                ORDER BY co_occurrences DESC
-                LIMIT ?
-            """, [ent_id_param, sess_id, limit]).fetchall()
-
-            related_list = [
-                {"name": co_row[0], "type": co_row[1] or "concept", "co_occurrences": co_row[2]}
-                for co_row in co_occurrence_result
-            ]
+            related_list = vector_store.get_cooccurring_entities(ent_id_param, sess_id, limit)
             related_entities_cache[ent_id_param] = related_list
             return related_list
         except Exception as err:
@@ -236,30 +219,11 @@ async def list_entities(
             )
 
             # Debug: check chunk_entities for this session (via entity_id join)
-            ce_count = vs._conn.execute(
-                "SELECT COUNT(*) FROM chunk_entities ce JOIN entities e ON ce.entity_id = e.id WHERE e.session_id = ?",
-                [session_id],
-            ).fetchone()[0]
+            ce_count = vs.count_session_links(session_id)
             print(f"[ENTITIES] session_id={session_id[:8]}, chunk_entities for session: {ce_count}")
 
-            # Debug: check for performance review entity specifically
-            pr_check = vs._conn.execute("""
-                SELECT e.id, e.name,
-                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as total_links
-                FROM entities e
-                WHERE LOWER(e.name) LIKE '%performance%' AND e.session_id = ?
-            """, [session_id]).fetchall()
-            for row in pr_check:
-                print(f"[ENTITIES] Performance entity: id={row[0][:8]}, name={row[1]}, total_links={row[2]}")
-
             # Get entities visible to this session
-            result = vs._conn.execute(f"""
-                SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-                       (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
-                FROM entities e
-                WHERE {where_clause}
-                ORDER BY e.name
-            """, params).fetchall()
+            result = vs.list_entities_with_refcount(where_clause, params)
 
             for row in result:
                 ent_id, name, display_name, semantic_type, ner_type, ref_count = row
@@ -273,16 +237,7 @@ async def list_entities(
                 # Get reference locations for this entity
                 references = []
                 if ref_count > 0:
-                    ref_result = vs._conn.execute("""
-                        SELECT em.document_name, em.section, ce.confidence
-                        FROM chunk_entities ce
-                        JOIN embeddings em ON ce.chunk_id = em.chunk_id
-                        WHERE ce.entity_id = ?
-                        ORDER BY ce.confidence DESC
-                        LIMIT 10
-                    """, [ent_id]).fetchall()
-                    for ref_row in ref_result:
-                        doc_name, section, confidence = ref_row
+                    for doc_name, section, confidence in vs.get_entity_references(ent_id):
                         references.append({
                             "document": doc_name,
                             "section": section,

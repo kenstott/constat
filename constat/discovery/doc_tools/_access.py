@@ -225,15 +225,7 @@ class _AccessMixin:
         """
         try:
             # Query chunks for this document
-            chunks = self._vector_store._conn.execute(
-                """
-                SELECT content, section, chunk_index
-                FROM embeddings
-                WHERE document_name = ?
-                ORDER BY chunk_index
-                """,
-                [name],
-            ).fetchall()
+            chunks = self._vector_store.get_chunks_by_document(name)
 
             if not chunks:
                 logger.warning(f"Document '{name}' not found in embeddings table")

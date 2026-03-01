@@ -610,3 +610,95 @@ class DuckDBVectorBackend(VectorBackend):
             [document_name],
         ).fetchone()
         return row[0] if row else None
+
+    # ------------------------------------------------------------------
+    # Phase 2: caller-facing query methods
+    # ------------------------------------------------------------------
+
+    def get_indexed_document_names(self, source: str | None = None) -> list[str]:
+        if source:
+            rows = self._conn.execute(
+                "SELECT DISTINCT document_name FROM embeddings WHERE source = ?",
+                [source],
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT DISTINCT document_name FROM embeddings"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def clear_document_chunks(self) -> None:
+        self._conn.execute("""
+            DELETE FROM embeddings
+            WHERE document_name NOT LIKE 'schema:%'
+              AND document_name NOT LIKE 'api:%'
+        """)
+        self._fts_dirty = True
+
+    def get_chunks_by_document(self, document_name: str) -> list[tuple]:
+        return self._conn.execute(
+            """
+            SELECT content, section, chunk_index
+            FROM embeddings
+            WHERE document_name = ?
+            ORDER BY chunk_index
+            """,
+            [document_name],
+        ).fetchall()
+
+    def get_chunk_content(self, chunk_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT content FROM embeddings WHERE chunk_id = ?",
+            [chunk_id],
+        ).fetchone()
+        return row[0] if row else None
+
+    def get_shared_chunk_content(
+        self, e1_id: str, e2_id: str, limit: int = 3,
+    ) -> list[str]:
+        rows = self._conn.execute("""
+            SELECT DISTINCT e.content
+            FROM chunk_entities ce1
+            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+            JOIN embeddings e ON ce1.chunk_id = e.chunk_id
+            WHERE ce1.entity_id = ? AND ce2.entity_id = ?
+            LIMIT ?
+        """, [e1_id, e2_id, limit]).fetchall()
+        return [r[0] for r in rows if r[0]]
+
+    def get_visible_chunks_with_metadata(
+        self, chunk_filter: str, params: list,
+    ) -> list[tuple]:
+        return self._conn.execute(
+            f"""
+            SELECT chunk_id, document_name, content, section, chunk_index, domain_id
+            FROM embeddings
+            WHERE {chunk_filter}
+            """,
+            params,
+        ).fetchall()
+
+    def delete_chunks_by_pattern(self, pattern: str) -> int:
+        chunk_ids = self._conn.execute(
+            "SELECT chunk_id FROM embeddings WHERE document_name LIKE ?",
+            [pattern],
+        ).fetchall()
+        chunk_ids = [r[0] for r in chunk_ids]
+        if not chunk_ids:
+            return 0
+        placeholders = ",".join(["?" for _ in chunk_ids])
+        self._conn.execute(
+            f"DELETE FROM chunk_entities WHERE chunk_id IN ({placeholders})",
+            chunk_ids,
+        )
+        self._conn.execute(
+            f"DELETE FROM embeddings WHERE chunk_id IN ({placeholders})",
+            chunk_ids,
+        )
+        self._fts_dirty = True
+        return len(chunk_ids)
+
+    def count_by_domain(self) -> list[tuple]:
+        return self._conn.execute(
+            "SELECT domain_id, COUNT(*) FROM embeddings GROUP BY domain_id"
+        ).fetchall()

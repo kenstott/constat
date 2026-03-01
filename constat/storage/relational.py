@@ -1651,3 +1651,253 @@ class RelationalStore:
             fts_dirty_callback()
         logger.debug(f"delete_document({document_name}, {session_id}): deleted {len(chunk_ids)} chunks")
         return len(chunk_ids)
+
+    # ------------------------------------------------------------------
+    # Phase 2: caller-facing query methods
+    # ------------------------------------------------------------------
+
+    def get_entity_document_names(self, entity_id: str, limit: int = 20) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT em.document_name FROM chunk_entities ce "
+            "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
+            "WHERE ce.entity_id = ? LIMIT ?",
+            [entity_id, limit],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_cooccurring_entities(
+        self, entity_id: str, session_id: str, limit: int = 5,
+    ) -> list[dict]:
+        rows = self._conn.execute("""
+            SELECT e2.name, e2.semantic_type, COUNT(*) as co_occurrences
+            FROM chunk_entities ce1
+            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+            JOIN entities e2 ON ce2.entity_id = e2.id
+            WHERE ce1.entity_id = ?
+              AND ce2.entity_id != ce1.entity_id
+              AND (e2.session_id IS NULL OR e2.session_id = ?)
+            GROUP BY e2.id, e2.name, e2.semantic_type
+            ORDER BY co_occurrences DESC
+            LIMIT ?
+        """, [entity_id, session_id, limit]).fetchall()
+        return [
+            {"name": r[0], "type": r[1] or "concept", "co_occurrences": r[2]}
+            for r in rows
+        ]
+
+    def get_cooccurrence_pairs(
+        self,
+        session_id: str,
+        min_count: int = 2,
+        limit: int | None = None,
+        include_types: bool = False,
+    ) -> list[tuple]:
+        if include_types:
+            sql = """
+                SELECT e1.id, e1.name, e1.semantic_type,
+                       e2.id, e2.name, e2.semantic_type,
+                       COUNT(*) as co_count
+                FROM chunk_entities ce1
+                JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+                JOIN entities e1 ON ce1.entity_id = e1.id
+                JOIN entities e2 ON ce2.entity_id = e2.id
+                WHERE e1.session_id = ? AND e2.session_id = ?
+                GROUP BY e1.id, e1.name, e1.semantic_type, e2.id, e2.name, e2.semantic_type
+                HAVING COUNT(*) >= ?
+                ORDER BY co_count DESC
+            """
+        else:
+            sql = """
+                SELECT e1.id, e1.name, e2.id, e2.name, COUNT(*) as co_count
+                FROM chunk_entities ce1
+                JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+                JOIN entities e1 ON ce1.entity_id = e1.id
+                JOIN entities e2 ON ce2.entity_id = e2.id
+                WHERE e1.session_id = ? AND e2.session_id = ?
+                GROUP BY e1.id, e1.name, e2.id, e2.name
+                HAVING COUNT(*) >= ?
+                ORDER BY co_count DESC
+            """
+        params: list = [session_id, session_id, min_count]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self._conn.execute(sql, params).fetchall()
+
+    def get_cooccurrence_pairs_by_name(
+        self,
+        session_id: str,
+        min_count: int = 3,
+    ) -> list[tuple]:
+        return self._conn.execute("""
+            SELECT e1.name, e2.name, COUNT(*) as co_count
+            FROM chunk_entities ce1
+            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
+            JOIN entities e1 ON ce1.entity_id = e1.id
+            JOIN entities e2 ON ce2.entity_id = e2.id
+            WHERE e1.session_id = ? AND e2.session_id = ?
+            GROUP BY e1.name, e2.name
+            HAVING COUNT(*) >= ?
+            ORDER BY co_count DESC
+        """, [session_id, session_id, min_count]).fetchall()
+
+    def get_shared_chunk_ids(
+        self, e1_id: str, e2_id: str, limit: int = 10,
+    ) -> list[str]:
+        rows = self._conn.execute("""
+            SELECT DISTINCT ce1.chunk_id
+            FROM chunk_entities ce1
+            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
+            WHERE ce1.entity_id = ? AND ce2.entity_id = ?
+            LIMIT ?
+        """, [e1_id, e2_id, limit]).fetchall()
+        return [r[0] for r in rows]
+
+    def get_entities_with_stats(
+        self, vis_filter: str, vis_params: list,
+    ) -> list[tuple]:
+        return self._conn.execute(f"""
+            WITH entity_stats AS (
+                SELECT
+                    ce.entity_id,
+                    COUNT(*) as ref_count,
+                    COUNT(DISTINCT em.source) as source_count,
+                    LIST(DISTINCT CASE WHEN em.source = 'document' THEN em.document_name END) as doc_names
+                FROM chunk_entities ce
+                JOIN embeddings em ON ce.chunk_id = em.chunk_id
+                GROUP BY ce.entity_id
+            )
+            SELECT
+                e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
+                COALESCE(es.ref_count, 0) as ref_count,
+                COALESCE(es.source_count, 0) as source_count,
+                es.doc_names
+            FROM entities e
+            LEFT JOIN entity_stats es ON es.entity_id = e.id
+            WHERE {vis_filter}
+            ORDER BY e.name
+        """, vis_params).fetchall()
+
+    def get_visible_entity_names(
+        self, vis_filter: str, vis_params: list,
+    ) -> list[str]:
+        rows = self._conn.execute(
+            f"SELECT LOWER(e.name) FROM entities e WHERE {vis_filter}",
+            vis_params,
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def update_entity_name(
+        self, entity_id: str, name: str, display_name: str,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE entities SET name = ?, display_name = ? WHERE id = ?",
+            [name, display_name, entity_id],
+        )
+
+    def mark_relationship_user_edited(self, rel_id: str) -> bool:
+        result = self._conn.execute(
+            "UPDATE entity_relationships SET user_edited = TRUE WHERE id = ? RETURNING id",
+            [rel_id],
+        ).fetchall()
+        return len(result) > 0
+
+    def list_session_relationships(self, session_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            """
+            SELECT id, subject_name, verb, object_name, sentence, confidence, user_edited
+            FROM entity_relationships
+            WHERE session_id = ?
+            ORDER BY user_edited DESC, confidence DESC
+            """,
+            [session_id],
+        ).fetchall()
+        return [
+            {
+                "id": r[0], "subject_name": r[1], "verb": r[2],
+                "object_name": r[3], "sentence": r[4] or "",
+                "confidence": r[5], "user_edited": r[6],
+            }
+            for r in rows
+        ]
+
+    def get_promotable_relationships(self, session_id: str) -> list[tuple]:
+        return self._conn.execute(
+            """
+            SELECT r.id, r.subject_name, r.verb, r.object_name
+            FROM entity_relationships r
+            WHERE r.session_id = ?
+              AND r.user_edited = FALSE
+              AND r.verb IN ('HAS_ONE', 'HAS_MANY', 'HAS_KIND')
+            """,
+            [session_id],
+        ).fetchall()
+
+    def get_glossary_parent_child_pairs(self, session_id: str) -> list[tuple[str, str]]:
+        rows = self._conn.execute(
+            """
+            SELECT child.name, parent.name
+            FROM glossary_terms child
+            JOIN glossary_terms parent ON child.parent_id = parent.id
+            WHERE child.session_id = ?
+            """,
+            [session_id],
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def list_entities_with_refcount(
+        self, vis_filter: str, vis_params: list,
+    ) -> list[tuple]:
+        return self._conn.execute(f"""
+            SELECT e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
+                   (SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id) as ref_count
+            FROM entities e
+            WHERE {vis_filter}
+            ORDER BY e.name
+        """, vis_params).fetchall()
+
+    def get_entity_references(
+        self, entity_id: str, limit: int = 10,
+    ) -> list[tuple]:
+        return self._conn.execute("""
+            SELECT em.document_name, em.section, ce.confidence
+            FROM chunk_entities ce
+            JOIN embeddings em ON ce.chunk_id = em.chunk_id
+            WHERE ce.entity_id = ?
+            ORDER BY ce.confidence DESC
+            LIMIT ?
+        """, [entity_id, limit]).fetchall()
+
+    def count_session_links(self, session_id: str) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_entities ce JOIN entities e ON ce.entity_id = e.id WHERE e.session_id = ?",
+            [session_id],
+        ).fetchone()[0]
+
+    def entity_exists(self, name: str, session_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
+            [name, session_id],
+        ).fetchone()
+        return row is not None
+
+    def get_non_ignored_entities_for_chunk(
+        self, chunk_id: str, session_id: str | None = None,
+    ) -> list[tuple]:
+        parts = ["ce.chunk_id = ?"]
+        params: list = [chunk_id]
+        if session_id:
+            parts.append("e.session_id = ?")
+            params.append(session_id)
+        where = " AND ".join(parts)
+        return self._conn.execute(
+            f"""
+            SELECT e.id, e.name, e.semantic_type
+            FROM chunk_entities ce
+            JOIN entities e ON ce.entity_id = e.id
+            LEFT JOIN glossary_terms g ON g.entity_id = e.id
+            WHERE {where}
+              AND COALESCE(g.ignored, FALSE) = FALSE
+            """,
+            params,
+        ).fetchall()

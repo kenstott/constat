@@ -161,24 +161,8 @@ class Store:
         for chunk_id, similarity, _chunk in results:
             if similarity < min_similarity:
                 continue
-            entity_filter = ["ce.chunk_id = ?"]
-            params: list = [chunk_id]
-            if session_id:
-                entity_filter.append("e.session_id = ?")
-                params.append(session_id)
-            where = " AND ".join(entity_filter)
 
-            rows = self.relational._conn.execute(
-                f"""
-                SELECT e.id, e.name, e.semantic_type
-                FROM chunk_entities ce
-                JOIN entities e ON ce.entity_id = e.id
-                LEFT JOIN glossary_terms g ON g.entity_id = e.id
-                WHERE {where}
-                  AND COALESCE(g.ignored, FALSE) = FALSE
-                """,
-                params,
-            ).fetchall()
+            rows = self.relational.get_non_ignored_entities_for_chunk(chunk_id, session_id)
 
             for eid, entity_name, entity_type in rows:
                 if eid not in entity_best or similarity > entity_best[eid]["similarity"]:

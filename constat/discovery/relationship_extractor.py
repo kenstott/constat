@@ -302,18 +302,9 @@ def extract_svo_relationships(
     from constat.discovery.models import EntityRelationship
 
     # Get co-occurring entity pairs
-    pairs = vector_store._conn.execute("""
-        SELECT e1.id, e1.name, e2.id, e2.name, COUNT(*) as co_count
-        FROM chunk_entities ce1
-        JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
-        JOIN entities e1 ON ce1.entity_id = e1.id
-        JOIN entities e2 ON ce2.entity_id = e2.id
-        WHERE e1.session_id = ? AND e2.session_id = ?
-        GROUP BY e1.id, e1.name, e2.id, e2.name
-        HAVING COUNT(*) >= ?
-        ORDER BY co_count DESC
-        LIMIT ?
-    """, [session_id, session_id, min_cooccurrence, MAX_CO_OCCURRING_PAIRS]).fetchall()
+    pairs = vector_store.get_cooccurrence_pairs(
+        session_id, min_count=min_cooccurrence, limit=MAX_CO_OCCURRING_PAIRS,
+    )
 
     if not pairs:
         logger.info(f"No co-occurring pairs found for session {session_id}")
@@ -332,27 +323,18 @@ def extract_svo_relationships(
             continue
 
         # Get shared chunk IDs
-        shared_chunks = vector_store._conn.execute("""
-            SELECT DISTINCT ce1.chunk_id
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
-            WHERE ce1.entity_id = ? AND ce2.entity_id = ?
-            LIMIT ?
-        """, [e1_id, e2_id, MAX_CHUNKS_PER_PAIR]).fetchall()
+        shared_chunk_ids = vector_store.get_shared_chunk_ids(e1_id, e2_id, MAX_CHUNKS_PER_PAIR)
 
         batch_rels: list[EntityRelationship] = []
 
-        for (chunk_id,) in shared_chunks:
+        for chunk_id in shared_chunk_ids:
             # Load chunk text
-            chunk_row = vector_store._conn.execute(
-                "SELECT content FROM embeddings WHERE chunk_id = ?",
-                [chunk_id],
-            ).fetchone()
-            if not chunk_row:
+            chunk_text = vector_store.get_chunk_content(chunk_id)
+            if not chunk_text:
                 continue
 
             try:
-                doc = nlp(chunk_row[0])
+                doc = nlp(chunk_text)
             except Exception:
                 continue
 
@@ -425,21 +407,9 @@ def get_co_occurring_pairs(
     Returns:
         List of (e1_id, e1_name, e1_type, e2_id, e2_name, e2_type, co_count)
     """
-    rows = vector_store._conn.execute("""
-        SELECT e1.id, e1.name, e1.semantic_type,
-               e2.id, e2.name, e2.semantic_type,
-               COUNT(*) as co_count
-        FROM chunk_entities ce1
-        JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
-        JOIN entities e1 ON ce1.entity_id = e1.id
-        JOIN entities e2 ON ce2.entity_id = e2.id
-        WHERE e1.session_id = ? AND e2.session_id = ?
-        GROUP BY e1.id, e1.name, e1.semantic_type, e2.id, e2.name, e2.semantic_type
-        HAVING COUNT(*) >= ?
-        ORDER BY co_count DESC
-        LIMIT ?
-    """, [session_id, session_id, min_cooccurrence, limit]).fetchall()
-    return rows
+    return vector_store.get_cooccurrence_pairs(
+        session_id, min_count=min_cooccurrence, limit=limit, include_types=True,
+    )
 
 
 def _get_shared_excerpts(
@@ -450,15 +420,8 @@ def _get_shared_excerpts(
     max_length: int = MAX_EXCERPT_LENGTH,
 ) -> list[str]:
     """Get shared chunk excerpts for an entity pair."""
-    chunk_rows = vector_store._conn.execute("""
-        SELECT DISTINCT e.content
-        FROM chunk_entities ce1
-        JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id
-        JOIN embeddings e ON ce1.chunk_id = e.chunk_id
-        WHERE ce1.entity_id = ? AND ce2.entity_id = ?
-        LIMIT ?
-    """, [e1_id, e2_id, max_excerpts]).fetchall()
-    return [row[0][:max_length] for row in chunk_rows if row[0]]
+    contents = vector_store.get_shared_chunk_content(e1_id, e2_id, max_excerpts)
+    return [c[:max_length] for c in contents]
 
 
 def _parse_llm_response(content: str) -> list[dict]:
@@ -972,33 +935,19 @@ def deduplicate_relationships(session_id: str, vector_store) -> int:
     # Build set of parent-child pairs from glossary taxonomy.
     # Any SVO relationship duplicating a taxonomy edge is redundant.
     parent_child_pairs: set[tuple[str, str]] = set()
-    pc_rows = vector_store._conn.execute(
-        """
-        SELECT child.name, parent.name
-        FROM glossary_terms child
-        JOIN glossary_terms parent ON child.parent_id = parent.id
-        WHERE child.session_id = ?
-        """,
-        [session_id],
-    ).fetchall()
+    pc_rows = vector_store.get_glossary_parent_child_pairs(session_id)
     for child_name, parent_name in pc_rows:
         parent_child_pairs.add(tuple(sorted([child_name.lower(), parent_name.lower()])))
 
-    rows = vector_store._conn.execute(
-        """
-        SELECT id, subject_name, verb, object_name, confidence, user_edited
-        FROM entity_relationships
-        WHERE session_id = ?
-        ORDER BY user_edited DESC, confidence DESC
-        """,
-        [session_id],
-    ).fetchall()
+    rows = vector_store.list_session_relationships(session_id)
 
     # Group by unordered pair
     best_by_pair: dict[tuple[str, str], tuple] = {}
     duplicates: list[str] = []
 
-    for rel_id, subj, verb, obj, confidence, user_edited in rows:
+    for row in rows:
+        rel_id, subj, obj = row["id"], row["subject_name"], row["object_name"]
+        confidence, user_edited = row["confidence"], row["user_edited"]
         pair_key = tuple(sorted([subj.lower(), obj.lower()]))
         # Remove SVO relationships that duplicate a parent-child taxonomy edge
         # but never delete user-edited relationships
@@ -1047,16 +996,7 @@ def promote_has_relationships(
     Returns:
         Number of relationships promoted.
     """
-    rows = vector_store._conn.execute(
-        """
-        SELECT r.id, r.subject_name, r.verb, r.object_name
-        FROM entity_relationships r
-        WHERE r.session_id = ?
-          AND r.user_edited = FALSE
-          AND r.verb IN ('HAS_ONE', 'HAS_MANY', 'HAS_KIND')
-        """,
-        [session_id],
-    ).fetchall()
+    rows = vector_store.get_promotable_relationships(session_id)
 
     if not rows:
         return 0

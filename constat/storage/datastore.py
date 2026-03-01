@@ -217,21 +217,22 @@ class DataStore:
                 )
             """))
 
-            # Add version column to existing databases (v1 dev, no migrations)
-            try:
-                conn.execute(text(
-                    "ALTER TABLE _constat_artifacts ADD COLUMN version INTEGER DEFAULT 1"
-                ))
-            except (SAOperationalError, SAProgrammingError):
-                pass  # Column already exists
-
-            # Add version column to table registry for existing databases
-            try:
-                conn.execute(text(
-                    "ALTER TABLE _constat_table_registry ADD COLUMN version INTEGER DEFAULT 1"
-                ))
-            except (SAOperationalError, SAProgrammingError):
-                pass  # Column already exists
+            # Add version column to existing databases (v1 dev, no migrations).
+            # PostgreSQL aborts the whole transaction on any error, so use
+            # savepoints there.  DuckDB doesn't support SAVEPOINT, so use
+            # plain try/except (DuckDB doesn't poison the transaction).
+            _use_savepoint = self.engine.dialect.name == "postgresql"
+            for tbl in ("_constat_artifacts", "_constat_table_registry"):
+                nested = conn.begin_nested() if _use_savepoint else None
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {tbl} ADD COLUMN version INTEGER DEFAULT 1"
+                    ))
+                    if nested:
+                        nested.commit()
+                except (SAOperationalError, SAProgrammingError):
+                    if nested:
+                        nested.rollback()  # Column already exists
 
             # Session metadata
             conn.execute(text("""

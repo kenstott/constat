@@ -104,17 +104,12 @@ def _resolve_entity_domains(entity_id: str | None, vs, source_to_domain: dict[st
     if not entity_id:
         return []
     try:
-        doc_rows = vs._conn.execute(
-            "SELECT DISTINCT em.document_name FROM chunk_entities ce "
-            "JOIN embeddings em ON ce.chunk_id = em.chunk_id "
-            "WHERE ce.entity_id = ? LIMIT 20",
-            [entity_id],
-        ).fetchall()
+        doc_names = vs.get_entity_document_names(entity_id, limit=20)
     except Exception:
         return []
     domains: list[str] = []
     seen: set[str] = set()
-    for (doc_name,) in doc_rows:
+    for doc_name in doc_names:
         matched: str | None = None
         if doc_name.startswith("schema:"):
             db_name = doc_name.split(":")[1].split(".")[0]
@@ -495,11 +490,7 @@ async def approve_relationship(
     managed = session_manager.get_session(session_id)
     vs = _get_vector_store(managed)
 
-    result = vs._conn.execute(
-        "UPDATE entity_relationships SET user_edited = TRUE WHERE id = ? RETURNING id",
-        [rel_id],
-    ).fetchall()
-    if not result:
+    if not vs.mark_relationship_user_edited(rel_id):
         raise HTTPException(status_code=404, detail=f"Relationship '{rel_id}' not found")
 
     return {"status": "approved", "id": rel_id}
@@ -563,11 +554,7 @@ async def add_definition(
 
     # Connectivity check: abstract terms (no entity match) must have a parent
     if not request.parent_id:
-        entity_row = vs._conn.execute(
-            "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?) AND session_id = ? LIMIT 1",
-            [request.name, session_id],
-        ).fetchone()
-        if not entity_row:
+        if not vs.entity_exists(request.name, session_id):
             raise HTTPException(
                 status_code=422,
                 detail="Abstract term must have parent_id or match a grounded entity",

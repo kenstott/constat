@@ -278,27 +278,7 @@ def generate_glossary(
         session_id, active_domains, alias="e",
     )
 
-    rows = vector_store._conn.execute(f"""
-        WITH entity_stats AS (
-            SELECT
-                ce.entity_id,
-                COUNT(*) as ref_count,
-                COUNT(DISTINCT em.source) as source_count,
-                LIST(DISTINCT CASE WHEN em.source = 'document' THEN em.document_name END) as doc_names
-            FROM chunk_entities ce
-            JOIN embeddings em ON ce.chunk_id = em.chunk_id
-            GROUP BY ce.entity_id
-        )
-        SELECT
-            e.id, e.name, e.display_name, e.semantic_type, e.ner_type,
-            COALESCE(es.ref_count, 0) as ref_count,
-            COALESCE(es.source_count, 0) as source_count,
-            es.doc_names
-        FROM entities e
-        LEFT JOIN entity_stats es ON es.entity_id = e.id
-        WHERE {entity_where}
-        ORDER BY e.name
-    """, params).fetchall()
+    rows = vector_store.get_entities_with_stats(entity_where, params)
 
     if not rows:
         logger.info(f"No entities found for session {session_id}, skipping glossary generation")
@@ -772,9 +752,8 @@ def reconcile_alias_entities(
             canonical = term.name.lower()
             canonical_display = term.display_name
             try:
-                _retry_on_conflict(lambda: vector_store._conn.execute(
-                    "UPDATE entities SET name = ?, display_name = ? WHERE id = ?",
-                    [canonical, canonical_display, alias_entity.id],
+                _retry_on_conflict(lambda: vector_store.update_entity_name(
+                    alias_entity.id, canonical, canonical_display,
                 ))
                 reconciled += 1
                 logger.info(
@@ -808,11 +787,7 @@ def _deduplicate_aliases(session_id: str, vector_store, *, user_id: str | None =
     entity_where, entity_params = vector_store.entity_visibility_filter(
         session_id, None, alias="e",
     )
-    entity_rows = vector_store._conn.execute(
-        f"SELECT LOWER(e.name) FROM entities e WHERE {entity_where}",
-        entity_params,
-    ).fetchall()
-    entity_names = {r[0] for r in entity_rows}
+    entity_names = set(vector_store.get_visible_entity_names(entity_where, entity_params))
 
     claimed: set[str] = set()
     for term in terms:
@@ -1041,17 +1016,9 @@ def suggest_cooccurrence_relationships(
     term_names = {t.name.lower() for t in glossary_terms}
 
     try:
-        pairs = vector_store._conn.execute("""
-            SELECT e1.name, e2.name, COUNT(*) as co_count
-            FROM chunk_entities ce1
-            JOIN chunk_entities ce2 ON ce1.chunk_id = ce2.chunk_id AND ce1.entity_id < ce2.entity_id
-            JOIN entities e1 ON ce1.entity_id = e1.id
-            JOIN entities e2 ON ce2.entity_id = e2.id
-            WHERE e1.session_id = ? AND e2.session_id = ?
-            GROUP BY e1.name, e2.name
-            HAVING COUNT(*) >= ?
-            ORDER BY co_count DESC
-        """, [session_id, session_id, min_cooccurrence]).fetchall()
+        pairs = vector_store.get_cooccurrence_pairs_by_name(
+            session_id, min_count=min_cooccurrence,
+        )
     except Exception as e:
         logger.warning(f"Co-occurrence query failed: {e}")
         return []
