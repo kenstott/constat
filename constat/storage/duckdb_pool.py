@@ -102,8 +102,83 @@ def _try_kill_orphan_lock_holder(error_msg: str) -> None:
             pass
 
 
+class _PendingResult:
+    """Holds RLock from execute() until a terminal fetch completes.
+
+    DuckDB's execute() returns the connection for chaining — cursor state
+    lives on the connection object.  The lock must span execute→fetch to
+    prevent another thread's execute from clobbering the cursor between
+    the two calls.
+
+    For fire-and-forget calls (DDL / INSERT with no fetch), CPython's
+    reference counting invokes __del__ immediately when the temporary
+    _PendingResult goes out of scope, releasing the lock.
+    """
+
+    __slots__ = ("_conn", "_lock", "_released")
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, lock: threading.RLock):
+        self._conn = conn
+        self._lock = lock  # Lock is HELD — acquired by caller
+        self._released = False
+
+    def _release(self):
+        if not self._released:
+            self._released = True
+            self._lock.release()
+
+    def fetchall(self):
+        try:
+            return self._conn.fetchall()
+        finally:
+            self._release()
+
+    def fetchone(self):
+        try:
+            return self._conn.fetchone()
+        finally:
+            self._release()
+
+    def fetchdf(self):
+        try:
+            return self._conn.fetchdf()
+        finally:
+            self._release()
+
+    def df(self):
+        try:
+            return self._conn.df()
+        finally:
+            self._release()
+
+    def fetchnumpy(self):
+        try:
+            return self._conn.fetchnumpy()
+        finally:
+            self._release()
+
+    @property
+    def description(self):
+        return self._conn.description
+
+    @property
+    def rowcount(self):
+        return self._conn.rowcount
+
+    def __del__(self):
+        self._release()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 class _LockedConnection:
-    """Proxy that serializes execute/executemany calls through a lock."""
+    """Proxy that serializes execute+fetch cycles through a lock.
+
+    execute() acquires the lock and returns a _PendingResult that holds
+    it until a terminal fetch operation (fetchall, fetchone, etc.) or
+    until the _PendingResult is garbage-collected.
+    """
 
     __slots__ = ("_conn", "_lock")
 
@@ -112,12 +187,17 @@ class _LockedConnection:
         self._lock = lock
 
     def execute(self, *args, **kwargs):
-        with self._lock:
-            return self._conn.execute(*args, **kwargs)
+        self._lock.acquire()
+        try:
+            self._conn.execute(*args, **kwargs)
+            return _PendingResult(self._conn, self._lock)
+        except:
+            self._lock.release()
+            raise
 
     def executemany(self, *args, **kwargs):
         with self._lock:
-            return self._conn.executemany(*args, **kwargs)
+            self._conn.executemany(*args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
@@ -243,9 +323,10 @@ class ThreadLocalDuckDB:
         self._init_lock = threading.Lock()
 
         # Run init_sql on the shared connection
+        conn = self._pool.get_connection()
         for sql in self._init_sql:
             try:
-                self._pool._shared_conn.execute(sql)
+                conn.execute(sql)
             except Exception as e:
                 logger.debug(f"Init SQL failed (may be expected): {e}")
 
@@ -268,7 +349,7 @@ class ThreadLocalDuckDB:
         with self._init_lock:
             self._init_sql.append(sql)
         try:
-            self._pool._shared_conn.execute(sql)
+            self._pool.get_connection().execute(sql)
         except Exception as e:
             logger.debug(f"add_init_sql failed: {e}")
 
@@ -283,7 +364,7 @@ class ThreadLocalDuckDB:
         this just runs on the shared connection.
         """
         try:
-            self._pool._shared_conn.execute(sql)
+            self._pool.get_connection().execute(sql)
         except Exception as e:
             logger.debug(f"run_on_all_connections failed: {e}")
 

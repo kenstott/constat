@@ -554,12 +554,20 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         # Watch .env files in common locations
         reload_includes.extend([".env", "demo/.env", "*.yaml", "demo/*.yaml"])
 
+        # Watch source + config dirs, but NOT "." which includes .constat/
+        # where session step code .py files are written during query execution
+        reload_dirs = ["constat"]
+        if config:
+            config_dir = str(Path(config).parent or ".")
+            if config_dir not in reload_dirs:
+                reload_dirs.append(config_dir)
+
         uvicorn.run(
             "constat.server.app:app",
             host=host,
             port=port,
             reload=True,
-            reload_dirs=["constat", "."],
+            reload_dirs=reload_dirs,
             reload_includes=reload_includes,
             log_level=log_level,
             timeout_graceful_shutdown=5,
