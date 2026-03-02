@@ -28,9 +28,17 @@ REASON: <brief explanation of what's unclear>
 QUESTIONS:
 Q1: <specific clarifying question ending with ?>
 SUGGESTIONS: <suggestion1> | <suggestion2> | <suggestion3>
+WIDGET: <choice|curation|ranking|mapping|table>
 Q2: <specific clarifying question ending with ?>
 SUGGESTIONS: <suggestion1> | <suggestion2>
-(max 3 questions, 2-4 suggestions per question, each question MUST end with ?)
+(max 3 questions, each question MUST end with ?)
+
+WIDGET selection rules (pick the best fit for each question):
+- **choice** (default — omit WIDGET line): 2-4 mutually exclusive options
+- **curation**: subset selection from 5+ items — list ALL relevant items in SUGGESTIONS (no limit)
+- **ranking**: ordering/prioritizing 3+ items — list all in SUGGESTIONS
+- **mapping**: pairing between two lists — use SUGGESTIONS_LEFT: Label: item1 | item2 and SUGGESTIONS_RIGHT: Label: item1 | item2 instead of SUGGESTIONS
+- **table**: multi-parameter input — use COLUMNS: col1 | col2 and COLUMN_TYPES: text | boolean | select instead of SUGGESTIONS
 
 Only flag as AMBIGUOUS if the missing info would SIGNIFICANTLY change the analysis approach.
 Do NOT flag as ambiguous if an available API can fulfill the data requirement.

@@ -34,6 +34,8 @@ from constat.session._types import (
     QuestionType,
     SessionConfig,
     StepEvent,
+    WidgetSpec,
+    WidgetType,
     create_session,
     is_meta_question,
 )
@@ -71,6 +73,8 @@ __all__ = [
     "DetectedIntent",
     "PlanApprovalRequest",
     "PlanApprovalResponse",
+    "WidgetSpec",
+    "WidgetType",
     "create_session",
     "is_meta_question",
 ]

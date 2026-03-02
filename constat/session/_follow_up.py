@@ -244,15 +244,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
         # Get previous problem for follow-up context
         previous_problem = self.datastore.get_session_meta("problem")
 
-        # Store follow-up question for /prove command
-        follow_ups_json = self.datastore.get_session_meta("follow_ups")
-        try:
-            follow_ups = json.loads(follow_ups_json) if follow_ups_json else []
-        except json.JSONDecodeError:
-            follow_ups = []
-        follow_ups.append(question)
-        self.datastore.set_session_meta("follow_ups", json.dumps(follow_ups))
-        logger.debug(f"[follow_up] Stored follow-up #{len(follow_ups)}: {question[:50]}...")
+        # NOTE: follow-up storage deferred to after plan approval (prevents orphaned entries on rejection)
 
         # Use LLM to analyze the question and detect intents (with follow-up context)
         # This single call determines intent, facts, AND execution mode
@@ -397,6 +389,8 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
             approval = self._request_approval(question, planner_response)
 
             if approval.decision == PlanApproval.REJECT:
+                # noinspection PyAttributeOutsideInit
+                self.plan = None
                 return {
                     "success": False,
                     "rejected": True,
@@ -483,6 +477,8 @@ User feedback: {suggestion_text}
                     # Request approval again
                     approval = self._request_approval(question, planner_response)
                     if approval.decision == PlanApproval.REJECT:
+                        # noinspection PyAttributeOutsideInit
+                        self.plan = None
                         return {
                             "success": False,
                             "rejected": True,
@@ -508,6 +504,16 @@ User feedback: {suggestion_text}
                 # Renumber remaining steps sequentially from next_step_number
                 for i, step in enumerate(follow_up_plan.steps):
                     step.number = next_step_number + i
+
+        # Store follow-up question now that plan is approved (deferred from earlier to avoid orphans on rejection)
+        follow_ups_json = self.datastore.get_session_meta("follow_ups")
+        try:
+            follow_ups = json.loads(follow_ups_json) if follow_ups_json else []
+        except json.JSONDecodeError:
+            follow_ups = []
+        follow_ups.append(question)
+        self.datastore.set_session_meta("follow_ups", json.dumps(follow_ups))
+        logger.debug(f"[follow_up] Stored follow-up #{len(follow_ups)}: {question[:50]}...")
 
         # Materialize facts table before execution starts
         self._materialize_facts_table()

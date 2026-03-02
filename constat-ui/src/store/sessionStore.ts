@@ -43,6 +43,7 @@ type ExecutionPhase =
 interface ClarificationQuestion {
   text: string
   suggestions: string[]
+  widget?: { type: string; config: Record<string, unknown> }
 }
 
 interface ClarificationState {
@@ -52,6 +53,7 @@ interface ClarificationState {
   questions: ClarificationQuestion[]
   currentStep: number
   answers: Record<number, string>
+  structuredAnswers: Record<number, unknown>
 }
 
 interface QueuedMessage {
@@ -122,10 +124,11 @@ interface SessionState {
   cancelExecution: () => Promise<void>
   approvePlan: (deletedSteps?: number[], editedSteps?: Array<{ number: number; goal: string }>) => Promise<void>
   rejectPlan: (feedback: string, editedSteps?: Array<{ number: number; goal: string }>) => Promise<void>
-  answerClarification: (answers: Record<number, string>) => void
+  answerClarification: (answers: Record<number, string>, structuredAnswers?: Record<number, unknown>) => void
   skipClarification: () => void
   setClarificationStep: (step: number) => void
   setClarificationAnswer: (step: number, answer: string) => void
+  setClarificationStructuredAnswer: (step: number, data: unknown) => void
   addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void
   updateMessage: (id: string, updates: Partial<Pick<Message, 'type' | 'content'>>) => void
   removeMessage: (id: string) => void
@@ -467,8 +470,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  answerClarification: (answers) => {
+  answerClarification: (answers, structuredAnswers) => {
     const { clarification, addMessage } = get()
+
+    // Merge any structured answers from clarification state
+    const finalStructured = structuredAnswers || clarification?.structuredAnswers || {}
 
     // Add user bubble with clarification answers
     if (clarification) {
@@ -478,7 +484,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       addMessage({ type: 'user', content: answerSummary })
     }
 
-    wsManager.send('clarify', { answers })
+    const payload: Record<string, unknown> = { answers }
+    if (Object.keys(finalStructured).length > 0) {
+      payload.structured_answers = finalStructured
+    }
+    wsManager.send('clarify', payload)
     set({ clarification: null, status: 'planning' })
   },
 
@@ -501,6 +511,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ? {
             ...state.clarification,
             answers: { ...state.clarification.answers, [step]: answer },
+          }
+        : null,
+    }))
+  },
+
+  setClarificationStructuredAnswer: (step, data) => {
+    set((state) => ({
+      clarification: state.clarification
+        ? {
+            ...state.clarification,
+            structuredAnswers: { ...state.clarification.structuredAnswers, [step]: data },
           }
         : null,
     }))
@@ -1053,7 +1074,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const data = event.data as {
           original_question: string
           ambiguity_reason: string
-          questions: Array<{ text: string; suggestions: string[] }>
+          questions: Array<{ text: string; suggestions: string[]; widget?: { type: string; config: Record<string, unknown> } }>
         }
         // Replace live/thinking with clarification prompt
         clearLiveMessage()
@@ -1068,6 +1089,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             questions: data.questions || [],
             currentStep: 0,
             answers: {},
+            structuredAnswers: {},
           },
         })
         break

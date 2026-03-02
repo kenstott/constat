@@ -243,7 +243,11 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
             "original_question": request.original_question,
             "ambiguity_reason": request.ambiguity_reason,
             "questions": [
-                {"text": q.text, "suggestions": q.suggestions}
+                {
+                    "text": q.text,
+                    "suggestions": q.suggestions,
+                    **({"widget": {"type": q.widget.type.value, "config": q.widget.config}} if q.widget else {}),
+                }
                 for q in request.questions
             ],
         }
@@ -273,7 +277,11 @@ def _create_clarification_callback(managed: ManagedSession, loop: asyncio.Abstra
             return ClarificationResponse(answers={}, skip=True)
 
         managed.status = SessionStatus.PLANNING
-        return ClarificationResponse(answers=response.get("answers", {}), skip=False)
+        return ClarificationResponse(
+            answers=response.get("answers", {}),
+            skip=False,
+            structured_answers=response.get("structured_answers", {}),
+        )
 
     return clarification_callback
 
@@ -874,8 +882,14 @@ async def websocket_endpoint(
 
                     elif action == "clarify":
                         # User answered all clarification questions
-                        answers = data.get("data", {}).get("answers", {})
-                        managed.clarification_response = {"answers": answers, "skip": False}
+                        clarify_data = data.get("data", {})
+                        answers = clarify_data.get("answers", {})
+                        structured_answers = clarify_data.get("structured_answers", {})
+                        managed.clarification_response = {
+                            "answers": answers,
+                            "structured_answers": structured_answers,
+                            "skip": False,
+                        }
                         if managed.clarification_event:
                             managed.clarification_event.set()
                         await websocket.send_json({

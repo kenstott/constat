@@ -344,19 +344,18 @@ class SolveMixin:
                 approval = self._request_approval(display_problem, planner_response)
 
                 if approval.decision == PlanApproval.REJECT:
-                    # User rejected the plan
+                    # User rejected the plan — keep session open for retry
                     self.history.save_plan_data(
                         self.session_id,
                         approval_decision="rejected",
                         user_feedback=approval.reason,
                         iteration=replan_attempt,
                     )
-                    self.datastore.set_session_meta("status", "rejected")
-                    self.history.complete_session(self.session_id, status="rejected")
+                    # noinspection PyAttributeOutsideInit
+                    self.plan = None
                     return {
                         "success": False,
                         "rejected": True,
-                        "plan": self.plan,
                         "reason": approval.reason,
                         "message": "Plan was rejected by user.",
                     }

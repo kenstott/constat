@@ -17,9 +17,45 @@ from typing import Optional
 from constat.core.models import TaskType
 from constat.prompts import load_prompt
 from constat.session._types import QuestionType, QuestionAnalysis, DetectedIntent, ClarificationQuestion, \
-    ClarificationRequest, StepEvent, is_meta_question
+    ClarificationRequest, StepEvent, WidgetType, WidgetSpec, is_meta_question
 
 logger = logging.getLogger(__name__)
+
+
+def _build_widget_spec(
+    widget_type: str,
+    suggestions: list[str],
+    left_label: str | None = None,
+    left_items: list[str] | None = None,
+    right_label: str | None = None,
+    right_items: list[str] | None = None,
+    columns: list[str] | None = None,
+    column_types: list[str] | None = None,
+) -> WidgetSpec | None:
+    """Build a WidgetSpec from parsed prompt directives.
+
+    Returns None for choice/unrecognized (frontend default).
+    """
+    wt = widget_type.lower().strip()
+    if wt == "curation":
+        return WidgetSpec(type=WidgetType.CURATION, config={"items": suggestions})
+    if wt == "ranking":
+        return WidgetSpec(type=WidgetType.RANKING, config={"items": suggestions})
+    if wt == "mapping" and left_items and right_items:
+        return WidgetSpec(type=WidgetType.MAPPING, config={
+            "left": left_items,
+            "right": right_items,
+            "leftLabel": left_label or "Left",
+            "rightLabel": right_label or "Right",
+        })
+    if wt == "table" and columns:
+        col_specs = []
+        for i, col in enumerate(columns):
+            col_type = column_types[i] if column_types and i < len(column_types) else "text"
+            col_specs.append({"key": col.strip().lower().replace(" ", "_"), "label": col.strip(), "type": col_type.strip()})
+        return WidgetSpec(type=WidgetType.TABLE, config={"columns": col_specs})
+    # choice or unrecognized → None (frontend uses default choice widget)
+    return None
 
 
 # noinspection PyUnresolvedReferences
@@ -541,6 +577,53 @@ CRITICAL INTENT RULES (apply in order):
                 current_question = None
                 in_questions_section = False
 
+                # Per-question widget state
+                current_widget_type = None
+                current_left_label = None
+                current_left_items: list[str] = []
+                current_right_label = None
+                current_right_items: list[str] = []
+                current_columns: list[str] = []
+                current_column_types: list[str] = []
+
+                def _finalize_question():
+                    """Attach widget spec to current_question and append it."""
+                    nonlocal current_question, current_widget_type
+                    nonlocal current_left_label, current_left_items
+                    nonlocal current_right_label, current_right_items
+                    nonlocal current_columns, current_column_types
+                    if not current_question or not current_question.text:
+                        return
+                    # Auto-inference: >4 suggestions with no explicit widget → curation
+                    effective_type = current_widget_type
+                    if not effective_type and len(current_question.suggestions) > 4:
+                        effective_type = "curation"
+                    if effective_type:
+                        spec = _build_widget_spec(
+                            widget_type=effective_type,
+                            suggestions=current_question.suggestions,
+                            left_label=current_left_label,
+                            left_items=current_left_items,
+                            right_label=current_right_label,
+                            right_items=current_right_items,
+                            columns=current_columns,
+                            column_types=current_column_types,
+                        )
+                        current_question.widget = spec
+                    # Cap suggestions for plain choice only
+                    if not current_question.widget and len(current_question.suggestions) > 4:
+                        current_question.suggestions = current_question.suggestions[:4]
+                    questions.append(current_question)
+                    # Reset per-question state
+                    current_question = None
+                    current_widget_type = None
+                    current_left_label = None
+                    current_left_items = []
+                    current_right_label = None
+                    current_right_items = []
+                    current_columns = []
+                    current_column_types = []
+
                 for line in lines:
                     line = line.strip()
                     if line.startswith("REASON:"):
@@ -548,46 +631,53 @@ CRITICAL INTENT RULES (apply in order):
                     elif line.upper().startswith("QUESTIONS"):
                         in_questions_section = True
                     elif line.startswith("SUGGESTIONS:") and current_question:
-                        # Parse suggestions for current question
                         suggestions_text = line[12:].strip()
                         suggestions = [s.strip() for s in suggestions_text.split("|") if s.strip()]
-                        current_question.suggestions = suggestions[:4]  # Max 4 suggestions
+                        current_question.suggestions = suggestions
+                    elif line.startswith("WIDGET:") and current_question:
+                        current_widget_type = line[7:].strip()
+                    elif line.startswith("SUGGESTIONS_LEFT:") and current_question:
+                        # Format: "SUGGESTIONS_LEFT: Label: item1 | item2"
+                        payload = line[17:].strip()
+                        if ":" in payload:
+                            current_left_label, items_str = payload.split(":", 1)
+                            current_left_label = current_left_label.strip()
+                            current_left_items = [s.strip() for s in items_str.split("|") if s.strip()]
+                    elif line.startswith("SUGGESTIONS_RIGHT:") and current_question:
+                        payload = line[18:].strip()
+                        if ":" in payload:
+                            current_right_label, items_str = payload.split(":", 1)
+                            current_right_label = current_right_label.strip()
+                            current_right_items = [s.strip() for s in items_str.split("|") if s.strip()]
+                    elif line.startswith("COLUMNS:") and current_question:
+                        current_columns = [s.strip() for s in line[8:].split("|") if s.strip()]
+                    elif line.startswith("COLUMN_TYPES:") and current_question:
+                        current_column_types = [s.strip() for s in line[13:].split("|") if s.strip()]
                     elif in_questions_section and line:
-                        # Try to parse as a question in specific formats only:
-                        # Q1: question, - question, 1. question, 1) question
-                        # Do NOT capture arbitrary text as questions (could be LLM reasoning)
+                        # Try to parse as a question in specific formats only
                         question_text = None
 
                         if line.startswith("Q") and ":" in line[:4]:
-                            # Format: Q1: question text
                             question_text = line.split(":", 1)[1].strip()
                         elif line.startswith("- "):
-                            # Format: - question text
                             question_text = line[2:].strip()
                         elif len(line) > 2 and line[0].isdigit() and line[1] in ".):":
-                            # Format: 1. question or 1) question or 1: question
                             question_text = line[2:].strip()
                         elif len(line) > 3 and line[:2].isdigit() and line[2] in ".):":
-                            # Format: 10. question (two-digit number)
                             question_text = line[3:].strip()
-                        # NOTE: We intentionally do NOT capture arbitrary text as questions
-                        # The LLM sometimes adds explanatory text that shouldn't be treated as questions
 
-                        # Only accept if it looks like a question (ends with ? or starts with question word)
                         if question_text and len(question_text) > 5:
                             is_question = (
                                 question_text.endswith("?") or
                                 question_text.lower().startswith(("what ", "which ", "how ", "when ", "where ", "who ", "should ", "do ", "does ", "is ", "are "))
                             )
                             if is_question:
-                                # Save previous question and start new one
-                                if current_question and current_question.text:
-                                    questions.append(current_question)
+                                # Finalize previous question before starting new one
+                                _finalize_question()
                                 current_question = ClarificationQuestion(text=question_text)
 
                 # Don't forget the last question
-                if current_question and current_question.text:
-                    questions.append(current_question)
+                _finalize_question()
 
                 if questions:
                     return ClarificationRequest(
@@ -641,7 +731,13 @@ CRITICAL INTENT RULES (apply in order):
         for question, answer in response.answers.items():
             logger.debug(f"[CLARIFICATION] Q: {question!r} -> A: {answer!r}")
             if answer:
-                clarifications.append(f"{question}: {answer}")
+                line = f"{question}: {answer}"
+                # Append structured data if present for this question
+                structured = response.structured_answers.get(question)
+                if structured:
+                    import json
+                    line += f"\n[Structured: {json.dumps(structured)}]"
+                clarifications.append(line)
 
         if clarifications:
             enhanced = f"{request.original_question}\n\nClarifications:\n" + "\n".join(clarifications)

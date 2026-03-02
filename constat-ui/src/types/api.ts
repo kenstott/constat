@@ -402,6 +402,19 @@ export interface CompletionItem {
   category?: string
 }
 
+// Widget Types
+export type WidgetType = 'choice' | 'curation' | 'mapping' | 'ranking' | 'annotation' | 'tree' | 'table'
+
+export interface WidgetSpec {
+  type: WidgetType
+  config: Record<string, unknown>
+}
+
+export interface WidgetResponse<T = unknown> {
+  freeform: string
+  structured: T
+}
+
 // WebSocket Events
 export type EventType =
   | 'welcome'

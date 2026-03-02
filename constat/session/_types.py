@@ -12,7 +12,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from enum import Enum
+from typing import Any, Callable, Optional
 
 from constat.core.config import Config
 from constat.execution.mode import Mode, PlanApprovalRequest, PlanApprovalResponse
@@ -62,11 +63,28 @@ STEP_PROMPT_TEMPLATE = load_prompt("step_prompt_template.md")
 ApprovalCallback = Callable[[PlanApprovalRequest], PlanApprovalResponse]
 
 
+class WidgetType(str, Enum):
+    CHOICE = "choice"
+    CURATION = "curation"
+    MAPPING = "mapping"
+    RANKING = "ranking"
+    ANNOTATION = "annotation"
+    TREE = "tree"
+    TABLE = "table"
+
+
+@dataclass
+class WidgetSpec:
+    type: WidgetType
+    config: dict = field(default_factory=dict)
+
+
 @dataclass
 class ClarificationQuestion:
     """A single clarification question with optional suggested answers."""
     text: str
     suggestions: list[str] = field(default_factory=list)
+    widget: Optional[WidgetSpec] = None
 
 
 @dataclass
@@ -82,6 +100,7 @@ class ClarificationResponse:
     """User's response to clarification request."""
     answers: dict[str, str]
     skip: bool = False
+    structured_answers: dict[str, Any] = field(default_factory=dict)
 
 
 ClarificationCallback = Callable[[ClarificationRequest], ClarificationResponse]
