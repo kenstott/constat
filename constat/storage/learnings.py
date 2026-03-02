@@ -292,6 +292,7 @@ class LearningStore:
         confidence: float,
         source_learnings: list[str],
         tags: Optional[list[str]] = None,
+        domain: str = "",
     ) -> str:
         """Save a compacted rule.
 
@@ -301,6 +302,7 @@ class LearningStore:
             confidence: Confidence score (0.0 to 1.0)
             source_learnings: IDs of learnings this rule was derived from
             tags: Optional tags for categorization
+            domain: Owning domain filename ("" = unscoped/global)
 
         Returns:
             The rule ID
@@ -316,6 +318,7 @@ class LearningStore:
             "tags": tags or [],
             "applied_count": 0,
             "created": datetime.now(timezone.utc).isoformat(),
+            "domain": domain,
         }
 
         self._save()
@@ -326,6 +329,7 @@ class LearningStore:
         category: Optional[LearningCategory] = None,
         min_confidence: float = 0.0,
         limit: Optional[int] = None,
+        domain: Optional[str] = None,
     ) -> list[dict]:
         """List rules.
 
@@ -333,6 +337,7 @@ class LearningStore:
             category: Filter by category (None for all)
             min_confidence: Minimum confidence threshold
             limit: Maximum number of rules to return (None for all)
+            domain: Filter by owning domain (None for all, "" for unscoped)
 
         Returns:
             List of rule dicts (with 'id'), highest confidence first
@@ -347,6 +352,10 @@ class LearningStore:
         # Filter by category
         if category:
             rules = [r for r in rules if r["category"] == category.value]
+
+        # Filter by domain
+        if domain is not None:
+            rules = [r for r in rules if r.get("domain", "") == domain]
 
         # Filter by confidence
         rules = [r for r in rules if r.get("confidence", 0) >= min_confidence]

@@ -704,6 +704,8 @@ class RuleInfo(BaseModel):
     confidence: float = Field(description="Confidence score 0-1")
     source_count: int = Field(default=0, description="Number of source learnings")
     tags: list[str] = Field(default_factory=list, description="Tags for searching")
+    domain: str = Field(default="", description="Owning domain filename")
+    source: str = Field(default="", description="Source tier")
 
 
 class RuleCreateRequest(BaseModel):
@@ -792,6 +794,7 @@ class GlossaryTermResponse(BaseModel):
     glossary_id: Optional[str] = Field(default=None, description="Glossary term ID (for parent_id linking)")
     ner_type: Optional[str] = Field(default=None, description="NER type")
     connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
+    tags: dict[str, Any] = Field(default_factory=dict, description="Classification tags (e.g. PII, GDPR)")
     ignored: bool = Field(default=False, description="Whether term is excluded from graphs and similarity")
 
 
@@ -824,6 +827,7 @@ class GlossaryUpdateRequest(BaseModel):
     status: Optional[str] = Field(default=None, description="New status")
     domain: Optional[str] = Field(default=None, description="New domain")
     semantic_type: Optional[str] = Field(default=None, description="New semantic type")
+    tags: Optional[dict[str, Any]] = Field(default=None, description="Classification tags (e.g. {\"PII\": {}, \"GDPR\": {}})")
     ignored: Optional[bool] = Field(default=None, description="Mark term as ignored")
 
 
@@ -871,6 +875,10 @@ class DomainInfo(BaseModel):
     name: str = Field(description="Domain display name")
     description: str = Field(default="", description="Domain description")
     path: str = Field(default="", description="Dot-delimited hierarchy path")
+    tier: str = Field(default="system", description="system | shared | user")
+    active: bool = Field(default=True, description="Whether domain is active")
+    owner: str = Field(default="", description="Owner user ID")
+    steward: str = Field(default="", description="Data steward for governance")
 
 
 class DomainTreeNode(BaseModel):
@@ -880,9 +888,16 @@ class DomainTreeNode(BaseModel):
     name: str = Field(description="Domain display name")
     path: str = Field(default="", description="Dot-delimited hierarchy path")
     description: str = Field(default="", description="Domain description")
+    tier: str = Field(default="system", description="system | shared | user")
+    active: bool = Field(default=True, description="Whether domain is active")
+    steward: str = Field(default="", description="Data steward for governance")
+    owner: str = Field(default="", description="Owner user ID")
     databases: list[str] = Field(default_factory=list)
     apis: list[str] = Field(default_factory=list)
     documents: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    agents: list[str] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
     children: list["DomainTreeNode"] = Field(default_factory=list)
 
 
@@ -898,6 +913,10 @@ class DomainDetailResponse(BaseModel):
     filename: str = Field(description="Domain YAML filename")
     name: str = Field(description="Domain display name")
     description: str = Field(default="", description="Domain description")
+    tier: str = Field(default="system", description="system | shared | user")
+    active: bool = Field(default=True, description="Whether domain is active")
+    owner: str = Field(default="", description="Owner user ID")
+    steward: str = Field(default="", description="Data steward for governance")
     databases: list[str] = Field(description="Database names in domain")
     apis: list[str] = Field(description="API names in domain")
     documents: list[str] = Field(description="Document names in domain")

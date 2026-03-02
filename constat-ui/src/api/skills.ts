@@ -8,6 +8,8 @@ export interface SkillInfo {
   description: string
   filename: string
   is_active: boolean
+  domain: string
+  source: string
 }
 
 export interface SkillsListResponse {

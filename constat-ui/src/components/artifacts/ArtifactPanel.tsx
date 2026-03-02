@@ -39,6 +39,7 @@ import { TableAccordion } from './TableAccordion'
 import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
+import DomainPanel from './DomainPanel'
 import * as sessionsApi from '@/api/sessions'
 import * as agentsApi from '@/api/agents'
 
@@ -1355,6 +1356,17 @@ ${skill.body}`
         )
       })()}
 
+      {/* ═══════════════ DOMAINS ═══════════════ */}
+      <AccordionSection
+        id="domains"
+        title="Domains"
+        count={session?.active_domains?.length || 0}
+        icon={<GlobeAltIcon className="w-4 h-4" />}
+        command="/domains"
+      >
+        <DomainPanel />
+      </AccordionSection>
+
       {/* ═══════════════ SOURCES ═══════════════ */}
       {sourcesVisible && (
       <button
@@ -2109,6 +2121,16 @@ ${skill.body}`
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {agent.name}
                       </span>
+                      {agent.domain && agent.domain !== 'global' && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex-shrink-0">
+                          {agent.domain}
+                        </span>
+                      )}
+                      {(!agent.domain || agent.domain === 'global') && agent.source && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
+                          {agent.source}
+                        </span>
+                      )}
                       <ChevronDownIcon
                         className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                       />
@@ -2473,6 +2495,16 @@ ${skill.body}`
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {skill.name}
                       </span>
+                      {skill.domain && skill.domain !== 'global' && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex-shrink-0">
+                          {skill.domain}
+                        </span>
+                      )}
+                      {(!skill.domain || skill.domain === 'global') && skill.source && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
+                          {skill.source}
+                        </span>
+                      )}
                       <ChevronDownIcon
                         className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                       />

@@ -1,6 +1,6 @@
 // Session API calls
 
-import { get, post, put, del } from './client'
+import { get, post, put, patch, del } from './client'
 import type {
   Session,
   SessionListResponse,
@@ -359,9 +359,15 @@ export interface DomainTreeNode {
   name: string
   path: string
   description: string
+  tier: string
+  active: boolean
+  owner: string
   databases: string[]
   apis: string[]
   documents: string[]
+  skills: string[]
+  agents: string[]
+  rules: string[]
   children: DomainTreeNode[]
 }
 
@@ -391,6 +397,13 @@ export async function draftGlossaryAliases(
   name: string
 ): Promise<{ status: string; name: string; aliases: string[] }> {
   return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-aliases`)
+}
+
+export async function draftGlossaryTags(
+  sessionId: string,
+  name: string
+): Promise<{ status: string; name: string; tags: string[] }> {
+  return post(`/sessions/${sessionId}/glossary/${encodeURIComponent(name)}/draft-tags`)
 }
 
 export async function refineGlossaryTerm(
@@ -787,6 +800,9 @@ export interface DomainInfo {
   filename: string
   name: string
   description: string
+  tier: string
+  active: boolean
+  owner: string
 }
 
 export async function listDomains(): Promise<{ domains: DomainInfo[] }> {
@@ -829,6 +845,88 @@ export async function updateDomainContent(
   content: string
 ): Promise<{ status: string; filename: string; path: string }> {
   return put(`/domains/${encodeURIComponent(filename)}/content`, { content })
+}
+
+export async function updateDomain(
+  filename: string,
+  data: { name?: string; description?: string; order?: number; active?: boolean }
+): Promise<{ status: string; filename: string }> {
+  return patch(`/domains/${encodeURIComponent(filename)}`, data)
+}
+
+export async function deleteDomain(
+  filename: string
+): Promise<{ status: string; filename: string }> {
+  return del(`/domains/${encodeURIComponent(filename)}`)
+}
+
+// Domain-scoped content
+export interface DomainSkillInfo {
+  name: string
+  description: string
+  domain: string
+}
+
+export interface DomainAgentInfo {
+  name: string
+  description: string
+  domain: string
+}
+
+export interface DomainRuleInfo {
+  id: string
+  summary: string
+  category: string
+  confidence: number
+  domain: string
+}
+
+export async function listDomainSkills(
+  filename: string
+): Promise<{ skills: DomainSkillInfo[] }> {
+  return get(`/domains/${encodeURIComponent(filename)}/skills`)
+}
+
+export async function listDomainAgents(
+  filename: string
+): Promise<{ agents: DomainAgentInfo[] }> {
+  return get(`/domains/${encodeURIComponent(filename)}/agents`)
+}
+
+export async function listDomainRules(
+  filename: string
+): Promise<{ rules: DomainRuleInfo[] }> {
+  return get(`/domains/${encodeURIComponent(filename)}/rules`)
+}
+
+export async function moveSkill(body: {
+  skill_name: string
+  from_domain: string
+  to_domain: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-skill', body)
+}
+
+export async function moveAgent(body: {
+  agent_name: string
+  from_domain: string
+  to_domain: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-agent', body)
+}
+
+export async function moveRule(body: {
+  rule_id: string
+  to_domain: string
+}): Promise<{ status: string }> {
+  return post('/domains/move-rule', body)
+}
+
+export async function promoteDomain(
+  filename: string,
+  targetName?: string
+): Promise<{ status: string; filename: string; new_tier: string }> {
+  return post(`/domains/${encodeURIComponent(filename)}/promote`, { target_name: targetName })
 }
 
 // Prompt Context

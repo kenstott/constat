@@ -39,6 +39,8 @@ class SkillInfo(BaseModel):
     description: str
     filename: str
     is_active: bool = False
+    domain: str = ""
+    source: str = ""
 
 
 class SkillsListResponse(BaseModel):
@@ -123,6 +125,8 @@ async def list_skills(
                 description=skill.description or "",
                 filename=skill.filename or "",
                 is_active=skill.name in manager.active_skills,
+                domain=skill.domain,
+                source=skill.source,
             ))
 
         logger.info(f"[SKILLS] Returning {len(skills)} skills")

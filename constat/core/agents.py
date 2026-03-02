@@ -40,6 +40,8 @@ class Agent:
     prompt: str
     description: str = ""
     skills: list[str] = field(default_factory=list)
+    domain: str = ""   # owning domain filename ("" = unscoped/global)
+    source: str = ""   # "system" | "shared" | "user" | "domain"
 
 
 class AgentManager:
@@ -84,6 +86,11 @@ class AgentManager:
                     )
                     logger.debug(f"Loaded agent: {name}")
 
+            # Assign domain="global" to unscoped agents
+            for agent in self._agents.values():
+                if not agent.domain:
+                    agent.domain = "global"
+
             logger.info(f"Loaded {len(self._agents)} agents from {self._agents_file}")
         except Exception as e:
             logger.warning(f"Failed to load agents from {self._agents_file}: {e}")
@@ -93,9 +100,45 @@ class AgentManager:
         self._agents.clear()
         self._load_agents()
 
-    def list_agents(self) -> list[str]:
-        """Get list of available agent names."""
+    def add_domain_agents(self, domain_dir: Path, domain_filename: str = "") -> None:
+        """Load agents from a domain's agents.yaml and merge into the pool."""
+        agents_file = domain_dir / "agents.yaml"
+        if not agents_file.exists():
+            return
+        try:
+            with open(agents_file, "r") as f:
+                data = yaml.safe_load(f) or {}
+            for name, config in data.items():
+                if isinstance(config, dict) and "prompt" in config:
+                    self._agents[name] = Agent(
+                        name=name,
+                        prompt=config["prompt"].strip(),
+                        description=config.get("description", "").strip(),
+                        skills=config.get("skills", []) or [],
+                        domain=domain_filename,
+                        source="domain",
+                    )
+            logger.info(f"Loaded domain agents from {agents_file}")
+        except Exception as e:
+            logger.warning(f"Failed to load domain agents from {agents_file}: {e}")
+
+    def remove_domain_agents(self, domain_filename: str) -> None:
+        """Remove all agents belonging to a domain."""
+        to_remove = [n for n, a in self._agents.items() if a.domain == domain_filename]
+        for name in to_remove:
+            del self._agents[name]
+            if self._active_agent == name:
+                self._active_agent = None
+
+    def list_agents(self, domain: Optional[str] = None) -> list[str]:
+        """Get list of available agent names, optionally filtered by domain."""
+        if domain is not None:
+            return [n for n, a in self._agents.items() if a.domain == domain]
         return list(self._agents.keys())
+
+    def get_domain_agents(self, domain: str) -> list[Agent]:
+        """Get agents belonging to a specific domain."""
+        return [a for a in self._agents.values() if a.domain == domain]
 
     def get_agent(self, name: str) -> Optional[Agent]:
         """Get an agent by name."""

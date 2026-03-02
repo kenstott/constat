@@ -214,6 +214,7 @@ async def list_glossary(
             entity_id=row.get("entity_id"),
             glossary_id=row.get("glossary_id"),
             ner_type=row.get("ner_type"),
+            tags={k: v for k, v in (row.get("tags") or {}).items() if not k.startswith("_")},
             ignored=row.get("ignored") or False,
         ))
 
@@ -291,7 +292,7 @@ async def get_glossary_term(
     # Resolve children — parent_id can be glossary_id or entity_id
     children = []
     lookup_name = term.name if term else name
-    entity = vs.find_entity_by_name(lookup_name, domain_ids=active_domains, session_id=session_id)
+    entity = vs.find_entity_by_name(lookup_name, domain_ids=active_domains, session_id=session_id, cross_session=True)
     candidate_ids = []
     if term:
         candidate_ids.append(term.id)
@@ -343,7 +344,7 @@ async def get_glossary_term(
             "semantic_type": term.semantic_type,
             "cardinality": term.cardinality,
             "plural": term.plural,
-            "tags": term.tags,
+            "tags": {k: v for k, v in (term.tags or {}).items() if not k.startswith("_")},
             "owner": term.owner,
             "status": term.status,
             "provenance": term.provenance,
@@ -371,6 +372,7 @@ async def get_glossary_term(
             "domain": effective_domain,
             "domain_path": domain_path_map.get(effective_domain) if effective_domain else None,
             "semantic_type": entity.semantic_type,
+            "tags": {},
             "glossary_status": "self_describing",
             "grounded": True,
             "connected_resources": resources,
@@ -599,7 +601,7 @@ async def update_definition(
     if not existing:
         # Self-describing term (entity-only, no glossary row) — create companion term
         active_domains = getattr(managed, "active_domains", []) or []
-        entity = vs.find_entity_by_name(name, domain_ids=active_domains, session_id=session_id)
+        entity = vs.find_entity_by_name(name, domain_ids=active_domains, session_id=session_id, cross_session=True)
         if not entity:
             raise HTTPException(status_code=404, detail=f"Term '{name}' not found")
         companion = GlossaryTerm(
@@ -631,6 +633,8 @@ async def update_definition(
         updates["domain"] = request.domain or None
     if request.semantic_type is not None:
         updates["semantic_type"] = request.semantic_type
+    if request.tags is not None:
+        updates["tags"] = request.tags
     if request.ignored is not None:
         updates["ignored"] = request.ignored
 
@@ -884,6 +888,79 @@ async def draft_aliases(
     }
 
 
+@router.post("/{session_id}/glossary/{name}/draft-tags", dependencies=[Depends(require_write("glossary"))])
+async def draft_tags(
+    session_id: str,
+    name: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """AI-generate draft classification tags for a glossary term."""
+    import json as _json
+
+    managed = session_manager.get_session(session_id)
+    vs = _get_vector_store(managed)
+    session = managed.session
+
+    if not session.router:
+        raise HTTPException(status_code=503, detail="LLM router not available")
+
+    from constat.discovery.glossary_generator import _build_entity_context
+    context = _build_entity_context(name, session_id, vs)
+
+    # Get existing tags for this term
+    term = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
+    existing_tags = list((term.tags or {}).keys()) if term else []
+    existing_str = ", ".join(existing_tags) if existing_tags else "none"
+
+    system = (
+        "Suggest classification tags for the given glossary term. "
+        "Tags are short uppercase labels for regulatory, sensitivity, or data governance classification. "
+        "Common examples: PII (personally identifiable information), PHI (protected health info), "
+        "FINANCIAL (monetary/accounting data), SENSITIVE (confidential business data), "
+        "GDPR (EU data protection), SOX (Sarbanes-Oxley), HIPAA (health data regulation), "
+        "CCPA (California privacy), PUBLIC (non-sensitive), INTERNAL (internal use only), "
+        "RESTRICTED (limited access), RETAIN_7Y (7-year retention). "
+        "Only suggest tags that clearly apply. Do NOT repeat existing tags. "
+        "Return ONLY a JSON array of uppercase strings, nothing else."
+    )
+    user_msg = (
+        f"Term: {display_entity_name(name)}\n\n"
+        f"Context:\n{context}\n\n"
+        f"Existing tags (DO NOT repeat):\n{existing_str}"
+    )
+
+    from constat.core.models import TaskType
+    result = session.router.execute(
+        task_type=TaskType.GLOSSARY_GENERATION,
+        system=system,
+        user_message=user_msg,
+        max_tokens=session.router.max_output_tokens,
+        complexity="low",
+    )
+
+    if not result.success or not result.content:
+        raise HTTPException(status_code=500, detail="Tag generation failed")
+
+    content = result.content.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        tags = _json.loads(content)
+        if not isinstance(tags, list):
+            tags = []
+    except _json.JSONDecodeError:
+        tags = []
+
+    existing_set = {t.upper() for t in existing_tags}
+    tags = [t.upper() for t in tags if isinstance(t, str) and t.upper() not in existing_set]
+
+    return {
+        "status": "ok",
+        "name": name,
+        "tags": tags,
+    }
+
+
 @router.post("/{session_id}/glossary/{name}/refine", dependencies=[Depends(require_write("glossary"))])
 async def refine_definition(
     session_id: str,
@@ -1092,6 +1169,10 @@ async def persist_glossary(
             entry: dict[str, Any] = {"definition": t.definition}
             if t.aliases:
                 entry["aliases"] = t.aliases
+            if t.tags:
+                visible = [k for k in t.tags if not k.startswith("_")]
+                if visible:
+                    entry["tags"] = visible
             if t.semantic_type and t.semantic_type != "concept":
                 entry["category"] = t.semantic_type
             glossary_dict[t.name] = entry

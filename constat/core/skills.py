@@ -126,6 +126,10 @@ class Skill:
     # Skill dependencies — names of other skills whose exports this skill calls
     dependencies: list[str] = field(default_factory=list)
 
+    # Domain scoping
+    domain: str = ""   # owning domain filename ("" = unscoped/global)
+    source: str = ""   # "system" | "shared" | "user" | "domain"
+
 
 class SkillManager:
     """Manages skills loaded from system, domain, and user directories.
@@ -150,6 +154,7 @@ class SkillManager:
         self._skills_dir = get_skills_dir(user_id, self._base_dir)
         self._system_skills_dir = system_skills_dir
         self._domain_skill_dirs: list[Path] = []
+        self._domain_skill_domain_map: dict[str, str] = {}  # skills_dir path → domain filename
         self._skills: dict[str, Skill] = {}
         self._active_skills: set[str] = set()
         self._ensure_skills_dir()
@@ -193,6 +198,11 @@ class SkillManager:
                 dependencies = frontmatter.get("dependencies", [])
 
                 if prompt:
+                    # Determine domain from directory context
+                    domain_name = ""
+                    if source == "domain":
+                        # skills_dir is {domain_dir}/skills/ — parent is domain dir
+                        domain_name = self._domain_skill_domain_map.get(str(skills_dir), "")
                     self._skills[name] = Skill(
                         name=name,
                         prompt=prompt,
@@ -207,6 +217,8 @@ class SkillManager:
                         argument_hint=argument_hint,
                         exports=exports if isinstance(exports, list) else [],
                         dependencies=dependencies if isinstance(dependencies, list) else [],
+                        domain=domain_name,
+                        source=source,
                     )
                     logger.debug(f"Loaded skill: {name} from {skill_dir.name}/SKILL.md ({source})")
 
@@ -231,16 +243,24 @@ class SkillManager:
         # 3. User skills (highest precedence)
         self._load_skills_from_dir(self._skills_dir, "user")
 
+        # Assign domain="global" to unscoped skills
+        for skill in self._skills.values():
+            if not skill.domain:
+                skill.domain = "global"
+
         logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, domains={len(self._domain_skill_dirs)}, user={self._skills_dir})")
 
-    def add_domain_skills(self, domain_dir: Path) -> None:
+    def add_domain_skills(self, domain_dir: Path, domain_filename: str = "") -> None:
         """Add a domain skills directory and reload.
 
         Args:
             domain_dir: Path to the domain's skills/ directory.
+            domain_filename: Owning domain filename for scoping.
         """
         if domain_dir not in self._domain_skill_dirs:
             self._domain_skill_dirs.append(domain_dir)
+            if domain_filename:
+                self._domain_skill_domain_map[str(domain_dir)] = domain_filename
             self._load_skills()
 
     def remove_domain_skills(self, domain_dir: Path) -> None:
@@ -253,17 +273,38 @@ class SkillManager:
         """Reload skills from files."""
         self._load_skills()
 
-    def list_skills(self) -> list[str]:
-        """Get list of available skill names."""
+    def list_skills(self, domain: Optional[str] = None) -> list[str]:
+        """Get list of available skill names, optionally filtered by domain."""
+        if domain is not None:
+            return [n for n, s in self._skills.items() if s.domain == domain]
         return list(self._skills.keys())
 
     def get_skill(self, name: str) -> Optional[Skill]:
         """Get a skill by name."""
         return self._skills.get(name)
 
+    def resolve_skill(self, name: str) -> Optional[Skill]:
+        """Resolve a skill by name, supporting qualified names (domain/skill)."""
+        if "/" in name:
+            domain_part, skill_part = name.split("/", 1)
+            for s in self._skills.values():
+                if s.name == skill_part and s.domain == domain_part:
+                    return s
+            return None
+        return self._skills.get(name)
+
+    @staticmethod
+    def qualified_name(skill: Skill) -> str:
+        """Return the qualified name for a skill."""
+        return f"{skill.domain}/{skill.name}" if skill.domain else skill.name
+
     def get_all_skills(self) -> list[Skill]:
         """Get all skills."""
         return list(self._skills.values())
+
+    def get_domain_skills(self, domain: str) -> list[Skill]:
+        """Get skills belonging to a specific domain."""
+        return [s for s in self._skills.values() if s.domain == domain]
 
     def activate_skill(self, name: str) -> bool:
         """Activate a skill.

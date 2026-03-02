@@ -259,6 +259,7 @@ export interface GlossaryTerm {
   entity_id?: string | null
   glossary_id?: string | null
   ner_type?: string | null
+  tags?: Record<string, unknown>
   ignored?: boolean
   connected_resources: Array<{
     entity_name: string

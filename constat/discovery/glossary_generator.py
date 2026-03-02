@@ -97,6 +97,11 @@ for ALL its children — even if those children seem self-describing. Without th
 entries, the parent-child link cannot be established. For self-describing children,
 keep the definition brief (e.g., "A premium customer tier level").
 
+- tags: classification labels for the term. Use short uppercase keys.
+  Common examples: "PII" (personally identifiable information), "PHI" (protected health info),
+  "FINANCIAL" (monetary/accounting data), "SENSITIVE" (confidential business data).
+  Only include tags that clearly apply based on the entity context. Empty array if none.
+
 Respond as a JSON array with one entry per entity (plus any new parent terms):
 [{
   "name": "...",
@@ -104,7 +109,8 @@ Respond as a JSON array with one entry per entity (plus any new parent terms):
   "parent": "..." or null,
   "parent_verb": "HAS_ONE" or "HAS_KIND" or "HAS_MANY",
   "aliases": ["..."],
-  "confidence": "high|medium|low"
+  "confidence": "high|medium|low",
+  "tags": ["PII", "FINANCIAL"]
 }]"""
 
 
@@ -512,13 +518,18 @@ def generate_glossary(
                     user_id=scope_id,
                 )
 
+                # Extract LLM tags
+                raw_tags = item.get("tags", [])
+                llm_tags = {t: {} for t in raw_tags if isinstance(t, str)}
+                term.tags = llm_tags
+
                 # Store parent name and verb for later linking
                 parent_name = item.get("parent")
                 if parent_name:
                     verb = item.get("parent_verb", "HAS_KIND")
                     if verb not in ("HAS_ONE", "HAS_KIND", "HAS_MANY"):
                         verb = "HAS_KIND"
-                    term.tags = {"_suggested_parent": {"name": parent_name, "verb": verb}}
+                    term.tags["_suggested_parent"] = {"name": parent_name, "verb": verb}
 
                 batch_terms.append(term)
 
@@ -886,7 +897,7 @@ def resolve_physical_resources(
         return sources
 
     # Direct match — concrete term
-    entity = vector_store.find_entity_by_name(term_name, domain_ids=domain_ids, session_id=session_id)
+    entity = vector_store.find_entity_by_name(term_name, domain_ids=domain_ids, session_id=session_id, cross_session=True)
     if entity:
         sources = _collect_entity_sources(entity)
         if sources:
@@ -900,7 +911,7 @@ def resolve_physical_resources(
     term = vector_store.get_glossary_term(term_name, session_id, user_id=user_id)
     if term:
         for alias in (term.aliases or []):
-            alias_entity = vector_store.find_entity_by_name(alias, domain_ids=domain_ids, session_id=session_id)
+            alias_entity = vector_store.find_entity_by_name(alias, domain_ids=domain_ids, session_id=session_id, cross_session=True)
             if alias_entity:
                 sources = _collect_entity_sources(alias_entity)
                 if sources:
@@ -944,7 +955,7 @@ def is_grounded(
     _visited.add(key)
 
     # Direct entity match — only grounded if it has non-glossary chunks
-    entity = vector_store.find_entity_by_name(term_name, session_id=session_id)
+    entity = vector_store.find_entity_by_name(term_name, session_id=session_id, cross_session=True)
     if entity and _entity_has_physical_chunks(entity, vector_store):
         return True
 
@@ -956,7 +967,7 @@ def is_grounded(
             if alias_key in _visited:
                 continue
             _visited.add(alias_key)
-            alias_entity = vector_store.find_entity_by_name(alias, session_id=session_id)
+            alias_entity = vector_store.find_entity_by_name(alias, session_id=session_id, cross_session=True)
             if alias_entity and _entity_has_physical_chunks(alias_entity, vector_store):
                 return True
 
@@ -964,7 +975,7 @@ def is_grounded(
         return False
 
     # Hierarchy: check children (by glossary ID and entity ID)
-    entity_for_term = vector_store.find_entity_by_name(term_name, session_id=session_id)
+    entity_for_term = vector_store.find_entity_by_name(term_name, session_id=session_id, cross_session=True)
     extra_ids = [entity_for_term.id] if entity_for_term else []
     children = vector_store.get_child_terms(term.id, *extra_ids)
     return any(is_grounded(c.name, session_id, vector_store, _visited, user_id=user_id) for c in children)

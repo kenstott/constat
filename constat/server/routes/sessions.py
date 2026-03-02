@@ -232,8 +232,12 @@ def _load_domains_into_session(
     # Register domain skills directories
     for filename, domain in valid_domains:
         if domain.source_path:
-            domain_skills_dir = Path(domain.source_path).parent / "skills"
-            managed.session.skill_manager.add_domain_skills(domain_skills_dir)
+            domain_dir = Path(domain.source_path).parent
+            domain_skills_dir = domain_dir / "skills"
+            managed.session.skill_manager.add_domain_skills(domain_skills_dir, domain_filename=filename)
+            # Also register domain agents
+            if hasattr(managed.session, "agent_manager"):
+                managed.session.agent_manager.add_domain_agents(domain_dir, domain_filename=filename)
 
     # Sync resources to session history (session.json)
     managed.session.sync_resources_to_history()

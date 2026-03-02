@@ -28,6 +28,8 @@ class AgentInfo(BaseModel):
     description: str = ""
     skills: list[str] = []
     is_active: bool = False
+    domain: str = ""
+    source: str = ""
 
 
 class AgentsListResponse(BaseModel):
@@ -127,6 +129,8 @@ async def list_agents(
                 description=agent.description,
                 skills=agent.skills,
                 is_active=(name == current_agent),
+                domain=agent.domain,
+                source=agent.source,
             ))
 
     logger.info(f"[AGENTS] Returning {len(agents)} agents, current_agent={current_agent}")

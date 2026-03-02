@@ -32,6 +32,7 @@ import {
   updateGlossaryTerm,
   draftGlossaryDefinition,
   draftGlossaryAliases,
+  draftGlossaryTags,
   listDomains,
   getDomainTree,
   moveDomainSource,
@@ -482,6 +483,113 @@ function AddRelationshipRow({
   )
 }
 
+// Inline tag editor — add/remove classification tags (mirrors AliasEditor style)
+function TagEditor({
+  tags,
+  onChange,
+  sessionId,
+  termName,
+}: {
+  tags: Record<string, unknown>
+  onChange: (tags: Record<string, unknown>) => void
+  sessionId: string
+  termName: string
+}) {
+  const [adding, setAdding] = useState(false)
+  const [input, setInput] = useState('')
+  const [drafting, setDrafting] = useState(false)
+  const tagKeys = Object.keys(tags || {})
+
+  const handleAdd = () => {
+    const val = input.trim().toUpperCase()
+    if (!val || val in (tags || {})) { setInput(''); setAdding(false); return }
+    onChange({ ...tags, [val]: {} })
+    setInput('')
+    setAdding(false)
+  }
+
+  const handleRemove = (tag: string) => {
+    const next = { ...tags }
+    delete next[tag]
+    onChange(next)
+  }
+
+  const handleDraft = async () => {
+    setDrafting(true)
+    try {
+      const result = await draftGlossaryTags(sessionId, termName)
+      if (result.tags && result.tags.length > 0) {
+        const merged = { ...tags }
+        for (const t of result.tags) {
+          if (!(t in merged)) merged[t] = {}
+        }
+        onChange(merged)
+      }
+    } catch (err) {
+      console.error('Draft tags failed:', err)
+    } finally {
+      setDrafting(false)
+    }
+  }
+
+  return (
+    <div className="text-xs text-gray-500 dark:text-gray-400">
+      <span className="font-medium">Tags:</span>
+      {tagKeys.length === 0 && !adding && (
+        <span className="text-gray-400 ml-1">none</span>
+      )}
+      {tagKeys.map((tag, i) => (
+        <span key={tag} className="inline-flex items-center ml-1">
+          <span className="text-amber-600 dark:text-amber-400">{tag}</span>
+          <button
+            onClick={() => handleRemove(tag)}
+            className="ml-0.5 text-red-400 hover:text-red-500"
+            title="Remove tag"
+          >
+            <XMarkIcon className="w-2.5 h-2.5" />
+          </button>
+          {i < tagKeys.length - 1 && <span>,</span>}
+        </span>
+      ))}
+      {adding ? (
+        <span className="inline-flex items-center ml-1">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleAdd()
+              if (e.key === 'Escape') { setAdding(false); setInput('') }
+            }}
+            onBlur={() => { if (!input.trim()) setAdding(false); else handleAdd() }}
+            className="px-1 py-0 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 w-20 uppercase"
+            placeholder="TAG"
+            autoFocus
+          />
+        </span>
+      ) : (
+        <>
+          <button
+            onClick={() => setAdding(true)}
+            className="ml-1 text-blue-500 hover:text-blue-600"
+            title="Add tag"
+          >
+            <PlusIcon className="w-3 h-3 inline" />
+          </button>
+          <button
+            onClick={handleDraft}
+            disabled={drafting}
+            className="ml-1 inline-flex items-center gap-0.5 text-purple-500 hover:text-purple-600 disabled:opacity-50"
+            title="AI-generate tags"
+          >
+            <SparklesIcon className="w-3 h-3" />
+            <span className="text-[10px]">{drafting ? 'Drafting...' : 'AI Draft'}</span>
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 // Connected resources display
 function ConnectedResources({
   sessionId,
@@ -491,6 +599,7 @@ function ConnectedResources({
   termName: string
 }) {
   const refreshKey = useGlossaryStore((s) => s.refreshKey)
+  const updateTerm = useGlossaryStore((s) => s.updateTerm)
   const [detail, setDetail] = useState<{
     resources: Array<{
       entity_name: string
@@ -502,10 +611,11 @@ function ConnectedResources({
     children: Array<{ name: string; display_name: string; parent_verb?: string }>
     relationships: Array<{ id: string; subject: string; verb: string; object: string; confidence: number }>
     cluster_siblings: string[]
+    tags: Record<string, unknown>
     domain: string | null
     domain_path: string | null
     spanning_domains: string[]
-  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], domain: null, domain_path: null, spanning_domains: [] })
+  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], tags: {}, domain: null, domain_path: null, spanning_domains: [] })
   const [loaded, setLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -522,6 +632,7 @@ function ConnectedResources({
           children: data.children || [],
           relationships: data.relationships || [],
           cluster_siblings: data.cluster_siblings || [],
+          tags: data.tags || {},
           domain: data.domain || null,
           domain_path: data.domain_path || null,
           spanning_domains: data.spanning_domains || [],
@@ -537,18 +648,22 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
-  const { resources, parent, parent_verb, children, relationships, cluster_siblings, domain, domain_path, spanning_domains } = detail
+  const { resources, parent, parent_verb, children, relationships, cluster_siblings, tags, domain, domain_path, spanning_domains } = detail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
   const hasContent = resources.length > 0 || hasConnections || !!domain
   if (!hasContent) return null
 
   return (
     <div className="mt-1.5 space-y-1.5">
-      {domain && (
-        <div className="text-xs text-gray-400 dark:text-gray-500">
-          Domain: {spanning_domains.length > 0 ? spanning_domains.join(', ') : (domain_path || domain)}
-        </div>
-      )}
+      <TagEditor
+        tags={tags}
+        onChange={(newTags) => {
+          setDetail(prev => ({ ...prev, tags: newTags }))
+          updateTerm(sessionId, termName, { tags: newTags })
+        }}
+        sessionId={sessionId}
+        termName={termName}
+      />
       {parent && (
         <div>
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">
@@ -631,6 +746,11 @@ function ConnectedResources({
               ))}
             </div>
           ))}
+        </div>
+      )}
+      {domain && (
+        <div className="text-xs text-gray-400 dark:text-gray-500">
+          Domain: {spanning_domains.length > 0 ? spanning_domains.join(', ') : (domain_path || domain)}
         </div>
       )}
       {hasConnections && (
@@ -990,6 +1110,11 @@ function GlossaryItem({
             {term.semantic_type}
           </span>
         )}
+        {Object.keys(term.tags || {}).map(tag => (
+          <span key={tag} className="text-[9px] px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 font-medium flex-shrink-0">
+            {tag}
+          </span>
+        ))}
         <DomainPromotePicker
           termName={term.name}
           currentDomain={term.domain || null}
@@ -1322,6 +1447,52 @@ function TreeIcon({ className }: { className?: string }) {
   )
 }
 
+function TagIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+      <path d="M7 7h.01M7 3h5a2 2 0 011.414.586l7 7a2 2 0 010 2.828l-5 5a2 2 0 01-2.828 0l-7-7A2 2 0 013 10V5a2 2 0 012-2z" />
+    </svg>
+  )
+}
+
+function buildTagGroups(terms: GlossaryTerm[]): Map<string, GlossaryTerm[]> {
+  const groups = new Map<string, GlossaryTerm[]>()
+  for (const t of terms) {
+    const tags = Object.keys(t.tags || {})
+    if (tags.length === 0) {
+      if (!groups.has('Untagged')) groups.set('Untagged', [])
+      groups.get('Untagged')!.push(t)
+    } else {
+      for (const tag of tags) {
+        if (!groups.has(tag)) groups.set(tag, [])
+        groups.get(tag)!.push(t)
+      }
+    }
+  }
+  return groups
+}
+
+function TagGroupSection({ tag, terms, sessionId }: { tag: string; terms: GlossaryTerm[]; sessionId: string }) {
+  const [collapsed, setCollapsed] = useState(false)
+  return (
+    <div className="mb-1">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center gap-1.5 py-1.5 px-1 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50"
+      >
+        <ChevronRightIcon className={`w-3 h-3 text-gray-400 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 font-medium">
+          {tag}
+        </span>
+        <span className="text-[10px] text-gray-400">{terms.length}</span>
+      </button>
+      {!collapsed && terms.map((term) => (
+        <GlossaryItem key={`${tag}-${term.name}`} term={term} sessionId={sessionId} depth={1} />
+      ))}
+    </div>
+  )
+}
+
 // Domain move picker — assign/reassign/unassign a term's domain
 // Any term can be moved between domains. Cascade moves descendants too.
 // Collect all descendant terms (recursive via parent_id)
@@ -1380,7 +1551,7 @@ function DomainPromotePicker({
       const flat = (activeDomains.length > 0
         ? allDomains.filter(d => activeDomains.includes(d.filename))
         : allDomains
-      ).map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], children: [] }))
+      ).map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], children: [] }))
       setTreeNodes(flat)
     }
     setLoading(false)
@@ -2893,7 +3064,7 @@ function SourceMovePicker({
       setTreeNodes(tree)
     } catch {
       const { domains: allDomains } = await listDomains()
-      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], children: [] })))
+      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], children: [] })))
     }
     setLoading(false)
   }
@@ -3159,7 +3330,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     getDomainTree()
       .then(setDomainTree)
       .catch(() => listDomains().then(r => setDomainTree(
-        r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], children: [] }))
+        r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], children: [] }))
       )).catch(() => {}))
   }, [])
 
@@ -3198,6 +3369,12 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     return buildTree(displayTerms)
   }, [displayTerms, viewMode])
 
+  // Build tag groups for tag view
+  const tagGroups = useMemo(() => {
+    if (viewMode !== 'tags') return null
+    return buildTagGroups(displayTerms)
+  }, [displayTerms, viewMode])
+
   const handleScopeChange = useCallback(
     (scope: 'all' | 'defined' | 'self_describing') => {
       setFilter({ scope })
@@ -3222,6 +3399,13 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           title="Tree view"
         >
           <TreeIcon className="w-3.5 h-3.5 text-gray-500" />
+        </button>
+        <button
+          onClick={() => setViewMode('tags')}
+          className={`p-1 rounded ${viewMode === 'tags' ? 'bg-gray-200 dark:bg-gray-600' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+          title="Group by tag"
+        >
+          <TagIcon className="w-3.5 h-3.5 text-gray-500" />
         </button>
         <button
           onClick={() => setFullscreen(!fullscreen)}
@@ -3363,6 +3547,12 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
               node={node}
               sessionId={sessionId}
             />
+          ))}
+        </div>
+      ) : viewMode === 'tags' && tagGroups ? (
+        <div className={`overflow-y-auto ${fullscreen ? 'flex-1' : 'max-h-[calc(100vh-20rem)]'}`}>
+          {Array.from(tagGroups.entries()).map(([tag, groupTerms]) => (
+            <TagGroupSection key={tag} tag={tag} terms={groupTerms} sessionId={sessionId} />
           ))}
         </div>
       ) : (

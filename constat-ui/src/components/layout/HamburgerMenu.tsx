@@ -7,7 +7,6 @@ import {
   Cog6ToothIcon,
   ChatBubbleLeftRightIcon,
   PlusIcon,
-  PencilIcon,
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
 } from '@heroicons/react/24/outline'
@@ -17,7 +16,6 @@ import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 import type { Session } from '@/types/api'
-import type { DomainInfo } from '@/api/sessions'
 
 interface HamburgerMenuProps {
   onNewSession?: () => void
@@ -75,29 +73,12 @@ function AccountSection({ onClose }: { onClose: () => void }) {
 
 export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
   const { menuOpen, setMenuOpen, theme, setTheme } = useUIStore()
-  const { session: currentSession, setSession, updateSession, createSession } = useSessionStore()
+  const { session: currentSession, setSession, createSession } = useSessionStore()
   const [sessions, setSessions] = useState<Session[]>([])
   const [loadingSessions, setLoadingSessions] = useState(false)
-  const [domains, setDomains] = useState<DomainInfo[]>([])
-  const [loadingDomains, setLoadingDomains] = useState(false)
-
   // Loading state for session operations
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null)
   const [creatingSession, setCreatingSession] = useState(false)
-
-  // Domain editor modal state
-  const [editingDomain, setEditingDomain] = useState<string | null>(null)
-  const [domainContent, setDomainContent] = useState('')
-  const [domainPath, setDomainPath] = useState('')
-  const [savingDomain, setSavingDomain] = useState(false)
-  const [domainSaveError, setDomainSaveError] = useState<string | null>(null)
-
-  // Create domain form state
-  const [showCreateDomain, setShowCreateDomain] = useState(false)
-  const [newDomainName, setNewDomainName] = useState('')
-  const [newDomainDesc, setNewDomainDesc] = useState('')
-  const [creatingDomain, setCreatingDomain] = useState(false)
-  const [createDomainError, setCreateDomainError] = useState<string | null>(null)
 
   // Fetch sessions, projects, and skills when menu opens
   useEffect(() => {
@@ -120,14 +101,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
         .catch(console.error)
         .finally(() => setLoadingSessions(false))
 
-      // Fetch domains
-      setLoadingDomains(true)
-      sessionsApi.listDomains()
-        .then((response) => {
-          setDomains(response.domains)
-        })
-        .catch(console.error)
-        .finally(() => setLoadingDomains(false))
     }
   }, [menuOpen, currentSession?.session_id])
 
@@ -210,104 +183,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       onNewSession?.()
     } finally {
       setCreatingSession(false)
-    }
-  }
-
-  const handleCreateDomain = async () => {
-    if (!newDomainName.trim()) return
-    setCreatingDomain(true)
-    setCreateDomainError(null)
-    try {
-      await sessionsApi.createDomain(newDomainName.trim(), newDomainDesc.trim())
-      // Refresh domains list
-      const response = await sessionsApi.listDomains()
-      setDomains(response.domains)
-      setShowCreateDomain(false)
-      setNewDomainName('')
-      setNewDomainDesc('')
-    } catch (error: unknown) {
-      if (error && typeof error === 'object' && 'data' in error) {
-        const detail = (error as { data?: { detail?: string } }).data?.detail
-        setCreateDomainError(detail || 'Failed to create domain')
-      } else {
-        setCreateDomainError('Failed to create domain')
-      }
-    } finally {
-      setCreatingDomain(false)
-    }
-  }
-
-  const [domainError, setDomainError] = useState<string | null>(null)
-
-  const handleToggleDomain = async (domainFilename: string) => {
-    if (!currentSession) return
-
-    setDomainError(null)
-    const currentDomains = currentSession.active_domains || []
-    const isSelected = currentDomains.includes(domainFilename)
-
-    // Toggle: remove if selected, add if not
-    const newDomains = isSelected
-      ? currentDomains.filter(d => d !== domainFilename)
-      : [...currentDomains, domainFilename]
-
-    try {
-      await sessionsApi.setActiveDomains(currentSession.session_id, newDomains)
-      // Update local session state without clearing messages or reconnecting WebSocket
-      updateSession({ active_domains: newDomains })
-      // Refresh data sources and entities to show merged sources
-      const artifactStore = useArtifactStore.getState()
-      await artifactStore.fetchDataSources(currentSession.session_id)
-      // Entities refresh via entity_rebuild_complete WS event
-    } catch (error: unknown) {
-      console.error('Failed to set domains:', error)
-      // Handle conflict errors
-      if (error && typeof error === 'object' && 'message' in error) {
-        const errObj = error as { message?: string; response?: { data?: { detail?: { message?: string; conflicts?: string[] } } } }
-        const detail = errObj.response?.data?.detail
-        if (detail && typeof detail === 'object' && detail.conflicts) {
-          setDomainError(detail.conflicts.join('\n'))
-        } else {
-          setDomainError(errObj.message || 'Failed to update domains')
-        }
-      }
-    }
-  }
-
-  // Open domain editor
-  const handleEditDomain = async (filename: string) => {
-    try {
-      setDomainSaveError(null)
-      const result = await sessionsApi.getDomainContent(filename)
-      setDomainContent(result.content)
-      setDomainPath(result.path)
-      setEditingDomain(filename)
-    } catch (error) {
-      console.error('Failed to load domain:', error)
-    }
-  }
-
-  // Save domain content
-  const handleSaveDomain = async () => {
-    if (!editingDomain) return
-
-    setSavingDomain(true)
-    setDomainSaveError(null)
-    try {
-      await sessionsApi.updateDomainContent(editingDomain, domainContent)
-      // Refresh domains list
-      const response = await sessionsApi.listDomains()
-      setDomains(response.domains)
-      setEditingDomain(null)
-    } catch (error: unknown) {
-      console.error('Failed to save domain:', error)
-      if (error && typeof error === 'object' && 'message' in error) {
-        setDomainSaveError((error as { message: string }).message)
-      } else {
-        setDomainSaveError('Failed to save domain')
-      }
-    } finally {
-      setSavingDomain(false)
     }
   }
 
@@ -465,121 +340,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
                       </div>
                     </div>
 
-                    {/* Domains section */}
-                    <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-                        <div className="flex items-center justify-between mb-2">
-                          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                            Domains
-                          </h3>
-                          <button
-                            onClick={() => setShowCreateDomain(!showCreateDomain)}
-                            className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                            title="Create domain"
-                          >
-                            <PlusIcon className="w-4 h-4" />
-                          </button>
-                        </div>
-                        {showCreateDomain && (
-                          <div className="mb-2 p-2 bg-gray-50 dark:bg-gray-900/50 rounded-md space-y-2">
-                            <input
-                              type="text"
-                              value={newDomainName}
-                              onChange={(e) => setNewDomainName(e.target.value)}
-                              placeholder="Domain name"
-                              className="w-full text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-                              onKeyDown={(e) => e.key === 'Enter' && handleCreateDomain()}
-                            />
-                            <input
-                              type="text"
-                              value={newDomainDesc}
-                              onChange={(e) => setNewDomainDesc(e.target.value)}
-                              placeholder="Description (optional)"
-                              className="w-full text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-                              onKeyDown={(e) => e.key === 'Enter' && handleCreateDomain()}
-                            />
-                            {createDomainError && (
-                              <p className="text-xs text-red-600 dark:text-red-400">{createDomainError}</p>
-                            )}
-                            <div className="flex gap-2">
-                              <button
-                                onClick={handleCreateDomain}
-                                disabled={creatingDomain || !newDomainName.trim()}
-                                className="px-3 py-1 text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 rounded transition-colors"
-                              >
-                                {creatingDomain ? 'Creating...' : 'Create'}
-                              </button>
-                              <button
-                                onClick={() => { setShowCreateDomain(false); setCreateDomainError(null) }}
-                                className="px-3 py-1 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                        {domainError && (
-                          <div className="mb-2 p-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-md">
-                            {domainError}
-                          </div>
-                        )}
-                        <div className="space-y-1">
-                          {loadingDomains ? (
-                            <p className="text-xs text-gray-400 py-2">Loading domains...</p>
-                          ) : (
-                            <>
-                              {/* Domain options with checkboxes */}
-                              {domains.map((domain) => {
-                                const isSelected = currentSession?.active_domains?.includes(domain.filename) ?? false
-                                return (
-                                  <div
-                                    key={domain.filename}
-                                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${
-                                      isSelected
-                                        ? 'bg-primary-100 dark:bg-primary-900/30'
-                                        : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => handleToggleDomain(domain.filename)}
-                                      className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 dark:bg-gray-700"
-                                    />
-                                    <button
-                                      onClick={() => handleToggleDomain(domain.filename)}
-                                      className="flex-1 min-w-0 text-left"
-                                    >
-                                      <p className={`text-sm font-medium truncate ${
-                                        isSelected
-                                          ? 'text-primary-700 dark:text-primary-300'
-                                          : 'text-gray-900 dark:text-gray-100'
-                                      }`}>
-                                        {domain.name}
-                                      </p>
-                                      {domain.description && (
-                                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                          {domain.description}
-                                        </p>
-                                      )}
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        handleEditDomain(domain.filename)
-                                      }}
-                                      className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600"
-                                      title="Edit domain YAML"
-                                    >
-                                      <PencilIcon className="w-4 h-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" />
-                                    </button>
-                                  </div>
-                                )
-                              })}
-                            </>
-                          )}
-                        </div>
-                    </div>
-
                     {/* Settings */}
                     <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-4 space-y-4">
                       <div className="flex items-center justify-between">
@@ -614,83 +374,6 @@ export function HamburgerMenu({ onNewSession }: HamburgerMenuProps) {
       </Dialog>
     </Transition.Root>
 
-      {/* Domain Editor Modal */}
-      <Transition.Root show={editingDomain !== null} as={Fragment}>
-        <Dialog as="div" className="relative z-[60]" onClose={() => setEditingDomain(null)}>
-          <Transition.Child
-            as={Fragment}
-            enter="ease-out duration-300"
-            enterFrom="opacity-0"
-            enterTo="opacity-100"
-            leave="ease-in duration-200"
-            leaveFrom="opacity-100"
-            leaveTo="opacity-0"
-          >
-            <div className="fixed inset-0 bg-gray-500/75 dark:bg-gray-900/75 transition-opacity" />
-          </Transition.Child>
-
-          <div className="fixed inset-0 z-10 overflow-y-auto">
-            <div className="flex min-h-full items-center justify-center p-4">
-              <Transition.Child
-                as={Fragment}
-                enter="ease-out duration-300"
-                enterFrom="opacity-0 scale-95"
-                enterTo="opacity-100 scale-100"
-                leave="ease-in duration-200"
-                leaveFrom="opacity-100 scale-100"
-                leaveTo="opacity-0 scale-95"
-              >
-                <Dialog.Panel className="w-full max-w-3xl transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow-xl transition-all">
-                  <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                    <Dialog.Title className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      Edit Domain: {editingDomain}
-                    </Dialog.Title>
-                    <button
-                      onClick={() => setEditingDomain(null)}
-                      className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      <XMarkIcon className="w-5 h-5 text-gray-500" />
-                    </button>
-                  </div>
-
-                  <div className="p-4">
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                      {domainPath}
-                    </p>
-                    <textarea
-                      value={domainContent}
-                      onChange={(e) => setDomainContent(e.target.value)}
-                      className="w-full h-96 font-mono text-sm p-3 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      spellCheck={false}
-                    />
-                    {domainSaveError && (
-                      <p className="mt-2 text-sm text-red-600 dark:text-red-400">
-                        {domainSaveError}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-                    <button
-                      onClick={() => setEditingDomain(null)}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveDomain}
-                      disabled={savingDomain}
-                      className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors"
-                    >
-                      {savingDomain ? 'Saving...' : 'Save'}
-                    </button>
-                  </div>
-                </Dialog.Panel>
-              </Transition.Child>
-            </div>
-          </div>
-        </Dialog>
-      </Transition.Root>
     </>
   )
 }

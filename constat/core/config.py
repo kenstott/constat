@@ -877,10 +877,14 @@ class DomainConfig(BaseModel):
     name: str
     description: str = ""
     owner: str = ""
+    steward: str = ""
     definition: str = ""
     filename: str = ""  # Source filename, autopopulated from _source_file
     source_path: str = ""  # Full path to source file, for editing
     path: str = ""  # Dot-delimited hierarchy path (e.g. "sales.north-america.retail")
+    tier: str = "system"  # "system" | "shared" | "user"
+    active: bool = True
+    order: int = 0
 
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
@@ -1099,6 +1103,7 @@ class Config(BaseModel):
                 "filename": filename,
                 "name": domain.name,
                 "description": domain.description,
+                "steward": domain.steward,
             }
             for filename, domain in self.domains.items()
         ]

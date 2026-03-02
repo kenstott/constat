@@ -21,7 +21,7 @@ interface GlossaryState {
   }>
   taxonomySuggestions: TaxonomySuggestion[]
   selectedName: string | null
-  viewMode: 'tree' | 'list'
+  viewMode: 'tree' | 'list' | 'tags'
   filters: GlossaryFilter
   totalDefined: number
   totalSelfDescribing: number
@@ -50,7 +50,7 @@ interface GlossaryState {
   bulkUpdateStatus: (sessionId: string, names: string[], status: string) => Promise<void>
   selectTerm: (name: string | null) => void
   setFilter: (filter: Partial<GlossaryFilter>) => void
-  setViewMode: (mode: 'tree' | 'list') => void
+  setViewMode: (mode: 'tree' | 'list' | 'tags') => void
   setGenerating: (generating: boolean) => void
   setProgress: (stage: string, percent: number) => void
   setEntityRebuilding: (rebuilding: boolean) => void

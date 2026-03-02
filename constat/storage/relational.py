@@ -122,6 +122,7 @@ class RelationalStore:
         name: str,
         domain_ids: Optional[list[str]] = None,
         session_id: Optional[str] = None,
+        cross_session: bool = False,
     ) -> Optional[Entity]:
         from constat.storage.duckdb_backend import DuckDBVectorBackend
 
@@ -130,6 +131,7 @@ class RelationalStore:
         if session_id:
             vis_filter, vis_params = self.entity_visibility_filter(
                 session_id, domain_ids, alias="",
+                cross_session=cross_session,
             )
             where = f"LOWER(name) = LOWER(?) AND {vis_filter}"
             params.extend(vis_params)

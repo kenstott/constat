@@ -99,14 +99,14 @@ class TestResolvePhysicalResources:
         sources = resources[0]["sources"]
         assert any("api:catfacts" in s["document_name"] for s in sources)
 
-    def test_no_resources_without_session_id(self, vs):
-        """Entity not found when session_id is wrong (visibility filter)."""
+    def test_cross_session_resources_visible(self, vs):
+        """Entity from another session is visible (cross_session in resolve)."""
         from constat.discovery.glossary_generator import resolve_physical_resources
 
         resources = resolve_physical_resources(
             "cat fact", "wrong-session", vs, user_id="wrong-user",
         )
-        assert len(resources) == 0
+        assert len(resources) > 0, "Cross-session entities should be visible in glossary resolution"
 
     def test_finds_resources_with_domain_ids(self, vs):
         """Adding domain_ids doesn't break when entity has no domain."""

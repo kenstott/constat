@@ -36,6 +36,8 @@ interface SkillInfo {
   description: string
   filename: string
   is_active: boolean
+  domain: string
+  source: string
 }
 
 // Agent info (all agents, not just active)
@@ -43,6 +45,8 @@ interface AgentInfo {
   name: string
   prompt: string
   is_active: boolean
+  domain: string
+  source: string
 }
 
 // User permissions
@@ -289,6 +293,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
           description: s.description,
           filename: s.filename,
           is_active: s.is_active,
+          domain: s.domain || '',
+          source: s.source || '',
         })),
       })
     } catch (error) {
@@ -375,10 +381,12 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       if (response.ok) {
         const data = await response.json()
         set({
-          allAgents: (data.agents || []).map((r: { name: string; prompt: string; is_active: boolean }) => ({
+          allAgents: (data.agents || []).map((r: { name: string; prompt: string; is_active: boolean; domain?: string; source?: string }) => ({
             name: r.name,
             prompt: r.prompt,
             is_active: r.is_active,
+            domain: r.domain || '',
+            source: r.source || '',
           })),
         })
       } else {
