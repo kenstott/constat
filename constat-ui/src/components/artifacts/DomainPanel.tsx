@@ -9,6 +9,7 @@ import {
   TrashIcon,
   PlusIcon,
   ArrowUpIcon,
+  ArrowsRightLeftIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
@@ -23,9 +24,19 @@ interface DragItem {
 }
 
 const TIER_BADGE: Record<string, { label: string; className: string }> = {
-  system: { label: '\u{1F512}', className: 'text-gray-400' },
-  shared: { label: '\u{1F465}', className: 'text-blue-500' },
-  user: { label: '\u{1F9EA}', className: 'text-amber-500' },
+  system: { label: 'S', className: 'text-[9px] font-bold text-gray-400' },
+  shared: { label: 'C', className: 'text-[9px] font-bold text-blue-500' },
+  user: { label: 'U', className: 'text-[9px] font-bold text-amber-500' },
+}
+
+/** Collect all domain filenames from a tree (for move-to pickers). */
+function collectDomainNames(nodes: DomainTreeNode[]): { filename: string; name: string }[] {
+  const out: { filename: string; name: string }[] = []
+  for (const n of nodes) {
+    out.push({ filename: n.filename, name: n.name })
+    if (n.children.length) out.push(...collectDomainNames(n.children))
+  }
+  return out
 }
 
 function DomainTreeNodeView({
@@ -34,6 +45,7 @@ function DomainTreeNodeView({
   activeDomains,
   isAdmin,
   userId,
+  allDomains,
   onToggle,
   onEdit,
   onDelete,
@@ -46,6 +58,7 @@ function DomainTreeNodeView({
   activeDomains: string[]
   isAdmin: boolean
   userId: string
+  allDomains: { filename: string; name: string }[]
   onToggle: (filename: string) => void
   onEdit: (filename: string) => void
   onDelete: (filename: string) => void
@@ -58,6 +71,7 @@ function DomainTreeNodeView({
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(node.name)
   const [dragOver, setDragOver] = useState(false)
+  const [movingItem, setMovingItem] = useState<{ type: DragItem['type']; name: string } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const hasScopedContent = node.skills.length > 0 || node.agents.length > 0 || node.rules.length > 0
   const hasChildren = node.children.length > 0 || hasScopedContent
@@ -65,12 +79,10 @@ function DomainTreeNodeView({
   const isActive = isSystem || activeDomains.includes(node.filename)
   const resourceCount =
     node.databases.length + node.apis.length + node.documents.length
-  const tierKey = node.tier || 'system'
-  const tier = (isAdmin && tierKey === 'system')
-    ? { label: '\u{1F513}', className: 'text-gray-400' }
-    : TIER_BADGE[tierKey] || TIER_BADGE.system
+  const tier = TIER_BADGE[node.tier || 'system'] || TIER_BADGE.system
   const canModify = isAdmin || (node.tier !== 'system' && (!node.owner || node.owner === userId))
   const canPromote = node.tier === 'user' && (isAdmin || !node.owner || node.owner === userId)
+  const moveTargets = allDomains.filter((d) => d.filename !== node.filename)
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -265,6 +277,7 @@ function DomainTreeNodeView({
           activeDomains={activeDomains}
           isAdmin={isAdmin}
           userId={userId}
+          allDomains={allDomains}
           onToggle={onToggle}
           onEdit={onEdit}
           onDelete={onDelete}
@@ -273,6 +286,30 @@ function DomainTreeNodeView({
           onDrop={onDrop}
         />
       ))}
+
+      {/* Move-to picker (shared by skills/agents/rules) */}
+      {movingItem && (
+        <div style={{ paddingLeft: (depth + 1) * 16 + 20 }} className="flex items-center gap-1.5 py-1">
+          <span className="text-[10px] text-gray-500">Move <strong>{movingItem.name}</strong> to:</span>
+          <select
+            autoFocus
+            className="text-[10px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1 py-0.5"
+            defaultValue=""
+            onChange={(e) => {
+              if (e.target.value) {
+                onDrop({ type: movingItem.type, name: movingItem.name, sourceDomain: node.filename }, e.target.value)
+                setMovingItem(null)
+              }
+            }}
+          >
+            <option value="" disabled>Select domain...</option>
+            {moveTargets.map((d) => (
+              <option key={d.filename} value={d.filename}>{d.name}</option>
+            ))}
+          </select>
+          <button onClick={() => setMovingItem(null)} className="text-[10px] text-gray-400 hover:text-gray-600">Cancel</button>
+        </div>
+      )}
 
       {/* Scoped content sub-lists */}
       {expanded && hasScopedContent && (
@@ -285,9 +322,16 @@ function DomainTreeNodeView({
                   key={s}
                   draggable
                   onDragStart={(e) => startDrag(e, 'skill', s)}
-                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300"
+                  className="group/item text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
                 >
-                  {s}
+                  <span className="flex-1 truncate">{s}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'skill', name: s }) }}
+                    className="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    title="Move to another domain"
+                  >
+                    <ArrowsRightLeftIcon className="w-3 h-3" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -300,9 +344,16 @@ function DomainTreeNodeView({
                   key={a}
                   draggable
                   onDragStart={(e) => startDrag(e, 'agent', a)}
-                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300"
+                  className="group/item text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
                 >
-                  {a}
+                  <span className="flex-1 truncate">{a}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'agent', name: a }) }}
+                    className="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    title="Move to another domain"
+                  >
+                    <ArrowsRightLeftIcon className="w-3 h-3" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -315,9 +366,16 @@ function DomainTreeNodeView({
                   key={r}
                   draggable
                   onDragStart={(e) => startDrag(e, 'rule', r)}
-                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300"
+                  className="group/item text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
                 >
-                  {r}
+                  <span className="flex-1 truncate">{r}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'rule', name: r }) }}
+                    className="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    title="Move to another domain"
+                  >
+                    <ArrowsRightLeftIcon className="w-3 h-3" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -519,6 +577,7 @@ export default function DomainPanel() {
   }, [refreshTree, session])
 
   const activeDomains = session?.active_domains || []
+  const allDomains = collectDomainNames(tree)
 
   if (loading) {
     return (
@@ -549,6 +608,7 @@ export default function DomainPanel() {
               activeDomains={activeDomains}
               isAdmin={isAdmin}
               userId={userId}
+              allDomains={allDomains}
               onToggle={handleToggle}
               onEdit={handleEdit}
               onDelete={(f) => setConfirmDelete(f)}
