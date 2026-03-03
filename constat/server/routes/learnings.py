@@ -428,6 +428,7 @@ async def get_domain_tree(
         # Scan for domain-scoped skills (skills/ subdirectory)
         skill_names: list[str] = []
         agent_names: list[str] = []
+        rule_ids: list[str] = []
         if domain_cfg.source_path:
             domain_dir = Path(domain_cfg.source_path).parent
             skills_dir = domain_dir / "skills"
@@ -444,6 +445,16 @@ async def get_domain_tree(
                 except Exception:
                     pass
 
+        # Load domain-scoped rules
+        try:
+            from constat.storage.learnings import LearningStore
+            store = LearningStore(user_id=user_id)
+            domain_key = domain_cfg.filename
+            rules = store.list_rules(domain=domain_key)
+            rule_ids = [r["id"] for r in rules]
+        except Exception:
+            pass
+
         return DomainTreeNode(
             filename=domain_cfg.filename,
             name=domain_cfg.name,
@@ -458,6 +469,7 @@ async def get_domain_tree(
             documents=list(domain_cfg.documents.keys()),
             skills=skill_names,
             agents=agent_names,
+            rules=rule_ids,
         )
 
     def _scan_dir(dir_path: Path, parent_path: str = "", tier: str = "system") -> list[DomainTreeNode]:

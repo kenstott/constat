@@ -24,9 +24,9 @@ interface DragItem {
 }
 
 const TIER_BADGE: Record<string, { label: string; className: string }> = {
-  system: { label: 'S', className: 'text-[9px] font-bold text-gray-400' },
-  shared: { label: 'C', className: 'text-[9px] font-bold text-blue-500' },
-  user: { label: 'U', className: 'text-[9px] font-bold text-amber-500' },
+  system: { label: '\u{1F512}', className: 'text-gray-400' },
+  shared: { label: '\u{1F465}', className: 'text-blue-500' },
+  user: { label: '\u{1F9EA}', className: 'text-amber-500' },
 }
 
 /** Collect all domain filenames from a tree (for move-to pickers). */
@@ -79,7 +79,11 @@ function DomainTreeNodeView({
   const isActive = isSystem || activeDomains.includes(node.filename)
   const resourceCount =
     node.databases.length + node.apis.length + node.documents.length
-  const tier = TIER_BADGE[node.tier || 'system'] || TIER_BADGE.system
+  const tierKey = node.tier || 'system'
+  // Admin can modify system domains — don't show lock
+  const tier = (isAdmin && tierKey === 'system')
+    ? null
+    : TIER_BADGE[tierKey] || TIER_BADGE.system
   const canModify = isAdmin || (node.tier !== 'system' && (!node.owner || node.owner === userId))
   const canPromote = node.tier === 'user' && (isAdmin || !node.owner || node.owner === userId)
   const moveTargets = allDomains.filter((d) => d.filename !== node.filename)
@@ -173,10 +177,12 @@ function DomainTreeNodeView({
           className={`w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 ${isSystem ? 'opacity-50 cursor-default' : 'cursor-pointer'}`}
         />
 
-        {/* Tier badge */}
-        <span className={`text-[10px] ${tier.className}`} title={node.tier}>
-          {tier.label}
-        </span>
+        {/* Tier badge — hidden for admin on system tier */}
+        {tier && (
+          <span className={`text-[10px] ${tier.className}`} title={node.tier}>
+            {tier.label}
+          </span>
+        )}
 
         {/* Name or rename input */}
         {renaming ? (
