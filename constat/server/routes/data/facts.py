@@ -70,11 +70,15 @@ async def list_facts(
                 role_id=None,
             ))
 
+        # Build a map of persisted fact details (including domain)
+        persisted_facts_data = fact_store.list_all_facts()
+
         # Add session facts
         for name, fact in all_facts.items():
             # Skip if already added from config (config takes precedence for display)
             if name in config_facts:
                 continue
+            persisted_data = persisted_facts_data.get(name)
             facts_list.append(FactInfo(
                 name=name,
                 value=fact.value,
@@ -83,6 +87,7 @@ async def list_facts(
                 confidence=getattr(fact, "confidence", None),
                 is_persisted=name in persisted_fact_names,
                 role_id=getattr(fact, "role_id", None),
+                domain=persisted_data.get("domain", "") if persisted_data else None,
             ))
 
         return FactListResponse(facts=facts_list)
@@ -392,4 +397,47 @@ async def edit_fact(
         raise
     except Exception as e:
         logger.error(f"Error editing fact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{session_id}/facts/{fact_name}/move")
+async def move_fact(
+    session_id: str,
+    fact_name: str,
+    body: dict[str, Any],
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, Any]:
+    """Move a persisted fact to a different domain.
+
+    Args:
+        session_id: Session ID
+        fact_name: Name of the fact to move
+        body: Request body with to_domain
+        session_manager: Injected session manager
+
+    Returns:
+        Confirmation
+
+    Raises:
+        400: Missing to_domain
+        404: Fact not found or not persisted
+    """
+    managed = session_manager.get_session(session_id)
+
+    to_domain = body.get("to_domain")
+    if to_domain is None:
+        raise HTTPException(status_code=400, detail="Missing 'to_domain' in request body")
+
+    try:
+        from constat.storage.facts import FactStore
+        fact_store = FactStore(user_id=managed.user_id)
+        if not fact_store.move_fact(fact_name, to_domain):
+            raise HTTPException(status_code=404, detail=f"Persisted fact not found: {fact_name}")
+
+        return {"status": "moved", "fact_name": fact_name, "to_domain": to_domain}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error moving fact: {e}")
         raise HTTPException(status_code=500, detail=str(e))

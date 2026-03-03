@@ -248,6 +248,14 @@ export async function editFact(
   return post<{ status: string }>(`/sessions/${sessionId}/facts/${factName}`, { value })
 }
 
+export async function moveFact(
+  sessionId: string,
+  factName: string,
+  toDomain: string
+): Promise<{ status: string }> {
+  return post<{ status: string }>(`/sessions/${sessionId}/facts/${encodeURIComponent(factName)}/move`, { to_domain: toDomain })
+}
+
 // Star/Promote
 export async function toggleArtifactStar(
   sessionId: string,

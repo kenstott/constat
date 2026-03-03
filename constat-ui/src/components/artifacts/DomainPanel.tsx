@@ -8,7 +8,6 @@ import {
   PencilIcon,
   TrashIcon,
   PlusIcon,
-  ArrowUpIcon,
   ArrowsRightLeftIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
@@ -18,25 +17,9 @@ import * as sessionsApi from '@/api/sessions'
 import type { DomainTreeNode } from '@/api/sessions'
 
 interface DragItem {
-  type: 'skill' | 'agent' | 'rule' | 'database' | 'api' | 'document'
+  type: 'database' | 'api' | 'document'
   name: string
   sourceDomain: string
-}
-
-const TIER_BADGE: Record<string, { label: string; className: string }> = {
-  system: { label: '\u{1F512}', className: 'text-gray-400' },
-  shared: { label: '\u{1F465}', className: 'text-blue-500' },
-  user: { label: '\u{1F9EA}', className: 'text-amber-500' },
-}
-
-/** Collect all domain filenames from a tree (for move-to pickers). */
-function collectDomainNames(nodes: DomainTreeNode[]): { filename: string; name: string }[] {
-  const out: { filename: string; name: string }[] = []
-  for (const n of nodes) {
-    out.push({ filename: n.filename, name: n.name })
-    if (n.children.length) out.push(...collectDomainNames(n.children))
-  }
-  return out
 }
 
 function DomainTreeNodeView({
@@ -45,7 +28,6 @@ function DomainTreeNodeView({
   activeDomains,
   isAdmin,
   userId,
-  allDomains,
   onToggle,
   onEdit,
   onDelete,
@@ -58,7 +40,6 @@ function DomainTreeNodeView({
   activeDomains: string[]
   isAdmin: boolean
   userId: string
-  allDomains: { filename: string; name: string }[]
   onToggle: (filename: string) => void
   onEdit: (filename: string) => void
   onDelete: (filename: string) => void
@@ -71,19 +52,15 @@ function DomainTreeNodeView({
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(node.name)
   const [dragOver, setDragOver] = useState(false)
-  const [movingItem, setMovingItem] = useState<{ type: DragItem['type']; name: string } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
-  const hasScopedContent = node.skills.length > 0 || node.agents.length > 0 || node.rules.length > 0
-  const hasChildren = node.children.length > 0 || hasScopedContent
+  const hasChildren = node.children.length > 0
   const isSystem = node.filename === 'system'
   const isActive = isSystem || activeDomains.includes(node.filename)
   const resourceCount =
     node.databases.length + node.apis.length + node.documents.length
   const canModify = isAdmin || (node.tier !== 'system' && (!node.owner || node.owner === userId))
-  // Show lock only when user cannot modify this domain
   const showLock = !canModify
   const canPromote = node.tier === 'user' && (isAdmin || !node.owner || node.owner === userId)
-  const moveTargets = allDomains.filter((d) => d.filename !== node.filename)
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -107,12 +84,6 @@ function DomainTreeNodeView({
     } catch {
       // Ignore invalid drag data
     }
-  }
-
-  const startDrag = (e: React.DragEvent, type: DragItem['type'], name: string) => {
-    const item: DragItem = { type, name, sourceDomain: node.filename }
-    e.dataTransfer.setData('application/json', JSON.stringify(item))
-    e.dataTransfer.effectAllowed = 'move'
   }
 
   // Close menu on outside click
@@ -252,7 +223,7 @@ function DomainTreeNodeView({
                   }}
                   className="w-full text-left px-3 py-1.5 text-xs text-blue-600 dark:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
                 >
-                  <ArrowUpIcon className="w-3 h-3" /> Promote to Shared
+                  <ArrowsRightLeftIcon className="w-3 h-3" /> Promote to Shared
                 </button>
               )}
               {canModify && (
@@ -280,7 +251,6 @@ function DomainTreeNodeView({
           activeDomains={activeDomains}
           isAdmin={isAdmin}
           userId={userId}
-          allDomains={allDomains}
           onToggle={onToggle}
           onEdit={onEdit}
           onDelete={onDelete}
@@ -289,102 +259,6 @@ function DomainTreeNodeView({
           onDrop={onDrop}
         />
       ))}
-
-      {/* Move-to picker (shared by skills/agents/rules) */}
-      {movingItem && (
-        <div style={{ paddingLeft: (depth + 1) * 16 + 20 }} className="flex items-center gap-1.5 py-1">
-          <span className="text-[10px] text-gray-500">Move <strong>{movingItem.name}</strong> to:</span>
-          <select
-            autoFocus
-            className="text-[10px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1 py-0.5"
-            defaultValue=""
-            onChange={(e) => {
-              if (e.target.value) {
-                onDrop({ type: movingItem.type, name: movingItem.name, sourceDomain: node.filename }, e.target.value)
-                setMovingItem(null)
-              }
-            }}
-          >
-            <option value="" disabled>Select domain...</option>
-            {moveTargets.map((d) => (
-              <option key={d.filename} value={d.filename}>{d.name}</option>
-            ))}
-          </select>
-          <button onClick={() => setMovingItem(null)} className="text-[10px] text-gray-400 hover:text-gray-600">Cancel</button>
-        </div>
-      )}
-
-      {/* Scoped content sub-lists */}
-      {expanded && hasScopedContent && (
-        <div style={{ paddingLeft: (depth + 1) * 16 + 20 }} className="space-y-0.5 py-0.5">
-          {node.skills.length > 0 && (
-            <div>
-              <span className="text-[10px] text-gray-400 uppercase tracking-wider">Skills ({node.skills.length})</span>
-              {node.skills.map((s) => (
-                <div
-                  key={s}
-                  draggable
-                  onDragStart={(e) => startDrag(e, 'skill', s)}
-                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
-                >
-                  <span className="flex-1 truncate">{s}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'skill', name: s }) }}
-                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    title="Move to another domain"
-                  >
-                    <ArrowsRightLeftIcon className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {node.agents.length > 0 && (
-            <div>
-              <span className="text-[10px] text-gray-400 uppercase tracking-wider">Agents ({node.agents.length})</span>
-              {node.agents.map((a) => (
-                <div
-                  key={a}
-                  draggable
-                  onDragStart={(e) => startDrag(e, 'agent', a)}
-                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
-                >
-                  <span className="flex-1 truncate">{a}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'agent', name: a }) }}
-                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    title="Move to another domain"
-                  >
-                    <ArrowsRightLeftIcon className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {node.rules.length > 0 && (
-            <div>
-              <span className="text-[10px] text-gray-400 uppercase tracking-wider">Rules ({node.rules.length})</span>
-              {node.rules.map((r) => (
-                <div
-                  key={r}
-                  draggable
-                  onDragStart={(e) => startDrag(e, 'rule', r)}
-                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
-                >
-                  <span className="flex-1 truncate">{r}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'rule', name: r }) }}
-                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    title="Move to another domain"
-                  >
-                    <ArrowsRightLeftIcon className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -545,32 +419,13 @@ export default function DomainPanel() {
 
   const handleDrop = useCallback(async (item: DragItem, targetDomain: string) => {
     try {
-      if (item.type === 'skill') {
-        await sessionsApi.moveSkill({
-          skill_name: item.name,
-          from_domain: item.sourceDomain,
-          to_domain: targetDomain,
-        })
-      } else if (item.type === 'agent') {
-        await sessionsApi.moveAgent({
-          agent_name: item.name,
-          from_domain: item.sourceDomain,
-          to_domain: targetDomain,
-        })
-      } else if (item.type === 'rule') {
-        await sessionsApi.moveRule({
-          rule_id: item.name,
-          to_domain: targetDomain,
-        })
-      } else if (item.type === 'database' || item.type === 'api' || item.type === 'document') {
-        await sessionsApi.moveDomainSource({
-          source_type: item.type === 'database' ? 'databases' : item.type === 'api' ? 'apis' : 'documents',
-          source_name: item.name,
-          from_domain: item.sourceDomain,
-          to_domain: targetDomain,
-          session_id: session?.session_id,
-        })
-      }
+      await sessionsApi.moveDomainSource({
+        source_type: item.type === 'database' ? 'databases' : item.type === 'api' ? 'apis' : 'documents',
+        source_name: item.name,
+        from_domain: item.sourceDomain,
+        to_domain: targetDomain,
+        session_id: session?.session_id,
+      })
       await refreshTree()
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'message' in err) {
@@ -580,7 +435,6 @@ export default function DomainPanel() {
   }, [refreshTree, session])
 
   const activeDomains = session?.active_domains || []
-  const allDomains = collectDomainNames(tree)
 
   if (loading) {
     return (
@@ -611,7 +465,6 @@ export default function DomainPanel() {
               activeDomains={activeDomains}
               isAdmin={isAdmin}
               userId={userId}
-              allDomains={allDomains}
               onToggle={handleToggle}
               onEdit={handleEdit}
               onDelete={(f) => setConfirmDelete(f)}

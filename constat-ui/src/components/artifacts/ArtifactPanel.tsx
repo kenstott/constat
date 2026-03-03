@@ -1,6 +1,6 @@
 // Artifact Panel container
 
-import { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -19,6 +19,7 @@ import {
   ArrowPathIcon,
   ArrowDownTrayIcon,
   ArrowUpTrayIcon,
+  ArrowsRightLeftIcon,
   PencilIcon,
   TrashIcon,
   CheckIcon,
@@ -305,6 +306,12 @@ export function ArtifactPanel() {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(() => {
     return localStorage.getItem('constat-reasoning-collapsed') === 'true'
   })
+  // Move-to-domain state
+  const [domainList, setDomainList] = useState<{ filename: string; name: string }[]>([])
+  const [movingSkill, setMovingSkill] = useState<string | null>(null)
+  const [movingAgent, setMovingAgent] = useState<string | null>(null)
+  const [movingFact, setMovingFact] = useState<string | null>(null)
+  const [movingRule, setMovingRule] = useState<string | null>(null)
 
   // Persist filter preference
   const toggleResultsFilter = () => {
@@ -417,6 +424,12 @@ export function ArtifactPanel() {
       fetchPromptContext(session.session_id)
       fetchAllSkills()
       fetchAllAgents(session.session_id)
+      // Fetch domain list for move-to pickers
+      sessionsApi.getDomainTree().then((nodes) => {
+        const collect = (ns: sessionsApi.DomainTreeNode[]): { filename: string; name: string }[] =>
+          ns.flatMap((n) => [{ filename: n.filename, name: n.name }, ...collect(n.children)])
+        setDomainList(collect(nodes))
+      }).catch(() => {})
     }
   }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents])
 
@@ -431,6 +444,32 @@ export function ArtifactPanel() {
     if (!session) return
     await sessionsApi.persistFact(session.session_id, factName)
     fetchFacts(session.session_id)
+  }
+
+  const handleMoveSkill = async (skillName: string, fromDomain: string, toDomain: string) => {
+    await sessionsApi.moveSkill({ skill_name: skillName, from_domain: fromDomain, to_domain: toDomain })
+    setMovingSkill(null)
+    fetchAllSkills()
+  }
+
+  const handleMoveAgent = async (agentName: string, fromDomain: string, toDomain: string) => {
+    if (!session) return
+    await sessionsApi.moveAgent({ agent_name: agentName, from_domain: fromDomain, to_domain: toDomain })
+    setMovingAgent(null)
+    fetchAllAgents(session.session_id)
+  }
+
+  const handleMoveFact = async (factName: string, toDomain: string) => {
+    if (!session) return
+    await sessionsApi.moveFact(session.session_id, factName, toDomain)
+    setMovingFact(null)
+    fetchFacts(session.session_id)
+  }
+
+  const handleMoveRule = async (ruleId: string, toDomain: string) => {
+    await sessionsApi.moveRule({ rule_id: ruleId, to_domain: toDomain })
+    setMovingRule(null)
+    fetchLearnings()
   }
 
   const handleAddFact = async () => {
@@ -2144,6 +2183,13 @@ ${skill.body}`
                         <PencilIcon className="w-3 h-3" />
                       </button>
                       <button
+                        onClick={(e) => { e.stopPropagation(); setMovingAgent(movingAgent === agent.name ? null : agent.name) }}
+                        className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                        title="Move to domain"
+                      >
+                        <ArrowsRightLeftIcon className="w-3 h-3" />
+                      </button>
+                      <button
                         onClick={() => handleDeleteAgent(agent.name)}
                         className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
                         title="Delete agent"
@@ -2152,6 +2198,25 @@ ${skill.body}`
                       </button>
                     </div>
                   </div>
+
+                  {/* Move-to-domain picker */}
+                  {movingAgent === agent.name && (
+                    <div className="flex items-center gap-2 px-4 py-1.5 bg-blue-50 dark:bg-blue-900/20 border-b border-gray-200 dark:border-gray-700">
+                      <span className="text-[11px] text-gray-600 dark:text-gray-400">Move to:</span>
+                      <select
+                        autoFocus
+                        className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
+                        defaultValue=""
+                        onChange={(e) => { if (e.target.value) handleMoveAgent(agent.name, agent.domain || 'global', e.target.value) }}
+                      >
+                        <option value="" disabled>Select domain...</option>
+                        {domainList.filter((d) => d.filename !== (agent.domain || 'global')).map((d) => (
+                          <option key={d.filename} value={d.filename}>{d.name}</option>
+                        ))}
+                      </select>
+                      <button onClick={() => setMovingAgent(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
+                    </div>
+                  )}
 
                   {/* Expanded content */}
                   {isExpanded && (
@@ -2557,6 +2622,13 @@ ${skill.body}`
                         <ArrowDownTrayIcon className="w-3 h-3" />
                       </button>
                       <button
+                        onClick={(e) => { e.stopPropagation(); setMovingSkill(movingSkill === skill.name ? null : skill.name) }}
+                        className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                        title="Move to domain"
+                      >
+                        <ArrowsRightLeftIcon className="w-3 h-3" />
+                      </button>
+                      <button
                         onClick={() => handleDeleteSkill(skill.name)}
                         className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
                         title="Delete skill"
@@ -2565,6 +2637,25 @@ ${skill.body}`
                       </button>
                     </div>
                   </div>
+
+                  {/* Move-to-domain picker */}
+                  {movingSkill === skill.name && (
+                    <div className="flex items-center gap-2 px-4 py-1.5 bg-blue-50 dark:bg-blue-900/20 border-b border-gray-200 dark:border-gray-700">
+                      <span className="text-[11px] text-gray-600 dark:text-gray-400">Move to:</span>
+                      <select
+                        autoFocus
+                        className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
+                        defaultValue=""
+                        onChange={(e) => { if (e.target.value) handleMoveSkill(skill.name, skill.domain || 'global', e.target.value) }}
+                      >
+                        <option value="" disabled>Select domain...</option>
+                        {domainList.filter((d) => d.filename !== (skill.domain || 'global')).map((d) => (
+                          <option key={d.filename} value={d.filename}>{d.name}</option>
+                        ))}
+                      </select>
+                      <button onClick={() => setMovingSkill(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
+                    </div>
+                  )}
 
                   {/* Expanded content */}
                   {isExpanded && (
@@ -2744,6 +2835,13 @@ ${skill.body}`
                               <PencilIcon className="w-3 h-3" />
                             </button>
                             <button
+                              onClick={() => setMovingRule(movingRule === rule.id ? null : rule.id)}
+                              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 rounded"
+                              title="Move to domain"
+                            >
+                              <ArrowsRightLeftIcon className="w-3 h-3" />
+                            </button>
+                            <button
                               onClick={() => handleDeleteRule(rule.id)}
                               className="p-1 text-gray-400 hover:text-red-500 dark:hover:text-red-400 rounded"
                               title="Delete rule"
@@ -2752,11 +2850,34 @@ ${skill.body}`
                             </button>
                           </div>
                         </div>
+                        {/* Move-to-domain picker */}
+                        {movingRule === rule.id && (
+                          <div className="mt-1 flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 rounded px-2 py-1">
+                            <span className="text-[11px] text-gray-600 dark:text-gray-400">Move to:</span>
+                            <select
+                              autoFocus
+                              className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
+                              defaultValue=""
+                              onChange={(e) => { if (e.target.value) handleMoveRule(rule.id, e.target.value) }}
+                            >
+                              <option value="" disabled>Select domain...</option>
+                              {domainList.filter((d) => d.filename !== (rule.domain || '')).map((d) => (
+                                <option key={d.filename} value={d.filename}>{d.name}</option>
+                              ))}
+                            </select>
+                            <button onClick={() => setMovingRule(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
+                          </div>
+                        )}
                         <div className="mt-1 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
                           <span className="px-1.5 py-0.5 bg-green-200 dark:bg-green-800 text-green-800 dark:text-green-200 rounded">
                             {Math.round(rule.confidence * 100)}% confidence
                           </span>
                           <span>{rule.source_count} sources</span>
+                          {rule.domain && (
+                            <span className="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded">
+                              {rule.domain}
+                            </span>
+                          )}
                           {rule.tags.length > 0 && (
                             <span className="text-gray-300 dark:text-gray-600">
                               {rule.tags.join(', ')}
@@ -3043,8 +3164,8 @@ ${skill.body}`
               </thead>
               <tbody>
                 {facts.map((fact) => (
+                  <React.Fragment key={fact.name}>
                   <tr
-                    key={fact.name}
                     className={`border-b border-gray-100 dark:border-gray-800 last:border-b-0 group ${
                       fact.source === 'config'
                         ? 'bg-purple-50/50 dark:bg-purple-900/10'
@@ -3064,6 +3185,11 @@ ${skill.body}`
                         {fact.is_persisted && fact.source !== 'config' && (
                           <span className="px-1 py-0.5 text-[10px] bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 rounded">
                             saved
+                          </span>
+                        )}
+                        {fact.is_persisted && fact.domain && (
+                          <span className="px-1 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded">
+                            {fact.domain}
                           </span>
                         )}
                         {fact.role_id && (
@@ -3092,6 +3218,15 @@ ${skill.body}`
                               <ArrowUpTrayIcon className="w-3 h-3" />
                             </button>
                           )}
+                          {fact.is_persisted && (
+                            <button
+                              onClick={() => setMovingFact(movingFact === fact.name ? null : fact.name)}
+                              className="p-1 text-gray-300 dark:text-gray-600 hover:text-primary-600 dark:hover:text-primary-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                              title="Move to domain"
+                            >
+                              <ArrowsRightLeftIcon className="w-3 h-3" />
+                            </button>
+                          )}
                           <button
                             onClick={() => handleForgetFact(fact.name)}
                             className="p-1 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -3103,6 +3238,29 @@ ${skill.body}`
                       )}
                     </td>
                   </tr>
+                  {/* Move-to-domain picker for fact */}
+                  {movingFact === fact.name && (
+                    <tr>
+                      <td colSpan={4} className="py-1.5 px-1">
+                        <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 rounded px-2 py-1">
+                          <span className="text-[11px] text-gray-600 dark:text-gray-400">Move to:</span>
+                          <select
+                            autoFocus
+                            className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
+                            defaultValue=""
+                            onChange={(e) => { if (e.target.value) handleMoveFact(fact.name, e.target.value) }}
+                          >
+                            <option value="" disabled>Select domain...</option>
+                            {domainList.filter((d) => d.filename !== (fact.domain || '')).map((d) => (
+                              <option key={d.filename} value={d.filename}>{d.name}</option>
+                            ))}
+                          </select>
+                          <button onClick={() => setMovingFact(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

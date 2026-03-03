@@ -213,6 +213,7 @@ export interface Fact {
   confidence?: number
   is_persisted: boolean
   role_id?: string | null  // Role provenance - which role created this fact
+  domain?: string | null  // Owning domain filename (null/empty = user-level)
 }
 
 // Entity Reference
@@ -361,6 +362,8 @@ export interface Rule {
   confidence: number
   source_count: number
   tags: string[]
+  domain: string
+  source: string
 }
 
 // Config

@@ -46,6 +46,8 @@ export function MainLayout({
 }: MainLayoutProps) {
   const [panelWidth, setPanelWidth] = useState(getSavedPanelWidth)
   const [isResizing, setIsResizing] = useState(false)
+  const conversationPanelHidden = useUIStore((s) => s.conversationPanelHidden)
+  const toggleConversationPanel = useUIStore((s) => s.toggleConversationPanel)
   const artifactPanelHidden = useUIStore((s) => s.artifactPanelHidden)
   const toggleArtifactPanel = useUIStore((s) => s.toggleArtifactPanel)
 
@@ -103,9 +105,28 @@ export function MainLayout({
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Conversation Panel */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {conversationPanel}
-        </main>
+        {conversationPanelHidden ? (
+          <button
+            onClick={toggleConversationPanel}
+            className="flex items-center justify-center w-6 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-500 dark:text-gray-400"
+            title="Show conversation panel"
+          >
+            <span className="text-xs font-bold">&raquo;</span>
+          </button>
+        ) : (
+          <>
+            <main className="flex-1 flex flex-col overflow-hidden relative">
+              {conversationPanel}
+              <button
+                onClick={toggleConversationPanel}
+                className="absolute right-1 top-2 z-10 w-6 h-6 flex items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 text-xs font-bold shadow-sm transition-colors"
+                title="Hide conversation panel"
+              >
+                &laquo;
+              </button>
+            </main>
+          </>
+        )}
 
         {artifactPanelHidden ? (
           /* Show panel button when hidden */

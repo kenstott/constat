@@ -96,6 +96,7 @@ class FactStore:
         description: str = "",
         context: str = "",
         role_id: Optional[str] = None,
+        domain: str = "",
     ) -> None:
         """Save a persistent fact.
 
@@ -105,6 +106,7 @@ class FactStore:
             description: Human-readable description
             context: Creation context (code, prompt, query that created this fact)
             role_id: Role that created this fact (None = shared)
+            domain: Owning domain filename (empty = user-level)
         """
         data = self._load()
         data["facts"][name] = {
@@ -112,6 +114,7 @@ class FactStore:
             "description": description,
             "context": context,
             "role_id": role_id,
+            "domain": domain,
             "created": datetime.now(timezone.utc).isoformat(),
         }
         self._save()
@@ -201,6 +204,23 @@ class FactStore:
             return False
 
         data["facts"][name]["role_id"] = None
+        self._save()
+        return True
+
+    def move_fact(self, name: str, to_domain: str) -> bool:
+        """Move a persistent fact to a different domain.
+
+        Args:
+            name: Fact name
+            to_domain: Target domain filename (empty = user-level)
+
+        Returns:
+            True if moved, False if not found
+        """
+        data = self._load()
+        if name not in data["facts"]:
+            return False
+        data["facts"][name]["domain"] = to_domain
         self._save()
         return True
 

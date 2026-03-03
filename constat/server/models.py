@@ -391,6 +391,7 @@ class FactInfo(BaseModel):
     confidence: Optional[float] = Field(default=None, description="Confidence score")
     is_persisted: bool = Field(default=False, description="Whether the fact is persisted globally")
     role_id: Optional[str] = Field(default=None, description="Role that created this fact (provenance)")
+    domain: Optional[str] = Field(default=None, description="Owning domain filename (None = user-level)")
 
 
 class FactListResponse(BaseModel):
