@@ -12,7 +12,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
-import { useAuthStore } from '@/store/authStore'
+import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 import type { DomainTreeNode } from '@/api/sessions'
 
@@ -331,7 +331,10 @@ function DomainTreeNodeView({
 export default function DomainPanel() {
   const { session, updateSession } = useSessionStore()
   const { fetchDataSources } = useArtifactStore()
-  const { isAdmin, userId } = useAuthStore()
+  const authState = useAuthStore()
+  // Derive from raw state — Zustand getter `isAdmin` goes stale after set()
+  const isAdmin = isAuthDisabled || authState.permissions?.persona === 'platform_admin'
+  const userId = isAuthDisabled ? 'default' : (authState.user?.uid || 'default')
   const [tree, setTree] = useState<DomainTreeNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
