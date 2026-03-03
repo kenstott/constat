@@ -79,12 +79,9 @@ function DomainTreeNodeView({
   const isActive = isSystem || activeDomains.includes(node.filename)
   const resourceCount =
     node.databases.length + node.apis.length + node.documents.length
-  const tierKey = node.tier || 'system'
-  // Admin can modify system domains — don't show lock
-  const tier = (isAdmin && tierKey === 'system')
-    ? null
-    : TIER_BADGE[tierKey] || TIER_BADGE.system
   const canModify = isAdmin || (node.tier !== 'system' && (!node.owner || node.owner === userId))
+  // Show lock only when user cannot modify this domain
+  const showLock = !canModify
   const canPromote = node.tier === 'user' && (isAdmin || !node.owner || node.owner === userId)
   const moveTargets = allDomains.filter((d) => d.filename !== node.filename)
 
@@ -177,10 +174,10 @@ function DomainTreeNodeView({
           className={`w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 ${isSystem ? 'opacity-50 cursor-default' : 'cursor-pointer'}`}
         />
 
-        {/* Tier badge — hidden for admin on system tier */}
-        {tier && (
-          <span className={`text-[10px] ${tier.className}`} title={node.tier}>
-            {tier.label}
+        {/* Lock — shown only when user cannot modify this domain */}
+        {showLock && (
+          <span className="text-[10px] text-gray-400" title="Read-only">
+            {'\u{1F512}'}
           </span>
         )}
 
