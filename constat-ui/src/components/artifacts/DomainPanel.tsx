@@ -325,12 +325,12 @@ function DomainTreeNodeView({
                   key={s}
                   draggable
                   onDragStart={(e) => startDrag(e, 'skill', s)}
-                  className="group/item text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
+                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
                 >
                   <span className="flex-1 truncate">{s}</span>
                   <button
                     onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'skill', name: s }) }}
-                    className="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                     title="Move to another domain"
                   >
                     <ArrowsRightLeftIcon className="w-3 h-3" />
@@ -347,12 +347,12 @@ function DomainTreeNodeView({
                   key={a}
                   draggable
                   onDragStart={(e) => startDrag(e, 'agent', a)}
-                  className="group/item text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
+                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
                 >
                   <span className="flex-1 truncate">{a}</span>
                   <button
                     onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'agent', name: a }) }}
-                    className="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                     title="Move to another domain"
                   >
                     <ArrowsRightLeftIcon className="w-3 h-3" />
@@ -369,12 +369,12 @@ function DomainTreeNodeView({
                   key={r}
                   draggable
                   onDragStart={(e) => startDrag(e, 'rule', r)}
-                  className="group/item text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 truncate cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
+                  className="text-[11px] text-gray-500 dark:text-gray-400 pl-2 py-0.5 cursor-grab active:cursor-grabbing hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1"
                 >
                   <span className="flex-1 truncate">{r}</span>
                   <button
                     onClick={(e) => { e.stopPropagation(); setMovingItem({ type: 'rule', name: r }) }}
-                    className="opacity-0 group-hover/item:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                     title="Move to another domain"
                   >
                     <ArrowsRightLeftIcon className="w-3 h-3" />
