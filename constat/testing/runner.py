@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 
 from constat.core.config import Config
 from constat.discovery.models import display_entity_name as _dn
@@ -31,6 +32,13 @@ from constat.testing.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _open_relational(config: Config):
+    """Open the DuckDB vector store read-only and return the relational layer."""
+    from constat.discovery.doc_tools import DocumentDiscoveryTools
+    doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True)
+    return doc_tools._vector_store._relational
 
 
 def run_domain_test(
@@ -57,11 +65,7 @@ def run_domain_test(
     if not questions:
         return DomainTestResult(domain=domain_filename, questions=[])
 
-    # Open the vector store (reuse existing DB, no auto-indexing)
-    from constat.discovery.doc_tools import DocumentDiscoveryTools
-
-    doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True)
-    relational = doc_tools._vector_store._relational
+    relational = _open_relational(config)
 
     results = []
     for q in questions:
@@ -107,6 +111,93 @@ def run_domain_test_e2e(
         qr.end_to_end = _run_e2e_question(config, gq, session_id, user_id)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Streaming generators — yield progress events per question
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TestProgressEvent:
+    """Progress event yielded during streaming test execution."""
+    event: str  # domain_start, question_start, question_done, domain_done
+    domain: str
+    domain_name: str = ""
+    question: str = ""
+    question_index: int = 0
+    question_total: int = 0
+    phase: str = ""  # "metadata" or "e2e"
+    result: QuestionResult | None = None
+
+
+def iter_domain_test(
+    config: Config,
+    domain_filename: str,
+    tags: list[str] | None = None,
+    session_id: str = "golden-test",
+    user_id: str = "default",
+    include_e2e: bool = False,
+):
+    """Generator that yields TestProgressEvent per question."""
+    domain_config = config.load_domain(domain_filename)
+    if not domain_config:
+        raise ValueError(f"Domain not found: {domain_filename}")
+
+    domain_name = domain_config.name or domain_filename
+    questions = parse_golden_questions(domain_config.golden_questions)
+    if tags:
+        tag_set = set(tags)
+        questions = [q for q in questions if tag_set & set(q.tags)]
+
+    total = len(questions)
+    if total == 0:
+        yield TestProgressEvent(event="domain_done", domain=domain_filename, domain_name=domain_name)
+        return
+
+    relational = _open_relational(config)
+
+    yield TestProgressEvent(
+        event="domain_start", domain=domain_filename, domain_name=domain_name,
+        question_total=total,
+    )
+
+    results: list[QuestionResult] = []
+    for i, q in enumerate(questions):
+        yield TestProgressEvent(
+            event="question_start", domain=domain_filename, domain_name=domain_name,
+            question=q.question, question_index=i, question_total=total,
+            phase="metadata",
+        )
+
+        qr = _run_question(relational, q, session_id, user_id, domain_filename)
+
+        # Phase 2 e2e if requested
+        if include_e2e and q.expect.end_to_end:
+            if not all(lr.passed == lr.total for lr in qr.layers):
+                qr.end_to_end = EndToEndResult(
+                    passed=False,
+                    failures=["Skipped: Phase 1 metadata assertions failed"],
+                )
+            else:
+                yield TestProgressEvent(
+                    event="question_start", domain=domain_filename, domain_name=domain_name,
+                    question=q.question, question_index=i, question_total=total,
+                    phase="e2e",
+                )
+                qr.end_to_end = _run_e2e_question(config, q, session_id, user_id)
+
+        results.append(qr)
+
+        yield TestProgressEvent(
+            event="question_done", domain=domain_filename, domain_name=domain_name,
+            question=q.question, question_index=i, question_total=total,
+            result=qr,
+        )
+
+    yield TestProgressEvent(
+        event="domain_done", domain=domain_filename, domain_name=domain_name,
+        question_total=total,
+    )
 
 
 def _run_e2e_question(
@@ -220,28 +311,43 @@ def _run_question(
     domain_ids = [domain_id]
 
     if q.expect.entities:
-        layers.append(_check_entities(relational, q.expect.entities, session_id, domain_ids))
+        layers.append(_check_entities(relational, q.expect.entities, session_id, domain_ids, user_id))
 
     if q.expect.grounding:
-        layers.append(_check_grounding(relational, q.expect.grounding, session_id, domain_ids))
+        layers.append(_check_grounding(relational, q.expect.grounding, session_id, domain_ids, user_id))
 
     if q.expect.glossary:
         layers.append(_check_glossary(relational, q.expect.glossary, session_id, user_id))
 
     if q.expect.relationships:
-        layers.append(_check_relationships(relational, q.expect.relationships, session_id))
+        layers.append(_check_relationships(relational, q.expect.relationships, session_id, user_id, domain_ids))
 
     return QuestionResult(question=q.question, tags=q.tags, layers=layers)
 
 
+def _resolve_entity_name(relational, name: str, session_id: str, user_id: str, domain_ids: list[str]):
+    """Find an entity by name, falling back to glossary alias resolution."""
+    entity = relational.find_entity_by_name(
+        name, domain_ids=domain_ids, session_id=session_id, cross_session=True,
+    )
+    if entity:
+        return entity
+    # Check if name is a glossary alias — resolve to the canonical entity
+    term = relational.get_glossary_term_by_name_or_alias(name, session_id, user_id=user_id)
+    if term:
+        return relational.find_entity_by_name(
+            term.name, domain_ids=domain_ids, session_id=session_id, cross_session=True,
+        )
+    return None
+
+
 def _check_entities(
     relational, expected: list[str], session_id: str, domain_ids: list[str],
+    user_id: str = "default",
 ) -> LayerResult:
     failures = []
     for name in expected:
-        entity = relational.find_entity_by_name(
-            name, domain_ids=domain_ids, session_id=session_id, cross_session=True,
-        )
+        entity = _resolve_entity_name(relational, name, session_id, user_id, domain_ids)
         if not entity:
             failures.append(f'missing "{_dn(name)}"')
     return LayerResult(
@@ -254,13 +360,11 @@ def _check_entities(
 
 def _check_grounding(
     relational, assertions: list[GroundingAssertion], session_id: str,
-    domain_ids: list[str],
+    domain_ids: list[str], user_id: str = "default",
 ) -> LayerResult:
     failures = []
     for ga in assertions:
-        entity = relational.find_entity_by_name(
-            ga.entity, domain_ids=domain_ids, session_id=session_id, cross_session=True,
-        )
+        entity = _resolve_entity_name(relational, ga.entity, session_id, user_id, domain_ids)
         if not entity:
             failures.append(f'entity "{_dn(ga.entity)}" not found for grounding check')
             continue
@@ -329,13 +433,22 @@ def _check_glossary(
 
 def _check_relationships(
     relational, assertions: list[RelationshipAssertion], session_id: str,
+    user_id: str = "default", domain_ids: list[str] | None = None,
 ) -> LayerResult:
     failures = []
     for ra in assertions:
-        rels = relational.get_relationships_for_entity(ra.subject, session_id)
+        # Resolve aliases to canonical entity names for subject and object
+        subject_entity = _resolve_entity_name(relational, ra.subject, session_id, user_id, domain_ids or [])
+        subject_name = subject_entity.name if subject_entity else ra.subject
+
+        rels = relational.get_relationships_for_entity(subject_name, session_id)
+
+        object_entity = _resolve_entity_name(relational, ra.object, session_id, user_id, domain_ids or [])
+        object_name = (object_entity.name if object_entity else ra.object).lower()
+
         matched = any(
             r["verb"].lower() == ra.verb.lower()
-            and r["object_name"].lower() == ra.object.lower()
+            and r["object_name"].lower() == object_name
             and (r["confidence"] or 0) >= ra.min_confidence
             for r in rels
         )

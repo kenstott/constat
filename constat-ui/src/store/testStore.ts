@@ -1,12 +1,23 @@
 import { create } from 'zustand'
 import type { GoldenQuestionRequest, GoldenQuestionResponse, TestableDomainInfo, TestRunResponse } from '@/types/api'
 import * as testingApi from '@/api/testing'
+import type { TestProgressEvent } from '@/api/testing'
+
+interface TestProgress {
+  domain: string
+  domainName: string
+  question: string
+  questionIndex: number
+  questionTotal: number
+  phase: string  // "metadata" | "e2e" | ""
+}
 
 interface TestState {
   testableDomains: TestableDomainInfo[]
   results: TestRunResponse | null
   loading: boolean
   error: string | null
+  progress: TestProgress | null
   selectedDomains: Set<string>
   selectedTags: Set<string>
   includeE2e: boolean
@@ -34,6 +45,7 @@ export const useTestStore = create<TestState>((set, get) => ({
   results: null,
   loading: false,
   error: null,
+  progress: null,
   selectedDomains: new Set(),
   selectedTags: new Set(),
   includeE2e: false,
@@ -51,17 +63,31 @@ export const useTestStore = create<TestState>((set, get) => ({
 
   runTests: async (sessionId: string) => {
     const { selectedDomains, selectedTags, includeE2e } = get()
-    set({ loading: true, error: null })
+    set({ loading: true, error: null, progress: null, results: null })
     try {
-      const results = await testingApi.runTests(
+      const results = await testingApi.runTestsStreaming(
         sessionId,
         [...selectedDomains],
         [...selectedTags],
         includeE2e,
+        (evt: TestProgressEvent) => {
+          if (evt.event === 'domain_start' || evt.event === 'question_start') {
+            set({
+              progress: {
+                domain: evt.domain,
+                domainName: evt.domain_name,
+                question: evt.question,
+                questionIndex: evt.question_index,
+                questionTotal: evt.question_total,
+                phase: evt.phase,
+              },
+            })
+          }
+        },
       )
-      set({ results, loading: false })
+      set({ results, loading: false, progress: null })
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e), loading: false })
+      set({ error: e instanceof Error ? e.message : String(e), loading: false, progress: null })
     }
   },
 
@@ -81,7 +107,7 @@ export const useTestStore = create<TestState>((set, get) => ({
 
   setIncludeE2e: (value: boolean) => set({ includeE2e: value }),
 
-  clearResults: () => set({ results: null, error: null }),
+  clearResults: () => set({ results: null, error: null, progress: null }),
 
   loadGoldenQuestions: async (sessionId: string, domain: string) => {
     try {

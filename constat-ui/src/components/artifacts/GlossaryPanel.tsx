@@ -230,12 +230,13 @@ function RelationshipRow({
   const [hover, setHover] = useState(false)
 
   const handleSave = async () => {
-    if (!editVerb.trim() || editVerb.trim() === rel.verb) {
+    const normalized = editVerb.trim().toUpperCase().replace(/[\s-]+/g, '_')
+    if (!normalized || normalized === rel.verb) {
       setEditing(false)
       return
     }
-    await updateRelationshipVerb(sessionId, rel.id, editVerb.trim())
-    onUpdated(rel.id, editVerb.trim())
+    await updateRelationshipVerb(sessionId, rel.id, normalized)
+    onUpdated(rel.id, normalized)
     setEditing(false)
   }
 
@@ -259,7 +260,7 @@ function RelationshipRow({
       {editing ? (
         <input
           value={editVerb}
-          onChange={(e) => setEditVerb(e.target.value)}
+          onChange={(e) => setEditVerb(e.target.value.toUpperCase().replace(/[\s-]+/g, '_'))}
           onKeyDown={(e) => {
             if (e.key === 'Enter') handleSave()
             if (e.key === 'Escape') { setEditing(false); setEditVerb(rel.verb) }
@@ -357,15 +358,15 @@ function EntityAutocomplete({
   )
 }
 
-// Verb picklist — shows existing verbs plus allows new
+// Verb picklist — Cypher-style UPPER_SNAKE_CASE
 const COMMON_VERBS = [
-  'contains', 'has', 'belongs_to',
-  'manages', 'reports_to', 'is_type_of',
-  'creates', 'processes', 'approves', 'places',
-  'sends', 'receives', 'transfers',
-  'drives', 'requires', 'enables',
-  'precedes', 'follows', 'triggers',
-  'references', 'works_in', 'participates_in', 'uses',
+  'CONTAINS', 'HAS', 'BELONGS_TO',
+  'MANAGES', 'REPORTS_TO', 'IS_TYPE_OF',
+  'CREATES', 'PROCESSES', 'APPROVES', 'PLACES',
+  'SENDS', 'RECEIVES', 'TRANSFERS',
+  'DRIVES', 'REQUIRES', 'ENABLES',
+  'PRECEDES', 'FOLLOWS', 'TRIGGERS',
+  'REFERENCES', 'WORKS_IN', 'PARTICIPATES_IN', 'USES',
 ]
 
 function VerbAutocomplete({
@@ -388,7 +389,7 @@ function VerbAutocomplete({
 
   const matches = useMemo(() => {
     if (!value.trim()) return allVerbs.slice(0, 8)
-    const q = value.toLowerCase()
+    const q = value.toUpperCase()
     return allVerbs.filter(v => v.includes(q)).slice(0, 8)
   }, [value, allVerbs])
 
@@ -398,8 +399,11 @@ function VerbAutocomplete({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setFocused(true)}
-        onBlur={() => setTimeout(() => setFocused(false), 150)}
-        placeholder="verb"
+        onBlur={() => {
+          setTimeout(() => setFocused(false), 150)
+          if (value.trim()) onChange(value.trim().toUpperCase().replace(/[\s-]+/g, '_'))
+        }}
+        placeholder="VERB"
         className={className}
       />
       {focused && matches.length > 0 && (
@@ -438,14 +442,15 @@ function AddRelationshipRow({
   const [error, setError] = useState<string | null>(null)
 
   const handleSubmit = async () => {
-    if (!verb.trim() || !object.trim()) return
+    const normalizedVerb = verb.trim().toUpperCase().replace(/[\s-]+/g, '_')
+    if (!normalizedVerb || !object.trim()) return
     setError(null)
     try {
-      const result = await createRelationship(sessionId, termName, verb.trim(), object.trim())
+      const result = await createRelationship(sessionId, termName, normalizedVerb, object.trim())
       onCreated({
         id: result.id,
         subject: termName,
-        verb: verb.trim(),
+        verb: normalizedVerb,
         object: object.trim(),
         confidence: 1.0,
       })

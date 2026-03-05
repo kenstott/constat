@@ -155,6 +155,7 @@ export default function RegressionPanel({ sessionId }: Props) {
     results,
     loading,
     error,
+    progress,
     selectedDomains,
     selectedTags,
     includeE2e,
@@ -393,12 +394,48 @@ export default function RegressionPanel({ sessionId }: Props) {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  Running{includeE2e ? ' (E2E)' : ''}...
+                  Running...
                 </>
               ) : (
                 'Run Tests'
               )}
             </button>
+
+            {/* Live progress */}
+            {loading && progress && (
+              <div className="mt-2 p-2 rounded border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 space-y-1.5 animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span className="text-xs font-medium text-blue-700 dark:text-blue-300">{progress.domainName}</span>
+                </div>
+                {progress.question && (
+                  <div className="text-xs text-gray-600 dark:text-gray-400 pl-4 truncate">
+                    {progress.questionIndex + 1}/{progress.questionTotal}: {progress.question}
+                  </div>
+                )}
+                {progress.phase && (
+                  <div className="flex items-center gap-1.5 pl-4">
+                    <svg className="animate-spin h-3 w-3 text-blue-500" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span className="text-[10px] uppercase font-medium text-blue-600 dark:text-blue-400">
+                      {progress.phase === 'e2e' ? 'End-to-end (LLM)' : 'Checking metadata'}
+                    </span>
+                  </div>
+                )}
+                {progress.questionTotal > 0 && (
+                  <div className="pl-4">
+                    <div className="w-full h-1 rounded-full bg-blue-200 dark:bg-blue-800 overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                        style={{ width: `${((progress.questionIndex) / progress.questionTotal) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Error */}

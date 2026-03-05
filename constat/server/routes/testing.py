@@ -6,12 +6,14 @@
 """Regression testing endpoints — run golden question assertions via the API."""
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Optional
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from constat.server.auth import CurrentUserId
@@ -21,11 +23,9 @@ from constat.server.models import (
     GoldenQuestionRequest,
     GoldenQuestionResponse,
     TestableDomainInfo,
-    TestDomainResult,
     TestEndToEndResult,
     TestLayerResult,
     TestQuestionResult,
-    TestRunResponse,
 )
 from constat.server.permissions import get_user_permissions
 from constat.server.session_manager import SessionManager
@@ -123,17 +123,39 @@ async def list_testable_domains(
     return results
 
 
-@router.post(
-    "/{session_id}/tests/run",
-    response_model=TestRunResponse,
-)
+def _question_result_to_dict(qr) -> dict:
+    """Convert a runner QuestionResult to an API-serializable dict."""
+    return TestQuestionResult(
+        question=qr.question,
+        tags=qr.tags,
+        passed=qr.passed,
+        layers=[
+            TestLayerResult(
+                layer=lr.layer,
+                passed=lr.passed,
+                total=lr.total,
+                failures=lr.failures,
+            )
+            for lr in qr.layers
+        ],
+        end_to_end=TestEndToEndResult(
+            passed=qr.end_to_end.passed,
+            answer=qr.end_to_end.answer,
+            judge_reasoning=qr.end_to_end.judge_reasoning,
+            failures=qr.end_to_end.failures,
+            duration_s=qr.end_to_end.duration_s,
+        ) if qr.end_to_end else None,
+    ).model_dump()
+
+
+@router.post("/{session_id}/tests/run")
 async def run_tests(
     session_id: str,
     body: RunTestsRequest,
     user_id: CurrentUserId,
     sm: SessionManager = Depends(_get_session_manager),
-) -> TestRunResponse:
-    """Run golden question regression tests."""
+):
+    """Run golden question regression tests, streaming progress via SSE."""
     managed = sm.get_session(session_id)
     config = managed.session.config
 
@@ -148,64 +170,82 @@ async def run_tests(
 
     tag_list = body.tags if body.tags else None
 
-    from constat.testing.runner import run_domain_test, run_domain_test_e2e
+    import queue
+    import threading
+    from constat.testing.runner import iter_domain_test
 
-    run_fn = run_domain_test_e2e if body.include_e2e else run_domain_test
+    async def event_stream():
+        domain_results: list[dict] = []
 
-    loop = asyncio.get_event_loop()
-    domain_results: list[TestDomainResult] = []
+        for df in domain_filenames:
+            q: queue.Queue = queue.Queue()
 
-    for df in domain_filenames:
-        result = await loop.run_in_executor(
-            None, run_fn, config, df, tag_list, session_id, user_id,
-        )
+            def _run(d=df):
+                try:
+                    for evt in iter_domain_test(
+                        config, d, tag_list, session_id, user_id,
+                        include_e2e=body.include_e2e,
+                    ):
+                        q.put(evt)
+                finally:
+                    q.put(None)  # sentinel
 
-        # Get display name
-        dc = config.load_domain(df)
-        domain_name = dc.name if dc else df
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
 
-        questions = [
-            TestQuestionResult(
-                question=qr.question,
-                tags=qr.tags,
-                passed=qr.passed,
-                layers=[
-                    TestLayerResult(
-                        layer=lr.layer,
-                        passed=lr.passed,
-                        total=lr.total,
-                        failures=lr.failures,
-                    )
-                    for lr in qr.layers
-                ],
-                end_to_end=TestEndToEndResult(
-                    passed=qr.end_to_end.passed,
-                    answer=qr.end_to_end.answer,
-                    judge_reasoning=qr.end_to_end.judge_reasoning,
-                    failures=qr.end_to_end.failures,
-                    duration_s=qr.end_to_end.duration_s,
-                ) if qr.end_to_end else None,
-            )
-            for qr in result.questions
-        ]
+            domain_questions: list[dict] = []
+            domain_name = df
+            loop = asyncio.get_event_loop()
 
-        domain_results.append(
-            TestDomainResult(
-                domain=df,
-                domain_name=domain_name,
-                passed_count=result.passed_count,
-                failed_count=result.failed_count,
-                questions=questions,
-            )
-        )
+            while True:
+                evt = await loop.run_in_executor(None, q.get)
+                if evt is None:
+                    break
 
-    total_passed = sum(d.passed_count for d in domain_results)
-    total_failed = sum(d.failed_count for d in domain_results)
+                domain_name = evt.domain_name or df
+                payload = {
+                    "event": evt.event,
+                    "domain": evt.domain,
+                    "domain_name": domain_name,
+                    "question": evt.question,
+                    "question_index": evt.question_index,
+                    "question_total": evt.question_total,
+                    "phase": evt.phase,
+                }
+                if evt.result:
+                    qr_dict = _question_result_to_dict(evt.result)
+                    payload["result"] = qr_dict
+                    domain_questions.append(qr_dict)
 
-    return TestRunResponse(
-        domains=domain_results,
-        total_passed=total_passed,
-        total_failed=total_failed,
+                yield f"data: {json.dumps(payload)}\n\n"
+
+            thread.join()
+
+            # Build domain summary
+            passed = sum(1 for qd in domain_questions if qd.get("passed"))
+            failed = len(domain_questions) - passed
+            domain_results.append({
+                "domain": df,
+                "domain_name": domain_name,
+                "passed_count": passed,
+                "failed_count": failed,
+                "questions": domain_questions,
+            })
+
+        # Final complete event with full TestRunResponse
+        total_passed = sum(d["passed_count"] for d in domain_results)
+        total_failed = sum(d["failed_count"] for d in domain_results)
+        final = {
+            "domains": domain_results,
+            "total_passed": total_passed,
+            "total_failed": total_failed,
+        }
+        yield f"data: {json.dumps({'event': 'complete', 'result': final})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

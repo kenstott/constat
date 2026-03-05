@@ -438,6 +438,9 @@ async def create_relationship(
     from constat.discovery.models import EntityRelationship
     from constat.discovery.relationship_extractor import categorize_verb
 
+    # Normalize verb to Cypher-style UPPER_SNAKE_CASE
+    verb = verb.strip().upper().replace(" ", "_").replace("-", "_")
+
     rel = EntityRelationship(
         id=str(uuid.uuid4()),
         subject_name=subject_name.lower(),
@@ -474,6 +477,9 @@ async def update_relationship_verb(
     verb = body.get("verb")
     if not verb:
         raise HTTPException(status_code=422, detail="verb is required")
+
+    # Normalize verb to Cypher-style UPPER_SNAKE_CASE
+    verb = verb.strip().upper().replace(" ", "_").replace("-", "_")
 
     updated = vs.update_entity_relationship_verb(rel_id, verb)
     if not updated:
