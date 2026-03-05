@@ -243,10 +243,10 @@ class SkillManager:
         # 3. User skills (highest precedence)
         self._load_skills_from_dir(self._skills_dir, "user")
 
-        # Assign domain="global" to unscoped skills
+        # Assign domain="user" to unscoped skills
         for skill in self._skills.values():
             if not skill.domain:
-                skill.domain = "global"
+                skill.domain = "user"
 
         logger.info(f"Loaded {len(self._skills)} skills (system={self._system_skills_dir}, domains={len(self._domain_skill_dirs)}, user={self._skills_dir})")
 

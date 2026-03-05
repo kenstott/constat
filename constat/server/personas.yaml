@@ -14,6 +14,8 @@ personas:
       inference_code: true
       facts: true
       glossary: true
+      entity_manager: true
+      query_history: true
     writes:
       sources: true
       glossary: true
@@ -23,9 +25,10 @@ personas:
       learnings: true
       system_prompt: true
       tier_promote: true
+      entities: true
+      domains: true
     feedback:
       flag_answers: true
-      suggest_glossary: true
 
   domain_builder:
     description: "Builds and configures domains"
@@ -42,6 +45,8 @@ personas:
       inference_code: true
       facts: true
       glossary: true
+      entity_manager: true
+      query_history: true
     writes:
       sources: true
       glossary: true
@@ -51,9 +56,10 @@ personas:
       learnings: true
       system_prompt: true
       tier_promote: true
+      entities: true
+      domains: true
     feedback:
       flag_answers: true
-      suggest_glossary: true
 
   sme:
     description: "Subject matter expert — curates glossary, facts, learnings"
@@ -62,17 +68,23 @@ personas:
       learnings: true
       facts: true
       glossary: true
+      entity_manager: true
+      query_history: true
     writes:
       glossary: true
       facts: true
       learnings: true
+      entities: true
     feedback:
       flag_answers: true
+      auto_approve: true
+      suggest_entities: true
 
   domain_user:
     description: "Business user — asks questions, flags answers"
     visibility:
       results: true
+      query_history: true
     writes: {}
     feedback:
       flag_answers: true

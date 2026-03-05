@@ -276,7 +276,7 @@ async def get_glossary_term(
 
     doc_tools = getattr(managed.session, "doc_tools", None)
     resources = resolve_physical_resources(name, session_id, vs, domain_ids=active_domains, user_id=managed.user_id, doc_tools=doc_tools)
-    grounded = is_grounded(name, session_id, vs, user_id=managed.user_id)
+    grounded = is_grounded(name, session_id, vs, user_id=managed.user_id, domain_ids=active_domains)
 
     # Resolve parent — parent_id can be glossary_id or entity_id
     parent_info = None

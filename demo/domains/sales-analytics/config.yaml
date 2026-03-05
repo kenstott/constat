@@ -1,0 +1,52 @@
+name: Sales Analytics
+description: Sales and customer data for revenue analysis
+databases:
+  sales:
+    uri: sqlite:///data/sales.db
+    description: 'Sales data with customers, products, orders, and order items.
+
+      Customer tiers: bronze/silver/gold/platinum with different discounts.
+
+      '
+documents:
+  business_rules:
+    path: docs/business_rules.md
+    description: Business policies for customer tiers and discounts
+golden_questions:
+- question: What are the top 5 customers by revenue?
+  tags:
+  - smoke
+  - revenue
+  expect:
+    entities:
+    - customer
+    - revenue
+    - order
+    grounding:
+    - entity: customer
+      resolves_to:
+      - schema:sales.customers
+    relationships:
+    - subject: customer
+      verb: PLACES
+      object: order
+    glossary:
+    - name: customer
+      has_definition: false
+    end_to_end: null
+- question: How many orders were placed last month?
+  tags:
+  - smoke
+  expect:
+    entities:
+    - order
+    grounding:
+    - entity: order
+      resolves_to:
+      - schema:sales.orders
+    end_to_end:
+      result_contains:
+      - order
+      semantic_match: Returns a count of orders from last month
+      plan_min_steps: 1
+      expect_success: true

@@ -65,6 +65,13 @@ async def get_current_user_id(
         logger.info("[AUTH] Auth disabled, returning 'default'")
         return "default"
 
+    # Check admin token bypass
+    if credentials and server_config.admin_token:
+        if credentials.credentials == server_config.admin_token:
+            logger.info("[AUTH] Admin token authenticated")
+            request.state.user_email = "admin@localhost"
+            return "admin"
+
     # Auth is enabled - validate token
     if not credentials:
         raise HTTPException(

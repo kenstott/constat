@@ -399,6 +399,71 @@ def validate(config: str):
     required=True,
     help="Path to config YAML file.",
 )
+@click.option("--domain", "-d", multiple=True, help="Domain(s) to test.")
+@click.option("--tags", "-t", multiple=True, help="Filter by tag.")
+@click.option(
+    "--format", "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+def test(config: str, domain: tuple[str, ...], tags: tuple[str, ...], output_format: str):
+    """Run golden question regression tests.
+
+    Checks entities, grounding, glossary, and relationships against the
+    existing vector store. No LLM calls — all checks are pure DB lookups.
+
+    \b
+    Examples:
+        constat test -c config.yaml
+        constat test -c config.yaml -d sales-analytics -t smoke
+        constat test -c config.yaml --format json
+    """
+    try:
+        cfg = Config.from_yaml(config)
+    except Exception as e:
+        console.print(f"[red]Config error:[/red] {e}")
+        sys.exit(1)
+
+    from constat.testing.runner import run_domain_test
+    from constat.testing.formatters import format_text, format_json
+
+    # Collect domains to test
+    if domain:
+        domain_filenames = list(domain)
+    else:
+        domain_filenames = [
+            name for name, dc in cfg.domains.items()
+            if dc.golden_questions
+        ]
+
+    if not domain_filenames:
+        console.print("[yellow]No domains with golden_questions found.[/yellow]")
+        sys.exit(0)
+
+    results = []
+    for df in domain_filenames:
+        tag_list = list(tags) if tags else None
+        result = run_domain_test(cfg, df, tags=tag_list)
+        results.append(result)
+
+    if output_format == "json":
+        console.print(format_json(results))
+    else:
+        console.print(format_text(results))
+
+    total_failed = sum(r.failed_count for r in results)
+    if total_failed:
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to config YAML file.",
+)
 def schema(config: str):
     """Show database schema overview.
 
@@ -547,12 +612,8 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
         if config:
             os.environ["CONSTAT_CONFIG"] = config
 
-        # Watch config files for changes in addition to Python files
-        reload_includes = ["*.py"]
-        if config:
-            reload_includes.append(config)
-        # Watch .env files in common locations
-        reload_includes.extend([".env", "demo/.env", "*.yaml", "demo/*.yaml"])
+        # Watch Python and .env files for changes
+        reload_includes = ["*.py", ".env", "demo/.env"]
 
         # Watch source + config dirs, but NOT "." which includes .constat/
         # where session step code .py files are written during query execution

@@ -866,7 +866,8 @@ def resolve_physical_resources(
 
     def _collect_entity_sources(ent):
         """Collect physical sources for an entity."""
-        chunks = vector_store.get_chunks_for_entity(ent.id, domain_ids=domain_ids)
+        # Entity already passed visibility — show all its chunks unfiltered
+        chunks = vector_store.get_chunks_for_entity(ent.id, all_domains=True)
         seen_docs: set[str] = set()
         sources = []
         for _chunk_id, chunk, _confidence in chunks:
@@ -944,41 +945,30 @@ def is_grounded(
     _visited: set | None = None,
     *,
     user_id: str | None = None,
+    domain_ids: list[str] | None = None,
 ) -> bool:
-    """Check if a term is grounded in physical reality."""
-    if _visited is None:
-        _visited = set()
+    """Check if a term is grounded — an entity exists for it.
 
-    key = f"{term_name}:{session_id}"
-    if key in _visited:
-        return False
-    _visited.add(key)
-
-    # Direct entity match — only grounded if it has non-glossary chunks
-    entity = vector_store.find_entity_by_name(term_name, session_id=session_id, cross_session=True)
-    if entity and _entity_has_physical_chunks(entity, vector_store):
+    All entities are grounded by definition: they were extracted from
+    physical data sources.  We just need to confirm the entity exists.
+    """
+    entity = vector_store.find_entity_by_name(
+        term_name, domain_ids=domain_ids, session_id=session_id, cross_session=True,
+    )
+    if entity:
         return True
 
-    # Check aliases — term may be grounded through an alias entity
+    # Check aliases
     term = vector_store.get_glossary_term(term_name, session_id, user_id=user_id)
     if term:
         for alias in (term.aliases or []):
-            alias_key = f"{alias.lower()}:{session_id}"
-            if alias_key in _visited:
-                continue
-            _visited.add(alias_key)
-            alias_entity = vector_store.find_entity_by_name(alias, session_id=session_id, cross_session=True)
-            if alias_entity and _entity_has_physical_chunks(alias_entity, vector_store):
+            alias_entity = vector_store.find_entity_by_name(
+                alias, domain_ids=domain_ids, session_id=session_id, cross_session=True,
+            )
+            if alias_entity:
                 return True
 
-    if not term:
-        return False
-
-    # Hierarchy: check children (by glossary ID and entity ID)
-    entity_for_term = vector_store.find_entity_by_name(term_name, session_id=session_id, cross_session=True)
-    extra_ids = [entity_for_term.id] if entity_for_term else []
-    children = vector_store.get_child_terms(term.id, *extra_ids)
-    return any(is_grounded(c.name, session_id, vector_store, _visited, user_id=user_id) for c in children)
+    return False
 
 
 def suggest_fk_relationships(

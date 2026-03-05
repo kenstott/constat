@@ -8,13 +8,17 @@ import {
   PencilIcon,
   TrashIcon,
   PlusIcon,
-  ArrowsRightLeftIcon,
+  ArrowUpOnSquareIcon,
+  Square3Stack3DIcon,
+  MapIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 import * as sessionsApi from '@/api/sessions'
 import type { DomainTreeNode } from '@/api/sessions'
+import { ArrowDownTrayIcon } from '@heroicons/react/24/outline'
+import { MermaidBlock } from '@/components/proof/MermaidBlock'
 
 interface DragItem {
   type: 'database' | 'api' | 'document'
@@ -34,6 +38,10 @@ function DomainTreeNodeView({
   onRename,
   onPromote,
   onDrop,
+  onCreateChild,
+  onShowComposition,
+  onShowDiagram,
+  togglingDomain,
 }: {
   node: DomainTreeNode
   depth: number
@@ -46,6 +54,10 @@ function DomainTreeNodeView({
   onRename: (filename: string, newName: string) => void
   onPromote: (filename: string) => void
   onDrop: (item: DragItem, targetDomain: string) => void
+  onCreateChild: (parentNode: DomainTreeNode) => void
+  onShowComposition: (node: DomainTreeNode) => void
+  onShowDiagram: (node: DomainTreeNode) => void
+  togglingDomain: string | null
 }) {
   const [expanded, setExpanded] = useState(depth < 2)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -54,13 +66,14 @@ function DomainTreeNodeView({
   const [dragOver, setDragOver] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const hasChildren = node.children.length > 0
-  const isSystem = node.filename === 'system'
+  const isSystem = node.filename === 'root'
+  const isSynthetic = node.filename === 'root' || node.filename === 'user'
   const isActive = isSystem || activeDomains.includes(node.filename)
   const resourceCount =
     node.databases.length + node.apis.length + node.documents.length
   const canModify = isAdmin || (node.tier !== 'system' && (!node.owner || node.owner === userId))
-  const showLock = !canModify
-  const canPromote = node.tier === 'user' && (isAdmin || !node.owner || node.owner === userId)
+  const showLock = !canModify && !isSynthetic
+  const canPromote = node.tier === 'user' && !isSynthetic && (isAdmin || !node.owner || node.owner === userId)
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -136,14 +149,18 @@ function DomainTreeNodeView({
             ))}
         </button>
 
-        {/* Checkbox — system domain is always active */}
-        <input
-          type="checkbox"
-          checked={isActive}
-          disabled={isSystem}
-          onChange={() => !isSystem && onToggle(node.filename)}
-          className={`w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 ${isSystem ? 'opacity-50 cursor-default' : 'cursor-pointer'}`}
-        />
+        {/* Checkbox — only system (root) is always active */}
+        {togglingDomain === node.filename ? (
+          <div className="w-3.5 h-3.5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+        ) : (
+          <input
+            type="checkbox"
+            checked={isActive}
+            disabled={isSystem || togglingDomain !== null}
+            onChange={() => !isSystem && onToggle(node.filename)}
+            className={`w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500 ${isSystem || togglingDomain !== null ? 'opacity-50 cursor-default' : 'cursor-pointer'}`}
+          />
+        )}
 
         {/* Lock — shown only when user cannot modify this domain */}
         {showLock && (
@@ -194,7 +211,7 @@ function DomainTreeNodeView({
           </button>
           {menuOpen && (
             <div className="absolute right-0 top-5 z-50 w-32 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-lg py-1">
-              {canModify && (
+              {canModify && !isSynthetic && (
                 <button
                   onClick={() => {
                     setMenuOpen(false)
@@ -215,6 +232,35 @@ function DomainTreeNodeView({
               >
                 <PencilIcon className="w-3 h-3" /> Edit YAML
               </button>
+              {canModify && (
+                <button
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onCreateChild(node)
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                >
+                  <PlusIcon className="w-3 h-3" /> Create Child
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setMenuOpen(false)
+                  onShowComposition(node)
+                }}
+                className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+              >
+                <Square3Stack3DIcon className="w-3 h-3" /> Composition
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false)
+                  onShowDiagram(node)
+                }}
+                className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+              >
+                <MapIcon className="w-3 h-3" /> Diagram
+              </button>
               {canPromote && (
                 <button
                   onClick={() => {
@@ -223,10 +269,10 @@ function DomainTreeNodeView({
                   }}
                   className="w-full text-left px-3 py-1.5 text-xs text-blue-600 dark:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
                 >
-                  <ArrowsRightLeftIcon className="w-3 h-3" /> Promote to Shared
+                  <ArrowUpOnSquareIcon className="w-3 h-3" /> Move to Root
                 </button>
               )}
-              {canModify && (
+              {canModify && !isSynthetic && (
                 <button
                   onClick={() => {
                     setMenuOpen(false)
@@ -241,6 +287,17 @@ function DomainTreeNodeView({
           )}
         </div>
       </div>
+
+      {/* Description */}
+      {expanded && node.description && !isSynthetic && (
+        <p
+          className="text-[11px] text-gray-500 dark:text-gray-400 truncate"
+          style={{ paddingLeft: depth * 16 + 20 }}
+          title={node.description}
+        >
+          {node.description}
+        </p>
+      )}
 
       {/* Children */}
       {expanded && node.children.map((child) => (
@@ -257,6 +314,10 @@ function DomainTreeNodeView({
           onRename={onRename}
           onPromote={onPromote}
           onDrop={onDrop}
+          onCreateChild={onCreateChild}
+          onShowComposition={onShowComposition}
+          onShowDiagram={onShowDiagram}
+          togglingDomain={togglingDomain}
         />
       ))}
     </div>
@@ -273,18 +334,127 @@ export default function DomainPanel() {
   const [tree, setTree] = useState<DomainTreeNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  // Create domain form
-  const [showCreate, setShowCreate] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newDesc, setNewDesc] = useState('')
-  const [creating, setCreating] = useState(false)
   // YAML editor
   const [editingFilename, setEditingFilename] = useState<string | null>(null)
   const [yamlContent, setYamlContent] = useState('')
   const [yamlPath, setYamlPath] = useState('')
   const [saving, setSaving] = useState(false)
+  // Domain toggle loading
+  const [togglingDomain, setTogglingDomain] = useState<string | null>(null)
   // Delete confirmation
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  // Create child domain
+  const [createChildParent, setCreateChildParent] = useState<DomainTreeNode | null>(null)
+  const [childName, setChildName] = useState('')
+  const [childDesc, setChildDesc] = useState('')
+  const [creatingChild, setCreatingChild] = useState(false)
+  const activeDomains = session?.active_domains || []
+  // Save session as domain
+  const [promoting, setPromoting] = useState(false)
+  const [promoteName, setPromoteName] = useState('')
+  const [promoteDesc, setPromoteDesc] = useState('')
+  const [promoteSubmitting, setPromoteSubmitting] = useState(false)
+  // Composition modal
+  const [compositionNode, setCompositionNode] = useState<DomainTreeNode | null>(null)
+  // Diagram modal
+  const [diagramNode, setDiagramNode] = useState<DomainTreeNode | null>(null)
+  const [sessionDiagram, setSessionDiagram] = useState(false)
+  const [diagramActiveOnly, setDiagramActiveOnly] = useState(false)
+  const [compositionDomains, setCompositionDomains] = useState<string[]>([])
+  const [savingComposition, setSavingComposition] = useState(false)
+
+  // Build a Mermaid composition diagram centered on one or more focus nodes.
+  // When allowedNodes is provided, only those nodes and edges between them are shown.
+  const buildCompositionDiagram = useCallback((
+    nodes: DomainTreeNode[],
+    focusFilenames: string[],
+    allowedNodes?: Set<string>,
+  ): string => {
+    // Collect all composition edges and display names
+    const allEdges: [string, string][] = []
+    const names = new Map<string, string>()
+    const walk = (n: DomainTreeNode) => {
+      names.set(n.filename, n.filename === 'root' ? 'System' : n.name)
+      if (n.domains) {
+        for (const child of n.domains) {
+          allEdges.push([n.filename, child])
+        }
+      }
+      n.children.forEach(walk)
+    }
+    nodes.forEach(walk)
+
+    // Filter edges to allowed nodes when constrained
+    const edges = allowedNodes
+      ? allEdges.filter(([from, to]) => allowedNodes.has(from) && allowedNodes.has(to))
+      : allEdges
+
+    // BFS both directions from focus nodes
+    const forward = new Map<string, string[]>()
+    const backward = new Map<string, string[]>()
+    for (const [from, to] of edges) {
+      if (!forward.has(from)) forward.set(from, [])
+      forward.get(from)!.push(to)
+      if (!backward.has(to)) backward.set(to, [])
+      backward.get(to)!.push(from)
+    }
+
+    const reachable = new Set<string>()
+    const queue = [...focusFilenames.filter((f) => !allowedNodes || allowedNodes.has(f))]
+    for (const f of queue) reachable.add(f)
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      for (const next of forward.get(cur) || []) {
+        if (!reachable.has(next)) { reachable.add(next); queue.push(next) }
+      }
+      for (const next of backward.get(cur) || []) {
+        if (!reachable.has(next)) { reachable.add(next); queue.push(next) }
+      }
+    }
+
+    // Build Mermaid lines
+    const lines = ['graph TD']
+    for (const id of reachable) {
+      const label = names.get(id) || id
+      const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '_')
+      lines.push(`  ${safeId}["${label}"]`)
+    }
+    const edgeSet = new Set<string>()
+    for (const [from, to] of edges) {
+      if (reachable.has(from) && reachable.has(to)) {
+        const key = `${from}|${to}`
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key)
+          const safeFrom = from.replace(/[^a-zA-Z0-9_-]/g, '_')
+          const safeTo = to.replace(/[^a-zA-Z0-9_-]/g, '_')
+          lines.push(`  ${safeFrom} --> ${safeTo}`)
+        }
+      }
+    }
+    // Highlight focus nodes
+    const focusSet = new Set(focusFilenames)
+    for (const id of reachable) {
+      if (focusSet.has(id)) {
+        const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '_')
+        lines.push(`  style ${safeId} fill:#3B82F6,color:#fff`)
+      }
+    }
+
+    return lines.join('\n')
+  }, [])
+
+  // Collect all domain filenames from tree (excluding synthetic nodes)
+  const collectFilenames = useCallback((nodes: DomainTreeNode[]): string[] => {
+    const result: string[] = []
+    const walk = (n: DomainTreeNode) => {
+      if (n.filename !== 'root' && n.filename !== 'user') result.push(n.filename)
+      n.children.forEach(walk)
+    }
+    nodes.forEach(walk)
+    return result
+  }, [])
+
+  const allDomainFilenames = collectFilenames(tree)
 
   const refreshTree = useCallback(async () => {
     try {
@@ -318,6 +488,7 @@ export default function DomainPanel() {
     async (filename: string) => {
       if (!session) return
       setError(null)
+      setTogglingDomain(filename)
       const current = session.active_domains || []
       const isSelected = current.includes(filename)
       const newDomains = isSelected
@@ -328,11 +499,15 @@ export default function DomainPanel() {
         await sessionsApi.setActiveDomains(session.session_id, newDomains)
         updateSession({ active_domains: newDomains })
         await fetchDataSources(session.session_id)
+        // Refresh prompt context (domain activation may update session prompt)
+        await useArtifactStore.getState().fetchPromptContext(session.session_id)
       } catch (err: unknown) {
         console.error('Failed to toggle domain:', err)
         if (err && typeof err === 'object' && 'message' in err) {
           setError((err as { message: string }).message)
         }
+      } finally {
+        setTogglingDomain(null)
       }
     },
     [session, updateSession, fetchDataSources],
@@ -388,24 +563,6 @@ export default function DomainPanel() {
     }
   }, [refreshTree])
 
-  const handleCreate = useCallback(async () => {
-    if (!newName.trim()) return
-    setCreating(true)
-    try {
-      await sessionsApi.createDomain(newName.trim(), newDesc.trim())
-      setNewName('')
-      setNewDesc('')
-      setShowCreate(false)
-      await refreshTree()
-    } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'message' in err) {
-        setError((err as { message: string }).message)
-      }
-    } finally {
-      setCreating(false)
-    }
-  }, [newName, newDesc, refreshTree])
-
   const handlePromote = useCallback(async (filename: string) => {
     try {
       await sessionsApi.promoteDomain(filename)
@@ -416,6 +573,96 @@ export default function DomainPanel() {
       }
     }
   }, [refreshTree])
+
+  const handleCreateChild = useCallback(async () => {
+    if (!childName.trim() || !createChildParent) return
+    setCreatingChild(true)
+    try {
+      // Initial composition = active child domains under the parent
+      const activeChildren = createChildParent.children
+        .filter((c) => activeDomains.includes(c.filename))
+        .map((c) => c.filename)
+      await sessionsApi.createDomain(
+        childName.trim(),
+        childDesc.trim(),
+        createChildParent.filename,
+        activeChildren,
+      )
+      setChildName('')
+      setChildDesc('')
+      setCreateChildParent(null)
+      await refreshTree()
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'message' in err) {
+        setError((err as { message: string }).message)
+      }
+    } finally {
+      setCreatingChild(false)
+    }
+  }, [childName, childDesc, createChildParent, activeDomains, refreshTree])
+
+  const handleSaveComposition = useCallback(async () => {
+    if (!compositionNode) return
+    setSavingComposition(true)
+    try {
+      // Load current YAML, update domains list, save back
+      const result = await sessionsApi.getDomainContent(compositionNode.filename)
+      const lines = result.content.split('\n')
+      // Remove existing domains: block and rebuild
+      let newLines: string[] = []
+      let inDomains = false
+      for (const line of lines) {
+        if (/^domains:/.test(line)) {
+          inDomains = true
+          continue
+        }
+        if (inDomains && /^\s*-\s/.test(line)) continue
+        if (inDomains) inDomains = false
+        newLines.push(line)
+      }
+      // Append new domains list
+      if (compositionDomains.length > 0) {
+        newLines.push('domains:')
+        for (const d of compositionDomains) {
+          newLines.push(`  - ${d}`)
+        }
+      }
+      await sessionsApi.updateDomainContent(compositionNode.filename, newLines.join('\n'))
+      setCompositionNode(null)
+      await refreshTree()
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'message' in err) {
+        setError((err as { message: string }).message)
+      }
+    } finally {
+      setSavingComposition(false)
+    }
+  }, [compositionNode, compositionDomains, refreshTree])
+
+  const handlePromoteSession = useCallback(async () => {
+    if (!promoteName.trim()) return
+    setPromoteSubmitting(true)
+    try {
+      const sessionPrompt = useArtifactStore.getState().promptContext?.systemPrompt || ''
+      await sessionsApi.createDomain(
+        promoteName.trim(),
+        promoteDesc.trim(),
+        'user',
+        activeDomains,
+        sessionPrompt,
+      )
+      setPromoting(false)
+      setPromoteName('')
+      setPromoteDesc('')
+      await refreshTree()
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'message' in err) {
+        setError((err as { message: string }).message)
+      }
+    } finally {
+      setPromoteSubmitting(false)
+    }
+  }, [promoteName, promoteDesc, activeDomains, refreshTree])
 
   const handleDrop = useCallback(async (item: DragItem, targetDomain: string) => {
     try {
@@ -434,8 +681,6 @@ export default function DomainPanel() {
     }
   }, [refreshTree, session])
 
-  const activeDomains = session?.active_domains || []
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-4">
@@ -448,6 +693,64 @@ export default function DomainPanel() {
     <div className="space-y-2">
       {error && (
         <p className="text-xs text-red-500 mb-2">{error}</p>
+      )}
+
+      {/* Save session as domain */}
+      {!promoting ? (
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setPromoting(true)}
+            className="flex items-center gap-1.5 text-xs text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300"
+          >
+            <ArrowDownTrayIcon className="w-3.5 h-3.5" />
+            Save Session as Domain
+          </button>
+          {activeDomains.length > 0 && (
+            <button
+              onClick={() => setSessionDiagram(true)}
+              title="Session composition diagram"
+              className="text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
+            >
+              <MapIcon className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="border border-gray-200 dark:border-gray-700 rounded p-2 space-y-2">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+            Save Session as Domain
+          </span>
+          <input
+            autoFocus
+            placeholder="Domain name"
+            value={promoteName}
+            onChange={(e) => setPromoteName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handlePromoteSession()}
+            className="w-full text-xs px-2 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded outline-none focus:ring-1 focus:ring-primary-500"
+          />
+          <input
+            placeholder="Description (optional)"
+            value={promoteDesc}
+            onChange={(e) => setPromoteDesc(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handlePromoteSession()}
+            className="w-full text-xs px-2 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded outline-none focus:ring-1 focus:ring-primary-500"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => { setPromoting(false); setPromoteName(''); setPromoteDesc('') }}
+              className="px-2 py-1 text-xs text-gray-600 dark:text-gray-400"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handlePromoteSession}
+              disabled={promoteSubmitting || !promoteName.trim()}
+              className="px-3 py-1 text-xs bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50"
+            >
+              {promoteSubmitting ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Domain tree */}
@@ -471,6 +774,10 @@ export default function DomainPanel() {
               onRename={handleRename}
               onPromote={handlePromote}
               onDrop={handleDrop}
+              onCreateChild={(n) => { setCreateChildParent(n); setChildName(''); setChildDesc('') }}
+              onShowComposition={(n) => { setCompositionNode(n); setCompositionDomains(n.domains || []) }}
+              onShowDiagram={(n) => setDiagramNode(n)}
+              togglingDomain={togglingDomain}
             />
           ))}
         </div>
@@ -494,6 +801,166 @@ export default function DomainPanel() {
           >
             Cancel
           </button>
+        </div>
+      )}
+
+      {/* Create child domain form */}
+      {createChildParent && (
+        <div className="border border-gray-200 dark:border-gray-700 rounded p-2 space-y-2">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+            New child of <span className="text-primary-600 dark:text-primary-400">{createChildParent.name}</span>
+          </span>
+          <input
+            autoFocus
+            placeholder="Domain name"
+            value={childName}
+            onChange={(e) => setChildName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleCreateChild()}
+            className="w-full text-xs px-2 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded outline-none focus:ring-1 focus:ring-primary-500"
+          />
+          <input
+            placeholder="Description (optional)"
+            value={childDesc}
+            onChange={(e) => setChildDesc(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleCreateChild()}
+            className="w-full text-xs px-2 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded outline-none focus:ring-1 focus:ring-primary-500"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setCreateChildParent(null)}
+              className="px-2 py-1 text-xs text-gray-600 dark:text-gray-400"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreateChild}
+              disabled={creatingChild || !childName.trim()}
+              className="px-3 py-1 text-xs bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50"
+            >
+              {creatingChild ? 'Creating...' : 'Create'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Composition modal */}
+      {compositionNode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-96 max-h-[60vh] overflow-y-auto p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                Composition: {compositionNode.name}
+              </h3>
+              <button
+                onClick={() => setCompositionNode(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Select which domains this domain composes:
+            </p>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {allDomainFilenames
+                .filter((f) => f !== compositionNode.filename)
+                .map((f) => (
+                  <label
+                    key={f}
+                    className="flex items-center gap-2 text-xs px-2 py-1.5 rounded hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={compositionDomains.includes(f)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setCompositionDomains((prev) => [...prev, f])
+                        } else {
+                          setCompositionDomains((prev) => prev.filter((d) => d !== f))
+                        }
+                      }}
+                      className="w-3.5 h-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    />
+                    <Square3Stack3DIcon className="w-3.5 h-3.5 text-gray-400" />
+                    <span className="text-gray-800 dark:text-gray-200">{f}</span>
+                  </label>
+                ))}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setCompositionNode(null)}
+                className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveComposition}
+                disabled={savingComposition}
+                className="px-3 py-1.5 text-xs bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50"
+              >
+                {savingComposition ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Composition diagram modal */}
+      {diagramNode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-[600px] max-h-[80vh] overflow-auto p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                Composition: {diagramNode.name}
+              </h3>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={diagramActiveOnly}
+                    onChange={(e) => setDiagramActiveOnly(e.target.checked)}
+                    className="w-3 h-3 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  Active only
+                </label>
+                <button
+                  onClick={() => { setDiagramNode(null); setDiagramActiveOnly(false) }}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
+                >
+                  &times;
+                </button>
+              </div>
+            </div>
+            <MermaidBlock chart={buildCompositionDiagram(
+              tree,
+              [diagramNode.filename],
+              diagramActiveOnly ? new Set(['root', ...activeDomains]) : undefined,
+            )} />
+          </div>
+        </div>
+      )}
+
+      {/* Session composition diagram modal */}
+      {sessionDiagram && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-[600px] max-h-[80vh] overflow-auto p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                Session Composition
+              </h3>
+              <button
+                onClick={() => setSessionDiagram(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+            <MermaidBlock chart={buildCompositionDiagram(
+              tree,
+              ['root', ...activeDomains],
+              new Set(['root', ...activeDomains]),
+            )} />
+          </div>
         </div>
       )}
 
@@ -531,48 +998,6 @@ export default function DomainPanel() {
         </div>
       )}
 
-      {/* Create domain form */}
-      {showCreate ? (
-        <div className="border border-gray-200 dark:border-gray-700 rounded p-2 space-y-2">
-          <input
-            autoFocus
-            placeholder="Domain name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            className="w-full text-xs px-2 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded outline-none focus:ring-1 focus:ring-primary-500"
-          />
-          <input
-            placeholder="Description (optional)"
-            value={newDesc}
-            onChange={(e) => setNewDesc(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            className="w-full text-xs px-2 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded outline-none focus:ring-1 focus:ring-primary-500"
-          />
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => { setShowCreate(false); setNewName(''); setNewDesc('') }}
-              className="px-2 py-1 text-xs text-gray-600 dark:text-gray-400"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCreate}
-              disabled={creating || !newName.trim()}
-              className="px-3 py-1 text-xs bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50"
-            >
-              {creating ? 'Creating...' : 'Create'}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
-        >
-          <PlusIcon className="w-3.5 h-3.5" /> New Domain
-        </button>
-      )}
     </div>
   )
 }

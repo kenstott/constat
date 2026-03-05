@@ -222,6 +222,28 @@ class LearningStore:
             return result
         return None
 
+    def update_learning_context(self, learning_id: str, updates: dict) -> bool:
+        """Merge keys into a learning's context dict.
+
+        Args:
+            learning_id: Learning ID to update.
+            updates: Keys to merge into context.
+
+        Returns:
+            True if the learning was found and updated.
+        """
+        data = self._load()
+        entry = data["corrections"].get(learning_id)
+        if entry is None:
+            return False
+        ctx = entry.get("context")
+        if not isinstance(ctx, dict):
+            entry["context"] = dict(updates)
+        else:
+            ctx.update(updates)
+        self._save()
+        return True
+
     def list_raw_learnings(
         self,
         category: Optional[LearningCategory] = None,

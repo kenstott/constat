@@ -899,6 +899,9 @@ class DomainTreeNode(BaseModel):
     skills: list[str] = Field(default_factory=list)
     agents: list[str] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+    system_prompt: str = Field(default="", description="Domain system prompt")
+    domains: list[str] = Field(default_factory=list, description="DAG composition children (filenames)")
     children: list["DomainTreeNode"] = Field(default_factory=list)
 
 
@@ -948,3 +951,73 @@ class ValidationErrorResponse(BaseModel):
         default_factory=list,
         description="Field-specific errors",
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression Testing
+# ---------------------------------------------------------------------------
+
+
+class TestLayerResult(BaseModel):
+    layer: str
+    passed: int
+    total: int
+    failures: list[str] = Field(default_factory=list)
+
+
+class TestEndToEndResult(BaseModel):
+    passed: bool
+    answer: str | None = None
+    judge_reasoning: str | None = None
+    failures: list[str] = Field(default_factory=list)
+    duration_s: float = 0.0
+
+
+class TestQuestionResult(BaseModel):
+    question: str
+    tags: list[str] = Field(default_factory=list)
+    passed: bool
+    layers: list[TestLayerResult] = Field(default_factory=list)
+    end_to_end: TestEndToEndResult | None = None
+
+
+class TestDomainResult(BaseModel):
+    domain: str
+    domain_name: str = ""
+    passed_count: int
+    failed_count: int
+    questions: list[TestQuestionResult] = Field(default_factory=list)
+
+
+class TestRunResponse(BaseModel):
+    domains: list[TestDomainResult] = Field(default_factory=list)
+    total_passed: int
+    total_failed: int
+
+
+class TestableDomainInfo(BaseModel):
+    filename: str
+    name: str
+    question_count: int
+    tags: list[str] = Field(default_factory=list)
+
+
+class GoldenQuestionExpectations(BaseModel):
+    entities: list[str] = Field(default_factory=list)
+    grounding: list[dict[str, Any]] = Field(default_factory=list)
+    relationships: list[dict[str, Any]] = Field(default_factory=list)
+    glossary: list[dict[str, Any]] = Field(default_factory=list)
+    end_to_end: dict[str, Any] | None = None
+
+
+class GoldenQuestionRequest(BaseModel):
+    question: str
+    tags: list[str] = Field(default_factory=list)
+    expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)
+
+
+class GoldenQuestionResponse(BaseModel):
+    index: int
+    question: str
+    tags: list[str] = Field(default_factory=list)
+    expect: GoldenQuestionExpectations = Field(default_factory=GoldenQuestionExpectations)

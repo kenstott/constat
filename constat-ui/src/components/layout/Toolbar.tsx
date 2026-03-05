@@ -53,10 +53,10 @@ export function Toolbar({ onNewQuery, onShowProof, onShowHelp, isCreatingNewSess
           onClick={onShowProof}
           disabled={isExecuting || !hasExecutedPlan}
           className="btn-secondary text-xs disabled:opacity-50"
-          title={hasExecutedPlan ? "Show proof tree / reasoning chain" : "Execute a query first to view proof"}
+          title={hasExecutedPlan ? "Show reasoning chain" : "Execute a query first to view reasoning chain"}
         >
           <CheckBadgeIcon className="w-4 h-4 mr-1" />
-          Proof
+          Reason-Chain
         </button>
 
         <button

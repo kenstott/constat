@@ -214,7 +214,18 @@ export function ConversationPanel() {
           </div>
         ) : (
           <>
-            {messages.map((message) => (
+            {messages.map((message, idx) => {
+              // Find most recent user query above this message (for flagging)
+              let queryText: string | undefined
+              if (message.type !== 'user') {
+                for (let i = idx - 1; i >= 0; i--) {
+                  if (messages[i].type === 'user') {
+                    queryText = messages[i].content
+                    break
+                  }
+                }
+              }
+              return (
               <MessageBubble
                 key={message.id}
                 type={message.type}
@@ -237,8 +248,10 @@ export function ConversationPanel() {
                 stepAttempts={message.stepAttempts}
                 stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
                 stepDisplayModeVersion={stepOverride?.version}
+                queryText={queryText}
               />
-            ))}
+              )
+            })}
             {/* Queued messages */}
             {queuedMessages.map((queued, index) => (
               <div key={queued.id} className="group flex gap-3 flex-row-reverse">

@@ -60,6 +60,22 @@ class UserPermissions(BaseModel):
         default_factory=list,
         description="API names user can call (empty = none, unless platform_admin)",
     )
+    skills: list[str] = Field(
+        default_factory=list,
+        description="Skill names user can access",
+    )
+    agents: list[str] = Field(
+        default_factory=list,
+        description="Agent names user can access",
+    )
+    rules: list[str] = Field(
+        default_factory=list,
+        description="Rule IDs user can access",
+    )
+    facts: list[str] = Field(
+        default_factory=list,
+        description="Fact names user can access",
+    )
 
 
 class PermissionsConfig(BaseModel):
@@ -132,6 +148,10 @@ class ServerConfig(BaseModel):
         default=None,
         description="Firebase project ID for JWT validation (required when auth enabled)",
     )
+    admin_token: Optional[str] = Field(
+        default=None,
+        description="Admin token for local CLI/script access (bypasses Firebase auth)",
+    )
     runtime_dir: str = Field(
         default=".",
         description="Base directory for runtime data. Data is stored in {runtime_dir}/.constat/",
@@ -158,6 +178,11 @@ class ServerConfig(BaseModel):
         firebase_env = os.environ.get("FIREBASE_PROJECT_ID")
         if firebase_env is not None:
             self.firebase_project_id = firebase_env
+
+        # CONSTAT_ADMIN_TOKEN env var overrides YAML/default
+        admin_token_env = os.environ.get("CONSTAT_ADMIN_TOKEN")
+        if admin_token_env is not None:
+            self.admin_token = admin_token_env
 
         return self
 

@@ -17,14 +17,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from constat.core.api import EntityManager
-from constat.server.auth import CurrentUserId, CurrentUserEmail
+from constat.server.auth import CurrentUserId
 from constat.server.models import (
     SessionCreate,
     SessionResponse,
     SessionListResponse,
     SessionStatus,
 )
-from constat.server.permissions import get_user_permissions
 from constat.server.persona_config import require_write
 from constat.server.session_manager import SessionManager, ManagedSession
 from constat.server.user_preferences import get_selected_domains, set_selected_domains
@@ -291,6 +290,9 @@ async def create_session(
     managed = session_manager.get_session(session_id)
     logger.debug(f"[create_session] got managed session")
 
+    # Seed per-session prompt from global config
+    managed.session_prompt = managed.session.config.system_prompt
+
     # Load preferred domains from user preferences (only for new sessions)
     preferred_domains = get_selected_domains(effective_user_id)
     logger.info(f"[create_session] preferred_domains from preferences: {preferred_domains}")
@@ -306,6 +308,10 @@ async def create_session(
             session_manager.resolve_config(session_id)
     else:
         logger.info(f"[create_session] No preferred domains found for user {effective_user_id}")
+
+    # Seed 'user' domain as active by default (toggleable by user)
+    if 'user' not in managed.active_domains:
+        managed.active_domains.append('user')
 
     # Run NER after domain loading (or even with no domains) so schema
     # entities are available for pattern matching in entity extraction.
@@ -469,9 +475,12 @@ async def set_active_domains(
     if not isinstance(domain_filenames, list):
         domain_filenames = [domain_filenames] if domain_filenames else []
 
-    # Verify all domains exist before loading
+    # Verify all domains exist before loading (skip synthetic nodes)
+    synthetic = {'root', 'user'}
     config = managed.session.config
     for filename in domain_filenames:
+        if filename in synthetic:
+            continue
         domain = config.load_domain(filename)  # type: ignore[arg-type]
         if not domain:
             raise HTTPException(status_code=404, detail=f"Domain not found: {filename}")
@@ -500,8 +509,14 @@ async def set_active_domains(
     managed._domain_databases = set()
     managed.active_domains = []
 
-    # Load domains using helper
-    loaded, conflicts = _load_domains_into_session(managed, domain_filenames)
+    # Load real domains (skip synthetic nodes)
+    real_filenames = [f for f in domain_filenames if f not in synthetic]
+    synthetic_active = [f for f in domain_filenames if f in synthetic]
+    loaded, conflicts = _load_domains_into_session(managed, real_filenames)
+
+    # Re-add synthetic nodes to active_domains
+    if synthetic_active:
+        managed.active_domains = synthetic_active + managed.active_domains
 
     if conflicts:
         raise HTTPException(
@@ -515,9 +530,16 @@ async def set_active_domains(
     # Re-resolve tiered config with new domains
     session_manager.resolve_config(session_id)
 
-    # Save to user preferences for future sessions
+    # Load single domain's system_prompt into session
+    if len(real_filenames) == 1:
+        single = config.load_domain(real_filenames[0])
+        if single and single.system_prompt:
+            managed.session.config.system_prompt = single.system_prompt
+            managed.session_prompt = single.system_prompt
+
+    # Save to user preferences for future sessions (exclude synthetic nodes)
     effective_user_id = user_id if user_id != "default" else managed.user_id
-    set_selected_domains(effective_user_id, domain_filenames)
+    set_selected_domains(effective_user_id, real_filenames)
     logger.info(f"Saved domain preferences for user {effective_user_id}: {domain_filenames}")
 
     return {
@@ -747,49 +769,35 @@ async def get_prompt_context(
 @router.put("/{session_id}/system-prompt", dependencies=[Depends(require_write("system_prompt"))])
 async def update_system_prompt(
     session_id: str,
-    request: Request,
     body: dict,
     user_id: CurrentUserId,
-    email: str = Depends(CurrentUserEmail),
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
-    """Update the system prompt (admin only).
+    """Update the session's system prompt.
 
-    Updates the in-memory config system prompt. Changes persist until server restart.
+    Updates only this session's prompt — does not affect global config or other sessions.
 
     Args:
         session_id: Session ID
-        request: FastAPI request object
         body: Dict with system_prompt field
         user_id: Authenticated user ID
-        email: Authenticated user email
         session_manager: Injected session manager
 
     Returns:
         Status and updated system_prompt
 
     Raises:
-        403: Not an admin
         404: Session not found
     """
-    # Check admin permission
-    server_config = request.app.state.server_config
-    perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
-    if not perms.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     managed = session_manager.get_session(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
     new_prompt = body.get("system_prompt", "")
 
-    # Update the global config
-    config = request.app.state.config
-    config.system_prompt = new_prompt
-
-    # Update the session's config reference
+    # Update session-local prompt only
     managed.session.config.system_prompt = new_prompt
+    managed.session_prompt = new_prompt
 
     return {
         "status": "updated",

@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
+  BeakerIcon,
   CodeBracketIcon,
   LightBulbIcon,
   TagIcon,
@@ -24,7 +25,6 @@ import {
   TrashIcon,
   CheckIcon,
   XMarkIcon,
-  Cog6ToothIcon,
   UserCircleIcon,
   SparklesIcon,
   ChevronDownIcon,
@@ -41,6 +41,7 @@ import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
 import DomainPanel from './DomainPanel'
+import RegressionPanel from './RegressionPanel'
 import * as sessionsApi from '@/api/sessions'
 import * as agentsApi from '@/api/agents'
 
@@ -278,7 +279,7 @@ export function ArtifactPanel() {
   const [draftingAgent, setDraftingAgent] = useState(false)
   const [editingAgent, setEditingAgent] = useState<{ name: string; prompt: string; description: string; skills: string[] } | null>(null)
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set())
-  const [agentContents, setAgentContents] = useState<Record<string, { prompt: string; description: string }>>({})
+  const [agentContents, setAgentContents] = useState<Record<string, { prompt: string; description: string; skills: string[] }>>({})
   const [creatingAgent, setCreatingAgent] = useState(false)
   const [newAgent, setNewAgent] = useState({ name: '', prompt: '', description: '', skills: [] as string[] })
   // System prompt editing state (admin only)
@@ -825,7 +826,7 @@ ${skill.body}`
       )
       if (response.ok) {
         const data = await response.json()
-        setAgentContents(prev => ({ ...prev, [agentName]: { prompt: data.prompt, description: data.description } }))
+        setAgentContents(prev => ({ ...prev, [agentName]: { prompt: data.prompt, description: data.description, skills: data.skills || [] } }))
       }
     } catch (err) {
       console.error('Failed to fetch agent content:', err)
@@ -1398,11 +1399,60 @@ ${skill.body}`
       {/* ═══════════════ DOMAINS ═══════════════ */}
       <AccordionSection
         id="domains"
-        title="Domains"
+        title="Session Domain"
         count={session?.active_domains?.length || 0}
         icon={<GlobeAltIcon className="w-4 h-4" />}
         command="/domains"
+        action={
+          canWrite('system_prompt') ? (
+            <button
+              onClick={handleEditSystemPrompt}
+              className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="Edit session prompt"
+            >
+              <PencilIcon className="w-4 h-4" />
+            </button>
+          ) : undefined
+        }
       >
+        {/* Session Prompt (inline) */}
+        {canSeeSection('system_prompt') && (promptContext?.systemPrompt || canWrite('system_prompt')) && (
+          <div className="mb-3">
+            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Session Prompt</div>
+            {editingSystemPrompt ? (
+              <div className="space-y-2">
+                <textarea
+                  value={systemPromptDraft || ''}
+                  onChange={(e) => setSystemPromptDraft(e.target.value)}
+                  className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none min-h-[150px]"
+                  placeholder="Enter session prompt..."
+                />
+                <div className="flex gap-1">
+                  <button
+                    onClick={handleSaveSystemPrompt}
+                    className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
+                    title="Save"
+                  >
+                    <CheckIcon className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setEditingSystemPrompt(false)}
+                    className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                    title="Cancel"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ) : promptContext?.systemPrompt ? (
+              <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
+                {promptContext.systemPrompt}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500 dark:text-gray-400 italic">No session prompt configured</p>
+            )}
+          </div>
+        )}
         <DomainPanel />
       </AccordionSection>
 
@@ -1921,61 +1971,6 @@ ${skill.body}`
       {reasoningVisible && !reasoningCollapsed && (
       <>
 
-      {/* System Prompt - show when there's content or user can see it */}
-      {canSeeSection('system_prompt') && (promptContext?.systemPrompt || canWrite('system_prompt')) && (
-        <AccordionSection
-          id="system-prompt"
-          title="System Prompt"
-          icon={<Cog6ToothIcon className="w-4 h-4" />}
-          command="/system"
-          action={
-            canWrite('system_prompt') ? (
-              <button
-                onClick={handleEditSystemPrompt}
-                className="p-1 text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                title="Edit system prompt"
-              >
-                <PencilIcon className="w-4 h-4" />
-              </button>
-            ) : (
-              <div className="w-6 h-6" />
-            )
-          }
-        >
-          {editingSystemPrompt ? (
-            <div className="space-y-2">
-              <textarea
-                value={systemPromptDraft || ''}
-                onChange={(e) => setSystemPromptDraft(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none min-h-[150px]"
-                placeholder="Enter system prompt..."
-              />
-              <div className="flex gap-1">
-                <button
-                  onClick={handleSaveSystemPrompt}
-                  className="p-1 text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 rounded"
-                  title="Save"
-                >
-                  <CheckIcon className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => setEditingSystemPrompt(false)}
-                  className="p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-                  title="Cancel"
-                >
-                  <XMarkIcon className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ) : promptContext?.systemPrompt ? (
-            <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
-              {promptContext.systemPrompt}
-            </div>
-          ) : (
-            <p className="text-sm text-gray-500 dark:text-gray-400 italic">No system prompt configured</p>
-          )}
-        </AccordionSection>
-      )}
 
       {/* Agents */}
       {canSeeSection('agents') && (
@@ -2160,14 +2155,9 @@ ${skill.body}`
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {agent.name}
                       </span>
-                      {agent.domain && agent.domain !== 'global' && (
+                      {agent.domain && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex-shrink-0">
                           {agent.domain}
-                        </span>
-                      )}
-                      {(!agent.domain || agent.domain === 'global') && agent.source && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
-                          {agent.source}
                         </span>
                       )}
                       <ChevronDownIcon
@@ -2207,10 +2197,10 @@ ${skill.body}`
                         autoFocus
                         className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
                         defaultValue=""
-                        onChange={(e) => { if (e.target.value) handleMoveAgent(agent.name, agent.domain || 'global', e.target.value) }}
+                        onChange={(e) => { if (e.target.value) handleMoveAgent(agent.name, agent.domain || 'user', e.target.value) }}
                       >
                         <option value="" disabled>Select domain...</option>
-                        {domainList.filter((d) => d.filename !== (agent.domain || 'global')).map((d) => (
+                        {domainList.filter((d) => d.filename !== (agent.domain || 'user')).map((d) => (
                           <option key={d.filename} value={d.filename}>{d.name}</option>
                         ))}
                       </select>
@@ -2231,6 +2221,25 @@ ${skill.body}`
                         <p className="text-xs text-gray-600 dark:text-gray-400 italic mb-3">
                           {content.description}
                         </p>
+                      )}
+
+                      {/* Skills pills */}
+                      {content?.skills && content.skills.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-3">
+                          {content.skills.map((skillName: string) => (
+                            <button
+                              key={skillName}
+                              onClick={() => {
+                                // Scroll to skills section if visible
+                                const el = document.getElementById(`skill-${skillName}`)
+                                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                              }}
+                              className="px-2 py-0.5 text-[11px] rounded-full bg-blue-100 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-600 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/60 cursor-pointer transition-colors"
+                            >
+                              {skillName}
+                            </button>
+                          ))}
+                        </div>
                       )}
 
                       {/* Markdown-formatted prompt */}
@@ -2560,14 +2569,9 @@ ${skill.body}`
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {skill.name}
                       </span>
-                      {skill.domain && skill.domain !== 'global' && (
+                      {skill.domain && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex-shrink-0">
                           {skill.domain}
-                        </span>
-                      )}
-                      {(!skill.domain || skill.domain === 'global') && skill.source && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0">
-                          {skill.source}
                         </span>
                       )}
                       <ChevronDownIcon
@@ -2646,10 +2650,10 @@ ${skill.body}`
                         autoFocus
                         className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5"
                         defaultValue=""
-                        onChange={(e) => { if (e.target.value) handleMoveSkill(skill.name, skill.domain || 'global', e.target.value) }}
+                        onChange={(e) => { if (e.target.value) handleMoveSkill(skill.name, skill.domain || 'user', e.target.value) }}
                       >
                         <option value="" disabled>Select domain...</option>
-                        {domainList.filter((d) => d.filename !== (skill.domain || 'global')).map((d) => (
+                        {domainList.filter((d) => d.filename !== (skill.domain || 'user')).map((d) => (
                           <option key={d.filename} value={d.filename}>{d.name}</option>
                         ))}
                       </select>
@@ -3187,7 +3191,7 @@ ${skill.body}`
                             saved
                           </span>
                         )}
-                        {fact.is_persisted && fact.domain && (
+                        {fact.domain && (
                           <span className="px-1 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded">
                             {fact.domain}
                           </span>
@@ -3280,6 +3284,16 @@ ${skill.body}`
           action={<div className="w-6 h-6" />}
         >
           <GlossaryPanel sessionId={session.session_id} />
+        </AccordionSection>
+      )}
+
+      {session && (
+        <AccordionSection
+          id="regression"
+          title="Regression Tests"
+          icon={<BeakerIcon className="w-4 h-4" />}
+        >
+          <RegressionPanel sessionId={session.session_id} />
         </AccordionSection>
       )}
       </>

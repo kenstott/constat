@@ -11,12 +11,10 @@ server:
   permissions:
     $ref: ./permissions.yaml
 
-# Domains keyed by identifier (used for permissions)
+# Domain composition (filesystem is authority, list defines DAG)
 domains:
-  sales-analytics:
-    $ref: ./domains/sales-analytics.yaml
-  hr-reporting:
-    $ref: ./domains/hr-reporting.yaml
+  - sales-analytics
+  - hr-reporting
 
 llm:
 #  provider: ollama

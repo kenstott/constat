@@ -146,8 +146,11 @@ class RelationalStore:
             f"""
             SELECT id, name, display_name, semantic_type, ner_type,
                    session_id, domain_id, created_at
-            FROM entities
+            FROM entities e
             WHERE {where}
+            ORDER BY (
+                SELECT COUNT(*) FROM chunk_entities ce WHERE ce.entity_id = e.id
+            ) DESC
             LIMIT 1
             """,
             params,
@@ -343,11 +346,16 @@ class RelationalStore:
         entity_id: str,
         limit: int | None = None,
         domain_ids: list[str] | None = None,
+        all_domains: bool = False,
     ) -> list[tuple[str, "DocumentChunk", float]]:
         from constat.discovery.models import DocumentChunk
         from constat.storage.duckdb_backend import DuckDBVectorBackend
 
-        emb_where, filter_params = DuckDBVectorBackend.chunk_visibility_filter(domain_ids, alias="em")
+        if all_domains:
+            emb_where = "1=1"
+            filter_params: list = []
+        else:
+            emb_where, filter_params = DuckDBVectorBackend.chunk_visibility_filter(domain_ids, alias="em")
         params: list = [entity_id] + filter_params
 
         limit_clause = ""
@@ -731,7 +739,7 @@ class RelationalStore:
 
             results.append({
                 "entity_id": entity_id,
-                "name": name,
+                "name": name.lower(),
                 "display_name": display_name,
                 "semantic_type": semantic_type,
                 "ner_type": ner_type,

@@ -370,12 +370,16 @@ export interface DomainTreeNode {
   tier: string
   active: boolean
   owner: string
+  steward: string
   databases: string[]
   apis: string[]
   documents: string[]
   skills: string[]
   agents: string[]
   rules: string[]
+  facts: string[]
+  system_prompt: string
+  domains: string[]
   children: DomainTreeNode[]
 }
 
@@ -616,6 +620,7 @@ export interface DocumentContent {
   type?: 'file' | 'content'  // 'file' = open with system app, 'content' = render in modal
   content?: string
   format?: string
+  url?: string
   sections?: string[]
   path?: string  // For type='file', the local file path
   metadata?: Record<string, unknown>
@@ -843,9 +848,12 @@ export async function getDomainContent(
 
 export async function createDomain(
   name: string,
-  description: string = ''
+  description: string = '',
+  parentDomain: string = '',
+  initialDomains: string[] = [],
+  systemPrompt: string = ''
 ): Promise<{ status: string; filename: string; name: string; description: string }> {
-  return post('/domains', { name, description })
+  return post('/domains', { name, description, parent_domain: parentDomain, initial_domains: initialDomains, system_prompt: systemPrompt })
 }
 
 export async function updateDomainContent(

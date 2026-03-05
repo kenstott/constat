@@ -50,6 +50,9 @@ class ManagedSession:
     # This is different from session_id which is the server/client UUID
     _history_session_id: Optional[str] = None
 
+    # Per-session system prompt (seeded from global config on creation)
+    session_prompt: Optional[str] = None
+
     # Active domain filenames (e.g., ['sales-analytics.yaml', 'hr-reporting.yaml'])
     active_domains: list[str] = field(default_factory=list)
 

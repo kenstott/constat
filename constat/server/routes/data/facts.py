@@ -409,6 +409,9 @@ async def move_fact(
 ) -> dict[str, Any]:
     """Move a persisted fact to a different domain.
 
+    Physically relocates the fact from the user's facts.yaml into the
+    target domain's facts.yaml (or the domain YAML's facts section).
+
     Args:
         session_id: Session ID
         fact_name: Name of the fact to move
@@ -422,6 +425,9 @@ async def move_fact(
         400: Missing to_domain
         404: Fact not found or not persisted
     """
+    import yaml as _yaml
+    from pathlib import Path
+
     managed = session_manager.get_session(session_id)
 
     to_domain = body.get("to_domain")
@@ -431,8 +437,36 @@ async def move_fact(
     try:
         from constat.storage.facts import FactStore
         fact_store = FactStore(user_id=managed.user_id)
-        if not fact_store.move_fact(fact_name, to_domain):
+
+        # Get the fact data before removing
+        fact_data = fact_store.get_fact(fact_name)
+        if not fact_data:
             raise HTTPException(status_code=404, detail=f"Persisted fact not found: {fact_name}")
+
+        # Remove from user facts.yaml
+        fact_store.delete_fact(fact_name)
+
+        # Write to target domain's facts.yaml
+        config = managed.session.config
+        to_cfg = config.load_domain(to_domain) if to_domain else None
+
+        if to_cfg and to_cfg.source_path:
+            tgt_file = Path(to_cfg.source_path).parent / "facts.yaml"
+        else:
+            # Moving back to user-level
+            tgt_file = fact_store.file_path
+
+        tgt_data: dict = {}
+        if tgt_file.exists():
+            tgt_data = _yaml.safe_load(tgt_file.read_text()) or {}
+        if "facts" not in tgt_data:
+            tgt_data["facts"] = {}
+
+        fact_data["domain"] = to_domain
+        tgt_data["facts"][fact_name] = fact_data
+
+        tgt_file.parent.mkdir(parents=True, exist_ok=True)
+        tgt_file.write_text(_yaml.dump(tgt_data, default_flow_style=False, sort_keys=False))
 
         return {"status": "moved", "fact_name": fact_name, "to_domain": to_domain}
 

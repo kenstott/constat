@@ -886,6 +886,9 @@ class DomainConfig(BaseModel):
     active: bool = True
     order: int = 0
 
+    # Composition: child domain filenames (DAG references)
+    domains: list[str] = Field(default_factory=list, description="Child domain filenames for composition")
+
     # Data sources (same structure as main config)
     databases: dict[str, DatabaseConfig] = Field(default_factory=dict)
     apis: dict[str, APIConfig] = Field(default_factory=dict)
@@ -897,6 +900,9 @@ class DomainConfig(BaseModel):
     rights: dict[str, Any] = Field(default_factory=dict)
     facts: dict[str, Any] = Field(default_factory=dict)
     learnings: dict[str, Any] = Field(default_factory=dict)
+
+    # Golden questions for regression testing
+    golden_questions: list[dict[str, Any]] = Field(default_factory=list)
 
     # NER stop list — terms to filter out during entity extraction
     ner_stop_list: list[str] = Field(default_factory=list)
@@ -934,7 +940,12 @@ class DomainConfig(BaseModel):
         """Create DomainConfig from dict, handling _source_file/_source_path."""
         # Map _source_file to filename if present
         if "_source_file" in data and not data.get("filename"):
-            data["filename"] = data["_source_file"]
+            source_file = data["_source_file"]
+            # For directory-based domains (config.yaml), use parent dir name
+            if source_file == "config.yaml" and "_source_path" in data:
+                data["filename"] = Path(data["_source_path"]).parent.name
+            else:
+                data["filename"] = source_file
         # Map _source_path to source_path if present
         if "_source_path" in data and not data.get("source_path"):
             data["source_path"] = data["_source_path"]
@@ -967,6 +978,9 @@ class DomainConfig(BaseModel):
         # Load parent config
         parent = cls.from_yaml(config_file)
 
+        # Use directory name as filename (not "config.yaml")
+        parent.filename = path.name
+
         # Compute hierarchy path
         stem = path.stem
         parent.path = f"{parent_path}.{stem}" if parent_path else stem
@@ -981,37 +995,6 @@ class DomainConfig(BaseModel):
             perms_data = yaml.safe_load(substituted)
             if perms_data:
                 parent.permissions = PermissionsConfig.model_validate(perms_data)
-
-        # Load and merge sub-domains (alphabetically)
-        sub_domains_dir = path / "domains"
-        if sub_domains_dir.is_dir():
-            merged_data: dict = {}
-            for sub_dir in sorted(sub_domains_dir.iterdir()):
-                if sub_dir.is_dir() and (sub_dir / "config.yaml").exists():
-                    sub_domain = cls.from_directory(sub_dir, parent_path=parent.path)
-                    sub_data = sub_domain.model_dump(exclude_defaults=True)
-                    # Merge sub-domain data additively
-                    for key, value in sub_data.items():
-                        if isinstance(value, dict) and isinstance(merged_data.get(key), dict):
-                            merged_data[key] = {**merged_data[key], **value}
-                        elif value:
-                            merged_data[key] = value
-
-            # Parent overlays sub-domain merge
-            parent_data = parent.model_dump(exclude_defaults=True)
-            for key, value in parent_data.items():
-                if isinstance(value, dict) and isinstance(merged_data.get(key), dict):
-                    merged_data[key] = {**merged_data[key], **value}
-                else:
-                    merged_data[key] = value
-
-            # Ensure required fields
-            merged_data.setdefault("name", parent.name)
-            result = cls.model_validate(merged_data)
-            # Preserve permissions from parent (model_validate won't carry it through merged_data correctly)
-            if parent.permissions is not None:
-                result.permissions = parent.permissions
-            return result
 
         return parent
 
@@ -1029,9 +1012,11 @@ class Config(BaseModel):
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
-    # Domains keyed by filename
-    # YAML format: domains: { sales.yaml: { $ref: ./domains/sales.yaml } }
+    # Domains keyed by filename (populated from filesystem or $ref dict)
     domains: dict[str, DomainConfig] = Field(default_factory=dict)
+
+    # Root composition list (domain filenames)
+    domain_refs: list[str] = Field(default_factory=list)
 
     @field_validator("domains", mode="before")
     @classmethod
@@ -1044,7 +1029,11 @@ class Config(BaseModel):
             if isinstance(item, dict):
                 # Map _source_file to filename
                 if "_source_file" in item and not item.get("filename"):
-                    item["filename"] = item["_source_file"]
+                    source_file = item["_source_file"]
+                    if source_file == "config.yaml" and "_source_path" in item:
+                        item["filename"] = Path(item["_source_path"]).parent.name
+                    else:
+                        item["filename"] = source_file
                 # Map _source_path to source_path
                 if "_source_path" in item and not item.get("source_path"):
                     item["source_path"] = item["_source_path"]
@@ -1191,13 +1180,25 @@ class Config(BaseModel):
         substituted = _substitute_env_vars(raw_content)
         # Parse YAML and resolve $ref references
         data = yaml.safe_load(substituted)
+
+        # domains: list = composition (DAG); filesystem = authority
+        domain_refs = data.pop("domains", []) or []
         data = _resolve_refs(data, config_dir)
 
-        # Backwards compat: map 'projects' key to 'domains'
-        if "projects" in data and "domains" not in data:
-            data["domains"] = data.pop("projects")
-        elif "projects" in data:
-            data.pop("projects")
+        # Discover domains from filesystem
+        domains_dict: dict[str, Any] = {}
+        domains_dir = config_dir / "domains"
+        if domains_dir.is_dir():
+            for entry in sorted(domains_dir.iterdir()):
+                if entry.is_dir() and (entry / "config.yaml").exists():
+                    cfg_path = entry / "config.yaml"
+                    cfg_raw = _substitute_env_vars(cfg_path.read_text())
+                    cfg_data = yaml.safe_load(cfg_raw) or {}
+                    cfg_data = _resolve_refs(cfg_data, entry)
+                    cfg_data["_source_file"] = "config.yaml"
+                    cfg_data["_source_path"] = str(cfg_path.resolve())
+                    domains_dict[entry.name] = cfg_data
+        data["domains"] = domains_dict
 
         # Load user config from file if provided
         user_data = None
@@ -1219,7 +1220,9 @@ class Config(BaseModel):
         # Store config directory for resolving relative paths
         data["config_dir"] = str(config_dir)
 
-        return cls.model_validate(data)
+        config = cls.model_validate(data)
+        config.domain_refs = domain_refs
+        return config
 
     @staticmethod
     def _merge_configs(engine: dict, user: dict) -> dict:

@@ -15,8 +15,7 @@ interface MainLayoutProps {
   isCreatingNewSession?: boolean
 }
 
-const MIN_PANEL_WIDTH = 200
-const MAX_PANEL_WIDTH = 800
+const MIN_PANEL_WIDTH = 150
 const DEFAULT_PANEL_WIDTH = 384 // w-96
 const PANEL_WIDTH_KEY = 'constat-panel-width'
 
@@ -26,7 +25,7 @@ function getSavedPanelWidth(): number {
     const saved = localStorage.getItem(PANEL_WIDTH_KEY)
     if (saved) {
       const width = parseInt(saved, 10)
-      if (!isNaN(width) && width >= MIN_PANEL_WIDTH && width <= MAX_PANEL_WIDTH) {
+      if (!isNaN(width) && width >= MIN_PANEL_WIDTH) {
         return width
       }
     }
@@ -61,8 +60,10 @@ export function MainLayout({
       if (!isResizing) return
 
       // Calculate new width (panel is on the right, so we measure from right edge)
+      // Clamp so neither panel goes below MIN_PANEL_WIDTH
       const newWidth = window.innerWidth - e.clientX
-      const clampedWidth = Math.min(Math.max(newWidth, MIN_PANEL_WIDTH), MAX_PANEL_WIDTH)
+      const maxWidth = window.innerWidth - MIN_PANEL_WIDTH
+      const clampedWidth = Math.min(Math.max(newWidth, MIN_PANEL_WIDTH), maxWidth)
       setPanelWidth(clampedWidth)
     },
     [isResizing]
@@ -105,61 +106,44 @@ export function MainLayout({
       {/* Main content area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Conversation Panel */}
-        {conversationPanelHidden ? (
-          <button
-            onClick={toggleConversationPanel}
-            className="flex items-center justify-center w-6 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-500 dark:text-gray-400"
-            title="Show conversation panel"
-          >
-            <span className="text-xs font-bold">&raquo;</span>
-          </button>
-        ) : (
-          <>
-            <main className="flex-1 flex flex-col overflow-hidden relative">
-              {conversationPanel}
-              <button
-                onClick={toggleConversationPanel}
-                className="absolute right-1 top-2 z-10 w-6 h-6 flex items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 text-xs font-bold shadow-sm transition-colors"
-                title="Hide conversation panel"
-              >
-                &laquo;
-              </button>
-            </main>
-          </>
+        {conversationPanelHidden ? null : (
+          <main className="flex-1 flex flex-col overflow-hidden relative">
+            {conversationPanel}
+          </main>
         )}
 
-        {artifactPanelHidden ? (
-          /* Show panel button when hidden */
+        {/* Vertical panel toggle strip */}
+        <div className="flex flex-col items-center justify-center gap-1 px-0.5 bg-gray-100 dark:bg-gray-800 border-x border-gray-200 dark:border-gray-700">
+          <button
+            onClick={toggleConversationPanel}
+            className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 text-xs font-bold transition-colors"
+            title={conversationPanelHidden ? 'Show conversation panel' : 'Hide conversation panel'}
+          >
+            {conversationPanelHidden ? <span>&raquo;</span> : <span>&laquo;</span>}
+          </button>
           <button
             onClick={toggleArtifactPanel}
-            className="flex items-center justify-center w-6 bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors text-gray-500 dark:text-gray-400"
-            title="Show artifact panel"
+            className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 text-xs font-bold transition-colors"
+            title={artifactPanelHidden ? 'Show artifact panel' : 'Hide artifact panel'}
           >
-            <span className="text-xs font-bold">&laquo;</span>
+            {artifactPanelHidden ? <span>&laquo;</span> : <span>&raquo;</span>}
           </button>
-        ) : (
+        </div>
+
+        {artifactPanelHidden ? null : (
           <>
-            {/* Resize Handle with hide button */}
-            <div className="relative flex flex-col items-center">
-              <button
-                onClick={toggleArtifactPanel}
-                className="absolute -left-3 top-2 z-10 w-6 h-6 flex items-center justify-center rounded-full bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 text-xs font-bold shadow-sm transition-colors"
-                title="Hide artifact panel"
-              >
-                &raquo;
-              </button>
-              <div
-                className={`w-1 h-full cursor-col-resize hover:bg-primary-400 transition-colors ${
-                  isResizing ? 'bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'
-                }`}
-                onMouseDown={handleMouseDown}
-              />
-            </div>
+            {/* Resize Handle */}
+            <div
+              className={`w-1 cursor-col-resize hover:bg-primary-400 transition-colors ${
+                isResizing ? 'bg-primary-500' : 'bg-gray-200 dark:bg-gray-700'
+              }`}
+              onMouseDown={handleMouseDown}
+            />
 
             {/* Artifact Panel */}
             <aside
-              className="border-l border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900"
-              style={{ width: panelWidth }}
+              className={`border-l border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900 ${conversationPanelHidden ? 'flex-1' : ''}`}
+              style={conversationPanelHidden ? undefined : { width: panelWidth }}
             >
               {artifactPanel}
             </aside>

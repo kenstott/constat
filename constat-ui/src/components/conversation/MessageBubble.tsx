@@ -20,6 +20,7 @@ import {
   BoltIcon,
   CheckIcon,
 } from '@heroicons/react/24/outline'
+import { FlagButton } from './FlagButton'
 
 // Animated dots component for loading states
 function AnimatedDots() {
@@ -94,6 +95,7 @@ interface MessageBubbleProps {
   stepAttempts?: number
   stepDisplayMode?: StepDisplayMode // External override for condense-all / expand-all
   stepDisplayModeVersion?: number // Increment to re-trigger override
+  queryText?: string // The user query that produced this answer (for flagging)
 }
 
 function formatMs(ms: number): string {
@@ -172,6 +174,7 @@ export function MessageBubble({
   stepAttempts,
   stepDisplayMode: externalStepMode,
   stepDisplayModeVersion: externalStepModeVersion,
+  queryText,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
   const Icon = styles.icon
@@ -258,23 +261,28 @@ export function MessageBubble({
             isUser ? 'rounded-tr-none' : 'rounded-tl-none'
           } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''}`}
         >
-          {/* Copy button for non-step messages - appears on hover, tucked into corner */}
+          {/* Copy + Flag buttons for non-step messages - appears on hover, tucked into corner */}
           {!isStep && (
-            <button
-              onClick={handleCopy}
-              className={`absolute top-[-2px] right-[-2px] p-1 rounded transition-all ${
-                copied
-                  ? 'text-green-500 dark:text-green-400'
-                  : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
-              }`}
-              title={copied ? 'Copied!' : 'Copy message'}
-            >
-              {copied ? (
-                <ClipboardDocumentCheckIcon className="w-4 h-4" />
-              ) : (
-                <ClipboardDocumentIcon className="w-4 h-4" />
+            <div className="absolute top-[-2px] right-[-2px] flex items-center gap-0.5">
+              {!isUser && queryText && (
+                <FlagButton queryText={queryText} answerSummary={content.slice(0, 200)} />
               )}
-            </button>
+              <button
+                onClick={handleCopy}
+                className={`p-1 rounded transition-all ${
+                  copied
+                    ? 'text-green-500 dark:text-green-400'
+                    : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
+                }`}
+                title={copied ? 'Copied!' : 'Copy message'}
+              >
+                {copied ? (
+                  <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                ) : (
+                  <ClipboardDocumentIcon className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           )}
           {stepNumber !== undefined && (
             <div className={`flex items-center gap-2 ${stepMode === 'oneline' ? '' : 'mb-1'}`}>
@@ -443,7 +451,7 @@ export function MessageBubble({
                   className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md transition-colors"
                 >
                   <EyeIcon className="w-4 h-4" />
-                  {content.toLowerCase().includes('proof') ? 'View Proof' : 'View Result'}
+                  {content.toLowerCase().includes('proof') ? 'View Reason-Chain' : 'View Result'}
                 </button>
               )}
               {isFinalInsight && stepDurationMs != null && stepDurationMs > 0 && (

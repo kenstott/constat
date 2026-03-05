@@ -56,6 +56,10 @@ class UserPermissions:
         databases: Optional[list[str]] = None,
         documents: Optional[list[str]] = None,
         apis: Optional[list[str]] = None,
+        skills: Optional[list[str]] = None,
+        agents: Optional[list[str]] = None,
+        rules: Optional[list[str]] = None,
+        facts: Optional[list[str]] = None,
     ):
         self.user_id = user_id
         self.email = email
@@ -64,6 +68,10 @@ class UserPermissions:
         self.databases = databases or []
         self.documents = documents or []
         self.apis = apis or []
+        self.skills = skills or []
+        self.agents = agents or []
+        self.rules = rules or []
+        self.facts = facts or []
 
     @property
     def is_admin(self) -> bool:
@@ -94,6 +102,30 @@ class UserPermissions:
             return True
         return api_name in self.apis
 
+    def can_access_skill(self, name: str) -> bool:
+        """Check if user can access a specific skill."""
+        if self.is_admin:
+            return True
+        return name in self.skills
+
+    def can_access_agent(self, name: str) -> bool:
+        """Check if user can access a specific agent."""
+        if self.is_admin:
+            return True
+        return name in self.agents
+
+    def can_access_rule(self, rule_id: str) -> bool:
+        """Check if user can access a specific rule."""
+        if self.is_admin:
+            return True
+        return rule_id in self.rules
+
+    def can_access_fact(self, name: str) -> bool:
+        """Check if user can access a specific fact."""
+        if self.is_admin:
+            return True
+        return name in self.facts
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API response."""
         return {
@@ -105,6 +137,10 @@ class UserPermissions:
             "databases": self.databases,
             "documents": self.documents,
             "apis": self.apis,
+            "skills": self.skills,
+            "agents": self.agents,
+            "rules": self.rules,
+            "facts": self.facts,
         }
 
     @classmethod
@@ -123,6 +159,10 @@ class UserPermissions:
             databases=config_perms.databases,
             documents=config_perms.documents,
             apis=config_perms.apis,
+            skills=config_perms.skills,
+            agents=config_perms.agents,
+            rules=config_perms.rules,
+            facts=config_perms.facts,
         )
 
 
@@ -164,6 +204,10 @@ def list_all_permissions(server_config: ServerConfig) -> list[dict[str, Any]]:
             "databases": perms.databases,
             "documents": perms.documents,
             "apis": perms.apis,
+            "skills": perms.skills,
+            "agents": perms.agents,
+            "rules": perms.rules,
+            "facts": perms.facts,
         })
     return result
 
@@ -203,6 +247,10 @@ def compute_effective_permissions(
             "allowed_databases": None,
             "allowed_apis": None,
             "allowed_documents": None,
+            "allowed_skills": None,
+            "allowed_agents": None,
+            "allowed_rules": None,
+            "allowed_facts": None,
         }
 
     # Admins see everything
@@ -211,12 +259,20 @@ def compute_effective_permissions(
             "allowed_databases": None,
             "allowed_apis": None,
             "allowed_documents": None,
+            "allowed_skills": None,
+            "allowed_agents": None,
+            "allowed_rules": None,
+            "allowed_facts": None,
         }
 
     # Start with user's global permissions
     allowed_databases = set(user_perms.databases)
     allowed_apis = set(user_perms.apis)
     allowed_documents = set(user_perms.documents)
+    allowed_skills = set(user_perms.skills)
+    allowed_agents = set(user_perms.agents)
+    allowed_rules = set(user_perms.rules)
+    allowed_facts = set(user_perms.facts)
 
     # Process active domains
     active_domains = active_domains or []
@@ -240,12 +296,20 @@ def compute_effective_permissions(
             domain_allowed_dbs = set(domain_perms.databases)
             domain_allowed_apis = set(domain_perms.apis)
             domain_allowed_docs = set(domain_perms.documents)
+            domain_allowed_skills = set(domain_perms.skills)
+            domain_allowed_agents = set(domain_perms.agents)
+            domain_allowed_rules = set(domain_perms.rules)
+            domain_allowed_facts = set(domain_perms.facts)
 
             # User gets domain resources that are in BOTH their global permissions
             # and the domain's allowed list (least privilege)
             allowed_databases.update(domain_databases & domain_allowed_dbs)
             allowed_apis.update(domain_apis & domain_allowed_apis)
             allowed_documents.update(domain_documents & domain_allowed_docs)
+            allowed_skills.update(domain_allowed_skills)
+            allowed_agents.update(domain_allowed_agents)
+            allowed_rules.update(domain_allowed_rules)
+            allowed_facts.update(domain_allowed_facts)
         else:
             # No domain permissions — all domain resources available
             # but still intersected with user's global permissions implicitly
@@ -258,4 +322,8 @@ def compute_effective_permissions(
         "allowed_databases": allowed_databases,
         "allowed_apis": allowed_apis,
         "allowed_documents": allowed_documents,
+        "allowed_skills": allowed_skills,
+        "allowed_agents": allowed_agents,
+        "allowed_rules": allowed_rules,
+        "allowed_facts": allowed_facts,
     }

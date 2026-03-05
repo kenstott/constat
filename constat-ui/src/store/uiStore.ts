@@ -191,8 +191,16 @@ export const useUIStore = create<UIState>()(
 
       toggleMenu: () => set((state) => ({ menuOpen: !state.menuOpen })),
       setMenuOpen: (open) => set({ menuOpen: open }),
-      toggleConversationPanel: () => set((state) => ({ conversationPanelHidden: !state.conversationPanelHidden })),
-      toggleArtifactPanel: () => set((state) => ({ artifactPanelHidden: !state.artifactPanelHidden })),
+      toggleConversationPanel: () => set((state) => ({
+        conversationPanelHidden: !state.conversationPanelHidden,
+        // Only one panel can be hidden at a time
+        artifactPanelHidden: !state.conversationPanelHidden ? false : state.artifactPanelHidden,
+      })),
+      toggleArtifactPanel: () => set((state) => ({
+        artifactPanelHidden: !state.artifactPanelHidden,
+        // Only one panel can be hidden at a time
+        conversationPanelHidden: !state.artifactPanelHidden ? false : state.conversationPanelHidden,
+      })),
       setArtifactPanelWidth: (width) => set({ artifactPanelWidth: width }),
 
       toggleArtifactSection: (section) =>

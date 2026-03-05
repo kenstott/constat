@@ -1440,6 +1440,7 @@ class SchemaManager:
             # Add table name (without database prefix for matching)
             # Keep raw name so EntityExtractor can generate all pattern variants
             entities.add(table_meta.name)
+            entities.add(table_meta.database)
 
             # Include column names if:
             # 1. include_columns is True (for all databases), OR

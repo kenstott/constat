@@ -39,7 +39,13 @@ import {
 } from '@/api/sessions'
 import type { DomainTreeNode } from '@/api/sessions'
 import { forceSimulation, forceLink, forceManyBody, forceCollide, forceX, forceY } from 'd3-force'
-import type { GlossaryTerm, GlossaryEditorialStatus } from '@/types/api'
+import type { GlossaryTerm, GlossaryEditorialStatus, GlossarySuggestion } from '@/types/api'
+import { useAuthStore } from '@/store/authStore'
+import {
+  getGlossarySuggestions,
+  approveGlossarySuggestion,
+  rejectGlossarySuggestion,
+} from '@/api/feedback'
 
 interface GlossaryPanelProps {
   sessionId: string
@@ -214,6 +220,11 @@ function RelationshipRow({
   onUpdated: (id: string, verb: string) => void
   onApproved: (id: string) => void
 }) {
+  const { terms } = useGlossaryStore()
+  const displayFor = (name: string) => {
+    const t = terms.find(t => t.name.toLowerCase() === name.toLowerCase())
+    return t?.display_name || name
+  }
   const [editing, setEditing] = useState(false)
   const [editVerb, setEditVerb] = useState(rel.verb)
   const [hover, setHover] = useState(false)
@@ -244,7 +255,7 @@ function RelationshipRow({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <TermLink name={rel.subject} displayName={rel.subject} />
+      <TermLink name={rel.subject} displayName={displayFor(rel.subject)} />
       {editing ? (
         <input
           value={editVerb}
@@ -265,7 +276,7 @@ function RelationshipRow({
           {rel.verb}
         </button>
       )}
-      <TermLink name={rel.object} displayName={rel.object} />
+      <TermLink name={rel.object} displayName={displayFor(rel.object)} />
       {rel.user_edited ? (
         <CheckIcon className="ml-1 w-3 h-3 text-green-500 flex-shrink-0" title="Approved — preserved during regeneration" />
       ) : hover && !editing ? (
@@ -331,7 +342,7 @@ function EntityAutocomplete({
           {matches.map((t) => (
             <button
               key={t.name}
-              onMouseDown={(e) => { e.preventDefault(); onChange(t.name); setFocused(false) }}
+              onMouseDown={(e) => { e.preventDefault(); onChange(t.display_name); setFocused(false) }}
               className="w-full text-left text-xs px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 truncate"
             >
               {t.display_name}
@@ -412,29 +423,40 @@ function VerbAutocomplete({
 function AddRelationshipRow({
   sessionId,
   termName,
+  displayName,
   onCreated,
 }: {
   sessionId: string
   termName: string
+  displayName: string
   onCreated: (rel: { id: string; subject: string; verb: string; object: string; confidence: number }) => void
 }) {
   const [open, setOpen] = useState(false)
   const [verb, setVerb] = useState('')
   const [object, setObject] = useState('')
 
+  const [error, setError] = useState<string | null>(null)
+
   const handleSubmit = async () => {
     if (!verb.trim() || !object.trim()) return
-    const result = await createRelationship(sessionId, termName, verb.trim(), object.trim())
-    onCreated({
-      id: result.id,
-      subject: termName,
-      verb: verb.trim(),
-      object: object.trim(),
-      confidence: 1.0,
-    })
-    setVerb('')
-    setObject('')
-    setOpen(false)
+    setError(null)
+    try {
+      const result = await createRelationship(sessionId, termName, verb.trim(), object.trim())
+      onCreated({
+        id: result.id,
+        subject: termName,
+        verb: verb.trim(),
+        object: object.trim(),
+        confidence: 1.0,
+      })
+      setVerb('')
+      setObject('')
+      setOpen(false)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[AddRelationshipRow] failed:', { sessionId, termName, verb, object: object, error: e })
+      setError(msg)
+    }
   }
 
   if (!open) {
@@ -452,7 +474,7 @@ function AddRelationshipRow({
   return (
     <div className="ml-2 mt-1 space-y-1">
       <div className="flex gap-1 items-center">
-        <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-[6rem]">{termName}</span>
+        <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-[6rem]">{displayName}</span>
         <VerbAutocomplete
           value={verb}
           onChange={setVerb}
@@ -479,6 +501,7 @@ function AddRelationshipRow({
           <XMarkIcon className="w-3 h-3" />
         </button>
       </div>
+      {error && <div className="text-xs text-red-500 ml-2">{error}</div>}
     </div>
   )
 }
@@ -594,9 +617,11 @@ function TagEditor({
 function ConnectedResources({
   sessionId,
   termName,
+  displayName,
 }: {
   sessionId: string
   termName: string
+  displayName: string
 }) {
   const refreshKey = useGlossaryStore((s) => s.refreshKey)
   const updateTerm = useGlossaryStore((s) => s.updateTerm)
@@ -604,7 +629,7 @@ function ConnectedResources({
     resources: Array<{
       entity_name: string
       entity_type: string
-      sources: Array<{ document_name: string; source: string; section?: string }>
+      sources: Array<{ document_name: string; source: string; section?: string; url?: string }>
     }>
     parent: { name: string; display_name: string } | null
     parent_verb: string
@@ -714,6 +739,7 @@ function ConnectedResources({
       <AddRelationshipRow
         sessionId={sessionId}
         termName={termName}
+        displayName={displayName}
         onCreated={(rel) => setDetail(prev => ({
           ...prev,
           relationships: [...prev.relationships, rel],
@@ -1145,15 +1171,15 @@ function GlossaryItem({
       {isOpen && (
         <div className="pb-2 space-y-1.5" style={{ paddingLeft: `${depth * 16 + 24}px` }}>
           {/* Definition */}
-          {isDefined && term.definition && !isEditing && (
+          {isDefined && !isEditing && (
             <p
-              className="text-xs text-gray-600 dark:text-gray-400 italic cursor-pointer hover:text-gray-800 dark:hover:text-gray-200"
+              className={`text-xs italic cursor-pointer hover:text-gray-800 dark:hover:text-gray-200 ${term.definition ? 'text-gray-600 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500'}`}
               onClick={() => {
                 setEditDef(term.definition || '')
                 setIsEditing(true)
               }}
             >
-              &ldquo;{term.definition}&rdquo;
+              {term.definition ? <>&ldquo;{term.definition}&rdquo;</> : 'Click to add definition…'}
             </p>
           )}
 
@@ -1215,7 +1241,7 @@ function GlossaryItem({
           )}
 
           {/* Connected resources */}
-          <ConnectedResources sessionId={sessionId} termName={term.name} />
+          <ConnectedResources sessionId={sessionId} termName={term.name} displayName={term.display_name} />
 
           {/* Actions for defined terms */}
           {isDefined && (
@@ -1551,7 +1577,7 @@ function DomainPromotePicker({
       const flat = (activeDomains.length > 0
         ? allDomains.filter(d => activeDomains.includes(d.filename))
         : allDomains
-      ).map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], children: [] }))
+      ).map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '' }))
       setTreeNodes(flat)
     }
     setLoading(false)
@@ -3064,7 +3090,7 @@ function SourceMovePicker({
       setTreeNodes(tree)
     } catch {
       const { domains: allDomains } = await listDomains()
-      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], children: [] })))
+      setTreeNodes(allDomains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '' })))
     }
     setLoading(false)
   }
@@ -3290,6 +3316,100 @@ function DomainFilterTree({
   )
 }
 
+// Glossary suggestions review section — shown to users with glossary write permission
+function GlossarySuggestionsSection({ sessionId }: { sessionId: string }) {
+  const canWrite = useAuthStore((s) => s.canWrite)
+  const [suggestions, setSuggestions] = useState<GlossarySuggestion[]>([])
+  const [expanded, setExpanded] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  // Only show for users who can write glossary
+  if (!canWrite('glossary')) return null
+
+  const fetchSuggestions = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await getGlossarySuggestions(sessionId)
+      setSuggestions(data)
+    } catch {
+      // Ignore errors (session may not exist yet)
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    fetchSuggestions()
+  }, [fetchSuggestions])
+
+  if (suggestions.length === 0 && !loading) return null
+
+  const handleApprove = async (learningId: string) => {
+    await approveGlossarySuggestion(sessionId, learningId)
+    setSuggestions((prev) => prev.filter((s) => s.learning_id !== learningId))
+  }
+
+  const handleReject = async (learningId: string) => {
+    await rejectGlossarySuggestion(sessionId, learningId)
+    setSuggestions((prev) => prev.filter((s) => s.learning_id !== learningId))
+  }
+
+  return (
+    <div className="border-t border-gray-200 dark:border-gray-700 pt-2 mt-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 w-full"
+      >
+        <ChevronRightIcon
+          className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+        />
+        Pending Suggestions
+        {suggestions.length > 0 && (
+          <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
+            {suggestions.length}
+          </span>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="mt-1 space-y-2">
+          {loading && <p className="text-xs text-gray-400">Loading...</p>}
+          {suggestions.map((s) => (
+            <div
+              key={s.learning_id}
+              className="bg-gray-50 dark:bg-gray-800 rounded p-2 text-xs space-y-1"
+            >
+              <div className="font-medium text-gray-700 dark:text-gray-300">
+                {s.term}
+              </div>
+              <div className="text-gray-500 dark:text-gray-400 italic">
+                {s.suggested_definition}
+              </div>
+              <div className="text-gray-400 dark:text-gray-500">
+                {s.message}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => handleApprove(s.learning_id)}
+                  className="px-2 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400 dark:hover:bg-green-900/50"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => handleReject(s.learning_id)}
+                  className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
   const {
     terms,
@@ -3330,7 +3450,7 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
     getDomainTree()
       .then(setDomainTree)
       .catch(() => listDomains().then(r => setDomainTree(
-        r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], children: [] }))
+        r.domains.map(d => ({ ...d, path: '', databases: [], apis: [], documents: [], skills: [], agents: [], rules: [], facts: [], system_prompt: '', domains: [], children: [], steward: '' }))
       )).catch(() => {}))
   }, [])
 
@@ -3562,6 +3682,9 @@ export default function GlossaryPanel({ sessionId }: GlossaryPanelProps) {
           ))}
         </div>
       )}
+
+      {/* Glossary suggestions from user feedback */}
+      <GlossarySuggestionsSection sessionId={sessionId} />
 
       {/* Taxonomy confirmation dialog */}
       {showDeleteDrafts && (

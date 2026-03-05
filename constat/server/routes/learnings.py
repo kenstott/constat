@@ -63,7 +63,7 @@ def _can_modify_domain(domain, user_id: str, server_config: ServerConfig) -> boo
         return True
     if domain.tier == "system":
         return False
-    if domain.owner and domain.owner != user_id:
+    if domain.owner and domain.owner != user_id and domain.steward != user_id:
         return False
     return True
 
@@ -71,6 +71,52 @@ def _can_modify_domain(domain, user_id: str, server_config: ServerConfig) -> boo
 def get_session_manager(request: Request) -> SessionManager:
     """Dependency to get session manager from app state."""
     return request.app.state.session_manager
+
+
+def _check_domain_cycles(graph: dict[str, list[str]]) -> list[str]:
+    """Check for cycles in a domain composition graph.
+
+    Args:
+        graph: dict mapping domain filename -> list of child domain filenames
+
+    Returns:
+        List of cycle descriptions (empty if no cycles).
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {name: WHITE for name in graph}
+    cycles: list[str] = []
+
+    def dfs(name: str, path: list[str]) -> None:
+        color[name] = GRAY
+        for child in graph.get(name, []):
+            if child not in color:
+                continue
+            if color[child] == GRAY:
+                cycles.append(" -> ".join(path + [child]))
+            elif color[child] == WHITE:
+                dfs(child, path + [child])
+        color[name] = BLACK
+
+    for name in graph:
+        if color[name] == WHITE:
+            dfs(name, [name])
+    return cycles
+
+
+def _domain_data_dirs(domain_cfg, user_id: str) -> list[Path]:
+    """Directories containing resources for a single domain (no recursion).
+
+    Returns only this domain's own directory and user overlay — no sub-domain walking.
+    """
+    dirs: list[Path] = []
+    if domain_cfg.source_path:
+        d = Path(domain_cfg.source_path).parent
+        if d.is_dir():
+            dirs.append(d)
+    user_domain_dir = Path(".constat") / user_id / "domains" / domain_cfg.filename
+    if user_domain_dir.is_dir():
+        dirs.append(user_domain_dir)
+    return dirs
 
 
 # In-memory learnings store (would use LearningStore in production)
@@ -102,6 +148,24 @@ async def list_learnings(
         cat_enum = LearningCategory(category) if category else None
         learnings_data = store.list_raw_learnings(category=cat_enum, limit=100)
         rules_data = store.list_rules(category=cat_enum, limit=50)
+
+        # Also collect rules from domain-scoped learnings.yaml files
+        import yaml as _yaml
+        seen_rule_ids = {r["id"] for r in rules_data}
+        for _key, domain_cfg in (_config.domains or {}).items():
+            if domain_cfg.source_path:
+                for d in _domain_data_dirs(domain_cfg, user_id):
+                    lf = d / "learnings.yaml"
+                    if lf.is_file():
+                        try:
+                            ldata = _yaml.safe_load(lf.read_text()) or {}
+                            for rid, rdata in (ldata.get("rules") or {}).items():
+                                if rid not in seen_rule_ids:
+                                    seen_rule_ids.add(rid)
+                                    rules_data.append({"id": rid, **rdata})
+                        except Exception:
+                            pass
+
         logger.info(f"[LEARNINGS] Loaded {len(learnings_data)} learnings, {len(rules_data)} rules")
 
         return LearningListResponse(
@@ -125,6 +189,7 @@ async def list_learnings(
                     confidence=r.get("confidence", 0.0),
                     source_count=len(r.get("source_learnings", [])),
                     tags=r.get("tags", []),
+                    domain=r.get("domain", ""),
                 )
                 for r in rules_data
             ],
@@ -421,37 +486,86 @@ async def get_domain_tree(
     user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> list[DomainTreeNode]:
-    """Get nested domain hierarchy tree."""
+    """Get nested domain hierarchy tree.
+
+    Uses flat discovery + DAG assembly from config `domains:` lists.
+    Filesystem nesting is for organizational ownership only — composition
+    is defined by the `domains:` field in each domain's config.yaml.
+    """
     from constat.core.config import DomainConfig
 
     def _build_node(domain_cfg: DomainConfig, tier: str = "system") -> DomainTreeNode:
-        # Scan for domain-scoped skills (skills/ subdirectory)
+        import yaml as _yaml
+
         skill_names: list[str] = []
         agent_names: list[str] = []
         rule_ids: list[str] = []
-        if domain_cfg.source_path:
-            domain_dir = Path(domain_cfg.source_path).parent
-            skills_dir = domain_dir / "skills"
+        fact_names: list[str] = []
+        seen_skills: set[str] = set()
+        seen_agents: set[str] = set()
+        seen_rules: set[str] = set()
+        seen_facts: set[str] = set()
+
+        for d in _domain_data_dirs(domain_cfg, user_id):
+            skills_dir = d / "skills"
             if skills_dir.is_dir():
                 for sd in skills_dir.iterdir():
-                    if sd.is_dir() and (sd / "SKILL.md").exists():
+                    if sd.is_dir() and (sd / "SKILL.md").exists() and sd.name not in seen_skills:
+                        seen_skills.add(sd.name)
                         skill_names.append(sd.name)
-            agents_file = domain_dir / "agents.yaml"
+
+            agents_file = d / "agents.yaml"
             if agents_file.is_file():
                 try:
-                    import yaml as _yaml
                     agent_data = _yaml.safe_load(agents_file.read_text()) or {}
-                    agent_names = list(agent_data.keys())
+                    for name in agent_data:
+                        if name not in seen_agents:
+                            seen_agents.add(name)
+                            agent_names.append(name)
                 except Exception:
                     pass
 
-        # Load domain-scoped rules
+            learnings_file = d / "learnings.yaml"
+            if learnings_file.is_file():
+                try:
+                    ldata = _yaml.safe_load(learnings_file.read_text()) or {}
+                    for rid in (ldata.get("rules") or {}):
+                        if rid not in seen_rules:
+                            seen_rules.add(rid)
+                            rule_ids.append(rid)
+                except Exception:
+                    pass
+
+            facts_file = d / "facts.yaml"
+            if facts_file.is_file():
+                try:
+                    fdata = _yaml.safe_load(facts_file.read_text()) or {}
+                    for fname in (fdata.get("facts") or {}):
+                        if fname not in seen_facts:
+                            seen_facts.add(fname)
+                            fact_names.append(fname)
+                except Exception:
+                    pass
+
+        # Also check user LearningStore for rules tagged with this domain
         try:
             from constat.storage.learnings import LearningStore
             store = LearningStore(user_id=user_id)
-            domain_key = domain_cfg.filename
-            rules = store.list_rules(domain=domain_key)
-            rule_ids = [r["id"] for r in rules]
+            for r in store.list_rules(domain=domain_cfg.filename):
+                if r["id"] not in seen_rules:
+                    seen_rules.add(r["id"])
+                    rule_ids.append(r["id"])
+        except Exception:
+            pass
+
+        # Also check user FactStore for facts tagged with this domain
+        try:
+            from constat.storage.facts import FactStore
+            fact_store = FactStore(user_id=user_id)
+            for fname, fdata in fact_store.list_all_facts().items():
+                if fdata.get("domain") == domain_cfg.filename and fname not in seen_facts:
+                    seen_facts.add(fname)
+                    fact_names.append(fname)
         except Exception:
             pass
 
@@ -470,78 +584,143 @@ async def get_domain_tree(
             skills=skill_names,
             agents=agent_names,
             rules=rule_ids,
+            facts=fact_names,
+            system_prompt=domain_cfg.system_prompt or "",
+            domains=domain_cfg.domains or [],
         )
 
-    def _scan_dir(dir_path: Path, parent_path: str = "", tier: str = "system") -> list[DomainTreeNode]:
-        nodes: list[DomainTreeNode] = []
+    # --- Phase 1: Flat discovery ---
+    # Discover all domains from all tiers without building hierarchy.
+    # all_configs/all_nodes keyed by canonical FQ name (e.g. "executive/sales-analytics").
+    all_configs: dict[str, tuple[DomainConfig, str]] = {}
+    all_nodes: dict[str, DomainTreeNode] = {}
+
+    def _register(canonical: str, cfg: DomainConfig, tier: str) -> None:
+        if canonical in all_configs:
+            return
+        cfg.filename = canonical
+        all_configs[canonical] = (cfg, tier)
+        node = _build_node(cfg, tier=tier)
+        node.filename = canonical
+        all_nodes[canonical] = node
+
+    def _flat_scan(dir_path: Path, prefix: str = "", tier: str = "system") -> None:
+        """Recursively discover domain directories, registering each one flat."""
         if not dir_path.is_dir():
-            return nodes
+            return
         for entry in sorted(dir_path.iterdir()):
+            # Auto-migrate flat-file domains to directory-based
+            if entry.is_file() and entry.suffix in (".yaml", ".yml"):
+                target_dir = entry.with_suffix("")
+                if not target_dir.is_dir():
+                    import shutil
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(entry), str(target_dir / "config.yaml"))
+                    logger.info(f"Migrated flat domain {entry.name} -> {target_dir.name}/config.yaml")
+
             if entry.is_dir() and (entry / "config.yaml").exists():
-                domain_cfg = DomainConfig.from_directory(entry, parent_path=parent_path)
-                node = _build_node(domain_cfg, tier=tier)
+                domain_cfg = DomainConfig.from_directory(entry)
+                canonical = f"{prefix}/{entry.name}" if prefix else entry.name
+                _register(canonical, domain_cfg, tier)
+                # Recurse into nested domains/ for discovery only
                 sub_dir = entry / "domains"
                 if sub_dir.is_dir():
-                    node.children = _scan_dir(sub_dir, parent_path=domain_cfg.path, tier=tier)
-                nodes.append(node)
-            elif entry.is_file() and entry.suffix in (".yaml", ".yml"):
-                try:
-                    domain_cfg = DomainConfig.from_yaml(entry)
-                    domain_cfg.path = f"{parent_path}.{entry.stem}" if parent_path else entry.stem
-                    nodes.append(_build_node(domain_cfg, tier=tier))
-                except Exception:
-                    pass
-        return nodes
+                    _flat_scan(sub_dir, prefix=canonical, tier=tier)
 
-    # Build tree from config directory's domains/ folder
-    result: list[DomainTreeNode] = []
+    # Scan system domains
     if config.config_dir:
         domains_dir = Path(config.config_dir) / "domains"
-        result.extend(_scan_dir(domains_dir))
+        _flat_scan(domains_dir)
 
-    # Normalize filenames to match config.domains keys (the canonical identifiers
-    # used by active_domains, preferences, entity domain_ids, etc.)
-    # _scan_dir uses the YAML filename (e.g. "sales-analytics.yaml") but
-    # config.domains keys omit the suffix (e.g. "sales-analytics").
-    if result and config.domains:
+    # Normalize filenames to match config.domains keys
+    if all_nodes and config.domains:
         config_keys = set(config.domains.keys())
-        def _normalize_filename(node: DomainTreeNode) -> None:
-            stem = node.filename.removesuffix(".yaml").removesuffix(".yml")
-            if stem in config_keys and node.filename not in config_keys:
-                node.filename = stem
-            for child in node.children:
-                _normalize_filename(child)
-        for node in result:
-            _normalize_filename(node)
+        renames: list[tuple[str, str]] = []
+        for fname in list(all_nodes.keys()):
+            stem = fname.removesuffix(".yaml").removesuffix(".yml")
+            if stem in config_keys and fname not in config_keys:
+                renames.append((fname, stem))
+        for old, new in renames:
+            all_nodes[new] = all_nodes.pop(old)
+            all_nodes[new].filename = new
+            cfg, tier = all_configs.pop(old)
+            cfg.filename = new
+            all_configs[new] = (cfg, tier)
 
-    # If no directory-based domains found, build flat tree from config.domains
-    if not result and config.domains:
+    # Fallback: config.domains dict
+    if not all_nodes and config.domains:
         for key, domain_cfg in sorted(config.domains.items()):
-            node = _build_node(domain_cfg)
-            # Use the config dict key as filename — this is what domain_id
-            # stores in entities/embeddings and what active_domains contains
-            node.filename = key
-            result.append(node)
+            _register(key, domain_cfg, "system")
 
     # Scan shared domains
     shared_domains_dir = Path(".constat") / "shared" / "domains"
-    if shared_domains_dir.is_dir():
-        existing_filenames = {n.filename for n in result}
-        for node in _scan_dir(shared_domains_dir, tier="shared"):
-            if node.filename not in existing_filenames:
-                result.append(node)
+    _flat_scan(shared_domains_dir, tier="shared")
 
     # Scan user domains
     user_domains_dir = Path(".constat") / user_id / "domains"
-    if user_domains_dir.is_dir():
-        existing_filenames = {n.filename for n in result}
-        for node in _scan_dir(user_domains_dir, tier="user"):
-            if node.filename not in existing_filenames:
-                result.append(node)
+    _flat_scan(user_domains_dir, tier="user")
 
-    # Collect user-level (unscoped) skills and agents for the System root node
+    def _resolve_ref(ref: str, parent_key: str = "") -> str | None:
+        """Resolve a domain reference to its canonical key.
+
+        Tries exact/FQ match first, then relative to parent (parent_key/ref).
+        """
+        if ref in all_configs:
+            return ref
+        if parent_key:
+            relative = f"{parent_key}/{ref}"
+            if relative in all_configs:
+                return relative
+        return None
+
+    # --- Phase 2: Cycle detection (3-color DFS) ---
+    WHITE, GRAY, BLACK = 0, 1, 2
+    _color = {name: WHITE for name in all_configs}
+    bad_edges: set[tuple[str, str]] = set()
+
+    def _dfs(name: str, path: list[str]) -> None:
+        _color[name] = GRAY
+        cfg, _ = all_configs[name]
+        for child_ref in (cfg.domains or []):
+            child = _resolve_ref(child_ref, parent_key=name)
+            if child is None or child not in _color:
+                continue
+            if _color[child] == GRAY:
+                bad_edges.add((name, child))
+                logger.error(f"Domain cycle: {' -> '.join(path + [child])}")
+            elif _color[child] == WHITE:
+                _dfs(child, path + [child])
+        _color[name] = BLACK
+
+    for _name in all_configs:
+        if _color[_name] == WHITE:
+            _dfs(_name, [_name])
+
+    # --- Phase 3: DAG assembly ---
+    referenced: set[str] = set()
+    for fname, (cfg, _) in all_configs.items():
+        for child_ref in (cfg.domains or []):
+            child_name = _resolve_ref(child_ref, parent_key=fname)
+            if child_name and child_name in all_nodes and (fname, child_name) not in bad_edges:
+                referenced.add(child_name)
+
+    # Attach children
+    for fname, (cfg, _) in all_configs.items():
+        node = all_nodes[fname]
+        for child_ref in (cfg.domains or []):
+            child_name = _resolve_ref(child_ref, parent_key=fname)
+            if child_name and child_name in all_nodes and (fname, child_name) not in bad_edges:
+                node.children.append(all_nodes[child_name])
+
+    # Top-level = unreferenced domains
+    top_level = [all_nodes[fname] for fname in all_nodes if fname not in referenced]
+
+    # --- Phase 4: Root wrapper ---
+    # Collect user-level (unscoped) skills, agents, rules, facts for User node
     user_skill_names: list[str] = []
     user_agent_names: list[str] = []
+    user_rule_ids: list[str] = []
+    user_fact_names: list[str] = []
     user_skills_dir = Path(".constat") / user_id / "skills"
     if user_skills_dir.is_dir():
         for sd in user_skills_dir.iterdir():
@@ -555,24 +734,57 @@ async def get_domain_tree(
             user_agent_names = list(agent_data.keys())
         except Exception:
             pass
+    # Collect unscoped user rules
+    try:
+        from constat.storage.learnings import LearningStore
+        user_store = LearningStore(user_id=user_id)
+        for r in user_store.list_rules(domain=""):
+            user_rule_ids.append(r["id"])
+    except Exception:
+        pass
+    # Collect unscoped user facts
+    try:
+        from constat.storage.facts import FactStore
+        user_fact_store = FactStore(user_id=user_id)
+        for fname, fdata in user_fact_store.list_all_facts().items():
+            if not fdata.get("domain"):
+                user_fact_names.append(fname)
+    except Exception:
+        pass
 
-    # Wrap all domains under a System root node — domains are children of system
-    if result:
-        system_node = DomainTreeNode(
-            filename="system",
-            name="System",
-            path="system",
-            description="Root configuration",
-            databases=list(config.databases.keys()),
-            apis=list(config.apis.keys()),
-            documents=[],
-            children=result,
-            skills=user_skill_names,
-            agents=user_agent_names,
-        )
-        return [system_node]
+    # Build User child node
+    user_node = DomainTreeNode(
+        filename="user",
+        name="User",
+        path="user",
+        description="",
+        tier="user",
+        owner=user_id,
+        skills=user_skill_names,
+        agents=user_agent_names,
+        rules=user_rule_ids,
+        facts=user_fact_names,
+    )
 
-    return result
+    # Attach user-tier domains as children of User node
+    user_tier_domains = [all_nodes[f] for f in all_nodes
+                         if all_configs[f][1] == "user" and f not in referenced]
+    system_top_level = [n for n in top_level if n not in user_tier_domains]
+    user_node.children = user_tier_domains
+
+    # Root and User as siblings
+    root_node = DomainTreeNode(
+        filename="root",
+        name="System",
+        path="root",
+        description="System configuration",
+        databases=list(config.databases.keys()),
+        apis=list(config.apis.keys()),
+        documents=[],
+        domains=config.domain_refs or [],
+        children=system_top_level,
+    )
+    return [root_node, user_node]
 
 
 @router.get("/domains", response_model=DomainListResponse)
@@ -678,26 +890,31 @@ async def create_domain(
         raise HTTPException(status_code=400, detail="Name is required")
 
     description = body.get("description", "").strip()
+    system_prompt = body.get("system_prompt", "").strip()
+    parent_domain = body.get("parent_domain", "").strip()
+    initial_domains: list[str] = body.get("initial_domains", [])
 
     # Slugify name to filename
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     if not slug:
         raise HTTPException(status_code=400, detail="Invalid name")
-    filename = f"{slug}.yaml"
+    filename = slug
 
     # Check for conflicts with system domains
     if filename in config.domains:
         raise HTTPException(status_code=409, detail=f"Domain '{filename}' already exists")
 
-    # Write domain file
+    # Write domain directory (slug/config.yaml)
     user_domains_dir = Path(".constat") / user_id / "domains"
-    user_domains_dir.mkdir(parents=True, exist_ok=True)
-    domain_path = user_domains_dir / filename
+    domain_dir = user_domains_dir / slug
+    domain_path = domain_dir / "config.yaml"
 
-    if domain_path.exists():
+    if domain_dir.exists():
         raise HTTPException(status_code=409, detail=f"Domain '{filename}' already exists")
 
-    content = {
+    domain_dir.mkdir(parents=True, exist_ok=True)
+
+    content: dict[str, Any] = {
         "name": name,
         "description": description,
         "owner": user_id,
@@ -705,6 +922,10 @@ async def create_domain(
         "apis": {},
         "documents": {},
     }
+    if system_prompt:
+        content["system_prompt"] = system_prompt
+    if initial_domains:
+        content["domains"] = initial_domains
     domain_path.write_text(yaml.dump(content, default_flow_style=False, sort_keys=False))
 
     # Register in config.domains
@@ -712,6 +933,39 @@ async def create_domain(
     content["filename"] = filename
     content["source_path"] = str(domain_path.resolve())
     config.domains[filename] = DomainConfig(**content)
+
+    # If parent_domain specified, add this domain to parent's domains list
+    if parent_domain and parent_domain != "user":
+        if parent_domain == "root":
+            # Add to main config.yaml domains list
+            if config.config_dir:
+                root_config_path = Path(config.config_dir) / "config.yaml"
+                if root_config_path.is_file():
+                    root_data = yaml.safe_load(root_config_path.read_text()) or {}
+                    root_domains = root_data.get("domains", [])
+                    if not isinstance(root_domains, list):
+                        root_domains = list(root_domains.keys())
+                    if filename not in root_domains:
+                        root_domains.append(filename)
+                        root_data["domains"] = root_domains
+                        root_config_path.write_text(
+                            yaml.dump(root_data, default_flow_style=False, sort_keys=False)
+                        )
+                        config.domain_refs = root_domains
+        else:
+            parent_cfg = config.domains.get(parent_domain)
+            if parent_cfg and parent_cfg.source_path:
+                parent_config_path = Path(parent_cfg.source_path)
+                if parent_config_path.is_file():
+                    parent_data = yaml.safe_load(parent_config_path.read_text()) or {}
+                    domains_list = parent_data.get("domains", [])
+                    if filename not in domains_list:
+                        domains_list.append(filename)
+                        parent_data["domains"] = domains_list
+                        parent_config_path.write_text(
+                            yaml.dump(parent_data, default_flow_style=False, sort_keys=False)
+                        )
+                        parent_cfg.domains = domains_list
 
     return {
         "status": "created",
@@ -828,11 +1082,28 @@ async def delete_domain(
     if not _can_modify_domain(domain, user_id, server_config):
         raise HTTPException(status_code=403, detail="You do not have permission to delete this domain")
 
+    # Prevent deletion if this domain is referenced in another domain's composition
+    referencing = [
+        k for k, d in config.domains.items()
+        if k != filename and filename in (d.domains or [])
+    ]
+    if referencing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete: domain is composed by {', '.join(referencing)}",
+        )
+
     if not domain.source_path:
         raise HTTPException(status_code=400, detail="Domain has no source path")
 
+    import shutil
     domain_path = Path(domain.source_path)
-    if domain_path.exists():
+    domain_dir = domain_path.parent
+
+    # Safety: only rmtree if the directory contains config.yaml
+    if domain_dir.is_dir() and (domain_dir / "config.yaml").exists():
+        shutil.rmtree(domain_dir)
+    elif domain_path.exists():
         domain_path.unlink()
 
     # Remove from config
@@ -844,12 +1115,14 @@ async def delete_domain(
 @router.get("/domains/{filename}/content")
 async def get_domain_content(
     filename: str,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> dict:
     """Get the raw YAML content of a domain file.
 
     Args:
         filename: Domain YAML filename
+        user_id: Current user
         config: Injected application config
 
     Returns:
@@ -858,6 +1131,30 @@ async def get_domain_content(
     Raises:
         404: Domain not found
     """
+    import yaml
+
+    # Root = main config.yaml
+    if filename == "root":
+        if not config.config_dir:
+            raise HTTPException(status_code=400, detail="No config directory configured")
+        domain_path = Path(config.config_dir) / "config.yaml"
+        if not domain_path.exists():
+            raise HTTPException(status_code=404, detail=f"Root config not found: {domain_path}")
+        return {"content": domain_path.read_text(), "path": str(domain_path), "filename": "root"}
+
+    # User = .constat/{user_id}/config.yaml — create default if missing
+    if filename == "user":
+        user_dir = Path(".constat") / user_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        domain_path = user_dir / "config.yaml"
+        if not domain_path.exists():
+            default_content = yaml.dump(
+                {"name": "User", "description": "", "domains": []},
+                default_flow_style=False, sort_keys=False,
+            )
+            domain_path.write_text(default_content)
+        return {"content": domain_path.read_text(), "path": str(domain_path), "filename": "user"}
+
     # noinspection DuplicatedCode
     domain = config.load_domain(filename)
     if not domain:
@@ -882,6 +1179,7 @@ async def get_domain_content(
 async def update_domain_content(
     filename: str,
     body: dict,
+    user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> dict:
     """Update the YAML content of a domain file.
@@ -889,6 +1187,7 @@ async def update_domain_content(
     Args:
         filename: Domain YAML filename
         body: Dict with 'content' (new YAML string)
+        user_id: Current user
         config: Injected application config
 
     Returns:
@@ -898,6 +1197,40 @@ async def update_domain_content(
         404: Domain not found
         400: Invalid YAML
     """
+    import yaml
+
+    # Root = main config.yaml
+    if filename == "root":
+        if not config.config_dir:
+            raise HTTPException(status_code=400, detail="No config directory configured")
+        domain_path = Path(config.config_dir) / "config.yaml"
+        if not domain_path.exists():
+            raise HTTPException(status_code=404, detail=f"Root config not found: {domain_path}")
+        content = body.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        try:
+            yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        domain_path.write_text(content)
+        return {"status": "saved", "filename": "root", "path": str(domain_path)}
+
+    # User = .constat/{user_id}/config.yaml
+    if filename == "user":
+        user_dir = Path(".constat") / user_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        domain_path = user_dir / "config.yaml"
+        content = body.get("content")
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+        try:
+            yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        domain_path.write_text(content)
+        return {"status": "saved", "filename": "user", "path": str(domain_path)}
+
     # noinspection DuplicatedCode
     domain = config.load_domain(filename)
     if not domain:
@@ -915,14 +1248,43 @@ async def update_domain_content(
         raise HTTPException(status_code=400, detail="Content is required")
 
     # Validate YAML before saving
-    import yaml
     try:
-        yaml.safe_load(content)
+        parsed = yaml.safe_load(content)
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
+    # Check for cycles if domains list changed
+    new_domains = (parsed or {}).get("domains", []) if isinstance(parsed, dict) else []
+    if new_domains:
+        # Build canonical graph from all known domains, resolving refs relative to parent
+        all_keys = set(config.domains.keys())
+        all_keys.add(filename)
+
+        def _resolve(ref: str, parent: str) -> str | None:
+            if ref in all_keys:
+                return ref
+            relative = f"{parent}/{ref}"
+            if relative in all_keys:
+                return relative
+            return None
+
+        graph: dict[str, list[str]] = {}
+        for k, d in config.domains.items():
+            graph[k] = [r for ref in (d.domains or []) if (r := _resolve(ref, k))]
+        graph[filename] = [r for ref in new_domains if (r := _resolve(ref, filename))]
+        cycles = _check_domain_cycles(graph)
+        if cycles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot save: would create domain cycle(s): {'; '.join(cycles)}",
+            )
+
     # Write the file
     domain_path.write_text(content)
+
+    # Update in-memory config
+    if isinstance(parsed, dict) and "domains" in parsed:
+        domain.domains = parsed["domains"]
 
     return {
         "status": "saved",
@@ -936,18 +1298,34 @@ async def list_domain_skills(
     filename: str,
     request: Request,
     user_id: CurrentUserId,
+    config: Config = Depends(get_config),
 ) -> dict:
     """List skills belonging to a domain."""
     from constat.server.routes.skills import get_skill_manager
     server_config = get_server_config(request)
     manager = get_skill_manager(user_id, server_config.data_dir)
-    skills = manager.get_domain_skills(filename)
-    return {
-        "skills": [
-            {"name": s.name, "description": s.description, "domain": s.domain}
-            for s in skills
-        ]
-    }
+
+    seen: set[str] = set()
+    skills_out: list[dict] = []
+
+    # Collect from all domain directories
+    domain_cfg = config.load_domain(filename)
+    if domain_cfg:
+        for d in _domain_data_dirs(domain_cfg, user_id):
+            skills_dir = d / "skills"
+            if skills_dir.is_dir():
+                for sd in skills_dir.iterdir():
+                    if sd.is_dir() and (sd / "SKILL.md").exists() and sd.name not in seen:
+                        seen.add(sd.name)
+                        skills_out.append({"name": sd.name, "description": "", "domain": filename})
+
+    # Also include from skill manager
+    for s in manager.get_domain_skills(filename):
+        if s.name not in seen:
+            seen.add(s.name)
+            skills_out.append({"name": s.name, "description": s.description, "domain": s.domain})
+
+    return {"skills": skills_out}
 
 
 @router.get("/domains/{filename}/agents")
@@ -955,33 +1333,78 @@ async def list_domain_agents(
     filename: str,
     request: Request,
     user_id: CurrentUserId,
+    config: Config = Depends(get_config),
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
     """List agents belonging to a domain."""
-    # Get agent_manager from session if available
-    agents = []
+    import yaml as _yaml
+
+    seen: set[str] = set()
+    agents_out: list[dict] = []
+
+    # Collect from all domain directories
+    domain_cfg = config.load_domain(filename)
+    if domain_cfg:
+        for d in _domain_data_dirs(domain_cfg, user_id):
+            agents_file = d / "agents.yaml"
+            if agents_file.is_file():
+                try:
+                    agent_data = _yaml.safe_load(agents_file.read_text()) or {}
+                    for name, adata in agent_data.items():
+                        if name not in seen:
+                            seen.add(name)
+                            agents_out.append({"name": name, "description": adata.get("description", ""), "domain": filename})
+                except Exception:
+                    pass
+
+    # Also include from agent_manager
     sessions = list(session_manager.sessions.values())
     for managed in sessions:
         if hasattr(managed.session, "agent_manager"):
-            agents = managed.session.agent_manager.get_domain_agents(filename)
+            for a in managed.session.agent_manager.get_domain_agents(filename):
+                if a.name not in seen:
+                    seen.add(a.name)
+                    agents_out.append({"name": a.name, "description": a.description, "domain": a.domain})
             break
-    return {
-        "agents": [
-            {"name": a.name, "description": a.description, "domain": a.domain}
-            for a in agents
-        ]
-    }
+
+    return {"agents": agents_out}
 
 
 @router.get("/domains/{filename}/rules")
 async def list_domain_rules(
     filename: str,
     user_id: CurrentUserId,
+    config: Config = Depends(get_config),
 ) -> dict:
     """List rules belonging to a domain."""
+    import yaml as _yaml
+
+    seen_ids: set[str] = set()
+    rules: list[dict] = []
+
+    def _collect_from_file(learnings_file: Path) -> None:
+        if not learnings_file.is_file():
+            return
+        ldata = _yaml.safe_load(learnings_file.read_text()) or {}
+        for rid, rdata in (ldata.get("rules") or {}).items():
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                rules.append({"id": rid, **rdata})
+
+    # Collect from all domain directories (recursive)
+    domain_cfg = config.load_domain(filename)
+    if domain_cfg:
+        for d in _domain_data_dirs(domain_cfg, user_id):
+            _collect_from_file(d / "learnings.yaml")
+
+    # Check user LearningStore for rules tagged with this domain
     from constat.storage.learnings import LearningStore
     store = LearningStore(user_id=user_id)
-    rules = store.list_rules(domain=filename)
+    for r in store.list_rules(domain=filename):
+        if r["id"] not in seen_ids:
+            seen_ids.add(r["id"])
+            rules.append(r)
+
     return {
         "rules": [
             RuleInfo(
@@ -998,6 +1421,44 @@ async def list_domain_rules(
     }
 
 
+@router.get("/domains/{filename}/facts")
+async def list_domain_facts(
+    filename: str,
+    user_id: CurrentUserId,
+    config: Config = Depends(get_config),
+) -> dict:
+    """List facts belonging to a domain."""
+    import yaml as _yaml
+
+    seen: set[str] = set()
+    facts_out: list[dict] = []
+
+    # Collect from all domain directories (recursive)
+    domain_cfg = config.load_domain(filename)
+    if domain_cfg:
+        for d in _domain_data_dirs(domain_cfg, user_id):
+            facts_file = d / "facts.yaml"
+            if facts_file.is_file():
+                try:
+                    fdata = _yaml.safe_load(facts_file.read_text()) or {}
+                    for fname, fval in (fdata.get("facts") or {}).items():
+                        if fname not in seen:
+                            seen.add(fname)
+                            facts_out.append({"name": fname, **(fval if isinstance(fval, dict) else {"value": fval})})
+                except Exception:
+                    pass
+
+    # Check user FactStore for facts tagged with this domain
+    from constat.storage.facts import FactStore
+    fact_store = FactStore(user_id=user_id)
+    for fname, fdata in fact_store.list_all_facts().items():
+        if fdata.get("domain") == filename and fname not in seen:
+            seen.add(fname)
+            facts_out.append({"name": fname, **fdata})
+
+    return {"facts": facts_out}
+
+
 @router.post("/domains/{filename}/promote")
 async def promote_domain(
     filename: str,
@@ -1006,7 +1467,7 @@ async def promote_domain(
     user_id: CurrentUserId,
     config: Config = Depends(get_config),
 ) -> dict:
-    """Promote a user domain to shared tier."""
+    """Move a user domain to root (system domains directory)."""
     import shutil
     import yaml
 
@@ -1015,53 +1476,58 @@ async def promote_domain(
         raise HTTPException(status_code=404, detail=f"Domain not found: {filename}")
 
     if domain.tier != "user":
-        raise HTTPException(status_code=400, detail="Only user domains can be promoted")
+        raise HTTPException(status_code=400, detail="Only user domains can be moved to root")
 
     server_config = get_server_config(request)
     if not _can_modify_domain(domain, user_id, server_config):
-        raise HTTPException(status_code=403, detail="You do not have permission to promote this domain")
+        raise HTTPException(status_code=403, detail="You do not have permission to move this domain")
 
     if not domain.source_path:
         raise HTTPException(status_code=400, detail="Domain has no source path")
 
-    src_path = Path(domain.source_path)
-    if not src_path.exists():
-        raise HTTPException(status_code=404, detail=f"Domain file not found: {src_path}")
+    src_config = Path(domain.source_path)
+    src_dir = src_config.parent
+    if not src_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Domain directory not found: {src_dir}")
 
-    target_name = body.get("target_name", filename)
-    shared_dir = Path(".constat") / "shared" / "domains"
-    shared_dir.mkdir(parents=True, exist_ok=True)
-    target_path = shared_dir / target_name
+    if not config.config_dir:
+        raise HTTPException(status_code=400, detail="No config directory configured")
 
-    # Copy YAML file
-    data = yaml.safe_load(src_path.read_text()) or {}
-    data["owner"] = user_id
-    target_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    # Move entire domain directory to system domains/
+    system_domains_dir = Path(config.config_dir) / "domains"
+    system_domains_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = system_domains_dir / filename
 
-    # Copy scoped content if exists (skills/, agents.yaml)
-    src_dir = src_path.parent
-    tgt_dir = target_path.parent / target_path.stem
-    # For file-based domains, scoped content is alongside the yaml
-    skills_dir = src_dir / "skills"
-    if skills_dir.is_dir():
-        tgt_skills = shared_dir / target_path.stem.replace(".yaml", "") / "skills"
-        tgt_skills.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(str(skills_dir), str(tgt_skills), dirs_exist_ok=True)
+    if target_dir.exists():
+        raise HTTPException(status_code=409, detail=f"Domain '{filename}' already exists under root")
 
-    agents_file = src_dir / "agents.yaml"
-    if agents_file.is_file():
-        tgt_agents = shared_dir / target_path.stem.replace(".yaml", "") / "agents.yaml"
-        tgt_agents.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(agents_file), str(tgt_agents))
+    shutil.move(str(src_dir), str(target_dir))
 
-    # Register promoted domain
+    # Add to root composition list in config.yaml
+    root_config_path = Path(config.config_dir) / "config.yaml"
+    if root_config_path.is_file():
+        root_data = yaml.safe_load(root_config_path.read_text()) or {}
+        root_domains = root_data.get("domains", [])
+        if not isinstance(root_domains, list):
+            root_domains = list(root_domains.keys())
+        if filename not in root_domains:
+            root_domains.append(filename)
+            root_data["domains"] = root_domains
+            root_config_path.write_text(
+                yaml.dump(root_data, default_flow_style=False, sort_keys=False)
+            )
+            config.domain_refs = root_domains
+
+    # Update in-memory config
     from constat.core.config import DomainConfig as DC
-    data["filename"] = target_name
-    data["source_path"] = str(target_path.resolve())
-    data["tier"] = "shared"
-    config.domains[target_name] = DC(**data)
+    new_config_path = target_dir / "config.yaml"
+    data = yaml.safe_load(new_config_path.read_text()) or {}
+    data["filename"] = filename
+    data["source_path"] = str(new_config_path.resolve())
+    data["tier"] = "system"
+    config.domains[filename] = DC(**data)
 
-    return {"status": "promoted", "filename": target_name, "new_tier": "shared"}
+    return {"status": "promoted", "filename": filename, "new_tier": "system"}
 
 
 @router.post("/domains/move-skill")
@@ -1077,10 +1543,10 @@ async def move_domain_skill(
     from_domain = body.get("from_domain", "")
     to_domain = body.get("to_domain", "")
 
-    # "system" and "global" are synthetic — treat as user directory
-    if from_domain in ("system", "global"):
+    # "root", "user", "system", "global" are synthetic — treat as user directory
+    if from_domain in ("root", "user", "system", "global"):
         from_domain = ""
-    if to_domain in ("system", "global"):
+    if to_domain in ("root", "user", "system", "global"):
         to_domain = ""
 
     if not skill_name:
@@ -1117,20 +1583,20 @@ async def move_domain_skill(
     if to_domain and not to_cfg:
         raise HTTPException(status_code=404, detail=f"Target domain not found: {to_domain}")
 
+    # Resolve the skills directory for a domain config
+    def _skills_dir(cfg: Optional[object]) -> Path:
+        if cfg and getattr(cfg, "source_path", None):
+            return Path(cfg.source_path).parent / "skills"
+        return manager.skills_dir
+
     # Determine source skill dir
-    if from_cfg and from_cfg.source_path:
-        src_skill_dir = Path(from_cfg.source_path).parent / "skills" / skill.filename
-    else:
-        src_skill_dir = manager.skills_dir / skill.filename
+    src_skill_dir = _skills_dir(from_cfg) / skill.filename
 
     if not src_skill_dir.exists():
         raise HTTPException(status_code=404, detail=f"Skill directory not found: {src_skill_dir}")
 
     # Determine target skill dir
-    if to_cfg and to_cfg.source_path:
-        target_skills_dir = Path(to_cfg.source_path).parent / "skills"
-    else:
-        target_skills_dir = manager.skills_dir
+    target_skills_dir = _skills_dir(to_cfg)
 
     target_skills_dir.mkdir(parents=True, exist_ok=True)
     target_skill_dir = target_skills_dir / skill.filename
@@ -1160,10 +1626,10 @@ async def move_domain_agent(
     from_domain = body.get("from_domain", "")
     to_domain = body.get("to_domain", "")
 
-    # "system" and "global" are synthetic — treat as user directory
-    if from_domain in ("system", "global"):
+    # "root", "user", "system", "global" are synthetic — treat as user directory
+    if from_domain in ("root", "user", "system", "global"):
         from_domain = ""
-    if to_domain in ("system", "global"):
+    if to_domain in ("root", "user", "system", "global"):
         to_domain = ""
 
     if not agent_name:
@@ -1185,11 +1651,14 @@ async def move_domain_agent(
     if to_domain and not to_cfg:
         raise HTTPException(status_code=404, detail=f"Target domain not found: {to_domain}")
 
+    # Resolve agents.yaml path for a domain config
+    def _agents_path(cfg: Optional[object]) -> Path:
+        if cfg and getattr(cfg, "source_path", None):
+            return Path(cfg.source_path).parent / "agents.yaml"
+        return Path(".constat") / user_id / "agents.yaml"
+
     # Read source agents.yaml
-    if from_cfg and from_cfg.source_path:
-        src_agents_file = Path(from_cfg.source_path).parent / "agents.yaml"
-    else:
-        src_agents_file = Path(".constat") / user_id / "agents.yaml"
+    src_agents_file = _agents_path(from_cfg)
 
     if not src_agents_file.exists():
         raise HTTPException(status_code=404, detail="Source agents file not found")
@@ -1201,10 +1670,7 @@ async def move_domain_agent(
     agent_data = src_data.pop(agent_name)
 
     # Write to target agents.yaml
-    if to_cfg and to_cfg.source_path:
-        tgt_agents_file = Path(to_cfg.source_path).parent / "agents.yaml"
-    else:
-        tgt_agents_file = Path(".constat") / user_id / "agents.yaml"
+    tgt_agents_file = _agents_path(to_cfg)
 
     tgt_data = {}
     if tgt_agents_file.exists():
@@ -1223,9 +1689,16 @@ async def move_domain_agent(
 async def move_domain_rule(
     body: dict,
     request: Request,
-    user_id: CurrentUserId,
+    config: Config = Depends(get_config),
+    user_id: CurrentUserId = "",
 ) -> dict:
-    """Move a rule to a different domain."""
+    """Move a rule to a different domain.
+
+    Physically relocates the rule entry from the source learnings.yaml
+    to the target domain's learnings.yaml (alongside agents.yaml pattern).
+    """
+    import yaml as _yaml
+
     rule_id = body.get("rule_id")
     to_domain = body.get("to_domain", "")
 
@@ -1233,22 +1706,71 @@ async def move_domain_rule(
         raise HTTPException(status_code=400, detail="rule_id is required")
 
     # Ownership check on target domain
+    server_config = get_server_config(request)
+    to_cfg = None
     if to_domain:
-        config: Config = request.app.state.config
-        server_config = get_server_config(request)
-        dcfg = config.load_domain(to_domain)
-        if dcfg and not _can_modify_domain(dcfg, user_id, server_config):
+        to_cfg = config.load_domain(to_domain)
+        if to_cfg and not _can_modify_domain(to_cfg, user_id, server_config):
             raise HTTPException(status_code=403, detail=f"You do not have permission to modify domain: {to_domain}")
+        if not to_cfg:
+            raise HTTPException(status_code=404, detail=f"Target domain not found: {to_domain}")
 
+    # Find and remove rule from current location
+    # Check user learnings.yaml first
     from constat.storage.learnings import LearningStore
-    store = LearningStore(user_id=user_id)
-    data = store._load()
+    user_store = LearningStore(user_id=user_id)
+    user_data = user_store._load()
 
-    if rule_id not in data["rules"]:
+    rule_entry = None
+    source_store = None
+
+    if rule_id in user_data["rules"]:
+        rule_entry = user_data["rules"].pop(rule_id)
+        source_store = user_store
+    else:
+        # Search domain learnings.yaml files
+        for domain_node in config.get_domain_tree():
+            dcfg = config.load_domain(domain_node.get("filename", ""))
+            if dcfg and dcfg.source_path:
+                domain_learnings = Path(dcfg.source_path).parent / "learnings.yaml"
+                if domain_learnings.exists():
+                    ddata = _yaml.safe_load(domain_learnings.read_text()) or {}
+                    if rule_id in ddata.get("rules", {}):
+                        rule_entry = ddata["rules"].pop(rule_id)
+                        domain_learnings.write_text(
+                            _yaml.dump(ddata, default_flow_style=False, sort_keys=False)
+                        )
+                        break
+
+    if rule_entry is None:
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
 
-    data["rules"][rule_id]["domain"] = to_domain
-    store._save()
+    # Write rule to target location
+    if to_cfg and to_cfg.source_path:
+        tgt_file = Path(to_cfg.source_path).parent / "learnings.yaml"
+    else:
+        # Moving back to user-level
+        tgt_file = user_store.file_path
+
+    tgt_data: dict = {}
+    if tgt_file.exists():
+        tgt_data = _yaml.safe_load(tgt_file.read_text()) or {}
+    if "rules" not in tgt_data:
+        tgt_data["rules"] = {}
+    if "corrections" not in tgt_data:
+        tgt_data["corrections"] = {}
+    if "archive" not in tgt_data:
+        tgt_data["archive"] = {}
+
+    rule_entry["domain"] = to_domain
+    tgt_data["rules"][rule_id] = rule_entry
+
+    tgt_file.parent.mkdir(parents=True, exist_ok=True)
+    tgt_file.write_text(_yaml.dump(tgt_data, default_flow_style=False, sort_keys=False))
+
+    # Save source if it was the user store
+    if source_store is not None:
+        source_store._save()
 
     return {"status": "moved", "rule_id": rule_id, "to_domain": to_domain}
 

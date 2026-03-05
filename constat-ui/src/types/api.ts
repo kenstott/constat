@@ -277,6 +277,7 @@ export interface GlossaryTerm {
     user_edited?: boolean
   }>
   cluster_siblings?: string[]
+  spanning_domains?: string[]
 }
 
 export interface GlossaryListResponse {
@@ -480,4 +481,93 @@ export interface WSEvent {
 export interface WSMessage {
   type: 'event' | 'ack' | 'error'
   payload: Record<string, unknown>
+}
+
+// Feedback
+export interface FlagRequest {
+  query_text: string
+  answer_summary: string
+  message: string
+  glossary_term?: string
+  suggested_definition?: string
+}
+
+export interface FlagResponse {
+  learning_id: string
+  glossary_suggestion_id?: string
+}
+
+export interface GlossarySuggestion {
+  learning_id: string
+  term: string
+  suggested_definition: string
+  message: string
+  created: string
+  user_id: string
+}
+
+// Regression Testing
+export interface TestLayerResult {
+  layer: string
+  passed: number
+  total: number
+  failures: string[]
+}
+
+export interface TestEndToEndResult {
+  passed: boolean
+  answer: string | null
+  judge_reasoning: string | null
+  failures: string[]
+  duration_s: number
+}
+
+export interface TestQuestionResult {
+  question: string
+  tags: string[]
+  passed: boolean
+  layers: TestLayerResult[]
+  end_to_end: TestEndToEndResult | null
+}
+
+export interface TestDomainResult {
+  domain: string
+  domain_name: string
+  passed_count: number
+  failed_count: number
+  questions: TestQuestionResult[]
+}
+
+export interface TestRunResponse {
+  domains: TestDomainResult[]
+  total_passed: number
+  total_failed: number
+}
+
+export interface TestableDomainInfo {
+  filename: string
+  name: string
+  question_count: number
+  tags: string[]
+}
+
+export interface GoldenQuestionExpectations {
+  entities: string[]
+  grounding: Array<Record<string, unknown>>
+  relationships: Array<Record<string, unknown>>
+  glossary: Array<Record<string, unknown>>
+  end_to_end?: Record<string, unknown> | null
+}
+
+export interface GoldenQuestionRequest {
+  question: string
+  tags: string[]
+  expect: GoldenQuestionExpectations
+}
+
+export interface GoldenQuestionResponse {
+  index: number
+  question: string
+  tags: string[]
+  expect: GoldenQuestionExpectations
 }

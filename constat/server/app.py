@@ -587,6 +587,8 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.agents import router as agents_router
     from constat.server.routes.skills import router as skills_router
     from constat.server.routes.tier_management import router as tier_management_router
+    from constat.server.routes.feedback import router as feedback_router
+    from constat.server.routes.testing import router as testing_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
@@ -604,6 +606,16 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         tier_management_router,
         prefix="/api/sessions",
         tags=["tier-management"],
+    )
+    fastapi_app.include_router(
+        feedback_router,
+        prefix="/api/sessions",
+        tags=["feedback"],
+    )
+    fastapi_app.include_router(
+        testing_router,
+        prefix="/api/sessions",
+        tags=["testing"],
     )
     fastapi_app.include_router(
         sessions_router,

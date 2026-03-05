@@ -86,10 +86,12 @@ class AgentManager:
                     )
                     logger.debug(f"Loaded agent: {name}")
 
-            # Assign domain="global" to unscoped agents
+            # Assign domain="user" and source="user" to unscoped agents
             for agent in self._agents.values():
                 if not agent.domain:
-                    agent.domain = "global"
+                    agent.domain = "user"
+                if not agent.source:
+                    agent.source = "user"
 
             logger.info(f"Loaded {len(self._agents)} agents from {self._agents_file}")
         except Exception as e:

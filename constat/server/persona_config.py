@@ -42,6 +42,10 @@ class PersonasConfig(BaseModel):
         """Check if a persona has write permission for a resource."""
         return self.get_persona(persona_name).writes.get(resource, False)
 
+    def can_feedback(self, persona_name: str, action: str) -> bool:
+        """Check if a persona has a feedback permission."""
+        return self.get_persona(persona_name).feedback.get(action, False)
+
 
 def load_personas_config(path: str | Path | None = None) -> PersonasConfig:
     """Load persona definitions from YAML.
@@ -104,3 +108,79 @@ def require_write(resource: str):
             )
 
     return _check_write
+
+
+def require_visibility(section: str):
+    """FastAPI dependency factory that checks persona visibility permission.
+
+    Usage:
+        @router.get("/entities", dependencies=[Depends(require_visibility("entity_manager"))])
+
+    Raises:
+        HTTPException 403 if the user's persona lacks visibility for the section.
+    """
+    from constat.server.auth import CurrentUserId, CurrentUserEmail
+
+    async def _check_visibility(
+        request: Request,
+        user_id: CurrentUserId,
+        email: CurrentUserEmail,
+    ) -> None:
+        from constat.server.permissions import get_user_permissions
+
+        server_config = request.app.state.server_config
+
+        if server_config.auth_disabled:
+            return
+
+        personas_config: PersonasConfig | None = getattr(request.app.state, "personas_config", None)
+        if personas_config is None:
+            return
+
+        perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
+
+        if not personas_config.can_see(perms.persona, section):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Persona '{perms.persona}' does not have visibility for '{section}'",
+            )
+
+    return _check_visibility
+
+
+def require_feedback(action: str):
+    """FastAPI dependency factory that checks persona feedback permission.
+
+    Usage:
+        @router.post("/flag", dependencies=[Depends(require_feedback("flag_answers"))])
+
+    Raises:
+        HTTPException 403 if the user's persona lacks the feedback permission.
+    """
+    from constat.server.auth import CurrentUserId, CurrentUserEmail
+
+    async def _check_feedback(
+        request: Request,
+        user_id: CurrentUserId,
+        email: CurrentUserEmail,
+    ) -> None:
+        from constat.server.permissions import get_user_permissions
+
+        server_config = request.app.state.server_config
+
+        if server_config.auth_disabled:
+            return
+
+        personas_config: PersonasConfig | None = getattr(request.app.state, "personas_config", None)
+        if personas_config is None:
+            return
+
+        perms = get_user_permissions(server_config, user_id=user_id, email=email or "")
+
+        if not personas_config.can_feedback(perms.persona, action):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Persona '{perms.persona}' does not have feedback permission for '{action}'",
+            )
+
+    return _check_feedback
