@@ -787,6 +787,61 @@ export async function deleteLearning(learningId: string): Promise<{ status: stri
   return del<{ status: string; id: string }>(`/learnings/${learningId}`)
 }
 
+export async function downloadSimpleExemplars(params: {
+  format?: 'messages' | 'alpaca' | 'sharegpt'
+  include?: string[]
+  domain?: string
+  min_confidence?: number
+  since?: string
+}): Promise<void> {
+  const query = new URLSearchParams()
+  if (params.format) query.set('format', params.format)
+  if (params.include) query.set('include', params.include.join(','))
+  if (params.domain) query.set('domain', params.domain)
+  if (params.min_confidence) query.set('min_confidence', String(params.min_confidence))
+  if (params.since) query.set('since', params.since)
+
+  // Build headers with auth
+  const headers: Record<string, string> = {}
+  const { useAuthStore, isAuthDisabled } = await import('@/store/authStore')
+  if (!isAuthDisabled) {
+    const token = await useAuthStore.getState().getToken()
+    if (token) headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const response = await fetch(`/api/learnings/exemplars/simple?${query}`, { headers })
+  if (!response.ok) throw new Error(`Download failed: ${response.statusText}`)
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `exemplars_${params.format || 'messages'}.jsonl`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Document URI addition
+export async function addDocumentURI(
+  sessionId: string,
+  body: {
+    name: string
+    url: string
+    description?: string
+    headers?: Record<string, string>
+    follow_links?: boolean
+    max_depth?: number
+    max_documents?: number
+    same_domain_only?: boolean
+    exclude_patterns?: string[]
+    type?: string
+  }
+): Promise<{ status: string; name: string; message: string }> {
+  return post<{ status: string; name: string; message: string }>(
+    `/sessions/${sessionId}/documents/add-uri`,
+    body
+  )
+}
+
 // Messages (for session restoration)
 export interface StoredMessage {
   id: string

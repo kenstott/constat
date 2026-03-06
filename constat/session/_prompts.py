@@ -186,10 +186,20 @@ class PromptsMixin:
 
         lines = []
 
+        # Determine active data source types for scope filtering
+        active_types = []
+        if hasattr(self, "config") and hasattr(self.config, "databases"):
+            active_types = list({
+                getattr(db, "type", "")
+                for db in self.config.databases.values()
+                if getattr(db, "type", "")
+            })
+
         # Get rules (compacted learnings) for codegen errors
         rules = self.learning_store.list_rules(
             category=LearningCategory.CODEGEN_ERROR,
             min_confidence=0.6,
+            scope_filter=active_types or None,
         )
         if rules:
             # Filter rules by type - SQL rules mention SQL/query patterns

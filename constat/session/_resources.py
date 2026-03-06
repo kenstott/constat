@@ -120,7 +120,25 @@ class ResourcesMixin:
             "description": description,
         }
 
-        # Index document files in the vector store
+        # Handle HTTP URIs via add_document_from_config
+        if self.doc_tools and uri.startswith(("http://", "https://")):
+            from constat.core.config import DocumentConfig
+            headers = {}
+            if auth:
+                headers["Authorization"] = auth
+            doc_config = DocumentConfig(
+                url=uri,
+                description=description,
+                headers=headers,
+            )
+            success, msg = self.doc_tools.add_document_from_config(
+                name, doc_config, session_id=getattr(self, "session_id", None),
+            )
+            if not success:
+                logger.warning(f"Failed to index HTTP document {name}: {msg}")
+            return True
+
+        # Index local document files in the vector store
         if self.doc_tools:
             doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx'}
             from pathlib import Path

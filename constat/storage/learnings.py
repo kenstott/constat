@@ -53,6 +53,15 @@ class LearningSource(Enum):
     NL_DETECTION = "nl_detection"
 
 
+def _get_scope_types(rule: dict) -> set[str]:
+    """Extract data source types from a rule's scope."""
+    scope = rule.get("scope")
+    if not scope:
+        return set()
+    sources = scope.get("data_sources", [])
+    return {s.get("type", "") for s in sources if s.get("type")}
+
+
 class LearningStore:
     """Two-tier learning storage: raw corrections + compacted rules.
 
@@ -173,6 +182,7 @@ class LearningStore:
         context: dict,
         correction: str,
         source: LearningSource = LearningSource.AUTO_CAPTURE,
+        scope: dict | None = None,
     ) -> str:
         """Save a raw learning.
 
@@ -181,6 +191,7 @@ class LearningStore:
             context: Contextual information (error details, code snippets, etc.)
             correction: The learning/correction text
             source: How this learning was captured
+            scope: Data source scope (level, data_sources)
 
         Returns:
             The learning ID
@@ -188,7 +199,7 @@ class LearningStore:
         data = self._load()
         learning_id = self._generate_id("learn")
 
-        data["corrections"][learning_id] = {
+        entry: dict = {
             "category": category.value,
             "created": datetime.now(timezone.utc).isoformat(),
             "context": context,
@@ -197,6 +208,10 @@ class LearningStore:
             "applied_count": 0,
             "promoted_to": None,
         }
+        if scope:
+            entry["scope"] = scope
+
+        data["corrections"][learning_id] = entry
 
         self._save()
         return learning_id
@@ -315,6 +330,7 @@ class LearningStore:
         source_learnings: list[str],
         tags: Optional[list[str]] = None,
         domain: str = "",
+        scope: dict | None = None,
     ) -> str:
         """Save a compacted rule.
 
@@ -325,6 +341,7 @@ class LearningStore:
             source_learnings: IDs of learnings this rule was derived from
             tags: Optional tags for categorization
             domain: Owning domain filename ("" = unscoped/global)
+            scope: Data source scope (level, data_sources)
 
         Returns:
             The rule ID
@@ -332,7 +349,7 @@ class LearningStore:
         data = self._load()
         rule_id = self._generate_id("rule")
 
-        data["rules"][rule_id] = {
+        entry: dict = {
             "category": category.value,
             "summary": summary,
             "confidence": confidence,
@@ -342,6 +359,10 @@ class LearningStore:
             "created": datetime.now(timezone.utc).isoformat(),
             "domain": domain,
         }
+        if scope:
+            entry["scope"] = scope
+
+        data["rules"][rule_id] = entry
 
         self._save()
         return rule_id
@@ -352,6 +373,7 @@ class LearningStore:
         min_confidence: float = 0.0,
         limit: Optional[int] = None,
         domain: Optional[str] = None,
+        scope_filter: list[str] | None = None,
     ) -> list[dict]:
         """List rules.
 
@@ -360,6 +382,8 @@ class LearningStore:
             min_confidence: Minimum confidence threshold
             limit: Maximum number of rules to return (None for all)
             domain: Filter by owning domain (None for all, "" for unscoped)
+            scope_filter: Data source types to match. Includes unscoped/global rules
+                and rules whose scope data_sources types overlap with this list.
 
         Returns:
             List of rule dicts (with 'id'), highest confidence first
@@ -381,6 +405,17 @@ class LearningStore:
 
         # Filter by confidence
         rules = [r for r in rules if r.get("confidence", 0) >= min_confidence]
+
+        # Filter by scope (data source types)
+        if scope_filter is not None:
+            filtered = []
+            filter_set = set(scope_filter)
+            for rule in rules:
+                rule_types = _get_scope_types(rule)
+                # Include if unscoped (global) or matches any active source type
+                if not rule_types or rule_types & filter_set:
+                    filtered.append(rule)
+            rules = filtered
 
         # Sort by confidence (highest first)
         rules = sorted(rules, key=lambda r: r.get("confidence", 0), reverse=True)

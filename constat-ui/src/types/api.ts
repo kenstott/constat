@@ -353,6 +353,7 @@ export interface Learning {
   context?: Record<string, unknown>
   applied_count: number
   created_at: string
+  scope?: { level?: string; data_sources?: Array<{ name?: string; type?: string }>; domain?: string }
 }
 
 // Rules (compacted learnings)
@@ -365,6 +366,7 @@ export interface Rule {
   tags: string[]
   domain: string
   source: string
+  scope?: { level?: string; data_sources?: Array<{ name?: string; type?: string }>; domain?: string }
 }
 
 // Config

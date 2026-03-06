@@ -620,6 +620,7 @@ class ExecutionMixin:
                     "original_code": last_code[:500] if last_code else "",
                     "step_goal": step.goal,
                     "attempt": attempt,
+                    "data_sources": self._get_step_data_sources(step),
                 }
 
                 retry_prompt = RETRY_PROMPT_TEMPLATE.format(
@@ -1124,8 +1125,8 @@ class ExecutionMixin:
             # Determine category based on error type and context
             category = self._categorize_error(context)
 
-            # Use LLM to generate a concise learning summary
-            summary = self._summarize_error_fix(context, fixed_code)
+            # Use LLM to generate a concise learning summary and scope
+            summary, scope = self._summarize_error_fix(context, fixed_code)
             if not summary:
                 # Fallback to a simple summary
                 error_preview = context.get("error_message", "")[:100]
@@ -1146,6 +1147,7 @@ class ExecutionMixin:
                 context=context,
                 correction=summary,
                 source=LearningSource.AUTO_CAPTURE,
+                scope=scope or None,
             )
 
             # Apply glossary draft after save
@@ -1162,6 +1164,16 @@ class ExecutionMixin:
                     logger.warning(f"[LEARNINGS] Compaction failed (non-fatal): {ce}")
         except Exception as e:
             logger.debug(f"Learning capture failed (non-fatal): {e}")
+
+    def _get_step_data_sources(self, step: Step) -> list[dict]:
+        """Extract data source info from databases used in this step."""
+        sources = []
+        for db_name, db_config in self.config.databases.items():
+            sources.append({
+                "name": db_name,
+                "type": getattr(db_config, "type", ""),
+            })
+        return sources
 
     def _compact_learnings(self) -> None:
         """Compact raw learnings into rules using LLM to find patterns."""
@@ -1536,33 +1548,62 @@ Return ONLY the JSON array."""
 
         return suggestions
 
-    def _summarize_error_fix(self, context: dict, fixed_code: str) -> str:
-        """Use LLM to generate a concise learning summary from an error fix.
+    def _summarize_error_fix(self, context: dict, fixed_code: str) -> tuple[str, dict]:
+        """Use LLM to generate a concise learning summary and scope classification.
 
         Args:
-            context: Error context with error_message, original_code
+            context: Error context with error_message, original_code, data_sources
             fixed_code: The code that fixed the error
 
         Returns:
-            A concise summary of what was learned, or empty string on failure
+            (summary, scope) where scope has level and data_sources
         """
+        import json as _json
+
+        data_sources = context.get("data_sources", [])
+        source_desc = ", ".join(
+            f"{s['name']} ({s['type']})" for s in data_sources
+        ) if data_sources else "unknown"
+
         try:
             prompt = f"""Summarize what was learned from this error fix in ONE sentence.
+Then classify how broadly this fix applies.
 
 Error: {context.get('error_message', '')[:300]}
 Original code snippet: {context.get('original_code', '')[:200]}
 Fixed code snippet: {fixed_code[:200]}
+Data source(s) involved: {source_desc}
 
-Output ONLY a single sentence describing the lesson learned, e.g., "Always use X instead of Y when..."
-Do not include any explanation or extra text."""
+Output JSON:
+{{"summary": "...", "scope_level": "instance | type | global", "scope_reason": "one sentence why"}}
+
+Scope guidance:
+- "instance": Fix is about THIS specific database's config, schema quirk, or data issue. Would NOT apply to another database of the same type.
+- "type": Fix is about the database ENGINE's behavior or SQL dialect. Applies to ALL databases of this type but not others.
+- "global": Fix is a general coding practice unrelated to any specific database engine.
+
+Output ONLY valid JSON."""
 
             response = self.llm.generate(
                 system="You are a technical writer summarizing coding lessons learned.",
                 user_message=prompt,
                 max_tokens=self.router.max_output_tokens,
             )
-            # generate() returns string directly
-            return response.strip()
+            content = response.strip()
+            # Try to parse JSON
+            try:
+                parsed = _json.loads(content)
+                summary = parsed.get("summary", "")
+                level = parsed.get("scope_level", "global")
+                scope: dict = {"level": level}
+                if level == "instance" and data_sources:
+                    scope["data_sources"] = data_sources
+                elif level == "type" and data_sources:
+                    scope["data_sources"] = [{"type": s["type"]} for s in data_sources if s.get("type")]
+                return summary, scope
+            except (_json.JSONDecodeError, KeyError):
+                # Fallback: treat response as plain summary
+                return content, {}
         except Exception as e:
             logger.debug(f"Failed to summarize learning (non-fatal): {e}")
-            return ""
+            return "", {}

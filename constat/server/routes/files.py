@@ -518,6 +518,88 @@ async def delete_file_reference(
 # ============================================================================
 
 
+from pydantic import BaseModel as _BaseModel
+
+
+class AddDocumentURIRequest(_BaseModel):
+    """Request to add a document from a URI."""
+    name: str
+    url: str
+    description: str = ""
+    headers: dict[str, str] = {}
+    follow_links: bool = False
+    max_depth: int = 2
+    max_documents: int = 20
+    same_domain_only: bool = True
+    exclude_patterns: list[str] = []
+    type: str = "auto"
+
+
+@router.post("/{session_id}/documents/add-uri")
+async def add_document_uri(
+    session_id: str,
+    body: AddDocumentURIRequest,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict:
+    """Add and index a document from a URL.
+
+    Fetches content from the URL, extracts text, chunks, embeds, and indexes
+    for search. Supports HTML, PDF, markdown, and other document types.
+
+    Args:
+        session_id: Session ID
+        body: Document URI configuration
+        session_manager: Injected session manager
+
+    Returns:
+        Status dict with name and message
+    """
+    managed = session_manager.get_session(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    session = managed.session
+    if not hasattr(session, "doc_tools") or not session.doc_tools:
+        raise HTTPException(status_code=503, detail="Document tools not available")
+
+    from constat.core.config import DocumentConfig
+
+    doc_config = DocumentConfig(
+        url=body.url,
+        description=body.description,
+        headers=body.headers,
+        follow_links=body.follow_links,
+        max_depth=body.max_depth,
+        max_documents=body.max_documents,
+        same_domain_only=body.same_domain_only,
+        exclude_patterns=body.exclude_patterns,
+        type=body.type,
+    )
+
+    success, msg = session.doc_tools.add_document_from_config(
+        body.name,
+        doc_config,
+        session_id=session_id,
+    )
+
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+
+    # Track as file reference for persistence/restore
+    managed._file_refs.append({
+        "name": body.name,
+        "uri": body.url,
+        "has_auth": bool(body.headers),
+        "description": body.description,
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "document_config": doc_config.model_dump(exclude_defaults=True),
+    })
+    managed.save_resources()
+    session_manager.refresh_entities_async(session_id)
+
+    return {"status": "ok", "name": body.name, "message": msg}
+
+
 @router.post("/{session_id}/documents/upload")
 async def upload_documents(
     session_id: str,

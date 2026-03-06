@@ -1,6 +1,8 @@
 // Artifact Panel container
 
 import React, { useEffect, useState, useCallback } from 'react'
+import { DomainBadge } from '../common/DomainBadge'
+import { ScopeBadge } from '../common/ScopeBadge'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -256,6 +258,11 @@ export function ArtifactPanel() {
   const [modalInput, setModalInput] = useState({ name: '', value: '', uri: '', type: '', persist: false })
   const [compacting, setCompacting] = useState(false)
   const [editingRule, setEditingRule] = useState<{ id: string; summary: string } | null>(null)
+  const [learningsTab, setLearningsTab] = useState<'rules' | 'pending' | 'export'>('rules')
+  const [exportFormat, setExportFormat] = useState<'messages' | 'alpaca' | 'sharegpt'>('messages')
+  const [exportInclude, setExportInclude] = useState<Set<string>>(new Set(['corrections', 'rules']))
+  const [exportMinConfidence, setExportMinConfidence] = useState(0.6)
+  const [exporting, setExporting] = useState(false)
   // Skill editing state
   // Structured skill editor state
   const [editingSkill, setEditingSkill] = useState<{
@@ -289,6 +296,12 @@ export function ArtifactPanel() {
   const [docSourceType, setDocSourceType] = useState<'uri' | 'files'>('files')
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
+  const [docFollowLinks, setDocFollowLinks] = useState(false)
+  const [docMaxDepth, setDocMaxDepth] = useState(2)
+  const [docMaxDocuments, setDocMaxDocuments] = useState(20)
+  const [docSameDomainOnly, setDocSameDomainOnly] = useState(true)
+  const [docContentType, setDocContentType] = useState('auto')
+  const [docShowAdvanced, setDocShowAdvanced] = useState(false)
   // Document viewer state
   const [viewingDocument, setViewingDocument] = useState<{ name: string; content: string; format?: string; url?: string } | null>(null)
   const [iframeBlocked, setIframeBlocked] = useState(false)
@@ -540,13 +553,33 @@ export function ArtifactPanel() {
     } else {
       // Add from URI
       if (!modalInput.name || !modalInput.uri) return
-      await sessionsApi.addFileRef(session.session_id, {
-        name: modalInput.name,
-        uri: modalInput.uri,
-      })
-      fetchDataSources(session.session_id)
-      // Entities refresh via entity_rebuild_complete WS event
-      setShowModal(null)
+      setUploading(true)
+      try {
+        if (modalInput.uri.startsWith('http://') || modalInput.uri.startsWith('https://')) {
+          await sessionsApi.addDocumentURI(session.session_id, {
+            name: modalInput.name,
+            url: modalInput.uri,
+            follow_links: docFollowLinks,
+            max_depth: docMaxDepth,
+            max_documents: docMaxDocuments,
+            same_domain_only: docSameDomainOnly,
+            type: docContentType,
+          })
+        } else {
+          await sessionsApi.addFileRef(session.session_id, {
+            name: modalInput.name,
+            uri: modalInput.uri,
+          })
+        }
+        fetchDataSources(session.session_id)
+        // Entities refresh via entity_rebuild_complete WS event
+        setShowModal(null)
+      } catch (err) {
+        console.error('Failed to add document:', err)
+        alert(`Failed to add document: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      } finally {
+        setUploading(false)
+      }
     }
     setModalInput({ name: '', value: '', uri: '', type: '', persist: false })
   }
@@ -1103,7 +1136,7 @@ ${skill.body}`
                         type="radio"
                         name="docSourceType"
                         checked={docSourceType === 'uri'}
-                        onChange={() => setDocSourceType('files')}
+                        onChange={() => setDocSourceType('uri')}
                         className="text-primary-600"
                       />
                       From URI
@@ -1121,7 +1154,7 @@ ${skill.body}`
                   </div>
 
                   {docSourceType === 'uri' ? (
-                    <>
+                    <div className="space-y-2">
                       <input
                         type="text"
                         placeholder="Name"
@@ -1136,7 +1169,71 @@ ${skill.body}`
                         onChange={(e) => setModalInput({ ...modalInput, uri: e.target.value })}
                         className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                       />
-                    </>
+
+                      {/* Crawling options (only for HTTP URLs) */}
+                      {(modalInput.uri || '').startsWith('http') && (
+                        <>
+                          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                            <input
+                              type="checkbox"
+                              checked={docFollowLinks}
+                              onChange={(e) => setDocFollowLinks(e.target.checked)}
+                              className="rounded text-primary-600"
+                            />
+                            Follow links (crawl linked pages)
+                          </label>
+
+                          {docFollowLinks && (
+                            <div className="pl-6 space-y-2">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-500 dark:text-gray-400 w-28">Max depth</label>
+                                <select value={docMaxDepth} onChange={(e) => setDocMaxDepth(Number(e.target.value))} className="text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                                  {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
+                                </select>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-500 dark:text-gray-400 w-28">Max documents</label>
+                                <select value={docMaxDocuments} onChange={(e) => setDocMaxDocuments(Number(e.target.value))} className="text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                                  {[5, 10, 20, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                                </select>
+                              </div>
+                              <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                                <input
+                                  type="checkbox"
+                                  checked={docSameDomainOnly}
+                                  onChange={(e) => setDocSameDomainOnly(e.target.checked)}
+                                  className="rounded text-primary-600"
+                                />
+                                Same domain only
+                              </label>
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => setDocShowAdvanced(!docShowAdvanced)}
+                            className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          >
+                            {docShowAdvanced ? 'Hide' : 'Show'} advanced options
+                          </button>
+
+                          {docShowAdvanced && (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-gray-500 dark:text-gray-400 w-28">Content type</label>
+                                <select value={docContentType} onChange={(e) => setDocContentType(e.target.value)} className="text-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                                  <option value="auto">Auto</option>
+                                  <option value="html">HTML</option>
+                                  <option value="pdf">PDF</option>
+                                  <option value="markdown">Markdown</option>
+                                  <option value="text">Text</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   ) : (
                     <>
                       <input
@@ -1517,14 +1614,11 @@ ${skill.body}`
                       )}
                       {db.name}
                     </button>
-                    {db.source && db.source !== 'config' && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                        db.source === 'session'
-                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                          : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                      }`}>
-                        {db.source === 'session' ? 'session' : db.source.replace('.yaml', '')}
-                      </span>
+                    {db.source === 'session' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">session</span>
+                    )}
+                    {db.source && db.source !== 'session' && db.source !== 'config' && (
+                      <DomainBadge domain={db.source.replace('.yaml', '')} />
                     )}
                   </div>
                   <div className="flex items-center gap-2">
@@ -1709,14 +1803,11 @@ ${skill.body}`
                       )}
                       {api.name}
                     </button>
-                    {api.source && api.source !== 'config' && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                        api.source === 'session'
-                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                          : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                      }`}>
-                        {api.source === 'session' ? 'session' : api.source.replace('.yaml', '')}
-                      </span>
+                    {api.source === 'session' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">session</span>
+                    )}
+                    {api.source && api.source !== 'session' && api.source !== 'config' && (
+                      <DomainBadge domain={api.source.replace('.yaml', '')} />
                     )}
                   </div>
                   <div className="flex items-center gap-2">
@@ -1900,14 +1991,11 @@ ${skill.body}`
                     >
                       {doc.name}
                     </button>
-                    {doc.source && doc.source !== 'config' && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                        doc.source === 'session'
-                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                          : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                      }`}>
-                        {doc.source === 'session' ? 'session' : doc.source.replace('.yaml', '')}
-                      </span>
+                    {doc.source === 'session' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">session</span>
+                    )}
+                    {doc.source && doc.source !== 'session' && doc.source !== 'config' && (
+                      <DomainBadge domain={doc.source.replace('.yaml', '')} />
                     )}
                   </div>
                   <div className="flex items-center gap-2">
@@ -2155,11 +2243,7 @@ ${skill.body}`
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {agent.name}
                       </span>
-                      {agent.domain && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex-shrink-0">
-                          {agent.domain}
-                        </span>
-                      )}
+                      <DomainBadge domain={agent.domain} />
                       <ChevronDownIcon
                         className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                       />
@@ -2569,11 +2653,7 @@ ${skill.body}`
                       <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
                         {skill.name}
                       </span>
-                      {skill.domain && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex-shrink-0">
-                          {skill.domain}
-                        </span>
-                      )}
+                      <DomainBadge domain={skill.domain} />
                       <ChevronDownIcon
                         className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                       />
@@ -2787,12 +2867,43 @@ ${skill.body}`
           <p className="text-sm text-gray-500 dark:text-gray-400">No learnings yet</p>
         ) : (
           <div className="space-y-3">
-            {/* Rules section */}
-            {rules.length > 0 && (
+            {/* Tab bar */}
+            <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+              <button
+                onClick={() => setLearningsTab('rules')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  learningsTab === 'rules'
+                    ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Rules ({rules.length})
+              </button>
+              <button
+                onClick={() => setLearningsTab('pending')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  learningsTab === 'pending'
+                    ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Pending ({learnings.length})
+              </button>
+              <button
+                onClick={() => setLearningsTab('export')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  learningsTab === 'export'
+                    ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Export
+              </button>
+            </div>
+
+            {/* Rules tab */}
+            {learningsTab === 'rules' && rules.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                  Rules ({rules.length})
-                </p>
                 {rules.map((rule) => (
                   <div
                     key={rule.id}
@@ -2877,11 +2988,8 @@ ${skill.body}`
                             {Math.round(rule.confidence * 100)}% confidence
                           </span>
                           <span>{rule.source_count} sources</span>
-                          {rule.domain && (
-                            <span className="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded">
-                              {rule.domain}
-                            </span>
-                          )}
+                          <DomainBadge domain={rule.domain || 'user'} />
+                          <ScopeBadge scope={rule.scope} />
                           {rule.tags.length > 0 && (
                             <span className="text-gray-300 dark:text-gray-600">
                               {rule.tags.join(', ')}
@@ -2894,14 +3002,13 @@ ${skill.body}`
                 ))}
               </div>
             )}
-            {/* Raw learnings section */}
-            {learnings.length > 0 && (
+            {learningsTab === 'rules' && rules.length === 0 && (
+              <p className="text-sm text-gray-500 dark:text-gray-400">No rules yet. Compact pending learnings to generate rules.</p>
+            )}
+
+            {/* Pending tab */}
+            {learningsTab === 'pending' && learnings.length > 0 && (
               <div className="space-y-2">
-                {rules.length > 0 && (
-                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                    Pending ({learnings.length})
-                  </p>
-                )}
                 {learnings.map((learning) => (
                   <div
                     key={learning.id}
@@ -2923,12 +3030,95 @@ ${skill.body}`
                       <span className="px-1.5 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
                         {learning.category}
                       </span>
+                      <DomainBadge domain="user" />
+                      <ScopeBadge scope={learning.scope} />
                       {learning.applied_count > 0 && (
                         <span>Applied {learning.applied_count}x</span>
                       )}
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+            {learningsTab === 'pending' && learnings.length === 0 && (
+              <p className="text-sm text-gray-500 dark:text-gray-400">No pending learnings.</p>
+            )}
+
+            {/* Export tab */}
+            {learningsTab === 'export' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Format</label>
+                  <select
+                    value={exportFormat}
+                    onChange={(e) => setExportFormat(e.target.value as typeof exportFormat)}
+                    className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  >
+                    <option value="messages">OpenAI Messages</option>
+                    <option value="alpaca">Alpaca</option>
+                    <option value="sharegpt">ShareGPT</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Include</label>
+                  <div className="mt-1 space-y-1">
+                    {(['corrections', 'rules', 'glossary'] as const).map((item) => (
+                      <label key={item} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={exportInclude.has(item)}
+                          onChange={(e) => {
+                            const next = new Set(exportInclude)
+                            if (e.target.checked) next.add(item); else next.delete(item)
+                            setExportInclude(next)
+                          }}
+                          className="rounded text-primary-600"
+                        />
+                        {item === 'corrections' ? `Corrections (${learnings.length})` :
+                         item === 'rules' ? `Rules (${rules.length})` :
+                         'Glossary terms'}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                    Min rule confidence: {Math.round(exportMinConfidence * 100)}%
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={exportMinConfidence * 100}
+                    onChange={(e) => setExportMinConfidence(Number(e.target.value) / 100)}
+                    className="mt-1 w-full"
+                  />
+                </div>
+
+                <button
+                  onClick={async () => {
+                    setExporting(true)
+                    try {
+                      await sessionsApi.downloadSimpleExemplars({
+                        format: exportFormat,
+                        include: Array.from(exportInclude),
+                        min_confidence: exportMinConfidence,
+                      })
+                    } catch (err) {
+                      console.error('Export failed:', err)
+                    } finally {
+                      setExporting(false)
+                    }
+                  }}
+                  disabled={exporting || exportInclude.size === 0}
+                  className="w-full px-3 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-md disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4" />
+                  {exporting ? 'Downloading...' : 'Download JSONL'}
+                </button>
               </div>
             )}
           </div>
@@ -3191,11 +3381,7 @@ ${skill.body}`
                             saved
                           </span>
                         )}
-                        {fact.domain && (
-                          <span className="px-1 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded">
-                            {fact.domain}
-                          </span>
-                        )}
+                        <DomainBadge domain={fact.domain} />
                         {fact.role_id && (
                           <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">
                             {fact.role_id}

@@ -684,6 +684,7 @@ class LearningInfo(BaseModel):
     )
     applied_count: int = Field(default=0, description="Times applied")
     created_at: datetime = Field(description="When captured")
+    scope: Optional[dict[str, Any]] = Field(default=None, description="Data source scope")
 
 
 class LearningCreateRequest(BaseModel):
@@ -707,6 +708,7 @@ class RuleInfo(BaseModel):
     tags: list[str] = Field(default_factory=list, description="Tags for searching")
     domain: str = Field(default="", description="Owning domain filename")
     source: str = Field(default="", description="Source tier")
+    scope: Optional[dict[str, Any]] = Field(default=None, description="Data source scope")
 
 
 class RuleCreateRequest(BaseModel):

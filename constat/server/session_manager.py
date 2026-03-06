@@ -277,6 +277,20 @@ class ManagedSession:
                 except Exception as e:
                     logger.warning(f"Failed to restore API {api['name']}: {e}")
 
+        # Re-index URI documents
+        if self._file_refs and self.session and hasattr(self.session, "doc_tools") and self.session.doc_tools:
+            from constat.core.config import DocumentConfig
+            for ref in self._file_refs:
+                if "document_config" in ref:
+                    try:
+                        doc_config = DocumentConfig(**ref["document_config"])
+                        self.session.doc_tools.add_document_from_config(
+                            ref["name"], doc_config, session_id=self.session_id,
+                        )
+                        logger.debug(f"Restored URI document: {ref['name']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to restore URI document {ref['name']}: {e}")
+
 
 class SessionManager:
     """Manages server-side Session instances.

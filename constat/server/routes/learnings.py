@@ -178,6 +178,7 @@ async def list_learnings(
                     context=l.get("context"),
                     applied_count=l.get("applied_count", 0),
                     created_at=datetime.fromisoformat(l["created"]) if l.get("created") else datetime.now(timezone.utc),
+                    scope=l.get("scope"),
                 )
                 for l in learnings_data
             ],
@@ -190,6 +191,7 @@ async def list_learnings(
                     source_count=len(r.get("source_learnings", [])),
                     tags=r.get("tags", []),
                     domain=r.get("domain", ""),
+                    scope=r.get("scope"),
                 )
                 for r in rules_data
             ],
@@ -452,6 +454,62 @@ async def download_exemplars(
         path=str(path),
         media_type="application/jsonl",
         filename=filenames[format],
+    )
+
+
+@router.get("/learnings/exemplars/simple")
+async def download_simple_exemplars(
+    user_id: CurrentUserId,
+    format: str = "messages",
+    include: str = "corrections,rules",
+    domain: str | None = None,
+    min_confidence: float = 0.0,
+    since: str | None = None,
+    session_manager: SessionManager = Depends(get_session_manager),
+):
+    """Download learnings as JSONL for fine-tuning — no LLM calls, instant."""
+    from fastapi.responses import StreamingResponse
+    from constat.storage.learnings import LearningStore
+    from constat.learning.simple_exporter import SimpleExporter
+
+    if format not in ("messages", "alpaca", "sharegpt"):
+        raise HTTPException(status_code=400, detail="format must be messages, alpaca, or sharegpt")
+
+    include_list = [s.strip() for s in include.split(",") if s.strip()]
+
+    since_dt = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid 'since' datetime format")
+
+    store = LearningStore(user_id=user_id)
+
+    # Try to get vector store for glossary export
+    vs = None
+    if "glossary" in include_list:
+        # Find any active session for this user to get its vector store
+        for managed in session_manager._sessions.values():
+            if hasattr(managed, "session") and managed.session:
+                if hasattr(managed.session, "doc_tools") and managed.session.doc_tools:
+                    vs = managed.session.doc_tools._vector_store
+                    break
+
+    exporter = SimpleExporter(store, vs)
+    content = exporter.export(
+        include=include_list,
+        fmt=format,
+        domain=domain,
+        min_confidence=min_confidence,
+        since=since_dt,
+    )
+
+    filename = f"exemplars_{format}.jsonl"
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/jsonl",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

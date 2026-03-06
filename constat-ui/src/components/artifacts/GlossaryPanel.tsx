@@ -1,6 +1,7 @@
 // Glossary Panel — unified glossary view replacing EntityAccordion
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { DomainBadge } from '../common/DomainBadge'
 import {
   ChevronRightIcon,
   MagnifyingGlassIcon,
@@ -1155,14 +1156,7 @@ function GlossaryItem({
         {isDefined && term.status && (
           <span className={`text-xs flex-shrink-0 ${statusColor}`}>{term.status}</span>
         )}
-        {term.domain && (
-          <span
-            className="text-xs px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 flex-shrink-0"
-            title={term.domain_path || term.domain}
-          >
-            {term.domain_path || term.domain}
-          </span>
-        )}
+        <DomainBadge domain={term.domain} domainPath={term.domain_path} />
         <span
           role="button"
           onClick={(e) => { e.stopPropagation(); handleDelete() }}

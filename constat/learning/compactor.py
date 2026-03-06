@@ -25,6 +25,47 @@ from constat.storage.learnings import LearningStore, LearningCategory
 logger = logging.getLogger(__name__)
 
 
+def _scope_group_key(scope: dict) -> str:
+    """Grouping key from scope. Same-type learnings land in the same group."""
+    if not scope:
+        return "_global"
+    sources = scope.get("data_sources", [])
+    if sources:
+        types = sorted({s.get("type", "") for s in sources if s.get("type")})
+        if types:
+            return ":".join(types)
+    return "_global"
+
+
+def _build_rule_scope(rule_data: dict, group: list[dict]) -> dict | None:
+    """Build scope dict for a rule from LLM output and source learnings."""
+    level = rule_data.get("scope_level", "global")
+    if level == "global":
+        return None
+
+    # Collect source types from learnings
+    source_types: set[str] = set()
+    source_names: set[str] = set()
+    for l in group:
+        for s in l.get("scope", {}).get("data_sources", []):
+            if s.get("type"):
+                source_types.add(s["type"])
+            if s.get("name"):
+                source_names.add(s["name"])
+
+    scope: dict = {"level": level}
+    if level == "instance" and source_names:
+        scope["data_sources"] = [
+            {"name": n, "type": t}
+            for n in sorted(source_names)
+            for t in sorted(source_types)
+        ] or [{"type": t} for t in sorted(source_types)]
+    elif level == "type" and source_types:
+        scope["data_sources"] = [{"type": t} for t in sorted(source_types)]
+
+    return scope if scope.get("data_sources") else None
+
+
 @dataclass
 class CompactionResult:
     """Result of a compaction operation."""
@@ -97,14 +138,15 @@ class LearningCompactor:
         if len(all_learnings) < self.MIN_GROUP_SIZE:
             return result
 
-        # Group by category first
-        by_category = defaultdict(list)
+        # Group by (category, scope_key) to prevent cross-engine merging
+        by_scope = defaultdict(list)
         for learning in all_learnings:
             cat = learning.get("category", "unknown")
-            by_category[cat].append(learning)
+            scope_key = _scope_group_key(learning.get("scope", {}))
+            by_scope[(cat, scope_key)].append(learning)
 
-        # Process each category
-        for category, learnings in by_category.items():
+        # Process each group
+        for (category, scope_key), learnings in by_scope.items():
             if len(learnings) < self.MIN_GROUP_SIZE:
                 continue
 
@@ -157,6 +199,9 @@ class LearningCompactor:
                         continue
 
                     if not dry_run:
+                        # Build scope from LLM's scope_level judgment
+                        rule_scope = _build_rule_scope(rule_data, group)
+
                         # Create rule
                         rule_id = self.store.save_rule(
                             summary=rule_data["summary"],
@@ -164,6 +209,7 @@ class LearningCompactor:
                             confidence=confidence,
                             source_learnings=[l["id"] for l in group],
                             tags=rule_data.get("tags", []),
+                            scope=rule_scope,
                         )
 
                         # Archive source learnings
@@ -584,7 +630,7 @@ Output ONLY valid JSON, no explanation."""
             group: List of similar learning dicts
 
         Returns:
-            Dict with summary, confidence, tags or None on failure
+            Dict with summary, confidence, tags, scope_level or None on failure
         """
         corrections = [l["correction"] for l in group]
         contexts = []
@@ -593,21 +639,48 @@ Output ONLY valid JSON, no explanation."""
             if isinstance(ctx, dict):
                 contexts.append(str(ctx)[:200])
 
+        # Collect scope info from learnings
+        scope_levels = set()
+        source_types = set()
+        source_names = set()
+        for l in group:
+            scope = l.get("scope", {})
+            if scope:
+                scope_levels.add(scope.get("level", "global"))
+                for s in scope.get("data_sources", []):
+                    if s.get("type"):
+                        source_types.add(s["type"])
+                    if s.get("name"):
+                        source_names.add(s["name"])
+
+        scope_desc = ""
+        if source_types:
+            scope_desc = f"\nData source types: {', '.join(sorted(source_types))}"
+            if source_names:
+                scope_desc += f"\nDatabase names: {', '.join(sorted(source_names))}"
+            scope_desc += f"\nIndividual scope levels: {', '.join(sorted(scope_levels)) if scope_levels else 'unscoped'}"
+
         prompt = f"""Create a single rule from these {len(group)} similar learnings.
 
 Learnings:
 {chr(10).join(f'- {c}' for c in corrections)}
 
 Context examples:
-{chr(10).join(contexts) if contexts else 'N/A'}
+{chr(10).join(contexts) if contexts else 'N/A'}{scope_desc}
 
 Output JSON with:
 - summary: A clear, actionable rule (1-2 sentences)
 - confidence: How confident you are this is a valid pattern (0.0-1.0)
 - tags: 2-4 relevant keywords for finding this rule later
+- scope_level: "instance" | "type" | "global" (judge the RULE's scope, not just echo the learnings)
+
+Scope guidance:
+- "instance": Pattern tied to a specific database's config/schema/data
+- "type": Pattern about a database ENGINE's behavior or SQL dialect
+- "global": General coding practice regardless of database
 
 Example:
-{{"summary": "Always cast date columns to datetime before comparison in SQL queries", "confidence": 0.85, "tags": ["datetime", "sql", "cast"]}}
+{{"summary": "Always cast date columns to datetime before comparison in SQL queries", "confidence": 0.85, "tags": ["datetime", "sql", "cast"], "scope_level": "global"}}
 
 Output ONLY valid JSON, no explanation."""
 
