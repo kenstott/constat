@@ -272,7 +272,7 @@ class SolveMixin:
             }
 
         # All queries use exploratory mode by default
-        # Use /prove command to generate auditable proofs when needed
+        # Use /reason command to generate auditable reasoning chains when needed
 
         # Generate plan with approval loop
         current_problem = problem

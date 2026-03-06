@@ -276,8 +276,8 @@ function MainApp() {
     // Clear previous proof state and open panel
     clearFacts()
     openProofPanel()
-    // Submit /prove command to trigger proof execution
-    submitQuery('/prove', true)
+    // Submit /reason command to trigger reasoning chain
+    submitQuery('/reason', true)
   }
 
   // Help modal state
@@ -317,7 +317,7 @@ function MainApp() {
         onSkillCreated={() => fetchAllSkills()}
         onRedo={(guidance) => {
           clearFacts()
-          submitQuery(guidance ? `/prove ${guidance}` : '/prove', true)
+          submitQuery(guidance ? `/reason ${guidance}` : '/reason', true)
         }}
       />
       <HelpModal

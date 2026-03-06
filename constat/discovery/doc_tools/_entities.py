@@ -157,6 +157,8 @@ class _EntityMixin:
             )
             links = _extract_links_from_chunks(extractor, domain_chunks)
             all_links.extend(links)
+            # Filter enumerated data values (e.g., "User0025", "Order12345")
+            extractor.filter_pattern_noise()
             all_entities.extend(extractor.get_all_entities())
             logger.debug(f"extract_entities_for_session({session_id}): domain={domain_id} -> {len(domain_chunks)} chunks, {len(links)} links")
 

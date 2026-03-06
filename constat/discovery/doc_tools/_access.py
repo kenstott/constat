@@ -439,7 +439,7 @@ class _AccessMixin:
             session_id: Session ID to include (for session-specific documents)
 
         Returns:
-            List of dicts with document, excerpt, section, mention_count, confidence
+            List of dicts with document, excerpt, section, confidence
             Empty list if entity not found
         """
         if not hasattr(self._vector_store, 'find_entity_by_name'):
@@ -456,7 +456,7 @@ class _AccessMixin:
         )
 
         results = []
-        for chunk_id, chunk, mention_count, confidence in chunks:
+        for chunk_id, chunk, confidence in chunks:
             results.append({
                 "document": chunk.document_name,
                 "excerpt": chunk.content,
@@ -465,7 +465,6 @@ class _AccessMixin:
                     "name": entity.name,
                     "type": entity.type,
                 },
-                "mention_count": mention_count,
                 "confidence": round(confidence, 3),
             })
 

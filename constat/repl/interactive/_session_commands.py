@@ -412,13 +412,13 @@ class _SessionCommandsMixin:
             self.console.print(f"[red]Error during audit:[/red] {e}")
 
     def _handle_prove(self) -> None:
-        """Handle /prove command - verify conversation claims with auditable proof."""
+        """Handle /reason command - verify conversation claims with auditable reasoning chain."""
         if not self.api.session:
-            self.console.print("[yellow]No active session. Ask questions first, then use /prove to verify.[/yellow]")
+            self.console.print("[yellow]No active session. Ask questions first, then use /reason to verify.[/yellow]")
             return
 
         if not self.api.session.session_id:
-            self.console.print("[yellow]No conversation to prove. Ask questions first.[/yellow]")
+            self.console.print("[yellow]No conversation to reason about. Ask questions first.[/yellow]")
             return
 
         self.console.print("[cyan]Generating auditable proof for conversation claims...[/cyan]")
@@ -435,7 +435,7 @@ class _SessionCommandsMixin:
 
             if result.get("no_claims"):
                 self.console.print("[yellow]No verifiable claims found in conversation.[/yellow]")
-                self.console.print("[dim]Try asking data-related questions first, then use /prove.[/dim]")
+                self.console.print("[dim]Try asking data-related questions first, then use /reason.[/dim]")
                 return
 
             claims = result.get("claims", [])

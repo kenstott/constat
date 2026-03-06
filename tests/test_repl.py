@@ -114,7 +114,7 @@ class TestHelpCommand:
             "/raw",
             "/insights",
             "/artifacts",
-            "/prove",
+            "/reason",
             "/quit", "/q",
         ]
 

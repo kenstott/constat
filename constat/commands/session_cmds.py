@@ -825,7 +825,7 @@ def prove_command(ctx: CommandContext) -> CommandResult:
     if not original_problem:
         return TextResult(
             success=True,
-            content="No conversation to prove. Submit a query first, then use /prove to verify it.",
+            content="No conversation to reason about. Submit a query first, then use /reason to verify it.",
         )
 
     # Run the proof (events will be emitted to UI)
@@ -844,5 +844,5 @@ def prove_command(ctx: CommandContext) -> CommandResult:
     # The actual proof facts are streamed via events
     return TextResult(
         success=True,
-        content="Proof verification complete. See the Proof panel for the full audit trail.",
+        content="Reasoning chain complete. See the Reasoning Chain panel for the full audit trail.",
     )

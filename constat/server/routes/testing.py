@@ -71,6 +71,82 @@ def _can_modify_domain(domain, user_id: str, server_config: ServerConfig) -> boo
     return True
 
 
+def _resolve_entity_to_store_name(
+    relational, name: str, session_id: str, user_id: str, domain_ids: list[str],
+) -> str | None:
+    """Look up a premise label in the glossary/entity store.
+
+    The glossary is the source of truth. Reasoning chains use glossary terms,
+    entities, or aliases at the top of the chain. If a name doesn't resolve,
+    it's not a valid grounded expectation and should be dropped.
+    """
+    # 1. Glossary term by name or alias (primary path)
+    term = relational.get_glossary_term_by_name_or_alias(name, session_id, user_id=user_id)
+    if term:
+        return term.name
+
+    # 2. Entity by name (case-insensitive)
+    entity = relational.find_entity_by_name(
+        name, domain_ids=domain_ids, session_id=session_id, cross_session=True,
+    )
+    if entity:
+        return entity.name
+
+    return None
+
+
+def _resolve_expectations(
+    relational, expect: dict, session_id: str, user_id: str, domain_ids: list[str],
+) -> dict:
+    """Resolve entity names in expectations to actual store names.
+
+    When a reasoning chain auto-generates a test, premise labels like
+    "Inventory Items" may not match the NER entity name "inventory items".
+    This resolves each name, keeping the original if no match is found.
+    """
+    # Resolve entity names — only keep entities that resolve to real store names.
+    # Unresolvable premise labels (transient facts, intermediate tables) are dropped.
+    resolved_entities = []
+    name_map: dict[str, str] = {}  # original -> resolved
+    for name in expect.get("entities", []):
+        resolved = _resolve_entity_to_store_name(relational, name, session_id, user_id, domain_ids)
+        if resolved:
+            name_map[name] = resolved
+            resolved_entities.append(resolved)
+        else:
+            logger.debug(f"Dropping unresolvable entity from expectations: {name!r}")
+    expect["entities"] = resolved_entities
+
+    # Resolve entity names in grounding assertions — drop unresolvable
+    resolved_grounding = []
+    for ga in expect.get("grounding", []):
+        entity = ga.get("entity", "")
+        if entity in name_map:
+            ga["entity"] = name_map[entity]
+            resolved_grounding.append(ga)
+        else:
+            resolved = _resolve_entity_to_store_name(relational, entity, session_id, user_id, domain_ids)
+            if resolved:
+                ga["entity"] = resolved
+                resolved_grounding.append(ga)
+            else:
+                logger.debug(f"Dropping unresolvable grounding assertion: {entity!r}")
+    expect["grounding"] = resolved_grounding
+
+    # Resolve entity names in relationship assertions
+    for ra in expect.get("relationships", []):
+        for field in ("subject", "object"):
+            val = ra.get(field, "")
+            if val in name_map:
+                ra[field] = name_map[val]
+            else:
+                resolved = _resolve_entity_to_store_name(relational, val, session_id, user_id, domain_ids)
+                if resolved:
+                    ra[field] = resolved
+
+    return expect
+
+
 def _gq_to_response(index: int, raw: dict) -> GoldenQuestionResponse:
     expect_raw = raw.get("expect", {})
     return GoldenQuestionResponse(
@@ -121,6 +197,96 @@ async def list_testable_domains(
             )
         )
     return results
+
+
+_GROUNDABLE_SOURCES = {"database", "document", "api", "embedded"}
+
+
+@router.get(
+    "/{session_id}/tests/expectations",
+    response_model=GoldenQuestionExpectations,
+)
+async def extract_expectations(
+    session_id: str,
+    user_id: CurrentUserId,
+    sm: SessionManager = Depends(_get_session_manager),
+) -> GoldenQuestionExpectations:
+    """Build golden-question expectations from the last reasoning chain.
+
+    Uses the glossary/entity store to resolve premise names to real entity
+    names.  Only premises with groundable sources (database, document, api)
+    are included.  Unresolvable premise labels are dropped — if they don't
+    appear in the glossary, the test would not be meaningful.
+    """
+    managed = sm.get_session(session_id)
+    proof = managed.session.last_proof_result
+    if not proof or not proof.get("proof_nodes"):
+        raise HTTPException(status_code=404, detail="No reasoning chain result available")
+
+    doc_tools = managed.session.doc_tools
+    relational = None
+    if doc_tools and hasattr(doc_tools, '_vector_store'):
+        relational = getattr(doc_tools._vector_store, '_relational', None)
+
+    domain_ids = list(getattr(doc_tools, '_active_domain_ids', None) or []) if doc_tools else []
+
+    entities: list[str] = []
+    grounding: list[dict] = []
+    seen: set[str] = set()
+
+    for node in proof["proof_nodes"]:
+        source = node.get("source", "")
+        # Only groundable sources
+        if source not in _GROUNDABLE_SOURCES:
+            continue
+        name = node.get("name", "")
+        if not name:
+            continue
+
+        # Resolve via glossary / entity store
+        resolved_name = None
+        if relational:
+            resolved_name = _resolve_entity_to_store_name(
+                relational, name, session_id, user_id, domain_ids,
+            )
+        if not resolved_name:
+            logger.debug(f"Dropping unresolvable premise from expectations: {name!r} (source={source})")
+            continue
+        if resolved_name in seen:
+            continue
+        seen.add(resolved_name)
+
+        entities.append(resolved_name)
+
+        # Default: include specific source grounding. If the underlying resource
+        # changes (table renamed, moved from API to DB), the test should flag it.
+        # Users can remove grounding assertions if they want looser validation.
+        resolves_to: list[str] = []
+        source_name = node.get("source_name")  # e.g., database name
+        table_name = node.get("table_name")  # e.g., actual table
+        api_endpoint = node.get("api_endpoint")
+
+        if source == "database" and source_name and table_name:
+            resolves_to.append(f"schema:{source_name}.{table_name}")
+        elif source == "database" and source_name:
+            resolves_to.append(f"schema:{source_name}")
+        elif source == "api" and api_endpoint:
+            resolves_to.append(f"api:{api_endpoint}")
+        elif source == "api" and source_name:
+            resolves_to.append(f"api:{source_name}")
+        elif source == "document":
+            resolves_to.append("document")
+        else:
+            resolves_to.append(source)
+
+        grounding.append({"entity": resolved_name, "resolves_to": resolves_to})
+
+    return GoldenQuestionExpectations(
+        entities=entities,
+        grounding=grounding,
+        relationships=[],
+        glossary=[],
+    )
 
 
 def _question_result_to_dict(qr) -> dict:
@@ -322,9 +488,26 @@ async def create_golden_question(
     if not _can_modify_domain(dc, user_id, server_config):
         raise HTTPException(status_code=403, detail="You do not have permission to modify this domain")
 
+    # Resolve entity names against the store so auto-generated tests use
+    # actual entity names rather than LLM premise labels.
+    # Only keep entities that actually resolve — drop unresolvable ones.
+    expect = body.expect.model_dump()
+    doc_tools = managed.session.doc_tools
+    if doc_tools and hasattr(doc_tools, '_vector_store'):
+        relational = getattr(doc_tools._vector_store, '_relational', None)
+        if relational:
+            domain_ids = list(getattr(doc_tools, '_active_domain_ids', None) or [])
+            logger.info(f"Resolving expectations: entities={expect.get('entities')}, domain_ids={domain_ids}, session_id={session_id}")
+            expect = _resolve_expectations(relational, expect, session_id, user_id, domain_ids)
+            logger.info(f"Resolved expectations: entities={expect.get('entities')}, grounding={expect.get('grounding')}")
+        else:
+            logger.warning("Cannot resolve expectations: no relational store available")
+    else:
+        logger.warning(f"Cannot resolve expectations: doc_tools={doc_tools is not None}, has _vector_store={hasattr(doc_tools, '_vector_store') if doc_tools else False}")
+
     domain_path, data = _read_domain_yaml(dc)
     gq_list = data.setdefault("golden_questions", [])
-    new_entry = {"question": body.question, "tags": body.tags, "expect": body.expect.model_dump()}
+    new_entry = {"question": body.question, "tags": body.tags, "expect": expect}
     gq_list.append(new_entry)
     _write_domain_yaml(domain_path, data, dc)
 

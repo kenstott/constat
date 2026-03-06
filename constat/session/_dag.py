@@ -372,6 +372,7 @@ RULES:
                             value=fact_value,
                             confidence=0.9,
                             source=FactSource.DATABASE,
+                            source_name=db_name,
                             query=sql,
                             table_name=table_name if row_count > 1 else None,
                             row_count=row_count if row_count > 1 else None,

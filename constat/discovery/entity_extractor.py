@@ -74,6 +74,11 @@ class EntityExtractor:
     PAREN_URL_RE = re.compile(r'^\(/')
     CSS_HTML_RE = re.compile(r'[;{}]|!Important|@Media', re.I)
     CHAPTER_SECTION_RE = re.compile(r'^(Chapter|Section|Article|Title|Page)\s+\d', re.I)
+    # Identifier patterns: word + numeric suffix (data values, not entities)
+    # e.g., "User 0025", "User0062", "SKU-A1234", "Order 12345"
+    IDENTIFIER_RE = re.compile(r'^[A-Za-z]+[\s\-_]*\d{2,}$')
+    # Comma-separated identifiers (e.g., "User0062, User0070")
+    COMMA_ID_RE = re.compile(r'^[A-Za-z]+[\s\-_]*\d+(?:\s*,\s*[A-Za-z]+[\s\-_]*\d+)+$')
     LEADING_ARTICLE_RE = re.compile(r'^(the|a|an)\s+', re.I)
     STARTS_WITH_DIGIT_RE = re.compile(r'^\d+\s')
     TRAILING_FRAGMENT_RE = re.compile(r'\s+(of|de|du|des|di|s|the|and|&|for|in|on|to|vs|v)\s*$', re.I)
@@ -83,10 +88,12 @@ class EntityExtractor:
         'wikiversity', 'wikivoyage', 'wiktionary', 'wikibook', 'wiki project',
     })
 
-    # Common noise words
+    # Common noise words (single words and common two-word column name patterns)
     NOISE_WORDS = {
         'level', 'type', 'status', 'category', 'name', 'email', 'phone',
         'address', 'date', 'time', 'id', 'page', 'section', 'table',
+        'user id', 'event id', 'order id', 'item id', 'record id',
+        'event type', 'event table', 'event date', 'event name',
     }
 
     def __init__(
@@ -284,6 +291,12 @@ class EntityExtractor:
         # Chapter/Section/Article + number references
         if self.CHAPTER_SECTION_RE.match(text):
             return True
+        # Identifier patterns (data values like "User 0025", "User0062", "Order 12345")
+        if self.IDENTIFIER_RE.match(text):
+            return True
+        # Comma-separated identifiers (e.g., "User0062, User0070")
+        if self.COMMA_ID_RE.match(text):
+            return True
         # Trailing asterisk (footnote markers)
         if text.endswith('*'):
             return True
@@ -471,6 +484,53 @@ class EntityExtractor:
     def get_all_entities(self) -> list[Entity]:
         """Get all extracted entities (for batch insert)."""
         return list(self._entity_cache.values())
+
+    @staticmethod
+    def _to_template(name: str) -> str:
+        """Convert entity name to a template by replacing digits with #.
+
+        "User 0025" → "User #"
+        "Order12345" → "Order#"
+        "SKU-A1234" → "SKU-A#"
+        """
+        return re.sub(r'\d+', '#', name).strip()
+
+    def filter_pattern_noise(self, min_instances: int = 3) -> int:
+        """Remove entities that appear as enumerated data values.
+
+        Groups entities by template (digits → #). If a template has
+        >= min_instances, all entities matching it are removed as they're
+        likely data values (user IDs, order numbers) rather than concepts.
+
+        Args:
+            min_instances: Minimum count to consider a pattern as noise
+
+        Returns:
+            Number of entities removed
+        """
+        from collections import Counter
+
+        templates: dict[str, list[str]] = {}
+        for eid, entity in self._entity_cache.items():
+            # Only check non-schema/non-api entities
+            if entity.ner_type in ('SCHEMA', 'API', 'TERM'):
+                continue
+            tmpl = self._to_template(entity.name)
+            if '#' not in tmpl:
+                continue  # No digits — not an enumerated pattern
+            templates.setdefault(tmpl, []).append(eid)
+
+        removed = 0
+        for tmpl, eids in templates.items():
+            if len(eids) >= min_instances:
+                for eid in eids:
+                    del self._entity_cache[eid]
+                    removed += 1
+                logger.debug(f"Filtered {len(eids)} enumerated entities matching template '{tmpl}'")
+
+        if removed:
+            logger.info(f"Pattern noise filter removed {removed} enumerated data value entities")
+        return removed
 
     def clear_cache(self) -> None:
         """Clear the entity cache."""

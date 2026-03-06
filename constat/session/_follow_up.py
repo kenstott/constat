@@ -299,7 +299,7 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                     _analysis = self._analyze_question(question, previous_problem=previous_problem)
 
         # All follow-ups use exploratory mode (planning + execution)
-        # Use /prove command to generate auditable proofs when needed
+        # Use /reason command to generate auditable reasoning chains when needed
         # Check for unresolved facts and try to extract facts from user message
         unresolved = self.fact_resolver.get_unresolved_facts()
 
@@ -984,7 +984,7 @@ Prove all of the above claims and provide a complete audit trail."""
         # This ensures the proof is independent and verifiable.
         logger.debug("[prove_conversation] Proof will derive from ground truth sources only (no cached facts)")
 
-        # Auto-approve during /prove
+        # Auto-approve during /reason
         original_auto_approve = self.session_config.auto_approve
         self.session_config.auto_approve = True
 

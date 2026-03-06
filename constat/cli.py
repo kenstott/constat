@@ -607,10 +607,14 @@ def serve(config: Optional[str], port: int, host: str, reload: bool, debug: bool
     console.print()
 
     if reload:
-        # For reload mode, set config path in environment and use module path
+        # For reload mode, persist config path so it survives uvicorn worker restarts
         import os
         if config:
             os.environ["CONSTAT_CONFIG"] = config
+            # Also write to file — env var can be lost across uvicorn reload
+            config_marker = Path(".constat/server_config_path")
+            config_marker.parent.mkdir(parents=True, exist_ok=True)
+            config_marker.write_text(str(Path(config).resolve()))
 
         # Watch Python and .env files for changes
         reload_includes = ["*.py", ".env", "demo/.env"]

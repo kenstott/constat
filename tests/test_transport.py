@@ -97,19 +97,24 @@ class TestFetchFile:
 
 
 class TestFetchHttp:
-    @patch("requests.get")
-    def test_basic_http(self, mock_get):
+    def test_basic_http(self):
         mock_response = MagicMock()
         mock_response.content = b"<html>page</html>"
         mock_response.headers = {"content-type": "text/html; charset=utf-8"}
-        mock_get.return_value = mock_response
 
-        cfg = _FakeConfig(url="https://example.com/page.html")
-        result = fetch_document(cfg)
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+
+        with patch(
+            "constat.discovery.doc_tools._transport._get_http_session",
+            return_value=mock_session,
+        ):
+            cfg = _FakeConfig(url="https://example.com/page.html")
+            result = fetch_document(cfg)
 
         assert result.data == b"<html>page</html>"
         assert result.detected_mime == "text/html; charset=utf-8"
         assert result.source_path == "https://example.com/page.html"
-        mock_get.assert_called_once_with(
+        mock_session.get.assert_called_once_with(
             "https://example.com/page.html", headers={}, timeout=30
         )

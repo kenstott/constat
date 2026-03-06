@@ -68,7 +68,7 @@ class CommandsMixin:
             await self._show_artifacts(show_all=show_all)
         elif cmd == "/code":
             await self._show_code(args)
-        elif cmd in ("/prove", "/audit"):
+        elif cmd in ("/reason", "/audit"):
             await self._handle_prove()
         elif cmd == "/preferences":
             await self._show_preferences()
@@ -124,7 +124,7 @@ class CommandsMixin:
             await self._export_table(args)
         elif cmd == "/summarize" and args:
             await self._handle_summarize(args)
-        elif cmd == "/prove":
+        elif cmd == "/reason":
             await self._handle_audit()
         elif cmd == "/user":
             log.write(Text(f"Current user: {self.user_id}", style="dim"))

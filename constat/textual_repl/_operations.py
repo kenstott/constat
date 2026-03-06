@@ -83,12 +83,12 @@ class OperationsMixin:
         self.post_message(SolveComplete(result))
 
     async def _handle_prove(self: "ConstatREPLApp") -> None:
-        """Handle /prove command - verify conversation claims with auditable proof."""
+        """Handle /reason command - verify conversation claims with auditable reasoning chain."""
         log = self.query_one("#output-log", OutputLog)
         status_bar = self.query_one("#status-bar", StatusBar)
 
         if not self.session or not self.session.session_id:
-            log.write(Text("No active session. Ask questions first, then use /prove to verify.", style="yellow"))
+            log.write(Text("No active session. Ask questions first, then use /reason to verify.", style="yellow"))
             return
 
         status_bar.update_status(status_message="Proving claims...", phase=Phase.EXECUTING)
@@ -127,7 +127,7 @@ class OperationsMixin:
                 return
 
             if result.get("no_claims"):
-                log.write(Text("No question to prove. Ask a question first, then use /prove.", style="yellow"))
+                log.write(Text("No question to reason about. Ask a question first, then use /reason.", style="yellow"))
                 return
 
             success = result.get("success", False)

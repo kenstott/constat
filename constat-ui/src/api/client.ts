@@ -93,6 +93,10 @@ async function handleResponse<T>(response: Response): Promise<T> {
         }
         throw new ApiError(response.status, response.statusText, data)
     }
+    // 204 No Content has no body
+    if (response.status === 204) {
+        return undefined as T
+    }
     return response.json()
 }
 

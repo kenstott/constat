@@ -160,7 +160,8 @@ Golden questions let you define expected outcomes for a domain and verify them a
 - Define questions with expected entities, grounding, relationships, and glossary assertions in domain YAML
 - Run from UI (Regression panel) or CLI: `constat test -c config.yaml`
 - Filter by domain (`-d sales-analytics`) or tag (`--tags smoke`)
-- Use `--e2e` to include end-to-end LLM round-trip tests (slower, costs tokens)
+- **Unit tests** verify glossary and entity integrity (fast, no LLM)
+- Use `--e2e` to include **integration tests** that run the full NLQ pipeline (slower, costs tokens)
 
 ## Additional Commands
 

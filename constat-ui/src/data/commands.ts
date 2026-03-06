@@ -62,7 +62,7 @@ export const COMMANDS: CommandDef[] = [
   // Analysis
   { command: '/discover', description: 'Search all data sources (returns structured JSON)', category: 'Analysis', argType: 'text' },
   { command: '/summarize', description: 'Summarize plan|session|facts|<table>', category: 'Analysis', argType: 'entity' },
-  { command: '/prove', description: 'Verify conversation claims with auditable reason-chain', category: 'Analysis' },
+  { command: '/reason', description: 'Verify conversation claims with auditable reasoning chain', category: 'Analysis' },
   { command: '/correct', description: 'Record a correction for future reference', category: 'Analysis', argType: 'text' },
   { command: '/learnings', description: 'Show learnings and rules', category: 'Analysis' },
   { command: '/compact-learnings', description: 'Promote similar learnings into rules', category: 'Analysis' },

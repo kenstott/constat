@@ -31,8 +31,10 @@ Parquet files are the source of truth. DuckDB views are created dynamically
 on startup by scanning the 'tables' directory.
 """
 
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 import duckdb
 import pandas as pd
@@ -98,6 +100,7 @@ class RegistryAwareDataStore:
 
         # In-memory DuckDB for queries over Parquet files
         self._duckdb: Optional[duckdb.DuckDBPyConnection] = None
+        self._duckdb_lock = threading.RLock()
 
         # Initialize DuckDB and create views from existing Parquet files
         self._init_duckdb()
@@ -111,23 +114,28 @@ class RegistryAwareDataStore:
 
     def _load_parquet_files(self) -> None:
         """Scan tables directory and create views for all Parquet files."""
-        conn = self._get_duckdb()
-
-        for parquet_file in self._tables_dir.glob("*.parquet"):
-            table_name = parquet_file.stem  # filename without extension
-            try:
-                conn.execute(f"""
-                    CREATE OR REPLACE VIEW {table_name} AS
-                    SELECT * FROM read_parquet('{parquet_file}')
-                """)
-            except duckdb.Error:
-                pass  # Skip if view creation fails
+        with self._locked_duckdb() as conn:
+            for parquet_file in self._tables_dir.glob("*.parquet"):
+                table_name = parquet_file.stem  # filename without extension
+                try:
+                    conn.execute(f"""
+                        CREATE OR REPLACE VIEW {table_name} AS
+                        SELECT * FROM read_parquet('{parquet_file}')
+                    """)
+                except duckdb.Error:
+                    pass  # Skip if view creation fails
 
     def _get_duckdb(self) -> duckdb.DuckDBPyConnection:
         """Get DuckDB connection, reinitializing if needed."""
         if self._duckdb is None:
             self._init_duckdb()
         return self._duckdb
+
+    @contextmanager
+    def _locked_duckdb(self) -> Generator[duckdb.DuckDBPyConnection, None, None]:
+        """Get DuckDB connection with lock held for the duration."""
+        with self._duckdb_lock:
+            yield self._get_duckdb()
 
     def _parquet_path(self, name: str) -> Path:
         """Get path to Parquet file for a table."""
@@ -165,7 +173,6 @@ class RegistryAwareDataStore:
         if df.empty or len(df.columns) == 0:
             return
 
-        conn = self._get_duckdb()
         parquet_path = self._parquet_path(name)
 
         # Archive existing version before overwriting
@@ -178,16 +185,17 @@ class RegistryAwareDataStore:
             parquet_path.rename(backup_path)
 
         # Save to Parquet using DuckDB (efficient writer)
-        conn.execute(f"DROP VIEW IF EXISTS {name}")
-        conn.execute("CREATE TABLE _temp_export AS SELECT * FROM df")
-        conn.execute(f"COPY _temp_export TO '{parquet_path}' (FORMAT PARQUET)")
-        conn.execute("DROP TABLE _temp_export")
+        with self._locked_duckdb() as conn:
+            conn.execute(f"DROP VIEW IF EXISTS {name}")
+            conn.execute("CREATE TABLE _temp_export AS SELECT * FROM df")
+            conn.execute(f"COPY _temp_export TO '{parquet_path}' (FORMAT PARQUET)")
+            conn.execute("DROP TABLE _temp_export")
 
-        # Create view over the Parquet file
-        conn.execute(f"""
-            CREATE OR REPLACE VIEW {name} AS
-            SELECT * FROM read_parquet('{parquet_path}')
-        """)
+            # Create view over the Parquet file
+            conn.execute(f"""
+                CREATE OR REPLACE VIEW {name} AS
+                SELECT * FROM read_parquet('{parquet_path}')
+            """)
 
         # Build column info for central registry
         columns = [
@@ -222,12 +230,11 @@ class RegistryAwareDataStore:
 
     def drop_table(self, name: str) -> bool:
         """Drop a table (view, Parquet, versioned backups, and registry entries)."""
-        conn = self._get_duckdb()
-
-        try:
-            conn.execute(f"DROP VIEW IF EXISTS {name}")
-        except duckdb.Error:
-            pass
+        with self._locked_duckdb() as conn:
+            try:
+                conn.execute(f"DROP VIEW IF EXISTS {name}")
+            except duckdb.Error:
+                pass
 
         # Remove Parquet file
         parquet_path = self._parquet_path(name)
@@ -251,11 +258,11 @@ class RegistryAwareDataStore:
 
     def load_dataframe(self, name: str) -> Optional[pd.DataFrame]:
         """Load a table as a DataFrame (via DuckDB view over Parquet)."""
-        conn = self._get_duckdb()
-        try:
-            return conn.execute(f"SELECT * FROM {name}").fetchdf()
-        except duckdb.Error:
-            return None
+        with self._locked_duckdb() as conn:
+            try:
+                return conn.execute(f"SELECT * FROM {name}").fetchdf()
+            except duckdb.Error:
+                return None
 
     def get_table_data(self, name: str) -> Optional[pd.DataFrame]:
         """Alias for load_dataframe for compatibility."""
@@ -264,76 +271,73 @@ class RegistryAwareDataStore:
     def get_table_versions(self, name: str) -> list[dict]:
         """Get all versions of a table, newest first."""
         versions = []
-        conn = self._get_duckdb()
         version_num = 0
 
-        # Current version (highest number)
-        parquet_path = self._parquet_path(name)
-        if parquet_path.exists():
-            try:
-                row_count = conn.execute(
-                    f"SELECT COUNT(*) FROM read_parquet('{parquet_path}')"
-                ).fetchone()[0]
-            except duckdb.Error:
-                row_count = 0
-            # Find the version number for the current file
-            version_num = 1
-            while self._parquet_path(f"{name}__v{version_num}").exists():
-                version_num += 1
-            versions.append({
-                "version": version_num,
-                "row_count": row_count,
-                "is_current": True,
-            })
-
-        # Archived versions (descending)
-        v = version_num - 1 if versions else 0
-        while v >= 1:
-            backup_path = self._parquet_path(f"{name}__v{v}")
-            if backup_path.exists():
+        with self._locked_duckdb() as conn:
+            # Current version (highest number)
+            parquet_path = self._parquet_path(name)
+            if parquet_path.exists():
                 try:
                     row_count = conn.execute(
-                        f"SELECT COUNT(*) FROM read_parquet('{backup_path}')"
+                        f"SELECT COUNT(*) FROM read_parquet('{parquet_path}')"
                     ).fetchone()[0]
                 except duckdb.Error:
                     row_count = 0
+                # Find the version number for the current file
+                version_num = 1
+                while self._parquet_path(f"{name}__v{version_num}").exists():
+                    version_num += 1
                 versions.append({
-                    "version": v,
+                    "version": version_num,
                     "row_count": row_count,
-                    "is_current": False,
+                    "is_current": True,
                 })
-            v -= 1
+
+            # Archived versions (descending)
+            v = version_num - 1 if versions else 0
+            while v >= 1:
+                backup_path = self._parquet_path(f"{name}__v{v}")
+                if backup_path.exists():
+                    try:
+                        row_count = conn.execute(
+                            f"SELECT COUNT(*) FROM read_parquet('{backup_path}')"
+                        ).fetchone()[0]
+                    except duckdb.Error:
+                        row_count = 0
+                    versions.append({
+                        "version": v,
+                        "row_count": row_count,
+                        "is_current": False,
+                    })
+                v -= 1
 
         return versions
 
     def load_table_version(self, name: str, version: int) -> Optional[pd.DataFrame]:
         """Load a specific version of a table."""
-        conn = self._get_duckdb()
-
         # Check if this is the current version
         current_version = 1
         while self._parquet_path(f"{name}__v{current_version}").exists():
             current_version += 1
 
         if version == current_version:
-            # Current version
             parquet_path = self._parquet_path(name)
         else:
-            # Archived version
             parquet_path = self._parquet_path(f"{name}__v{version}")
 
         if not parquet_path.exists():
             return None
 
-        try:
-            return conn.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
-        except duckdb.Error:
-            return None
+        with self._locked_duckdb() as conn:
+            try:
+                return conn.execute(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+            except duckdb.Error:
+                return None
 
     def query(self, sql: str) -> pd.DataFrame:
         """Execute SQL query over DuckDB views (which read from Parquet)."""
-        conn = self._get_duckdb()
-        return conn.execute(sql).fetchdf()
+        with self._locked_duckdb() as conn:
+            return conn.execute(sql).fetchdf()
 
     def list_tables(self) -> list[dict]:
         """List all user tables with metadata from the central registry."""
@@ -359,19 +363,19 @@ class RegistryAwareDataStore:
 
     def get_table_schema(self, name: str) -> Optional[list[dict]]:
         """Get schema for a table from DuckDB."""
-        conn = self._get_duckdb()
-        try:
-            rows = conn.execute(f"DESCRIBE {name}").fetchall()
-            return [
-                {
-                    "name": row[0],
-                    "type": row[1],
-                    "nullable": True,
-                }
-                for row in rows
-            ]
-        except duckdb.Error:
-            return None
+        with self._locked_duckdb() as conn:
+            try:
+                rows = conn.execute(f"DESCRIBE {name}").fetchall()
+                return [
+                    {
+                        "name": row[0],
+                        "type": row[1],
+                        "nullable": True,
+                    }
+                    for row in rows
+                ]
+            except duckdb.Error:
+                return None
 
     def table_exists(self, name: str) -> bool:
         """Check if a table exists (Parquet file present)."""
@@ -590,9 +594,10 @@ class RegistryAwareDataStore:
 
     def close(self) -> None:
         """Close both DuckDB and underlying datastore."""
-        if self._duckdb is not None:
-            self._duckdb.close()
-            self._duckdb = None
+        with self._duckdb_lock:
+            if self._duckdb is not None:
+                self._duckdb.close()
+                self._duckdb = None
         self._datastore.close()
 
     def __enter__(self):

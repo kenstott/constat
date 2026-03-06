@@ -446,7 +446,7 @@ class CommandSuggester(Suggester):
         "/redo",
         "/artifacts",
         "/code",
-        "/prove", "/audit",
+        "/reason", "/audit",
         "/preferences",
         "/databases",
         "/database", "/db",
@@ -474,7 +474,7 @@ class CommandSuggester(Suggester):
         "/resume",
         "/export",
         "/summarize",
-        "/prove",
+        "/reason",
         "/user",
         "/quit", "/q",
     ]

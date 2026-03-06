@@ -679,7 +679,15 @@ def get_app() -> FastAPI:
         from pathlib import Path
         from dotenv import load_dotenv
 
-        config_path = os.environ.get("CONSTAT_CONFIG", "config.yaml")
+        config_path = os.environ.get("CONSTAT_CONFIG")
+        if not config_path:
+            # Recover from persisted file (env var lost on uvicorn reload)
+            marker = Path(".constat/server_config_path")
+            if marker.exists():
+                config_path = marker.read_text().strip()
+                logger.info(f"Recovered config path from marker: {config_path}")
+            else:
+                config_path = "config.yaml"
         try:
             # Load .env file (same logic as Config.from_yaml)
             config_dir = Path(config_path).parent.resolve()

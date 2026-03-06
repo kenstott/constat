@@ -271,7 +271,7 @@ async def create_skill_from_proof(
     session = managed.session
 
     if not session.last_proof_result:
-        raise HTTPException(status_code=404, detail="No proof result available. Run /prove first.")
+        raise HTTPException(status_code=404, detail="No proof result available. Run /reason first.")
 
     proof_result = session.last_proof_result
     proof_nodes = proof_result.get("proof_nodes", [])

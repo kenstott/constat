@@ -9,7 +9,10 @@ import remarkGfm from 'remark-gfm'
 import { useUIStore } from '@/store/uiStore'
 import { useTestStore } from '@/store/testStore'
 import { createSkillFromProof } from '@/api/skills'
-import type { GoldenQuestionExpectations, GoldenQuestionRequest } from '@/types/api'
+import { extractExpectations } from '@/api/testing'
+import { listDomains } from '@/api/sessions'
+import type { DomainInfo } from '@/api/sessions'
+import type { GoldenQuestionRequest } from '@/types/api'
 import { MermaidBlock } from './MermaidBlock'
 import { CodeViewer } from '@/components/artifacts/CodeViewer'
 
@@ -250,28 +253,11 @@ function NodeTooltip({ node, position }: { node: FactNode; position: { x: number
   )
 }
 
-function extractExpectationsFromFacts(facts: Map<string, FactNode>): GoldenQuestionExpectations {
-  const entities: string[] = []
-  const grounding: Array<Record<string, unknown>> = []
-  for (const node of facts.values()) {
-    if (node.status !== 'resolved') continue
-    // Premise nodes start with P — they ground entities to data sources
-    if (node.id.startsWith('P')) {
-      const name = node.name.replace(/^P\d+:\s*/, '')
-      if (name) entities.push(name)
-      if (node.source) {
-        grounding.push({ entity: name, resolves_to: node.source })
-      }
-    }
-  }
-  return { entities, grounding, relationships: [], glossary: [] }
-}
 
 export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = false, summary, isSummaryGenerating = false, sessionId, onSkillCreated, onRedo }: ProofDAGPanelProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
-  const testableDomains = useTestStore(s => s.testableDomains)
-  const loadTestableDomains = useTestStore(s => s.loadTestableDomains)
+  const [allDomains, setAllDomains] = useState<DomainInfo[]>([])
   const saveGoldenQuestion = useTestStore(s => s.saveGoldenQuestion)
   const [hoveredNode, setHoveredNode] = useState<{ node: FactNode; position: { x: number; y: number } } | null>(null)
   const [selectedIdStack, setSelectedIdStack] = useState<string[]>([])
@@ -1033,8 +1019,11 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
             )}
             {isProofComplete && sessionId && !showTestForm && (
               <button
-                onClick={() => {
-                  if (testableDomains.length === 0) loadTestableDomains(sessionId)
+                onClick={async () => {
+                  if (allDomains.length === 0) {
+                    const resp = await listDomains()
+                    setAllDomains(resp.domains)
+                  }
                   setShowTestForm(true)
                 }}
                 className="px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors"
@@ -1050,7 +1039,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   if (!testDomain || isSavingTest) return
                   setIsSavingTest(true)
                   try {
-                    const expect = extractExpectationsFromFacts(facts)
+                    const expect = await extractExpectations(sessionId)
                     // Use the final node description or first resolved inference as the question
                     const questionText = finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
                     const body: GoldenQuestionRequest = {
@@ -1075,7 +1064,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   disabled={isSavingTest}
                 >
                   <option value="">Select domain...</option>
-                  {testableDomains.map(d => (
+                  {allDomains.map(d => (
                     <option key={d.filename} value={d.filename}>{d.name}</option>
                   ))}
                 </select>

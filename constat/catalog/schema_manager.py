@@ -1415,6 +1415,7 @@ class SchemaManager:
         self,
         include_columns: bool = False,
         include_columns_for_dbs: list[str] | None = None,
+        only_databases: set[str] | None = None,
     ) -> list[str]:
         """Return table names (and optionally column names) for entity extraction.
 
@@ -1429,6 +1430,8 @@ class SchemaManager:
             include_columns_for_dbs: List of database names for which to include
                 column names (even if include_columns is False). Useful for
                 session-added databases where column names are meaningful.
+            only_databases: If set, only include entities from these databases.
+                Used to scope extraction to active domain databases.
 
         Returns:
             List of unique entity names (raw, not normalized)
@@ -1437,6 +1440,10 @@ class SchemaManager:
         include_columns_set = set(include_columns_for_dbs or [])
 
         for table_meta in self.metadata_cache.values():
+            # Skip databases not in the filter
+            if only_databases is not None and table_meta.database not in only_databases:
+                continue
+
             # Add table name (without database prefix for matching)
             # Keep raw name so EntityExtractor can generate all pattern variants
             entities.add(table_meta.name)

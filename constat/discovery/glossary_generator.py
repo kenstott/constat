@@ -338,8 +338,9 @@ def generate_glossary(
                 claimed_aliases.add(a.strip().lower())
 
     # Build candidate list (pre-filter obvious non-candidates and already-defined terms)
-    candidates = []
-    gated_count = 0
+    # Two-pass approach: first collect pre-filtered candidates + their thresholds,
+    # then batch-encode for similarity gating (avoids per-entity encode() overhead).
+    pre_candidates = []  # (entity_data, threshold, doc_names)
     for row in rows:
         entity_id, name, display_name, semantic_type, ner_type, ref_count, source_count, doc_names = row
         entity_data = {
@@ -356,12 +357,11 @@ def generate_glossary(
         if name.lower() in existing_defined:
             continue  # Already has a definition — skip
 
-        # Threshold gating: check if entity passes similarity threshold
+        # Compute threshold from doc configs (no embedding needed yet)
+        threshold = 0.0
         if has_gating and doc_configs and domain_embedding is not None and embedding_model is not None:
-            import numpy as np
             entity_doc_names = doc_names or []
-            # Find lowest threshold across source documents (most permissive)
-            threshold = float('inf')
+            threshold_val = float('inf')
             for doc_name in entity_doc_names:
                 if not doc_name:
                     continue
@@ -374,18 +374,37 @@ def generate_glossary(
                 for key in candidates_keys:
                     if key in doc_configs:
                         t = _resolve_threshold(getattr(doc_configs[key], 'generate_definitions', True))
-                        threshold = min(threshold, t)
+                        threshold_val = min(threshold_val, t)
                         break
-            if threshold == float('inf'):
-                threshold = 0.0  # No config found — allow by default
-            if threshold > 0.0:
-                entity_emb = embedding_model.encode(display_name or name, normalize_embeddings=True)
-                similarity = float(np.dot(entity_emb, domain_embedding))
-                if similarity < threshold:
-                    gated_count += 1
-                    continue
+            if threshold_val == float('inf'):
+                threshold_val = 0.0  # No config found — allow by default
+            threshold = threshold_val
 
-        candidates.append(entity_data)
+        pre_candidates.append((entity_data, threshold))
+
+    # Batch similarity gating: encode all entities that need it in one call
+    candidates = []
+    gated_count = 0
+    needs_gating = [(i, pc) for i, pc in enumerate(pre_candidates) if pc[1] > 0.0]
+
+    if needs_gating and embedding_model is not None and domain_embedding is not None:
+        import numpy as np
+        texts = [pc[0]["display_name"] or pc[0]["name"] for _, pc in needs_gating]
+        logger.info(f"Batch-encoding {len(texts)} entities for threshold gating")
+        all_embeddings = embedding_model.encode(texts, normalize_embeddings=True, batch_size=256)
+        similarities = np.dot(all_embeddings, domain_embedding)
+
+        gated_indices: set[int] = set()
+        for j, (orig_idx, (entity_data, threshold)) in enumerate(needs_gating):
+            if float(similarities[j]) < threshold:
+                gated_count += 1
+                gated_indices.add(orig_idx)
+
+        for i, (entity_data, threshold) in enumerate(pre_candidates):
+            if i not in gated_indices:
+                candidates.append(entity_data)
+    else:
+        candidates = [pc[0] for pc in pre_candidates]
 
     if not candidates:
         logger.info(f"No candidates for glossary generation in session {session_id}")

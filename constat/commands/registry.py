@@ -122,8 +122,8 @@ COMMANDS: list[tuple[tuple[str, ...], Callable[[CommandContext], CommandResult],
     (("/skill-deactivate",), skill_deactivate_command, _cmd_desc["skill-deactivate"]),
     (("/skill-draft",), skill_draft_command, _cmd_desc["skill-draft"]),
     (("/skill-download",), skill_download_command, _cmd_desc["skill-download"]),
-    # Proof/verification
-    (("/prove",), prove_command, _cmd_desc["prove"]),
+    # Reasoning chain verification
+    (("/reason",), prove_command, _cmd_desc["reason"]),
     # Diagnostics (LLM tool inspection)
     (("/schema",), schema_command, _cmd_desc["schema"]),
     (("/search-tables",), search_tables_command, _cmd_desc["search-tables"]),

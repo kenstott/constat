@@ -381,7 +381,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                 onChange={(e) => setIncludeE2e(e.target.checked)}
                 className="rounded border-gray-300 dark:border-gray-600"
               />
-              <span className="text-xs text-gray-600 dark:text-gray-400">Include E2E (slow, uses LLM)</span>
+              <span className="text-xs text-gray-600 dark:text-gray-400">Include Integration Tests (slow, uses LLM)</span>
             </label>
             <button
               onClick={() => runTests(sessionId)}
@@ -420,7 +420,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     <span className="text-[10px] uppercase font-medium text-blue-600 dark:text-blue-400">
-                      {progress.phase === 'e2e' ? 'End-to-end (LLM)' : 'Checking metadata'}
+                      {progress.phase === 'e2e' ? 'Integration test (LLM)' : 'Unit tests'}
                     </span>
                   </div>
                 )}
@@ -521,7 +521,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                                         : 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300'
                                     }`}
                                   >
-                                    e2e
+                                    integration
                                   </span>
                                 )}
                               </div>
@@ -544,7 +544,7 @@ export default function RegressionPanel({ sessionId }: Props) {
                                 {qr.end_to_end && (
                                   <div className="mb-1 border-t dark:border-gray-700 pt-1 mt-1">
                                     <div className="flex items-center gap-2">
-                                      <div className="text-[10px] font-medium text-gray-500 uppercase">End-to-End</div>
+                                      <div className="text-[10px] font-medium text-gray-500 uppercase">Integration Test</div>
                                       {qr.end_to_end.passed ? (
                                         <CheckCircleIcon className="w-3.5 h-3.5 text-green-500" />
                                       ) : (

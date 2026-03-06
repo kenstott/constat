@@ -411,8 +411,12 @@ def _run_query(managed: ManagedSession, problem: str, loop: asyncio.AbstractEven
             managed.session.doc_tools._active_domain_ids = managed.active_domains or []
 
         # Slash commands that need the async pipeline (for real-time event delivery)
+        # /redo and /reason are handled by follow_up()/solve() directly, not the
+        # command registry — skip them here so they fall through.
         stripped = problem.strip()
-        if stripped.startswith("/"):
+        _lower = stripped.lower()
+        _passthrough_commands = ("/redo", "/reason")
+        if stripped.startswith("/") and not any(_lower.startswith(c) for c in _passthrough_commands):
             from constat.commands.registry import is_command
             if is_command(stripped):
                 result = managed.session._handle_slash_command(stripped)
@@ -572,10 +576,10 @@ async def submit_query(
 
     # Fast path: slash commands bypass async execution pipeline
     # Run synchronously and emit result directly to event queue
-    # Exception: /prove needs the async pipeline for real-time event delivery
+    # Exception: /reason needs the async pipeline for real-time event delivery
     stripped = body.problem.strip()
     _lower = stripped.lower()
-    _async_commands = ("/redo", "/prove")
+    _async_commands = ("/redo", "/reason")
     if stripped.startswith("/") and not any(_lower.startswith(c) for c in _async_commands):
         try:
             from constat.commands.registry import is_command
@@ -841,7 +845,13 @@ async def websocket_endpoint(
                 except asyncio.CancelledError:
                     break
                 except Exception as send_err:
-                    logger.error(f"Error sending event: {send_err}")
+                    # WebSocket closed mid-send (e.g. reconnecting after session restore).
+                    # Re-queue the event so the next WS connection picks it up.
+                    logger.debug(f"WebSocket send failed (will retry on reconnect): {send_err}")
+                    try:
+                        managed.event_queue.put_nowait(event)
+                    except Exception:
+                        pass
                     break
 
         async def receive_commands():

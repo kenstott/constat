@@ -376,7 +376,12 @@ def extract_svo_relationships(
                     session_id=session_id,
                 )
 
-                vector_store.add_entity_relationship(rel)
+                try:
+                    vector_store.add_entity_relationship(rel)
+                except Exception as insert_err:
+                    if "Duplicate key" in str(insert_err) or "UNIQUE constraint" in str(insert_err):
+                        continue
+                    raise
                 batch_rels.append(rel)
 
                 # Track per-entity counts
@@ -621,7 +626,12 @@ def refine_relationships_with_llm(
                     session_id=session_id,
                 )
 
-                vector_store.add_entity_relationship(rel)
+                try:
+                    vector_store.add_entity_relationship(rel)
+                except Exception as insert_err:
+                    if "Duplicate key" in str(insert_err) or "UNIQUE constraint" in str(insert_err):
+                        continue
+                    raise
                 batch_rels.append(rel)
 
             if batch_rels:
@@ -685,7 +695,12 @@ def store_fk_relationships(
             session_id=session_id,
         )
 
-        vector_store.add_entity_relationship(rel)
+        try:
+            vector_store.add_entity_relationship(rel)
+        except Exception as insert_err:
+            if "Duplicate key" in str(insert_err) or "UNIQUE constraint" in str(insert_err):
+                continue
+            raise
         all_rels.append(rel)
 
     if all_rels and on_batch:
@@ -901,7 +916,13 @@ def infer_glossary_relationships(
                     session_id=session_id,
                 )
 
-                vector_store.add_entity_relationship(rel)
+                try:
+                    vector_store.add_entity_relationship(rel)
+                except Exception as insert_err:
+                    if "Duplicate key" in str(insert_err) or "UNIQUE constraint" in str(insert_err):
+                        logger.debug(f"Skipping duplicate relationship {rel_id}: {subject_name} {verb} {object_name}")
+                        continue
+                    raise
                 batch_rels.append(rel)
 
             if batch_rels:

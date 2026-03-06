@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 
 from constat.core.config import Config
 from constat.discovery.doc_tools import DocumentDiscoveryTools
+from constat.discovery.doc_tools import _transport as _doc_transport
 from constat.discovery.doc_tools._file_extractors import (
     _extract_pdf_text,
     _extract_pdf_text_from_bytes,
@@ -26,6 +27,14 @@ from constat.discovery.doc_tools._file_extractors import (
     _extract_pptx_text,
     _extract_pptx_text_from_bytes,
 )
+
+
+# Reset module-level HTTP session singleton between tests
+@pytest.fixture(autouse=True)
+def _reset_http_session():
+    _doc_transport._http_session = None
+    yield
+    _doc_transport._http_session = None
 
 
 # =============================================================================
@@ -315,19 +324,18 @@ class TestPdfLoadingViaHttpType:
 
     def test_load_pdf_via_http_content_type(self, config_with_http_pdf, mock_pdf_reader):
         """Test that PDFs are detected via HTTP content-type header."""
-        tools = DocumentDiscoveryTools(config_with_http_pdf)
-        
         mock_reader = mock_pdf_reader(["HTTP PDF content"])
-        
+
         mock_response = Mock()
         mock_response.content = b"fake pdf bytes"
         mock_response.headers = {"content-type": "application/pdf"}
         mock_response.raise_for_status = Mock()
-        
-        with patch('requests.get', return_value=mock_response), \
+
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))), \
              patch('pypdf.PdfReader', return_value=mock_reader):
+            tools = DocumentDiscoveryTools(config_with_http_pdf)
             result = tools.get_document("http_pdf")
-            
+
             assert "content" in result
             assert "[Page 1]" in result["content"]
             assert result["format"] == "text"
@@ -342,19 +350,18 @@ class TestPdfLoadingViaHttpType:
                 }
             }
         )
-        tools = DocumentDiscoveryTools(config)
-        
         mock_reader = mock_pdf_reader(["URL extension PDF content"])
-        
+
         mock_response = Mock()
         mock_response.content = b"fake pdf bytes"
         mock_response.headers = {"content-type": "application/octet-stream"}  # Not PDF content-type
         mock_response.raise_for_status = Mock()
-        
-        with patch('requests.get', return_value=mock_response), \
+
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))), \
              patch('pypdf.PdfReader', return_value=mock_reader):
+            tools = DocumentDiscoveryTools(config)
             result = tools.get_document("url_pdf")
-            
+
             assert "content" in result
             assert "[Page 1]" in result["content"]
             assert result["format"] == "text"
@@ -373,35 +380,35 @@ class TestPdfLoadingViaHttpType:
                 }
             }
         )
-        tools = DocumentDiscoveryTools(config)
-        
         mock_reader = mock_pdf_reader(["Secure PDF content"])
-        
+
         mock_response = Mock()
         mock_response.content = b"fake pdf bytes"
         mock_response.headers = {"content-type": "application/pdf"}
         mock_response.raise_for_status = Mock()
-        
-        with patch('requests.get', return_value=mock_response) as mock_get, \
+
+        mock_session_get = Mock(return_value=mock_response)
+        mock_session = Mock(get=mock_session_get)
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=mock_session), \
              patch('pypdf.PdfReader', return_value=mock_reader):
+            tools = DocumentDiscoveryTools(config)
             result = tools.get_document("auth_pdf")
-            
+
             # Verify headers were passed
-            call_kwargs = mock_get.call_args[1]
+            call_kwargs = mock_session_get.call_args[1]
             assert call_kwargs["headers"]["Authorization"] == "Bearer token123"
             assert call_kwargs["headers"]["X-Custom"] == "value"
             assert "content" in result
 
     def test_http_pdf_fetch_error(self, config_with_http_pdf):
         """Test error handling when HTTP PDF fetch fails."""
-        tools = DocumentDiscoveryTools(config_with_http_pdf)
-        
         mock_response = Mock()
         mock_response.raise_for_status = Mock(side_effect=Exception("404 Not Found"))
-        
-        with patch('requests.get', return_value=mock_response):
+
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
+            tools = DocumentDiscoveryTools(config_with_http_pdf)
             result = tools.get_document("http_pdf")
-            
+
             assert "error" in result
             assert "Failed to load" in result["error"]
 
@@ -1103,7 +1110,7 @@ class TestDocxLoadingViaDocxType:
         mock_response.content = docx_bytes
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("url_doc")
             
             assert "content" in result
@@ -1149,7 +1156,7 @@ class TestDocxLoadingViaHttpType:
         mock_response.headers = {"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("http_doc")
             
             assert "content" in result
@@ -1175,7 +1182,7 @@ class TestDocxLoadingViaHttpType:
         mock_response.headers = {"content-type": "application/octet-stream"}  # Generic content type
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("url_doc")
             
             assert "content" in result
@@ -1409,7 +1416,7 @@ class TestXlsxLoadingViaXlsxType:
         mock_response.content = xlsx_bytes
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("url_excel")
             
             assert "content" in result
@@ -1457,7 +1464,7 @@ class TestXlsxLoadingViaHttpType:
         mock_response.headers = {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("http_excel")
             
             assert "content" in result
@@ -1484,7 +1491,7 @@ class TestXlsxLoadingViaHttpType:
         mock_response.headers = {"content-type": "application/octet-stream"}
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("url_excel")
             
             assert "content" in result
@@ -1732,7 +1739,7 @@ class TestPptxLoadingViaPptxType:
         mock_response.content = pptx_bytes
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("url_pptx")
             
             assert "content" in result
@@ -1780,7 +1787,7 @@ class TestPptxLoadingViaHttpType:
         mock_response.headers = {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"}
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("http_pptx")
             
             assert "content" in result
@@ -1807,7 +1814,7 @@ class TestPptxLoadingViaHttpType:
         mock_response.headers = {"content-type": "application/octet-stream"}
         mock_response.raise_for_status = Mock()
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("url_pptx")
             
             assert "content" in result
@@ -2040,7 +2047,7 @@ class TestOfficeDocumentErrorHandling:
         mock_response = Mock()
         mock_response.raise_for_status = Mock(side_effect=Exception("404 Not Found"))
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('constat.discovery.doc_tools._transport._get_http_session', return_value=Mock(get=Mock(return_value=mock_response))):
             result = tools.get_document("http_doc")
             
             assert "error" in result

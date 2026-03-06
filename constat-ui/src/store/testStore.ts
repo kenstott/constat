@@ -9,7 +9,7 @@ interface TestProgress {
   question: string
   questionIndex: number
   questionTotal: number
-  phase: string  // "metadata" | "e2e" | ""
+  phase: string  // "metadata" (unit) | "e2e" (integration) | ""
 }
 
 interface TestState {

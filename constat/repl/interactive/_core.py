@@ -256,7 +256,7 @@ class _CoreMixin:
             ("/forget-learning <id>", "Delete a learning by ID"),
             ("/audit", "Re-derive last result with full audit trail"),
             ("/summarize <target>", "Summarize plan|session|facts|<table>"),
-            ("/prove", "Verify conversation claims with auditable proof"),
+            ("/reason", "Verify conversation claims with auditable reasoning chain"),
             ("/quit, /q", "Exit"),
         ]
         for cmd, desc in commands:
@@ -338,7 +338,7 @@ class _CoreMixin:
             self._handle_audit()
         elif cmd == "/summarize":
             self._handle_summarize(arg)
-        elif cmd == "/prove":
+        elif cmd == "/reason":
             self._handle_prove()
         else:
             self.console.print(f"[yellow]Unknown: {cmd}[/yellow]")

@@ -10,7 +10,7 @@
 """Execution phase and plan approval handling.
 
 All queries run in exploratory mode by default (fast, conversational, best-effort).
-Use the /prove command to verify claims from the conversation with auditable proofs.
+Use the /reason command to verify claims from the conversation with auditable reasoning chains.
 """
 
 from dataclasses import dataclass, field
@@ -22,7 +22,7 @@ class Mode(Enum):
     """Execution mode - kept for backwards compatibility.
 
     Note: Mode selection is no longer used. All queries run exploratory by default.
-    Use /prove to generate auditable proofs when needed.
+    Use /reason to generate auditable reasoning chains when needed.
     """
 
     PROOF = "proof"
@@ -121,7 +121,7 @@ class SubIntent(Enum):
     """Stop and revise the plan."""
 
     PROVE = "prove"
-    """Generate proof for conversation claims (/prove)."""
+    """Generate proof for conversation claims (/reason)."""
 
 
 @dataclass

@@ -1371,19 +1371,33 @@ class RelationalStore:
             "DELETE FROM glossary_clusters WHERE session_id = ?", [session_id]
         )
         seen: set[str] = set()
+        seen_exact: set[str] = set()
         batch = []
         for name, cluster_id in zip(term_names, labels):
             key = name.lower()
-            if key in seen:
+            if key in seen or name in seen_exact:
                 continue
             seen.add(key)
+            seen_exact.add(name)
             batch.append((name, int(cluster_id), session_id))
 
         if batch:
-            self._conn.executemany(
-                "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
-                batch,
-            )
+            try:
+                self._conn.executemany(
+                    "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?)",
+                    batch,
+                )
+            except Exception as e:
+                if "Duplicate" not in str(e):
+                    raise
+                for row in batch:
+                    try:
+                        self._conn.execute(
+                            "INSERT INTO glossary_clusters (term_name, cluster_id, session_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                            list(row),
+                        )
+                    except Exception:
+                        pass
 
         self._clusters_dirty = False
 
@@ -1539,7 +1553,7 @@ class RelationalStore:
         self._evict_ner_scope_fingerprint(fingerprint)
 
         self._conn.execute(
-            "INSERT INTO ner_scope_cache (fingerprint, entity_count) VALUES (?, ?)",
+            "INSERT INTO ner_scope_cache (fingerprint, entity_count) VALUES (?, ?) ON CONFLICT (fingerprint) DO UPDATE SET entity_count = excluded.entity_count",
             [fingerprint, entity_count],
         )
 

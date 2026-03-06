@@ -361,6 +361,41 @@ def _check_entities(
     )
 
 
+# Map FactSource type names to document-name prefixes for grounding checks.
+# When a grounding assertion uses a source type (e.g. "database") instead of
+# a specific document pattern (e.g. "schema:sales.customers"), we match against
+# the corresponding document-name prefix in the embeddings table.
+_SOURCE_TYPE_PREFIXES: dict[str, list[str]] = {
+    "database": ["schema:"],
+    "document": ["Document:", "doc:"],
+    "api": ["api:", "API:"],
+    "embedded": ["schema:", "api:", "Document:", "doc:"],  # any indexed source
+    "cache": [],
+    "derived": [],
+    "llm_knowledge": [],
+}
+
+
+def _matches_grounding(expected: str, doc_names: list[str]) -> bool:
+    """Check if an expected grounding pattern matches any document name.
+
+    Handles both specific patterns (substring match) and source-type
+    shorthand like "database" or "document" (prefix match).
+    """
+    prefixes = _SOURCE_TYPE_PREFIXES.get(expected)
+    if prefixes is not None:
+        # Source-type shorthand — match if ANY doc has a matching prefix
+        if not prefixes:
+            # Ungroundable source types (cache, derived, llm) — pass trivially
+            return True
+        return any(
+            any(doc_name.startswith(p) for p in prefixes)
+            for doc_name in doc_names
+        )
+    # Specific pattern — substring match (original behaviour)
+    return any(expected in doc_name for doc_name in doc_names)
+
+
 def _check_grounding(
     relational, assertions: list[GroundingAssertion], session_id: str,
     domain_ids: list[str], user_id: str = "default",
@@ -373,7 +408,7 @@ def _check_grounding(
             continue
         doc_names = relational.get_entity_document_names(entity.id)
         matched = any(
-            any(expected in doc_name for doc_name in doc_names)
+            _matches_grounding(expected, doc_names)
             for expected in ga.resolves_to
         )
         if not matched:

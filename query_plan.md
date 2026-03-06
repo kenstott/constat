@@ -4,7 +4,7 @@
 flowchart TD
     subgraph entry["Phase 1: Entry & Fast Paths"]
         Q["User submits query"] --> SLASH{Slash command?}
-        SLASH -->|Yes| CMD["Handle command<br>/tables, /help, /prove"]
+        SLASH -->|Yes| CMD["Handle command<br>/tables, /help, /reason"]
         SLASH -->|No| META{Meta-question?<br>regex check}
         META -->|Yes| META_ANS["Answer from<br>capabilities doc"]
         META -->|No| PAR

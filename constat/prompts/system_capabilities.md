@@ -18,7 +18,7 @@ Steps form a **directed acyclic graph (DAG)** — independent steps run in paral
 ## Proof Mode (Auditable Reasoning)
 
 For formal verification of claims:
-- Activated with the `/prove` command or by asking questions with "verify", "prove", "validate"
+- Activated with the `/reason` command or by asking questions with "verify", "prove", "validate"
 - Your question becomes a **hypothesis** to prove or disprove
 - Works backwards: **recursively decomposes claims** until grounded in verifiable facts
 - Each inference must produce evidence supporting or refuting the claim
@@ -114,7 +114,7 @@ Constat produces rich output:
 ## Commands
 
 Key commands available:
-- `/prove` — Re-run analysis in auditable proof mode
+- `/reason` — Re-run analysis in auditable reasoning chain mode
 - `/tables` — List all session tables
 - `/show <table>` — Display a specific table
 - `/query <sql>` — Run SQL against session data

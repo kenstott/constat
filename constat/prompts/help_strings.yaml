@@ -48,7 +48,7 @@ help_commands:
   # Analysis
   - ["/discover <query>", "Search all data sources (returns structured JSON)", "Analysis"]
   - ["/summarize <target>", "Summarize plan|session|facts|<table>", "Analysis"]
-  - ["/prove", "Verify conversation claims with auditable proof", "Analysis"]
+  - ["/reason", "Verify conversation claims with auditable reasoning chain", "Analysis"]
   - ["/correct <text>", "Record a correction for future reference", "Analysis"]
   - ["/learnings", "Show learnings and rules", "Analysis"]
   - ["/compact-learnings", "Promote similar learnings into rules", "Analysis"]
@@ -139,7 +139,7 @@ command_descriptions:
   skill-deactivate: "Deactivate a skill"
   skill-draft: "Draft a skill using AI"
   skill-download: "Download skill as Claude Desktop zip"
-  prove: "Verify conversation with auditable proof"
+  reason: "Verify conversation with auditable reasoning chain"
   glossary: "Show glossary terms"
   define: "Add a glossary definition"
   undefine: "Remove a glossary definition"

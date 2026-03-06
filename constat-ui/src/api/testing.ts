@@ -1,5 +1,5 @@
 import { get, post, put, del } from '@/api/client'
-import type { GoldenQuestionRequest, GoldenQuestionResponse, TestableDomainInfo, TestRunResponse } from '@/types/api'
+import type { GoldenQuestionExpectations, GoldenQuestionRequest, GoldenQuestionResponse, TestableDomainInfo, TestRunResponse } from '@/types/api'
 import { useAuthStore, isAuthDisabled } from '@/store/authStore'
 
 export async function listTestableDomains(sessionId: string): Promise<TestableDomainInfo[]> {
@@ -106,4 +106,10 @@ export async function deleteGoldenQuestion(
   index: number,
 ): Promise<void> {
   return del<void>(`/sessions/${sessionId}/tests/${domain}/questions/${index}`)
+}
+
+export async function extractExpectations(
+  sessionId: string,
+): Promise<GoldenQuestionExpectations> {
+  return get<GoldenQuestionExpectations>(`/sessions/${sessionId}/tests/expectations`)
 }

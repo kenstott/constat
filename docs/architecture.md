@@ -60,7 +60,7 @@ This enables **separation of concerns** within a single query - different steps 
 | Mode | Purpose | Trigger |
 |------|---------|---------|
 | **Exploratory** | Multi-step data analysis, visualization | Default for data questions |
-| **Auditable** | Fact resolution with derivation traces | `/prove` command or compliance context |
+| **Auditable** | Fact resolution with derivation traces | `/reason` command or compliance context |
 | **Knowledge** | Document lookup + LLM synthesis | Questions about concepts, not data |
 
 ### Artifacts
@@ -514,7 +514,7 @@ WebSocket connection delivers live events:
 
 ### Auditable Mode UX
 
-When the user clicks the **proof button** or uses `/prove`, the system switches to auditable mode with a distinct UX:
+When the user clicks the **reasoning chain button** or uses `/reason`, the system switches to auditable mode with a distinct UX:
 
 **Flow:**
 1. Generate proof plan (propositions + inferences with dependencies)

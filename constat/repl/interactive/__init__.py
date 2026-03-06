@@ -27,7 +27,7 @@ REPL_COMMANDS = [
     "/doc", "/docs", "/documents", "/api", "/apis",
     "/discover", "/correct", "/learnings", "/compact-learnings", "/forget-learning",
     "/rule", "/rule-edit", "/rule-delete",
-    "/audit", "/summarize", "/prove",
+    "/audit", "/summarize", "/reason",
     "/glossary", "/define", "/undefine", "/refine",
     "/schema", "/search-tables", "/search-apis", "/search-docs", "/search-chunks",
     "/lookup", "/entity", "/known-facts", "/sources",

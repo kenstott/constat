@@ -66,14 +66,11 @@ def mock_vector_store():
         FakeGlossaryTerm("ARR", "Annual recurring revenue", [], status="draft", provenance="llm"),
         FakeGlossaryTerm("MRR", "Monthly recurring revenue", ["Monthly Rev"], status="draft", provenance="human"),
     ]
-    # Mock relationship query
-    mock_conn = MagicMock()
-    mock_conn.execute.return_value.fetchall.return_value = [
-        ("r1", "Revenue", "DRIVES", "Profit", "Revenue drives profit", 0.9),
-        ("r2", "Customer", "HAS", "Subscription", "Customer has subscription", 0.8),
-        ("r3", "Churn Rate", "AFFECTS", "Revenue", "Churn rate affects revenue", 0.7),
+    vs.list_session_relationships.return_value = [
+        {"id": "r1", "subject_name": "Revenue", "verb": "DRIVES", "object_name": "Profit", "sentence": "Revenue drives profit", "confidence": 0.9, "user_edited": False},
+        {"id": "r2", "subject_name": "Customer", "verb": "HAS", "object_name": "Subscription", "sentence": "Customer has subscription", "confidence": 0.8, "user_edited": False},
+        {"id": "r3", "subject_name": "Churn Rate", "verb": "AFFECTS", "object_name": "Revenue", "sentence": "Churn rate affects revenue", "confidence": 0.7, "user_edited": False},
     ]
-    vs._conn = mock_conn
     return vs
 
 

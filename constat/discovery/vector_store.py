@@ -273,6 +273,22 @@ class DuckDBVectorStore(VectorStoreBackend):
         """Get the thread-local connection (backwards compatibility)."""
         return self._db.conn
 
+    @property
+    def _fts_dirty(self):
+        return self._vector._fts_dirty
+
+    @_fts_dirty.setter
+    def _fts_dirty(self, value):
+        self._vector._fts_dirty = value
+
+    @property
+    def _clusters_dirty(self):
+        return self._relational._clusters_dirty
+
+    @_clusters_dirty.setter
+    def _clusters_dirty(self, value):
+        self._relational._clusters_dirty = value
+
     # ------------------------------------------------------------------
     # Schema init (stays in DuckDBVectorStore for Phase 1)
     # ------------------------------------------------------------------

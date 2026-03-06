@@ -1201,19 +1201,28 @@ If the original question had multiple goals or sub-questions, note whether all w
             except Exception as e:
                 logger.warning(f"Failed to generate DFD: {e}")
 
-            # Build proof nodes for summary generation
+            # Build proof nodes for summary generation and test extraction
             proof_nodes = []
             for p in premises:
                 pid = p['id']
                 resolved = resolved_premises.get(pid)
-                proof_nodes.append({
+                node_data = {
                     "id": pid,
                     "name": p['name'],
                     "value": resolved.value if resolved else None,
                     "source": resolved.source.value if resolved and hasattr(resolved.source, 'value') else str(resolved.source) if resolved else p.get('source'),
                     "confidence": resolved.confidence if resolved else None,
                     "dependencies": [],
-                })
+                }
+                # Include specific source details for test expectation extraction
+                if resolved:
+                    if resolved.source_name:
+                        node_data["source_name"] = resolved.source_name
+                    if resolved.table_name:
+                        node_data["table_name"] = resolved.table_name
+                    if resolved.api_endpoint:
+                        node_data["api_endpoint"] = resolved.api_endpoint
+                proof_nodes.append(node_data)
             for inf in inferences:
                 iid = inf['id']
                 value = resolved_inferences.get(iid)
