@@ -652,7 +652,11 @@ async def update_definition(
         return {"status": "no_changes"}
 
     logger.info(f"update_definition({name}): updates={updates}, user_id={managed.user_id}, session_id={session_id}")
-    result = vs.update_glossary_term(name, session_id, updates, user_id=managed.user_id)
+    try:
+        result = vs.update_glossary_term(name, session_id, updates, user_id=managed.user_id)
+    except Exception:
+        logger.exception(f"update_definition({name}): update_glossary_term failed")
+        raise
     logger.info(f"update_definition({name}): result={result}")
 
     if not result:

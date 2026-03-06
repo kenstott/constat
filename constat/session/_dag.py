@@ -1375,12 +1375,18 @@ YOUR JSON RESPONSE:"""
         columns = []
         for _, row in schema_df.iterrows():
             col_name = row.iloc[0]
-            col_type = str(row.iloc[1]) if len(row) > 1 else "unknown"
+            col_type = str(row.iloc[1]).lower() if len(row) > 1 else "unknown"
+            is_text = any(t in col_type for t in ("varchar", "text", "char", "string"))
+            null_expr = (
+                f"\"{col_name}\" IS NULL OR \"{col_name}\" = ''"
+                if is_text
+                else f"\"{col_name}\" IS NULL"
+            )
             try:
                 stats = self.datastore.query(
                     f"SELECT "
                     f"COUNT(DISTINCT \"{col_name}\") as distinct_count, "
-                    f"SUM(CASE WHEN \"{col_name}\" IS NULL OR CAST(\"{col_name}\" AS VARCHAR) = '' THEN 1 ELSE 0 END) as null_count "
+                    f"SUM(CASE WHEN {null_expr} THEN 1 ELSE 0 END) as null_count "
                     f"FROM {table_name}"
                 )
                 # noinspection PyTypeChecker

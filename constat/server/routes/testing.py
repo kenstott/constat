@@ -178,7 +178,8 @@ async def run_tests(
         domain_results: list[dict] = []
 
         for df in domain_filenames:
-            q: queue.Queue = queue.Queue()
+            evt_queue: queue.Queue = queue.Queue()
+            thread_error: list[Exception] = []
 
             def _run(d=df):
                 try:
@@ -186,9 +187,12 @@ async def run_tests(
                         config, d, tag_list, session_id, user_id,
                         include_e2e=body.include_e2e,
                     ):
-                        q.put(evt)
+                        evt_queue.put(evt)
+                except Exception as exc:
+                    logger.exception(f"Test runner error for domain {d}")
+                    thread_error.append(exc)
                 finally:
-                    q.put(None)  # sentinel
+                    evt_queue.put(None)  # sentinel
 
             thread = threading.Thread(target=_run, daemon=True)
             thread.start()
@@ -198,7 +202,7 @@ async def run_tests(
             loop = asyncio.get_event_loop()
 
             while True:
-                evt = await loop.run_in_executor(None, q.get)
+                evt = await loop.run_in_executor(None, evt_queue.get)
                 if evt is None:
                     break
 
@@ -220,6 +224,16 @@ async def run_tests(
                 yield f"data: {json.dumps(payload)}\n\n"
 
             thread.join()
+
+            # If the thread errored, emit an error event
+            if thread_error:
+                err_payload = {
+                    "event": "error",
+                    "domain": df,
+                    "domain_name": domain_name,
+                    "message": str(thread_error[0]),
+                }
+                yield f"data: {json.dumps(err_payload)}\n\n"
 
             # Build domain summary
             passed = sum(1 for qd in domain_questions if qd.get("passed"))

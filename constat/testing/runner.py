@@ -34,11 +34,14 @@ from constat.testing.models import (
 logger = logging.getLogger(__name__)
 
 
-def _open_relational(config: Config):
-    """Open the DuckDB vector store read-only and return the relational layer."""
+def _open_doc_tools(config: Config):
+    """Open the DuckDB vector store read-only and return (doc_tools, relational).
+
+    Caller must keep the doc_tools reference alive to prevent GC closing the connection.
+    """
     from constat.discovery.doc_tools import DocumentDiscoveryTools
     doc_tools = DocumentDiscoveryTools(config, skip_auto_index=True)
-    return doc_tools._vector_store._relational
+    return doc_tools, doc_tools._vector_store._relational
 
 
 def run_domain_test(
@@ -65,7 +68,7 @@ def run_domain_test(
     if not questions:
         return DomainTestResult(domain=domain_filename, questions=[])
 
-    relational = _open_relational(config)
+    _dt, relational = _open_doc_tools(config)
 
     results = []
     for q in questions:
@@ -154,7 +157,7 @@ def iter_domain_test(
         yield TestProgressEvent(event="domain_done", domain=domain_filename, domain_name=domain_name)
         return
 
-    relational = _open_relational(config)
+    _dt, relational = _open_doc_tools(config)
 
     yield TestProgressEvent(
         event="domain_start", domain=domain_filename, domain_name=domain_name,
