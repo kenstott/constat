@@ -87,6 +87,7 @@ class ConstatAPIImpl:
         problem: str,
         *,
         require_approval: bool = True,
+        force_plan: bool = False,
     ) -> SolveResult:
         """Solve a new problem, generating and executing a plan."""
         # Store original approval setting and temporarily override
@@ -94,7 +95,7 @@ class ConstatAPIImpl:
         self._session.session_config.require_approval = require_approval
 
         try:
-            result = self._session.solve(problem)
+            result = self._session.solve(problem, force_plan=force_plan)
             return self._convert_solve_result(result)
         except Exception as e:
             return SolveResult(success=False, error=str(e))
@@ -675,23 +676,39 @@ class ConstatAPIImpl:
     @staticmethod
     def _extract_steps(result: dict) -> tuple[StepInfo, ...]:
         """Extract step information from result dict."""
-        steps = []
-        plan = result.get("plan", {})
+        from constat.core.models import Plan
+
+        plan = result.get("plan")
+        if plan is None:
+            return ()
+
+        # Handle Plan object (returned by session.solve)
+        if isinstance(plan, Plan):
+            steps = []
+            for step in plan.steps:
+                status = step.status.value if step.status else "pending"
+                steps.append(StepInfo(
+                    number=step.number,
+                    description=step.goal,
+                    status=status,
+                    code=step.code if hasattr(step, "code") else None,
+                ))
+            return tuple(steps)
+
+        # Handle dict plan (legacy / serialized)
         plan_steps = plan.get("steps", []) if isinstance(plan, dict) else []
         step_results = result.get("step_results", [])
-
+        steps = []
         for i, step in enumerate(plan_steps):
             status = "completed" if i < len(step_results) else "pending"
             if i < len(step_results) and not step_results[i].get("success", True):
                 status = "failed"
-
             steps.append(StepInfo(
                 number=i + 1,
-                description=step.get("description", ""),
+                description=step.get("description", "") or step.get("goal", ""),
                 status=status,
                 code=step.get("code"),
             ))
-
         return tuple(steps)
 
     @staticmethod

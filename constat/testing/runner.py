@@ -225,7 +225,7 @@ def _run_e2e_question(
         auto_approve=True,
     )
 
-    solve_result = api.solve(gq.question, require_approval=False)
+    solve_result = api.solve(gq.question, require_approval=False, force_plan=True)
     duration = time.monotonic() - t0
 
     # Check expect_success
