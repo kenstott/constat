@@ -54,10 +54,10 @@ Technical documentation of the system architecture and logic flow.
 │ CLARIFY / PLAN /     │ │ │  DAG Sched.  │ │ │ ┌───────────────────────────┐ │
 │ EXECUTE / PROVE      │ │ └──────────────┘ │ │ │    TaskRouter             │ │
 │                      │ │ ┌──────────────┐ │ │ │ (providers/router.py)     │ │
-│                      │ │ │  Auditable   │ │ │ └───────────────────────────┘ │
-│                      │ │ │ FactResolver │ │ │ ┌───────────────────────────┐ │
-│                      │ │ │ ProbLog      │ │ │ │    DataStore              │ │
-│                      │ │ │ Proof Tree   │ │ │ │ (datastore.py)            │ │
+│                      │ │ │  Reasoning  │ │ │ └───────────────────────────┘ │
+│                      │ │ │  Chain      │ │ │ ┌───────────────────────────┐ │
+│                      │ │ │ FactResolver│ │ │ │    DataStore              │ │
+│                      │ │ │ Proof Tree  │ │ │ │ (datastore.py)            │ │
 │                      │ │ └──────────────┘ │ │ └───────────────────────────┘ │
 └──────────────────────┘ └──────────────────┘ │ ┌───────────────────────────┐ │
                                               │ │    DiscoveryTools         │ │
@@ -136,7 +136,7 @@ All queries are classified before routing to an execution mode.
 ```python
 class Mode(Enum):
     EXPLORATORY = "exploratory"  # Multi-step planner (default)
-    PROOF = "proof"              # Fact resolver with derivation traces
+    PROOF = "proof"              # Reasoning chain: fact resolver with derivation traces
 ```
 
 ```python
@@ -148,7 +148,7 @@ class Phase(Enum):
     FAILED = "failed"                    # Execution failed
 ```
 
-All queries run exploratory by default. Use `/prove` for auditable proofs.
+All queries run exploratory by default. Use `/reason` for auditable reasoning chains.
 
 ## Request Processing Flow
 
@@ -186,7 +186,8 @@ User Question: "What are the top 5 customers by revenue this quarter?"
 │    - Category filters: "product analysis" → "Which product categories?"     │
 │                                                                             │
 │  If ambiguity detected:                                                     │
-│    1. Present clarifying questions to user                                  │
+│    1. Present clarifying questions with interactive widgets                 │
+│       (choice, curation, ranking, table, mapping, tree, annotation)        │
 │    2. User provides answers (or skips to proceed anyway)                    │
 │    3. Enhanced question passed to planning phase                            │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -274,7 +275,7 @@ User Question: "What are the top 5 customers by revenue this quarter?"
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Auditable Mode: Fact Resolution
+### Reasoning Chain Mode: Fact Resolution
 
 Used for compliance and scenarios requiring provable conclusions.
 
@@ -343,12 +344,12 @@ User Question: "Is customer C001 a VIP?"
 │  Parallel execution:                                                        │
 │    Level 0 (leaf facts) → resolved concurrently via asyncio.gather          │
 │    Level N → resolved once Level 0..N-1 complete                            │
-│    Sub-proofs resolved recursively with parallelization at each level       │
+│    Sub-chains resolved recursively with parallelization at each level      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  4. PROOF TREE + DERIVATION TRACE                                           │
+│  4. REASONING CHAIN + DERIVATION TRACE                                      │
 │                                                                             │
 │  ProofNode tree built showing:                                              │
 │    - Each fact, its value, source, and confidence                           │
@@ -367,7 +368,7 @@ Alternative fact resolution engine using logic programming semantics:
 - Facts are **predicates** (ground truths from database queries)
 - Dependencies are **rules** (symbolic derivations)
 - Resolution is **depth-first search** (Prolog-style)
-- Proofs come automatically from the resolution trace
+- Reasoning chains come automatically from the resolution trace
 - Confidence values propagated as probabilities
 
 Register SQL executors for database-backed predicates. `resolve_fact()` returns a value plus `proof.to_trace()` for the full derivation chain.
@@ -1024,7 +1025,7 @@ Alternative Textual-based REPL (~5,375 lines) with:
 - `/replay <name>` - Replay a saved plan
 - `/history` - List previous sessions
 - `/resume <id>` - Continue a session
-- `/prove` - Switch to auditable mode
+- `/reason` - Switch to reasoning chain mode
 - `/roles` - List/switch roles
 - `/skills` - List available skills
 - `/learnings` - View stored learnings
@@ -1184,7 +1185,7 @@ Code Execution
 8. **Parallel Fact Resolution** - Resolve independent facts concurrently (3-5x speedup)
    - Top-level assumed facts have no dependencies → resolve in parallel
    - Rate-limited to avoid API throttling (semaphore + RPM tracking)
-   - Sub-proofs resolved recursively with parallelization at each level
+   - Sub-chains resolved recursively with parallelization at each level
 
 ### TaskRouter (`providers/router.py`)
 

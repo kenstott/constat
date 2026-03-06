@@ -1,6 +1,6 @@
 # Platform Roles & Persona Architecture
 
-> **Status:** Design. No implementation yet.
+> **Status:** Partially implemented. Persona config, permissions, admin token auth, and feedback flagging are implemented. Full role-based visibility gating is not yet implemented.
 
 ## Problem
 
@@ -200,7 +200,7 @@ server:
 
       bob@company.com:
         role: domain_builder
-        domains: [sales.yaml, hr.yaml]
+        domains: [sales-analytics, hr-reporting]
 
       carol@company.com:
         role: sme
@@ -329,7 +329,7 @@ The glossary + entity model is the differentiator. Generic "chat with your data"
 - Query execution engine
 - Glossary resolution
 - Skill execution
-- DAG/proof engine
+- DAG/reasoning chain engine
 - Storage layer
 - LLM calls
 - Tiered config merging

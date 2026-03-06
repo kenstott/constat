@@ -1,6 +1,14 @@
 # Golden Questions: Domain Regression Testing
 
-> **Status:** Design. No implementation yet.
+> **Status:** Implemented (Phase 1 + Phase 2). Phase 3 (CI integration) not yet implemented.
+
+### Implementation Notes
+
+- SSE streaming for real-time test progress in the UI
+- Alias resolution in entity, grounding, and relationship checks
+- Force reasoning-chain mode for end-to-end tests
+- UI panel (`RegressionPanel`) with golden question CRUD
+- `constat test` CLI command with domain/tag/e2e filtering
 
 ## Problem
 

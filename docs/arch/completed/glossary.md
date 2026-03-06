@@ -538,6 +538,8 @@ This replaces `search_documents`, `search_glossary`, and `search_all` with a sin
 
 > Moved from `config_merge.md` Phase 8. Relationships describe how glossary terms connect to each other beyond taxonomy (parent/child). They surface join paths, business rules, and domain constraints.
 
+**Verb normalization:** All relationship verbs are stored in UPPER_SNAKE_CASE (e.g., `PLACES`, `BELONGS_TO`, `HAS_KIND`). The `relationship_extractor.py` normalizes verbs on extraction: lowercase → uppercase, spaces → underscores, lemmatized to base form. This ensures consistent matching in golden question assertions and glossary queries.
+
 Three suggestion sources, in order of confidence:
 
 **1. FK-derived relationships (high confidence, no LLM needed)**

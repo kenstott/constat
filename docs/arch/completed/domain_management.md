@@ -1,6 +1,6 @@
 # Domain Management Architecture
 
-> **Status:** Design. No phases implemented yet.
+> **Status:** Implemented (Phases 1–4). Phase 5 (cleanup — remove hamburger menu domain section) in progress.
 
 ## Problem
 

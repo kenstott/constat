@@ -8,7 +8,7 @@ Skills are domain-specific knowledge modules (`SKILL.md` files) that inject cont
 
 This document covers two concerns:
 1. The existing skill creation flow (manual + AI-drafted)
-2. A new "Convert Proof to Skill" option that captures verified derivation knowledge as a reusable skill
+2. A new "Convert Reasoning Chain to Skill" option that captures verified derivation knowledge as a reusable skill
 
 ## Current Skill Creation
 
@@ -47,43 +47,43 @@ Markdown body with:
 
 Both paths live in the ArtifactPanel Skills accordion section.
 
-## Decision: Proof-to-Skill Conversion
+## Decision: Reasoning-Chain-to-Skill Conversion
 
 ### Problem
 
-A completed proof contains verified facts, derivation strategies, source bindings, and confidence scores — exactly the kind of domain knowledge that makes a good skill. Today this knowledge is discarded after viewing. Users who want to capture it must manually author a skill from memory.
+A completed reasoning chain contains verified facts, derivation strategies, source bindings, and confidence scores — exactly the kind of domain knowledge that makes a good skill. Today this knowledge is discarded after viewing. Users who want to capture it must manually author a skill from memory.
 
 ### Proposal
 
-When a completed proof is in scope, add a **"Save as Skill"** action to the ProofDAGPanel. This is a third creation path alongside manual and AI-drafted:
+When a completed reasoning chain is in scope, add a **"Save as Skill"** action to the ProofDAGPanel. This is a third creation path alongside manual and AI-drafted:
 
 | Path | Trigger | Input | Output |
 |------|---------|-------|--------|
 | Manual | Plus button in Skills panel | Name, description, tools, body | SKILL.md written directly |
 | AI Draft | "Draft with AI" button | Name + description | LLM generates full SKILL.md |
-| **From Proof** | **"Save as Skill" in ProofDAGPanel** | **Proof nodes + summary + optional name** | **LLM distills proof into SKILL.md** |
+| **From Reasoning Chain** | **"Save as Skill" in ProofDAGPanel** | **Reasoning chain nodes + summary + optional name** | **LLM distills reasoning chain into SKILL.md** |
 
 ### Constraints
 
-- At most **one proof** is in scope at a time (per `proofStore`)
-- The proof must be **completed** (`hasCompletedProof === true`) before conversion
-- The proof summary (LLM-generated) should be available but is not strictly required
+- At most **one reasoning chain** is in scope at a time (per `proofStore`)
+- The reasoning chain must be **completed** (`hasCompletedProof === true`) before conversion
+- The reasoning chain summary (LLM-generated) should be available but is not strictly required
 
 ### UX Flow
 
 ```
-ProofDAGPanel (proof completed)
+ProofDAGPanel (reasoning chain completed)
   │
-  ├─ Existing: "View Summary" tab shows LLM-generated proof summary
+  ├─ Existing: "View Summary" tab shows LLM-generated reasoning chain summary
   │
   └─ New: "Save as Skill" button (appears after proof_complete)
        │
        ├─ Click → inline form (name input, optional description override)
-       │          Pre-populated description from proof summary first line
+       │          Pre-populated description from reasoning chain summary first line
        │
        └─ Confirm → POST /api/skills/from-proof
                      │
-                     ├─ LLM distills proof nodes into skill content
+                     ├─ LLM distills reasoning chain nodes into skill content
                      ├─ Creates SKILL.md with verified patterns
                      └─ Skill appears in ArtifactPanel Skills list
 ```
@@ -96,14 +96,14 @@ The skill gets two artifacts: a **SKILL.md** (LLM-distilled patterns) and a **sc
 
 #### SKILL.md — Reusable Patterns
 
-| Proof Data | Skill Output |
+| Reasoning Chain Data | Skill Output |
 |------------|-------------|
 | Resolved fact names + values | Metric definitions table |
 | Fact sources (DATABASE, API, DOCUMENT) | Source reference section |
 | Derivation strategies (SQL, aggregation, join) | SQL patterns as code blocks |
 | Fact dependencies (DAG edges) | Derivation order / methodology notes |
 | Confidence scores | Reliability annotations |
-| Proof summary | Skill description + overview |
+| Reasoning chain summary | Skill description + overview |
 
 #### scripts/proof.py — Executable Inference Code
 
@@ -129,9 +129,9 @@ This generation logic is reused for the skill's `scripts/` directory. The script
 The SKILL.md body references the script:
 
 ```markdown
-## Executable Proof
+## Executable Reasoning Chain
 
-A verified proof script is available at `scripts/proof.py`.
+A verified reasoning chain script is available at `scripts/proof.py`.
 Run standalone: `python scripts/proof.py`
 
 Premise parameters (configurable via kwargs to `run_proof()`):
@@ -219,12 +219,12 @@ The endpoint:
 
 #### Prompt Strategy
 
-The key distinction: a proof captures **specific verified values** ("Q4 churn was 12.3%"). A skill should capture **reusable patterns** ("To calculate churn rate, use `status = 'C'` in `sales_db.customers`, aggregate by period"). The executable script preserves the specific derivation for reproducibility, while the SKILL.md generalizes.
+The key distinction: a reasoning chain captures **specific verified values** ("Q4 churn was 12.3%"). A skill should capture **reusable patterns** ("To calculate churn rate, use `status = 'C'` in `sales_db.customers`, aggregate by period"). The executable script preserves the specific derivation for reproducibility, while the SKILL.md generalizes.
 
 ```
-You are converting a verified proof into a reusable skill.
+You are converting a verified reasoning chain into a reusable skill.
 
-The proof verified specific claims. Your job is to extract the
+The reasoning chain verified specific claims. Your job is to extract the
 REUSABLE PATTERNS — not the specific values.
 
 The exact inference code is saved separately as scripts/proof.py.
@@ -239,7 +239,7 @@ Focus on:
 - Reference scripts/proof.py for the executable derivation
 
 Do NOT include:
-- Specific numeric results from this proof run
+- Specific numeric results from this reasoning chain run
 - Date ranges or filters specific to the original query
 - One-time observations that won't generalize
 - Raw code (that's in scripts/proof.py)
@@ -324,7 +324,7 @@ async def create_skill_from_proof(
 3. Refactor `download_inference_code` to call the extracted function
 4. No behavior change — pure refactor
 
-### Phase 2: Backend Skill-from-Proof
+### Phase 2: Backend Skill-from-Reasoning-Chain
 
 1. Cache `prove_conversation()` result on session as `last_proof_result`
 2. Add `skill_from_proof()` to `constat/core/skills.py`

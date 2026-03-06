@@ -1,4 +1,6 @@
-# Proof-Solving Process Diagram
+# Reasoning Chain Process Diagram
+
+> **Note:** The UI refers to this feature as "Reasoning Chain". Internal code retains `proof_*` names (e.g., `proof_complete`, `proof_tree.py`).
 
 ## High-Level Flow
 
@@ -12,7 +14,7 @@ User Question
          │ QUERY
          ▼
 ┌─────────────────┐
-│  Auditable Mode  │  Session.solve() → _solve_auditable()
+│ Reasoning Chain  │  Session.solve() → _solve_auditable()
 └────────┬────────┘
          │
          ▼

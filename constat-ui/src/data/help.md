@@ -71,7 +71,7 @@ Type `/` in the input to see autocomplete. Key commands:
 |---------|-------------|
 | `/discover <query>` | Search all data sources (returns structured JSON) |
 | `/summarize <target>` | Summarize plan, session, facts, or a table |
-| `/prove` | Verify claims with auditable proof |
+| `/reason` | Verify claims with auditable reasoning chain |
 | `/correct <text>` | Record a correction as a learning |
 | `/learnings` | Show learnings and rules |
 | `/compact-learnings` | Promote similar learnings into rules |
@@ -85,6 +85,22 @@ Type `/` in the input to see autocomplete. Key commands:
 | `/insights` | Toggle insight synthesis |
 | `/preferences` | Show current preferences |
 | `/user` | Show or set current user |
+
+## Clarification Widgets
+
+When a query is ambiguous, Constat presents clarifying questions before planning. Questions use specialized interactive widgets:
+
+| Widget | Purpose |
+|--------|---------|
+| **Choice** | Radio group for selecting from suggested answers |
+| **Curation** | Keep/remove list for filtering items |
+| **Ranking** | Drag-to-reorder for prioritizing items |
+| **Table** | Tabular selection for structured data |
+| **Mapping** | Match items from two lists |
+| **Tree** | Hierarchical selection (expand/collapse) |
+| **Annotation** | Label or tag items inline |
+
+Each question can also be answered with free-form text via "Other". You can skip clarification to proceed with defaults.
 
 ## Plan Editing
 
@@ -109,7 +125,8 @@ The right panel contains these sections:
 | **Learnings** | Patterns learned from corrections and interactions |
 | **Exploratory Code** | Python code generated for each step (collapsible, downloadable) |
 | **Facts** | Concrete values with provenance |
-| **Glossary** | Business terms and definitions discovered from data |
+| **Domains** | Domain hierarchy with tiers, resources, and grants |
+| **Glossary** | Business terms, definitions, relationships, taxonomy, and aliases |
 
 Use the `«`/`»` button on the panel edge to hide or show the panel.
 
@@ -118,7 +135,7 @@ Use the `«`/`»` button on the panel edge to hide or show the panel.
 The bottom toolbar provides:
 - **New** — Start a new session
 - **Cancel** — Stop running execution
-- **Proof** — Run auditable proof verification (available after execution)
+- **Reasoning Chain** — Run auditable reasoning chain verification (available after execution)
 - **Brief** — Toggle brief mode (skips insight synthesis for faster results)
 - **Help** — Show this help
 
@@ -132,6 +149,25 @@ The bottom toolbar provides:
 | **Rule** | Consolidated learnings with higher confidence | Automatic compaction |
 | **Glossary term** | Business term definition | Discovery and refinement |
 
-- **Facts** appear in proof trees and provide values for calculations
+- **Facts** appear in reasoning chains and provide values for calculations
 - **Learnings** influence how the system approaches problems
 - **Rules** are automatically promoted from multiple related learnings
+
+## Regression Testing
+
+Golden questions let you define expected outcomes for a domain and verify them automatically.
+
+- Define questions with expected entities, grounding, relationships, and glossary assertions in domain YAML
+- Run from UI (Regression panel) or CLI: `constat test -c config.yaml`
+- Filter by domain (`-d sales-analytics`) or tag (`--tags smoke`)
+- Use `--e2e` to include end-to-end LLM round-trip tests (slower, costs tokens)
+
+## Additional Commands
+
+Beyond the commands listed above, Constat supports command families for managing domain resources:
+
+- `/rule`, `/rule-edit`, `/rule-delete` — Manage rules
+- `/agent`, `/agent-edit`, `/agent-delete` — Manage agents
+- `/skill`, `/skill-edit`, `/skill-delete` — Manage skills
+
+Type `/` in the input to see the full autocomplete list.

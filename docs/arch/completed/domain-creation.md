@@ -1,6 +1,6 @@
 # Domain Creation & Composition
 
-> **Status:** Design. No implementation yet.
+> **Status:** Partially implemented. Domain tiers, domain panel, move resources, and promote are done. `includes` composition is not yet implemented.
 
 ## Problem
 

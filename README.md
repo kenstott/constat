@@ -56,11 +56,11 @@ result = session.solve("What are the top 10 customers by revenue this quarter?")
 - Generates multi-step execution plans with user approval
 - Each step produces code, output, and narrative
 - Results include charts, tables, and insights
-- Clarification questions asked before planning when queries are ambiguous
+- Clarification questions with interactive widgets (choice, curation, ranking, table, mapping, tree, annotation) before planning when queries are ambiguous
 
-### On-Demand Proof Generation
+### On-Demand Reasoning Chain
 
-At any point, use `/prove` to generate a formal proof of your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
+At any point, use `/reason` to generate a formal reasoning chain for your results with full derivation traces. This is useful for compliance, financial reporting, and any scenario requiring provable conclusions.
 
 The system automatically:
 1. Analyzes the question to identify required facts
@@ -257,8 +257,8 @@ df = pd.read_parquet(file_transactions)
        +----------------+----------------+
        |                                 |
 +------v------+                   +------v------+
-| Exploratory |                   |  Auditable  |
-|    Mode     |                   |    Mode     |
+| Exploratory |                   |  Reasoning  |
+|    Mode     |                   |    Chain    |
 +------+------+                   +------+------+
        |                                 |
 +------v------+                   +------v------+
@@ -342,6 +342,7 @@ constat init
 | `validate` | Validate a config file |
 | `schema` | Show database schema overview |
 | `init` | Generate a sample config.yaml |
+| `test` | Run golden question regression tests for domain quality |
 
 **`serve` options:**
 ```bash
@@ -350,6 +351,14 @@ constat serve -c config.yaml --port 8080      # Custom port
 constat serve -c config.yaml --host 0.0.0.0   # Bind to all interfaces
 constat serve -c config.yaml --reload         # Auto-reload for development
 constat serve -c config.yaml --debug          # Enable debug logging
+```
+
+**`test` options:**
+```bash
+constat test -c config.yaml                    # Run all domain tests
+constat test -c config.yaml -d sales-analytics # Specific domain
+constat test -c config.yaml --tags smoke       # Filter by tag
+constat test -c config.yaml --e2e              # Include end-to-end (LLM)
 ```
 
 ### REPL Commands
@@ -417,7 +426,7 @@ Once in the interactive REPL, these commands are available:
 
 | Command | Description |
 |---------|-------------|
-| `/prove`, `/audit` | Verify conversation claims with auditable proof |
+| `/reason`, `/audit` | Verify conversation claims with auditable reasoning chain |
 
 **Settings:**
 
@@ -520,9 +529,9 @@ npm run dev
 **Features:**
 - Real-time streaming via WebSocket
 - Plan approval dialog before execution
-- Clarification dialog for ambiguous queries
+- Clarification dialog with interactive widgets (choice, ranking, curation, mapping, tree, table, annotation)
 - Artifact panel with tables, charts, and code
-- Proof DAG visualization (D3-based directed acyclic graph)
+- Reasoning Chain DAG visualization (D3-based directed acyclic graph)
 - Firebase authentication for multi-user deployments
 - Responsive layout with collapsible panels
 
@@ -560,6 +569,9 @@ constat serve -c config.yaml --port 8000
 | `/api/sessions/roles` | Role management |
 | `/api/skills` | Skill management |
 | `/api/learnings` | Learning management |
+| `/api/sessions/{id}/tests/...` | Regression test execution and results |
+| `/api/sessions/{id}/glossary/...` | Glossary terms, relationships, taxonomy |
+| `/api/domains/...` | Domain CRUD, tree, move, promote |
 
 Full OpenAPI documentation is available at `/docs` when the server is running.
 
@@ -661,6 +673,61 @@ llm:
 | Together AI | `together` | Yes |
 | Groq | `groq` | Yes |
 
+## Domains
+
+Domains are the primary organizational unit. Everything — data sources, glossary terms, skills, agents, rules — is scoped to a domain. Domains form a strict DAG and are organized in three tiers:
+
+| Tier | Location | Editable | Purpose |
+|------|----------|----------|---------|
+| **system** | `config.yaml` domains | No | Curated by admin, read-only |
+| **shared** | `.constat/shared/domains/` | Owner only | Promoted from user, visible to all |
+| **user** | `.constat/{user_id}/domains/` | Yes | Personal sandbox, persists across sessions |
+
+Content flows upward: user → shared → system (read-only). User domains are persistent staging areas — experiments, draft skills, and what-if rules survive across sessions until promoted or deleted.
+
+**Domain resources:** databases, APIs, documents, glossary terms, skills, agents, rules, permissions, system prompts, NER stop lists.
+
+**Move resources** between domains via drag-and-drop in the domain panel or the `/domains/move-*` endpoints. **Promote** user domains to shared via the UI or `POST /domains/{filename}/promote`.
+
+## Glossary
+
+The glossary is a unified view of auto-generated entities (from NER extraction) married with curated business definitions. Every extracted entity is a glossary term. Most are self-describing — physical metadata communicates their meaning. Some get curated definitions where physical metadata is insufficient.
+
+**Glossary features:**
+- **Definitions** — business meaning for terms, with AI-assisted generation and refinement
+- **Taxonomy** — parent/child hierarchy (e.g., "retail customer" is a kind of "customer")
+- **Aliases** — alternate names for the same concept, with AI suggestions
+- **Tags** — key-value metadata for categorization, with AI generators
+- **Relationships** — SVO triples between terms (e.g., customer PLACES order) with UPPER_SNAKE_CASE verb normalization, with AI suggestions
+- **Status workflow** — draft → reviewed → approved
+- **Domain scoping** — terms are owned by domains
+
+Relationships use UPPER_SNAKE_CASE verbs (e.g., `PLACES`, `BELONGS_TO`, `HAS_KIND`). Verbs are normalized on extraction: lemmatized, uppercased, spaces replaced with underscores.
+
+## Regression Testing
+
+Golden questions let you define expected outcomes for a domain and verify them automatically. Questions are defined in domain YAML alongside the resources they test.
+
+**Five assertion layers:**
+
+| Layer | What | Cost |
+|-------|------|------|
+| Entity extraction | Expected entities appear in NER output | Free |
+| Grounding | Entities resolve to expected sources | Free |
+| Glossary | Terms have definitions, correct domain, parent hierarchy | Free |
+| Relationships | Expected SVO triples exist | Free |
+| End-to-end | LLM generates plan, executes, answer matches reference | LLM call |
+
+The first four layers are pure database lookups. End-to-end is opt-in (`--e2e`).
+
+```bash
+constat test -c config.yaml                    # All domains
+constat test -c config.yaml -d sales-analytics # Specific domain
+constat test -c config.yaml --tags smoke       # Filter by tag
+```
+
+The UI provides a Regression panel for golden question CRUD and test execution with SSE streaming for real-time progress.
+
 ## Roles
 
 Roles are user-defined personas that customize the LLM's behavior for specific analysis contexts. Each role provides a custom system prompt that shapes how the LLM approaches queries.
@@ -669,9 +736,11 @@ Roles are stored per-user at `.constat/{user_id}/roles.yaml` and can be managed 
 
 ## Skills
 
-Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context.
+Skills are domain-specific knowledge modules that provide specialized context and guidance for analysis tasks. They are loaded dynamically based on the query context and scoped to domains.
 
 This follows the standard skill/prompt pattern used by Anthropic (Claude Code), OpenAI, and other AI providers for extending chatbot capabilities with domain-specific knowledge.
+
+Skills are portable programs — they can run under other LLMs, not just the one that created them. A completed reasoning chain can be converted to a skill via "Save as Skill" in the DAG panel, capturing verified derivation patterns as reusable domain knowledge.
 
 ### Skill Structure
 
@@ -775,7 +844,7 @@ Every piece of information is a `Fact` with:
 
 ### Derivation Traces
 
-When using `/prove`, every conclusion includes a full derivation trace showing:
+When using `/reason`, every conclusion includes a full reasoning chain showing:
 - The logical chain of reasoning
 - All data sources consulted
 - The exact queries executed
@@ -1313,6 +1382,9 @@ server:
   # Firebase authentication
   auth_disabled: false                    # Set true for development
   firebase_project_id: your-project-id
+
+  # Admin token for auth bypass (CLI, scripts, CI)
+  admin_token: ${CONSTAT_ADMIN_TOKEN}     # Bearer token that grants admin access
 
   # User permissions (or use $ref to separate file)
   permissions:
