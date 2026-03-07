@@ -45,7 +45,9 @@ async def list_facts(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     try:
         all_facts = managed.session.fact_resolver.get_all_facts()
@@ -116,7 +118,9 @@ async def get_proof_tree(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     try:
         # Get all facts with their provenance
@@ -161,7 +165,9 @@ async def get_output(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Get output from scratchpad or last execution
     output = ""
@@ -204,7 +210,9 @@ async def add_fact(
     Raises:
         400: Missing name or value
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if "name" not in body:
         raise HTTPException(status_code=400, detail="Missing 'name' in request body")
@@ -271,7 +279,9 @@ async def persist_fact(
     Raises:
         404: Session or fact not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     try:
         all_facts = managed.session.fact_resolver.get_all_facts()
@@ -310,7 +320,9 @@ async def forget_fact(
     Raises:
         404: Session or fact not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     try:
         all_facts = managed.session.fact_resolver.get_all_facts()
@@ -368,7 +380,9 @@ async def edit_fact(
         404: Session or fact not found
         400: Missing value in request
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if "value" not in body:
         raise HTTPException(status_code=400, detail="Missing 'value' in request body")
@@ -428,7 +442,9 @@ async def move_fact(
     import yaml as _yaml
     from pathlib import Path
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     to_domain = body.get("to_domain")
     if to_domain is None:

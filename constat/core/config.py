@@ -427,6 +427,13 @@ class TaskRoutingConfig(BaseModel):
     # Dict of task_type name -> routing entry
     routes: dict[str, TaskRoutingEntry] = Field(default_factory=dict)
 
+    def prepend_model(self, task_type: str, spec: ModelSpec) -> None:
+        """Prepend a model to the routing chain for a task type."""
+        if task_type not in self.routes:
+            self.routes[task_type] = TaskRoutingEntry(models=[spec])
+        else:
+            self.routes[task_type].models.insert(0, spec)
+
     def get_models_for_task(
         self,
         task_type: str,
@@ -909,6 +916,10 @@ class DomainConfig(BaseModel):
 
     # Optional domain-scoped permissions (loaded from permissions.yaml in domain directory)
     permissions: Optional[Any] = Field(default=None, description="Domain-scoped PermissionsConfig (restricts global permissions)")
+
+    # Optional domain-specific task routing (fine-tuned models, local models)
+    # Same structure as llm.task_routing — maps task_type to model chain
+    task_routing: dict[str, Any] = Field(default_factory=dict)
 
     # Optional domain-specific settings
     databases_description: str = ""

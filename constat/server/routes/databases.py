@@ -71,7 +71,9 @@ async def add_database(
         404: Session not found
         400: Invalid database configuration
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Determine the URI
     uri = body.uri
@@ -239,7 +241,9 @@ async def list_databases(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     databases = []
     seen_names = set()
 
@@ -347,7 +351,9 @@ async def list_data_sources(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     config = managed.session.config
 
     # Get databases (reuse existing logic)
@@ -489,7 +495,9 @@ async def remove_database(
         404: Session or database not found
         400: Cannot remove config database
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check if it's a config database
     if db_name in managed.session.config.databases:
@@ -589,7 +597,9 @@ async def test_database_connection(
     Raises:
         404: Session or database not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.has_database(db_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
@@ -643,7 +653,9 @@ async def preview_database_table(
     """
     import pandas as pd
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.has_database(db_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
@@ -718,7 +730,9 @@ async def download_database_table(
     import pandas as pd
     from constat.server.routes.data.tables import DownloadFormat, _df_to_download_response
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.has_database(db_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {db_name}")
@@ -783,7 +797,9 @@ async def add_api(
         400: API already exists
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check for duplicate name
     dynamic_apis = managed._dynamic_apis
@@ -878,7 +894,9 @@ async def remove_api(
         400: Cannot remove config-defined API
         404: Session or API not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check if it's a config API
     if api_name in managed.session.config.apis:

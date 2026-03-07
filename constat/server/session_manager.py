@@ -495,12 +495,54 @@ class SessionManager:
         resolved = loader.resolve()
         managed.resolved_config = resolved
         managed.session.resolved_config = resolved
+
+        # Wire domain task routing into the session's TaskRouter
+        self._apply_domain_routing(managed.session, resolved)
+
         logger.info(f"Resolved tiered config for session {session_id}: "
                      f"{len(resolved.sources.databases)} dbs, "
                      f"{len(resolved.sources.apis)} apis, "
                      f"{len(resolved.glossary)} glossary, "
                      f"domains={resolved.active_domains}")
         return resolved
+
+    @staticmethod
+    def _apply_domain_routing(session: Session, resolved: ResolvedConfig) -> None:
+        """Apply per-domain and user task routing to the session's router.
+
+        Domain task_routing is kept separate from the merged config because each
+        domain's routing is independent — the router walks the domain hierarchy
+        (domain → user → system) per step to find the appropriate model chain.
+        """
+        from constat.core.config import TaskRoutingConfig, TaskRoutingEntry, ModelSpec
+
+        router = session.router
+
+        # Set per-domain routing
+        for domain_path, raw_routing in resolved.domain_task_routing.items():
+            routes = {}
+            for task_type, entry_data in raw_routing.items():
+                if isinstance(entry_data, dict) and "models" in entry_data:
+                    models = [
+                        ModelSpec(**m) if isinstance(m, dict) else m
+                        for m in entry_data["models"]
+                    ]
+                    routes[task_type] = TaskRoutingEntry(models=models)
+            if routes:
+                router.set_domain_routing(domain_path, TaskRoutingConfig(routes=routes))
+
+        # Set user-level routing
+        if resolved.user_task_routing:
+            routes = {}
+            for task_type, entry_data in resolved.user_task_routing.items():
+                if isinstance(entry_data, dict) and "models" in entry_data:
+                    models = [
+                        ModelSpec(**m) if isinstance(m, dict) else m
+                        for m in entry_data["models"]
+                    ]
+                    routes[task_type] = TaskRoutingEntry(models=models)
+            if routes:
+                router.set_user_routing(TaskRoutingConfig(routes=routes))
 
     def _run_entity_extraction(self, session_id: str, session: Session) -> None:
         """Run NER for session's visible documents.

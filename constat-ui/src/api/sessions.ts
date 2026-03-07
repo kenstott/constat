@@ -20,6 +20,8 @@ import type {
   Config,
   Learning,
   Rule,
+  FineTuneJob,
+  FineTuneProvider,
 } from '@/types/api'
 
 // Session ID persistence (matches key used in App.tsx)
@@ -1089,4 +1091,45 @@ export async function getProofFacts(
   return get<{ facts: StoredProofFact[]; summary: string | null }>(
     `/sessions/${sessionId}/proof-facts`
   )
+}
+
+// Fine-Tuning
+export async function listFineTuneJobs(params?: {
+  status?: string
+  domain?: string
+}): Promise<FineTuneJob[]> {
+  const query = new URLSearchParams()
+  if (params?.status) query.set('status', params.status)
+  if (params?.domain) query.set('domain', params.domain)
+  const qs = query.toString()
+  return get<FineTuneJob[]>(`/fine-tune/jobs${qs ? `?${qs}` : ''}`)
+}
+
+export async function startFineTuneJob(body: {
+  name: string
+  provider: string
+  base_model: string
+  task_types: string[]
+  domain?: string
+  include?: string[]
+  min_confidence?: number
+  hyperparams?: Record<string, unknown>
+}): Promise<FineTuneJob> {
+  return post<FineTuneJob>('/fine-tune/jobs', body)
+}
+
+export async function getFineTuneJob(modelId: string): Promise<FineTuneJob> {
+  return get<FineTuneJob>(`/fine-tune/jobs/${modelId}`)
+}
+
+export async function cancelFineTuneJob(modelId: string): Promise<void> {
+  await post(`/fine-tune/jobs/${modelId}/cancel`)
+}
+
+export async function deleteFineTuneJob(modelId: string): Promise<void> {
+  await del(`/fine-tune/jobs/${modelId}`)
+}
+
+export async function listFineTuneProviders(): Promise<FineTuneProvider[]> {
+  return get<FineTuneProvider[]>('/fine-tune/providers')
 }

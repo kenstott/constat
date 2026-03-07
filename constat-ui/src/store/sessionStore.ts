@@ -670,7 +670,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
 
       case 'proof_start':
-        ensureLiveMessage('Generating proof...', 'planning')
+        ensureLiveMessage('Generating reasoning chain...', 'planning')
         set({ status: 'planning' })
         // Clear previous inference codes (proof is a complete re-run)
         useArtifactStore.getState().clearInferenceCodes()

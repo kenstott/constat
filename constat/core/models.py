@@ -56,6 +56,9 @@ class TaskType(Enum):
     # Relationship extraction
     RELATIONSHIP_EXTRACTION = "relationship_extraction"
 
+    # User interaction
+    USER_INPUT = "user_input"
+
     # Default fallback
     GENERAL = "general"
 
@@ -179,6 +182,11 @@ class Step:
     # When set, facts created by this step are scoped to the role
     # Detected from patterns like "as a [role]" or "acting as [role]"
     role_id: Optional[str] = None
+
+    # Domain this step operates in (for domain-aware model routing)
+    # Set by the planner based on which domain's data the step touches.
+    # Router walks: domain hierarchy → user → system to find the model chain.
+    domain: Optional[str] = None
 
     # Skills to apply for this step (None = use query-level skills)
     # Skills provide domain-specific instructions for code generation

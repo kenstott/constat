@@ -204,15 +204,15 @@ server:
 
       carol@company.com:
         role: sme
-        domains: [sales.yaml]
+        domains: [sales-analytics]
 
       dave@company.com:
         role: domain_user
-        domains: [sales.yaml]
+        domains: [sales-analytics]
 
       external@client.com:
         role: viewer
-        domains: [sales.yaml]
+        domains: [sales-analytics]
 
     default:
       role: viewer

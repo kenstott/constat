@@ -1,5 +1,7 @@
 Generate Python code for this inference:
 
+USER REQUEST: {user_request}
+
 Inference: {inf_id}: {inf_name} = {operation}
 Explanation: {explanation}
 

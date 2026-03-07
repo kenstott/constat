@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from constat.core.config import LLMConfig, ModelSpec
+from constat.core.config import LLMConfig, ModelSpec, TaskRoutingConfig
 from constat.core.models import TaskType
 from constat.providers.base import BaseLLMProvider
 
@@ -95,11 +95,65 @@ class TaskRouter:
         self.routing_config = llm_config.get_task_routing()
         self._provider_cache: dict[str, BaseLLMProvider] = {}
 
+        # Domain-aware routing: domain_path → TaskRoutingConfig
+        # Checked before system routing, walking up the domain hierarchy
+        self._domain_routing: dict[str, TaskRoutingConfig] = {}
+
+        # User-level routing override (checked after domain, before system)
+        self._user_routing: Optional[TaskRoutingConfig] = None
+
         # Escalation history for observability
         self._escalation_history: list[EscalationEvent] = []
 
         # Escalation callback
         self._on_escalation: Optional[Callable[[EscalationEvent], None]] = None
+
+    def set_domain_routing(self, domain_path: str, config: TaskRoutingConfig) -> None:
+        """Set task routing for a specific domain.
+
+        Args:
+            domain_path: Dot-delimited domain path (e.g., "sales.north-america")
+            config: TaskRoutingConfig for this domain
+        """
+        self._domain_routing[domain_path] = config
+
+    def set_user_routing(self, config: TaskRoutingConfig) -> None:
+        """Set user-level task routing override."""
+        self._user_routing = config
+
+    def _resolve_models_for_domain(
+        self, task_type: str, complexity: str, domain: Optional[str]
+    ) -> list[ModelSpec]:
+        """Resolve model chain by walking domain hierarchy → user → system.
+
+        Escalation order:
+            1. Exact domain match
+            2. Walk up domain hierarchy (trim rightmost path segment)
+            3. User-level routing
+            4. System-level routing (self.routing_config)
+
+        First tier with a chain for this task_type wins.
+        Within that chain, the existing escalation (try each model) applies.
+        """
+        # Walk domain hierarchy
+        if domain:
+            parts = domain.split(".")
+            for i in range(len(parts), 0, -1):
+                ancestor = ".".join(parts[:i])
+                routing = self._domain_routing.get(ancestor)
+                if routing:
+                    models = routing.get_models_for_task(task_type, complexity)
+                    if models:
+                        return models
+
+        # User-level routing
+        if self._user_routing:
+            models = self._user_routing.get_models_for_task(task_type, complexity)
+            if models:
+                return models
+
+        # System-level routing (existing behavior)
+        return self.routing_config.get_models_for_task(task_type, complexity)
 
     def on_escalation(self, callback: Callable[[EscalationEvent], None]) -> None:
         """Register callback for escalation events."""
@@ -174,6 +228,7 @@ class TaskRouter:
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         complexity: str = "medium",
+        domain: Optional[str] = None,
     ) -> TaskResult:
         """
         Execute a task with automatic model escalation.
@@ -186,14 +241,17 @@ class TaskRouter:
             tool_handlers: Optional tool handler functions
             max_tokens: Max tokens to generate
             complexity: Complexity hint (low, medium, high)
+            domain: Optional domain path for domain-aware routing.
+                    Walks domain hierarchy → user → system to find model chain.
 
         Returns:
             TaskResult with content and escalation info
         """
         start_time = time.time()
-        models = self.routing_config.get_models_for_task(
+        models = self._resolve_models_for_domain(
             task_type.value,
-            complexity
+            complexity,
+            domain,
         )
 
         # If no models configured for this task type, use general fallback
@@ -297,6 +355,7 @@ class TaskRouter:
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 12288,
         complexity: str = "medium",
+        domain: Optional[str] = None,
     ) -> TaskResult:
         """Execute and extract code from response."""
         result = self.execute(
@@ -307,6 +366,7 @@ class TaskRouter:
             tool_handlers=tool_handlers,
             max_tokens=max_tokens,
             complexity=complexity,
+            domain=domain,
         )
 
         if result.success:
@@ -369,6 +429,39 @@ class TaskRouter:
     def clear_stats(self) -> None:
         """Clear escalation history."""
         self._escalation_history.clear()
+
+    def set_domain_models(self, models: list) -> None:
+        """Inject fine-tuned models into domain-aware routing.
+
+        For each model with status='ready', prepends to the appropriate
+        domain's routing chain (or system routing if no domain).
+        """
+        for ft_model in models:
+            if ft_model.status != "ready" or not ft_model.fine_tuned_model_id:
+                continue
+            spec = ModelSpec(
+                provider=ft_model.provider,
+                model=ft_model.fine_tuned_model_id,
+            )
+            domain = getattr(ft_model, "domain", None)
+            if domain:
+                # Inject into domain-specific routing
+                if domain not in self._domain_routing:
+                    self._domain_routing[domain] = TaskRoutingConfig(routes={})
+                for task_type in ft_model.task_types:
+                    self._domain_routing[domain].prepend_model(task_type, spec)
+                    logger.info(
+                        f"Prepended fine-tuned model {ft_model.name} "
+                        f"({ft_model.fine_tuned_model_id}) to {domain}/{task_type}"
+                    )
+            else:
+                # No domain — prepend to system routing
+                for task_type in ft_model.task_types:
+                    self.routing_config.prepend_model(task_type, spec)
+                    logger.info(
+                        f"Prepended fine-tuned model {ft_model.name} "
+                        f"({ft_model.fine_tuned_model_id}) to system/{task_type}"
+                    )
 
     def clear_cache(self) -> None:
         """Clear the provider cache."""

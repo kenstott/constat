@@ -113,7 +113,9 @@ async def upload_file_multipart(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Generate file ID and path
     file_id = f"f_{uuid.uuid4().hex[:12]}"
@@ -175,7 +177,9 @@ async def upload_file_data_uri(
         404: Session not found
         400: Invalid data format
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Parse data URI or raw base64
     data = body.data
@@ -250,7 +254,9 @@ async def list_uploaded_files(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     files = _get_uploaded_files_for_session(managed)
 
     return UploadedFileListResponse(
@@ -288,7 +294,9 @@ async def download_file(
         404: Session or file not found
     """
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     files = _get_uploaded_files_for_session(managed)
 
     # Find the file
@@ -327,7 +335,9 @@ async def delete_file(
         404: Session or file not found
     """
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     files = _get_uploaded_files_for_session(managed)
 
     # Find and remove the file
@@ -381,7 +391,9 @@ async def add_file_reference(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Call session.add_file if available
     try:
@@ -441,7 +453,9 @@ async def list_file_references(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     file_refs = managed._file_refs
 
     return FileRefListResponse(
@@ -478,7 +492,9 @@ async def delete_file_reference(
     Raises:
         404: Session or file reference not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     file_refs = managed._file_refs
 
     # Find and remove from file refs
@@ -554,7 +570,7 @@ async def add_document_uri(
     Returns:
         Status dict with name and message
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
@@ -630,7 +646,9 @@ async def upload_documents(
         404: Session not found
         400: No valid documents provided
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Document extensions (indexed for search)
     doc_extensions = {'.md', '.txt', '.pdf', '.docx', '.html', '.htm', '.pptx', '.xlsx'}
@@ -829,7 +847,9 @@ async def get_document(
         404: Session or document not found
     """
     print(f"[GET_DOC] name={name!r}")
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.doc_tools:
         print("[GET_DOC] doc_tools not available")
@@ -865,7 +885,9 @@ async def serve_file(
         403: Access denied (path outside allowed directories)
     """
     # Verify session exists (for authentication)
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     file_path = Path(path)
     print(f"[SERVE_FILE] Requested path: {path}")

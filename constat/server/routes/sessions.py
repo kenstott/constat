@@ -406,7 +406,9 @@ async def get_session(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_response(managed)
 
 
@@ -468,7 +470,9 @@ async def set_active_domains(
         404: Session or domain not found
         409: Conflict detected between domains or config
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     domain_filenames = body.get("domains", body.get("projects", []))
 
     # noinspection PyTypeChecker
@@ -568,7 +572,9 @@ async def get_messages(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Get messages from session history using server session ID
     # (works even before first query creates a history session)
@@ -599,7 +605,9 @@ async def save_messages(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     messages = body.get("messages", [])
 
     # Save messages to session history using server session ID
@@ -629,7 +637,9 @@ async def get_proof_facts(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Get proof facts from session history
     history = SessionHistory(user_id=managed.user_id or "default")
@@ -659,7 +669,9 @@ async def save_proof_facts(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     facts = body.get("facts", [])
     summary = body.get("summary")
 
@@ -688,7 +700,9 @@ async def reset_context(
     Returns:
         Status confirmation
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Reset the session's planning context
     if managed.api:
@@ -725,7 +739,7 @@ async def get_prompt_context(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -789,7 +803,7 @@ async def update_system_prompt(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -829,7 +843,7 @@ async def match_dynamic_context(
             - skills: List of dicts with name, description, similarity
             - role_source: "skill" or "query" indicating how role was selected
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 

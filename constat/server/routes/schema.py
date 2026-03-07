@@ -88,7 +88,9 @@ async def list_database_tables(
     Raises:
         404: Session or database not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     if not managed.has_database(database_name):
         raise HTTPException(status_code=404, detail=f"Database not found: {database_name}")
@@ -135,7 +137,9 @@ async def get_table_schema(
     Raises:
         404: Session, database, or table not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         full_name = f"{database_name}.{table_name}"
@@ -198,7 +202,9 @@ async def search_schema(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         results = managed.session.schema_manager.find_relevant_tables(
@@ -242,7 +248,9 @@ async def get_api_schema(
     Raises:
         404: Session or API not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         # Check config APIs and domain APIs
@@ -314,7 +322,9 @@ async def refresh_schema(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         stats = managed.session.refresh_metadata(force_full=force_full)

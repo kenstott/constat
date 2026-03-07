@@ -81,7 +81,7 @@ constat/
 ├── catalog/        # Schema introspection
 ├── discovery/      # On-demand tools for LLM
 │   └── doc_tools/  # Document ingestion (transport, MIME, crawler, extractors)
-├── learning/       # Exemplar generation for fine-tuning
+├── learning/       # Exemplar generation, fine-tuning lifecycle
 ├── providers/      # LLM integrations
 ├── storage/        # Persistence layer
 ├── server/         # FastAPI backend
@@ -225,6 +225,7 @@ FastAPI backend for the web UI.
 | `routes/queries.py` | Query execution (REST + WebSocket) |
 | `routes/sessions.py` | Session CRUD |
 | `routes/learnings.py` | Learnings, rules, exemplar generation endpoints |
+| `routes/fine_tune.py` | Fine-tuning job management endpoints |
 | `auth.py` | Firebase authentication (optional) |
 
 ## Session Flow
@@ -446,6 +447,29 @@ Three coverage levels control what gets exported:
 | **comprehensive** | Everything: rules + all glossary + relationships | Small models (maximum data) |
 
 Outputs both OpenAI messages JSONL and Alpaca JSONL formats. Exemplar runs are tracked in `LearningStore` for reproducibility.
+
+### Fine-Tuning Closed Loop
+
+The exemplar pipeline extends to automated fine-tuning via `FineTuneManager`:
+
+```
+Corrections/Rules → Export JSONL → Save artifact → Upload → Fine-tune → Inject into router
+```
+
+Fine-tuned specialist models (gpt-4o-mini, Llama-8B via Together AI) handle domain-specific SQL/codegen tasks. They're prepended to the `TaskRouter` escalation chain — tried first, with Claude as automatic fallback on failure.
+
+| Component | File | Role |
+|-----------|------|------|
+| Registry | `learning/fine_tune_registry.py` | YAML-backed model tracking |
+| Providers | `learning/fine_tune_providers.py` | OpenAI + Together AI clients |
+| Manager | `learning/fine_tune_manager.py` | Lifecycle orchestration |
+| API | `server/routes/fine_tune.py` | REST endpoints |
+
+Training artifacts (JSONL + manifest) are saved to `.constat/{user_id}/fine_tune/{name}/` before upload — the reproducible "source code" of the model. These can be committed to git and used to recreate the model via `recreate_from_artifact()`.
+
+Fine-tuned models are domain-scoped: a model trained on `sales-analytics` corrections is only injected into routing for sales sessions.
+
+See [docs/arch/completed/fine-tuning.md](arch/completed/fine-tuning.md) for full design.
 
 ## UX Architecture
 

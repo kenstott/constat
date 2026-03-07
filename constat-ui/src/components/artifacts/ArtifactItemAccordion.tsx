@@ -95,6 +95,20 @@ function CsvTableView({ content, maxHeight }: { content: string; maxHeight?: str
   )
 }
 
+/** Heuristic: does this text look like CSV data?
+ *  Checks that the first line has 2+ comma-separated fields and
+ *  at least one subsequent data line has a similar field count. */
+function looksLikeCsv(text: string): boolean {
+  if (!text) return false
+  const lines = text.split('\n').filter((l) => l.trim())
+  if (lines.length < 2) return false
+  const headerFields = lines[0].split(',').length
+  if (headerFields < 2) return false
+  // Check that at least one data line has a comparable field count
+  const dataFields = lines[1].split(',').length
+  return dataFields >= headerFields - 1 && dataFields <= headerFields + 1
+}
+
 interface ArtifactItemAccordionProps {
   artifact: Artifact
   initiallyOpen?: boolean
@@ -648,10 +662,11 @@ export function ArtifactItemAccordion({ artifact, initiallyOpen = false }: Artif
       )
     }
 
-    // CSV — parse into a table
+    // CSV — parse into a table (explicit type or auto-detected from content)
     if (
       content.artifact_type === 'csv' ||
-      content.mime_type === 'text/csv'
+      content.mime_type === 'text/csv' ||
+      (content.artifact_type === 'output' && looksLikeCsv(content.content))
     ) {
       return <CsvTableView content={content.content} maxHeight={maxHeight} />
     }

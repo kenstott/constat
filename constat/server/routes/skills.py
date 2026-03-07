@@ -214,7 +214,7 @@ async def draft_skill(
 ) -> DraftSkillResponse:
     """Use LLM to draft a skill based on user description."""
     session_manager = get_session_manager(request)
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -264,7 +264,7 @@ async def create_skill_from_proof(
 ) -> CreateSkillFromProofResponse:
     """Create a skill from a completed proof."""
     session_manager = get_session_manager(request)
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 

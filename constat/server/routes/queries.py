@@ -105,6 +105,7 @@ def _step_to_response(step) -> StepResponse:
         expected_outputs=step.expected_outputs,
         depends_on=step.depends_on,
         code=step.code,
+        domain=step.domain,
         result=result_dict,
     )
 
@@ -562,7 +563,9 @@ async def submit_query(
         404: Session not found
         400: Session is busy
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Check if session is busy
     if managed.status in (SessionStatus.PLANNING, SessionStatus.EXECUTING, SessionStatus.AWAITING_APPROVAL):
@@ -642,7 +645,9 @@ async def cancel_execution(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Signal cancellation to the session
     if hasattr(managed.session, "_cancelled"):
@@ -677,7 +682,9 @@ async def get_plan(
     Raises:
         404: Session not found or no plan exists
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.plan:
         raise HTTPException(status_code=404, detail="No plan exists for this session")
@@ -708,7 +715,9 @@ async def approve_plan(
         404: Session not found
         400: Session not awaiting approval
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if managed.status != SessionStatus.AWAITING_APPROVAL:
         raise HTTPException(

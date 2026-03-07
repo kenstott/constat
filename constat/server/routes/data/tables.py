@@ -48,7 +48,9 @@ async def list_tables(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.datastore:
         return TableListResponse(tables=[])
@@ -108,7 +110,9 @@ async def get_table_versions(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> TableVersionsResponse:
     """Get version history for a table."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -142,7 +146,9 @@ async def get_table_version_data(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> TableDataResponse:
     """Get data for a specific version of a table."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -190,7 +196,9 @@ async def get_table_data(
     Raises:
         404: Session or table not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -301,7 +309,9 @@ async def download_table(
     Raises:
         404: Session or table not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -342,7 +352,9 @@ async def toggle_table_star(
     Raises:
         404: Session or table not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     try:
         if not managed.session.datastore:

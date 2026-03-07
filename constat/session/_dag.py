@@ -792,6 +792,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 api_sources_section=api_sources_section,
                 data_source_apis="\n".join(data_source_apis),
                 table_name=table_name,
+                user_request=problem,
             ) + step_hints_section
             if inference_learnings:
                 inference_prompt += f"\n\nLEARNINGS FROM PREVIOUS ERRORS:\n{inference_learnings}"

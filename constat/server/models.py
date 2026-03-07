@@ -218,6 +218,10 @@ class StepResponse(BaseModel):
         default=None,
         description="Generated code (after execution)",
     )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Domain this step operates in (for domain-aware model routing)",
+    )
     result: Optional[dict[str, Any]] = Field(
         default=None,
         description="Execution result (after completion)",

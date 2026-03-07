@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from constat.core.models import PlannerResponse, StepStatus, StepResult
+from constat.core.models import Plan, PlannerResponse, StepStatus, StepResult, TaskType
 from constat.execution.mode import PlanApproval, PrimaryIntent
 from constat.execution.scratchpad import Scratchpad
 from constat.session._types import QuestionAnalysis, QuestionType, StepEvent, is_meta_question
@@ -518,150 +518,177 @@ class SolveMixin:
             logger.debug(f"[EXECUTION]   Step {step.number}: status={step.status.value}, "
                          f"depends_on={step.depends_on}, goal='{step.goal[:60]}...'")
 
-        execution_waves = self.plan.get_execution_order()
-        logger.debug(f"[EXECUTION] execution_waves: {execution_waves}, total steps: {len(self.plan.steps)}")
         cancelled = False
+        needs_replan = True  # Enter the wave loop at least once
 
-        for wave_num, wave_step_nums in enumerate(execution_waves):
-            logger.debug(f"[EXECUTION] Starting wave {wave_num + 1}, steps: {wave_step_nums}")
-            # Phase 4: Check for cancellation before starting each wave
-            if self.is_cancelled():
-                cancelled = True
-                self._emit_event(StepEvent(
-                    event_type="execution_cancelled",
-                    step_number=0,
-                    data={
-                        "message": "Execution cancelled between waves",
-                        "wave": wave_num,
-                        "completed_steps": len(all_results),
-                    }
-                ))
-                break
+        while needs_replan:
+            needs_replan = False
+            execution_waves = self.plan.get_execution_order()
+            logger.debug(f"[EXECUTION] execution_waves: {execution_waves}, total steps: {len(self.plan.steps)}")
 
-            # Get steps for this wave
-            wave_steps = [self.plan.get_step(num) for num in wave_step_nums]
-            wave_steps = [s for s in wave_steps if s is not None]
+            for wave_num, wave_step_nums in enumerate(execution_waves):
+                # Skip waves containing only already-completed steps
+                pending_in_wave = [n for n in wave_step_nums
+                                   if self.plan.get_step(n) and self.plan.get_step(n).status == StepStatus.PENDING]
+                if not pending_in_wave:
+                    continue
 
-            # Execute all steps in this wave in parallel
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave_steps)) as executor:
-                # Submit all steps in wave
-                future_to_step = {}
-                for step in wave_steps:
-                    # Phase 4: Check for cancellation before starting each step
-                    if self.is_cancelled():
-                        cancelled = True
+                logger.debug(f"[EXECUTION] Starting wave {wave_num + 1}, steps: {wave_step_nums}")
+                # Phase 4: Check for cancellation before starting each wave
+                if self.is_cancelled():
+                    cancelled = True
+                    self._emit_event(StepEvent(
+                        event_type="execution_cancelled",
+                        step_number=0,
+                        data={
+                            "message": "Execution cancelled between waves",
+                            "wave": wave_num,
+                            "completed_steps": len(all_results),
+                        }
+                    ))
+                    break
+
+                # Get steps for this wave (only pending ones)
+                wave_steps = [self.plan.get_step(num) for num in pending_in_wave]
+                wave_steps = [s for s in wave_steps if s is not None]
+
+                # Execute all steps in this wave in parallel
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave_steps)) as executor:
+                    # Submit all steps in wave
+                    future_to_step = {}
+                    for step in wave_steps:
+                        # Phase 4: Check for cancellation before starting each step
+                        if self.is_cancelled():
+                            cancelled = True
+                            break
+
+                        step.status = StepStatus.RUNNING
+                        self.datastore.update_plan_step(step.number, status="running")
+                        self._emit_event(StepEvent(
+                            event_type="wave_step_start",
+                            step_number=step.number,
+                            data={"wave": wave_num + 1, "goal": step.goal}
+                        ))
+                        future = executor.submit(self._execute_step, step)
+                        future_to_step[future] = step
+
+                    if cancelled:
+                        # Cancel any pending futures
+                        for future in future_to_step:
+                            future.cancel()
                         break
 
-                    step.status = StepStatus.RUNNING
-                    self.datastore.update_plan_step(step.number, status="running")
-                    self._emit_event(StepEvent(
-                        event_type="wave_step_start",
-                        step_number=step.number,
-                        data={"wave": wave_num + 1, "goal": step.goal}
-                    ))
-                    future = executor.submit(self._execute_step, step)
-                    future_to_step[future] = step
+                    # Collect results as they complete
+                    wave_failed = False
+                    user_input_completed = False
+                    user_input_stdout = ""
+                    for future in concurrent.futures.as_completed(future_to_step):
+                        # Phase 4: Check for cancellation while collecting results
+                        # Note: We still collect completed results even if cancelled
+                        step = future_to_step[future]
+                        try:
+                            result = future.result()
+                        except concurrent.futures.CancelledError:
+                            # Step was cancelled before it started
+                            result = StepResult(
+                                success=False,
+                                stdout="",
+                                error="Step cancelled",
+                                attempts=0,
+                            )
+                            cancelled = True
+                        except Exception as e:
+                            logger.error(f"[EXECUTION] Step {step.number} raised unhandled exception: {e}", exc_info=True)
+                            result = StepResult(
+                                success=False,
+                                stdout="",
+                                error=str(e),
+                                attempts=1,
+                            )
 
-                if cancelled:
-                    # Cancel any pending futures
-                    for future in future_to_step:
-                        future.cancel()
-                    break
-
-                # Collect results as they complete
-                wave_failed = False
-                for future in concurrent.futures.as_completed(future_to_step):
-                    # Phase 4: Check for cancellation while collecting results
-                    # Note: We still collect completed results even if cancelled
-                    step = future_to_step[future]
-                    try:
-                        result = future.result()
-                    except concurrent.futures.CancelledError:
-                        # Step was cancelled before it started
-                        result = StepResult(
-                            success=False,
-                            stdout="",
-                            error="Step cancelled",
-                            attempts=0,
-                        )
-                        cancelled = True
-                    except Exception as e:
-                        logger.error(f"[EXECUTION] Step {step.number} raised unhandled exception: {e}", exc_info=True)
-                        result = StepResult(
-                            success=False,
-                            stdout="",
-                            error=str(e),
-                            attempts=1,
-                        )
-
-                    logger.debug(f"[EXECUTION] Step {step.number} result: success={result.success}, attempts={result.attempts}, error={result.error[:200] if result.error else 'none'}")
-                    if result.success:
-                        self.plan.mark_step_completed(step.number, result)
-                        self.scratchpad.add_step_result(
-                            step_number=step.number,
-                            goal=step.goal,
-                            result=result.stdout,
-                            tables_created=result.tables_created,
-                        )
-                        if self.datastore:
-                            self.datastore.add_scratchpad_entry(
+                        logger.debug(f"[EXECUTION] Step {step.number} result: success={result.success}, attempts={result.attempts}, error={result.error[:200] if result.error else 'none'}")
+                        if result.success:
+                            self.plan.mark_step_completed(step.number, result)
+                            self.scratchpad.add_step_result(
                                 step_number=step.number,
                                 goal=step.goal,
-                                narrative=result.stdout,
+                                result=result.stdout,
                                 tables_created=result.tables_created,
-                                code=result.code,
                             )
-                            self.datastore.update_plan_step(
-                                step.number,
-                                status="completed",
-                                code=step.code,
-                                attempts=result.attempts,
-                                duration_ms=result.duration_ms,
-                            )
-                        all_results.append(result)
-                    else:
-                        self.plan.mark_step_failed(step.number, result)
-                        if self.datastore:
-                            self.datastore.update_plan_step(
-                                step.number,
-                                status="failed" if not cancelled else "cancelled",
-                                code=step.code,
-                                error=result.error,
-                                attempts=result.attempts,
-                                duration_ms=result.duration_ms,
-                            )
-                        if not cancelled:  # Only mark as failed if not cancelled
-                            wave_failed = True
-                        all_results.append(result)
+                            if self.datastore:
+                                self.datastore.add_scratchpad_entry(
+                                    step_number=step.number,
+                                    goal=step.goal,
+                                    narrative=result.stdout,
+                                    tables_created=result.tables_created,
+                                    code=result.code,
+                                )
+                                self.datastore.update_plan_step(
+                                    step.number,
+                                    status="completed",
+                                    code=step.code,
+                                    attempts=result.attempts,
+                                    duration_ms=result.duration_ms,
+                                )
+                            all_results.append(result)
+                            # Track if a user_input step completed
+                            if step.task_type == TaskType.USER_INPUT:
+                                user_input_completed = True
+                                user_input_stdout = result.stdout
+                        else:
+                            self.plan.mark_step_failed(step.number, result)
+                            if self.datastore:
+                                self.datastore.update_plan_step(
+                                    step.number,
+                                    status="failed" if not cancelled else "cancelled",
+                                    code=step.code,
+                                    error=result.error,
+                                    attempts=result.attempts,
+                                    duration_ms=result.duration_ms,
+                                )
+                            if not cancelled:  # Only mark as failed if not cancelled
+                                wave_failed = True
+                            all_results.append(result)
 
-                if cancelled:
-                    logger.debug(f"[EXECUTION] Wave {wave_num + 1} cancelled, breaking out of loop")
-                    break
+                    if cancelled:
+                        logger.debug(f"[EXECUTION] Wave {wave_num + 1} cancelled, breaking out of loop")
+                        break
 
-                logger.debug(f"[EXECUTION] Wave {wave_num + 1} completed: "
-                             f"wave_failed={wave_failed}, all_results={len(all_results)}, "
-                             f"completed_steps={self.plan.completed_steps}")
+                    logger.debug(f"[EXECUTION] Wave {wave_num + 1} completed: "
+                                 f"wave_failed={wave_failed}, all_results={len(all_results)}, "
+                                 f"completed_steps={self.plan.completed_steps}")
 
-                # If any step in wave failed, stop execution
-                if wave_failed:
-                    self.datastore.set_session_meta("status", "failed")
-                    failed_result = next(r for r in all_results if not r.success)
-                    self.history.record_query(
-                        session_id=self.session_id,
-                        question=problem,
-                        success=False,
-                        attempts=failed_result.attempts,
-                        duration_ms=failed_result.duration_ms,
-                        error=failed_result.error,
-                    )
-                    self.history.complete_session(self.session_id, status="failed")
-                    return {
-                        "success": False,
-                        "plan": self.plan,
-                        "error": failed_result.error,
-                        "completed_steps": self.plan.completed_steps,
-                    }
+                    # If any step in wave failed, stop execution
+                    if wave_failed:
+                        self.datastore.set_session_meta("status", "failed")
+                        failed_result = next(r for r in all_results if not r.success)
+                        self.history.record_query(
+                            session_id=self.session_id,
+                            question=problem,
+                            success=False,
+                            attempts=failed_result.attempts,
+                            duration_ms=failed_result.duration_ms,
+                            error=failed_result.error,
+                        )
+                        self.history.complete_session(self.session_id, status="failed")
+                        return {
+                            "success": False,
+                            "plan": self.plan,
+                            "error": failed_result.error,
+                            "completed_steps": self.plan.completed_steps,
+                        }
+
+                    # Replan after user_input step completes
+                    if user_input_completed:
+                        remaining = [s for s in self.plan.steps if s.status == StepStatus.PENDING]
+                        if remaining:
+                            new_steps = self._replan_after_user_input(problem, self.plan, user_input_stdout)
+                            if new_steps:
+                                completed = [s for s in self.plan.steps if s.status != StepStatus.PENDING]
+                                self.plan.steps = completed + new_steps
+                                needs_replan = True  # Re-enter the wave loop with new plan
+                                break  # Break out of current wave iteration
 
         # Log exit reason
         logger.debug(f"[EXECUTION] Wave loop finished: cancelled={cancelled}, "
@@ -851,6 +878,89 @@ class SolveMixin:
             "datastore_tables": self.datastore.list_tables() if self.datastore else [],
             "datastore_path": str(self.datastore.db_path) if self.datastore and self.datastore.db_path else None,
         }
+
+    def _replan_after_user_input(self, problem: str, current_plan: Plan, user_answer: str) -> list | None:
+        """Replan remaining steps after a user_input step completes.
+
+        Gathers completed step context and calls the planner to generate
+        new remaining steps informed by the user's answer.
+
+        Returns new steps (renumbered) or None if replanning fails.
+        """
+        from constat.prompts import load_prompt
+
+        try:
+            scratchpad_context = self.datastore.get_scratchpad_as_markdown()
+            existing_tables = self.datastore.list_tables()
+            existing_tables_list = (
+                chr(10).join(f'  - `{t["name"]}`: {t.get("row_count", "?")} rows' for t in existing_tables)
+                if existing_tables else '(none)'
+            )
+
+            last_completed = max(
+                (s.number for s in current_plan.steps if s.status == StepStatus.COMPLETED),
+                default=0,
+            )
+            next_step_number = last_completed + 1
+
+            replan_prompt = load_prompt("replan_after_input.md").format(
+                problem=problem,
+                scratchpad_context=scratchpad_context,
+                existing_tables_list=existing_tables_list,
+                user_answer=user_answer,
+                next_step_number=next_step_number,
+            )
+
+            self._emit_event(StepEvent(
+                event_type="replanning",
+                step_number=0,
+                data={"message": "Replanning based on your input..."}
+            ))
+
+            self._sync_user_facts_to_planner()
+            self._sync_glossary_to_planner(problem)
+            planner_response = self.planner.plan(replan_prompt)
+            new_steps = planner_response.plan.steps
+
+            # Renumber steps to continue from last completed
+            for i, step in enumerate(new_steps):
+                step.number = next_step_number + i
+                step.status = StepStatus.PENDING
+
+            # Save new steps to datastore
+            for step in new_steps:
+                self.datastore.save_plan_step(
+                    step_number=step.number,
+                    goal=step.goal,
+                    expected_inputs=step.expected_inputs,
+                    expected_outputs=step.expected_outputs,
+                    status="pending",
+                )
+
+            # Emit plan_ready so UI updates the step list
+            self._emit_event(StepEvent(
+                event_type="plan_ready",
+                step_number=0,
+                data={
+                    "steps": [
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        for s in current_plan.steps if s.status == StepStatus.COMPLETED
+                    ] + [
+                        {"number": s.number, "goal": s.goal, "depends_on": s.depends_on, "role_id": s.role_id}
+                        for s in new_steps
+                    ],
+                    "reasoning": planner_response.reasoning,
+                    "is_followup": False,
+                    "replanned": True,
+                }
+            ))
+
+            logger.info(f"[REPLAN] Replanned after user input: {len(new_steps)} new steps from step {next_step_number}")
+            return new_steps
+
+        except Exception as e:
+            logger.warning(f"[REPLAN] Replanning after user input failed: {e}")
+            return None
 
     def resume(self, session_id: str) -> bool:
         """

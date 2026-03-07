@@ -108,8 +108,22 @@ export async function deleteGoldenQuestion(
   return del<void>(`/sessions/${sessionId}/tests/${domain}/questions/${index}`)
 }
 
+export interface ProofNodeInput {
+  id: string
+  name: string
+  source?: string
+  source_name?: string
+  table_name?: string
+  api_endpoint?: string
+  status: string
+}
+
 export async function extractExpectations(
   sessionId: string,
+  proofNodes?: ProofNodeInput[],
 ): Promise<GoldenQuestionExpectations> {
-  return get<GoldenQuestionExpectations>(`/sessions/${sessionId}/tests/expectations`)
+  return post<GoldenQuestionExpectations>(
+    `/sessions/${sessionId}/tests/expectations`,
+    { proof_nodes: proofNodes ?? [] },
+  )
 }

@@ -25,6 +25,13 @@ Your code has access to:
 - `parse_number(val)`: parse string numbers → tuple of all values. "8-12%" → (8.0, 12.0), "1,2,3" → (1.0, 2.0, 3.0), "5%" → (5.0,). Use `min()`/`max()` for range bounds
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
 - `viz`: visualization helper for saving maps and charts to files
+- `ask_user(question, options=None, widget=None, data=None)` — pause execution and ask the user a question. Returns their answer as a string. Only available in `user_input` steps. Choose the right widget for the interaction:
+  - **No widget** (default): free-text input. Use for open-ended questions.
+  - `widget="choice"`, `options=["A", "B", "C"]`: radio buttons. Use for picking one option from a short list.
+  - `widget="curation"`, `data={"items": [...]}`: checklist with search/filter. Use for "which of these do you want to keep/approve?"
+  - `widget="mapping"`, `data={"left": [...], "right": [...], "leftLabel": "...", "rightLabel": "..."}`: two-column connector. Use for "how do these map/correlate to those?"
+  - `widget="table"`, `data={"columns": [{"key": "k", "label": "L", "type": "text"}], "rows": [...]}`: editable grid. Use for structured review/editing of tabular data.
+  - `widget="ranking"`, `data={"items": [...]}`: drag-to-reorder. Use for prioritization.
 
 ## Database Access Patterns
 **SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):

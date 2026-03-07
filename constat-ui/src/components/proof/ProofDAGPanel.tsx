@@ -1039,7 +1039,13 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                   if (!testDomain || isSavingTest) return
                   setIsSavingTest(true)
                   try {
-                    const expect = await extractExpectations(sessionId)
+                    const proofNodes = Array.from(facts.values()).map(f => ({
+                      id: f.id,
+                      name: f.name,
+                      source: f.source,
+                      status: f.status,
+                    }))
+                    const expect = await extractExpectations(sessionId, proofNodes)
                     // Use the final node description or first resolved inference as the question
                     const questionText = finalNode?.description || finalNode?.name?.replace(/^I\d+:\s*/, '') || 'Untitled question'
                     const body: GoldenQuestionRequest = {

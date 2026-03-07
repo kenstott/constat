@@ -444,8 +444,35 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
             _warmup_vector_store(config)
             logger.info("Document pre-indexing complete")
 
+            # Startup: Initialize fine-tune manager
+            from constat.learning.fine_tune_registry import FineTuneRegistry
+            from constat.learning.fine_tune_manager import FineTuneManager
+            from constat.storage.learnings import LearningStore
+
+            ft_registry = FineTuneRegistry()
+            ft_learning_store = LearningStore(user_id="default")
+            ft_manager = FineTuneManager(ft_registry, ft_learning_store)
+            _fastapi_app.state.fine_tune_manager = ft_manager
+
             # Startup: Start cleanup task
             await session_manager.start_cleanup_task()
+
+            # Startup: Start fine-tune polling task
+            async def _fine_tune_poll_loop():
+                while True:
+                    try:
+                        await asyncio.sleep(60)
+                        updated = await asyncio.to_thread(ft_manager.check_all_training)
+                        for model in updated:
+                            if model.status in ("ready", "failed"):
+                                logger.info(f"Fine-tune {model.name}: {model.status}")
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.error(f"Fine-tune poll error: {e}")
+
+            ft_poll_task = asyncio.create_task(_fine_tune_poll_loop())
+
             logger.info("Constat API server started")
         except Exception as e:
             logger.error(f"FATAL: Server startup failed: {e}")
@@ -454,8 +481,9 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
 
         yield
 
-        # Shutdown: Stop cleanup task and cleanup sessions
+        # Shutdown: Stop fine-tune poll task and cleanup sessions
         try:
+            ft_poll_task.cancel()
             logger.info("Shutting down Constat API server...")
             await asyncio.wait_for(_shutdown_tasks(session_manager), timeout=5.0)
             logger.info("Constat API server stopped cleanly")
@@ -589,6 +617,7 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
     from constat.server.routes.tier_management import router as tier_management_router
     from constat.server.routes.feedback import router as feedback_router
     from constat.server.routes.testing import router as testing_router
+    from constat.server.routes.fine_tune import router as fine_tune_router
 
     # IMPORTANT: Register routers with specific paths BEFORE routers with /{session_id} wildcards
     # Otherwise the wildcard routes will match paths like /agents, /skills, etc.
@@ -656,6 +685,11 @@ def create_app(config: Config, server_config: ServerConfig) -> FastAPI:
         users_router,
         prefix="/api/users",
         tags=["users"],
+    )
+    fastapi_app.include_router(
+        fine_tune_router,
+        prefix="/api",
+        tags=["fine-tune"],
     )
 
     return fastapi_app

@@ -392,7 +392,7 @@ async def generate_exemplars(
     if coverage not in ("minimal", "standard", "comprehensive"):
         raise HTTPException(status_code=400, detail="coverage must be minimal, standard, or comprehensive")
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 

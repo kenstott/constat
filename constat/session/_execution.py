@@ -21,7 +21,9 @@ from constat.core.models import FailureSuggestion, PostValidation, Step, StepRes
 from constat.email import create_send_email
 from constat.execution import RETRY_PROMPT_TEMPLATE
 from constat.execution.executor import format_error_for_retry
-from constat.session._types import StepEvent
+from constat.session._types import (
+    ClarificationQuestion, ClarificationRequest, StepEvent, WidgetSpec, WidgetType,
+)
 from constat.storage.learnings import LearningCategory, LearningSource
 from constat.visualization import create_viz_helper
 
@@ -30,6 +32,62 @@ logger = logging.getLogger(__name__)
 
 # noinspection PyUnresolvedReferences
 class ExecutionMixin:
+
+    def _make_ask_user(self, step_number: int) -> Callable:
+        """Create an ask_user() function for use in generated step code."""
+        def ask_user(question: str, options: list[str] | None = None,
+                     widget: str | None = None,
+                     data: dict | list | None = None) -> str | dict | list:
+            """Ask the user a question and block until they respond.
+
+            Args:
+                question: The question text
+                options: Optional list of suggested answers
+                widget: Optional widget type (choice, curation, table, mapping, ranking)
+                data: Optional data to display with the widget
+            Returns:
+                For choice/no widget: the user's answer as a string
+                For curation: {"kept": [...], "removed": [...]}
+                For mapping: {"mappings": [{"left": ..., "right": ...}, ...]}
+                For table: {"rows": [...]}
+                For ranking: {"ranked": [...]}
+            """
+            if not self._clarification_callback:
+                raise RuntimeError("User input not available (no clarification callback)")
+
+            widget_spec = None
+            if widget:
+                config = dict(data) if isinstance(data, dict) else {}
+                if isinstance(data, list):
+                    config["items"] = data
+                widget_spec = WidgetSpec(type=WidgetType(widget), config=config)
+
+            request = ClarificationRequest(
+                original_question=question,
+                ambiguity_reason="input_request",
+                questions=[ClarificationQuestion(
+                    text=question,
+                    suggestions=options or [],
+                    widget=widget_spec,
+                )],
+            )
+
+            response = self._clarification_callback(request)
+            if response.skip:
+                return "" if not widget else {}
+
+            # Prefer structured answers from widgets (curation, mapping, table, ranking)
+            for structured in response.structured_answers.values():
+                if structured:
+                    return structured
+
+            # Fall back to text answer (choice widget or free-text)
+            for answer in response.answers.values():
+                if answer:
+                    return answer
+            return "" if not widget else {}
+
+        return ask_user
 
     def _create_llm_ask_helper(self) -> Callable:
         """Create a helper function for step code to query LLM for general knowledge."""
@@ -612,6 +670,7 @@ class ExecutionMixin:
                     tools=self._get_schema_tools(),
                     tool_handlers=self._get_tool_handlers(),
                     complexity=step.complexity,
+                    domain=step.domain,
                 )
             else:
                 # Track error context for potential learning capture
@@ -634,6 +693,7 @@ class ExecutionMixin:
                     tools=self._get_schema_tools(),
                     tool_handlers=self._get_tool_handlers(),
                     complexity=step.complexity,
+                    domain=step.domain,
                 )
 
             if not result.success:
@@ -664,6 +724,7 @@ class ExecutionMixin:
 
             # Execute
             exec_globals = self._get_execution_globals()
+            exec_globals['ask_user'] = self._make_ask_user(step.number)
             result = self.executor.execute(code, exec_globals)
             logger.debug(f"[Step {step.number}] Execution result (attempt {attempt}): success={result.success}, error={result.error_message()[:200] if not result.success else 'none'}")
 

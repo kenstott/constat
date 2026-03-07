@@ -710,16 +710,7 @@ CRITICAL INTENT RULES (apply in order):
         if not self._clarification_callback:
             return None
 
-        # Emit event for UI
-        self._emit_event(StepEvent(
-            event_type="clarification_needed",
-            step_number=0,
-            data={
-                "reason": request.ambiguity_reason,
-                "questions": request.questions,
-            }
-        ))
-
+        # The clarification callback handles event emission to the frontend
         response = self._clarification_callback(request)
 
         if response.skip:

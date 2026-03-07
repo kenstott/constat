@@ -23,6 +23,20 @@ llm:
    model: claude-sonnet-4-20250514
    api_key: ${ANTHROPIC_API_KEY}
 
+   task_routing:
+     sql_generation:
+       models:
+         - provider: together
+           model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+         - provider: anthropic
+           model: claude-sonnet-4-20250514
+     python_analysis:
+       models:
+         - provider: together
+           model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+         - provider: anthropic
+           model: claude-sonnet-4-20250514
+
 # Vector store and clustering
 storage:
   vector_store:

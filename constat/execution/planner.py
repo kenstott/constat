@@ -386,6 +386,7 @@ class Planner:
                 task_type=task_type,
                 complexity=step_data.get("complexity", "medium"),
                 role_id=step_data.get("role_id"),
+                domain=step_data.get("domain"),
                 post_validations=_parse_post_validations(step_data.get("post_validations", [])),
             ))
         return steps

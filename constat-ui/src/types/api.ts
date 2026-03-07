@@ -369,6 +369,29 @@ export interface Rule {
   scope?: { level?: string; data_sources?: Array<{ name?: string; type?: string }>; domain?: string }
 }
 
+// Fine-Tuning
+export type FineTuneStatus = 'training' | 'ready' | 'failed' | 'archived'
+
+export interface FineTuneJob {
+  id: string
+  name: string
+  provider: string
+  base_model: string
+  fine_tuned_model_id?: string
+  task_types: string[]
+  domain?: string
+  status: FineTuneStatus
+  created: string
+  exemplar_count: number
+  metrics?: Record<string, unknown>
+  training_data_path?: string
+}
+
+export interface FineTuneProvider {
+  name: string
+  models: string[]
+}
+
 // Config
 export interface Config {
   databases: string[]

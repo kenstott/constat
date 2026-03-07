@@ -104,7 +104,7 @@ async def list_agents(
     """List all available agents."""
     logger.info(f"[AGENTS] list_agents ENTERED: session_id={session_id}, user_id={user_id}")
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         logger.warning(f"[AGENTS] Session not found or user mismatch: managed={managed is not None}, managed.user_id={managed.user_id if managed else 'N/A'}, user_id={user_id}")
         raise HTTPException(status_code=404, detail="Session not found")
@@ -150,7 +150,7 @@ async def set_current_agent(
 ) -> SetAgentResponse:
     """Set the active agent for the session."""
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -194,7 +194,7 @@ async def get_agent_content(
 ) -> AgentContentResponse:
     """Get the full content of an agent."""
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -225,7 +225,7 @@ async def create_agent(
 ) -> AgentInfo:
     """Create a new agent."""
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -263,7 +263,7 @@ async def update_agent(
 ) -> dict:
     """Update an agent."""
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -295,7 +295,7 @@ async def delete_agent(
 ) -> dict:
     """Delete an agent."""
     # noinspection DuplicatedCode
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -319,7 +319,7 @@ async def draft_agent(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> DraftAgentResponse:
     """Use LLM to draft an agent based on user description."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     if not managed or managed.user_id != user_id:
         raise HTTPException(status_code=404, detail="Session not found")
 

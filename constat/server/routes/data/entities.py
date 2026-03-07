@@ -12,7 +12,7 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from constat.server.routes.data import get_session_manager
 from constat.server.session_manager import SessionManager
@@ -43,7 +43,9 @@ async def list_entities(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Use dict keyed by normalized_name only for deduplication (merge across types)
     from constat.discovery.models import normalize_entity_name, display_entity_name
@@ -370,7 +372,9 @@ async def add_entity_to_glossary(
     Raises:
         404: Session or entity not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Try to add to glossary via session
     try:

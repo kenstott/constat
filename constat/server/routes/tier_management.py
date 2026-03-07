@@ -198,7 +198,9 @@ async def get_resolved_config(
     Returns:
         Dict with sections and attribution
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     rc = managed.resolved_config
 
     if not rc:
@@ -260,7 +262,9 @@ async def promote_item(
     if body.section not in MANAGEABLE_SECTIONS:
         raise HTTPException(status_code=400, detail=f"Section '{body.section}' is not manageable. Must be one of: {sorted(MANAGEABLE_SECTIONS)}")
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     rc = managed.resolved_config
     if not rc:
         raise HTTPException(status_code=400, detail="No resolved config available")
@@ -353,7 +357,9 @@ async def remove_item(
     if body.section not in MANAGEABLE_SECTIONS:
         raise HTTPException(status_code=400, detail=f"Section '{body.section}' is not manageable. Must be one of: {sorted(MANAGEABLE_SECTIONS)}")
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     rc = managed.resolved_config
     if not rc:
         raise HTTPException(status_code=400, detail="No resolved config available")
@@ -435,7 +441,9 @@ async def create_item(
     if body.value is None:
         raise HTTPException(status_code=400, detail="value is required for create")
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     # Default to user tier
     target_tier = _parse_tier(body.target_tier) if body.target_tier else ConfigSource.USER

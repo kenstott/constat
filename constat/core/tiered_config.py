@@ -80,6 +80,14 @@ class ResolvedConfig:
     system_prompt: str = ""
     databases_description: str = ""
 
+    # Per-domain task routing: domain_path → raw task_routing dict
+    # Used to populate router._domain_routing during session setup.
+    # NOT merged — each domain's routing is independent.
+    domain_task_routing: dict[str, dict] = field(default_factory=dict)
+
+    # User-level task routing override (from user config tier)
+    user_task_routing: Optional[dict] = None
+
     # Attribution: dotted path → ConfigSource that set it
     _attribution: dict[str, ConfigSource] = field(default_factory=dict)
 
@@ -144,7 +152,7 @@ def _extract_mergeable_sections(data: dict) -> dict:
     sections = {}
     for key in ("databases", "apis", "documents", "glossary", "relationships",
                 "rights", "facts", "learnings", "skills", "system_prompt",
-                "databases_description"):
+                "databases_description", "task_routing"):
         if key in data:
             sections[key] = data[key]
     return sections
@@ -193,12 +201,17 @@ class TieredConfigLoader:
         """Build the fully resolved configuration.
 
         Merges tiers 1-5 in order, tracking attribution.
+        Domain task_routing is collected separately (not merged) for
+        domain-aware model routing in the TaskRouter.
 
         Returns:
             ResolvedConfig with all sections merged
         """
         attribution: dict[str, ConfigSource] = {}
         merged: dict[str, Any] = {}
+
+        # Collect per-domain task_routing separately (not merged)
+        domain_task_routing: dict[str, dict] = {}
 
         # --- Tier 1: System config ---
         tier1 = self._load_system_tier()
@@ -212,11 +225,18 @@ class TieredConfigLoader:
                 merged = _deep_merge(
                     merged, tier2, "", attribution, ConfigSource.SYSTEM_DOMAIN
                 )
+                # Collect domain task_routing separately
+                if domain_config.task_routing:
+                    domain_path = domain_config.path or domain_name
+                    domain_task_routing[domain_path] = dict(domain_config.task_routing)
 
         # --- Tier 3: User config ---
         tier3 = self._load_user_tier()
         if tier3:
             merged = _deep_merge(merged, tier3, "", attribution, ConfigSource.USER)
+
+        # Extract user-level task_routing before it gets merged away
+        user_task_routing = tier3.get("task_routing") if tier3 else None
 
         # --- Tier 4: User domains ---
         for domain_name in sorted(self._domain_names):
@@ -225,6 +245,14 @@ class TieredConfigLoader:
                 merged = _deep_merge(
                     merged, tier4, "", attribution, ConfigSource.USER_DOMAIN
                 )
+                # User domain task_routing overrides system domain
+                if "task_routing" in tier4:
+                    domain_config = self._config.load_domain(domain_name)
+                    domain_path = (domain_config.path if domain_config else None) or domain_name
+                    domain_task_routing[domain_path] = _deep_merge(
+                        domain_task_routing.get(domain_path, {}),
+                        tier4["task_routing"],
+                    )
 
         # --- Tier 5: Session overrides ---
         if self._session_overrides:
@@ -233,7 +261,7 @@ class TieredConfigLoader:
             )
 
         # Build ResolvedConfig from merged dict
-        return self._build_resolved(merged, attribution)
+        return self._build_resolved(merged, attribution, domain_task_routing, user_task_routing)
 
     def _load_system_tier(self) -> dict:
         """Extract tier-1 sections from system config."""
@@ -316,7 +344,13 @@ class TieredConfigLoader:
         data = _load_yaml_file(domain_path)
         return _extract_mergeable_sections(data)
 
-    def _build_resolved(self, merged: dict, attribution: dict) -> ResolvedConfig:
+    def _build_resolved(
+        self,
+        merged: dict,
+        attribution: dict,
+        domain_task_routing: Optional[dict[str, dict]] = None,
+        user_task_routing: Optional[dict] = None,
+    ) -> ResolvedConfig:
         """Build a ResolvedConfig from the merged dict."""
         sources = SourcesConfig(
             databases=merged.get("databases", {}),
@@ -335,6 +369,8 @@ class TieredConfigLoader:
             llm=self._config.llm,
             system_prompt=merged.get("system_prompt", ""),
             databases_description=merged.get("databases_description", ""),
+            domain_task_routing=domain_task_routing or {},
+            user_task_routing=user_task_routing,
             active_domains=list(self._domain_names),
             _attribution=attribution,
         )

@@ -258,11 +258,24 @@ export function ArtifactPanel() {
   const [modalInput, setModalInput] = useState({ name: '', value: '', uri: '', type: '', persist: false })
   const [compacting, setCompacting] = useState(false)
   const [editingRule, setEditingRule] = useState<{ id: string; summary: string } | null>(null)
-  const [learningsTab, setLearningsTab] = useState<'rules' | 'pending' | 'export'>('rules')
+  const [learningsTab, setLearningsTab] = useState<'rules' | 'pending' | 'export' | 'fine-tune'>('rules')
   const [exportFormat, setExportFormat] = useState<'messages' | 'alpaca' | 'sharegpt'>('messages')
   const [exportInclude, setExportInclude] = useState<Set<string>>(new Set(['corrections', 'rules']))
   const [exportMinConfidence, setExportMinConfidence] = useState(0.6)
   const [exporting, setExporting] = useState(false)
+
+  // Fine-tune state
+  const [ftJobs, setFtJobs] = useState<import('@/types/api').FineTuneJob[]>([])
+  const [ftProviders, setFtProviders] = useState<import('@/types/api').FineTuneProvider[]>([])
+  const [ftShowForm, setFtShowForm] = useState(false)
+  const [ftName, setFtName] = useState('')
+  const [ftProvider, setFtProvider] = useState('')
+  const [ftBaseModel, setFtBaseModel] = useState('')
+  const [ftTaskTypes, setFtTaskTypes] = useState<Set<string>>(new Set(['sql_generation']))
+  const [ftDomain, setFtDomain] = useState('')
+  const [ftInclude, setFtInclude] = useState<Set<string>>(new Set(['corrections', 'rules']))
+  const [ftMinConf, setFtMinConf] = useState(0.6)
+  const [ftSubmitting, setFtSubmitting] = useState(false)
   // Skill editing state
   // Structured skill editor state
   const [editingSkill, setEditingSkill] = useState<{
@@ -446,6 +459,16 @@ export function ArtifactPanel() {
       }).catch(() => {})
     }
   }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents])
+
+  // Auto-refresh fine-tune jobs when any are training
+  useEffect(() => {
+    const hasTraining = ftJobs.some(j => j.status === 'training')
+    if (!hasTraining || learningsTab !== 'fine-tune') return
+    const interval = setInterval(() => {
+      sessionsApi.listFineTuneJobs().then(setFtJobs).catch(() => {})
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [ftJobs, learningsTab])
 
   // Handlers
   const handleForgetFact = async (factName: string) => {
@@ -2899,6 +2922,26 @@ ${skill.body}`
               >
                 Export
               </button>
+              <button
+                onClick={() => {
+                  setLearningsTab('fine-tune')
+                  sessionsApi.listFineTuneJobs().then(setFtJobs).catch(() => {})
+                  sessionsApi.listFineTuneProviders().then((p) => {
+                    setFtProviders(p)
+                    if (p.length > 0 && !ftProvider) {
+                      setFtProvider(p[0].name)
+                      if (p[0].models.length > 0) setFtBaseModel(p[0].models[0])
+                    }
+                  }).catch(() => {})
+                }}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  learningsTab === 'fine-tune'
+                    ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
+                Fine-Tune
+              </button>
             </div>
 
             {/* Rules tab */}
@@ -3119,6 +3162,232 @@ ${skill.body}`
                   <ArrowDownTrayIcon className="w-4 h-4" />
                   {exporting ? 'Downloading...' : 'Download JSONL'}
                 </button>
+              </div>
+            )}
+
+            {/* Fine-Tune tab */}
+            {learningsTab === 'fine-tune' && (
+              <div className="space-y-3">
+                {/* Job list */}
+                {ftJobs.length > 0 && (
+                  <div className="space-y-2">
+                    {ftJobs.map((job) => (
+                      <div
+                        key={job.id}
+                        className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg group"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                                {job.name}
+                              </span>
+                              <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${
+                                job.status === 'ready' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                                job.status === 'training' ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 animate-pulse' :
+                                job.status === 'failed' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' :
+                                'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
+                              }`}>
+                                {job.status}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                              {job.provider}/{job.base_model} · {job.exemplar_count} examples
+                              {job.task_types.length > 0 && ` · ${job.task_types.join(', ')}`}
+                            </div>
+                          </div>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {job.status === 'training' && (
+                              <button
+                                onClick={async () => {
+                                  await sessionsApi.cancelFineTuneJob(job.id)
+                                  setFtJobs(ftJobs.map(j => j.id === job.id ? { ...j, status: 'failed' as const } : j))
+                                }}
+                                className="p-1 text-gray-400 hover:text-yellow-600 rounded"
+                                title="Cancel"
+                              >
+                                <XMarkIcon className="w-3 h-3" />
+                              </button>
+                            )}
+                            <button
+                              onClick={async () => {
+                                await sessionsApi.deleteFineTuneJob(job.id)
+                                setFtJobs(ftJobs.filter(j => j.id !== job.id))
+                              }}
+                              className="p-1 text-gray-400 hover:text-red-500 rounded"
+                              title="Delete"
+                            >
+                              <TrashIcon className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* New job form */}
+                {ftShowForm ? (
+                  <div className="space-y-2 p-2 border border-gray-200 dark:border-gray-700 rounded-lg">
+                    <input
+                      type="text"
+                      placeholder="Model name (e.g., sales-sql-v1)"
+                      value={ftName}
+                      onChange={(e) => setFtName(e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">Provider</label>
+                        <select
+                          value={ftProvider}
+                          onChange={(e) => {
+                            setFtProvider(e.target.value)
+                            const prov = ftProviders.find(p => p.name === e.target.value)
+                            if (prov && prov.models.length > 0) setFtBaseModel(prov.models[0])
+                          }}
+                          className="mt-0.5 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                        >
+                          {ftProviders.length === 0 && <option value="">No providers (set API keys)</option>}
+                          {ftProviders.map(p => (
+                            <option key={p.name} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">Base Model</label>
+                        <select
+                          value={ftBaseModel}
+                          onChange={(e) => setFtBaseModel(e.target.value)}
+                          className="mt-0.5 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                        >
+                          {(ftProviders.find(p => p.name === ftProvider)?.models || []).map(m => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">Task Types</label>
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {['sql_generation', 'python_analysis', 'planning', 'summarization'].map(tt => (
+                          <label key={tt} className="flex items-center gap-1 text-[11px] text-gray-700 dark:text-gray-300">
+                            <input
+                              type="checkbox"
+                              checked={ftTaskTypes.has(tt)}
+                              onChange={(e) => {
+                                const next = new Set(ftTaskTypes)
+                                if (e.target.checked) next.add(tt); else next.delete(tt)
+                                setFtTaskTypes(next)
+                              }}
+                              className="rounded text-primary-600"
+                            />
+                            {tt}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">Training Data</label>
+                      <div className="mt-0.5 flex flex-wrap gap-2">
+                        {(['corrections', 'rules', 'glossary'] as const).map(item => (
+                          <label key={item} className="flex items-center gap-1 text-[11px] text-gray-700 dark:text-gray-300">
+                            <input
+                              type="checkbox"
+                              checked={ftInclude.has(item)}
+                              onChange={(e) => {
+                                const next = new Set(ftInclude)
+                                if (e.target.checked) next.add(item); else next.delete(item)
+                                setFtInclude(next)
+                              }}
+                              className="rounded text-primary-600"
+                            />
+                            {item}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">Domain (optional)</label>
+                      <select
+                        value={ftDomain}
+                        onChange={(e) => setFtDomain(e.target.value)}
+                        className="mt-0.5 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                      >
+                        <option value="">All domains (cross-domain)</option>
+                        {domainList.map(d => (
+                          <option key={d.filename} value={d.filename}>{d.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                        Min confidence: {Math.round(ftMinConf * 100)}%
+                      </label>
+                      <input
+                        type="range"
+                        min={0} max={100} step={5}
+                        value={ftMinConf * 100}
+                        onChange={(e) => setFtMinConf(Number(e.target.value) / 100)}
+                        className="mt-0.5 w-full"
+                      />
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => {
+                          if (!ftName || !ftProvider || !ftBaseModel || ftTaskTypes.size === 0) return
+                          setFtSubmitting(true)
+                          try {
+                            const job = await sessionsApi.startFineTuneJob({
+                              name: ftName,
+                              provider: ftProvider,
+                              base_model: ftBaseModel,
+                              task_types: Array.from(ftTaskTypes),
+                              domain: ftDomain || undefined,
+                              include: Array.from(ftInclude),
+                              min_confidence: ftMinConf,
+                            })
+                            setFtJobs([job, ...ftJobs])
+                            setFtShowForm(false)
+                            setFtName('')
+                          } catch (err) {
+                            console.error('Fine-tune start failed:', err)
+                          } finally {
+                            setFtSubmitting(false)
+                          }
+                        }}
+                        disabled={ftSubmitting || !ftName || !ftProvider || !ftBaseModel || ftTaskTypes.size === 0}
+                        className="flex-1 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded disabled:opacity-50 transition-colors"
+                      >
+                        {ftSubmitting ? 'Starting...' : 'Start Training'}
+                      </button>
+                      <button
+                        onClick={() => setFtShowForm(false)}
+                        className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setFtShowForm(true)}
+                    className="w-full px-3 py-2 text-sm font-medium text-primary-600 dark:text-primary-400 border border-dashed border-primary-300 dark:border-primary-700 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-md transition-colors flex items-center justify-center gap-2"
+                  >
+                    <PlusIcon className="w-4 h-4" />
+                    New Fine-Tune Job
+                  </button>
+                )}
+
+                {ftJobs.length === 0 && !ftShowForm && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">No fine-tuning jobs yet.</p>
+                )}
               </div>
             )}
           </div>

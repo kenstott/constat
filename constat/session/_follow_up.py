@@ -286,17 +286,9 @@ CONTENT: <the value if VALUE, or the guidance/direction if STEER>
                 original_problem = self.datastore.get_session_meta("problem") if self.datastore else question
                 return self.solve(original_problem, force_plan=True)
 
-        # Check for ambiguity and request clarification if needed
-        if self.session_config.ask_clarifications and self._clarification_callback:
-            existing_tables = self.datastore.list_tables()
-            clarification_request = self._detect_ambiguity(question, session_tables=existing_tables)
-            if clarification_request:
-                enhanced_question = self._request_clarification(clarification_request)
-                if enhanced_question:
-                    question = enhanced_question
-                    # Re-analyze with clarified question
-                    logger.debug("[follow_up] Question clarified, re-analyzing...")
-                    _analysis = self._analyze_question(question, previous_problem=previous_problem)
+        # NOTE: We do NOT re-run _detect_ambiguity() here. Clarifications are handled
+        # during execution via user_input steps, and replanning after user input avoids
+        # re-asking questions that were already answered.
 
         # All follow-ups use exploratory mode (planning + execution)
         # Use /reason command to generate auditable reasoning chains when needed
@@ -524,7 +516,15 @@ User feedback: {suggestion_text}
         all_results = []
         cancelled = False
 
-        for step in follow_up_plan.steps:
+        step_idx = 0
+        while step_idx < len(follow_up_plan.steps):
+            step = follow_up_plan.steps[step_idx]
+
+            # Skip already-completed steps (from before a replan)
+            if step.status == StepStatus.COMPLETED:
+                step_idx += 1
+                continue
+
             # Phase 4: Check for cancellation before starting each step
             if self.is_cancelled():
                 cancelled = True
@@ -558,6 +558,19 @@ User feedback: {suggestion_text}
                         tables_created=result.tables_created,
                         code=result.code,
                     )
+
+                # Replan after user_input step completes
+                if step.task_type == TaskType.USER_INPUT:
+                    remaining = [s for s in follow_up_plan.steps if s.status == StepStatus.PENDING]
+                    if remaining:
+                        new_steps = self._replan_after_user_input(question, follow_up_plan, result.stdout)
+                        if new_steps:
+                            completed = [s for s in follow_up_plan.steps if s.status != StepStatus.PENDING]
+                            follow_up_plan.steps = completed + new_steps
+                            # Reset index to re-scan from start (completed steps are skipped)
+                            step_idx = 0
+                            all_results.append(result)
+                            continue
             else:
                 follow_up_plan.mark_step_failed(step.number, result)
                 self.history.record_query(
@@ -576,6 +589,7 @@ User feedback: {suggestion_text}
                 }
 
             all_results.append(result)
+            step_idx += 1
 
         # Phase 4: Handle cancellation - return with completed results preserved
         if cancelled:
@@ -972,7 +986,7 @@ Prove all of the above claims and provide a complete audit trail."""
         if self.history and self.session_id:
             self.history.clear_inferences(self.session_id)
 
-        # Emit proof_start event so UI shows "Generating proof..." instead of "Planning..."
+        # Emit proof_start event so UI shows "Generating reasoning chain..." instead of "Planning..."
         self._emit_event(StepEvent(
             event_type="proof_start",
             step_number=0,

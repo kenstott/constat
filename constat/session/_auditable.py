@@ -339,15 +339,26 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
                         "explanation": match.group(4).strip(),
                     })
                 else:
-                    # Simpler format without operation details
-                    simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
-                    if simple_match:
+                    # Try: I1: name = operation (without explanation)
+                    no_expl_match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+)$', line)
+                    if no_expl_match:
                         inferences.append({
-                            "id": simple_match.group(1),
-                            "name": "",
-                            "operation": simple_match.group(2).strip(),
+                            "id": no_expl_match.group(1),
+                            "name": no_expl_match.group(2).strip(),
+                            "operation": no_expl_match.group(3).strip(),
                             "explanation": "",
                         })
+                    else:
+                        # Bare format: I1: some text — use fact_id as name
+                        simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
+                        if simple_match:
+                            fact_id = simple_match.group(1)
+                            inferences.append({
+                                "id": fact_id,
+                                "name": fact_id,
+                                "operation": simple_match.group(2).strip(),
+                                "explanation": "",
+                            })
             elif current_section == "conclusion" and line:
                 if line.startswith("C:"):
                     conclusion = line.split("C:", 1)[1].strip()
@@ -504,14 +515,24 @@ REMEMBER:
                             "explanation": match.group(4).strip(),
                         })
                     else:
-                        simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
-                        if simple_match:
+                        no_expl_match = re.match(r'^(I\d+):\s*(.+?)\s*=\s*(.+)$', line)
+                        if no_expl_match:
                             inferences.append({
-                                "id": simple_match.group(1),
-                                "name": "",
-                                "operation": simple_match.group(2).strip(),
+                                "id": no_expl_match.group(1),
+                                "name": no_expl_match.group(2).strip(),
+                                "operation": no_expl_match.group(3).strip(),
                                 "explanation": "",
                             })
+                        else:
+                            simple_match = re.match(r'^(I\d+):\s*(.+)$', line)
+                            if simple_match:
+                                fact_id = simple_match.group(1)
+                                inferences.append({
+                                    "id": fact_id,
+                                    "name": fact_id,
+                                    "operation": simple_match.group(2).strip(),
+                                    "explanation": "",
+                                })
                 elif current_section == "conclusion" and line:
                     if line.startswith("C:"):
                         conclusion = line.split("C:", 1)[1].strip()

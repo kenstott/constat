@@ -202,16 +202,36 @@ async def list_testable_domains(
 _GROUNDABLE_SOURCES = {"database", "document", "api", "embedded"}
 
 
-@router.get(
+class ProofNodeInput(BaseModel):
+    """A proof node sent from the client."""
+    id: str = ""
+    name: str = ""
+    source: str = ""
+    source_name: Optional[str] = None
+    table_name: Optional[str] = None
+    api_endpoint: Optional[str] = None
+    status: str = ""
+
+
+class ExtractExpectationsRequest(BaseModel):
+    """Request body with proof nodes from the client."""
+    proof_nodes: list[ProofNodeInput] = []
+
+
+@router.post(
     "/{session_id}/tests/expectations",
     response_model=GoldenQuestionExpectations,
 )
 async def extract_expectations(
     session_id: str,
     user_id: CurrentUserId,
+    body: Optional[ExtractExpectationsRequest] = None,
     sm: SessionManager = Depends(_get_session_manager),
 ) -> GoldenQuestionExpectations:
-    """Build golden-question expectations from the last reasoning chain.
+    """Build golden-question expectations from proof nodes.
+
+    Accepts proof nodes in the request body (from client-side proofStore).
+    Falls back to server-side last_proof_result if no body provided.
 
     Uses the glossary/entity store to resolve premise names to real entity
     names.  Only premises with groundable sources (database, document, api)
@@ -219,8 +239,17 @@ async def extract_expectations(
     appear in the glossary, the test would not be meaningful.
     """
     managed = sm.get_session(session_id)
-    proof = managed.session.last_proof_result
-    if not proof or not proof.get("proof_nodes"):
+
+    # Prefer client-supplied proof nodes, fall back to server-side state
+    proof_nodes: list[dict] = []
+    if body and body.proof_nodes:
+        proof_nodes = [n.model_dump() for n in body.proof_nodes]
+    else:
+        proof = managed.session.last_proof_result
+        if proof:
+            proof_nodes = proof.get("proof_nodes", [])
+
+    if not proof_nodes:
         raise HTTPException(status_code=404, detail="No reasoning chain result available")
 
     doc_tools = managed.session.doc_tools
@@ -234,7 +263,7 @@ async def extract_expectations(
     grounding: list[dict] = []
     seen: set[str] = set()
 
-    for node in proof["proof_nodes"]:
+    for node in proof_nodes:
         source = node.get("source", "")
         # Only groundable sources
         if source not in _GROUNDABLE_SOURCES:

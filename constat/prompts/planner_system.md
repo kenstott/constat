@@ -83,7 +83,16 @@ If no active skills match the request, plan from primitives as usual.
     - Prefer aggregation at the database level over pulling raw data into Python
     - When the user asks a simple question, prefer fewer steps over exhaustive multi-step analysis
     - Use `llm_map`/`llm_classify` only on unique values, not every row
-13. **NO DUPLICATE WORK** - Never plan a step that re-does work already completed by a prior step.
+13. **USER INPUT STEPS** — When a plan needs user feedback on intermediate results, use `task_type: "user_input"`. The step code calls `ask_user(question, widget=..., data=...)` to pause and get the user's answer. Use when the user's input genuinely affects subsequent steps.
+    - **Approval/curation**: Step computes items → user_input step uses `widget="curation"` to let user check/uncheck items to keep
+    - **Correlation/mapping**: Step extracts key terms from two datasets → user_input step uses `widget="mapping"` to let user draw connections between them
+    - **Selection**: Step queries categories → user_input step uses `widget="choice"` to pick one
+    - **Review/edit**: Step produces tabular results → user_input step uses `widget="table"` for structured editing
+    - **Prioritization**: Step lists options → user_input step uses `widget="ranking"` to let user reorder
+    - WRONG: Using user_input for questions that could be resolved before the plan starts (use clarifications instead)
+    - When the task involves **creative mapping, subjective matching, or ambiguous associations** between two datasets, prefer inserting a user_input step to let the user guide the correlation logic rather than letting the LLM decide autonomously
+    - **Mention the widget type in the step goal** so code generation picks the right one (e.g., "Ask user to map inventory terms to breed characteristics using mapping widget")
+14. **NO DUPLICATE WORK** - Never plan a step that re-does work already completed by a prior step.
     - If step N produces a table with columns A, B, C, step N+1 must NOT recompute those columns — load and use the table directly.
     - WRONG: Step 3 matches products→breeds with reasoning. Step 4 "generates final list with reasoning" by re-calling `llm_map`. This duplicates Step 3.
     - RIGHT: Step 3 matches products→breeds with reasoning. Step 4 formats the existing matches into a report. No LLM calls needed.
@@ -108,6 +117,14 @@ Guidelines:
 2. If no agent fits well, use `null` for that step
 3. Prefer specific agents over generic ones when multiple could apply
 
+## Domain-Aware Model Routing
+Each step can specify a `domain` — the domain whose data the step primarily operates on. This determines which model chain handles code generation for that step (domains may have fine-tuned specialist models).
+
+- Set `domain` to the domain filename (e.g., `"sales-analytics"`) when the step queries or transforms data from a specific domain
+- If a step touches data from multiple domains, set `domain` to the broadest common ancestor, or omit it
+- Omit `domain` (or set to `null`) for steps that don't touch domain-specific data (e.g., pure formatting, synthesis)
+- The available domains are listed in the resources section below
+
 ## Output Format
 Return a JSON object:
 ```json
@@ -115,17 +132,18 @@ Return a JSON object:
   "reasoning": "Brief explanation of your approach",
   "contains_sensitive_data": false,
   "steps": [
-    {{"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium", "role_id": null, "post_validations": [{{"expression": "len(df) > 0", "description": "Query returned results", "on_fail": "retry"}}]}},
-    {{"number": 2, "goal": "...", "inputs": ["df"], "outputs": ["summary"], "depends_on": [1], "task_type": "python_analysis", "complexity": "low", "role_id": "financial-analyst"}}
+    {{"number": 1, "goal": "...", "inputs": [], "outputs": ["df"], "depends_on": [], "task_type": "sql_generation", "complexity": "medium", "domain": "sales-analytics", "role_id": null, "post_validations": [{{"expression": "len(df) > 0", "description": "Query returned results", "on_fail": "retry"}}]}},
+    {{"number": 2, "goal": "...", "inputs": ["df"], "outputs": ["summary"], "depends_on": [1], "task_type": "python_analysis", "complexity": "low", "domain": "sales-analytics", "role_id": "financial-analyst"}}
   ]
 }}
 ```
 
-Note: `role_id` is optional. Use `null` or omit it for steps that should use shared context.
+Note: `role_id` and `domain` are optional. Use `null` or omit for steps that should use shared context / system-level routing.
 
 ## Task Types (for code generation routing)
 - **sql_generation**: Steps that primarily query databases (SELECT, joins, aggregations)
 - **python_analysis**: Steps that transform data, compute statistics, or generate output (including summaries)
+- **user_input**: Steps that pause to ask the user a question about intermediate results. Code calls `ask_user()`.
 
 ## Complexity Levels
 - **low**: Simple single-table queries

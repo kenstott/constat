@@ -238,6 +238,17 @@ class IntentClassifier:
 
         return segments
 
+    # Priority order: actionable intents beat session-management intents.
+    # When a multi-sentence message mixes PLAN_NEW + CONTROL, the PLAN_NEW
+    # sentence is the real request and the CONTROL match is a false positive
+    # from qualifiers like "do not worry about low confidence".
+    _PRIMARY_PRIORITY = {
+        PrimaryIntent.PLAN_NEW: 4,
+        PrimaryIntent.PLAN_CONTINUE: 3,
+        PrimaryIntent.QUERY: 2,
+        PrimaryIntent.CONTROL: 1,
+    }
+
     def _classify_multi_segment(
         self,
         segments: list[str],
@@ -245,9 +256,11 @@ class IntentClassifier:
     ) -> TurnIntent:
         """Classify multiple segments and resolve conflicts.
 
-        Classifies each segment independently. On conflict (same primary intent),
-        the latest segment wins - this handles natural self-correction patterns
-        like "analyze sales. wait, I got that wrong. analyze revenue instead."
+        Classifies each segment independently. When all segments agree on
+        primary intent, the latest wins (handles self-correction). When
+        primaries conflict, the highest-priority actionable intent wins —
+        PLAN_NEW beats CONTROL because qualifiers like "be creative, do not
+        worry about X" are style instructions, not session commands.
 
         Args:
             segments: List of message segments.
@@ -265,10 +278,22 @@ class IntentClassifier:
         if not intents:
             return TurnIntent(primary=PrimaryIntent.QUERY)
 
-        # Latest wins on conflict - return the last non-trivial intent
-        # A "trivial" intent would be one that looks like self-correction
-        # without a new actionable request
-        return intents[-1]
+        # Check if all segments agree on primary intent
+        primaries = {i.primary for i in intents}
+        if len(primaries) == 1:
+            # All agree — latest wins (handles self-correction)
+            return intents[-1]
+
+        # Conflict: pick the highest-priority actionable intent.
+        # Among ties at the same priority, latest wins.
+        best = intents[0]
+        best_priority = self._PRIMARY_PRIORITY.get(best.primary, 0)
+        for intent in intents[1:]:
+            p = self._PRIMARY_PRIORITY.get(intent.primary, 0)
+            if p >= best_priority:
+                best = intent
+                best_priority = p
+        return best
 
     def _classify_single(
         self,

@@ -149,10 +149,12 @@ export function ClarificationDialog() {
             </div>
             <div className="flex-1">
               <DialogTitle className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                Clarification Needed
+                {clarification.ambiguityReason === 'input_request' ? 'Input Request' : 'Clarification Needed'}
               </DialogTitle>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                {clarification.ambiguityReason}
+                {clarification.ambiguityReason === 'input_request'
+                  ? 'This step needs your input to continue'
+                  : clarification.ambiguityReason}
               </p>
             </div>
             <button

@@ -38,6 +38,8 @@ router = APIRouter()
 
 def _get_vector_store(managed):
     """Get vector store from managed session."""
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
     session = managed.session
     if hasattr(session, "doc_tools") and session.doc_tools:
         vs = session.doc_tools._vector_store
@@ -147,7 +149,7 @@ async def list_glossary(
     Queries NER-extracted entities joined with glossary_terms from the DB.
     All entities come from NER extraction — every entity has chunk references.
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     active_domains = getattr(managed, "active_domains", []) or []
@@ -234,7 +236,7 @@ async def list_deprecated(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Get deprecated glossary terms (no matching entity)."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     active_domains = getattr(managed, "active_domains", []) or []
@@ -262,7 +264,7 @@ async def get_glossary_term(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Get a specific glossary term with physical resources."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     term = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
@@ -394,7 +396,7 @@ async def get_term_relationships(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Get SVO relationships for a glossary term."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     svo_rels = vs.get_relationships_for_entity(name, session_id)
@@ -423,7 +425,7 @@ async def create_relationship(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Create a new SVO relationship between two entities."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     body = await request.json()
@@ -470,7 +472,7 @@ async def update_relationship_verb(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Update the verb of an existing relationship."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     body = await request.json()
@@ -495,7 +497,7 @@ async def approve_relationship(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Mark a relationship as user-approved (user_edited=TRUE)."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     if not vs.mark_relationship_user_edited(rel_id):
@@ -511,7 +513,7 @@ async def delete_relationship(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Delete a relationship."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     deleted = vs.delete_entity_relationship(rel_id)
@@ -527,7 +529,7 @@ async def generate_glossary(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Re-trigger LLM glossary generation."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     # Cancel any in-progress generation (additive — does not clear existing)
@@ -552,7 +554,7 @@ async def add_definition(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Add a definition to a term."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     # Check if term already has a definition (user-scoped)
@@ -600,7 +602,7 @@ async def update_definition(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Update a glossary term definition."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
@@ -673,7 +675,7 @@ async def delete_glossary_by_status(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Delete all glossary terms matching a status (default: draft)."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     # Cancel any in-progress glossary generation so it doesn't re-create drafts
@@ -690,7 +692,7 @@ async def delete_definition(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Delete a term with cascade: children reparented to root, ancestors revalidated."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     active_domains = managed.session.active_domains if hasattr(managed.session, "active_domains") else None
@@ -711,7 +713,7 @@ async def rename_term(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Rename a glossary term. Only abstract (non-grounded) terms can be renamed."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     body = await request.json()
@@ -744,7 +746,7 @@ async def reconnect_term(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Reconnect a deprecated term by updating parent_id and/or domain."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     existing = vs.get_glossary_term(name, session_id, user_id=managed.user_id)
@@ -783,7 +785,7 @@ async def draft_definition(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """AI-generate a draft definition for a term that lacks one."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
     session = managed.session
 
@@ -828,7 +830,7 @@ async def draft_aliases(
     """AI-generate draft aliases for a glossary term."""
     import json as _json
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
     session = managed.session
 
@@ -907,7 +909,7 @@ async def draft_tags(
     """AI-generate draft classification tags for a glossary term."""
     import json as _json
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
     session = managed.session
 
@@ -978,7 +980,7 @@ async def refine_definition(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """AI-assisted definition refinement."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
     session = managed.session
 
@@ -1038,7 +1040,7 @@ async def suggest_taxonomy(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """LLM-assisted taxonomy suggestions for glossary terms."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
     session = managed.session
 
@@ -1106,7 +1108,7 @@ async def bulk_update_status(
     session_manager: SessionManager = Depends(get_session_manager),
 ) -> dict[str, Any]:
     """Update status for multiple glossary terms."""
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
 
     updated = []
@@ -1135,7 +1137,7 @@ async def persist_glossary(
     """Write approved glossary terms to domain YAML."""
     import yaml
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
     vs = _get_vector_store(managed)
     config = request.app.state.config
 

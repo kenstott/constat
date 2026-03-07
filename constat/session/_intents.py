@@ -632,7 +632,7 @@ Provide a brief, high-level summary of the key findings."""
 
         # REDO_CMD: re-execute last plan
         if sub_intent == SubIntent.REDO_CMD:
-            return self._handle_redo()
+            return self._handle_redo(user_input)
 
         # HELP: show available commands
         if sub_intent == SubIntent.HELP:
@@ -826,7 +826,7 @@ Provide a brief, high-level summary of the key findings."""
             "reset": True,
         }
 
-    def _handle_redo(self) -> dict:
+    def _handle_redo(self, user_input: str = "") -> dict:
         """Handle redo control command - replan and re-execute."""
         if not self.datastore:
             return {
@@ -844,12 +844,26 @@ Provide a brief, high-level summary of the key findings."""
                 "meta_response": True,
             }
 
+        # Extract guidance from user input (strip "redo" prefix if present)
+        guidance = None
+        if user_input:
+            stripped = user_input.strip()
+            # Remove common redo prefixes
+            for prefix in ("redo", "redo.", "redo,", "redo:"):
+                if stripped.lower().startswith(prefix):
+                    stripped = stripped[len(prefix):].strip()
+                    break
+            if stripped:
+                guidance = stripped
+
         # Redo stays in session mode: replan and re-execute from scratch
         session_mode = self.datastore.get_session_meta("mode")
         if session_mode == "auditable":
-            return self.prove_conversation()
+            return self.prove_conversation(guidance=guidance)
 
         # Exploratory: full replan with new code generation
+        if guidance:
+            problem = f"{problem}\n\nAdditional instructions: {guidance}"
         return self.solve(problem, force_plan=True)
 
     @staticmethod

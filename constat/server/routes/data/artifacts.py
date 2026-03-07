@@ -47,7 +47,9 @@ async def list_artifacts(
     Raises:
         404: Session not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     if not managed.session.datastore:
         return ArtifactListResponse(artifacts=[])
@@ -208,7 +210,9 @@ async def get_artifact(
     Raises:
         404: Session or artifact not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -276,7 +280,9 @@ async def get_artifact_versions(
     Raises:
         404: Session or artifact not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -326,7 +332,9 @@ async def download_artifact_file(
     """
     from pathlib import Path
 
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     if not managed.session.datastore:
         raise HTTPException(status_code=404, detail="No datastore for this session")
@@ -417,7 +425,9 @@ async def toggle_artifact_star(
     Raises:
         404: Session or artifact not found
     """
-    managed = session_manager.get_session(session_id)
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     try:
         if not managed.session.datastore:
