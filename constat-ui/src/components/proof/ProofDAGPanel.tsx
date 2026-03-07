@@ -1052,6 +1052,7 @@ export function ProofDAGPanel({ isOpen, onClose, facts, isPlanningComplete = fal
                     setTestDomain('')
                   } catch (err) {
                     console.error('Failed to save test:', err)
+                    alert(`Failed to save test: ${err instanceof Error ? err.message : String(err)}`)
                   } finally {
                     setIsSavingTest(false)
                   }

@@ -243,6 +243,11 @@ export default function RegressionPanel({ sessionId }: Props) {
       {/* ================================================================ */}
       {/* MANAGE MODE                                                      */}
       {/* ================================================================ */}
+      {/* Error display (visible in both modes) */}
+      {error && (
+        <div className="text-red-600 dark:text-red-400 text-xs px-1">{error}</div>
+      )}
+
       {manageMode ? (
         <div className="space-y-2">
           {testableDomains.map((d) => {
@@ -437,11 +442,6 @@ export default function RegressionPanel({ sessionId }: Props) {
               </div>
             )}
           </div>
-
-          {/* Error */}
-          {error && (
-            <div className="text-red-600 dark:text-red-400 text-xs">{error}</div>
-          )}
 
           {/* Results */}
           {results && (
