@@ -22,6 +22,7 @@ import type {
   Rule,
   FineTuneJob,
   FineTuneProvider,
+  ModelRouteInfo,
 } from '@/types/api'
 
 // Session ID persistence (matches key used in App.tsx)
@@ -509,6 +510,7 @@ export interface StepCode {
   goal: string
   code: string
   prompt?: string
+  model?: string
 }
 
 export async function listStepCodes(
@@ -527,6 +529,7 @@ export interface InferenceCode {
   code: string
   attempt: number
   prompt?: string
+  model?: string
 }
 
 export async function listInferenceCodes(
@@ -736,6 +739,12 @@ export async function removeApi(
 // Config (global, not per-session)
 export async function getConfig(): Promise<Config> {
   return get<Config>(`/config`)
+}
+
+export async function getSessionRouting(
+  sessionId: string
+): Promise<Record<string, Record<string, ModelRouteInfo[]>>> {
+  return get<Record<string, Record<string, ModelRouteInfo[]>>>(`/sessions/${sessionId}/routing`)
 }
 
 // Learnings (global, not per-session)

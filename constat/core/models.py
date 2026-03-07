@@ -382,9 +382,26 @@ class Plan:
                 # Circular dependency or bug - break to avoid infinite loop
                 break
 
-            waves.append(sorted(wave))
-            completed.update(wave)
-            remaining -= set(wave)
+            # Isolate user_input steps: they block on user interaction and must
+            # not run in parallel with other steps (causes ordering issues in UI
+            # and prevents subsequent steps from using the user's answer).
+            user_input_in_wave = [
+                n for n in wave
+                if (s := self.get_step(n)) and s.task_type == TaskType.USER_INPUT
+            ]
+            if user_input_in_wave and len(wave) > 1:
+                # Put user_input steps first (each in its own wave), then the rest
+                non_ui = sorted(set(wave) - set(user_input_in_wave))
+                for ui_num in sorted(user_input_in_wave):
+                    waves.append([ui_num])
+                    completed.add(ui_num)
+                    remaining.discard(ui_num)
+                # Re-evaluate remaining steps (some may now be unblocked)
+                continue
+            else:
+                waves.append(sorted(wave))
+                completed.update(wave)
+                remaining -= set(wave)
 
         return waves
 

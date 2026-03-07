@@ -471,30 +471,63 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   answerClarification: (answers, structuredAnswers) => {
-    const { clarification, addMessage } = get()
+    const { clarification, currentStepNumber } = get()
 
     // Merge any structured answers from clarification state
     const finalStructured = structuredAnswers || clarification?.structuredAnswers || {}
 
-    // Add user bubble with clarification answers
-    if (clarification) {
-      const answerSummary = clarification.questions
-        .map((q, i) => `**${q.text}**\n${answers[i] || 'Skipped'}`)
-        .join('\n\n')
-      addMessage({ type: 'user', content: answerSummary })
-    }
-
+    // Dismiss dialog and send response FIRST — ensures modal closes immediately
     const payload: Record<string, unknown> = { answers }
     if (Object.keys(finalStructured).length > 0) {
       payload.structured_answers = finalStructured
     }
     wsManager.send('clarify', payload)
-    set({ clarification: null, status: 'planning' })
+    const isInputRequest = clarification?.ambiguityReason === 'input_request'
+    set({ clarification: null, status: isInputRequest ? 'executing' : 'planning' })
+
+    // Add user response bubble (right side) — answer only, question is already on the left
+    if (clarification) {
+      const answerSummary = clarification.questions
+        .map((_, i) => answers[i] || 'Skipped')
+        .join('\n\n')
+
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        type: 'user',
+        content: answerSummary,
+        timestamp: new Date(),
+      }
+
+      // Find the question system message (last system message near the current step)
+      // and insert the response after it
+      const stepMsgId = currentStepNumber ? get().stepMessageIds[currentStepNumber] : null
+      set((state) => {
+        if (stepMsgId) {
+          const stepIdx = state.messages.findIndex((m) => m.id === stepMsgId)
+          if (stepIdx >= 0) {
+            // Find the system message after the step (the question)
+            let insertIdx = state.messages.length
+            for (let i = stepIdx + 1; i < state.messages.length; i++) {
+              if (state.messages[i].type === 'system') {
+                insertIdx = i + 1
+                break
+              }
+            }
+            const updated = [...state.messages]
+            updated.splice(insertIdx, 0, userMsg)
+            return { messages: updated }
+          }
+        }
+        return { messages: [...state.messages, userMsg] }
+      })
+    }
   },
 
   skipClarification: () => {
+    const { clarification } = get()
     wsManager.send('skip_clarification')
-    set({ clarification: null, status: 'planning' })
+    const isInputRequest = clarification?.ambiguityReason === 'input_request'
+    set({ clarification: null, status: isInputRequest ? 'executing' : 'planning' })
   },
 
   setClarificationStep: (step) => {
@@ -715,6 +748,55 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set({ status: 'awaiting_approval', plan: event.data.plan as Plan, executionPhase: 'awaiting_approval' })
         break
 
+      case 'plan_updated': {
+        // Mid-execution replan (e.g., after user_input step) — update step list
+        // without disrupting execution state or showing approval dialog
+        const updatedSteps = (event.data.steps as Array<{ number: number; goal: string; depends_on?: number[]; role_id?: string }>) || []
+        // Build a fresh copy of stepMessageIds to avoid stale closure issues
+        const freshIds = { ...get().stepMessageIds }
+        // Remove pending step messages that are no longer in the plan
+        const newStepNumbers = new Set(updatedSteps.map((s) => s.number))
+        const staleIds = get().messages
+          .filter((m) => m.type === 'step' && m.stepNumber && m.isPending && !newStepNumbers.has(m.stepNumber))
+          .map((m) => m.id)
+        if (staleIds.length > 0) {
+          set((state) => ({
+            messages: state.messages.filter((m) => !staleIds.includes(m.id)),
+          }))
+          for (const num of Object.keys(freshIds)) {
+            if (staleIds.includes(freshIds[Number(num)])) {
+              delete freshIds[Number(num)]
+            }
+          }
+        }
+        // Add new pending step messages — re-read messages AFTER stale removal
+        const freshMsgs = get().messages
+        const newPendingSteps = updatedSteps.filter(
+          (s) => !freshIds[s.number] && !freshMsgs.some((m) => m.stepNumber === s.number)
+        )
+        if (newPendingSteps.length > 0) {
+          const newMsgs = newPendingSteps.map((step) => ({
+            id: crypto.randomUUID(),
+            type: 'step' as const,
+            content: `Step ${step.number}: ${step.goal || 'Pending'}`,
+            timestamp: new Date(),
+            stepNumber: step.number,
+            isLive: false,
+            isPending: true,
+            role: step.role_id,
+          }))
+          for (const msg of newMsgs) {
+            freshIds[msg.stepNumber!] = msg.id
+          }
+          set((state) => ({
+            messages: [...state.messages, ...newMsgs],
+          }))
+        }
+        // Sync stepMessageIds back to state
+        set({ stepMessageIds: freshIds })
+        break
+      }
+
       case 'step_start': {
         const goal = (event.data.goal as string) || 'Processing'
         // Track the starting step of this query for View Result
@@ -760,11 +842,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break
       }
 
+      case 'model_escalation': {
+        const fromModel = (event.data.from_model as string) || ''
+        const toModel = (event.data.to_model as string) || ''
+        const reason = (event.data.reason as string) || ''
+        // Show short model names (e.g., "together/meta-llama/..." → "Llama-3.1-8B")
+        const shortName = (m: string) => {
+          const parts = m.split('/')
+          return parts[parts.length - 1].replace('Meta-Llama-', 'Llama-').replace('-Instruct-Turbo', '')
+        }
+        const reasonShort = reason.length > 60 ? reason.slice(0, 60) + '...' : reason
+        updateStepMessage(
+          event.step_number,
+          `Step ${event.step_number}: ${shortName(fromModel)} → ${shortName(toModel)} (${reasonShort})`
+        )
+        // Increment stepAttempts so the retry badge shows
+        const escMsgId = stepMessageIds[event.step_number]
+        if (escMsgId) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === escMsgId ? { ...m, stepAttempts: (m.stepAttempts || 0) + 1 } : m
+            ),
+          }))
+        }
+        set({ executionPhase: 'retrying' })
+        break
+      }
+
       case 'step_executing': {
         const goal = (event.data.goal as string) || ''
         const code = (event.data.code as string) || ''
+        const model = (event.data.model as string) || undefined
         if (code) {
-          useArtifactStore.getState().addStepCode(event.step_number, goal, code)
+          useArtifactStore.getState().addStepCode(event.step_number, goal, code, model)
         }
         updateStepMessage(event.step_number, `Step ${event.step_number}: Executing${goal ? ` - ${goal}` : ''}...`)
         set({ executionPhase: 'executing' })
@@ -804,6 +914,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           tables_created?: string[]
           duration_ms?: number
           attempts?: number
+          model?: string
         }
         // Update step bubble with completion status and output (code goes to Code accordion)
         const summary = result.goal || 'Completed'
@@ -830,7 +941,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         // Store code for the Code accordion
         if (result.code) {
-          useArtifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code)
+          useArtifactStore.getState().addStepCode(event.step_number, result.goal || '', result.code, result.model)
         }
         // Fetch artifacts/facts/tables/learnings after each step completes
         const { session } = get()
@@ -1076,9 +1187,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ambiguity_reason: string
           questions: Array<{ text: string; suggestions: string[]; widget?: { type: string; config: Record<string, unknown> } }>
         }
-        // Replace live/thinking with clarification prompt
+        // Replace live/thinking with the actual question text
         clearLiveMessage()
-        addMessage({ type: 'system', content: 'Please clarify your question.' })
+        const questionText = data.questions?.[0]?.text || data.original_question || 'Please clarify your question.'
+        // Insert the question as a system message at the current position (near the active step)
+        const { currentStepNumber } = get()
+        const stepMsgId = currentStepNumber ? stepMessageIds[currentStepNumber] : null
+        if (stepMsgId) {
+          // Insert after the current step message
+          set((state) => {
+            const idx = state.messages.findIndex((m) => m.id === stepMsgId)
+            const newMsg: Message = {
+              id: crypto.randomUUID(),
+              type: 'system',
+              content: questionText,
+              timestamp: new Date(),
+            }
+            if (idx >= 0) {
+              const updated = [...state.messages]
+              updated.splice(idx + 1, 0, newMsg)
+              return { messages: updated }
+            }
+            return { messages: [...state.messages, newMsg] }
+          })
+        } else {
+          addMessage({ type: 'system', content: questionText })
+        }
         set({
           status: 'awaiting_approval',
           executionPhase: 'idle',
@@ -1166,6 +1300,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             operation: icData.operation as string || '',
             code: icData.code as string,
             attempt: icData.attempt as number,
+            model: icData.model as string || undefined,
           })
         }
         break

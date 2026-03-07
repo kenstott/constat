@@ -1,7 +1,7 @@
 // Artifact state store
 
 import { create } from 'zustand'
-import type { Artifact, ArtifactContent, TableInfo, Fact, Entity, SessionDatabase, ApiSourceInfo, DocumentSourceInfo, Learning, Rule } from '@/types/api'
+import type { Artifact, ArtifactContent, TableInfo, Fact, Entity, SessionDatabase, ApiSourceInfo, DocumentSourceInfo, Learning, Rule, ModelRouteInfo } from '@/types/api'
 import * as sessionsApi from '@/api/sessions'
 import * as skillsApi from '@/api/skills'
 
@@ -10,6 +10,7 @@ interface StepCode {
   step_number: number
   goal: string
   code: string
+  model?: string
 }
 
 // Inference code from auditable mode (matches API response)
@@ -20,6 +21,7 @@ interface InferenceCode {
   code: string
   attempt: number
   prompt?: string
+  model?: string
 }
 
 // Prompt context types
@@ -71,6 +73,7 @@ interface ArtifactState {
   stepCodes: StepCode[]
   inferenceCodes: InferenceCode[]
   promptContext: PromptContext | null
+  taskRouting: Record<string, Record<string, ModelRouteInfo[]>> | null
   allSkills: SkillInfo[]
   allAgents: AgentInfo[]
   userPermissions: UserPermissions
@@ -94,6 +97,7 @@ interface ArtifactState {
   fetchDatabases: (sessionId: string) => Promise<void>
   fetchDataSources: (sessionId: string) => Promise<void>
   fetchPromptContext: (sessionId: string) => Promise<void>
+  fetchTaskRouting: (sessionId: string) => Promise<void>
   fetchAllSkills: () => Promise<void>
   createSkill: (name: string, prompt: string, description?: string) => Promise<void>
   updateSkill: (name: string, content: string) => Promise<void>
@@ -113,7 +117,7 @@ interface ArtifactState {
   updateTable: (tableName: string, updates: Partial<TableInfo>) => void
   addArtifact: (artifact: Artifact) => void
   addFact: (fact: Fact) => void
-  addStepCode: (stepNumber: number, goal: string, code: string) => void
+  addStepCode: (stepNumber: number, goal: string, code: string, model?: string) => void
   // Star/promote actions (persist to server)
   toggleArtifactStar: (sessionId: string, artifactId: number) => Promise<void>
   toggleTableStar: (sessionId: string, tableName: string) => Promise<void>
@@ -141,6 +145,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   apis: [],
   documents: [],
   promptContext: null,
+  taskRouting: null,
   allSkills: [],
   allAgents: [],
   userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
@@ -280,6 +285,15 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       })
     } catch (error) {
       console.warn('Failed to fetch prompt context:', error)
+    }
+  },
+
+  fetchTaskRouting: async (sessionId: string) => {
+    try {
+      const layers = await sessionsApi.getSessionRouting(sessionId)
+      set({ taskRouting: layers })
+    } catch (error) {
+      console.warn('Failed to fetch task routing:', error)
     }
   },
 
@@ -529,16 +543,16 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
     })
   },
 
-  addStepCode: (stepNumber, goal, code) => {
+  addStepCode: (stepNumber, goal, code, model?) => {
     set((state) => {
       // Check if step code already exists
       const existingIndex = state.stepCodes.findIndex((s) => s.step_number === stepNumber)
       if (existingIndex >= 0) {
         const updated = [...state.stepCodes]
-        updated[existingIndex] = { step_number: stepNumber, goal, code }
+        updated[existingIndex] = { step_number: stepNumber, goal, code, model }
         return { stepCodes: updated }
       }
-      return { stepCodes: [...state.stepCodes, { step_number: stepNumber, goal, code }] }
+      return { stepCodes: [...state.stepCodes, { step_number: stepNumber, goal, code, model }] }
     })
   },
 

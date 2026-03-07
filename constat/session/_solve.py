@@ -102,39 +102,53 @@ class SolveMixin:
                 return None
 
         # Determine which tasks to run
-        tasks = {
+        # Fast tasks: intent, analysis, ambiguity, dynamic_context (~2-5s each)
+        # Slow task: planning (~15-30s) — launched separately, awaited only when needed
+        fast_tasks = {
             "intent": run_intent,
             "analysis": run_analysis,
             "dynamic_context": run_dynamic_context,
         }
         if self.session_config.ask_clarifications and self._clarification_callback:
-            tasks["ambiguity"] = run_ambiguity
-        # Always run speculative planning in parallel
-        tasks["planning"] = run_planning
+            fast_tasks["ambiguity"] = run_ambiguity
 
-        # Run all tasks in parallel
+        # Run fast tasks in parallel; launch planning as a non-blocking background future
         parallel_start = time.time()
+        task_timings: dict[str, float] = {}
         results = {}
-        with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-            futures = {executor.submit(fn): name for name, fn in tasks.items()}
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    results[name] = future.result()
-                except Exception as e:
-                    logger.warning(f"[PARALLEL] Task {name} failed: {e}")
-                    results[name] = None
+        # Use a persistent executor so the planning future survives the fast-task loop
+        executor = ThreadPoolExecutor(max_workers=len(fast_tasks) + 1)
+        planning_start = time.time()
+        planning_future = executor.submit(run_planning)
 
-        parallel_duration = time.time() - parallel_start
-        logger.debug(f"[PARALLEL] All tasks completed in {parallel_duration:.2f}s")
+        fast_starts = {name: time.time() for name in fast_tasks}
+        fast_futures = {executor.submit(fn): name for name, fn in fast_tasks.items()}
+        for future in as_completed(fast_futures):
+            name = fast_futures[future]
+            elapsed = time.time() - fast_starts[name]
+            task_timings[name] = elapsed
+            try:
+                results[name] = future.result()
+                logger.info(f"[PARALLEL] {name} completed in {elapsed:.2f}s")
+            except Exception as e:
+                logger.warning(f"[PARALLEL] {name} failed in {elapsed:.2f}s: {e}")
+                results[name] = None
+
+        fast_duration = time.time() - parallel_start
+        timing_summary = ", ".join(f"{k}={v:.1f}s" for k, v in sorted(task_timings.items(), key=lambda x: -x[1]))
+        logger.info(f"[PARALLEL] Fast tasks completed in {fast_duration:.2f}s ({timing_summary}), planning still running in background")
 
         turn_intent = results.get("intent")
         analysis = results.get("analysis") or QuestionAnalysis(
             question_type=QuestionType.DATA_ANALYSIS, extracted_facts=[]
         )
         clarification_request = results.get("ambiguity")
-        speculative_plan = results.get("planning")
         dynamic_context = results.get("dynamic_context")
+        # planning_future awaited later only if needed
+        speculative_plan = None  # Will be resolved from planning_future when needed
+
+        # Track whether the speculative plan is still usable
+        planning_discarded = False
 
         # Emit dynamic context event (role and skills matched for this query)
         logger.info(f"[DYNAMIC_CONTEXT] dynamic_context={dynamic_context}")
@@ -146,7 +160,8 @@ class SolveMixin:
                 activated = self.skill_manager.set_active_skills(skill_names)
                 logger.info(f"[DYNAMIC_CONTEXT] Activated skills: {activated}")
                 if activated:
-                    speculative_plan = None
+                    planning_discarded = True
+                    planning_future.cancel()
                     logger.debug("[PARALLEL] Skills activated, discarding speculative plan")
 
             event_data = {
@@ -169,12 +184,16 @@ class SolveMixin:
             result = self._handle_query_intent(turn_intent, problem)
             if not result.get("_route_to_planning"):
                 logger.debug("[PARALLEL] QUERY handled without planning (speculative plan discarded)")
+                planning_future.cancel()
+                executor.shutdown(wait=False)
                 return result
             logger.info("[ROUTING] QUERY/LOOKUP found data sources, routing to planning")
             route_to_planning = True
 
         if not force_plan and turn_intent and turn_intent.primary == PrimaryIntent.CONTROL and not route_to_planning:
             logger.debug("[PARALLEL] CONTROL intent (speculative plan discarded)")
+            planning_future.cancel()
+            executor.shutdown(wait=False)
             return self._handle_control_intent(turn_intent, problem)
 
         # PLAN_NEW, PLAN_CONTINUE, or re-routed QUERY - continue with planning flow
@@ -188,7 +207,8 @@ class SolveMixin:
             # If problem was enhanced, speculative plan may be stale - replan
             if enhanced_problem != problem:
                 logger.debug("[PARALLEL] Problem enhanced, replanning...")
-                speculative_plan = None
+                planning_discarded = True
+                planning_future.cancel()
         problem = enhanced_problem
 
         # Emit facts if any were extracted
@@ -204,6 +224,8 @@ class SolveMixin:
 
         # Return cached fact answer if question was about a known fact
         if analysis.cached_fact_answer:
+            planning_future.cancel()
+            executor.shutdown(wait=False)
             return {
                 "success": True,
                 "meta_response": True,
@@ -215,6 +237,8 @@ class SolveMixin:
 
         if question_type == QuestionType.META_QUESTION:
             logger.debug("[PARALLEL] META_QUESTION (speculative plan discarded)")
+            planning_future.cancel()
+            executor.shutdown(wait=False)
             self._emit_event(StepEvent(
                 event_type="progress",
                 step_number=0,
@@ -223,6 +247,8 @@ class SolveMixin:
             return self._answer_meta_question(problem)
         elif question_type == QuestionType.GENERAL_KNOWLEDGE:
             logger.debug("[PARALLEL] GENERAL_KNOWLEDGE (speculative plan discarded)")
+            planning_future.cancel()
+            executor.shutdown(wait=False)
             self._emit_event(StepEvent(
                 event_type="progress",
                 step_number=0,
@@ -237,7 +263,8 @@ class SolveMixin:
                 problem = enhanced_problem
                 # Re-analyze with clarified problem - speculative plan is stale
                 logger.debug("[PARALLEL] Problem clarified, replanning...")
-                speculative_plan = None
+                planning_discarded = True
+                planning_future.cancel()
                 analysis = self._analyze_question(problem)
 
         # Create session + datastore (idempotent — may already exist from skill execution)
@@ -256,6 +283,8 @@ class SolveMixin:
 
         # Check for unclear/garbage input before processing
         if self._is_unclear_input(problem):
+            planning_future.cancel()
+            executor.shutdown(wait=False)
             return {
                 "success": True,
                 "meta_response": True,
@@ -282,16 +311,33 @@ class SolveMixin:
 
         while replan_attempt <= self.session_config.max_replan_attempts:
             # Use speculative plan if available (from parallel execution), otherwise generate new plan
-            if speculative_plan is not None and replan_attempt == 0:
-                logger.debug("[PARALLEL] Using speculative plan (saved ~1 LLM call)")
-                planner_response = speculative_plan
-                self.plan = planner_response.plan
-                # Emit planning events for UI consistency
+            if not planning_discarded and replan_attempt == 0:
+                # Await the background planning future
                 self._emit_event(StepEvent(
                     event_type="planning_start",
                     step_number=0,
-                    data={"message": "Plan ready..."}
+                    data={"message": "Analyzing data sources and creating plan..."}
                 ))
+                try:
+                    speculative_plan = planning_future.result()  # blocks until planning completes
+                    elapsed = time.time() - planning_start
+                    logger.info(f"[PARALLEL] planning completed in {elapsed:.2f}s")
+                except Exception as e:
+                    logger.warning(f"[PARALLEL] planning failed: {e}")
+                    speculative_plan = None
+                executor.shutdown(wait=False)
+
+                if speculative_plan is not None:
+                    logger.debug("[PARALLEL] Using speculative plan (saved ~1 LLM call)")
+                    planner_response = speculative_plan
+                    self.plan = planner_response.plan
+                else:
+                    # Speculative plan failed, fall through to synchronous planning
+                    self._sync_user_facts_to_planner()
+                    self._sync_glossary_to_planner(current_problem)
+                    self._sync_available_agents_to_planner()
+                    planner_response = self.planner.plan(current_problem)
+                    self.plan = planner_response.plan
             else:
                 # Emit planning start event
                 self._emit_event(StepEvent(
@@ -519,176 +565,155 @@ class SolveMixin:
                          f"depends_on={step.depends_on}, goal='{step.goal[:60]}...'")
 
         cancelled = False
-        needs_replan = True  # Enter the wave loop at least once
+        execution_waves = self.plan.get_execution_order()
+        logger.debug(f"[EXECUTION] execution_waves: {execution_waves}, total steps: {len(self.plan.steps)}")
 
-        while needs_replan:
-            needs_replan = False
-            execution_waves = self.plan.get_execution_order()
-            logger.debug(f"[EXECUTION] execution_waves: {execution_waves}, total steps: {len(self.plan.steps)}")
+        for wave_num, wave_step_nums in enumerate(execution_waves):
+            # Skip waves containing only already-completed steps
+            pending_in_wave = [n for n in wave_step_nums
+                               if self.plan.get_step(n) and self.plan.get_step(n).status == StepStatus.PENDING]
+            if not pending_in_wave:
+                continue
 
-            for wave_num, wave_step_nums in enumerate(execution_waves):
-                # Skip waves containing only already-completed steps
-                pending_in_wave = [n for n in wave_step_nums
-                                   if self.plan.get_step(n) and self.plan.get_step(n).status == StepStatus.PENDING]
-                if not pending_in_wave:
-                    continue
+            logger.debug(f"[EXECUTION] Starting wave {wave_num + 1}, steps: {wave_step_nums}")
+            # Phase 4: Check for cancellation before starting each wave
+            if self.is_cancelled():
+                cancelled = True
+                self._emit_event(StepEvent(
+                    event_type="execution_cancelled",
+                    step_number=0,
+                    data={
+                        "message": "Execution cancelled between waves",
+                        "wave": wave_num,
+                        "completed_steps": len(all_results),
+                    }
+                ))
+                break
 
-                logger.debug(f"[EXECUTION] Starting wave {wave_num + 1}, steps: {wave_step_nums}")
-                # Phase 4: Check for cancellation before starting each wave
-                if self.is_cancelled():
-                    cancelled = True
+            # Get steps for this wave (only pending ones)
+            wave_steps = [self.plan.get_step(num) for num in pending_in_wave]
+            wave_steps = [s for s in wave_steps if s is not None]
+
+            # Execute all steps in this wave in parallel
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave_steps)) as executor:
+                # Submit all steps in wave
+                future_to_step = {}
+                for step in wave_steps:
+                    # Phase 4: Check for cancellation before starting each step
+                    if self.is_cancelled():
+                        cancelled = True
+                        break
+
+                    step.status = StepStatus.RUNNING
+                    self.datastore.update_plan_step(step.number, status="running")
                     self._emit_event(StepEvent(
-                        event_type="execution_cancelled",
-                        step_number=0,
-                        data={
-                            "message": "Execution cancelled between waves",
-                            "wave": wave_num,
-                            "completed_steps": len(all_results),
-                        }
+                        event_type="wave_step_start",
+                        step_number=step.number,
+                        data={"wave": wave_num + 1, "goal": step.goal}
                     ))
+                    future = executor.submit(self._execute_step, step)
+                    future_to_step[future] = step
+
+                if cancelled:
+                    # Cancel any pending futures
+                    for future in future_to_step:
+                        future.cancel()
                     break
 
-                # Get steps for this wave (only pending ones)
-                wave_steps = [self.plan.get_step(num) for num in pending_in_wave]
-                wave_steps = [s for s in wave_steps if s is not None]
+                # Collect results as they complete
+                wave_failed = False
+                for future in concurrent.futures.as_completed(future_to_step):
+                    # Phase 4: Check for cancellation while collecting results
+                    # Note: We still collect completed results even if cancelled
+                    step = future_to_step[future]
+                    try:
+                        result = future.result()
+                    except concurrent.futures.CancelledError:
+                        # Step was cancelled before it started
+                        result = StepResult(
+                            success=False,
+                            stdout="",
+                            error="Step cancelled",
+                            attempts=0,
+                        )
+                        cancelled = True
+                    except Exception as e:
+                        logger.error(f"[EXECUTION] Step {step.number} raised unhandled exception: {e}", exc_info=True)
+                        result = StepResult(
+                            success=False,
+                            stdout="",
+                            error=str(e),
+                            attempts=1,
+                        )
 
-                # Execute all steps in this wave in parallel
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave_steps)) as executor:
-                    # Submit all steps in wave
-                    future_to_step = {}
-                    for step in wave_steps:
-                        # Phase 4: Check for cancellation before starting each step
-                        if self.is_cancelled():
-                            cancelled = True
-                            break
-
-                        step.status = StepStatus.RUNNING
-                        self.datastore.update_plan_step(step.number, status="running")
-                        self._emit_event(StepEvent(
-                            event_type="wave_step_start",
+                    logger.debug(f"[EXECUTION] Step {step.number} result: success={result.success}, attempts={result.attempts}, error={result.error[:200] if result.error else 'none'}")
+                    if result.success:
+                        self.plan.mark_step_completed(step.number, result)
+                        self.scratchpad.add_step_result(
                             step_number=step.number,
-                            data={"wave": wave_num + 1, "goal": step.goal}
-                        ))
-                        future = executor.submit(self._execute_step, step)
-                        future_to_step[future] = step
-
-                    if cancelled:
-                        # Cancel any pending futures
-                        for future in future_to_step:
-                            future.cancel()
-                        break
-
-                    # Collect results as they complete
-                    wave_failed = False
-                    user_input_completed = False
-                    user_input_stdout = ""
-                    for future in concurrent.futures.as_completed(future_to_step):
-                        # Phase 4: Check for cancellation while collecting results
-                        # Note: We still collect completed results even if cancelled
-                        step = future_to_step[future]
-                        try:
-                            result = future.result()
-                        except concurrent.futures.CancelledError:
-                            # Step was cancelled before it started
-                            result = StepResult(
-                                success=False,
-                                stdout="",
-                                error="Step cancelled",
-                                attempts=0,
-                            )
-                            cancelled = True
-                        except Exception as e:
-                            logger.error(f"[EXECUTION] Step {step.number} raised unhandled exception: {e}", exc_info=True)
-                            result = StepResult(
-                                success=False,
-                                stdout="",
-                                error=str(e),
-                                attempts=1,
-                            )
-
-                        logger.debug(f"[EXECUTION] Step {step.number} result: success={result.success}, attempts={result.attempts}, error={result.error[:200] if result.error else 'none'}")
-                        if result.success:
-                            self.plan.mark_step_completed(step.number, result)
-                            self.scratchpad.add_step_result(
+                            goal=step.goal,
+                            result=result.stdout,
+                            tables_created=result.tables_created,
+                        )
+                        if self.datastore:
+                            self.datastore.add_scratchpad_entry(
                                 step_number=step.number,
                                 goal=step.goal,
-                                result=result.stdout,
+                                narrative=result.stdout,
                                 tables_created=result.tables_created,
+                                code=result.code,
                             )
-                            if self.datastore:
-                                self.datastore.add_scratchpad_entry(
-                                    step_number=step.number,
-                                    goal=step.goal,
-                                    narrative=result.stdout,
-                                    tables_created=result.tables_created,
-                                    code=result.code,
-                                )
-                                self.datastore.update_plan_step(
-                                    step.number,
-                                    status="completed",
-                                    code=step.code,
-                                    attempts=result.attempts,
-                                    duration_ms=result.duration_ms,
-                                )
-                            all_results.append(result)
-                            # Track if a user_input step completed
-                            if step.task_type == TaskType.USER_INPUT:
-                                user_input_completed = True
-                                user_input_stdout = result.stdout
-                        else:
-                            self.plan.mark_step_failed(step.number, result)
-                            if self.datastore:
-                                self.datastore.update_plan_step(
-                                    step.number,
-                                    status="failed" if not cancelled else "cancelled",
-                                    code=step.code,
-                                    error=result.error,
-                                    attempts=result.attempts,
-                                    duration_ms=result.duration_ms,
-                                )
-                            if not cancelled:  # Only mark as failed if not cancelled
-                                wave_failed = True
-                            all_results.append(result)
+                            self.datastore.update_plan_step(
+                                step.number,
+                                status="completed",
+                                code=step.code,
+                                attempts=result.attempts,
+                                duration_ms=result.duration_ms,
+                            )
+                        all_results.append(result)
+                    else:
+                        self.plan.mark_step_failed(step.number, result)
+                        if self.datastore:
+                            self.datastore.update_plan_step(
+                                step.number,
+                                status="failed" if not cancelled else "cancelled",
+                                code=step.code,
+                                error=result.error,
+                                attempts=result.attempts,
+                                duration_ms=result.duration_ms,
+                            )
+                        if not cancelled:  # Only mark as failed if not cancelled
+                            wave_failed = True
+                        all_results.append(result)
 
-                    if cancelled:
-                        logger.debug(f"[EXECUTION] Wave {wave_num + 1} cancelled, breaking out of loop")
-                        break
+                if cancelled:
+                    logger.debug(f"[EXECUTION] Wave {wave_num + 1} cancelled, breaking out of loop")
+                    break
 
-                    logger.debug(f"[EXECUTION] Wave {wave_num + 1} completed: "
-                                 f"wave_failed={wave_failed}, all_results={len(all_results)}, "
-                                 f"completed_steps={self.plan.completed_steps}")
+                logger.debug(f"[EXECUTION] Wave {wave_num + 1} completed: "
+                             f"wave_failed={wave_failed}, all_results={len(all_results)}, "
+                             f"completed_steps={self.plan.completed_steps}")
 
-                    # If any step in wave failed, stop execution
-                    if wave_failed:
-                        self.datastore.set_session_meta("status", "failed")
-                        failed_result = next(r for r in all_results if not r.success)
-                        self.history.record_query(
-                            session_id=self.session_id,
-                            question=problem,
-                            success=False,
-                            attempts=failed_result.attempts,
-                            duration_ms=failed_result.duration_ms,
-                            error=failed_result.error,
-                        )
-                        self.history.complete_session(self.session_id, status="failed")
-                        return {
-                            "success": False,
-                            "plan": self.plan,
-                            "error": failed_result.error,
-                            "completed_steps": self.plan.completed_steps,
-                        }
-
-                    # Replan after user_input step completes
-                    if user_input_completed:
-                        remaining = [s for s in self.plan.steps if s.status == StepStatus.PENDING]
-                        if remaining:
-                            new_steps = self._replan_after_user_input(problem, self.plan, user_input_stdout)
-                            if new_steps:
-                                completed = [s for s in self.plan.steps if s.status != StepStatus.PENDING]
-                                self.plan.steps = completed + new_steps
-                                needs_replan = True  # Re-enter the wave loop with new plan
-                                break  # Break out of current wave iteration
+                # If any step in wave failed, stop execution
+                if wave_failed:
+                    self.datastore.set_session_meta("status", "failed")
+                    failed_result = next(r for r in all_results if not r.success)
+                    self.history.record_query(
+                        session_id=self.session_id,
+                        question=problem,
+                        success=False,
+                        attempts=failed_result.attempts,
+                        duration_ms=failed_result.duration_ms,
+                        error=failed_result.error,
+                    )
+                    self.history.complete_session(self.session_id, status="failed")
+                    return {
+                        "success": False,
+                        "plan": self.plan,
+                        "error": failed_result.error,
+                        "completed_steps": self.plan.completed_steps,
+                    }
 
         # Log exit reason
         logger.debug(f"[EXECUTION] Wave loop finished: cancelled={cancelled}, "
@@ -911,12 +936,6 @@ class SolveMixin:
                 next_step_number=next_step_number,
             )
 
-            self._emit_event(StepEvent(
-                event_type="replanning",
-                step_number=0,
-                data={"message": "Replanning based on your input..."}
-            ))
-
             self._sync_user_facts_to_planner()
             self._sync_glossary_to_planner(problem)
             planner_response = self.planner.plan(replan_prompt)
@@ -937,9 +956,10 @@ class SolveMixin:
                     status="pending",
                 )
 
-            # Emit plan_ready so UI updates the step list
+            # Emit plan_updated (not plan_ready) so UI updates step list without
+            # disrupting execution state or showing an approval dialog
             self._emit_event(StepEvent(
-                event_type="plan_ready",
+                event_type="plan_updated",
                 step_number=0,
                 data={
                     "steps": [
@@ -950,8 +970,6 @@ class SolveMixin:
                         for s in new_steps
                     ],
                     "reasoning": planner_response.reasoning,
-                    "is_followup": False,
-                    "replanned": True,
                 }
             ))
 

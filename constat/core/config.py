@@ -17,7 +17,7 @@ from typing import Any, Optional, Union
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _resolve_refs(data: Any, base_dir: Path) -> Any:
@@ -370,6 +370,7 @@ class ModelSpec(BaseModel):
     model: str
 
     # Provider-specific options
+    api_key: Optional[str] = None  # Per-model API key (supports ${ENV_VAR})
     base_url: Optional[str] = None
     timeout_seconds: Optional[int] = None
     max_tokens: Optional[int] = None
@@ -387,7 +388,7 @@ class TaskRoutingEntry(BaseModel):
             - provider: ollama
               model: sqlcoder:7b
             - provider: anthropic
-              model: claude-3-5-haiku-20241022
+              model: claude-haiku-4-5-20251001
     """
     # Ordered list of models to try (first = preferred, subsequent = fallback)
     models: list[ModelSpec]
@@ -409,7 +410,7 @@ class TaskRoutingConfig(BaseModel):
               - provider: ollama
                 model: sqlcoder:7b
               - provider: anthropic
-                model: claude-3-5-haiku-20241022
+                model: claude-haiku-4-5-20251001
           planning:
             models:
               - provider: anthropic
@@ -426,6 +427,20 @@ class TaskRoutingConfig(BaseModel):
     """
     # Dict of task_type name -> routing entry
     routes: dict[str, TaskRoutingEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_flat_routing(cls, data: Any) -> Any:
+        """Accept flat YAML format where task types are top-level keys."""
+        if isinstance(data, dict) and "routes" not in data:
+            # All keys are task type names → wrap as routes
+            routes = {}
+            for key, val in data.items():
+                if isinstance(val, dict) and "models" in val:
+                    routes[key] = val
+            if routes:
+                return {"routes": routes}
+        return data
 
     def prepend_model(self, task_type: str, spec: ModelSpec) -> None:
         """Prepend a model to the routing chain for a task type."""
@@ -474,16 +489,16 @@ DEFAULT_TASK_ROUTING = {
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
     "intent_classification": TaskRoutingEntry(
-        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+        models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
     "summarization": TaskRoutingEntry(
-        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+        models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
     "fact_resolution": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
     "relationship_extraction": TaskRoutingEntry(
-        models=[ModelSpec(model="claude-3-5-haiku-20241022")]
+        models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
     "general": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]

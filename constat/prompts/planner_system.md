@@ -84,6 +84,8 @@ If no active skills match the request, plan from primitives as usual.
     - When the user asks a simple question, prefer fewer steps over exhaustive multi-step analysis
     - Use `llm_map`/`llm_classify` only on unique values, not every row
 13. **USER INPUT STEPS** — When a plan needs user feedback on intermediate results, use `task_type: "user_input"`. The step code calls `ask_user(question, widget=..., data=...)` to pause and get the user's answer. Use when the user's input genuinely affects subsequent steps.
+    - **PLACE USER INPUT STEPS AS EARLY AS POSSIBLE**. If a user_input step only needs the output of step 1, make it step 2 — not step 5. The user should not wait through unnecessary steps before being asked for input. Steps that depend on the user's answer come AFTER the user_input step.
+    - **Simple questions first**: If a step just asks the user for a number, preference, or selection that doesn't require prior computation, place it as step 1 or 2 with `depends_on: []`.
     - **Approval/curation**: Step computes items → user_input step uses `widget="curation"` to let user check/uncheck items to keep
     - **Correlation/mapping**: Step extracts key terms from two datasets → user_input step uses `widget="mapping"` to let user draw connections between them
     - **Selection**: Step queries categories → user_input step uses `widget="choice"` to pick one

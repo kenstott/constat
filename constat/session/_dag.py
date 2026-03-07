@@ -827,7 +827,8 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     code = re.sub(r'^```\w*\n?', '', code)
                     code = re.sub(r'\n?```$', '', code)
 
-                logger.info(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}: code length={len(code)} chars")
+                codegen_model = code_result.model_used
+                logger.info(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}: code length={len(code)} chars, model={codegen_model}")
                 logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} code:\n{code}")
 
                 # Auto-fix DataFrame boolean errors
@@ -847,6 +848,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                         "operation": operation or "",
                         "code": code,
                         "attempt": attempt + 1,
+                        "model": codegen_model,
                     }
                 ))
 
@@ -1091,6 +1093,7 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     attempt=attempt + 1,
                     output=output or None,
                     prompt=inference_prompt,
+                    model=codegen_model,
                 )
 
             # Reduce confidence if inference used LLM fuzzy mapping

@@ -305,6 +305,7 @@ def _create_event_handler(managed: ManagedSession):
         "step_complete": EventType.STEP_COMPLETE,
         "step_error": EventType.STEP_ERROR,
         "step_failed": EventType.STEP_FAILED,
+        "model_escalation": EventType.MODEL_ESCALATION,
         "facts_extracted": EventType.FACTS_EXTRACTED,
         "progress": EventType.PROGRESS,
         "dynamic_context": EventType.DYNAMIC_CONTEXT,
@@ -567,12 +568,28 @@ async def submit_query(
     if not managed:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Check if session is busy
+    # If session is busy from a previous execution, cancel it and start fresh
     if managed.status in (SessionStatus.PLANNING, SessionStatus.EXECUTING, SessionStatus.AWAITING_APPROVAL):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Session is busy (status: {managed.status.value})",
+        logger.info(
+            f"Session {session_id} busy ({managed.status.value}), "
+            f"cancelling previous execution for new query"
         )
+        # Signal cancellation to the session
+        if hasattr(managed.session, "_cancelled"):
+            managed.session._cancelled = True
+        if hasattr(managed.session, "_execution_context"):
+            managed.session._execution_context.cancel()
+        # Unblock any waiting approval/clarification events
+        if managed.approval_event:
+            managed.approval_response = {"approved": False, "feedback": "Cancelled by user"}
+            managed.approval_event.set()
+        if managed.clarification_event:
+            managed.clarification_response = {"skip": True}
+            managed.clarification_event.set()
+        # Reset state
+        managed.status = SessionStatus.IDLE
+        managed.current_query = None
+        managed.execution_id = None
 
     # Generate execution ID
     execution_id = str(uuid.uuid4())
@@ -601,7 +618,9 @@ async def submit_query(
         except Exception as e:
             logger.warning(f"Slash command fast path failed, falling back to async: {e}")
 
-    # Update session state
+    # Update session state (reset cancellation flag for fresh execution)
+    if hasattr(managed.session, "_cancelled"):
+        managed.session._cancelled = False
     managed.current_query = body.problem
     managed.execution_id = execution_id
     managed.status = SessionStatus.PLANNING
@@ -795,6 +814,11 @@ async def websocket_endpoint(
         managed.execution_id = None
         managed.approval_event = None
         managed.approval_response = None
+        managed.clarification_event = None
+        managed.clarification_response = None
+        # Signal cancellation to any running execution
+        if hasattr(managed.session, "_cancelled"):
+            managed.session._cancelled = True
         # Clear stale events from previous execution to prevent duplicates
         while not managed.event_queue.empty():
             try:

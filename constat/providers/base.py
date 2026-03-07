@@ -76,6 +76,7 @@ class BaseLLMProvider(ABC):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
@@ -87,6 +88,7 @@ class BaseLLMProvider(ABC):
             tool_handlers: Dict mapping tool names to handler functions
             max_tokens: Maximum tokens to generate
             model: Override model for this call
+            timeout: Per-request timeout in seconds (overrides client default)
 
         Returns:
             Final text response after all tool calls are resolved

@@ -42,6 +42,7 @@ class OllamaProvider(OpenAIProvider):
         self,
         model: str = "llama3.2",
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Ollama provider.
@@ -49,12 +50,13 @@ class OllamaProvider(OpenAIProvider):
         Args:
             model: Model to use (e.g., "llama3.2", "llama3.1", "codellama")
             base_url: Custom Ollama server URL (default: http://localhost:11434/v1)
+            timeout: Client-level timeout in seconds
         """
         url = base_url or self.DEFAULT_BASE_URL
         self._base_url = url.rstrip("/v1").rstrip("/")  # Store base for API calls
 
         # Ollama doesn't require an API key
-        super().__init__(api_key="ollama", model=model, base_url=url)
+        super().__init__(api_key="ollama", model=model, base_url=url, timeout=timeout)
         self._supports_tools_cache: Optional[bool] = None
 
     @property
@@ -113,6 +115,7 @@ class TogetherProvider(OpenAIProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Together AI provider.
@@ -123,11 +126,12 @@ class TogetherProvider(OpenAIProvider):
                 - meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo
                 - meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
                 - codellama/CodeLlama-70b-Instruct-hf
+            timeout: Client-level timeout in seconds
         """
         import os
 
         resolved_key = api_key or os.environ.get("TOGETHER_API_KEY")
-        super().__init__(api_key=resolved_key, model=model, base_url=self.TOGETHER_BASE_URL)
+        super().__init__(api_key=resolved_key, model=model, base_url=self.TOGETHER_BASE_URL, timeout=timeout)
 
 
 class GroqProvider(OpenAIProvider):
@@ -143,6 +147,7 @@ class GroqProvider(OpenAIProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "llama-3.3-70b-versatile",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Groq provider.
@@ -154,11 +159,12 @@ class GroqProvider(OpenAIProvider):
                 - llama-3.1-70b-versatile
                 - llama-3.1-8b-instant
                 - llama3-70b-8192
+            timeout: Client-level timeout in seconds
         """
         import os
 
         resolved_key = api_key or os.environ.get("GROQ_API_KEY")
-        super().__init__(api_key=resolved_key, model=model, base_url=self.GROQ_BASE_URL)
+        super().__init__(api_key=resolved_key, model=model, base_url=self.GROQ_BASE_URL, timeout=timeout)
 
 
 # Convenience alias - default to Ollama for local use

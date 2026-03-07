@@ -24,6 +24,7 @@ class GeminiProvider(BaseLLMProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "gemini-1.5-pro",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Gemini provider.
@@ -81,6 +82,7 @@ class GeminiProvider(BaseLLMProvider):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.

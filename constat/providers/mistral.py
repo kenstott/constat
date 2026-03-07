@@ -59,6 +59,7 @@ class MistralProvider(OpenAIProvider):
         api_key: Optional[str] = None,
         model: str = "mistral-large-latest",
         base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Mistral provider.
@@ -73,6 +74,7 @@ class MistralProvider(OpenAIProvider):
                 - ministral-8b-latest (edge 8B)
                 - ministral-3b-latest (edge 3B)
             base_url: Custom base URL (default: https://api.mistral.ai/v1)
+            timeout: Client-level timeout in seconds
         """
         resolved_key = api_key or os.environ.get("MISTRAL_API_KEY")
         if not resolved_key:
@@ -82,7 +84,7 @@ class MistralProvider(OpenAIProvider):
             )
 
         url = base_url or self.MISTRAL_BASE_URL
-        super().__init__(api_key=resolved_key, model=model, base_url=url)
+        super().__init__(api_key=resolved_key, model=model, base_url=url, timeout=timeout)
 
     @classmethod
     def list_models(cls) -> dict[str, str]:
@@ -101,6 +103,7 @@ class CodestralProvider(MistralProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "codestral-latest",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Codestral provider.
@@ -108,5 +111,6 @@ class CodestralProvider(MistralProvider):
         Args:
             api_key: Mistral API key (or uses MISTRAL_API_KEY env var)
             model: Codestral model variant (default: codestral-latest)
+            timeout: Client-level timeout in seconds
         """
-        super().__init__(api_key=api_key, model=model)
+        super().__init__(api_key=api_key, model=model, timeout=timeout)

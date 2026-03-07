@@ -559,18 +559,6 @@ User feedback: {suggestion_text}
                         code=result.code,
                     )
 
-                # Replan after user_input step completes
-                if step.task_type == TaskType.USER_INPUT:
-                    remaining = [s for s in follow_up_plan.steps if s.status == StepStatus.PENDING]
-                    if remaining:
-                        new_steps = self._replan_after_user_input(question, follow_up_plan, result.stdout)
-                        if new_steps:
-                            completed = [s for s in follow_up_plan.steps if s.status != StepStatus.PENDING]
-                            follow_up_plan.steps = completed + new_steps
-                            # Reset index to re-scan from start (completed steps are skipped)
-                            step_idx = 0
-                            all_results.append(result)
-                            continue
             else:
                 follow_up_plan.mark_step_failed(step.number, result)
                 self.history.record_query(

@@ -31,6 +31,7 @@ import {
   SparklesIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  CpuChipIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
@@ -126,7 +127,7 @@ function formatMs(ms: number): string {
 }
 
 /** Collapsible step code list for the Exploratory Code section */
-function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string }> }) {
+function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string; model?: string }> }) {
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set())
   const [showPrompt, setShowPrompt] = useState<Set<number>>(new Set())
 
@@ -171,6 +172,9 @@ function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; g
                   <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
                 )}
                 <span>Step {step.step_number}: {step.goal}</span>
+                {step.model && (
+                  <span className="ml-1 text-[10px] text-gray-400 dark:text-gray-500 font-mono">[{step.model}]</span>
+                )}
               </button>
               {step.prompt && (
                 <button
@@ -216,6 +220,7 @@ export function ArtifactPanel() {
     stepCodes,
     inferenceCodes,
     promptContext,
+    taskRouting,
     allSkills,
     allAgents,
     fetchArtifacts,
@@ -225,6 +230,7 @@ export function ArtifactPanel() {
     fetchLearnings,
     fetchDataSources,
     fetchPromptContext,
+    fetchTaskRouting,
     fetchAllSkills,
     fetchAllAgents,
     createSkill,
@@ -240,7 +246,8 @@ export function ArtifactPanel() {
   // Sources group visible if any child section visible
   const sourcesVisible = canSeeSection('databases') || canSeeSection('apis') || canSeeSection('documents')
   // Reasoning group visible if any child section visible
-  const reasoningVisible = canSeeSection('system_prompt') || canSeeSection('agents') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code') || canSeeSection('facts') || canSeeSection('glossary')
+  const hasRouting = taskRouting && Object.keys(taskRouting).length > 0
+  const reasoningVisible = canSeeSection('system_prompt') || canSeeSection('agents') || canSeeSection('skills') || canSeeSection('learnings') || canSeeSection('code') || canSeeSection('inference_code') || canSeeSection('facts') || canSeeSection('glossary') || hasRouting
 
   const [expandedDb, setExpandedDb] = useState<string | null>(null)
   const [dbTables, setDbTables] = useState<Record<string, sessionsApi.DatabaseTableInfo[]>>({})
@@ -451,6 +458,7 @@ export function ArtifactPanel() {
       fetchPromptContext(session.session_id)
       fetchAllSkills()
       fetchAllAgents(session.session_id)
+      fetchTaskRouting(session.session_id)
       // Fetch domain list for move-to pickers
       sessionsApi.getDomainTree().then((nodes) => {
         const collect = (ns: sessionsApi.DomainTreeNode[]): { filename: string; name: string }[] =>
@@ -458,7 +466,7 @@ export function ArtifactPanel() {
         setDomainList(collect(nodes))
       }).catch(() => {})
     }
-  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents])
+  }, [session, fetchArtifacts, fetchTables, fetchFacts, fetchEntities, fetchLearnings, fetchDataSources, fetchPromptContext, fetchAllSkills, fetchAllAgents, fetchTaskRouting])
 
   // Auto-refresh fine-tune jobs when any are training
   useEffect(() => {
@@ -2082,6 +2090,55 @@ ${skill.body}`
       {reasoningVisible && !reasoningCollapsed && (
       <>
 
+      {/* Models (task routing) */}
+      {hasRouting && (
+      <AccordionSection
+        id="models"
+        title="Models"
+        count={Object.values(taskRouting!).reduce((n, routes) => n + Object.keys(routes).length, 0)}
+        icon={<CpuChipIcon className="w-4 h-4" />}
+      >
+        <div className="space-y-3">
+          {Object.entries(taskRouting!).map(([layerName, routes]) => {
+            const isSystem = layerName === 'system'
+            const isUser = layerName === 'user'
+            const label = isSystem ? 'System Defaults' : isUser ? 'User Overrides' : layerName
+            return (
+            <div key={layerName}>
+              <div className="flex items-center gap-1.5 mb-1.5 pb-1 border-b border-gray-200 dark:border-gray-700">
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+                  isSystem ? 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' :
+                  isUser ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' :
+                  'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                }`}>
+                  {label}
+                </span>
+                <span className="text-[9px] text-gray-400">{Object.keys(routes).length} tasks</span>
+              </div>
+              <div className="space-y-1.5 pl-1">
+                {Object.entries(routes).map(([taskType, models]) => (
+                  <div key={taskType}>
+                    <div className="text-[10px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-0.5">
+                      {taskType.replace(/_/g, ' ')}
+                    </div>
+                    <div className="space-y-0.5">
+                      {models.map((m, i) => (
+                        <div key={i} className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400">
+                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${i === 0 ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
+                          <span className="font-mono text-[11px] truncate">{m.provider}/{m.model}</span>
+                          {i === 0 && <span className="text-[9px] text-green-600 dark:text-green-400 flex-shrink-0">primary</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            )
+          })}
+        </div>
+      </AccordionSection>
+      )}
 
       {/* Agents */}
       {canSeeSection('agents') && (
@@ -3524,6 +3581,9 @@ ${skill.body}`
                         <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
                       )}
                       <span>{inf.inference_id}: {inf.name} = {inf.operation}</span>
+                      {inf.model && (
+                        <span className="ml-1 text-[10px] text-gray-400 dark:text-gray-500 font-mono">[{inf.model}]</span>
+                      )}
                     </button>
                     {inf.prompt && (
                       <button

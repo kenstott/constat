@@ -33,6 +33,7 @@ class GrokProvider(OpenAIProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "grok-2-latest",
+        timeout: Optional[float] = None,
     ):
         """
         Initialize Grok provider.
@@ -40,9 +41,10 @@ class GrokProvider(OpenAIProvider):
         Args:
             api_key: xAI API key (or uses XAI_API_KEY env var)
             model: Model to use (e.g., "grok-2-latest", "grok-2", "grok-1")
+            timeout: Client-level timeout in seconds
         """
         import os
 
         # Use XAI_API_KEY env var if no key provided
         resolved_key = api_key or os.environ.get("XAI_API_KEY")
-        super().__init__(api_key=resolved_key, model=model, base_url=self.XAI_BASE_URL)
+        super().__init__(api_key=resolved_key, model=model, base_url=self.XAI_BASE_URL, timeout=timeout)

@@ -55,6 +55,7 @@ class EventType(str, Enum):
     STEP_COMPLETE = "step_complete"
     STEP_ERROR = "step_error"
     STEP_FAILED = "step_failed"
+    MODEL_ESCALATION = "model_escalation"
 
     # Fact events
     FACTS_EXTRACTED = "facts_extracted"
@@ -859,6 +860,11 @@ class TaxonomySuggestion(BaseModel):
 # ============================================================================
 
 
+class ModelRouteInfo(BaseModel):
+    """Single model in a routing chain."""
+    provider: str
+    model: str
+
 class ConfigResponse(BaseModel):
     """Sanitized configuration response."""
 
@@ -868,6 +874,7 @@ class ConfigResponse(BaseModel):
     llm_provider: str = Field(description="LLM provider")
     llm_model: str = Field(description="LLM model")
     execution_timeout: int = Field(description="Execution timeout seconds")
+    task_routing: dict[str, list[ModelRouteInfo]] = Field(default_factory=dict, description="Task type to model chain")
 
 
 # ============================================================================

@@ -83,6 +83,24 @@ class PromptsMixin:
 
         return False
 
+    @staticmethod
+    def _get_step_system_prompt(step) -> str:
+        """Get the system prompt for a step, with ask_user docs only for user_input steps."""
+        if step.task_type == TaskType.USER_INPUT:
+            ask_user_docs = (
+                "- `ask_user(question, options=None, widget=None, data=None)` — pause execution and ask the user a question. "
+                "Returns their answer as a string. Choose the right widget for the interaction:\n"
+                '  - **No widget** (default): free-text input. Use for open-ended questions.\n'
+                '  - `widget="choice"`, `options=["A", "B", "C"]`: radio buttons. Use for picking one option from a short list.\n'
+                '  - `widget="curation"`, `data={"items": [...]}`: checklist with search/filter. Use for "which of these do you want to keep/approve?"\n'
+                '  - `widget="mapping"`, `data={"left": [...], "right": [...], "leftLabel": "...", "rightLabel": "..."}`: two-column connector. Use for "how do these map/correlate to those?"\n'
+                '  - `widget="table"`, `data={"columns": [{"key": "k", "label": "L", "type": "text"}], "rows": [...]}`: editable grid. Use for structured review/editing of tabular data.\n'
+                '  - `widget="ranking"`, `data={"items": [...]}`: drag-to-reorder. Use for prioritization.'
+            )
+        else:
+            ask_user_docs = ""
+        return STEP_SYSTEM_PROMPT.replace("{ask_user_docs}", ask_user_docs)
+
     def _build_step_prompt(self, step) -> str:
         """Build the prompt for generating step code."""
         # Format datastore tables info with column metadata
@@ -147,8 +165,10 @@ class PromptsMixin:
         if glossary_context:
             domain_ctx += "\n" + glossary_context
 
+        system_prompt = self._get_step_system_prompt(step)
+
         return STEP_PROMPT_TEMPLATE.format(
-            system_prompt=STEP_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             injected_sections=injected_sections,
             skill_functions=skill_functions_text,
             schema_overview=ctx["schema_overview"],

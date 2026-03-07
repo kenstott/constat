@@ -518,6 +518,7 @@ def llm_extract(texts: str | list[str], fields: list[str] | dict, context: str =
 
 Respond with ONLY valid JSON: an array of objects, one per text, each with keys {fields_str}.
 If a field cannot be extracted, set it to null.
+All values MUST be plain strings — never use arrays, lists, or nested objects as values. Join multiple items with commas.
 
 Example format: [{{"field1": "val1", "field2": null}}, ...]
 
@@ -535,6 +536,11 @@ YOUR JSON RESPONSE:"""
         results = [{f: None for f in fields} for _ in texts]
     else:
         results = json.loads(content)
+        # Flatten any array values to comma-separated strings
+        for row in results:
+            for k, v in row.items():
+                if isinstance(v, list):
+                    row[k] = ", ".join(str(x) for x in v)
 
     null_count = sum(1 for row in results for v in row.values() if v is None)
     logger.info(

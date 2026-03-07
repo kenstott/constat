@@ -393,6 +393,11 @@ export interface FineTuneProvider {
 }
 
 // Config
+export interface ModelRouteInfo {
+  provider: string
+  model: string
+}
+
 export interface Config {
   databases: string[]
   apis: string[]
@@ -400,6 +405,7 @@ export interface Config {
   llm_provider: string
   llm_model: string
   execution_timeout: number
+  task_routing?: Record<string, ModelRouteInfo[]>
 }
 
 // API Source Info
@@ -454,6 +460,7 @@ export type EventType =
   | 'proof_start'
   | 'replanning'
   | 'plan_ready'
+  | 'plan_updated'
   | 'plan_approved'
   | 'plan_rejected'
   | 'dynamic_context'
@@ -463,6 +470,7 @@ export type EventType =
   | 'step_complete'
   | 'step_error'
   | 'step_failed'
+  | 'model_escalation'
   | 'validation_retry'
   | 'validation_warnings'
   | 'facts_extracted'

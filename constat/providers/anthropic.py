@@ -37,8 +37,12 @@ class AnthropicProvider(BaseLLMProvider):
         self,
         api_key: Optional[str] = None,
         model: str = "claude-sonnet-4-20250514",
+        timeout: Optional[float] = None,
     ):
-        self.client = anthropic.Anthropic(api_key=api_key)
+        kwargs = {"max_retries": 0}
+        if timeout:
+            kwargs["timeout"] = timeout
+        self.client = anthropic.Anthropic(api_key=api_key, **kwargs)
         self.model = model
 
     @property
@@ -57,6 +61,7 @@ class AnthropicProvider(BaseLLMProvider):
         tool_handlers: Optional[dict[str, Callable]] = None,
         max_tokens: int = 4096,
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """
         Generate a response, automatically handling tool calls.
@@ -86,6 +91,8 @@ class AnthropicProvider(BaseLLMProvider):
             }
             if tools:
                 kwargs["tools"] = tools
+            if timeout is not None:
+                kwargs["timeout"] = timeout
 
             response = self.client.messages.create(**kwargs)
 

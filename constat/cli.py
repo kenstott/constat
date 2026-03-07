@@ -664,7 +664,7 @@ llm:
   # tiers:
   #   planning: claude-sonnet-4-20250514
   #   codegen: claude-sonnet-4-20250514
-  #   simple: claude-3-5-haiku-20241022
+  #   simple: claude-haiku-4-5-20251001
 
 # Database Connections
 databases:

@@ -28,14 +28,18 @@ llm:
        models:
          - provider: together
            model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+           timeout_seconds: 15
          - provider: anthropic
            model: claude-sonnet-4-20250514
+           timeout_seconds: 120
      python_analysis:
        models:
          - provider: together
            model: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+           timeout_seconds: 15
          - provider: anthropic
            model: claude-sonnet-4-20250514
+           timeout_seconds: 120
 
 # Vector store and clustering
 storage:

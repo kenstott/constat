@@ -25,13 +25,7 @@ Your code has access to:
 - `parse_number(val)`: parse string numbers → tuple of all values. "8-12%" → (8.0, 12.0), "1,2,3" → (1.0, 2.0, 3.0), "5%" → (5.0,). Use `min()`/`max()` for range bounds
 - `send_email(to, subject, body, df=None)`: send email with optional DataFrame attachment
 - `viz`: visualization helper for saving maps and charts to files
-- `ask_user(question, options=None, widget=None, data=None)` — pause execution and ask the user a question. Returns their answer as a string. Only available in `user_input` steps. Choose the right widget for the interaction:
-  - **No widget** (default): free-text input. Use for open-ended questions.
-  - `widget="choice"`, `options=["A", "B", "C"]`: radio buttons. Use for picking one option from a short list.
-  - `widget="curation"`, `data={"items": [...]}`: checklist with search/filter. Use for "which of these do you want to keep/approve?"
-  - `widget="mapping"`, `data={"left": [...], "right": [...], "leftLabel": "...", "rightLabel": "..."}`: two-column connector. Use for "how do these map/correlate to those?"
-  - `widget="table"`, `data={"columns": [{"key": "k", "label": "L", "type": "text"}], "rows": [...]}`: editable grid. Use for structured review/editing of tabular data.
-  - `widget="ranking"`, `data={"items": [...]}`: drag-to-reorder. Use for prioritization.
+{ask_user_docs}
 
 ## Database Access Patterns
 **SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):
@@ -107,7 +101,8 @@ Do NOT import skill modules. The functions are already available as globals, jus
 - For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
-- **Discovery tools NOT available**: `find_relevant_tables()`, `get_table_schema()`, etc. are planning-only. In step code, query tables/collections directly.
+- **Discovery tools NOT available**: `find_relevant_tables()`, `get_table_schema()`, `get_api_schema_overview()`, etc. are planning-only. In step code, query tables/collections directly.
+- **NEVER use `input()`** — it blocks the server. To ask users questions, the step must have `task_type: user_input` with `ask_user()`. Regular steps cannot interact with users.
 - **NEVER hardcode mapping dicts, classification tables, or extracted constants**. Use `llm_map()`, `llm_classify()`, `llm_extract()`, or `llm_summarize()`. Hardcoded data breaks auditability and won't update when source data changes.
 - **NEVER hardcode policy rules, thresholds, or business logic from reference documents**. Use `doc_read(name)` to load the document at runtime, then `llm_extract()` to parse structured rules from it. This ensures code stays current when documents change.
 - **ALWAYS convert string-formatted numbers to numeric before saving**. Use `parse_number(val)` which returns a tuple of all extracted numbers: `"8-12%" → (8.0, 12.0)`, `"5%" → (5.0,)`, `"1,2,3" → (1.0, 2.0, 3.0)`. For min/max columns: `df['raise_min'] = df['raise_pct'].apply(lambda v: min(parse_number(v)))`. NEVER write your own parser. Downstream steps cannot aggregate string columns.
@@ -129,8 +124,8 @@ Do NOT import skill modules. The functions are already available as globals, jus
 - Tables saved to `store` appear automatically as clickable artifacts - don't dump their contents to stdout
 - For final reports/exports: Use `viz` methods to save files (creates clickable file:// URIs)
 - If data isn't in store, and you query the database instead, that's normal — say "Querying database..." not "Error: not found in store".
-- **NEVER wrap calls in try/except with hardcoded fallback data.** If `doc_read()`, `llm_extract()`, or a DB query fails, let the error propagate. The retry mechanism will fix it. NEVER invent default values (raise percentages, budgets, thresholds) as a fallback.
-- **NEVER use `.get('key', hardcoded_default)`** on `llm_extract` results. Access keys directly so missing keys raise `KeyError` immediately.
+- **NEVER use try/except.** No error handling at all. If code fails, the retry mechanism will fix it. Wrapping errors in try/except hides bugs and produces wrong results. Let ALL errors propagate — KeyError, NameError, ValueError, etc.
+- **NEVER use `.get('key', hardcoded_default)`** on dict results. Access keys directly so missing keys raise `KeyError` immediately.
 
 ## Output Format
 Return ONLY Python code wrapped in ```python ... ``` markers.

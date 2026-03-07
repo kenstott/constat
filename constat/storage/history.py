@@ -606,6 +606,7 @@ class SessionHistory:
         output: Optional[str] = None,
         error: Optional[str] = None,
         prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> None:
         """
         Save code for a specific execution step.
@@ -618,6 +619,7 @@ class SessionHistory:
             output: Standard output from execution (optional)
             error: Error message if execution failed (optional)
             prompt: LLM prompt used to generate the code (optional)
+            model: Model used to generate the code (optional)
         """
         steps_dir = self._steps_dir(session_id)
         self._ensure_dir(steps_dir)
@@ -628,6 +630,8 @@ class SessionHistory:
             "goal": goal,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if model:
+            step_data["model"] = model
 
         # Save code file
         code_file = steps_dir / f"step_{step_number:03d}_code.py"
@@ -693,12 +697,15 @@ class SessionHistory:
                             if prompt_file.exists():
                                 with open(prompt_file) as pf:
                                     prompt = pf.read()
-                            steps.append({
+                            entry = {
                                 "step_number": step_number,
                                 "goal": step_data.get("goal", ""),
                                 "code": code,
                                 "prompt": prompt,
-                            })
+                            }
+                            if step_data.get("model"):
+                                entry["model"] = step_data["model"]
+                            steps.append(entry)
 
         return sorted(steps, key=lambda x: x["step_number"])
 
@@ -724,6 +731,7 @@ class SessionHistory:
         output: Optional[str] = None,
         error: Optional[str] = None,
         prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> None:
         """Save code for a specific inference node (auditable mode)."""
         inferences_dir = self._inferences_dir(session_id)
@@ -759,6 +767,8 @@ class SessionHistory:
             "attempt": attempt,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+        if model:
+            entry["model"] = model
         with open(index_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
@@ -832,14 +842,17 @@ class SessionHistory:
                         if prompt_file.exists():
                             with open(prompt_file) as pf:
                                 prompt = pf.read()
-                        inferences.append({
+                        inf_entry = {
                             "inference_id": iid,
                             "name": data.get("name", ""),
                             "operation": data.get("operation", ""),
                             "code": code,
                             "attempt": data.get("attempt", 1),
                             "prompt": prompt,
-                        })
+                        }
+                        if data.get("model"):
+                            inf_entry["model"] = data["model"]
+                        inferences.append(inf_entry)
 
             # Deduplicate: keep last entry per inference_id
             by_id = {}

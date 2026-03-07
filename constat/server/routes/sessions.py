@@ -440,6 +440,41 @@ async def delete_session(
     }
 
 
+@router.get("/{session_id}/routing")
+async def get_session_routing(
+    session_id: str,
+    session_manager: SessionManager = Depends(get_session_manager),
+) -> dict[str, dict[str, list[dict]]]:
+    """Get model routing layers for this session: system, user, and per-domain overrides."""
+    from constat.server.models import ModelRouteInfo
+
+    managed = session_manager.get_session_or_none(session_id)
+    if not managed:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = managed.session
+    if not hasattr(session, "router") or not session.router:
+        raise HTTPException(status_code=503, detail="Router not available")
+
+    layers = session.router.get_routing_layers(
+        active_domains=managed.active_domains
+    )
+    default_provider = session.config.llm.provider
+
+    result: dict[str, dict[str, list[dict]]] = {}
+    for layer_name, routes in layers.items():
+        result[layer_name] = {}
+        for task_type, specs in routes.items():
+            result[layer_name][task_type] = [
+                ModelRouteInfo(
+                    provider=spec.provider or default_provider,
+                    model=spec.model,
+                ).model_dump()
+                for spec in specs
+            ]
+    return result
+
+
 @router.post("/{session_id}/domains")
 async def set_active_domains(
     session_id: str,

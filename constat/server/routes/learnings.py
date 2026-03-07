@@ -524,6 +524,19 @@ async def get_config_sanitized(
     Returns:
         Sanitized configuration
     """
+    # Build task routing info (sanitized — no API keys)
+    from constat.server.models import ModelRouteInfo
+    routing = config.llm.get_task_routing()
+    task_routing: dict[str, list[ModelRouteInfo]] = {}
+    for task_type, entry in routing.routes.items():
+        task_routing[task_type] = [
+            ModelRouteInfo(
+                provider=spec.provider or config.llm.provider,
+                model=spec.model,
+            )
+            for spec in entry.models
+        ]
+
     return ConfigResponse(
         databases=list(config.databases.keys()),
         apis=list(config.apis.keys()),
@@ -531,6 +544,7 @@ async def get_config_sanitized(
         llm_provider=config.llm.provider,
         llm_model=config.llm.model,
         execution_timeout=config.execution.timeout_seconds,
+        task_routing=task_routing,
     )
 
 

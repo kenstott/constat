@@ -170,6 +170,12 @@ class RegistryAwareDataStore:
             role_id: Role that created this table (provenance)
         """
         _ = step_number  # accepted for API compatibility
+
+        # Coerce non-DataFrame inputs (e.g. list of dicts from API responses)
+        if isinstance(df, (list, dict)):
+            import pandas as pd
+            df = pd.DataFrame(df)
+
         if df.empty or len(df.columns) == 0:
             return
 
@@ -366,14 +372,15 @@ class RegistryAwareDataStore:
         with self._locked_duckdb() as conn:
             try:
                 rows = conn.execute(f"DESCRIBE {name}").fetchall()
-                return [
-                    {
-                        "name": row[0],
-                        "type": row[1],
-                        "nullable": True,
-                    }
-                    for row in rows
-                ]
+                schema = []
+                for row in rows:
+                    if len(row) >= 2:
+                        schema.append({
+                            "name": row[0],
+                            "type": row[1],
+                            "nullable": True,
+                        })
+                return schema
             except duckdb.Error:
                 return None
 

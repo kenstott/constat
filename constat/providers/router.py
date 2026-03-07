@@ -46,6 +46,8 @@ class TaskResult:
     escalations: list[EscalationEvent] = field(default_factory=list)
     attempts: int = 1
     total_time_ms: int = 0
+    # Index of the model used within the chain (for skip_models alignment)
+    model_index: int = 0
 
 
 class TaskRouter:
@@ -155,6 +157,43 @@ class TaskRouter:
         # System-level routing (existing behavior)
         return self.routing_config.get_models_for_task(task_type, complexity)
 
+    def get_routing_layers(
+        self, active_domains: Optional[list[str]] = None
+    ) -> dict[str, dict[str, list[ModelSpec]]]:
+        """Return routing layers: system defaults, user overrides, and per-domain overrides.
+
+        Returns:
+            dict with keys "system", optionally "user", and domain paths.
+            Each value maps task_type → list of ModelSpec.
+            "system" includes all task types; other layers include only overrides.
+        """
+        layers: dict[str, dict[str, list[ModelSpec]]] = {}
+
+        # System layer — full routing (defaults merged with config)
+        system: dict[str, list[ModelSpec]] = {}
+        for task_type, entry in self.routing_config.routes.items():
+            system[task_type] = entry.models
+        layers["system"] = system
+
+        # User layer — overrides only
+        if self._user_routing and self._user_routing.routes:
+            user: dict[str, list[ModelSpec]] = {}
+            for task_type, entry in self._user_routing.routes.items():
+                user[task_type] = entry.models
+            layers["user"] = user
+
+        # Domain layers — only show active domains, overrides only
+        domains_to_show = set(active_domains or [])
+        for domain_path, config in self._domain_routing.items():
+            if not domains_to_show or domain_path in domains_to_show:
+                domain_routes: dict[str, list[ModelSpec]] = {}
+                for task_type, entry in config.routes.items():
+                    domain_routes[task_type] = entry.models
+                if domain_routes:
+                    layers[domain_path] = domain_routes
+
+        return layers
+
     def on_escalation(self, callback: Callable[[EscalationEvent], None]) -> None:
         """Register callback for escalation events."""
         self._on_escalation = callback
@@ -186,11 +225,14 @@ class TaskRouter:
     def _get_cache_key(
         provider_name: str,
         base_url: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> str:
         """Generate cache key for a provider configuration."""
         key = provider_name.lower()
         if base_url:
             key += f":{base_url}"
+        if timeout:
+            key += f":t{timeout}"
         return key
 
     def _get_provider(self, spec: ModelSpec) -> BaseLLMProvider:
@@ -199,7 +241,7 @@ class TaskRouter:
         provider_name = spec.provider or self.llm_config.provider
         base_url = spec.base_url or self.llm_config.base_url
 
-        cache_key = self._get_cache_key(provider_name, base_url)
+        cache_key = self._get_cache_key(provider_name, base_url, spec.timeout_seconds)
 
         if cache_key not in self._provider_cache:
             provider_class = self._get_provider_class(provider_name)
@@ -207,14 +249,21 @@ class TaskRouter:
             # Build kwargs
             kwargs = {"model": spec.model}
 
-            # Add API key if provider likely needs it
-            if self.llm_config.api_key and provider_name not in ("ollama", "llama"):
+            # API key resolution: spec.api_key → global key (if same provider) → provider env var
+            if spec.api_key:
+                kwargs["api_key"] = spec.api_key
+            elif self.llm_config.api_key and provider_name == (self.llm_config.provider or "").lower():
                 kwargs["api_key"] = self.llm_config.api_key
 
             # Add base_url if provided
             if base_url:
                 kwargs["base_url"] = base_url
 
+            # Set client-level timeout from model spec
+            if spec.timeout_seconds:
+                kwargs["timeout"] = float(spec.timeout_seconds)
+
+            logger.info(f"Creating provider {provider_name}/{spec.model} (api_key={'set' if 'api_key' in kwargs else 'from env'}, timeout={spec.timeout_seconds or 120}s)")
             self._provider_cache[cache_key] = provider_class(**kwargs)
 
         return self._provider_cache[cache_key]
@@ -229,6 +278,7 @@ class TaskRouter:
         max_tokens: int = 4096,
         complexity: str = "medium",
         domain: Optional[str] = None,
+        skip_models: int = 0,
     ) -> TaskResult:
         """
         Execute a task with automatic model escalation.
@@ -248,19 +298,41 @@ class TaskRouter:
             TaskResult with content and escalation info
         """
         start_time = time.time()
+
+        effective_domain = domain
+
         models = self._resolve_models_for_domain(
             task_type.value,
             complexity,
-            domain,
+            effective_domain,
         )
 
-        # If no models configured for this task type, use general fallback
+        # If no models configured for this task type, try related task types
+        # before falling back to the generic "general" chain.
+        if not models:
+            # user_input steps generate simple Python — use python_analysis chain
+            fallback_map = {"user_input": "python_analysis"}
+            fallback_type = fallback_map.get(task_type.value)
+            if fallback_type:
+                models = self._resolve_models_for_domain(fallback_type, complexity, effective_domain)
+
         if not models:
             models = self.routing_config.get_models_for_task("general", complexity)
 
         # If still no models, use default from llm_config
         if not models:
             models = [ModelSpec(model=self.llm_config.model)]
+
+        # Skip leading models (used for runtime-error escalation)
+        # Clamp to keep at least the last model in the chain
+        if skip_models > 0 and len(models) > 1:
+            effective_skip = min(skip_models, len(models) - 1)
+            skipped = models[:effective_skip]
+            models = models[effective_skip:]
+            logger.info(
+                f"[ESCALATION] Skipping {len(skipped)} model(s) for {task_type.value} "
+                f"due to runtime errors: {[f'{(s.provider or self.llm_config.provider)}/{s.model}' for s in skipped]}"
+            )
 
         escalations = []
         last_error = None
@@ -277,6 +349,7 @@ class TaskRouter:
                     tool_handlers=tool_handlers,
                     max_tokens=max_tokens,
                     model=spec.model,
+                    timeout=float(spec.timeout_seconds) if spec.timeout_seconds else None,
                 )
 
                 if content is None:
@@ -307,6 +380,7 @@ class TaskRouter:
                     escalations=escalations,
                     attempts=i + 1,
                     total_time_ms=elapsed_ms,
+                    model_index=skip_models + i,
                 )
 
             except Exception as e:
@@ -356,6 +430,7 @@ class TaskRouter:
         max_tokens: int = 12288,
         complexity: str = "medium",
         domain: Optional[str] = None,
+        skip_models: int = 0,
     ) -> TaskResult:
         """Execute and extract code from response."""
         result = self.execute(
@@ -367,6 +442,7 @@ class TaskRouter:
             max_tokens=max_tokens,
             complexity=complexity,
             domain=domain,
+            skip_models=skip_models,
         )
 
         if result.success:
