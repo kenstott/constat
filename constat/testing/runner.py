@@ -407,6 +407,12 @@ def _check_grounding(
             failures.append(f'entity "{_dn(ga.entity)}" not found for grounding check')
             continue
         doc_names = relational.get_entity_document_names(entity.id)
+        if not ga.strict:
+            # Loose mode — just verify entity grounds to something
+            if not doc_names:
+                failures.append(f'"{_dn(ga.entity)}" has no grounding (expected at least one data source)')
+            continue
+        # Strict mode — must match specific resolves_to patterns
         matched = any(
             _matches_grounding(expected, doc_names)
             for expected in ga.resolves_to
@@ -445,10 +451,22 @@ def _check_glossary(
             # Entity exists but no glossary definition
             if ga.has_definition:
                 failures.append(f'"{_dn(ga.name)}" exists as entity but has no glossary definition')
+            # Check grounding on bare entity
+            doc_names = relational.get_entity_document_names(entity.id)
+            if not doc_names:
+                failures.append(f'"{_dn(ga.name)}" is not grounded to any data source')
             # Can't check domain/parent on bare entity — skip those checks
             continue
         if ga.has_definition and not term.definition:
             failures.append(f'"{_dn(ga.name)}" has no definition')
+        # Check grounding — term's entity must be grounded to at least one data source
+        entity = relational.find_entity_by_name(term.name, session_id=session_id, cross_session=True)
+        if not entity:
+            failures.append(f'"{_dn(ga.name)}" has glossary term but no entity')
+        else:
+            doc_names = relational.get_entity_document_names(entity.id)
+            if not doc_names:
+                failures.append(f'"{_dn(ga.name)}" is not grounded to any data source')
         if ga.domain and term.domain != ga.domain:
             failures.append(f'"{_dn(ga.name)}" domain: expected "{ga.domain}", got "{term.domain}"')
         if ga.parent:

@@ -249,6 +249,7 @@ export function ConversationPanel() {
                 stepDisplayMode={message.type === 'step' ? stepOverride?.mode : undefined}
                 stepDisplayModeVersion={stepOverride?.version}
                 queryText={queryText}
+                isSuperseded={message.isSuperseded}
               />
               )
             })}

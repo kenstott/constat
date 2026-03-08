@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -199,6 +200,21 @@ async def list_testable_domains(
     return results
 
 
+def _resolve_entity_with_term(
+    relational, name: str, session_id: str, user_id: str, domain_ids: list[str],
+) -> tuple[str | None, object | None]:
+    """Resolve a premise name, returning (resolved_name, glossary_term_or_none)."""
+    term = relational.get_glossary_term_by_name_or_alias(name, session_id, user_id=user_id)
+    if term:
+        return term.name, term
+    entity = relational.find_entity_by_name(
+        name, domain_ids=domain_ids, session_id=session_id, cross_session=True,
+    )
+    if entity:
+        return entity.name, None
+    return None, None
+
+
 _GROUNDABLE_SOURCES = {"database", "document", "api", "embedded"}
 
 
@@ -261,25 +277,34 @@ async def extract_expectations(
 
     entities: list[str] = []
     grounding: list[dict] = []
+    glossary: list[dict] = []
+    glossary_seen: set[str] = set()
     seen: set[str] = set()
 
     for node in proof_nodes:
-        source = node.get("source", "")
+        raw_source = node.get("source", "")
+        # Source may be composite like "database:chinook" — split to get type
+        source_type = raw_source.split(":")[0] if raw_source else ""
         # Only groundable sources
-        if source not in _GROUNDABLE_SOURCES:
+        if source_type not in _GROUNDABLE_SOURCES:
             continue
-        name = node.get("name", "")
+        raw_name = node.get("name", "")
+        if not raw_name:
+            continue
+        # Strip fact-id prefix like "P1: " or "I2: " from DAG node names
+        name = re.sub(r"^[A-Z]\d+:\s*", "", raw_name)
         if not name:
             continue
 
         # Resolve via glossary / entity store
         resolved_name = None
+        term_obj = None
         if relational:
-            resolved_name = _resolve_entity_to_store_name(
+            resolved_name, term_obj = _resolve_entity_with_term(
                 relational, name, session_id, user_id, domain_ids,
             )
         if not resolved_name:
-            logger.debug(f"Dropping unresolvable premise from expectations: {name!r} (source={source})")
+            logger.debug(f"Dropping unresolvable premise from expectations: {name!r} (source={raw_source})")
             continue
         if resolved_name in seen:
             continue
@@ -287,34 +312,48 @@ async def extract_expectations(
 
         entities.append(resolved_name)
 
-        # Default: include specific source grounding. If the underlying resource
-        # changes (table renamed, moved from API to DB), the test should flag it.
-        # Users can remove grounding assertions if they want looser validation.
+        # Build grounding assertion from source info.
+        # Explicit fields take priority; fall back to parsing the composite source string.
         resolves_to: list[str] = []
         source_name = node.get("source_name")  # e.g., database name
         table_name = node.get("table_name")  # e.g., actual table
         api_endpoint = node.get("api_endpoint")
 
-        if source == "database" and source_name and table_name:
+        # Parse composite source for fallback values (e.g., "database:chinook")
+        source_suffix = raw_source.split(":", 1)[1] if ":" in raw_source else None
+        if not source_name and source_type == "database" and source_suffix:
+            source_name = source_suffix
+        if not api_endpoint and source_type == "api" and source_suffix:
+            api_endpoint = source_suffix
+
+        if source_type == "database" and source_name and table_name:
             resolves_to.append(f"schema:{source_name}.{table_name}")
-        elif source == "database" and source_name:
+        elif source_type == "database" and source_name:
             resolves_to.append(f"schema:{source_name}")
-        elif source == "api" and api_endpoint:
+        elif source_type == "api" and api_endpoint:
             resolves_to.append(f"api:{api_endpoint}")
-        elif source == "api" and source_name:
+        elif source_type == "api" and source_name:
             resolves_to.append(f"api:{source_name}")
-        elif source == "document":
+        elif source_type == "document":
             resolves_to.append("document")
         else:
-            resolves_to.append(source)
+            resolves_to.append(raw_source)
 
-        grounding.append({"entity": resolved_name, "resolves_to": resolves_to})
+        grounding.append({"entity": resolved_name, "resolves_to": resolves_to, "strict": True})
+
+        # Build glossary assertion if resolved via glossary term
+        if term_obj and resolved_name not in glossary_seen:
+            glossary_seen.add(resolved_name)
+            ga = {"name": resolved_name, "has_definition": bool(term_obj.definition)}
+            if term_obj.domain:
+                ga["domain"] = term_obj.domain
+            glossary.append(ga)
 
     return GoldenQuestionExpectations(
         entities=entities,
         grounding=grounding,
         relationships=[],
-        glossary=[],
+        glossary=glossary,
     )
 
 

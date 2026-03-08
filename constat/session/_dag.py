@@ -809,6 +809,9 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
             attempt = 0
             exec_globals: dict = {}
             captured = io.StringIO()
+            skip_models = 0  # Model escalation index
+            escalation_threshold = 2  # Escalate after N consecutive failures
+            runtime_failures = 0
 
             for attempt in range(max_retries):
                 prompt = inference_prompt
@@ -820,7 +823,11 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     system="Generate Python code. Return only executable code.",
                     user_message=prompt,
                     max_tokens=self.router.max_output_tokens,
+                    skip_models=skip_models,
                 )
+                # Track model index for escalation
+                if code_result.model_index > skip_models:
+                    skip_models = code_result.model_index
 
                 code = code_result.content.strip()
                 if code.startswith("```"):
@@ -1003,10 +1010,15 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
 
                     if _val_error:
                         last_error = _val_error
+                        runtime_failures += 1
                         logger.warning(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} validation: {_val_error}")
                         if first_error is None:
                             first_error = last_error
                             first_code = code
+                        if runtime_failures >= escalation_threshold:
+                            skip_models += 1
+                            runtime_failures = 0
+                            logger.info(f"[INFERENCE_CODE] {inf_id} escalating after {escalation_threshold} validation failures, skip_models={skip_models}")
                         continue
                     # --- End validation ---
 
@@ -1027,11 +1039,17 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                     break
                 except Exception as e:
                     last_error = str(e)
+                    runtime_failures += 1
                     logger.warning(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1}/{max_retries} failed: {last_error}")
                     logger.debug(f"[INFERENCE_CODE] {inf_id} attempt {attempt+1} code:\n{code}")
                     if first_error is None:
                         first_error = last_error
                         first_code = code
+                    # Escalate to next model after consecutive failures
+                    if runtime_failures >= escalation_threshold:
+                        skip_models += 1
+                        runtime_failures = 0
+                        logger.info(f"[INFERENCE_CODE] {inf_id} escalating after {escalation_threshold} failures, skip_models={skip_models}")
                 finally:
                     sys.stdout = old_stdout
 

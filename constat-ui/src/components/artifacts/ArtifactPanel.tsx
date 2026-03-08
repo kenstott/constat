@@ -40,6 +40,7 @@ import { useUIStore } from '@/store/uiStore'
 import { useGlossaryStore } from '@/store/glossaryStore'
 import { AccordionSection } from './ArtifactAccordion'
 import { TableAccordion } from './TableAccordion'
+import type { FineTuneJob, FineTuneProvider } from '@/types/api'
 import { ArtifactItemAccordion } from './ArtifactItemAccordion'
 import { CodeViewer } from './CodeViewer'
 import GlossaryPanel from './GlossaryPanel'
@@ -53,8 +54,8 @@ type ModalType = 'database' | 'api' | 'document' | 'fact' | 'rule' | null
 // Helper to parse YAML front-matter from markdown content
 function parseFrontMatter(content: string): { frontMatter: Record<string, unknown> | null; body: string } {
   // Handle edge cases
-  if (!content || typeof content !== 'string') {
-    return { frontMatter: null, body: content || '' }
+  if (!content) {
+    return { frontMatter: null, body: '' }
   }
 
   const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
@@ -127,9 +128,20 @@ function formatMs(ms: number): string {
 }
 
 /** Collapsible step code list for the Exploratory Code section */
-function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string; model?: string }> }) {
+function StepCodeList({ stepCodes, supersededStepNumbers }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string; model?: string }>; supersededStepNumbers: Set<number> }) {
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(() => new Set(stepCodes.map((s) => s.step_number)))
   const [showPrompt, setShowPrompt] = useState<Set<number>>(new Set())
+
+  // Collapse newly arriving step codes by default
+  useEffect(() => {
+    setCollapsedSteps((prev) => {
+      const next = new Set(prev)
+      for (const s of stepCodes) {
+        next.add(s.step_number)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [stepCodes])
 
   const toggleStep = useCallback((stepNumber: number) => {
     setCollapsedSteps((prev) => {
@@ -160,21 +172,23 @@ function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; g
       {stepCodes.map((step) => {
         const isCollapsed = collapsedSteps.has(step.step_number)
         return (
-          <div key={step.step_number}>
+          <div key={step.step_number} className={supersededStepNumbers.has(step.step_number) ? 'opacity-40' : ''}>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => toggleStep(step.step_number)}
-                className="flex items-center gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
+                className="flex items-start gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
               >
                 {isCollapsed ? (
-                  <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+                  <ChevronRightIcon className="w-3 h-3 flex-shrink-0 mt-0.5" />
                 ) : (
-                  <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+                  <ChevronDownIcon className="w-3 h-3 flex-shrink-0 mt-0.5" />
                 )}
-                <span>Step {step.step_number}: {step.goal}</span>
-                {step.model && (
-                  <span className="ml-1 text-[10px] text-gray-400 dark:text-gray-500 font-mono">[{step.model}]</span>
-                )}
+                <span className="flex flex-col">
+                  <span>Step {step.step_number}: {step.goal}</span>
+                  {step.model && (
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">{step.model}</span>
+                  )}
+                </span>
               </button>
               {step.prompt && (
                 <button
@@ -219,6 +233,7 @@ export function ArtifactPanel() {
     documents,
     stepCodes,
     inferenceCodes,
+    supersededStepNumbers,
     promptContext,
     taskRouting,
     allSkills,
@@ -272,8 +287,8 @@ export function ArtifactPanel() {
   const [exporting, setExporting] = useState(false)
 
   // Fine-tune state
-  const [ftJobs, setFtJobs] = useState<import('@/types/api').FineTuneJob[]>([])
-  const [ftProviders, setFtProviders] = useState<import('@/types/api').FineTuneProvider[]>([])
+  const [ftJobs, setFtJobs] = useState<FineTuneJob[]>([])
+  const [ftProviders, setFtProviders] = useState<FineTuneProvider[]>([])
   const [ftShowForm, setFtShowForm] = useState(false)
   const [ftName, setFtName] = useState('')
   const [ftProvider, setFtProvider] = useState('')
@@ -3326,7 +3341,7 @@ ${skill.body}`
                           onChange={(e) => setFtBaseModel(e.target.value)}
                           className="mt-0.5 w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
                         >
-                          {(ftProviders.find(p => p.name === ftProvider)?.models || []).map(m => (
+                          {(ftProviders.find(p => p.name === ftProvider)?.models || []).map((m: string) => (
                             <option key={m} value={m}>{m}</option>
                           ))}
                         </select>
@@ -3513,7 +3528,7 @@ ${skill.body}`
             </button>
           }
         >
-          <StepCodeList stepCodes={stepCodes} />
+          <StepCodeList stepCodes={stepCodes} supersededStepNumbers={supersededStepNumbers} />
         </AccordionSection>
       )}
 
@@ -3580,17 +3595,19 @@ ${skill.body}`
                         else next.add(inf.inference_id)
                         return next
                       })}
-                      className="flex items-center gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
+                      className="flex items-start gap-1 flex-1 text-left text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 py-1 transition-colors"
                     >
                       {isCollapsed ? (
-                        <ChevronRightIcon className="w-3 h-3 flex-shrink-0" />
+                        <ChevronRightIcon className="w-3 h-3 flex-shrink-0 mt-0.5" />
                       ) : (
-                        <ChevronDownIcon className="w-3 h-3 flex-shrink-0" />
+                        <ChevronDownIcon className="w-3 h-3 flex-shrink-0 mt-0.5" />
                       )}
-                      <span>{inf.inference_id}: {inf.name} = {inf.operation}</span>
-                      {inf.model && (
-                        <span className="ml-1 text-[10px] text-gray-400 dark:text-gray-500 font-mono">[{inf.model}]</span>
-                      )}
+                      <span className="flex flex-col">
+                        <span>{inf.inference_id}: {inf.name} = {inf.operation}</span>
+                        {inf.model && (
+                          <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">{inf.model}</span>
+                        )}
+                      </span>
                     </button>
                     {inf.prompt && (
                       <button

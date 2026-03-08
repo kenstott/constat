@@ -127,6 +127,8 @@ interface ArtifactState {
   deleteRule: (ruleId: string) => Promise<void>
   deleteLearning: (learningId: string) => Promise<void>
   addInferenceCode: (ic: InferenceCode) => void
+  supersededStepNumbers: Set<number>
+  markStepsSuperseded: () => void  // Mark all current step numbers as superseded (on redo)
   clear: () => void
   clearQueryResults: () => void  // Clear artifacts/tables/facts/stepCodes but keep data sources/entities/learnings
   clearInferenceCodes: () => void  // Clear inference codes on proof re-run
@@ -151,6 +153,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
   selectedArtifact: null,
   selectedTable: null,
+  supersededStepNumbers: new Set<number>(),
   loading: false,
   error: null,
 
@@ -678,6 +681,7 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       userPermissions: { isAdmin: false, persona: 'viewer', visibility: {}, writes: {} },
       selectedArtifact: null,
       selectedTable: null,
+      supersededStepNumbers: new Set<number>(),
       error: null,
     }),
 
@@ -693,6 +697,15 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
       selectedTable: null,
       error: null,
     }),
+  markStepsSuperseded: () =>
+    set((state) => {
+      const superseded = new Set(state.supersededStepNumbers)
+      for (const sc of state.stepCodes) {
+        superseded.add(sc.step_number)
+      }
+      return { supersededStepNumbers: superseded }
+    }),
+
   addInferenceCode: (ic) =>
     set((state) => {
       // Replace if same inference_id exists (retry), otherwise append

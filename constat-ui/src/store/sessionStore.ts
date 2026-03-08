@@ -27,6 +27,7 @@ interface Message {
   stepStartedAt?: number // Epoch ms when step started
   stepDurationMs?: number // Final duration from backend
   stepAttempts?: number // Number of attempts (retries)
+  isSuperseded?: boolean // Step from a previous run (dimmed in UI)
 }
 
 // Execution phases for live status updates
@@ -110,6 +111,9 @@ interface SessionState {
     skills?: { name: string; similarity: number }[]
   } | null
 
+  // Whether the current query is a redo (clears old steps) vs follow-up (keeps old steps)
+  isRedo: boolean
+
   // Session creation state (for disabling input during new query)
   isCreatingSession: boolean
 
@@ -162,6 +166,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   agents: [],
   currentAgent: null,
   queryContext: null,
+  isRedo: false,
   isCreatingSession: false,
   _glossaryTimeout: null,
 
@@ -345,6 +350,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       timestamp: new Date(),
       isLive: true,
     }
+    const isRedo = /^\/redo\b/i.test(expandedProblem.trim()) || !isFollowup
     set((state) => ({
       messages: [...state.messages, thinkingMessage],
       thinkingMessageId: thinkingId,
@@ -356,6 +362,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       executionPhase: 'idle',
       currentStepNumber: 0,
       stepAttempt: 1,
+      isRedo,
       suggestions: [], // Clear suggestions after use
     }))
 
@@ -437,9 +444,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     wsManager.approve()
     // Sort step messages by step number to ensure consistent display order
     stepMessages.sort((a, b) => (a.stepNumber || 0) - (b.stepNumber || 0))
+    const { isRedo } = get()
+    if (isRedo) {
+      // Redo: mark old step codes as superseded (don't clear them)
+      useArtifactStore.getState().markStepsSuperseded()
+    }
     set((state) => ({
-      messages: [...state.messages, ...stepMessages],
-      stepMessageIds,
+      // Always append. On redo, mark old step messages as superseded.
+      messages: [
+        ...state.messages.map((m) =>
+          isRedo && m.type === 'step' && !m.isSuperseded
+            ? { ...m, isSuperseded: true }
+            : m
+        ),
+        ...stepMessages,
+      ],
+      stepMessageIds: { ...state.stepMessageIds, ...stepMessageIds },
       liveMessageId: null,
       status: 'executing',
       executionPhase: 'executing',

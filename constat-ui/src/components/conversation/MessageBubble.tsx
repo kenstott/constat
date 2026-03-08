@@ -96,6 +96,7 @@ interface MessageBubbleProps {
   stepDisplayMode?: StepDisplayMode // External override for condense-all / expand-all
   stepDisplayModeVersion?: number // Increment to re-trigger override
   queryText?: string // The user query that produced this answer (for flagging)
+  isSuperseded?: boolean // Step from a previous run (dimmed)
 }
 
 function formatMs(ms: number): string {
@@ -175,6 +176,7 @@ export function MessageBubble({
   stepDisplayMode: externalStepMode,
   stepDisplayModeVersion: externalStepModeVersion,
   queryText,
+  isSuperseded,
 }: MessageBubbleProps) {
   const styles = typeStyles[type]
   const Icon = styles.icon
@@ -244,7 +246,7 @@ export function MessageBubble({
   const displayContent = showAnimatedDots ? cleanedContent.slice(0, -3) : cleanedContent
 
   return (
-    <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
+    <div className={`group flex gap-3 ${isUser ? 'flex-row-reverse' : ''} ${isSuperseded ? 'opacity-40' : ''}`}>
       {/* Avatar */}
       <div
         className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${

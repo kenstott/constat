@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 class GroundingAssertion:
     entity: str
     resolves_to: list[str]
+    strict: bool = True  # False = just verify entity has any grounding
 
 
 @dataclass
@@ -120,7 +121,7 @@ class DomainTestResult:
 
 def _parse_expectations(raw: dict) -> GoldenExpectations:
     grounding = [
-        GroundingAssertion(entity=g["entity"], resolves_to=g.get("resolves_to", []))
+        GroundingAssertion(entity=g["entity"], resolves_to=g.get("resolves_to", []), strict=g.get("strict", True))
         for g in raw.get("grounding", [])
     ]
     relationships = [

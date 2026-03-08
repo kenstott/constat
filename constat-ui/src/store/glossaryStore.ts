@@ -118,6 +118,7 @@ export const useGlossaryStore = create<GlossaryState>((set, get) => ({
   deleteTerm: async (sessionId, name) => {
     await sessionsApi.deleteGlossaryTerm(sessionId, name)
     await get().fetchTerms(sessionId)
+    await get().fetchDeprecated(sessionId)
   },
 
   renameTerm: async (sessionId, name, newName) => {

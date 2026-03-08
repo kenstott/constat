@@ -89,12 +89,16 @@ function QuestionForm({
       <div>
         <div className="flex items-center justify-between">
           <div className={labelClass}>Grounding</div>
-          <button onClick={() => setGrounding([...grounding, { entity: '', resolves_to: '' }])} className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline">+ row</button>
+          <button onClick={() => setGrounding([...grounding, { entity: '', resolves_to: '', strict: true }])} className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline">+ row</button>
         </div>
         {grounding.map((g, i) => (
           <div key={i} className="flex gap-1 mt-0.5">
             <input className={inputClass} placeholder="entity" value={String(g.entity ?? '')} onChange={e => { const next = [...grounding]; next[i] = { ...next[i], entity: e.target.value }; setGrounding(next) }} />
             <input className={inputClass} placeholder="resolves_to (comma-sep)" value={String(g.resolves_to ?? '')} onChange={e => { const next = [...grounding]; next[i] = { ...next[i], resolves_to: e.target.value }; setGrounding(next) }} />
+            <label className="flex items-center gap-0.5 text-[10px] text-gray-500 whitespace-nowrap">
+              <input type="checkbox" checked={!!g.strict} onChange={e => { const next = [...grounding]; next[i] = { ...next[i], strict: e.target.checked }; setGrounding(next) }} />
+              strict
+            </label>
             <button onClick={() => setGrounding(grounding.filter((_, j) => j !== i))} className="text-red-500 hover:text-red-700 px-1"><TrashIcon className="w-3 h-3" /></button>
           </div>
         ))}
