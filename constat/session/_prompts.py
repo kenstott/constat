@@ -89,7 +89,9 @@ class PromptsMixin:
         if step.task_type == TaskType.USER_INPUT:
             ask_user_docs = (
                 "- `ask_user(question, options=None, widget=None, data=None, cache_key=None)` — pause execution and ask the user a question. "
-                "Returns their answer as a string. **Always provide a `cache_key`** so the answer is cached and not re-asked on retry. "
+                "Returns their answer. **Always provide a `cache_key`** — the answer is automatically saved to `store` under that key. "
+                "On retry, `ask_user` returns the stored answer without re-asking. "
+                "Do NOT call `store.set_state()` separately for the answer — `ask_user` already does it. "
                 "Choose the right widget for the interaction:\n"
                 '  - **No widget** (default): free-text input. Use for open-ended questions.\n'
                 '  - `widget="choice"`, `options=["A", "B", "C"]`: radio buttons. Use for picking one option from a short list.\n'
