@@ -36,11 +36,12 @@ class ExecutionMixin:
     def _make_ask_user(self, step_number: int) -> Callable:
         """Create an ask_user() function for use in generated step code.
 
-        Caches the user's answer per step_number so retries don't re-ask.
+        Caches answers by cache_key so retries don't re-ask.
         """
         def ask_user(question: str, options: list[str] | None = None,
                      widget: str | None = None,
-                     data: dict | list | None = None) -> str | dict | list:
+                     data: dict | list | None = None,
+                     cache_key: str | None = None) -> str | dict | list:
             """Ask the user a question and block until they respond.
 
             Args:
@@ -48,6 +49,8 @@ class ExecutionMixin:
                 options: Optional list of suggested answers
                 widget: Optional widget type (choice, curation, table, mapping, ranking)
                 data: Optional data to display with the widget
+                cache_key: Cache key for the answer. If a cached value exists, return it
+                    without asking. Always provide a cache_key to avoid re-asking on retry.
             Returns:
                 For choice/no widget: the user's answer as a string
                 For curation: {"kept": [...], "removed": [...]}
@@ -55,10 +58,13 @@ class ExecutionMixin:
                 For table: {"rows": [...]}
                 For ranking: {"ranked": [...]}
             """
+            # Use cache_key if provided, fall back to step_number
+            key = cache_key or f"step_{step_number}"
+
             # Return cached answer on retry attempts
-            if step_number in self._user_input_cache:
-                logger.debug(f"[Step {step_number}] Returning cached user input")
-                return self._user_input_cache[step_number]
+            if key in self._user_input_cache:
+                logger.debug(f"[Step {step_number}] Returning cached user input for key={key}")
+                return self._user_input_cache[key]
 
             if not self._clarification_callback:
                 raise RuntimeError("User input not available (no clarification callback)")
@@ -83,23 +89,23 @@ class ExecutionMixin:
             response = self._clarification_callback(request)
             if response.skip:
                 result = "" if not widget else {}
-                self._user_input_cache[step_number] = result
+                self._user_input_cache[key] = result
                 return result
 
             # Prefer structured answers from widgets (curation, mapping, table, ranking)
             for structured in response.structured_answers.values():
                 if structured:
-                    self._user_input_cache[step_number] = structured
+                    self._user_input_cache[key] = structured
                     return structured
 
             # Fall back to text answer (choice widget or free-text)
             for answer in response.answers.values():
                 if answer:
-                    self._user_input_cache[step_number] = answer
+                    self._user_input_cache[key] = answer
                     return answer
 
             result = "" if not widget else {}
-            self._user_input_cache[step_number] = result
+            self._user_input_cache[key] = result
             return result
 
         return ask_user
@@ -1090,10 +1096,19 @@ class ExecutionMixin:
     def _ask_validation_clarification(self, step: Step, validation: PostValidation) -> str | None:
         """Ask user for clarification when a post-validation fails with on_fail=CLARIFY.
 
+        Caches the response so retries don't re-ask the same validation question.
+
         Returns:
             User's response string, or None if skipped/unavailable.
         """
         from constat.session._types import ClarificationRequest, ClarificationQuestion
+
+        # Cache key based on step + validation to avoid re-asking on retry
+        cache_key = f"validation_{step.number}_{validation.description}"
+        if cache_key in self._user_input_cache:
+            logger.debug(f"[Step {step.number}] Returning cached validation clarification for: {validation.description}")
+            cached = self._user_input_cache[cache_key]
+            return cached if cached else None
 
         if not self._clarification_callback:
             return None
@@ -1116,12 +1131,15 @@ class ExecutionMixin:
 
         response = self._clarification_callback(request)
         if response.skip:
+            self._user_input_cache[cache_key] = ""
             return None
 
         # Return first non-empty answer
         for answer in response.answers.values():
             if answer:
+                self._user_input_cache[cache_key] = answer
                 return answer
+        self._user_input_cache[cache_key] = ""
         return None
 
     @staticmethod

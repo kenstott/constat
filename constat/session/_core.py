@@ -209,7 +209,7 @@ class CoreMixin:
         self._clarification_callback: Optional[ClarificationCallback] = None
 
         # Cache for user_input step answers — prevents re-asking on retry
-        self._user_input_cache: dict[int, str | dict | list] = {}
+        self._user_input_cache: dict[str, str | dict | list] = {}
 
         # Tool response cache for schema tools (cleared on refresh)
         self._tool_cache: dict[str, Any] = {}

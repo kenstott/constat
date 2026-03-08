@@ -88,8 +88,9 @@ class PromptsMixin:
         """Get the system prompt for a step, with ask_user docs only for user_input steps."""
         if step.task_type == TaskType.USER_INPUT:
             ask_user_docs = (
-                "- `ask_user(question, options=None, widget=None, data=None)` — pause execution and ask the user a question. "
-                "Returns their answer as a string. Choose the right widget for the interaction:\n"
+                "- `ask_user(question, options=None, widget=None, data=None, cache_key=None)` — pause execution and ask the user a question. "
+                "Returns their answer as a string. **Always provide a `cache_key`** so the answer is cached and not re-asked on retry. "
+                "Choose the right widget for the interaction:\n"
                 '  - **No widget** (default): free-text input. Use for open-ended questions.\n'
                 '  - `widget="choice"`, `options=["A", "B", "C"]`: radio buttons. Use for picking one option from a short list.\n'
                 '  - `widget="curation"`, `data={"items": [...]}`: checklist with search/filter. Use for "which of these do you want to keep/approve?"\n'
