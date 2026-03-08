@@ -128,7 +128,7 @@ function formatMs(ms: number): string {
 
 /** Collapsible step code list for the Exploratory Code section */
 function StepCodeList({ stepCodes }: { stepCodes: Array<{ step_number: number; goal: string; code: string; prompt?: string; model?: string }> }) {
-  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set())
+  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(() => new Set(stepCodes.map((s) => s.step_number)))
   const [showPrompt, setShowPrompt] = useState<Set<number>>(new Set())
 
   const toggleStep = useCallback((stepNumber: number) => {
@@ -328,7 +328,7 @@ export function ArtifactPanel() {
   const [loadingDocument, setLoadingDocument] = useState(false)
   // Results filter - persisted in localStorage
   const [showInferencePrompt, setShowInferencePrompt] = useState<Set<string>>(new Set())
-  const [collapsedInferences, setCollapsedInferences] = useState<Set<string>>(new Set())
+  const [collapsedInferences, setCollapsedInferences] = useState<Set<string>>(new Set<string>())
   const [showPublishedOnly, setShowPublishedOnly] = useState(() => {
     const stored = localStorage.getItem('constat-results-filter')
     return stored !== 'all' // Default to published only
@@ -353,6 +353,13 @@ export function ArtifactPanel() {
     setShowPublishedOnly(newValue)
     localStorage.setItem('constat-results-filter', newValue ? 'published' : 'all')
   }
+
+  // Default inference codes to collapsed when they load
+  useEffect(() => {
+    if (inferenceCodes.length > 0) {
+      setCollapsedInferences(new Set(inferenceCodes.map((inf) => inf.inference_id)))
+    }
+  }, [inferenceCodes])
 
   // Deep link: ref stores the link for phase 2 (data loading after sections render)
   // Handle deep links: uncollapse sections, load data, scroll into view

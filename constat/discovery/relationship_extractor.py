@@ -10,14 +10,16 @@
 """SVO relationship extraction from document chunks using spaCy dependency parsing
 and LLM-based refinement.
 
-Two-phase extraction:
-1. SpaCy pass — extracts candidate SVOs from co-occurring entity pairs (cheap, fast)
-2. LLM pass — validates/rejects candidates, fixes verbs, infers implicit relationships
+Multi-phase extraction:
+Phase -1: Structural seeding — FK constraints (no glossary dependency) + Neo4j graph patterns
+Phase 1:  SpaCy pass — extracts candidate SVOs from co-occurring entity pairs (cheap, fast)
+Phase 2:  LLM pass — validates/rejects candidates, fixes verbs, infers implicit relationships
 """
 
 import hashlib
 import json
 import logging
+import re
 from typing import Callable, Optional
 
 from constat.core.models import TaskType
@@ -173,6 +175,136 @@ def categorize_verb(verb: str) -> str:
         if v in verbs:
             return category
     return "other"
+
+
+# ---------------------------------------------------------------------------
+# Phase -1: Structural relationship seeding (FK + Neo4j graph patterns)
+# ---------------------------------------------------------------------------
+
+_GRAPH_PATTERN_RE = re.compile(r'\(:(\w+)\)-\[:(\w+)\]->\(:(\w+)\)')
+
+
+def _parse_graph_pattern(pattern: str) -> tuple[str, str, str] | None:
+    """Parse a Neo4j graph pattern like '(:Person)-[:ACTED_IN]->(:Movie)'.
+
+    Returns:
+        (source, relationship, target) or None if pattern doesn't match.
+    """
+    m = _GRAPH_PATTERN_RE.search(pattern)
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3)
+
+
+def seed_structural_relationships(
+    session_id: str,
+    schema_manager,
+    vector_store,
+    on_batch: Callable[[list], None] | None = None,
+) -> list:
+    """Seed high-confidence structural relationships before SpaCy/LLM inference.
+
+    Two sub-steps:
+    A. FK constraints — creates REFERENCES relationships from TableMetadata.foreign_keys
+       (no glossary dependency, uses raw table names)
+    B. Neo4j graph patterns — parses graph_schema() patterns into EntityRelationships
+
+    Args:
+        session_id: Session ID
+        schema_manager: SchemaManager with metadata_cache and nosql_connections
+        vector_store: DuckDBVectorStore instance
+        on_batch: Optional callback per batch of relationships
+
+    Returns:
+        List of EntityRelationship objects created.
+    """
+    from constat.catalog.nosql.base import NoSQLType
+    from constat.discovery.models import EntityRelationship
+
+    all_rels: list[EntityRelationship] = []
+
+    # --- A. FK constraint seeding ---
+    for table_meta in schema_manager.metadata_cache.values():
+        for fk in table_meta.foreign_keys:
+            subject = table_meta.name
+            obj = fk.to_table
+
+            rel_id = hashlib.sha256(
+                f"{subject}:REFERENCES:{obj}:{session_id}".encode()
+            ).hexdigest()[:16]
+
+            rel = EntityRelationship(
+                id=rel_id,
+                subject_name=subject,
+                verb="REFERENCES",
+                object_name=obj,
+                sentence=f"FK: {table_meta.name}.{fk.from_column} \u2192 {fk.to_table}.{fk.to_column}",
+                confidence=0.95,
+                verb_category="association",
+                session_id=session_id,
+            )
+
+            try:
+                vector_store.add_entity_relationship(rel)
+            except Exception as insert_err:
+                if "Duplicate key" in str(insert_err) or "UNIQUE constraint" in str(insert_err):
+                    continue
+                raise
+            all_rels.append(rel)
+
+    if all_rels:
+        logger.info(f"FK structural seeding: {len(all_rels)} relationships for {session_id}")
+
+    # --- B. Neo4j graph pattern seeding ---
+    neo4j_count = 0
+    for _db_name, connector in schema_manager.nosql_connections.items():
+        if connector.nosql_type != NoSQLType.GRAPH:
+            continue
+
+        try:
+            schema = connector.graph_schema()
+        except Exception as e:
+            logger.warning(f"Failed to get graph schema from {_db_name}: {e}")
+            continue
+
+        for pattern in schema.get("patterns", []):
+            parsed = _parse_graph_pattern(pattern)
+            if not parsed:
+                continue
+
+            src, rel_type, tgt = parsed
+
+            rel_id = hashlib.sha256(
+                f"{src}:{rel_type}:{tgt}:{session_id}".encode()
+            ).hexdigest()[:16]
+
+            rel = EntityRelationship(
+                id=rel_id,
+                subject_name=src,
+                verb=rel_type,
+                object_name=tgt,
+                sentence=f"Graph pattern: {pattern}",
+                confidence=0.98,
+                verb_category=categorize_verb(rel_type),
+                session_id=session_id,
+            )
+
+            try:
+                vector_store.add_entity_relationship(rel)
+            except Exception as insert_err:
+                if "Duplicate key" in str(insert_err) or "UNIQUE constraint" in str(insert_err):
+                    continue
+                raise
+            all_rels.append(rel)
+            neo4j_count += 1
+
+    if neo4j_count:
+        logger.info(f"Neo4j structural seeding: {neo4j_count} relationships for {session_id}")
+
+    if all_rels and on_batch:
+        on_batch(all_rels)
+
+    return all_rels
 
 
 def _get_ancestors(token):

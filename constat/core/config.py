@@ -344,7 +344,7 @@ class DatabaseConfig(BaseModel):
 
     def is_nosql(self) -> bool:
         """Check if this is a NoSQL database."""
-        return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore")
+        return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "neo4j")
 
     def is_file_source(self) -> bool:
         """Check if this is a file-based data source."""
@@ -495,6 +495,9 @@ DEFAULT_TASK_ROUTING = {
         models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
     "fact_resolution": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
+    "derivation_logic": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),
     "relationship_extraction": TaskRoutingEntry(

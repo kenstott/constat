@@ -22,6 +22,7 @@ On-Premise / Self-Hosted:
 - MongoDB: Document store (collections, documents)
 - Cassandra: Wide-column store (keyspaces, tables) - also DataStax Astra
 - Elasticsearch: Search engine (indices, documents) - also Elastic Cloud, OpenSearch
+- Neo4j: Graph database (nodes, relationships)
 
 Cloud-Native:
 - DynamoDB: AWS key-value/document store
@@ -72,6 +73,7 @@ from .dynamodb import DynamoDBConnector
 from .elasticsearch import ElasticsearchConnector
 from .firestore import FirestoreConnector
 from .mongodb import MongoDBConnector
+from .neo4j import Neo4jConnector
 
 __all__ = [
     # Base classes
@@ -83,6 +85,7 @@ __all__ = [
     "MongoDBConnector",
     "CassandraConnector",
     "ElasticsearchConnector",
+    "Neo4jConnector",
     # Cloud connectors
     "DynamoDBConnector",
     "CosmosDBConnector",

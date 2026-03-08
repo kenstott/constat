@@ -533,6 +533,21 @@ class SchemaManager:
                 sample_size=db_config.sample_size,
             )
 
+        elif db_type == "neo4j":
+            from constat.catalog.nosql.neo4j import Neo4jConnector
+            auth_args: dict = {}
+            if db_config.username and db_config.password:
+                auth_args["username"] = db_config.username
+                auth_args["password"] = db_config.password
+            return Neo4jConnector(
+                uri=db_config.uri or "bolt://localhost:7687",
+                database=db_config.database or "neo4j",
+                name=db_name,
+                description=db_config.description,
+                sample_size=db_config.sample_size,
+                **auth_args,
+            )
+
         return None
 
     def _introspect_all(self) -> None:
@@ -1352,7 +1367,7 @@ class SchemaManager:
                 "summary": summary,
                 # Database type - tells LLM what query semantics to use
                 "database_type": table_meta.database_type,  # e.g., "postgresql", "mongodb"
-                "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra"),
+                "is_nosql": table_meta.database_type in ("mongodb", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "cassandra", "neo4j"),
             }
 
             # Enrich with document context if doc_tools provided
@@ -1446,7 +1461,11 @@ class SchemaManager:
 
             # Add table name (without database prefix for matching)
             # Keep raw name so EntityExtractor can generate all pattern variants
-            entities.add(table_meta.name)
+            # Strip "rel:" prefix from graph relationship names for clean NER
+            entity_name = table_meta.name
+            if entity_name.startswith("rel:"):
+                entity_name = entity_name[4:]
+            entities.add(entity_name)
             entities.add(table_meta.database)
 
             # Include column names if:

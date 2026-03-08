@@ -950,9 +950,23 @@ class SessionManager:
 
         on_batch = self._make_relationship_batch_callback(managed)
 
+        # Phase -1: Structural seeding (FK constraints + Neo4j graph patterns)
+        if on_progress:
+            on_progress("Seeding structural relationships", 3)
+        if session.schema_manager:
+            try:
+                from constat.discovery.relationship_extractor import seed_structural_relationships
+                structural_rels = seed_structural_relationships(
+                    session_id, session.schema_manager, vector_store, on_batch,
+                )
+                if structural_rels:
+                    logger.info(f"Phase -1 structural seeding for {session_id}: {len(structural_rels)} relationships")
+            except Exception as e:
+                logger.exception(f"Phase -1 structural seeding for {session_id} failed: {e}")
+
         # Phase 1: spaCy SVO (optional)
         if on_progress:
-            on_progress("Extracting text relationships", 5)
+            on_progress("Extracting text relationships", 7)
         svo_rels = []
         try:
             from constat.discovery.entity_extractor import get_nlp
@@ -976,7 +990,7 @@ class SessionManager:
 
         # Phase 2: LLM refinement (if router available)
         if on_progress:
-            on_progress("Refining relationships", 12)
+            on_progress("Refining relationships", 14)
         if hasattr(session, 'router') and session.router:
             try:
                 from constat.discovery.relationship_extractor import (

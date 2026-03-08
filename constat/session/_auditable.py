@@ -268,7 +268,7 @@ IMPORTANT: ALL premises must appear in at least one inference. The final inferen
 """
 
         result = self.router.execute(
-            task_type=TaskType.INTENT_CLASSIFICATION,
+            task_type=TaskType.DERIVATION_LOGIC,
             system="You analyze questions and decompose them into premises and inferences for auditable answers.",
             user_message=fact_plan_prompt,
             max_tokens=self.router.max_output_tokens,
@@ -450,7 +450,7 @@ REMEMBER:
 - Do NOT reference facts that don't exist (e.g., P5 when only P1-P3 are defined)
 """
             retry_result = self.router.execute(
-                task_type=TaskType.INTENT_CLASSIFICATION,
+                task_type=TaskType.DERIVATION_LOGIC,
                 system="You analyze questions and decompose them into premises and inferences for auditable answers. CRITICAL: Ensure all fact references are valid.",
                 user_message=retry_prompt,
                 max_tokens=self.router.max_output_tokens,
