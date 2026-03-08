@@ -979,21 +979,23 @@ class DataStore:
         Returns:
             Artifact ID
         """
-        # Get next ID
-        with self.engine.connect() as conn:
+        # Serialize metadata
+        metadata_json = json.dumps(metadata) if metadata else None
+
+        # All ID generation and insert in one transaction to avoid parallel race
+        with self.engine.begin() as conn:
             result = conn.execute(
                 text("SELECT COALESCE(MAX(id), 0) + 1 FROM _constat_artifacts")
             ).fetchone()
             artifact_id = result[0]
 
-        # Auto-generate name if not provided
-        if name is None:
-            name = f"artifact_{artifact_id}_{artifact_type}"
+            # Auto-generate name if not provided
+            if name is None:
+                name = f"artifact_{artifact_id}_{artifact_type}"
 
-        # Determine version: if name already exists, increment
-        version = 1
-        if name and not name.startswith("artifact_"):
-            with self.engine.connect() as conn:
+            # Determine version: if name already exists, increment
+            version = 1
+            if name and not name.startswith("artifact_"):
                 result = conn.execute(
                     text("SELECT MAX(version) FROM _constat_artifacts WHERE name = :name"),
                     {"name": name}
@@ -1001,10 +1003,6 @@ class DataStore:
                 if result[0] is not None:
                     version = result[0] + 1
 
-        # Serialize metadata
-        metadata_json = json.dumps(metadata) if metadata else None
-
-        with self.engine.begin() as conn:
             conn.execute(
                 text("""
                     INSERT INTO _constat_artifacts
