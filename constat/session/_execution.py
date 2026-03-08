@@ -36,7 +36,8 @@ class ExecutionMixin:
     def _make_ask_user(self, step_number: int) -> Callable:
         """Create an ask_user() function for use in generated step code.
 
-        Caches answers by cache_key so retries don't re-ask.
+        Caches answers in the datastore by cache_key so retries return
+        the stored answer without re-asking.
         """
         def ask_user(question: str, options: list[str] | None = None,
                      widget: str | None = None,
@@ -58,13 +59,14 @@ class ExecutionMixin:
                 For table: {"rows": [...]}
                 For ranking: {"ranked": [...]}
             """
-            # Use cache_key if provided, fall back to step_number
-            key = cache_key or f"step_{step_number}"
+            key = cache_key or f"_ask_user_step_{step_number}"
 
-            # Return cached answer on retry attempts
-            if key in self._user_input_cache:
-                logger.debug(f"[Step {step_number}] Returning cached user input for key={key}")
-                return self._user_input_cache[key]
+            # Check datastore for cached answer
+            if self.datastore:
+                cached = self.datastore.get_state(key)
+                if cached is not None:
+                    logger.debug(f"[Step {step_number}] Returning cached user input from store for key={key}")
+                    return cached
 
             if not self._clarification_callback:
                 raise RuntimeError("User input not available (no clarification callback)")
@@ -89,23 +91,27 @@ class ExecutionMixin:
             response = self._clarification_callback(request)
             if response.skip:
                 result = "" if not widget else {}
-                self._user_input_cache[key] = result
+                if self.datastore:
+                    self.datastore.set_state(key, result, step_number=step_number)
                 return result
 
             # Prefer structured answers from widgets (curation, mapping, table, ranking)
             for structured in response.structured_answers.values():
                 if structured:
-                    self._user_input_cache[key] = structured
+                    if self.datastore:
+                        self.datastore.set_state(key, structured, step_number=step_number)
                     return structured
 
             # Fall back to text answer (choice widget or free-text)
             for answer in response.answers.values():
                 if answer:
-                    self._user_input_cache[key] = answer
+                    if self.datastore:
+                        self.datastore.set_state(key, answer, step_number=step_number)
                     return answer
 
             result = "" if not widget else {}
-            self._user_input_cache[key] = result
+            if self.datastore:
+                self.datastore.set_state(key, result, step_number=step_number)
             return result
 
         return ask_user
@@ -1098,19 +1104,19 @@ class ExecutionMixin:
     def _ask_validation_clarification(self, step: Step, validation: PostValidation) -> str | None:
         """Ask user for clarification when a post-validation fails with on_fail=CLARIFY.
 
-        Caches the response so retries don't re-ask the same validation question.
+        Caches the response in the datastore so retries don't re-ask.
 
         Returns:
             User's response string, or None if skipped/unavailable.
         """
         from constat.session._types import ClarificationRequest, ClarificationQuestion
 
-        # Cache key based on step + validation to avoid re-asking on retry
-        cache_key = f"validation_{step.number}_{validation.description}"
-        if cache_key in self._user_input_cache:
-            logger.debug(f"[Step {step.number}] Returning cached validation clarification for: {validation.description}")
-            cached = self._user_input_cache[cache_key]
-            return cached if cached else None
+        cache_key = f"_validation_{step.number}_{validation.description}"
+        if self.datastore:
+            cached = self.datastore.get_state(cache_key)
+            if cached is not None:
+                logger.debug(f"[Step {step.number}] Returning cached validation clarification for: {validation.description}")
+                return cached if cached else None
 
         if not self._clarification_callback:
             return None
@@ -1133,15 +1139,18 @@ class ExecutionMixin:
 
         response = self._clarification_callback(request)
         if response.skip:
-            self._user_input_cache[cache_key] = ""
+            if self.datastore:
+                self.datastore.set_state(cache_key, "", step_number=step.number)
             return None
 
         # Return first non-empty answer
         for answer in response.answers.values():
             if answer:
-                self._user_input_cache[cache_key] = answer
+                if self.datastore:
+                    self.datastore.set_state(cache_key, answer, step_number=step.number)
                 return answer
-        self._user_input_cache[cache_key] = ""
+        if self.datastore:
+            self.datastore.set_state(cache_key, "", step_number=step.number)
         return None
 
     @staticmethod
