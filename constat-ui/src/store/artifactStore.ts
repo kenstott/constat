@@ -210,7 +210,8 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
   fetchStepCodes: async (sessionId) => {
     try {
       const response = await sessionsApi.listStepCodes(sessionId)
-      set({ stepCodes: response.steps })
+      const sorted = [...response.steps].sort((a, b) => a.step_number - b.step_number)
+      set({ stepCodes: sorted })
     } catch (error) {
       console.warn('Failed to fetch step codes:', error)
     }
@@ -552,7 +553,9 @@ export const useArtifactStore = create<ArtifactState>((set, get) => ({
         updated[existingIndex] = { step_number: stepNumber, goal, code, model }
         return { stepCodes: updated }
       }
-      return { stepCodes: [...state.stepCodes, { step_number: stepNumber, goal, code, model }] }
+      const updated = [...state.stepCodes, { step_number: stepNumber, goal, code, model }]
+      updated.sort((a, b) => a.step_number - b.step_number)
+      return { stepCodes: updated }
     })
   },
 
