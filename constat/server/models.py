@@ -1021,6 +1021,7 @@ class GoldenQuestionExpectations(BaseModel):
     relationships: list[dict[str, Any]] = Field(default_factory=list)
     glossary: list[dict[str, Any]] = Field(default_factory=list)
     end_to_end: dict[str, Any] | None = None
+    suggested_question: str | None = None
 
 
 class GoldenQuestionRequest(BaseModel):

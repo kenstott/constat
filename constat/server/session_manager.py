@@ -1203,27 +1203,12 @@ class SessionManager:
             return True
 
     def cleanup_expired(self) -> int:
-        """Remove sessions that have exceeded the timeout.
+        """No-op — sessions persist until explicitly deleted.
 
         Returns:
-            Number of sessions cleaned up
+            0
         """
-        timeout = self._server_config.session_timeout_minutes
-        expired_ids = []
-
-        with self._lock:
-            for session_id, managed in self._sessions.items():
-                if managed.is_expired(timeout):
-                    expired_ids.append(session_id)
-
-        # Delete expired sessions outside the lock
-        for session_id in expired_ids:
-            self.delete_session(session_id)
-
-        if expired_ids:
-            logger.info(f"Cleaned up {len(expired_ids)} expired sessions")
-
-        return len(expired_ids)
+        return 0
 
     async def start_cleanup_task(self, interval_seconds: int = 60) -> None:
         """Start the periodic cleanup background task.

@@ -121,9 +121,11 @@ export interface ProofNodeInput {
 export async function extractExpectations(
   sessionId: string,
   proofNodes?: ProofNodeInput[],
+  originalQuestion?: string,
+  proofSummary?: string,
 ): Promise<GoldenQuestionExpectations> {
   return post<GoldenQuestionExpectations>(
     `/sessions/${sessionId}/tests/expectations`,
-    { proof_nodes: proofNodes ?? [] },
+    { proof_nodes: proofNodes ?? [], original_question: originalQuestion, proof_summary: proofSummary },
   )
 }

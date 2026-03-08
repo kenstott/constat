@@ -153,14 +153,11 @@ class DagMixin:
                     )
                 return node.value, node.confidence, "user"
 
-            # Check cache
+            # Check cache — return with planned source (preserves type prefix)
             cached_fact = self.fact_resolver.get_fact(fact_name)
             if cached_fact and cached_fact.value is not None:
                 resolved_premises[fact_id] = cached_fact
-                source_str = format_source_attribution(
-                    cached_fact.source, cached_fact.source_name, cached_fact.api_endpoint
-                )
-                return cached_fact.value, cached_fact.confidence, source_str
+                return cached_fact.value, cached_fact.confidence, source
 
             fact = None
             sql = None
@@ -177,6 +174,9 @@ class DagMixin:
                     source_str = format_source_attribution(
                         cached_fact.source, cached_fact.source_name, cached_fact.api_endpoint
                     )
+                    # Preserve original source type for test extraction
+                    if source_str == "cache" and cached_fact.source_name:
+                        source_str = f"database:{cached_fact.source_name}"
                     return cached_fact.value, cached_fact.confidence, source_str
 
                 # Try datastore table
@@ -205,7 +205,8 @@ class DagMixin:
                                 table_name=table["name"],
                                 row_count=row_count,
                             )
-                            return value_str, 0.95, "cache"
+                            # Return "database" since cached tables originate from DB
+                            return value_str, 0.95, "database"
 
                 raise ValueError(f"Cached data not found: {fact_name}")
 

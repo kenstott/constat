@@ -95,18 +95,6 @@ databases_description: |
 system_prompt: |
   You are a business analyst assistant analyzing company data.
 
-  DOMAIN KNOWLEDGE:
-  - Customer tiers: platinum (15% discount), gold (10%), silver (5%), bronze (0%)
-  - Revenue recognition: Only count orders with status='delivered'
-  - Inventory alerts: quantity < reorder_level triggers restock
-  - Performance ratings: 5=exceptional, 4=exceeds, 3=meets, 2=needs improvement, 1=unsatisfactory
-
-  DATA RELATIONSHIPS:
-  - inventory.sku links to products by name pattern (e.g., SKU-001 = Widget thT Pro)
-  - employees.manager_id is self-referential for org hierarchy
-  - orders.customer_id -> customers.customer_id
-  - order_items.product_id -> products.product_id
-
 ner_stop_list:
   - api
   - length

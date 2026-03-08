@@ -590,6 +590,7 @@ export interface GoldenQuestionExpectations {
   relationships: Array<Record<string, unknown>>
   glossary: Array<Record<string, unknown>>
   end_to_end?: Record<string, unknown> | null
+  suggested_question?: string | null
 }
 
 export interface GoldenQuestionRequest {

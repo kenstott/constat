@@ -1227,11 +1227,15 @@ If the original question had multiple goals or sub-questions, note whether all w
             for p in premises:
                 pid = p['id']
                 resolved = resolved_premises.get(pid)
+                # Use the premise's planned source (e.g. "database:hr") which
+                # preserves the source type prefix needed for test extraction.
+                # The resolved Fact may lose this (e.g. cache → "cache").
+                source_str = p.get('source', '')
                 node_data = {
                     "id": pid,
                     "name": p['name'],
                     "value": resolved.value if resolved else None,
-                    "source": resolved.source.value if resolved and hasattr(resolved.source, 'value') else str(resolved.source) if resolved else p.get('source'),
+                    "source": source_str,
                     "confidence": resolved.confidence if resolved else None,
                     "dependencies": [],
                 }

@@ -24,13 +24,4 @@ documents:
     - auth\.wikimedia\.org
     - \.(png|jpg|jpeg|gif|svg|ico|css|js)(\?|$)
     description: Human resource management concepts and practices
-golden_questions:
-- question: Verify salary recommendations and budget analysis exist
-  tags:
-  - from-reason-chain
-  expect:
-    entities: []
-    grounding: []
-    relationships: []
-    glossary: []
-    end_to_end: null
+golden_questions: []

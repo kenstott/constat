@@ -218,6 +218,52 @@ def _resolve_entity_with_term(
 _GROUNDABLE_SOURCES = {"database", "document", "api", "embedded"}
 
 
+def _generate_test_metadata(
+    config, original_question: str | None, proof_summary: str | None,
+    entities: list[str],
+) -> tuple[str | None, str | None]:
+    """Use LLM to generate a concise test question name and semantic_match criteria.
+
+    Returns (suggested_question, semantic_match).
+    """
+    from constat.providers.router import TaskRouter
+    from constat.discovery.models import display_entity_name as _dn
+
+    router = TaskRouter(config.llm)
+    entity_names = ", ".join(_dn(e) for e in entities[:10])
+
+    context_parts = []
+    if original_question:
+        context_parts.append(f"Original question: {original_question}")
+    if proof_summary:
+        context_parts.append(f"Proof summary: {proof_summary[:500]}")
+    if entity_names:
+        context_parts.append(f"Entities involved: {entity_names}")
+
+    system = (
+        "You generate regression test metadata for a data analytics system. "
+        "Given context about a reasoning chain, produce:\n"
+        "1. A concise test question (imperative, 3-8 words, like 'Calculate employee raises' or 'Find top revenue products')\n"
+        "2. A semantic_match criteria string describing what a correct answer should contain\n\n"
+        "Reply with exactly two lines:\n"
+        "QUESTION: <the test question>\n"
+        "CRITERIA: <what a correct answer should demonstrate>"
+    )
+    user_message = "\n".join(context_parts)
+    response = router.generate(system=system, user_message=user_message, max_tokens=128)
+
+    suggested_question = None
+    semantic_match = None
+    for line in response.strip().split("\n"):
+        line = line.strip()
+        if line.upper().startswith("QUESTION:"):
+            suggested_question = line.split(":", 1)[1].strip()
+        elif line.upper().startswith("CRITERIA:"):
+            semantic_match = line.split(":", 1)[1].strip()
+
+    return suggested_question, semantic_match
+
+
 class ProofNodeInput(BaseModel):
     """A proof node sent from the client."""
     id: str = ""
@@ -232,6 +278,8 @@ class ProofNodeInput(BaseModel):
 class ExtractExpectationsRequest(BaseModel):
     """Request body with proof nodes from the client."""
     proof_nodes: list[ProofNodeInput] = []
+    original_question: Optional[str] = None
+    proof_summary: Optional[str] = None
 
 
 @router.post(
@@ -267,6 +315,7 @@ async def extract_expectations(
 
     if not proof_nodes:
         raise HTTPException(status_code=404, detail="No reasoning chain result available")
+    logger.info(f"[extract_expectations] received {len(proof_nodes)} proof nodes")
 
     doc_tools = managed.session.doc_tools
     relational = None
@@ -285,9 +334,12 @@ async def extract_expectations(
         raw_source = node.get("source", "")
         # Source may be composite like "database:chinook" — split to get type
         source_type = raw_source.split(":")[0] if raw_source else ""
-        # Only groundable sources
+        # Only premises (groundable sources) create expectations;
+        # all other outcomes (derived, cache, llm_knowledge, etc.) use LLM-as-judge
+        logger.info(f"[extract_expectations] node name={node.get('name')!r} source={raw_source!r} source_type={source_type!r} status={node.get('status')!r}")
         if source_type not in _GROUNDABLE_SOURCES:
             continue
+
         raw_name = node.get("name", "")
         if not raw_name:
             continue
@@ -303,9 +355,10 @@ async def extract_expectations(
             resolved_name, term_obj = _resolve_entity_with_term(
                 relational, name, session_id, user_id, domain_ids,
             )
+        logger.info(f"[extract_expectations] stripped name={name!r} resolved={resolved_name!r} has_relational={relational is not None}")
         if not resolved_name:
-            logger.debug(f"Dropping unresolvable premise from expectations: {name!r} (source={raw_source})")
-            continue
+            # Normalize raw name to snake_case for use as entity name
+            resolved_name = name.strip().lower().replace(" ", "_")
         if resolved_name in seen:
             continue
         seen.add(resolved_name)
@@ -313,13 +366,11 @@ async def extract_expectations(
         entities.append(resolved_name)
 
         # Build grounding assertion from source info.
-        # Explicit fields take priority; fall back to parsing the composite source string.
         resolves_to: list[str] = []
-        source_name = node.get("source_name")  # e.g., database name
-        table_name = node.get("table_name")  # e.g., actual table
+        source_name = node.get("source_name")
+        table_name = node.get("table_name")
         api_endpoint = node.get("api_endpoint")
 
-        # Parse composite source for fallback values (e.g., "database:chinook")
         source_suffix = raw_source.split(":", 1)[1] if ":" in raw_source else None
         if not source_name and source_type == "database" and source_suffix:
             source_name = source_suffix
@@ -349,11 +400,38 @@ async def extract_expectations(
                 ga["domain"] = term_obj.domain
             glossary.append(ga)
 
+    logger.info(f"[extract_expectations] result: {len(entities)} entities, {len(grounding)} grounding, {len(glossary)} glossary")
+
+    # Use LLM to generate a concise test question name and semantic_match criteria
+    suggested_question = None
+    end_to_end = None
+    original_question = body.original_question if body else None
+    proof_summary = body.proof_summary if body else None
+
+    # Fall back to server-side proof result for original question
+    if not original_question:
+        proof = getattr(managed.session, 'last_proof_result', None)
+        if proof:
+            original_question = proof.get("problem")
+
+    if original_question or entities:
+        try:
+            config = managed.session.config
+            suggested_question, semantic_match = _generate_test_metadata(
+                config, original_question, proof_summary, entities,
+            )
+            if semantic_match:
+                end_to_end = {"semantic_match": semantic_match}
+        except Exception as e:
+            logger.warning(f"Failed to generate test metadata via LLM: {e}")
+
     return GoldenQuestionExpectations(
         entities=entities,
         grounding=grounding,
         relationships=[],
         glossary=glossary,
+        end_to_end=end_to_end,
+        suggested_question=suggested_question,
     )
 
 
