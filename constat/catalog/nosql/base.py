@@ -23,6 +23,7 @@ class NoSQLType(Enum):
     GRAPH = "graph"  # Neo4j, Amazon Neptune
     SEARCH = "search"  # Elasticsearch, OpenSearch
     TIME_SERIES = "time_series"  # InfluxDB, TimescaleDB
+    OBSERVABILITY = "observability"  # Jaeger, Zipkin
 
 
 @dataclass

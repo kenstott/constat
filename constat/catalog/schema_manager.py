@@ -548,6 +548,20 @@ class SchemaManager:
                 **auth_args,
             )
 
+        elif db_type == "jaeger":
+            from constat.catalog.nosql.jaeger import JaegerConnector
+            auth_args = {}
+            if db_config.username and db_config.password:
+                auth_args["username"] = db_config.username
+                auth_args["password"] = db_config.password
+            return JaegerConnector(
+                uri=db_config.uri or "http://localhost:16686",
+                name=db_name,
+                description=db_config.description,
+                sample_size=db_config.sample_size,
+                **auth_args,
+            )
+
         return None
 
     def _introspect_all(self) -> None:

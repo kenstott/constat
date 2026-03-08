@@ -38,6 +38,7 @@ from constat.catalog.nosql import (
     CosmosDBConnector,
     FirestoreConnector,
     Neo4jConnector,
+    JaegerConnector,
 )
 
 
@@ -52,6 +53,7 @@ class TestNoSQLBase:
         assert NoSQLType.GRAPH.value == "graph"
         assert NoSQLType.SEARCH.value == "search"
         assert NoSQLType.TIME_SERIES.value == "time_series"
+        assert NoSQLType.OBSERVABILITY.value == "observability"
 
     def test_field_info_defaults(self):
         """Test FieldInfo dataclass defaults."""
@@ -588,6 +590,293 @@ class TestNeo4jConnector:
         assert Neo4jConnector.REL_PREFIX == "rel:"
 
 
+class TestJaegerConnector:
+    """Tests for Jaeger connector."""
+
+    # Sample Jaeger API responses
+    SERVICES_RESPONSE = {"data": ["frontend", "backend", "db-service"]}
+    OPERATIONS_RESPONSE = {"data": ["GET /api/users", "POST /api/orders", "DB query"]}
+    TRACES_RESPONSE = {
+        "data": [
+            {
+                "traceID": "abc123",
+                "processes": {
+                    "p1": {
+                        "serviceName": "frontend",
+                        "tags": [{"key": "hostname", "value": "web-01"}],
+                    },
+                },
+                "spans": [
+                    {
+                        "traceID": "abc123",
+                        "spanID": "span1",
+                        "operationName": "GET /api/users",
+                        "processID": "p1",
+                        "startTime": 1700000000000000,
+                        "duration": 15000,
+                        "tags": [
+                            {"key": "http.method", "value": "GET"},
+                            {"key": "http.status_code", "value": 200},
+                        ],
+                        "references": [],
+                    },
+                    {
+                        "traceID": "abc123",
+                        "spanID": "span2",
+                        "operationName": "DB query",
+                        "processID": "p1",
+                        "startTime": 1700000000005000,
+                        "duration": 8000,
+                        "tags": [
+                            {"key": "db.type", "value": "postgresql"},
+                            {"key": "error", "value": True},
+                        ],
+                        "references": [
+                            {"refType": "CHILD_OF", "spanID": "span1"},
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+
+    def test_init(self):
+        connector = JaegerConnector(
+            uri="http://localhost:16686",
+            name="test_jaeger",
+        )
+        assert connector.uri == "http://localhost:16686"
+        assert connector.name == "test_jaeger"
+        assert connector.nosql_type == NoSQLType.OBSERVABILITY
+
+    def test_default_name(self):
+        connector = JaegerConnector()
+        assert connector.name == "jaeger"
+
+    def test_uri_trailing_slash_stripped(self):
+        connector = JaegerConnector(uri="http://localhost:16686/")
+        assert connector.uri == "http://localhost:16686"
+
+    @patch("constat.catalog.nosql.jaeger.requests.Session")
+    def test_connect(self, mock_session_class):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self.SERVICES_RESPONSE
+        mock_session.get.return_value = mock_resp
+        mock_session_class.return_value = mock_session
+
+        connector = JaegerConnector(uri="http://localhost:16686")
+        connector.connect()
+
+        assert connector.is_connected
+        mock_session.get.assert_called_once_with("http://localhost:16686/api/services")
+
+    @patch("constat.catalog.nosql.jaeger.requests.Session")
+    def test_connect_with_auth(self, mock_session_class):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self.SERVICES_RESPONSE
+        mock_session.get.return_value = mock_resp
+        mock_session_class.return_value = mock_session
+
+        connector = JaegerConnector(
+            uri="http://localhost:16686",
+            username="admin",
+            password="secret",
+        )
+        connector.connect()
+
+        assert mock_session.auth == ("admin", "secret")
+
+    @patch("constat.catalog.nosql.jaeger.requests.Session")
+    def test_disconnect(self, mock_session_class):
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = self.SERVICES_RESPONSE
+        mock_session.get.return_value = mock_resp
+        mock_session_class.return_value = mock_session
+
+        connector = JaegerConnector()
+        connector.connect()
+        connector.disconnect()
+
+        assert not connector.is_connected
+        mock_session.close.assert_called_once()
+
+    def _make_connected_connector(self):
+        """Create a connector with a mocked session."""
+        connector = JaegerConnector(
+            uri="http://localhost:16686",
+            name="test_jaeger",
+            sample_size=50,
+        )
+        connector._session = MagicMock()
+        connector._connected = True
+        return connector
+
+    def _mock_get(self, connector, responses):
+        """Mock _session.get to return responses by URL pattern."""
+        def side_effect(url, params=None):
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            for pattern, data in responses.items():
+                if pattern in url:
+                    mock_resp.json.return_value = data
+                    return mock_resp
+            mock_resp.json.return_value = {"data": []}
+            return mock_resp
+        connector._session.get.side_effect = side_effect
+
+    def test_get_collections(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/api/services": self.SERVICES_RESPONSE})
+
+        collections = connector.get_collections()
+        assert collections == ["backend", "db-service", "frontend"]
+
+    def test_get_collection_schema(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/api/traces": self.TRACES_RESPONSE})
+
+        schema = connector.get_collection_schema("frontend")
+
+        assert schema.name == "frontend"
+        assert schema.database == "test_jaeger"
+        assert schema.nosql_type == NoSQLType.OBSERVABILITY
+
+        field_names = [f.name for f in schema.fields]
+        # Fixed fields
+        assert "traceID" in field_names
+        assert "spanID" in field_names
+        assert "operationName" in field_names
+        assert "serviceName" in field_names
+        assert "duration" in field_names
+        assert "error" in field_names
+        # Dynamic tag fields
+        assert "tags.http.method" in field_names
+        assert "tags.db.type" in field_names
+
+    def test_get_collection_schema_cached(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/api/traces": self.TRACES_RESPONSE})
+
+        schema1 = connector.get_collection_schema("frontend")
+        schema2 = connector.get_collection_schema("frontend")
+        assert schema1 is schema2
+        # Only one HTTP call
+        assert connector._session.get.call_count == 1
+
+    def test_query(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/api/traces": self.TRACES_RESPONSE})
+
+        results = connector.query("frontend", {"operation": "GET /api/users"}, limit=10)
+
+        assert len(results) == 2
+        assert results[0]["traceID"] == "abc123"
+        assert results[0]["operationName"] == "GET /api/users"
+        assert results[0]["serviceName"] == "frontend"
+
+    def test_query_passes_params(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/api/traces": {"data": []}})
+
+        connector.query("frontend", {
+            "operation": "GET /api",
+            "minDuration": "1ms",
+            "tags": '{"http.method":"GET"}',
+        }, limit=5)
+
+        call_args = connector._session.get.call_args
+        params = call_args[1].get("params") or call_args[0][1] if len(call_args[0]) > 1 else call_args[1]["params"]
+        assert params["service"] == "frontend"
+        assert params["operation"] == "GET /api"
+        assert params["minDuration"] == "1ms"
+        assert params["limit"] == 5
+
+    def test_get_trace(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/api/traces/abc123": self.TRACES_RESPONSE})
+
+        spans = connector.get_trace("abc123")
+
+        assert len(spans) == 2
+        assert spans[0]["traceID"] == "abc123"
+        assert spans[1]["parentSpanID"] == "span1"
+
+    def test_get_operations(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {"/operations": self.OPERATIONS_RESPONSE})
+
+        ops = connector.get_operations("frontend")
+        assert ops == ["GET /api/users", "POST /api/orders", "DB query"]
+
+    def test_flatten_span_error_detection(self):
+        """Test that error tag is properly detected."""
+        connector = JaegerConnector()
+        span = {
+            "traceID": "t1",
+            "spanID": "s1",
+            "operationName": "op",
+            "startTime": 1700000000000000,
+            "duration": 1000,
+            "tags": [{"key": "error", "value": True}],
+            "references": [],
+        }
+        process = {"serviceName": "svc", "tags": []}
+
+        flat = connector._flatten_span(span, process)
+        assert flat["error"] is True
+
+    def test_flatten_span_status_code(self):
+        """Test that http.status_code is extracted."""
+        connector = JaegerConnector()
+        span = {
+            "traceID": "t1",
+            "spanID": "s1",
+            "operationName": "op",
+            "startTime": 1700000000000000,
+            "duration": 1000,
+            "tags": [{"key": "http.status_code", "value": 500}],
+            "references": [],
+        }
+        process = {"serviceName": "svc", "tags": []}
+
+        flat = connector._flatten_span(span, process)
+        assert flat["statusCode"] == 500
+
+    def test_flatten_span_parent_ref(self):
+        """Test parent span ID extraction from CHILD_OF reference."""
+        connector = JaegerConnector()
+        span = {
+            "traceID": "t1",
+            "spanID": "s2",
+            "operationName": "op",
+            "startTime": 1700000000000000,
+            "duration": 1000,
+            "tags": [],
+            "references": [{"refType": "CHILD_OF", "spanID": "s1"}],
+        }
+        process = {"serviceName": "svc", "tags": []}
+
+        flat = connector._flatten_span(span, process)
+        assert flat["parentSpanID"] == "s1"
+
+    def test_get_overview(self):
+        connector = self._make_connected_connector()
+        self._mock_get(connector, {
+            "/api/services": self.SERVICES_RESPONSE,
+            "/operations": self.OPERATIONS_RESPONSE,
+        })
+
+        overview = connector.get_overview()
+        assert "test_jaeger" in overview
+        assert "observability" in overview
+
+
 class TestSchemaInference:
     """Tests for schema inference from samples."""
 
@@ -778,6 +1067,18 @@ class TestNotConnectedErrors:
         connector = Neo4jConnector(uri="bolt://localhost:7687")
         with pytest.raises(RuntimeError, match="Not connected"):
             connector.get_overview()
+
+    def test_jaeger_not_connected(self):
+        """Test Jaeger operations fail when not connected."""
+        connector = JaegerConnector(uri="http://localhost:16686")
+        with pytest.raises(RuntimeError, match="Not connected"):
+            connector.get_collections()
+
+    def test_jaeger_query_not_connected(self):
+        """Test Jaeger query fails when not connected."""
+        connector = JaegerConnector(uri="http://localhost:16686")
+        with pytest.raises(RuntimeError, match="Not connected"):
+            connector.query("frontend", {})
 
 
 class TestParseGraphPattern:

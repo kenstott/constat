@@ -171,6 +171,16 @@ class DatabaseConfig(BaseModel):
             project: my-gcp-project
             collection: users
             credentials_path: /path/to/credentials.json
+
+    Jaeger Example:
+        databases:
+          tracing:
+            type: jaeger
+            uri: http://localhost:16686
+            description: Application tracing data
+            sample_size: 50
+            username: ${JAEGER_USER}
+            password: ${JAEGER_PASS}
     """
     model_config = {"extra": "allow"}  # Allow type-specific fields
 
@@ -344,7 +354,7 @@ class DatabaseConfig(BaseModel):
 
     def is_nosql(self) -> bool:
         """Check if this is a NoSQL database."""
-        return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "neo4j")
+        return self.type in ("mongodb", "cassandra", "elasticsearch", "dynamodb", "cosmosdb", "firestore", "neo4j", "jaeger")
 
     def is_file_source(self) -> bool:
         """Check if this is a file-based data source."""

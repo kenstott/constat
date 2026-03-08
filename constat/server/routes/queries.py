@@ -345,17 +345,21 @@ def _create_event_handler(managed: ManagedSession):
 
             api_event_type = event_type_map.get(event.event_type, EventType.PROGRESS)
 
-            # Sanitize event data — replace non-serializable types
+            # Sanitize event data — replace non-serializable types (recursive)
             safe_data = event.data
             if safe_data:
                 import pandas as pd
-                sanitized = {}
-                for k, v in safe_data.items():
-                    if isinstance(v, pd.DataFrame):
-                        sanitized[k] = f"DataFrame({len(v)} rows, {len(v.columns)} cols)"
-                    else:
-                        sanitized[k] = v
-                safe_data = sanitized
+
+                def _sanitize(obj):
+                    if isinstance(obj, pd.DataFrame):
+                        return f"DataFrame({len(obj)} rows, {len(obj.columns)} cols)"
+                    if isinstance(obj, dict):
+                        return {k: _sanitize(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_sanitize(v) for v in obj]
+                    return obj
+
+                safe_data = _sanitize(safe_data)
 
             ws_event = StepEventWS(
                 event_type=api_event_type,

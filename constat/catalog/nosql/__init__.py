@@ -23,6 +23,7 @@ On-Premise / Self-Hosted:
 - Cassandra: Wide-column store (keyspaces, tables) - also DataStax Astra
 - Elasticsearch: Search engine (indices, documents) - also Elastic Cloud, OpenSearch
 - Neo4j: Graph database (nodes, relationships)
+- Jaeger: Distributed tracing (services, spans)
 
 Cloud-Native:
 - DynamoDB: AWS key-value/document store
@@ -72,6 +73,7 @@ from .cosmosdb import CosmosDBConnector
 from .dynamodb import DynamoDBConnector
 from .elasticsearch import ElasticsearchConnector
 from .firestore import FirestoreConnector
+from .jaeger import JaegerConnector
 from .mongodb import MongoDBConnector
 from .neo4j import Neo4jConnector
 
@@ -86,6 +88,7 @@ __all__ = [
     "CassandraConnector",
     "ElasticsearchConnector",
     "Neo4jConnector",
+    "JaegerConnector",
     # Cloud connectors
     "DynamoDBConnector",
     "CosmosDBConnector",

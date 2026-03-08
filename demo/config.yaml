@@ -24,6 +24,24 @@ llm:
    api_key: ${ANTHROPIC_API_KEY}
 
    task_routing:
+     # Document analysis — Opus for nuanced extraction
+     glossary_generation:
+       models:
+         - provider: anthropic
+           model: claude-opus-4-20250514
+           timeout_seconds: 180
+     relationship_extraction:
+       models:
+         - provider: anthropic
+           model: claude-opus-4-20250514
+           timeout_seconds: 180
+     # Planning — Opus for multi-step reasoning
+     planning:
+       models:
+         - provider: anthropic
+           model: claude-opus-4-20250514
+           timeout_seconds: 180
+     # Code gen — Llama fast path, Sonnet fallback
      sql_generation:
        models:
          - provider: together

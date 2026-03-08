@@ -658,6 +658,16 @@ REFERENCED TABLES (query with pd.read_sql(sql, db_<name>)):
 {chr(10).join(referenced_tables)}
 """
 
+            # Build available tables constraint for inference prompt (same pattern as SQL gen)
+            all_known_tables: set[str] = set()
+            if self.schema_manager:
+                for db_name in self.schema_manager.connections.keys():
+                    all_known_tables.update(
+                        m.name.lower() for m in self.schema_manager.get_tables_for_db(db_name)
+                    )
+            if all_known_tables:
+                referenced_section += f"\nAVAILABLE DATABASE TABLES (no others exist): {', '.join(sorted(all_known_tables))}\n"
+
             # Build API sources section for prompt (with schema info)
             api_sources_section = ""
             api_schema_cache: dict[str, dict] = {}
@@ -1084,8 +1094,20 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                                 f"This may indicate incorrect aggregation."
                             )
             elif computed is not None:
-                resolved_inferences[inf_id] = computed
-                result_value = computed
+                # If computed is a DataFrame, save it to datastore and use row count
+                if hasattr(computed, 'empty') and hasattr(computed, 'columns'):
+                    if self.datastore:
+                        self.datastore.save_dataframe(table_name, computed)
+                        row_count = len(computed)
+                        node.row_count = row_count
+                        resolved_inferences[inf_id] = f"{row_count} rows"
+                        result_value = f"{row_count} rows"
+                    else:
+                        resolved_inferences[inf_id] = computed
+                        result_value = computed
+                else:
+                    resolved_inferences[inf_id] = computed
+                    result_value = computed
             else:
                 output = captured.getvalue().strip()
                 if output:
