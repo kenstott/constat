@@ -789,10 +789,9 @@ class ExecutionMixin:
 
             # Execute
             exec_globals = self._get_execution_globals()
-            # Only inject ask_user into user_input steps to prevent
-            # non-user_input steps from re-asking questions on retry
-            if step.task_type == TaskType.USER_INPUT:
-                exec_globals['ask_user'] = self._make_ask_user(step.number)
+            # ask_user available in all steps — returns cached value from store
+            # if it exists, only asks the user if no cached value is found
+            exec_globals['ask_user'] = self._make_ask_user(step.number)
             result = self.executor.execute(code, exec_globals)
             logger.debug(f"[Step {step.number}] Execution result (attempt {attempt}): success={result.success}, error={result.error_message()[:200] if not result.success else 'none'}")
 

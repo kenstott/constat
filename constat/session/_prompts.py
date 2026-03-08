@@ -85,15 +85,16 @@ class PromptsMixin:
 
     @staticmethod
     def _get_step_system_prompt(step) -> str:
-        """Get the system prompt for a step, with ask_user docs only for user_input steps."""
+        """Get the system prompt for a step, with ask_user docs."""
+        ask_user_docs = (
+            "- `ask_user(question, options=None, widget=None, data=None, cache_key=None)` — ask the user a question OR retrieve a previously stored answer. "
+            "**Always provide a `cache_key`** using the format `step_N.name` (e.g., `step_1.item_count`). "
+            "If a value exists in `store` for that cache_key, it returns instantly without asking. "
+            "If no value exists, it pauses execution, asks the user, and stores the answer. "
+            "**NEVER call `store.set_state()` or `store.get_state()` for ask_user values.** The ONLY way to store and retrieve user answers is through `ask_user(cache_key=...)`. "
+        )
         if step.task_type == TaskType.USER_INPUT:
-            ask_user_docs = (
-                "- `ask_user(question, options=None, widget=None, data=None, cache_key=None)` — pause execution and ask the user a question. "
-                "Returns their answer. **Always provide a `cache_key`** using the format `step_N.name` (e.g., `step_1.item_count`). "
-                "The answer is automatically stored in `store` under that cache_key. "
-                "On retry, `ask_user` returns the stored answer without re-asking. "
-                "To retrieve the answer later (in this step or other steps), call `ask_user()` again with the same `cache_key` — it returns the stored value instantly. "
-                "**NEVER call `store.set_state()` or `store.get_state()` for ask_user values.** The ONLY way to store and retrieve user answers is through `ask_user(cache_key=...)`. "
+            ask_user_docs += (
                 "Choose the right widget for the interaction:\n"
                 '  - **No widget** (default): free-text input. Use for open-ended questions.\n'
                 '  - `widget="choice"`, `options=["A", "B", "C"]`: radio buttons. Use for picking one option from a short list.\n'
@@ -102,8 +103,6 @@ class PromptsMixin:
                 '  - `widget="table"`, `data={"columns": [{"key": "k", "label": "L", "type": "text"}], "rows": [...]}`: editable grid. Use for structured review/editing of tabular data.\n'
                 '  - `widget="ranking"`, `data={"items": [...]}`: drag-to-reorder. Use for prioritization.'
             )
-        else:
-            ask_user_docs = ""
         return STEP_SYSTEM_PROMPT.replace("{ask_user_docs}", ask_user_docs)
 
     def _build_step_prompt(self, step) -> str:
