@@ -435,6 +435,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     await queriesApi.approvePlan(session.session_id, true, undefined, deletedSteps, editedSteps)
     wsManager.approve()
+    // Sort step messages by step number to ensure consistent display order
+    stepMessages.sort((a, b) => (a.stepNumber || 0) - (b.stepNumber || 0))
     set((state) => ({
       messages: [...state.messages, ...stepMessages],
       stepMessageIds,
