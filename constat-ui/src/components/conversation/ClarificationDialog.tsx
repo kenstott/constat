@@ -141,9 +141,9 @@ export function ClarificationDialog() {
 
       {/* Dialog container */}
       <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel className={`w-full ${maxWidthClass} rounded-xl bg-white dark:bg-gray-800 shadow-2xl`}>
+        <DialogPanel className={`w-full ${maxWidthClass} max-h-[80vh] flex flex-col rounded-xl bg-white dark:bg-gray-800 shadow-2xl`}>
           {/* Header */}
-          <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex-shrink-0 flex items-center gap-3 px-6 py-4 border-b border-gray-200 dark:border-gray-700">
             <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
               <QuestionMarkCircleIcon className="w-6 h-6 text-primary-600 dark:text-primary-400" />
             </div>
@@ -168,7 +168,7 @@ export function ClarificationDialog() {
 
           {/* Progress indicator */}
           {totalSteps > 1 && (
-            <div className="px-6 pt-4">
+            <div className="flex-shrink-0 px-6 pt-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   Question {currentStep + 1} of {totalSteps}
@@ -198,7 +198,7 @@ export function ClarificationDialog() {
           )}
 
           {/* Content */}
-          <div className="px-6 py-5">
+          <div className="px-6 py-5 overflow-y-auto min-h-0">
             {/* Original question context */}
             <div className="mb-4 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
               <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Your question:</p>
@@ -281,7 +281,7 @@ export function ClarificationDialog() {
           </div>
 
           {/* Footer */}
-          <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
+          <div className="flex-shrink-0 px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
             <button
               onClick={handleSkip}
               className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"

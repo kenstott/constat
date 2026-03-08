@@ -165,6 +165,11 @@ class PythonExecutor:
         exec_globals["exit"] = _blocked_exit
         exec_globals["quit"] = _blocked_exit
 
+        # Prevent input() from blocking the server
+        def _blocked_input(*_args, **_kwargs):
+            raise RuntimeError("input() is not allowed — use ask_user() for user_input steps")
+        exec_globals["input"] = _blocked_input
+
         # Execute
         try:
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
