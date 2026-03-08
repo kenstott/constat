@@ -34,7 +34,10 @@ logger = logging.getLogger(__name__)
 class ExecutionMixin:
 
     def _make_ask_user(self, step_number: int) -> Callable:
-        """Create an ask_user() function for use in generated step code."""
+        """Create an ask_user() function for use in generated step code.
+
+        Caches the user's answer per step_number so retries don't re-ask.
+        """
         def ask_user(question: str, options: list[str] | None = None,
                      widget: str | None = None,
                      data: dict | list | None = None) -> str | dict | list:
@@ -52,6 +55,11 @@ class ExecutionMixin:
                 For table: {"rows": [...]}
                 For ranking: {"ranked": [...]}
             """
+            # Return cached answer on retry attempts
+            if step_number in self._user_input_cache:
+                logger.debug(f"[Step {step_number}] Returning cached user input")
+                return self._user_input_cache[step_number]
+
             if not self._clarification_callback:
                 raise RuntimeError("User input not available (no clarification callback)")
 
@@ -74,18 +82,25 @@ class ExecutionMixin:
 
             response = self._clarification_callback(request)
             if response.skip:
-                return "" if not widget else {}
+                result = "" if not widget else {}
+                self._user_input_cache[step_number] = result
+                return result
 
             # Prefer structured answers from widgets (curation, mapping, table, ranking)
             for structured in response.structured_answers.values():
                 if structured:
+                    self._user_input_cache[step_number] = structured
                     return structured
 
             # Fall back to text answer (choice widget or free-text)
             for answer in response.answers.values():
                 if answer:
+                    self._user_input_cache[step_number] = answer
                     return answer
-            return "" if not widget else {}
+
+            result = "" if not widget else {}
+            self._user_input_cache[step_number] = result
+            return result
 
         return ask_user
 

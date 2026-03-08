@@ -373,7 +373,7 @@ CRITICAL INTENT RULES (apply in order):
             # Parse CACHED_ANSWER
             if "CACHED_ANSWER:" in response:
                 answer_section = response.split("CACHED_ANSWER:", 1)[1].split("---")[0].strip()
-                if answer_section and answer_section.upper() != "NONE":
+                if answer_section and not answer_section.upper().startswith("NONE"):
                     cached_answer = answer_section
 
             # Parse INTENTS (preserving order)
