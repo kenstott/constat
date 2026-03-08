@@ -777,6 +777,10 @@ class ExecutionMixin:
             tables_before = set(t['name'] for t in tables_before_list)
             versions_before = {t['name']: t.get('version', 1) for t in tables_before_list}
 
+            # Save code before execution so it's available even if execution hangs
+            if self.datastore:
+                self.datastore.add_artifact(step.number, attempt, "code", code, role_id=self._current_agent_id)
+
             # Execute
             exec_globals = self._get_execution_globals()
             # Only inject ask_user into user_input steps to prevent
@@ -790,11 +794,9 @@ class ExecutionMixin:
             if result.success and self.datastore:
                 self._auto_save_results(result.namespace, step.number)
 
-            # Record artifacts in datastore
-            if self.datastore:
-                self.datastore.add_artifact(step.number, attempt, "code", code, role_id=self._current_agent_id)
-                if result.stdout:
-                    self.datastore.add_artifact(step.number, attempt, "output", result.stdout, role_id=self._current_agent_id)
+            # Record output artifact after execution
+            if self.datastore and result.stdout:
+                self.datastore.add_artifact(step.number, attempt, "output", result.stdout, role_id=self._current_agent_id)
 
             if result.success:
                 duration_ms = int((time.time() - start_time) * 1000)
