@@ -907,6 +907,16 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                                 pass
                         exec_globals[iid] = val
 
+                # Block filesystem writes — LLM code must use store.save_dataframe(), not open()
+                _builtin_open = open
+                def _restricted_open(path, mode='r', *args, **kwargs):
+                    if any(m in str(mode) for m in ('w', 'a', 'x')):
+                        raise PermissionError(
+                            f"File writing is not allowed. Use store.save_dataframe(name, df) to persist data."
+                        )
+                    return _builtin_open(path, mode, *args, **kwargs)
+                exec_globals["open"] = _restricted_open
+
                 captured = io.StringIO()
                 old_stdout = sys.stdout
                 try:

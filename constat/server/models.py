@@ -804,6 +804,7 @@ class GlossaryTermResponse(BaseModel):
     connected_resources: list[dict[str, Any]] = Field(default_factory=list, description="Physical resources")
     tags: dict[str, Any] = Field(default_factory=dict, description="Classification tags (e.g. PII, GDPR)")
     ignored: bool = Field(default=False, description="Whether term is excluded from graphs and similarity")
+    canonical_source: Optional[str] = Field(default=None, description="Document name of the authoritative source for this term")
 
 
 class GlossaryListResponse(BaseModel):
@@ -837,6 +838,7 @@ class GlossaryUpdateRequest(BaseModel):
     semantic_type: Optional[str] = Field(default=None, description="New semantic type")
     tags: Optional[dict[str, Any]] = Field(default=None, description="Classification tags (e.g. {\"PII\": {}, \"GDPR\": {}})")
     ignored: Optional[bool] = Field(default=None, description="Mark term as ignored")
+    canonical_source: Optional[str] = Field(default=None, description="Document name of the authoritative source")
 
 
 class GlossaryBulkStatusRequest(BaseModel):

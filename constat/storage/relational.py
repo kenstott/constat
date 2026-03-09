@@ -413,7 +413,7 @@ class RelationalStore:
     _GLOSSARY_COLUMNS = (
         "id, name, display_name, definition, domain, parent_id, parent_verb, "
         "aliases, semantic_type, cardinality, plural, "
-        "tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored"
+        "tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored, canonical_source"
     )
 
     @staticmethod
@@ -422,7 +422,7 @@ class RelationalStore:
         (term_id, name, display_name, definition, domain, parent_id,
          parent_verb, aliases_json, semantic_type, cardinality, plural,
          tags_json, owner, status, provenance, session_id, user_id,
-         created_at, updated_at, ignored) = row
+         created_at, updated_at, ignored, canonical_source) = row
         aliases = json.loads(aliases_json) if aliases_json else []
         tags = json.loads(tags_json) if tags_json else {}
         return GlossaryTerm(
@@ -446,6 +446,7 @@ class RelationalStore:
             created_at=created_at,
             updated_at=updated_at,
             ignored=bool(ignored),
+            canonical_source=canonical_source,
         )
 
     def add_glossary_term(self, term: GlossaryTerm) -> None:
@@ -455,8 +456,8 @@ class RelationalStore:
             INSERT OR REPLACE INTO glossary_terms
             (id, name, display_name, definition, domain, parent_id, parent_verb,
              aliases, semantic_type, cardinality, plural,
-             tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored, canonical_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 term.id, term.name, term.display_name, term.definition,
@@ -466,7 +467,7 @@ class RelationalStore:
                 json.dumps(term.tags), term.owner,
                 term.status, term.provenance, term.session_id,
                 term.user_id or "default",
-                term.created_at, term.updated_at, term.ignored,
+                term.created_at, term.updated_at, term.ignored, term.canonical_source,
             ],
         )
         self._clusters_dirty = True
@@ -476,7 +477,7 @@ class RelationalStore:
         allowed = {
             "definition", "display_name", "domain", "parent_id", "parent_verb",
             "aliases", "semantic_type", "cardinality", "plural",
-            "tags", "owner", "status", "provenance", "ignored",
+            "tags", "owner", "status", "provenance", "ignored", "canonical_source",
         }
         sets = []
         params: list = []

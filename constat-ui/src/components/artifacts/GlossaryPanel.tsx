@@ -646,7 +646,8 @@ function ConnectedResources({
     domain: string | null
     domain_path: string | null
     spanning_domains: string[]
-  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], tags: {}, domain: null, domain_path: null, spanning_domains: [] })
+    canonical_source: string | null
+  }>({ resources: [], parent: null, parent_verb: 'HAS_KIND', children: [], relationships: [], cluster_siblings: [], tags: {}, domain: null, domain_path: null, spanning_domains: [], canonical_source: null })
   const [loaded, setLoaded] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
 
@@ -667,6 +668,7 @@ function ConnectedResources({
           domain: data.domain || null,
           domain_path: data.domain_path || null,
           spanning_domains: data.spanning_domains || [],
+          canonical_source: data.canonical_source || null,
         })
         setLoaded(true)
       }
@@ -679,7 +681,7 @@ function ConnectedResources({
 
   if (!loaded) return <div className="text-xs text-gray-400">Loading resources...</div>
 
-  const { resources, parent, parent_verb, children, relationships, cluster_siblings, tags, domain, domain_path, spanning_domains } = detail
+  const { resources, parent, parent_verb, children, relationships, cluster_siblings, tags, domain, domain_path, spanning_domains, canonical_source } = detail
   const hasConnections = !!(parent || children.length > 0 || relationships.length > 0 || cluster_siblings.length > 0)
   const hasContent = resources.length > 0 || hasConnections || !!domain
   if (!hasContent) return null
@@ -768,14 +770,40 @@ function ConnectedResources({
         <div>
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5">Connected Resources</div>
           {resources.map((r, i) => (
-            <div key={i} className="text-xs text-gray-500 dark:text-gray-400 ml-2 mb-0.5">
+            <div key={i} className="group/res text-xs text-gray-500 dark:text-gray-400 ml-2 mb-0.5">
               <span className="font-medium">{r.entity_name}</span>
               <span className="text-gray-400"> ({r.entity_type})</span>
-              {r.sources.map((s, j) => (
-                <div key={j} className="ml-2">
-                  <SourceLink source={s.source} documentName={s.document_name} section={s.section} url={s.url} />
-                </div>
-              ))}
+              {r.sources.map((s, j) => {
+                const isCanonical = canonical_source === s.document_name
+                return (
+                  <div key={j} className="ml-2 flex items-center gap-1">
+                    <SourceLink source={s.source} documentName={s.document_name} section={s.section} url={s.url} />
+                    {isCanonical ? (
+                      <button
+                        onClick={() => {
+                          updateTerm(sessionId, termName, { canonical_source: null })
+                          setDetail(prev => ({ ...prev, canonical_source: null }))
+                        }}
+                        className="px-1 py-0 rounded text-[10px] font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800"
+                        title="Click to remove canonical source"
+                      >
+                        canonical
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          updateTerm(sessionId, termName, { canonical_source: s.document_name })
+                          setDetail(prev => ({ ...prev, canonical_source: s.document_name }))
+                        }}
+                        className="px-1 py-0 rounded text-[10px] text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 opacity-0 group-hover/res:opacity-100 transition-opacity"
+                        title="Set as canonical source"
+                      >
+                        set canonical
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           ))}
         </div>

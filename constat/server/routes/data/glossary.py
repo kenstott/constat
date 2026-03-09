@@ -357,6 +357,7 @@ async def get_glossary_term(
             "relationships": relationships,
             "cluster_siblings": cluster_siblings,
             "ignored": term.ignored,
+            "canonical_source": term.canonical_source,
         }
         if effective_domain == "cross-domain":
             result["spanning_domains"] = _resolve_entity_domains(

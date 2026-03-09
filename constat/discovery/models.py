@@ -397,6 +397,7 @@ class GlossaryTerm:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     ignored: bool = False
+    canonical_source: Optional[str] = None
 
     def __post_init__(self):
         now = datetime.now()

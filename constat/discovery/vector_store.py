@@ -395,7 +395,8 @@ class DuckDBVectorStore(VectorStoreBackend):
                 user_id VARCHAR NOT NULL DEFAULT 'default',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ignored BOOLEAN DEFAULT FALSE
+                ignored BOOLEAN DEFAULT FALSE,
+                canonical_source VARCHAR
             )
         """)
 
@@ -409,6 +410,13 @@ class DuckDBVectorStore(VectorStoreBackend):
         try:
             self._conn.execute(
                 "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE"
+            )
+        except Exception:
+            pass
+
+        try:
+            self._conn.execute(
+                "ALTER TABLE glossary_terms ADD COLUMN canonical_source VARCHAR"
             )
         except Exception:
             pass
