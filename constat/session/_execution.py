@@ -187,6 +187,120 @@ class ExecutionMixin:
 
         return doc_read
 
+    def _search_document_chunks(self, query: str, document_name: str, limit: int = 10) -> list:
+        """Search for chunks within a specific document by semantic similarity.
+
+        Returns list of (chunk_id, similarity, DocumentChunk) tuples sorted by chunk_index.
+        Expands to include neighboring chunks for table continuation markers.
+        """
+        import threading
+
+        doc_tools = self.doc_tools
+        vs = doc_tools._vector_store
+        model = doc_tools._model
+        model_lock = getattr(doc_tools, '_model_lock', threading.Lock())
+
+        with model_lock:
+            query_embedding = model.encode([query], normalize_embeddings=True)
+
+        results = vs.search_by_document(
+            query_embedding, document_name, limit=limit, query_text=query,
+        )
+
+        # Check for table continuation markers — expand to neighboring chunks
+        has_continuation = any("[TABLE:cont]" in c.content or "[TABLE:start]" in c.content
+                               for _, _, c in results)
+        if has_continuation:
+            all_doc_chunks = vs.get_chunks_by_document(document_name)
+            matched_indices = {c.chunk_index for _, _, c in results}
+            # Expand to neighbors of any chunk with continuation markers
+            expanded_indices = set(matched_indices)
+            for _, _, c in results:
+                if "[TABLE:cont]" in c.content or "[TABLE:start]" in c.content:
+                    expanded_indices.add(c.chunk_index - 1)
+                    expanded_indices.add(c.chunk_index + 1)
+            # Add any new chunks from the expansion
+            for content, section, chunk_idx in all_doc_chunks:
+                if chunk_idx in expanded_indices and chunk_idx not in matched_indices:
+                    from constat.discovery.models import DocumentChunk
+                    results.append(("", 0.0, DocumentChunk(
+                        document_name=document_name,
+                        content=content,
+                        section=section,
+                        chunk_index=chunk_idx,
+                    )))
+
+        # Sort by chunk_index for coherent text assembly
+        results.sort(key=lambda r: r[2].chunk_index)
+        return results
+
+    def _assemble_chunk_text(self, results: list) -> str:
+        """Assemble text from search results, merging table continuations."""
+        parts = []
+        for _, _, chunk in results:
+            text = chunk.content
+            # Strip table continuation markers for clean text
+            text = text.replace("[TABLE:start]\n", "")
+            text = text.replace("\n[TABLE:cont]", "")
+            text = text.replace("[TABLE:cont]\n", "")
+            text = text.replace("\n[TABLE:end]", "")
+            parts.append(text)
+        return "\n\n".join(parts)
+
+    def _create_extract_table_helper(self) -> Callable:
+        """Create a closure for llm_extract_table with vector store access."""
+        from constat.llm import llm_extract_table as _llm_extract_table
+
+        def llm_extract_table(
+            description: str,
+            document: str,
+            columns: list[str] | None = None,
+        ) -> "pd.DataFrame":
+            """Extract a table from a document into a DataFrame.
+
+            Uses chunk-based search to find the relevant section, then extracts
+            the table via LLM. Handles table continuation markers for large tables.
+
+            Args:
+                description: What table to find (e.g., "raise guidelines").
+                document: Document name as configured.
+                columns: Optional column names to enforce.
+
+            Returns:
+                pandas DataFrame with extracted rows and columns.
+            """
+            results = self._search_document_chunks(description, document)
+            text = self._assemble_chunk_text(results)
+            return _llm_extract_table(text, description, columns=columns)
+        return llm_extract_table
+
+    def _create_extract_facts_helper(self) -> Callable:
+        """Create a closure for llm_extract_facts with vector store access."""
+        from constat.llm import llm_extract_facts as _llm_extract_facts
+
+        def llm_extract_facts(
+            query: str,
+            document: str,
+            context: str = "",
+        ) -> list[dict]:
+            """Extract facts from a document matching a query.
+
+            Uses chunk-based search to find relevant sections, then extracts
+            typed facts via LLM.
+
+            Args:
+                query: What to look for (e.g., "VIP thresholds").
+                document: Document name as configured.
+                context: Optional domain context.
+
+            Returns:
+                List of fact dicts with name, value, dtype, metadata.
+            """
+            results = self._search_document_chunks(query, document)
+            text = self._assemble_chunk_text(results)
+            return _llm_extract_facts(text, context=context)
+        return llm_extract_facts
+
     def _is_current_plan_sensitive(self) -> bool:
         """Check if the current plan involves sensitive data."""
         return self.plan is not None and self.plan.contains_sensitive_data
@@ -356,6 +470,8 @@ class ExecutionMixin:
             "llm_extract": constat.llm.llm_extract,
             "llm_summarize": constat.llm.llm_summarize,
             "llm_score": constat.llm.llm_score,
+            "llm_extract_table": self._create_extract_table_helper(),
+            "llm_extract_facts": self._create_extract_facts_helper(),
             "doc_read": self._create_doc_read_helper(),
         }
 
@@ -655,11 +771,11 @@ class ExecutionMixin:
         Returns:
             StepResult with success/failure info
         """
-        from constat.session._types import STEP_SYSTEM_PROMPT
-
         start_time = time.time()
         last_code = ""
         last_error = None
+        last_model = ""  # Track which model generated the failed code
+        last_provider = ""
         pending_learning_context = None  # Track error for potential learning capture
 
         # Set current role context for this step (facts created will inherit this role_id)
@@ -694,9 +810,15 @@ class ExecutionMixin:
             ))
 
             # Use router with step's task_type for automatic model selection/escalation
-            step_system = self._get_step_system_prompt(step)
+            model_family = self.router.resolve_model_family(
+                task_type=step.task_type,
+                complexity=step.complexity,
+                domain=step.domain,
+                skip_models=skip_models,
+            )
+            step_system = self._get_step_system_prompt(step, model_family=model_family)
             if attempt == 1:
-                prompt = self._build_step_prompt(step)
+                prompt = self._build_step_prompt(step, model_family=model_family)
                 result = self.router.execute_code(
                     task_type=step.task_type,
                     system=step_system,
@@ -715,11 +837,14 @@ class ExecutionMixin:
                     "step_goal": step.goal,
                     "attempt": attempt,
                     "data_sources": self._get_step_data_sources(step),
+                    "error_model": last_model,
+                    "error_provider": last_provider,
                 }
 
                 retry_prompt = RETRY_PROMPT_TEMPLATE.format(
                     error_details=last_error,
                     previous_code=last_code,
+                    data_sources=self._build_retry_data_sources(),
                 )
                 result = self.router.execute_code(
                     task_type=step.task_type,
@@ -751,7 +876,8 @@ class ExecutionMixin:
 
             code = result.content
             codegen_model = result.model_used
-            logger.info(f"[Step {step.number}] Code generated by {result.provider_used}/{codegen_model}")
+            codegen_provider = result.provider_used
+            logger.info(f"[Step {step.number}] Code generated by {codegen_provider}/{codegen_model}")
 
             # If the router escalated past models (e.g. Llama timed out),
             # align skip_models so retries don't re-try dead models.
@@ -808,6 +934,8 @@ class ExecutionMixin:
 
                 # Capture learning if this was a successful retry
                 if attempt > 1 and pending_learning_context:
+                    pending_learning_context["fixed_by_model"] = codegen_model
+                    pending_learning_context["fixed_by_provider"] = codegen_provider
                     self._capture_error_learning(
                         context=pending_learning_context,
                         fixed_code=code,
@@ -921,6 +1049,8 @@ class ExecutionMixin:
             # Prepare for retry
             last_code = code
             last_error = format_error_for_retry(result, code)
+            last_model = codegen_model
+            last_provider = codegen_provider
 
             # Escalate to next model after repeated runtime failures
             runtime_failures += 1
@@ -1342,6 +1472,32 @@ class ExecutionMixin:
                 "type": getattr(db_config, "type", ""),
             })
         return sources
+
+    def _build_retry_data_sources(self) -> str:
+        """Build data source summary for retry prompts so LLM knows where tables live."""
+        lines = []
+
+        # Database tables (source data — accessed via pd.read_sql)
+        if self.schema_manager:
+            by_db: dict[str, list[str]] = {}
+            for table_meta in self.schema_manager.metadata_cache.values():
+                by_db.setdefault(table_meta.database, []).append(table_meta.name)
+            if by_db:
+                lines.append("\nDATA SOURCES (use pd.read_sql(query, db_<name>)):")
+                for db_name in sorted(by_db):
+                    tables = sorted(by_db[db_name])
+                    lines.append(f"  db_{db_name}: {', '.join(tables)}")
+
+        # Store tables (intermediate data from previous steps)
+        if self.datastore:
+            store_tables = self.datastore.list_tables()
+            if store_tables:
+                names = [t['name'] for t in store_tables if not t['name'].startswith('_')]
+                if names:
+                    lines.append(f"\nSTORE TABLES (use store.load_dataframe('name') or store.query()):")
+                    lines.append(f"  {', '.join(names)}")
+
+        return "\n".join(lines) if lines else ""
 
     def _compact_learnings(self) -> None:
         """Compact raw learnings into rules using LLM to find patterns."""

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from constat.core.models import TaskType
-from constat.session._types import STEP_SYSTEM_PROMPT, STEP_PROMPT_TEMPLATE
+from constat.session._types import STEP_PROMPT_SECTIONS, STEP_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +83,53 @@ class PromptsMixin:
 
         return False
 
-    @staticmethod
-    def _get_step_system_prompt(step) -> str:
-        """Get the system prompt for a step, with ask_user docs."""
+    def _get_step_system_prompt(self, step, model_family: str | None = None) -> str:
+        """Get the system prompt for a step, composing only relevant sections.
+
+        Args:
+            step: The step being executed.
+            model_family: Provider name (e.g. 'anthropic', 'ollama'). When set,
+                family-specific section overrides (``<!-- @tag:family -->``) are
+                preferred over the generic ``<!-- @tag -->`` version.
+        """
+        # Always-included tags
+        tags = {"core", "rules"}
+
+        code_gen = step.task_type in (TaskType.PYTHON_ANALYSIS, TaskType.SQL_GENERATION)
+
+        if code_gen:
+            tags.add("pitfalls")
+            if hasattr(self, "config") and self.config.databases:
+                tags.add("database")
+            if self.resources.has_apis():
+                tags.add("api")
+            if self.resources.has_documents():
+                tags.add("doc_tools")
+            if step.number > 1:
+                tags.add("data_integrity")
+            if self.skill_manager.active_skill_objects:
+                tags.add("skills")
+
+        if step.task_type == TaskType.PYTHON_ANALYSIS:
+            tags.add("llm_tools")
+            tags.add("llm_guide")
+
+        # Compose in file order, preferring model-family overrides
+        parts: list[str] = []
+        seen_tags: set[str] = set()
+        # First pass: collect family-specific sections
+        if model_family:
+            for tag, content, family in STEP_PROMPT_SECTIONS:
+                if tag in tags and family == model_family:
+                    parts.append(content)
+                    seen_tags.add(tag)
+        # Second pass: fill in generic sections not overridden
+        for tag, content, family in STEP_PROMPT_SECTIONS:
+            if tag in tags and family is None and tag not in seen_tags:
+                parts.append(content)
+        text = "\n".join(parts)
+
+        # Inject ask_user docs
         ask_user_docs = (
             "- `ask_user(question, options=None, widget=None, data=None, cache_key=None)` — ask the user a question OR retrieve a previously stored answer. "
             "**Always provide a `cache_key`** using the format `step_N.name` (e.g., `step_1.item_count`). "
@@ -103,9 +147,9 @@ class PromptsMixin:
                 '  - `widget="table"`, `data={"columns": [{"key": "k", "label": "L", "type": "text"}], "rows": [...]}`: editable grid. Use for structured review/editing of tabular data.\n'
                 '  - `widget="ranking"`, `data={"items": [...]}`: drag-to-reorder. Use for prioritization.'
             )
-        return STEP_SYSTEM_PROMPT.replace("{ask_user_docs}", ask_user_docs)
+        return text.replace("{ask_user_docs}", ask_user_docs)
 
-    def _build_step_prompt(self, step) -> str:
+    def _build_step_prompt(self, step, model_family: str | None = None) -> str:
         """Build the prompt for generating step code."""
         # Format datastore tables info with column metadata
         if self.datastore:
@@ -140,7 +184,7 @@ class PromptsMixin:
         code_gen_types = {TaskType.PYTHON_ANALYSIS, TaskType.SQL_GENERATION}
         if step.task_type in code_gen_types:
             try:
-                learnings_text = self._get_codegen_learnings(step.goal, step.task_type)
+                learnings_text = self._get_codegen_learnings(step.goal, step.task_type, model_family=model_family)
             except Exception as e:
                 logger.debug(f"Failed to get codegen learnings: {e}")
 
@@ -169,7 +213,7 @@ class PromptsMixin:
         if glossary_context:
             domain_ctx += "\n" + glossary_context
 
-        system_prompt = self._get_step_system_prompt(step)
+        system_prompt = self._get_step_system_prompt(step, model_family=model_family)
 
         return STEP_PROMPT_TEMPLATE.format(
             system_prompt=system_prompt,
@@ -190,12 +234,13 @@ class PromptsMixin:
             outputs=", ".join(step.expected_outputs) if step.expected_outputs else "(none)",
         )
 
-    def _get_codegen_learnings(self, step_goal: str, task_type: TaskType = None) -> str:
+    def _get_codegen_learnings(self, step_goal: str, task_type: TaskType = None, model_family: str | None = None) -> str:
         """Get relevant codegen learnings showing what didn't work vs what did work.
 
         Args:
             step_goal: The goal of the current step for context matching
             task_type: The task type to filter learnings (SQL vs Python)
+            model_family: Provider name to filter learnings by error model
 
         Returns:
             Formatted learnings text for prompt injection
@@ -246,6 +291,7 @@ class PromptsMixin:
             category=LearningCategory.CODEGEN_ERROR,
             limit=10,
             include_promoted=False,
+            model_family=model_family,
         )
         if raw_learnings:
             # Filter by type and relevance

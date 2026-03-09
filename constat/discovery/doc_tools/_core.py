@@ -52,6 +52,67 @@ from ._schema_inference import _expand_file_paths, _infer_structured_schema
 logger = logging.getLogger(__name__)
 
 
+def _is_table_line(line: str) -> bool:
+    """Detect pipe-separated table rows (DOCX/XLSX/PPTX/HTML/MD formats)."""
+    return line.count("|") >= 2
+
+
+def _is_list_line(line: str) -> bool:
+    """Detect markdown list items."""
+    stripped = line.lstrip()
+    if stripped[:2] in ("- ", "* ", "+ "):
+        return True
+    # Ordered list: "1. ", "2. ", etc.
+    if stripped and stripped[0].isdigit():
+        dot_pos = stripped.find(". ")
+        if 0 < dot_pos <= 4:
+            return stripped[:dot_pos].isdigit()
+    return False
+
+
+def _merge_blocks(paragraphs: list[str], separator: str) -> list[str]:
+    """Merge consecutive table lines and list lines into atomic blocks."""
+    merged: list[str] = []
+    i = 0
+    while i < len(paragraphs):
+        para = paragraphs[i]
+        lines = para.split("\n") if "\n" in para else [para]
+
+        # Check if this paragraph is a table block
+        if any(_is_table_line(l) for l in lines if l.strip()):
+            block_parts = [para]
+            j = i + 1
+            while j < len(paragraphs):
+                next_lines = paragraphs[j].split("\n") if "\n" in paragraphs[j] else [paragraphs[j]]
+                if any(_is_table_line(l) for l in next_lines if l.strip()):
+                    block_parts.append(paragraphs[j])
+                    j += 1
+                else:
+                    break
+            merged.append(separator.join(block_parts))
+            i = j
+            continue
+
+        # Check if this paragraph is a list block
+        if any(_is_list_line(l) for l in lines if l.strip()):
+            block_parts = [para]
+            j = i + 1
+            while j < len(paragraphs):
+                next_lines = paragraphs[j].split("\n") if "\n" in paragraphs[j] else [paragraphs[j]]
+                if any(_is_list_line(l) for l in next_lines if l.strip()):
+                    block_parts.append(paragraphs[j])
+                    j += 1
+                else:
+                    break
+            merged.append(separator.join(block_parts))
+            i = j
+            continue
+
+        merged.append(para)
+        i += 1
+    return merged
+
+
 # noinspection PyUnresolvedReferences
 class _CoreMixin:
     """Init, document management, indexing, and chunking for DocumentDiscoveryTools."""
@@ -678,12 +739,15 @@ class _CoreMixin:
         if all_links:
             self._vector_store.link_chunk_entities(_deduplicate_chunk_links(all_links))
 
+    TABLE_CHUNK_LIMIT = CHUNK_SIZE * 4  # 6000 chars — allow oversized but not unbounded
+
     def _chunk_document(self, name: str, content: str) -> list[DocumentChunk]:
         """Split a document into chunks for embedding.
 
         Chunks are split only on paragraph/line boundaries - never mid-paragraph.
         Paragraphs are combined until hitting CHUNK_SIZE, then a new chunk starts.
         A chunk may exceed CHUNK_SIZE if a single paragraph is larger (we don't split it).
+        Table blocks and list blocks are merged into atomic units before chunking.
         """
         chunks = []
         heading_stack: list[tuple[int, str]] = []  # (level, text)
@@ -696,6 +760,9 @@ class _CoreMixin:
         else:
             paragraphs = content.split("\n")
             separator = "\n"
+
+        # Merge consecutive table/list paragraphs into atomic blocks
+        paragraphs = _merge_blocks(paragraphs, separator)
 
         chunk_index = 0
         current_chunk = ""
@@ -759,8 +826,41 @@ class _CoreMixin:
                         chunk_index=chunk_index,
                     ))
                     chunk_index += 1
-                # Start new chunk with this paragraph (even if it exceeds CHUNK_SIZE)
-                current_chunk = para
+                # If oversized table block exceeds TABLE_CHUNK_LIMIT, split at row
+                # boundaries with continuation markers for reassembly
+                if len(para) > self.TABLE_CHUNK_LIMIT:
+                    lines = para.split("\n")
+                    is_table = any(_is_table_line(l) for l in lines if l.strip())
+                    sub_chunk = ""
+                    first_sub = True
+                    for line in lines:
+                        candidate = (sub_chunk + "\n" + line).strip() if sub_chunk else line
+                        if len(candidate) <= self.CHUNK_SIZE and sub_chunk:
+                            sub_chunk = candidate
+                        elif sub_chunk:
+                            # Add table continuation markers
+                            if is_table:
+                                marker = "[TABLE:start]" if first_sub else "[TABLE:cont]"
+                                sub_chunk = f"{marker}\n{sub_chunk}\n[TABLE:cont]"
+                                first_sub = False
+                            chunks.append(DocumentChunk(
+                                document_name=name,
+                                content=sub_chunk,
+                                section=current_section,
+                                chunk_index=chunk_index,
+                            ))
+                            chunk_index += 1
+                            sub_chunk = line
+                        else:
+                            sub_chunk = line
+                    # Mark last sub-chunk with [TABLE:end]
+                    if is_table and sub_chunk:
+                        marker = "[TABLE:start]" if first_sub else "[TABLE:cont]"
+                        sub_chunk = f"{marker}\n{sub_chunk}\n[TABLE:end]"
+                    current_chunk = sub_chunk
+                else:
+                    # Start new chunk with this paragraph (even if it exceeds CHUNK_SIZE)
+                    current_chunk = para
 
         # Save final chunk
         if current_chunk:

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -56,7 +57,33 @@ class QuestionAnalysis:
     mode_reasoning: Optional[str] = None
 
 
+def _parse_prompt_sections(text: str) -> list[tuple[str, str, str | None]]:
+    """Parse section-tagged prompt into ordered (tag, content, model_family) list.
+
+    Supports ``<!-- @tag -->`` (all models) and ``<!-- @tag:family -->``
+    (model-family-specific override, e.g. ``<!-- @pitfalls:ollama -->``).
+    """
+    sections: list[tuple[str, str, str | None]] = []
+    current_tag = "core"
+    current_family: str | None = None
+    lines: list[str] = []
+    for line in text.split("\n"):
+        m = re.match(r'^<!--\s*@(\w+)(?::(\w+))?\s*-->$', line.strip())
+        if m:
+            if lines:
+                sections.append((current_tag, "\n".join(lines), current_family))
+            current_tag = m.group(1)
+            current_family = m.group(2)  # None when no :family
+            lines = []
+        else:
+            lines.append(line)
+    if lines:
+        sections.append((current_tag, "\n".join(lines), current_family))
+    return sections
+
+
 STEP_SYSTEM_PROMPT = load_prompt("step_system_prompt.md")
+STEP_PROMPT_SECTIONS = _parse_prompt_sections(STEP_SYSTEM_PROMPT)
 STEP_PROMPT_TEMPLATE = load_prompt("step_prompt_template.md")
 
 

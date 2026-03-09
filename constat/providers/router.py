@@ -157,6 +157,31 @@ class TaskRouter:
         # System-level routing (existing behavior)
         return self.routing_config.get_models_for_task(task_type, complexity)
 
+    def resolve_model_family(
+        self,
+        task_type: TaskType,
+        complexity: str = "medium",
+        domain: Optional[str] = None,
+        skip_models: int = 0,
+    ) -> str:
+        """Resolve the provider family for the first model that would handle this task.
+
+        Returns the provider name (e.g., 'anthropic', 'ollama', 'openai').
+        """
+        models = self._resolve_models_for_domain(task_type.value, complexity, domain)
+        if not models:
+            fallback_map = {"user_input": "python_analysis"}
+            fallback_type = fallback_map.get(task_type.value)
+            if fallback_type:
+                models = self._resolve_models_for_domain(fallback_type, complexity, domain)
+        if not models:
+            models = self.routing_config.get_models_for_task("general", complexity)
+        if not models:
+            models = [ModelSpec(model=self.llm_config.model)]
+        if skip_models > 0 and len(models) > 1:
+            models = models[min(skip_models, len(models) - 1):]
+        return (models[0].provider or self.llm_config.provider).lower()
+
     def get_routing_layers(
         self, active_domains: Optional[list[str]] = None
     ) -> dict[str, dict[str, list[ModelSpec]]]:

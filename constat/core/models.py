@@ -49,6 +49,7 @@ class TaskType(Enum):
     SUMMARIZATION = "summarization"
     ERROR_ANALYSIS = "error_analysis"  # Analyzing execution errors for retry
     SYNTHESIS = "synthesis"  # Generate final response from resolved facts
+    STRUCTURED_EXTRACTION = "structured_extraction"  # Extract tables/facts from docs
 
     # Glossary generation
     GLOSSARY_GENERATION = "glossary_generation"

@@ -79,4 +79,4 @@ class TestCanonicalSourceRelational:
 
 class TestCanonicalSourceColumns:
     def test_in_glossary_columns(self):
-        assert "canonical_source" in RelationalStore._GLOSSARY_COLUMNS
+        assert "canonical_source" in RelationalStore._ALL_GLOSSARY_COLUMNS

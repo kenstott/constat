@@ -10,6 +10,7 @@ interface StepCode {
   step_number: number
   goal: string
   code: string
+  prompt?: string
   model?: string
 }
 

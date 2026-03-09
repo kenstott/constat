@@ -1136,6 +1136,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           artifactStore.fetchArtifacts(session.session_id)
           artifactStore.fetchFacts(session.session_id)
           artifactStore.fetchInferenceCodes(session.session_id)
+          artifactStore.fetchStepCodes(session.session_id)
           artifactStore.fetchLearnings()
         }
         // Process queued messages after a short delay to let UI update

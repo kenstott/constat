@@ -883,6 +883,8 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 exec_globals["llm_extract"] = constat.llm.llm_extract
                 exec_globals["llm_summarize"] = constat.llm.llm_summarize
                 exec_globals["llm_score"] = constat.llm.llm_score
+                exec_globals["llm_extract_table"] = self._create_extract_table_helper()
+                exec_globals["llm_extract_facts"] = self._create_extract_facts_helper()
                 exec_globals["doc_read"] = self._create_doc_read_helper()
                 self._inference_used_llm_map = False  # Reset per inference
 

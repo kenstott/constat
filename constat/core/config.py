@@ -513,6 +513,9 @@ DEFAULT_TASK_ROUTING = {
     "relationship_extraction": TaskRoutingEntry(
         models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
+    "structured_extraction": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
     "general": TaskRoutingEntry(
         models=[ModelSpec(model="claude-sonnet-4-20250514")]
     ),

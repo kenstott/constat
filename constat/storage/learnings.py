@@ -264,6 +264,7 @@ class LearningStore:
         category: Optional[LearningCategory] = None,
         limit: Optional[int] = 50,
         include_promoted: bool = False,
+        model_family: str | None = None,
     ) -> list[dict]:
         """List raw learnings.
 
@@ -271,6 +272,9 @@ class LearningStore:
             category: Filter by category (None for all)
             limit: Maximum number to return
             include_promoted: Include learnings that have been promoted to rules
+            model_family: Filter to learnings where the error was produced by
+                this provider (matches context.error_provider). Learnings
+                without model info are always included.
 
         Returns:
             List of learning dicts (with 'id'), newest first
@@ -289,6 +293,14 @@ class LearningStore:
         # Filter promoted unless requested
         if not include_promoted:
             learnings = [l for l in learnings if not l.get("promoted_to")]
+
+        # Filter by model family (provider that produced the error)
+        if model_family:
+            learnings = [
+                l for l in learnings
+                if not l.get("context", {}).get("error_provider")
+                or l["context"]["error_provider"] == model_family
+            ]
 
         # Sort by created (newest first) and limit
         learnings = sorted(learnings, key=lambda l: l["created"], reverse=True)

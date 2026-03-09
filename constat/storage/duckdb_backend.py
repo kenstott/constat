@@ -435,6 +435,75 @@ class DuckDBVectorBackend(VectorBackend):
             return self._rerank(query_text, results, limit)
         return results[:limit]
 
+    def search_by_document(
+        self,
+        query_embedding: np.ndarray,
+        document_name: str,
+        limit: int = 5,
+        min_similarity: float = 0.3,
+        query_text: str | None = None,
+    ) -> list[tuple[str, float, DocumentChunk]]:
+        """Search for similar chunks within a specific document."""
+        from constat.discovery.models import ChunkType
+
+        query = query_embedding.flatten().tolist()
+        fetch_limit = limit * 3 if query_text else limit
+
+        result = self._conn.execute(
+            f"""
+            SELECT
+                chunk_id,
+                document_name,
+                source,
+                chunk_type,
+                section,
+                chunk_index,
+                content,
+                array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) as similarity
+            FROM embeddings
+            WHERE document_name = ?
+              AND array_cosine_similarity(embedding, ?::FLOAT[{self.EMBEDDING_DIM}]) >= ?
+            ORDER BY similarity DESC
+            LIMIT ?
+            """,
+            [query, document_name, query, min_similarity, fetch_limit],
+        ).fetchall()
+
+        vector_results = []
+        for row in result:
+            chunk_id, doc_name, src, chunk_type_str, section, chunk_idx, content, similarity = row
+            try:
+                chunk_type = ChunkType(chunk_type_str) if chunk_type_str else ChunkType.DOCUMENT
+            except ValueError:
+                chunk_type = ChunkType.DOCUMENT
+            chunk = DocumentChunk(
+                document_name=doc_name,
+                content=content,
+                section=section,
+                chunk_index=chunk_idx,
+                source=src or "document",
+                chunk_type=chunk_type,
+            )
+            vector_results.append((chunk_id, float(similarity), chunk))
+
+        if not query_text:
+            return vector_results
+
+        bm25_results = self._bm25_search(
+            query_text,
+            limit=fetch_limit,
+            source_filter="document_name = ?",
+            source_params=[document_name],
+        )
+        if not bm25_results:
+            results = vector_results[:limit]
+        else:
+            results = self._rrf_merge(vector_results, bm25_results)[:limit * 3]
+
+        if self._reranker_model and query_text:
+            return self._rerank(query_text, results, limit)
+        return results[:limit]
+
     # ------------------------------------------------------------------
     # Chunk retrieval
     # ------------------------------------------------------------------

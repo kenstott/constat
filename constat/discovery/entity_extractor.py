@@ -118,6 +118,7 @@ class EntityExtractor:
         self.session_id = session_id
         self.domain_id = domain_id
         self._stop_list = stop_list or set()
+        self._joined_to_canonical: dict[str, str] = {}  # "performancereview" → "performance review"
 
         # Build custom NLP pipeline with EntityRuler
         self._nlp = get_nlp()
@@ -169,14 +170,16 @@ class EntityExtractor:
 
                 # 4. Single-token patterns for camelCase/PascalCase joined forms
                 if ' ' in singular:
-                    # Singular joined (matches "performance review")
+                    # Singular joined (matches "performancereview")
                     singular_joined = singular.replace(' ', '').lower()
                     patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": singular_joined}]})
-                    # Plural joined if different (matches "performance reviews")
+                    self._joined_to_canonical[singular_joined] = singular
+                    # Plural joined if different (matches "performancereviews")
                     if normalized != singular:
                         plural_joined = normalized.replace(' ', '').lower()
                         if plural_joined != singular_joined:
                             patterns.append({"label": "SCHEMA", "pattern": [{"LOWER": plural_joined}]})
+                            self._joined_to_canonical[plural_joined] = singular
 
         # Add API patterns (case-insensitive token matching)
         for term in (api_terms or []):
@@ -350,6 +353,10 @@ class EntityExtractor:
         Returns:
             Entity with semantic_type and ner_type set appropriately
         """
+        # Map joined forms back to canonical (e.g., "Performancereview" → "performance review")
+        joined_key = name.lower().replace(' ', '')
+        if joined_key in self._joined_to_canonical:
+            name = self._joined_to_canonical[joined_key]
         normalized = normalize_entity_name(name).lower()
 
         if normalized in self._entity_cache:

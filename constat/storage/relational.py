@@ -410,65 +410,95 @@ class RelationalStore:
     # Glossary CRUD
     # ------------------------------------------------------------------
 
-    _GLOSSARY_COLUMNS = (
-        "id, name, display_name, definition, domain, parent_id, parent_verb, "
-        "aliases, semantic_type, cardinality, plural, "
-        "tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored, canonical_source"
-    )
+    # Canonical column order — queried columns are intersected with actual table at runtime
+    _ALL_GLOSSARY_COLUMNS = [
+        "id", "name", "display_name", "definition", "domain", "parent_id", "parent_verb",
+        "aliases", "semantic_type", "cardinality", "plural",
+        "tags", "owner", "status", "provenance", "session_id", "user_id",
+        "created_at", "updated_at", "ignored", "canonical_source",
+    ]
+    _glossary_columns_cache: str | None = None
+    _glossary_columns_list_cache: list[str] | None = None
 
-    @staticmethod
-    def _term_from_row(row) -> GlossaryTerm:
+    @property
+    def _GLOSSARY_COLUMNS(self) -> str:
+        if self._glossary_columns_cache is not None:
+            return self._glossary_columns_cache
+        try:
+            rows = self._conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'glossary_terms'"
+            ).fetchall()
+            actual = {r[0] for r in rows}
+            cols = [c for c in self._ALL_GLOSSARY_COLUMNS if c in actual]
+            self.__class__._glossary_columns_list_cache = cols
+            self.__class__._glossary_columns_cache = ", ".join(cols)
+            return self._glossary_columns_cache
+        except Exception:
+            self.__class__._glossary_columns_list_cache = list(self._ALL_GLOSSARY_COLUMNS)
+            self.__class__._glossary_columns_cache = ", ".join(self._ALL_GLOSSARY_COLUMNS)
+            return self._glossary_columns_cache
+
+    def _term_from_row(self, row) -> GlossaryTerm:
         import json
-        (term_id, name, display_name, definition, domain, parent_id,
-         parent_verb, aliases_json, semantic_type, cardinality, plural,
-         tags_json, owner, status, provenance, session_id, user_id,
-         created_at, updated_at, ignored, canonical_source) = row
+        # Build dict from positional tuple using the actual queried columns
+        # Ensure cache is populated
+        _ = self._GLOSSARY_COLUMNS
+        cols = self._glossary_columns_list_cache or self._ALL_GLOSSARY_COLUMNS
+        d = {}
+        for i, val in enumerate(row):
+            if i < len(cols):
+                d[cols[i]] = val
+        aliases_json = d.get("aliases")
+        tags_json = d.get("tags")
         aliases = json.loads(aliases_json) if aliases_json else []
         tags = json.loads(tags_json) if tags_json else {}
         return GlossaryTerm(
-            id=term_id,
-            name=name,
-            display_name=display_name,
-            definition=definition,
-            domain=domain,
-            parent_id=parent_id,
-            parent_verb=parent_verb or "HAS_KIND",
+            id=d.get("id", ""),
+            name=d.get("name", ""),
+            display_name=d.get("display_name", ""),
+            definition=d.get("definition", ""),
+            domain=d.get("domain"),
+            parent_id=d.get("parent_id"),
+            parent_verb=d.get("parent_verb") or "HAS_KIND",
             aliases=aliases,
-            semantic_type=semantic_type,
-            cardinality=cardinality or "many",
-            plural=plural,
+            semantic_type=d.get("semantic_type"),
+            cardinality=d.get("cardinality") or "many",
+            plural=d.get("plural"),
             tags=tags,
-            owner=owner,
-            status=status or "draft",
-            provenance=provenance or "llm",
-            session_id=session_id,
-            user_id=user_id or "default",
-            created_at=created_at,
-            updated_at=updated_at,
-            ignored=bool(ignored),
-            canonical_source=canonical_source,
+            owner=d.get("owner"),
+            status=d.get("status") or "draft",
+            provenance=d.get("provenance") or "llm",
+            session_id=d.get("session_id", ""),
+            user_id=d.get("user_id") or "default",
+            created_at=d.get("created_at"),
+            updated_at=d.get("updated_at"),
+            ignored=bool(d.get("ignored", False)),
+            canonical_source=d.get("canonical_source"),
         )
 
     def add_glossary_term(self, term: GlossaryTerm) -> None:
         import json
+        # Build column/value pairs, only for columns that exist in the table
+        _ = self._GLOSSARY_COLUMNS  # ensure cache populated
+        actual_cols = set((self._glossary_columns_list_cache or self._ALL_GLOSSARY_COLUMNS))
+        all_pairs = [
+            ("id", term.id), ("name", term.name), ("display_name", term.display_name),
+            ("definition", term.definition), ("domain", term.domain),
+            ("parent_id", term.parent_id), ("parent_verb", term.parent_verb),
+            ("aliases", json.dumps(term.aliases)), ("semantic_type", term.semantic_type),
+            ("cardinality", term.cardinality), ("plural", term.plural),
+            ("tags", json.dumps(term.tags)), ("owner", term.owner),
+            ("status", term.status), ("provenance", term.provenance),
+            ("session_id", term.session_id), ("user_id", term.user_id or "default"),
+            ("created_at", term.created_at), ("updated_at", term.updated_at),
+            ("ignored", term.ignored), ("canonical_source", term.canonical_source),
+        ]
+        cols = [c for c, _ in all_pairs if c in actual_cols]
+        vals = [v for c, v in all_pairs if c in actual_cols]
+        placeholders = ", ".join("?" for _ in cols)
         self._conn.execute(
-            """
-            INSERT OR REPLACE INTO glossary_terms
-            (id, name, display_name, definition, domain, parent_id, parent_verb,
-             aliases, semantic_type, cardinality, plural,
-             tags, owner, status, provenance, session_id, user_id, created_at, updated_at, ignored, canonical_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                term.id, term.name, term.display_name, term.definition,
-                term.domain, term.parent_id, term.parent_verb,
-                json.dumps(term.aliases), term.semantic_type,
-                term.cardinality, term.plural,
-                json.dumps(term.tags), term.owner,
-                term.status, term.provenance, term.session_id,
-                term.user_id or "default",
-                term.created_at, term.updated_at, term.ignored, term.canonical_source,
-            ],
+            f"INSERT OR REPLACE INTO glossary_terms ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
         )
         self._clusters_dirty = True
 

@@ -175,7 +175,7 @@ def _get_backend():
 # Internal dispatch
 # ---------------------------------------------------------------------------
 
-def _execute(system: str, user_message: str) -> tuple[str, str, str]:
+def _execute(system: str, user_message: str, *, task_type=None) -> tuple[str, str, str]:
     """Call the backend and return (content, model_used, provider_used)."""
     backend = _get_backend()
 
@@ -189,7 +189,7 @@ def _execute(system: str, user_message: str) -> tuple[str, str, str]:
         from constat.core.models import TaskType
         # noinspection PyUnresolvedReferences
         result = backend.execute(
-            task_type=TaskType.SYNTHESIS,
+            task_type=task_type or TaskType.SYNTHESIS,
             system=system,
             user_message=user_message,
             max_tokens=backend.max_output_tokens,
@@ -688,3 +688,142 @@ YOUR JSON RESPONSE:"""
     ))
 
     return results
+
+
+def llm_extract_table(
+    text: str,
+    description: str,
+    columns: list[str] | None = None,
+) -> "pd.DataFrame":
+    """Extract a table from document text into a DataFrame.
+
+    Reads structured tabular data (markdown tables, lists of key-value pairs,
+    embedded grids) from document text and returns it as a DataFrame.
+
+    Args:
+        text: Document text (typically from doc_read()).
+        description: What table to find (e.g., "employee rating scale",
+                     "raise percentage guidelines").
+        columns: Optional column names to enforce. If None, LLM infers them.
+
+    Returns:
+        pandas DataFrame with extracted rows and columns.
+    """
+    import pandas as pd
+
+    col_instruction = ""
+    if columns:
+        col_str = ", ".join(f'"{c}"' for c in columns)
+        col_instruction = f"\nUse exactly these column names as keys: {col_str}."
+
+    prompt = f"""Locate the table described as: "{description}" in the following text.
+Extract ALL rows from that table.
+
+{text}
+
+Return ONLY valid JSON: an array of objects, one per row.{col_instruction}
+If no matching table is found, return an empty array [].
+
+YOUR JSON RESPONSE:"""
+
+    from constat.core.models import TaskType
+    content, model_used, provider_used = _execute(
+        system="You extract tabular data from documents. Output ONLY a valid JSON array of row objects.",
+        user_message=prompt,
+        task_type=TaskType.STRUCTURED_EXTRACTION,
+    )
+
+    content = _parse_json(content)
+
+    if not content.startswith("["):
+        logger.warning(f"[LLM_EXTRACT_TABLE] Could not parse response: {content[:200]}")
+        rows = []
+    else:
+        rows = json.loads(content)
+
+    logger.info(
+        f"[LLM_EXTRACT_TABLE] Extracted {len(rows)} rows for '{description}'"
+    )
+
+    _notify(LLMCallEvent(
+        primitive="llm_extract_table",
+        input_count=1,
+        null_count=0 if rows else 1,
+        model_used=model_used,
+        provider_used=provider_used,
+    ))
+
+    return pd.DataFrame(rows, columns=columns) if columns else pd.DataFrame(rows)
+
+
+def llm_extract_facts(
+    text: str,
+    context: str = "",
+) -> list[dict]:
+    """Extract all facts from text with typed metadata.
+
+    Scans document text and identifies every discrete factual assertion,
+    data point, rule, or structured element. Each fact is tagged with
+    its data type and relevant metadata.
+
+    Args:
+        text: Text to scan (from doc_read() or chunk content).
+        context: Optional domain context (e.g., "HR compensation policies").
+
+    Returns:
+        List of fact dicts. Each has:
+        - name: short label for the fact
+        - value: the extracted value (string, number, or structured)
+        - dtype: "scalar" | "range" | "table" | "list" | "rule" | "text"
+        - metadata: type-specific metadata dict
+    """
+    ctx = f"\nDomain context: {context}" if context else ""
+
+    prompt = f"""Extract ALL discrete facts, data points, rules, thresholds, tables, and lists from the following text.{ctx}
+
+{text}
+
+For each fact, return a JSON object with:
+- "name": short label
+- "value": the extracted value (string, number, array of objects for tables, array for lists)
+- "dtype": one of "scalar", "range", "table", "list", "rule", "text"
+- "metadata": type-specific dict:
+  - scalar: {{"unit": "...", "data_type": "..."}}
+  - range: {{"min": ..., "max": ..., "unit": "..."}}
+  - table: {{"columns": [...], "row_count": N}}
+  - list: {{"items": [...], "count": N}}
+  - rule: {{"condition": "...", "action": "..."}}
+  - text: {{}}
+
+Return ONLY valid JSON: an array of fact objects.
+
+YOUR JSON RESPONSE:"""
+
+    from constat.core.models import TaskType
+    content, model_used, provider_used = _execute(
+        system="You extract structured facts from documents. Output ONLY a valid JSON array of fact objects.",
+        user_message=prompt,
+        task_type=TaskType.STRUCTURED_EXTRACTION,
+    )
+
+    content = _parse_json(content)
+
+    if not content.startswith("["):
+        logger.warning(f"[LLM_EXTRACT_FACTS] Could not parse response: {content[:200]}")
+        facts = []
+    else:
+        facts = json.loads(content)
+
+    logger.info(
+        f"[LLM_EXTRACT_FACTS] Extracted {len(facts)} facts"
+    )
+
+    _notify(LLMCallEvent(
+        primitive="llm_extract_facts",
+        input_count=1,
+        null_count=0 if facts else 1,
+        model_used=model_used,
+        provider_used=provider_used,
+    ))
+
+    return facts

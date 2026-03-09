@@ -32,6 +32,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CpuChipIcon,
+  QuestionMarkCircleIcon,
 } from '@heroicons/react/24/outline'
 import { useSessionStore } from '@/store/sessionStore'
 import { useArtifactStore } from '@/store/artifactStore'
@@ -192,10 +193,11 @@ function StepCodeList({ stepCodes, supersededStepNumbers }: { stepCodes: Array<{
               </button>
               {step.prompt && (
                 <button
-                  onClick={() => togglePrompt(step.step_number)}
-                  className="text-[10px] text-gray-400 hover:text-primary-500 ml-auto px-1"
+                  onClick={(e) => { e.stopPropagation(); togglePrompt(step.step_number) }}
+                  className="ml-auto p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  title="View generation prompt"
                 >
-                  {showPrompt.has(step.step_number) ? 'Hide Prompt' : 'Prompt'}
+                  <QuestionMarkCircleIcon className={`w-4 h-4 ${showPrompt.has(step.step_number) ? 'text-primary-500' : 'text-gray-400 hover:text-primary-500'}`} />
                 </button>
               )}
             </div>

@@ -6,7 +6,7 @@ Previous code:
 ```python
 {previous_code}
 ```
-
+{data_sources}
 Fix the error and try again. Return ONLY the corrected Python code wrapped in ```python ... ``` markers.
 
 CRITICAL RULES FOR RETRIES:
@@ -17,3 +17,5 @@ CRITICAL RULES FOR RETRIES:
 - NEVER use `fillna()` with invented business values (e.g. `fillna(3.0)` for ratings).
 - If a column doesn't exist, query the actual schema first (`SELECT * FROM table LIMIT 1`) then use the correct column names.
 - If `doc_read()` or `llm_extract()` failed, fix the call — don't replace it with hardcoded data.
+- If a table is not found, use the `find_relevant_tables` or `find_entity` tools to locate it — do NOT guess table names or locations.
+- `store` only contains intermediate tables saved by previous steps. Source data lives in database connections (`db_<name>`).

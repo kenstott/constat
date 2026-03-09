@@ -9,6 +9,7 @@ IMPORTANT: If an API can provide the data needed for the question, the question 
 For example, if the question asks about countries and a countries API is available, that's sufficient.
 If a user fact provides needed information (like user_email for sending results), USE IT - do not ask again.
 If session tables exist and the question references a dataset, match it to the most relevant session table - do NOT ask which dataset.
+If the user references a specific document by name AND that document appears in the Reference Documents list, the question is CLEAR — the document is accessible via doc_read(). NEVER ask the user to "confirm access" to a listed document.
 
 ONLY ask about SCOPE and APPROACH - things that affect how to structure the analysis:
 1. Geographic scope (country, region, state, etc.) - unless an API provides this

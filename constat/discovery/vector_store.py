@@ -400,26 +400,34 @@ class DuckDBVectorStore(VectorStoreBackend):
             )
         """)
 
-        try:
-            self._conn.execute(
-                "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT 'default'"
-            )
-        except Exception:
-            pass
+        # Schema evolution — add columns missing from older databases
+        _alter_stmts = [
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT 'default'",
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS canonical_source VARCHAR",
+            "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS parent_verb VARCHAR DEFAULT 'HAS_KIND'",
+        ]
+        schema_changed = False
+        for stmt in _alter_stmts:
+            try:
+                self._conn.execute(stmt)
+                schema_changed = True
+            except Exception:
+                pass
 
-        try:
-            self._conn.execute(
-                "ALTER TABLE glossary_terms ADD COLUMN IF NOT EXISTS ignored BOOLEAN DEFAULT FALSE"
-            )
-        except Exception:
-            pass
+        # Drop legacy columns
+        for col in ("list_of",):
+            try:
+                self._conn.execute(f"ALTER TABLE glossary_terms DROP COLUMN IF EXISTS {col}")
+                schema_changed = True
+            except Exception:
+                pass
 
-        try:
-            self._conn.execute(
-                "ALTER TABLE glossary_terms ADD COLUMN canonical_source VARCHAR"
-            )
-        except Exception:
-            pass
+        # Invalidate column cache so RelationalStore re-probes
+        if schema_changed:
+            from constat.storage.relational import RelationalStore
+            RelationalStore._glossary_columns_cache = None
+            RelationalStore._glossary_columns_list_cache = None
 
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS entity_relationships (
@@ -601,6 +609,9 @@ class DuckDBVectorStore(VectorStoreBackend):
 
     def search_by_source(self, *a, **kw):
         return self._vector.search_by_source(*a, **kw)
+
+    def search_by_document(self, *a, **kw):
+        return self._vector.search_by_document(*a, **kw)
 
     def delete_by_document(self, *a, **kw):
         return self._vector.delete_by_document(*a, **kw)
@@ -912,11 +923,11 @@ class DuckDBVectorStore(VectorStoreBackend):
         return RelationalStore.entity_visibility_filter(*a, **kw)
 
     def _term_from_row(self, row):
-        return RelationalStore._term_from_row(row)
+        return self._relational._term_from_row(row)
 
     @property
     def _GLOSSARY_COLUMNS(self):
-        return RelationalStore._GLOSSARY_COLUMNS
+        return self._relational._GLOSSARY_COLUMNS
 
     # ------------------------------------------------------------------
     # Cross-layer operations — delegate to Store
