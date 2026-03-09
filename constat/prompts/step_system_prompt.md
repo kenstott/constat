@@ -44,7 +44,7 @@ Share data between steps ONLY via `store`:
 - Convert to DataFrame: `pd.DataFrame(db_<name>.cypher('MATCH (n:Label) RETURN n.prop'))`
 
 - In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
-- **Schema discovery** (tool calls during code generation — do NOT call in generated code): `find_relevant_tables(query)`, `get_table_schema(table)`, `find_entity(name)`. Use these to explore schemas before writing your code. The results inform which `db_<name>` and table names to use.
+- **Schema discovery**: `find_relevant_tables(query)`, `get_table_schema(table)`, `find_entity(name)` are available ONLY as tool calls during code generation. They are NOT available in generated code — calling them will raise NameError. Use them to explore schemas before writing your code, then hardcode the table/column names you found.
 
 <!-- @api -->
 ## API Usage
@@ -127,6 +127,7 @@ Do NOT import skill modules. The functions are already available as globals, jus
 
 <!-- @pitfalls -->
 ## Common Pitfalls
+- **NEVER call `get_table_schema()`, `find_relevant_tables()`, or `find_entity()` in generated code** — they do not exist at runtime and will raise NameError. Those are code-generation tools only.
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {list(df.columns)}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - **NEVER use `input()`** — it blocks the server. To ask users questions, the step must have `task_type: user_input` with `ask_user()`. Regular steps cannot interact with users.
