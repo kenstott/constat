@@ -7,14 +7,20 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""List-returning LLM primitive wrappers.
+"""Forgiving LLM primitive wrappers.
 
-These wrappers accept full columns (with duplicates), deduplicate internally,
-call the raw primitives on uniques, and return input-aligned lists.
-This eliminates the .map() pattern that causes failures with smaller models.
+Accept anything (str, list, Series, ndarray), deduplicate internally,
+return the simplest possible type based on how they were called:
+  - Single value in  → scalar out  (str / float / None)
+  - Multiple values  → list out    (list[str] / list[float|None])
+
+No reason/score kwargs — reasoning is captured in the event stream.
+Generated code gets exactly one way to call each function.
 """
 
 from __future__ import annotations
+
+import logging
 
 from constat.llm import (
     llm_map as _raw_llm_map,
@@ -22,77 +28,59 @@ from constat.llm import (
     llm_score as _raw_llm_score,
 )
 
+logger = logging.getLogger(__name__)
 
-def llm_map(
-    values: list,
-    allowed: list[str],
-    source_desc: str = "values",
-    target_desc: str = "",
-    *,
-    reason: bool = False,
-    score: bool = False,
-) -> list[str] | list[dict]:
-    """Map values to an allowed set, returning an input-aligned list.
 
-    Deduplicates internally — pass the full column (duplicates OK).
+def _to_str_list(values) -> tuple[list[str], bool]:
+    """Normalize any input to list[str]. Returns (str_list, was_scalar)."""
+    if isinstance(values, str):
+        return [values], True
+    # pandas Series / numpy ndarray
+    if hasattr(values, 'tolist'):
+        items = values.tolist()
+        return [str(v) for v in items], len(items) == 1
+    if isinstance(values, (list, tuple)):
+        return [str(v) for v in values], len(values) == 1
+    # Single non-string scalar
+    return [str(values)], True
 
-    Returns:
-        list[str] by default — direct column assignment.
-        list[dict] when reason or score is True, with keys "value", "reason", "score".
-    """
-    if not values:
+
+def llm_map(values, allowed, source_desc="values", target_desc="", **_kw):
+    """Map values to an allowed set. Always returns str (scalar) or list[str]."""
+    str_values, scalar = _to_str_list(values)
+    if not str_values:
         return []
-    str_values = [str(v) for v in values]
     unique = list(dict.fromkeys(str_values))
-    raw = _raw_llm_map(unique, allowed, source_desc, target_desc, reason=reason, score=score)
-    return [raw[v] for v in str_values]
+    raw = _raw_llm_map(unique, allowed, source_desc, target_desc)
+    result = [raw.get(v, raw.get(v)) for v in str_values]
+    if scalar:
+        return result[0]
+    return result
 
 
-def llm_classify(
-    values: list,
-    categories: list[str],
-    context: str = "",
-    *,
-    reason: bool = False,
-    score: bool = False,
-) -> list[str | None] | list[dict]:
-    """Classify values into categories, returning an input-aligned list.
-
-    Deduplicates internally — pass the full column (duplicates OK).
-
-    Returns:
-        list[str | None] by default — None for unclassifiable.
-        list[dict] when reason or score is True.
-    """
-    if not values:
+def llm_classify(values, categories, context="", **_kw):
+    """Classify values into categories. Always returns str|None (scalar) or list[str|None]."""
+    str_values, scalar = _to_str_list(values)
+    if not str_values:
         return []
-    str_values = [str(v) for v in values]
     unique = list(dict.fromkeys(str_values))
-    raw = _raw_llm_classify(unique, categories, context, reason=reason, score=score)
-    return [raw.get(str(v)) for v in str_values]
+    raw = _raw_llm_classify(unique, categories, context)
+    result = [raw.get(v) for v in str_values]
+    if scalar:
+        return result[0]
+    return result
 
 
-def llm_score(
-    texts: list[str],
-    min_val: float = 0.0,
-    max_val: float = 1.0,
-    instruction: str = "Rate each text",
-    *,
-    reason: bool = False,
-) -> list[float | None] | list[dict]:
-    """Score texts on a numeric scale, returning an input-aligned list.
-
-    Deduplicates internally — pass the full column (duplicates OK).
-
-    Returns:
-        list[float | None] by default — scores only, direct column assignment.
-        list[dict] when reason=True, with keys "score", "reasoning".
-    """
-    if not texts:
+def llm_score(texts, min_val=0.0, max_val=1.0, instruction="Rate each text", **_kw):
+    """Score texts on a numeric scale. Always returns float|None (scalar) or list[float|None]."""
+    str_values, scalar = _to_str_list(texts)
+    if not str_values:
         return []
-    unique = list(dict.fromkeys(texts))
+    unique = list(dict.fromkeys(str_values))
     raw = _raw_llm_score(unique, min_val, max_val, instruction)
     score_map = dict(zip(unique, raw))
-    if reason:
-        return [{"score": score_map[v][0], "reasoning": score_map[v][1]} for v in texts]
-    return [score_map[v][0] for v in texts]
+    # raw returns list[tuple[float|None, str]] — extract score only
+    result = [score_map[v][0] for v in str_values]
+    if scalar:
+        return result[0]
+    return result

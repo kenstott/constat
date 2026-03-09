@@ -36,6 +36,7 @@ class TaskType(Enum):
 
     # Classification and routing
     INTENT_CLASSIFICATION = "intent_classification"  # User intent
+    CLARIFICATION = "clarification"  # Ambiguity detection — needs strong judgment
     MODE_SELECTION = "mode_selection"  # Exploratory vs auditable
 
     # Fact resolution (auditable mode)

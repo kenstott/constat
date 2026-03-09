@@ -558,7 +558,7 @@ CRITICAL INTENT RULES (apply in order):
 
         try:
             result = self.router.execute(
-                task_type=TaskType.INTENT_CLASSIFICATION,
+                task_type=TaskType.CLARIFICATION,
                 system="You detect ambiguity in data analysis requests. Be practical - only flag truly ambiguous requests.",
                 user_message=prompt,
                 max_tokens=self.router.max_output_tokens,

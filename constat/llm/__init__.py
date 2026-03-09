@@ -690,6 +690,154 @@ YOUR JSON RESPONSE:"""
     return results
 
 
+_UNIT_MULT = {
+    'k': 1e3, 'K': 1e3,
+    'm': 1e6, 'M': 1e6,
+    'b': 1e9, 'B': 1e9,
+    't': 1e12, 'T': 1e12,
+}
+_CURRENCY_SYMBOLS = frozenset('$£€¥₹₽₩₪฿₫₴₸₺₼₾')
+_CURRENCY_RE = re.compile('[' + re.escape(''.join(_CURRENCY_SYMBOLS)) + '%,]')
+_BOOL_TRUE = frozenset({'true', 'yes', 'y'})
+_BOOL_FALSE = frozenset({'false', 'no', 'n'})
+_NULL_VALS = frozenset({'null', 'none', 'n/a', 'na', 'nan', '-', '--', ''})
+# Column names that should never be coerced to numeric
+_STRING_COL_RE = re.compile(
+    r'(?i)(^id$|_id$|id_|name|desc|note|comment|label|title|text|'
+    r'address|email|phone|url|path|code|sku|status|type|category)'
+)
+
+
+def _parse_cell_value(val):
+    """Parse a cell value into its simplest type.
+
+    Returns:
+        bool    — "Yes"/"No", "True"/"False", "Y"/"N"
+        int     — whole numbers: "5", "1,000"
+        float   — decimals/pct/currency: "8.5%", "$1,200.50", "10k"
+        tuple   — ranges: "5-8%", "8 to 12", "up to 15%"
+        None    — non-numeric text, dates, IDs, codes
+        passthrough — already bool/int/float
+    """
+    # --- Passthrough ---
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and val != val:  # NaN
+            return None
+        return val
+
+    s = str(val).strip()
+    if not s or s.lower() in _NULL_VALS:
+        return None
+
+    s_lower = s.lower()
+
+    # --- Bool detection ---
+    if s_lower in _BOOL_TRUE:
+        return True
+    if s_lower in _BOOL_FALSE:
+        return False
+
+    # --- Bail-out: dates (ISO, US, EU) ---
+    if re.match(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}$', s):
+        return None
+    if re.match(r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$', s):
+        return None
+
+    # --- Bail-out: times ---
+    if re.match(r'\d{1,2}:\d{2}(:\d{2})?$', s):
+        return None
+
+    # --- Bail-out: significant alpha content (IDs, codes, prose) ---
+    # Remove known range phrases from the original string first (word boundaries intact)
+    residual = re.sub(r'(?i)\b(up\s+to|between|and|or|to)\b', '', s)
+    # Then strip digits, currency symbols, whitespace, punctuation — see what letters remain
+    residual = _CURRENCY_RE.sub('', residual)
+    residual = re.sub(r'[\d.\s\-–—/;|()+:]+', '', residual)
+    # Allow unit suffix characters (k, M, B, T)
+    residual = residual.strip()
+    if residual and not all(c in _UNIT_MULT for c in residual):
+        return None
+
+    # --- Detect percentage → convert to decimal at the end ---
+    is_pct = '%' in s
+
+    # --- Accounting negatives: (5%) → -5 ---
+    is_accounting_neg = s.startswith('(') and s.endswith(')')
+    if is_accounting_neg:
+        s = s[1:-1].strip()
+
+    # Strip currency symbols, %, commas
+    cleaned = _CURRENCY_RE.sub('', s).strip()
+
+    def _apply_unit(num_str: str):
+        num_str = num_str.strip()
+        if not num_str:
+            return None
+        if num_str[-1] in _UNIT_MULT:
+            try:
+                return float(num_str[:-1]) * _UNIT_MULT[num_str[-1]]
+            except ValueError:
+                return None
+        try:
+            return float(num_str)
+        except ValueError:
+            return None
+
+    def _pct(v):
+        """If original had %, convert to decimal."""
+        if not is_pct:
+            return v
+        if isinstance(v, tuple):
+            return tuple(n / 100 for n in v)
+        return v / 100
+
+    # --- "up to X" → (0, X) ---
+    up_to = re.match(r'up\s+to\s+', s, re.IGNORECASE)
+    if up_to:
+        rest = _CURRENCY_RE.sub('', s[up_to.end():]).strip()
+        v = _apply_unit(rest)
+        if v is not None:
+            return _pct((0.0, v))
+
+    # --- "between X and Y" → (X, Y) ---
+    between = re.match(r'between\s+', s, re.IGNORECASE)
+    if between:
+        rest = _CURRENCY_RE.sub('', s[between.end():]).strip()
+        parts = re.split(r'\s+and\s+', rest, flags=re.IGNORECASE)
+        if len(parts) == 2:
+            a, b = _apply_unit(parts[0].strip()), _apply_unit(parts[1].strip())
+            if a is not None and b is not None:
+                return _pct((a, b))
+
+    # --- Range detection ---
+    range_parts = re.split(
+        r'\s*[-–—/]\s*|\s+to\s+|\s+and\s+',
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if len(range_parts) > 1:
+        numbers = [_apply_unit(p) for p in range_parts if p.strip()]
+        numbers = [n for n in numbers if n is not None]
+        if len(numbers) >= 2:
+            if is_accounting_neg:
+                numbers = [-n for n in numbers]
+            return _pct(tuple(numbers))
+
+    # --- Single value ---
+    v = _apply_unit(cleaned)
+    if v is not None:
+        if is_accounting_neg:
+            v = -v
+        v = _pct(v)
+        if not is_pct and v == int(v) and not ('.' in cleaned or cleaned[-1] in _UNIT_MULT):
+            return int(v)
+        return v
+
+    return None
+
+
 def llm_extract_table(
     text: str,
     description: str,
@@ -753,7 +901,192 @@ YOUR JSON RESPONSE:"""
         provider_used=provider_used,
     ))
 
-    return pd.DataFrame(rows, columns=columns) if columns else pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+
+    # --- Phase 1: Coerce ALL columns first (before enforcement) ---
+    _pct_cols = set()  # columns where % values were converted to decimal rates
+    for col in list(df.columns):
+        if _STRING_COL_RE.search(col):
+            continue
+        if df[col].dtype.kind not in ('O', 'U'):
+            continue
+
+        non_null = df[col].notna().sum()
+        if non_null == 0:
+            continue
+
+        # Detect if column has percentage values
+        pct_count = df[col].apply(
+            lambda v: '%' in str(v) if pd.notna(v) else False
+        ).sum()
+        if pct_count > non_null * 0.3:
+            _pct_cols.add(col)
+
+        parsed = df[col].apply(
+            lambda v: _parse_cell_value(v) if pd.notna(v) else None
+        )
+
+        # Bool column
+        bool_count = parsed.apply(lambda v: isinstance(v, bool)).sum()
+        if bool_count > non_null * 0.5:
+            df[col] = parsed.apply(
+                lambda v: v if isinstance(v, bool) else None
+            ).astype('boolean')
+            continue
+
+        # Date column
+        date_like = df[col].apply(
+            lambda v: bool(re.match(
+                r'\d{4}[-/]\d{1,2}[-/]\d{1,2}$|'
+                r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$',
+                str(v).strip(),
+            )) if pd.notna(v) else False
+        ).sum()
+        if date_like > non_null * 0.5:
+            converted = pd.to_datetime(df[col], errors='coerce')
+            if converted.notna().sum() > non_null * 0.5:
+                df[col] = converted
+                continue
+
+        # Numeric / range column
+        numeric_count = parsed.apply(
+            lambda v: isinstance(v, (int, float, tuple)) and not isinstance(v, bool)
+        ).sum()
+        if numeric_count > non_null * 0.5:
+            has_ranges = parsed.apply(lambda v: isinstance(v, tuple)).any()
+            if has_ranges:
+                df[col] = parsed
+            else:
+                df[col] = parsed.apply(
+                    lambda v: float(v) if isinstance(v, (int, float))
+                    and not isinstance(v, bool) else None
+                ).astype(float)
+
+    # --- Phase 1b: Rename pct → rate for percent-converted columns ---
+    _PCT_RE = re.compile(r'(?i)(percentage|percent|pct)')
+    renames = {}
+    for col in _pct_cols:
+        if col in df.columns and _PCT_RE.search(col):
+            new_name = _PCT_RE.sub('rate', col)
+            if new_name != col:
+                renames[col] = new_name
+    if renames:
+        df = df.rename(columns=renames)
+        logger.info(f"[LLM_EXTRACT_TABLE] Renamed pct→rate: {renames}")
+        # Update _pct_cols to track new names for tuple expansion
+        _pct_cols = {renames.get(c, c) for c in _pct_cols}
+
+    # --- Phase 2: Auto-expand tuple columns by width ---
+    # 2-element → _min, _max
+    # 3-element → _min, _mid, _max
+    # 4-element → _q1, _q2, _q3, _q4
+    # Ragged   → pad shorter tuples with None to max width
+    _SUFFIXES = {
+        2: ('_min', '_max'),
+        3: ('_min', '_mid', '_max'),
+        4: ('_q1', '_q2', '_q3', '_q4'),
+    }
+    for col in list(df.columns):
+        if not df[col].apply(lambda v: isinstance(v, tuple)).any():
+            continue
+        tuple_lens = df[col].apply(
+            lambda v: len(v) if isinstance(v, tuple) else 0
+        )
+        max_width = int(tuple_lens.max())
+        if max_width < 2 or max_width > 4:
+            continue  # don't expand single-element or very wide tuples
+
+        suffixes = _SUFFIXES.get(max_width, tuple(f'_{i+1}' for i in range(max_width)))
+
+        def _scalar_to_float(v):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return float(v)
+            return None
+
+        for i, suffix in enumerate(suffixes):
+            df[f'{col}{suffix}'] = df[col].apply(
+                lambda v, idx=i: (
+                    v[idx] if isinstance(v, tuple) and idx < len(v)
+                    else _scalar_to_float(v) if not isinstance(v, tuple)
+                    else None  # tuple shorter than max_width
+                )
+            )
+        df = df.drop(columns=[col])
+        expanded = ', '.join(f"'{col}{s}'" for s in suffixes)
+        logger.info(
+            f"[LLM_EXTRACT_TABLE] Expanded range column '{col}' → {expanded}"
+        )
+
+    # --- Phase 3: Enforce requested columns (with fuzzy matching) ---
+    if columns:
+        # Build mapping: requested col → best available col
+        available = set(df.columns)
+        col_map = {}
+        for req_col in columns:
+            if req_col in available:
+                col_map[req_col] = req_col
+                continue
+            # Try suffix match: "min_raise" matches "typical_raise_min"
+            req_lower = req_col.lower()
+            req_parts = set(req_lower.replace('_', ' ').split())
+            _POSITION_KEYWORDS = {'min', 'max', 'mid', 'q1', 'q2', 'q3', 'q4'}
+            for avail in available:
+                avail_lower = avail.lower()
+                avail_parts = set(avail_lower.replace('_', ' ').split())
+                # Exact word-set match: "min_raise" ↔ "raise_min"
+                if req_parts == avail_parts:
+                    col_map[req_col] = avail
+                    break
+                # Positional: "min_raise" matches "typical_raise_min"
+                # if they share a position keyword and a content word
+                pos_in_req = req_parts & _POSITION_KEYWORDS
+                pos_in_avail = avail_parts & _POSITION_KEYWORDS
+                if pos_in_req and pos_in_req == pos_in_avail:
+                    content_req = req_parts - _POSITION_KEYWORDS
+                    content_avail = avail_parts - _POSITION_KEYWORDS
+                    if content_req & content_avail:
+                        col_map[req_col] = avail
+                        break
+
+        # LLM fallback for unmatched columns — reuse llm_classify
+        unmatched_req = [c for c in columns if c not in col_map]
+        unmatched_avail = list(available - set(col_map.values()))
+        if unmatched_req and unmatched_avail:
+            try:
+                matches = llm_classify(
+                    unmatched_req, unmatched_avail,
+                    context="Match requested column names to available column names",
+                )
+                for req, avail in matches.items():
+                    if avail and avail in unmatched_avail:
+                        col_map[req] = avail
+                        logger.info(
+                            f"[LLM_EXTRACT_TABLE] LLM matched '{req}' → '{avail}'"
+                        )
+            except Exception as e:
+                logger.debug(f"[LLM_EXTRACT_TABLE] LLM column matching failed: {e}")
+
+        # Apply mapping
+        result_df = pd.DataFrame()
+        for req_col in columns:
+            if req_col in col_map:
+                result_df[req_col] = df[col_map[req_col]]
+            else:
+                result_df[req_col] = None
+
+        mapped = {r: c for r, c in col_map.items() if r != c}
+        if mapped:
+            logger.info(f"[LLM_EXTRACT_TABLE] Column mapping: {mapped}")
+
+        extra = available - set(col_map.values())
+        if extra:
+            logger.warning(
+                f"[LLM_EXTRACT_TABLE] Dropping unmatched columns: {extra}"
+            )
+
+        df = result_df
+
+    return df
 
 
 def llm_extract_facts(

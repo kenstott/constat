@@ -256,36 +256,14 @@ export function MessageBubble({
         <Icon className={`w-4 h-4 ${styles.iconColor}`} />
       </div>
 
-      {/* Content */}
+      {/* Content + Action margin */}
       <div className={`flex-1 max-w-[80%] ${isUser ? 'text-right' : ''}`}>
-        <div
-          className={`relative inline-block rounded-lg px-4 py-3 ${styles.bg} ${
-            isUser ? 'rounded-tr-none' : 'rounded-tl-none'
-          } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''}`}
-        >
-          {/* Copy + Flag buttons for non-step messages - appears on hover, tucked into corner */}
-          {!isStep && (
-            <div className="absolute top-[-2px] right-[-2px] flex items-center gap-0.5">
-              {!isUser && queryText && (
-                <FlagButton queryText={queryText} answerSummary={content.slice(0, 200)} />
-              )}
-              <button
-                onClick={handleCopy}
-                className={`p-1 rounded transition-all ${
-                  copied
-                    ? 'text-green-500 dark:text-green-400'
-                    : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100'
-                }`}
-                title={copied ? 'Copied!' : 'Copy message'}
-              >
-                {copied ? (
-                  <ClipboardDocumentCheckIcon className="w-4 h-4" />
-                ) : (
-                  <ClipboardDocumentIcon className="w-4 h-4" />
-                )}
-              </button>
-            </div>
-          )}
+        <div className="flex items-start gap-1">
+          <div
+            className={`relative inline-block rounded-lg px-4 py-3 ${styles.bg} ${
+              isUser ? 'rounded-tr-none' : 'rounded-tl-none'
+            } ${isLive ? 'border-l-2 border-blue-500' : ''} ${isPending ? 'border-l-2 border-gray-300 dark:border-gray-600 opacity-60' : ''} flex-1 min-w-0`}
+          >
           {stepNumber !== undefined && (
             <div className={`flex items-center gap-2 ${stepMode === 'oneline' ? '' : 'mb-1'}`}>
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
@@ -516,6 +494,30 @@ export function MessageBubble({
             </div>
           )}
           {children}
+          </div>
+          {/* Action buttons — dedicated right margin, stacked vertically */}
+          {!isStep && (
+            <div className="flex flex-col gap-1 pt-1 w-6 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={handleCopy}
+                className={`p-1 rounded transition-all ${
+                  copied
+                    ? 'text-green-500 dark:text-green-400'
+                    : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+                }`}
+                title={copied ? 'Copied!' : 'Copy message'}
+              >
+                {copied ? (
+                  <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                ) : (
+                  <ClipboardDocumentIcon className="w-4 h-4" />
+                )}
+              </button>
+              {!isUser && queryText && (
+                <FlagButton queryText={queryText} answerSummary={content.slice(0, 200)} />
+              )}
+            </div>
+          )}
         </div>
         {timestamp && !isLive && (
           <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">

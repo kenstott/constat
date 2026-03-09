@@ -223,7 +223,8 @@ class SolveMixin:
             ))
 
         # Return cached fact answer if question was about a known fact
-        if analysis.cached_fact_answer:
+        # Skip when force_plan=True (REDO) — user wants re-execution, not cached answers
+        if analysis.cached_fact_answer and not force_plan:
             planning_future.cancel()
             executor.shutdown(wait=False)
             return {
@@ -235,7 +236,7 @@ class SolveMixin:
 
         question_type = analysis.question_type
 
-        if question_type == QuestionType.META_QUESTION:
+        if not force_plan and question_type == QuestionType.META_QUESTION:
             logger.debug("[PARALLEL] META_QUESTION (speculative plan discarded)")
             planning_future.cancel()
             executor.shutdown(wait=False)
@@ -245,7 +246,7 @@ class SolveMixin:
                 data={"message": "Reviewing available data sources..."}
             ))
             return self._answer_meta_question(problem)
-        elif question_type == QuestionType.GENERAL_KNOWLEDGE:
+        elif not force_plan and question_type == QuestionType.GENERAL_KNOWLEDGE:
             logger.debug("[PARALLEL] GENERAL_KNOWLEDGE (speculative plan discarded)")
             planning_future.cancel()
             executor.shutdown(wait=False)

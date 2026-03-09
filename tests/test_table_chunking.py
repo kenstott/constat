@@ -197,8 +197,12 @@ class TestLlmExtractTableInternal:
         from constat.llm import llm_extract_table
         df = llm_extract_table("some doc text", "raise guidelines")
         assert len(df) == 2
-        assert list(df.columns) == ["rating", "raise_pct"]
+        # Range values "5-7%" auto-expand into raise_rate_min / raise_rate_max
+        # (pct → rate because values converted to decimal)
+        assert list(df.columns) == ["rating", "raise_rate_min", "raise_rate_max"]
         assert df.iloc[0]["rating"] == "Exceeds"
+        assert df.iloc[0]["raise_rate_min"] == 0.05
+        assert df.iloc[0]["raise_rate_max"] == 0.07
 
     @patch("constat.llm._execute")
     def test_with_columns(self, mock_execute):

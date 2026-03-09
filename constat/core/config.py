@@ -501,6 +501,9 @@ DEFAULT_TASK_ROUTING = {
     "intent_classification": TaskRoutingEntry(
         models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),
+    "clarification": TaskRoutingEntry(
+        models=[ModelSpec(model="claude-sonnet-4-20250514")]
+    ),
     "summarization": TaskRoutingEntry(
         models=[ModelSpec(model="claude-haiku-4-5-20251001")]
     ),

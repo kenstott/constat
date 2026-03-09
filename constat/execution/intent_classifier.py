@@ -256,7 +256,7 @@ class IntentClassifier:
     ) -> TurnIntent:
         """Classify multiple segments and resolve conflicts.
 
-        Classifies each segment independently. When all segments agree on
+        Classifies each segment in parallel. When all segments agree on
         primary intent, the latest wins (handles self-correction). When
         primaries conflict, the highest-priority actionable intent wins —
         PLAN_NEW beats CONTROL because qualifiers like "be creative, do not
@@ -269,11 +269,18 @@ class IntentClassifier:
         Returns:
             TurnIntent from the winning segment.
         """
-        intents: list[TurnIntent] = []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        for segment in segments:
-            intent = self._classify_single(segment, context)
-            intents.append(intent)
+        intents: list[TurnIntent] = [None] * len(segments)
+
+        with ThreadPoolExecutor(max_workers=len(segments)) as executor:
+            futures = {
+                executor.submit(self._classify_single, seg, context): i
+                for i, seg in enumerate(segments)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                intents[idx] = future.result()
 
         if not intents:
             return TurnIntent(primary=PrimaryIntent.QUERY)

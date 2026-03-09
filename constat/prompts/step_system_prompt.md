@@ -61,39 +61,29 @@ Share data between steps ONLY via `store`:
 <!-- @llm_tools -->
 ## LLM Functions
 - `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
-- `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)`: map values to an allowed set using LLM knowledge. `allowed` is the complete list of valid target values. Returns an input-aligned list. Pass the FULL column (duplicates OK) — deduplication is internal. ALWAYS returns a best-effort mapping for every input — never null.
-  - Default: `list[str]` — assign directly: `df['breed'] = llm_map(df['item'].tolist(), breed_names, "items", "breeds")`.
-  - `reason=True` and/or `score=True`: `list[dict]` with keys `"value"`, `"reason"`, `"score"`. Score is 0.0–1.0 confidence.
-- `llm_classify(values, categories, context, reason=False, score=False)`: classify items into **semantic categories you defined** (e.g., ["high", "medium", "low"], ["bug", "feature"]). NOT for matching to a domain list — use `llm_map` for that. Returns an input-aligned list. Pass the FULL column (duplicates OK).
-  - Default: `list[str | None]` — assign directly: `df['category'] = llm_classify(df['desc'].tolist(), categories, "context")`.
-  - `reason=True` and/or `score=True`: `list[dict]` — same shape as `llm_map` rich mode.
+- `llm_map(values, allowed, source_desc, target_desc) -> list[str]`: map values to an allowed set. Accepts anything: list, Series, ndarray, or a single string. Returns `list[str]` for multiple inputs, `str` for a single input. Deduplicates internally.
+  - `df['breed'] = llm_map(df['item'].tolist(), breed_names, "items", "breeds")`
+- `llm_classify(values, categories, context) -> list[str | None]`: classify into **semantic categories you defined** (e.g., ["high", "medium", "low"]). NOT for matching to a domain list — use `llm_map` for that. Accepts anything. Returns `list[str|None]` for multiple, `str|None` for single.
+  - `df['category'] = llm_classify(df['desc'].tolist(), categories, "context")`
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple. Best for: parsing addresses, extracting entities from descriptions.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
-- `llm_score(texts, min_val, max_val, instruction, reason=False)`: score texts on a numeric scale using LLM judgment. Pass the FULL column (duplicates OK) — deduplication is internal.
-  - Default: `list[float | None]` — assign directly: `df['score'] = llm_score(df['text'].tolist(), 0, 5, "Rate quality")`.
-  - `reason=True`: `list[dict]` with keys `"score"`, `"reasoning"`.
-- `llm_extract_table(description, document, columns=None) -> DataFrame`: extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. Optional `columns` enforces column names. Best for: converting embedded tables, grids, or structured lists into queryable DataFrames.
+- `llm_score(texts, min_val, max_val, instruction) -> list[float | None]`: score texts on a numeric scale. Accepts anything: list, Series, ndarray, or a single string. Returns `list[float|None]` for multiple, `float|None` for single. Deduplicates internally.
+  - `df['score'] = llm_score(df['text'].tolist(), 0, 5, "Rate quality")`
+- `llm_extract_table(description, document, columns=None) -> DataFrame`: extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. Optional `columns` enforces column names. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic — do NOT divide by 100 or manually parse.
 - `llm_extract_facts(query, document, context="") -> list[dict]`: extract facts matching a query from a document. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype` ("scalar"|"range"|"table"|"list"|"rule"|"text"), and `metadata` dict. Best for: discovering data points, thresholds, rules, and structured elements relevant to a specific topic.
 
 <!-- @llm_guide -->
 ## LLM Primitive Selection Guide
-- **Map values to an allowed set** (product→breed, city→country_code, name→standardized): use `llm_map`. You provide the complete list of valid target values; the LLM picks from that list only.
-  - RIGHT: `llm_map(products, breed_names, "products", "cat breeds")` — map to a known breed list
-  - RIGHT: `llm_map(countries, iso_codes, "countries", "ISO 3166-1 alpha-2 codes")` — map to known codes
-  - WRONG: `llm_classify(products, breed_list)` — this is NOT classification, it's mapping to a domain
-- **Classify into semantic categories** (sentiment, priority, risk level): use `llm_classify`. Categories must be a predetermined **semantic grouping** you defined, not just "a list of things to pick from."
-  - RIGHT: `llm_classify(tickets, ["bug", "feature", "question"])` — semantic categories you defined
-  - RIGHT: `llm_classify(reviews, ["positive", "neutral", "negative"])` — sentiment buckets
-  - WRONG: `llm_classify(products, breed_names)` — breed names are NOT semantic categories, this is a mapping task
-  - WRONG: `llm_classify(cities, country_names)` — countries are a domain to map to, not categories
-- **Extract multiple fields from text** (parse addresses, extract entities): use `llm_extract(texts, field_names)`
-- **Generate per-row reasoning/descriptions**: use `llm_map(values, target, reason=True)` for mapping with explanations, `llm_extract(descriptions, ["reasoning"])`, or `llm_summarize(texts, instruction)` — NEVER `llm_ask` in a loop or with all rows concatenated
-- **Single factual lookup** (GDP, capital, conversion rate): use `llm_ask(question)`
-- **Extract a table from a document** (rating scales, guidelines, schedules): use `llm_extract_table('description', 'document_name')`. Searches document chunks to find the table, returns a DataFrame ready to join/merge. NOT for flat field extraction — use `llm_extract` for that.
-- **Discover facts/data in a document** (thresholds, rules, individual data points): use `llm_extract_facts('query', 'document_name', context)`. Returns typed fact dicts — NOT a DataFrame. If you need tabular data, use `llm_extract_table` instead; NEVER manually parse `llm_extract_facts` output into a DataFrame.
-- **Key distinction**: if the target values come from a known domain (breeds, countries, codes) → `llm_map`. If you're bucketing inputs into labels you invented (high/med/low, categories) → `llm_classify`. If you need a **table from a document** → `llm_extract_table` (returns DataFrame directly, no post-processing needed).
-- llm_map, llm_classify, llm_score accept full columns directly — deduplication is internal. Never loop. Assign the result list to the column directly.
-- `llm_ask` is NOT a batch primitive. It takes one question and returns one value. Do not pass it a list of items.
+- **Map values to an allowed set** (product→breed, city→country_code, name→standardized): `llm_map`
+- **Classify into semantic categories** (sentiment, priority, risk level): `llm_classify`
+- **Score on a numeric scale** (quality, sentiment 0-1, rating 1-5): `llm_score`
+- **Extract structured fields from text** (parse addresses, entities): `llm_extract`
+- **Extract a table from a document** (rating scales, guidelines): `llm_extract_table`
+- **Discover facts in a document** (thresholds, rules, data points): `llm_extract_facts`
+- **Single factual lookup** (GDP, capital): `llm_ask`
+- **Key distinction**: known domain values → `llm_map`. Labels you invented → `llm_classify`.
+- `llm_map`, `llm_classify`, `llm_score` accept anything (list, Series, ndarray, single string). Deduplication is internal. Assign the result directly to a column.
+- `llm_ask` is NOT a batch primitive. One question → one value.
 
 <!-- @data_integrity -->
 ## Trust Prior Step Results
@@ -128,6 +118,8 @@ Do NOT import skill modules. The functions are already available as globals, jus
 <!-- @pitfalls -->
 ## Common Pitfalls
 - **NEVER call `get_table_schema()`, `find_relevant_tables()`, or `find_entity()` in generated code** — they do not exist at runtime and will raise NameError. Those are code-generation tools only.
+- **Prefer passing full columns** to `llm_score`, `llm_map`, `llm_classify` — one call, direct assignment. Per-row `.apply()` calls work but waste tokens.
+  - BEST: `df['score'] = llm_score(df['text'].tolist(), 0, 1, "Rate sentiment")`
 - If an expected column is missing, raise an error listing the actual columns: `raise KeyError(f"Expected 'col' but columns are: {list(df.columns)}")`. NEVER silently default to zero or skip — this produces corrupt data that passes downstream undetected.
 - NEVER use `if df:` on DataFrames - use `if df.empty:` or `if not df.empty:` instead
 - **NEVER use `input()`** — it blocks the server. To ask users questions, the step must have `task_type: user_input` with `ask_user()`. Regular steps cannot interact with users.

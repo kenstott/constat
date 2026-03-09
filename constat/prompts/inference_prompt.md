@@ -48,11 +48,11 @@ CRITICAL Rules:
 8. For ANY VALUE MAPPING, CLASSIFICATION, or DATA EXTRACTION requiring world knowledge:
    NEVER hardcode a mapping dictionary, classification table, or extracted constants.
    Use the appropriate LLM primitive:
-   - `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)` — map values to an allowed set. Returns input-aligned list. Pass the FULL column (duplicates OK) — deduplication is internal. ALWAYS returns a best-effort mapping — never null. Default: `list[str]`. With `reason=True`/`score=True`: `list[dict]` with keys "value", "reason", "score".
-   - `llm_classify(values, categories, context, reason=False, score=False)` — classification into **semantic categories you defined** (e.g., sentiment, priority, risk). NOT for matching to a domain list. Returns input-aligned list. Default: `list[str | None]`. Same rich shape as llm_map when reason/score enabled.
+   - `llm_map(values, allowed, source_desc, target_desc)` — map values to an allowed set. Returns `list[str]` (or `str` for single input). Accepts list, Series, ndarray, or single string. Deduplicates internally.
+   - `llm_classify(values, categories, context)` — classification into **semantic categories you defined** (e.g., sentiment, priority, risk). NOT for matching to a domain list. Returns `list[str|None]` (or `str|None` for single input).
    - `llm_extract(texts, fields, context)` — structured field extraction from free text. `fields` is a list of strings. Returns a dict if one text is passed, list of dicts if multiple.
    - `llm_summarize(texts, instruction)` — text summarization/condensation
-   - `llm_score(texts, min_val, max_val, instruction, reason=False)` — numeric scoring. Returns input-aligned list. Default: `list[float | None]`. `reason=True`: `list[dict]` with keys "score", "reasoning".
+   - `llm_score(texts, min_val, max_val, instruction)` — numeric scoring. Returns `list[float|None]` (or `float|None` for single input). Accepts list, Series, ndarray, or single string. Deduplicates internally.
 
    Example (mapping):
    df['breed'] = llm_map(df['item'].tolist(), breed_names, "inventory items", "cat breeds")
@@ -63,7 +63,10 @@ CRITICAL Rules:
    Example (scoring):
    df['sentiment_score'] = llm_score(df['review_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate sentiment of this employee evaluation")
 
-   - `llm_extract_table(description, document, columns=None) -> DataFrame` — extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. Returns DataFrame directly — no manual parsing needed.
+   Prefer passing full columns — one call, direct assignment. Per-row .apply() calls work but waste tokens.
+   BEST: df['score'] = llm_score(df['text'].tolist(), 0, 1, "Rate sentiment")
+
+   - `llm_extract_table(description, document, columns=None) -> DataFrame` — extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. **Types are auto-coerced**: percentages become decimal rates (8% → 0.08), currency and units (k/M/B) become numeric, ranges like "5-8%" become separate `_min`/`_max` columns, bools and dates are detected. Values are ready for direct arithmetic — do NOT divide by 100 or manually parse.
    - `llm_extract_facts(query, document, context="") -> list[dict]` — extract facts matching a query from a document. `document` is the configured document NAME, NOT raw text. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype`, and `metadata`. Do NOT call `doc_read()` first.
 
    Hardcoded dicts embed unverifiable LLM knowledge and WILL be flagged.
