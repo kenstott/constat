@@ -212,6 +212,7 @@ INFERENCE RULES:
 - CRITICAL: Only ONE verify_exists() at the very end, referencing the computed answer. Do NOT add validate() or verify() steps before it.
 - CRITICAL: Do NOT add intermediate analysis steps that are not required by the question. If the question asks to "match X to Y", plan ONE inference that does the matching — do NOT plan separate steps to "analyze characteristics", "classify categories", "score complexity" etc. unless explicitly requested.
 - CRITICAL: Each inference should produce data that the NEXT inference actually needs. Do NOT generate intermediate datasets that are never consumed downstream.
+- CRITICAL: NO DUPLICATE WORK. If inference I2 already enriches data with sentiment/scores/classifications, do NOT create a separate I3 that re-computes the same enrichment. One operation = one inference. Before adding an inference, check whether a prior inference already produces that output.
 - Operations like date extraction, filtering, grouping belong HERE, not in premises
 - Keep operations simple: filter, join, group_sum, count, apply_rules, calculate, etc.
 - For FUZZY MAPPING (e.g., free-text product names → breed names): plan the inference to first attempt mapping via data sources (APIs, databases), then use llm_map(values, allowed_list, source_desc, target_desc) as fallback for unmatched values. This reduces confidence but enables mapping when no exact data source exists.
@@ -538,6 +539,14 @@ REMEMBER:
                         conclusion = line.split("C:", 1)[1].strip()
                     elif not conclusion:
                         conclusion = line
+
+        # LLM review pass: fix miswired inferences (rewire wrong refs, drop redundant steps)
+        if len(inferences) > 2:
+            from constat.execution.dag import deduplicate_inferences
+            original_count = len(inferences)
+            inferences = deduplicate_inferences(premises, inferences, self.router)
+            if len(inferences) < original_count:
+                logger.info("DAG review: %d -> %d inferences", original_count, len(inferences))
 
         # Detect collection-oriented queries (reports, lists, etc.)
         # These don't have explicit scalar comparisons - the implicit goal is "data exists"

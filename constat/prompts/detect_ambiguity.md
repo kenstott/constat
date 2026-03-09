@@ -18,6 +18,8 @@ ONLY ask about SCOPE and APPROACH - things that affect how to structure the anal
 4. Category/segment filters (which products, customer types, etc.)
 5. Comparison basis (compared to what baseline?)
 
+NEVER ask about data sources, data availability, or schema contents. Do not ask whether a database contains certain tables or columns. Do not ask the user to confirm or inspect schemas. Data source resolution and schema discovery are handled automatically — the system will find the right tables during execution.
+
 {personal_values_guidance}
 
 If the question is CLEAR ENOUGH to proceed (even with reasonable defaults), respond:
