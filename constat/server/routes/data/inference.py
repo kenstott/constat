@@ -268,7 +268,8 @@ def generate_inference_script(
     # LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)
     lines.extend([
         '# LLM primitives — auto-detects provider from env vars (ANTHROPIC_API_KEY, etc.)',
-        'from constat.llm import llm_map, llm_classify, llm_extract, llm_summarize, llm_score',
+        'from constat.llm.wrappers import llm_map, llm_classify, llm_score',
+        'from constat.llm import llm_extract, llm_summarize',
         '',
         '',
         '# ============================================================================',

@@ -26,10 +26,10 @@ Share data between steps ONLY via `store`:
 - `db`: alias for the first database
 
 **SQL databases** (SQLite, PostgreSQL, MySQL, DuckDB):
+- **ALWAYS write SQL in PostgreSQL dialect** regardless of the target database. A transpiler converts to the native dialect automatically. Do NOT use SQLite, MySQL, or DuckDB-specific syntax.
 - Use `pd.read_sql(query, db_<name>)` - NEVER use db.execute()
-- Or use `sql_<name>(query)` helper - returns DataFrame, auto-transpiles PostgreSQL syntax
+- Or use `sql_<name>(query)` helper - returns DataFrame, auto-transpiles
 - `sql(query)` is alias for first database
-- Write queries in PostgreSQL style - they'll be transpiled to the target dialect
 
 **NoSQL databases** (MongoDB, Cassandra, Elasticsearch, etc.):
 - MongoDB: `list(db_<name>['collection'].find(query))` returns list of dicts
@@ -37,9 +37,12 @@ Share data between steps ONLY via `store`:
 - Cassandra: `db_<name>.query('table', {'column': value})` returns list of dicts
 - Convert to DataFrame: `pd.DataFrame(db_<name>['collection'].find(query))`
 
-**CRITICAL for SQL databases**: Do NOT use `db.execute()` or `db_<name>.execute()` - this does not work. Use `pd.read_sql(query, db_<name>)` instead.
+**Graph databases** (Neo4j):
+- `db_<name>.cypher(query, params=None)` — execute Cypher queries, returns list of dicts
+- `db_<name>.query('NodeLabel', {'prop': value})` — query nodes by property match (use `'rel:TYPE'` for relationships)
+- `db_<name>.graph_schema()` — returns `{'labels': [...], 'relationship_types': [...], 'patterns': ['(:Person)-[:ACTED_IN]->(:Movie)']}`
+- Convert to DataFrame: `pd.DataFrame(db_<name>.cypher('MATCH (n:Label) RETURN n.prop'))`
 
-- For DuckDB dates: use `CAST(date_col AS DATE) >= '2024-01-01'`
 - In SQL, always quote identifiers with double quotes (e.g., "group", "order") to avoid reserved word conflicts
 - **Schema discovery** (tool calls during code generation — do NOT call in generated code): `find_relevant_tables(query)`, `get_table_schema(table)`, `find_entity(name)`. Use these to explore schemas before writing your code. The results inform which `db_<name>` and table names to use.
 
@@ -58,15 +61,17 @@ Share data between steps ONLY via `store`:
 <!-- @llm_tools -->
 ## LLM Functions
 - `llm_ask(question) -> int | float | str`: ask the LLM a SINGLE factual question, returns a SINGLE scalar value. Use for one-off facts (e.g., "What is the GDP of France?" → 2780000000000). NEVER use llm_ask for per-row enrichment — use llm_map/llm_classify/llm_extract instead.
-- `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)`: map values to an allowed set using LLM knowledge. `allowed` is the complete list of valid target values. Returns a dict keyed by EXACT input value. ALWAYS returns a best-effort mapping for every input — never null. Pass ALL unique values at once (never loop).
-  - Default: `dict[str, str]` — `{"Whisker Wand": "Abyssinian", "Purrfect Pillow": "Bengal"}`. Use with `df['col'].map(result)`.
-  - `reason=True` and/or `score=True`: `dict[str, dict]` — `{"Whisker Wand": {"value": "Abyssinian", "reason": "...", "score": 0.95}}`. Use `.map(lambda x: result[x]["value"])` for the mapped value. Score is a float 0.0–1.0 reflecting mapping confidence. Use score to filter weak matches — do NOT assume null means unmappable.
-- `llm_classify(values, categories, context, reason=False, score=False)`: classify items into **semantic categories you defined** (e.g., ["high", "medium", "low"], ["bug", "feature"]). NOT for matching to a domain list — use `llm_map` for that. Pass ALL unique values at once.
-  - Default: `dict[str, str]`. Use with `df['col'].map(result)`.
-  - `reason=True` and/or `score=True`: `dict[str, dict]` — same shape as `llm_map` rich mode.
+- `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)`: map values to an allowed set using LLM knowledge. `allowed` is the complete list of valid target values. Returns an input-aligned list. Pass the FULL column (duplicates OK) — deduplication is internal. ALWAYS returns a best-effort mapping for every input — never null.
+  - Default: `list[str]` — assign directly: `df['breed'] = llm_map(df['item'].tolist(), breed_names, "items", "breeds")`.
+  - `reason=True` and/or `score=True`: `list[dict]` with keys `"value"`, `"reason"`, `"score"`. Score is 0.0–1.0 confidence.
+- `llm_classify(values, categories, context, reason=False, score=False)`: classify items into **semantic categories you defined** (e.g., ["high", "medium", "low"], ["bug", "feature"]). NOT for matching to a domain list — use `llm_map` for that. Returns an input-aligned list. Pass the FULL column (duplicates OK).
+  - Default: `list[str | None]` — assign directly: `df['category'] = llm_classify(df['desc'].tolist(), categories, "context")`.
+  - `reason=True` and/or `score=True`: `list[dict]` — same shape as `llm_map` rich mode.
 - `llm_extract(texts, fields, context)`: extract structured fields from free text using LLM. `fields` is a `list[str]`. Returns a dict if one text is passed, list of dicts if multiple. Best for: parsing addresses, extracting entities from descriptions.
 - `llm_summarize(texts, instruction)`: summarize texts using LLM. Pass ALL texts at once.
-- `llm_score(texts, min_val, max_val, instruction)`: score texts on a numeric scale using LLM judgment. Returns list of `(score, reasoning)` tuples. Score is a float in [min_val, max_val]. Pass ALL texts at once.
+- `llm_score(texts, min_val, max_val, instruction, reason=False)`: score texts on a numeric scale using LLM judgment. Pass the FULL column (duplicates OK) — deduplication is internal.
+  - Default: `list[float | None]` — assign directly: `df['score'] = llm_score(df['text'].tolist(), 0, 5, "Rate quality")`.
+  - `reason=True`: `list[dict]` with keys `"score"`, `"reasoning"`.
 - `llm_extract_table(description, document, columns=None) -> DataFrame`: extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. Optional `columns` enforces column names. Best for: converting embedded tables, grids, or structured lists into queryable DataFrames.
 - `llm_extract_facts(query, document, context="") -> list[dict]`: extract facts matching a query from a document. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype` ("scalar"|"range"|"table"|"list"|"rule"|"text"), and `metadata` dict. Best for: discovering data points, thresholds, rules, and structured elements relevant to a specific topic.
 
@@ -87,7 +92,7 @@ Share data between steps ONLY via `store`:
 - **Extract a table from a document** (rating scales, guidelines, schedules): use `llm_extract_table('description', 'document_name')`. Searches document chunks to find the table, returns a DataFrame ready to join/merge. NOT for flat field extraction — use `llm_extract` for that.
 - **Discover facts/data in a document** (thresholds, rules, individual data points): use `llm_extract_facts('query', 'document_name', context)`. Returns typed fact dicts — NOT a DataFrame. If you need tabular data, use `llm_extract_table` instead; NEVER manually parse `llm_extract_facts` output into a DataFrame.
 - **Key distinction**: if the target values come from a known domain (breeds, countries, codes) → `llm_map`. If you're bucketing inputs into labels you invented (high/med/low, categories) → `llm_classify`. If you need a **table from a document** → `llm_extract_table` (returns DataFrame directly, no post-processing needed).
-- All batch primitives (llm_map, llm_classify, llm_extract, llm_summarize, llm_score) accept lists and process all items in ONE call. Pass unique values, never loop.
+- llm_map, llm_classify, llm_score accept full columns directly — deduplication is internal. Never loop. Assign the result list to the column directly.
 - `llm_ask` is NOT a batch primitive. It takes one question and returns one value. Do not pass it a list of items.
 
 <!-- @data_integrity -->

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import constat.llm
+import constat.llm.wrappers
 from constat.core.models import TaskType
 from constat.execution.fact_resolver import format_source_attribution
 from constat.prompts import load_prompt
@@ -878,11 +879,11 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                 exec_globals["store"] = self.datastore
                 exec_globals["pd"] = pd
                 exec_globals["np"] = np
-                exec_globals["llm_map"] = constat.llm.llm_map
-                exec_globals["llm_classify"] = constat.llm.llm_classify
+                exec_globals["llm_map"] = constat.llm.wrappers.llm_map
+                exec_globals["llm_classify"] = constat.llm.wrappers.llm_classify
                 exec_globals["llm_extract"] = constat.llm.llm_extract
                 exec_globals["llm_summarize"] = constat.llm.llm_summarize
-                exec_globals["llm_score"] = constat.llm.llm_score
+                exec_globals["llm_score"] = constat.llm.wrappers.llm_score
                 exec_globals["llm_extract_table"] = self._create_extract_table_helper()
                 exec_globals["llm_extract_facts"] = self._create_extract_facts_helper()
                 exec_globals["doc_read"] = self._create_doc_read_helper()
@@ -1118,6 +1119,9 @@ Example: result = api_countries('{{ country(code: "GB") {{ name languages {{ nam
                         resolved_inferences[inf_id] = computed
                         result_value = computed
                 else:
+                    # Ensure result is JSON-serializable for events
+                    if hasattr(computed, 'tolist'):
+                        computed = computed.tolist()
                     resolved_inferences[inf_id] = computed
                     result_value = computed
             else:

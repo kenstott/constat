@@ -1,18 +1,25 @@
-Generate Python code for this inference:
-
-USER REQUEST: {user_request}
+Generate Python code for this ONE inference step only:
 
 Inference: {inf_id}: {inf_name} = {operation}
 Explanation: {explanation}
 
+USER REQUEST (for context only — do NOT implement the whole request): {user_request}
+
+YOUR INPUTS — load these, do NOT recompute them:
 SCALAR VALUES:
 {scalars}
 
-TABLES (already in datastore, query with store.query()):
+TABLES (already in datastore, load with store.load_dataframe() or store.query()):
 {tables}
 {referenced_section}{api_sources_section}
 Available Data Access:
 {data_source_apis}
+
+SCOPE: This code implements ONLY "{operation}". Your dependency tables already contain
+the results of prior inferences. Load them and use their columns directly.
+Do NOT re-query the source database for data a prior inference already produced.
+Do NOT re-run LLM primitives that a prior inference already ran.
+Keep the code SHORT — load inputs, transform, save output.
 
 CRITICAL Rules:
 1. PRESERVE ALL ROWS - Do NOT aggregate to a single row unless explicitly asked
@@ -41,24 +48,23 @@ CRITICAL Rules:
 8. For ANY VALUE MAPPING, CLASSIFICATION, or DATA EXTRACTION requiring world knowledge:
    NEVER hardcode a mapping dictionary, classification table, or extracted constants.
    Use the appropriate LLM primitive:
-   - `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)` — map values to an allowed set. `allowed` is the complete list of valid target values. ALWAYS returns a best-effort mapping for every input — never null. Returns dict[str, str] by default. With `reason=True`/`score=True`, returns dict[str, dict] with keys "value", "reason", "score". Use score to filter weak matches.
-   - `llm_classify(values, categories, context, reason=False, score=False)` — classification into **semantic categories you defined** (e.g., sentiment, priority, risk). NOT for matching to a domain list. Same rich return shape as llm_map when reason/score enabled.
+   - `llm_map(values, allowed, source_desc, target_desc, reason=False, score=False)` — map values to an allowed set. Returns input-aligned list. Pass the FULL column (duplicates OK) — deduplication is internal. ALWAYS returns a best-effort mapping — never null. Default: `list[str]`. With `reason=True`/`score=True`: `list[dict]` with keys "value", "reason", "score".
+   - `llm_classify(values, categories, context, reason=False, score=False)` — classification into **semantic categories you defined** (e.g., sentiment, priority, risk). NOT for matching to a domain list. Returns input-aligned list. Default: `list[str | None]`. Same rich shape as llm_map when reason/score enabled.
    - `llm_extract(texts, fields, context)` — structured field extraction from free text. `fields` is a list of strings. Returns a dict if one text is passed, list of dicts if multiple.
    - `llm_summarize(texts, instruction)` — text summarization/condensation
-   - `llm_score(texts, min_val, max_val, instruction)` — numeric scoring with reasoning. Returns list of `(score, reasoning)` tuples
+   - `llm_score(texts, min_val, max_val, instruction, reason=False)` — numeric scoring. Returns input-aligned list. Default: `list[float | None]`. `reason=True`: `list[dict]` with keys "score", "reasoning".
 
    Example (mapping):
-   mapping = llm_map(df['item'].unique().tolist(), breed_names, "inventory items", "cat breeds")
-   df['breed'] = df['item'].map(mapping)
+   df['breed'] = llm_map(df['item'].tolist(), breed_names, "inventory items", "cat breeds")
 
    Example (classification):
-   classes = llm_classify(df['description'].tolist(), ["bug", "feature", "question"], "support tickets")
-   df['category'] = df['description'].map(classes)
+   df['category'] = llm_classify(df['description'].tolist(), ["bug", "feature", "question"], "support tickets")
 
    Example (scoring):
-   results = llm_score(df['review_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate sentiment of this employee evaluation")
-   df['sentiment_score'] = [score for score, _ in results]
-   df['score_reasoning'] = [reason for _, reason in results]
+   df['sentiment_score'] = llm_score(df['review_text'].tolist(), min_val=0.0, max_val=3.0, instruction="Rate sentiment of this employee evaluation")
+
+   - `llm_extract_table(description, document, columns=None) -> DataFrame` — extract a table from a document into a DataFrame. Searches document chunks by `description` to find the relevant section, then extracts tabular data via LLM. `document` is the configured document NAME (e.g., `'business_rules'`), NOT raw text. Do NOT call `doc_read()` first — the function handles chunk retrieval internally. Returns DataFrame directly — no manual parsing needed.
+   - `llm_extract_facts(query, document, context="") -> list[dict]` — extract facts matching a query from a document. `document` is the configured document NAME, NOT raw text. Searches document chunks by `query` to find relevant sections, then extracts typed facts. Each fact has `name`, `value`, `dtype`, and `metadata`. Do NOT call `doc_read()` first.
 
    Hardcoded dicts embed unverifiable LLM knowledge and WILL be flagged.
 
@@ -78,7 +84,7 @@ CRITICAL Rules:
    RIGHT: Let the exception raise, or catch specifically and re-raise with context:
    `except Exception as e: raise ValueError(f"API call failed for {{item}}: {{e}}")`
 11. STATIC DATA PROHIBITION: These patterns are FORBIDDEN:
-    - Dict literals with 3+ string keys used in .map() — use llm_map()
+    - Dict literals with 3+ string keys for value mapping — use llm_map()
     - Lists of domain-specific string constants for classification — use llm_classify()
     - Manually constructed extraction results — use llm_extract()
     All LLM knowledge must flow through llm_* primitives for tracking and auditability.
@@ -104,5 +110,7 @@ CRITICAL Rules:
     ```
     ALWAYS use `parse_number()` for string-to-numeric conversion. NEVER write your own parser.
     NEVER save columns with string-formatted numbers — downstream steps cannot aggregate them.
+14. NO IMPORTS: All tools (`store`, `pd`, `np`, `llm_map`, `llm_classify`, `llm_extract`, `llm_summarize`, `llm_score`, `llm_extract_table`, `llm_extract_facts`, `doc_read`, `parse_number`, `db_*`, `sql_*`, `api_*`) are pre-injected globals. NEVER use `import` statements — they will fail.
+15. **No external NLP libraries** (TextBlob, VADER, spaCy, nltk, etc.) are available. For sentiment analysis, scoring, or text classification use `llm_score()` or `llm_classify()`.
 
 Return ONLY Python code, no markdown.

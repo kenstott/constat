@@ -20,6 +20,8 @@ Execution is level-based:
 - Level N: Nodes depending on Level 0..N-1 (run in parallel)
 """
 
+import json
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -27,6 +29,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from constat.execution.fact_resolver import format_source_attribution
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from constat.execution.parallel_scheduler import ExecutionContext
@@ -554,6 +558,178 @@ def validate_proof_plan(
         valid=len(errors) == 0,
         errors=errors,
     )
+
+
+def deduplicate_inferences(
+    premises: list[dict],
+    inferences: list[dict],
+    router,
+) -> list[dict]:
+    """LLM review pass: fix miswired inferences in the DAG.
+
+    A later inference that re-does work from scratch (e.g. re-classifying raw
+    data) when a prior inference already produced that result is a wiring
+    error — it should consume the prior output, not redo the computation.
+
+    This function asks a fast model to identify two symptoms of the same
+    underlying problem:
+    - **rewire**: an inference references the wrong input (e.g. raw premise
+      instead of a prior inference's output). Fix: rewrite the reference.
+    - **remove**: an inference is fully redundant because a prior inference
+      already produced equivalent output. Fix: drop it and point downstream
+      consumers at the earlier inference.
+
+    Args:
+        premises: List of premise dicts
+        inferences: List of inference dicts
+        router: LLM router instance
+
+    Returns:
+        Cleaned inference list (unchanged if no issues found)
+    """
+    from constat.core.models import TaskType
+
+    # Format compact DAG representation
+    dag_lines = ["PREMISES:"]
+    for p in premises:
+        source = p.get("source", "database")
+        dag_lines.append(f"  {p['id']}: {p.get('name', '')} ({p.get('description', '')}) [source: {source}]")
+    dag_lines.append("INFERENCES:")
+    for inf in inferences:
+        dag_lines.append(f"  {inf['id']}: {inf.get('name', '')} = {inf.get('operation', '')} -- {inf.get('explanation', '')}")
+    dag_text = "\n".join(dag_lines)
+
+    system = (
+        "You review data derivation plans for wiring correctness. "
+        "Return ONLY valid JSON, no markdown fences."
+    )
+    prompt = f"""{dag_text}
+
+Each inference should consume the output of prior steps, not redo their work.
+Review the wiring and identify:
+
+1. REWIRE: An inference that references a raw input (premise or earlier inference) when a later inference already transformed that data and this inference should consume the transformed result instead.
+2. REMOVE: An inference that is fully redundant — a prior inference already produces equivalent output. Downstream consumers should point at the prior inference instead.
+
+Return JSON:
+{{"rewire": [{{"inference": "I4", "old_ref": "P1", "new_ref": "I2", "reason": "..."}}], "remove": [{{"drop": "I3", "use_instead": "I2", "reason": "..."}}]}}
+
+Return {{"rewire": [], "remove": []}} if the wiring is correct.
+IMPORTANT: Only flag clear-cut issues. Do not flag inferences that intentionally build on prior results in a new way.
+A reference IS a dependency. If I4 references I3, then I4 NEEDS I3's output. NEVER rewire I4 away from I3 unless I3 is truly redundant with the replacement.
+NEVER rewire away from an inference that ENRICHES data with new columns (e.g., llm_score, llm_classify, llm_map, llm_extract, join, enrich). An enrichment step adds data that downstream steps need — skipping it loses those columns."""
+
+    logger.info("DAG review: checking %d inferences for wiring issues", len(inferences))
+
+    try:
+        result = router.execute(
+            task_type=TaskType.INTENT_CLASSIFICATION,
+            system=system,
+            user_message=prompt,
+            max_tokens=1024,
+        )
+    except Exception:
+        logger.warning("DAG review LLM call failed, skipping")
+        return inferences
+
+    # Parse response
+    content = result.content.strip()
+    logger.info("DAG review raw response: %s", content[:500])
+    # Extract JSON from markdown fences or surrounding text
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+    if json_match:
+        content = json_match.group(1)
+    elif content.startswith("```"):
+        content = re.sub(r'^```(?:json)?\s*', '', content)
+        content = re.sub(r'\s*```.*', '', content, flags=re.DOTALL)
+
+    try:
+        review = json.loads(content)
+    except json.JSONDecodeError:
+        logger.warning("DAG review: could not parse LLM response, skipping")
+        return inferences
+
+    rewires = review.get("rewire", [])
+    removals = review.get("remove", [])
+
+    if not rewires and not removals:
+        return inferences
+
+    # Build ID sets for validation
+    valid_ids = {p["id"] for p in premises} | {inf["id"] for inf in inferences}
+    inferences_by_id = {inf["id"]: inf for inf in inferences}
+
+    # Build reverse dependency map: ref_id -> set of inference IDs that reference it
+    def _build_ref_counts(inf_list):
+        counts: dict[str, set[str]] = {inf["id"]: set() for inf in inf_list}
+        for inf in inf_list:
+            for ref in re.findall(r'\b([PI]\d+)\b', inf["operation"]):
+                if ref in counts:
+                    counts[ref].add(inf["id"])
+        return counts
+
+    ref_counts = _build_ref_counts(inferences)
+
+    # Apply rewires first (before removing inferences)
+    for fix in rewires:
+        inf_id = fix.get("inference", "")
+        old_ref = fix.get("old_ref", "")
+        new_ref = fix.get("new_ref", "")
+        if inf_id not in inferences_by_id or old_ref not in valid_ids or new_ref not in valid_ids:
+            continue
+        # Reject if this rewire would orphan old_ref (make it referenced by nothing)
+        remaining_refs = ref_counts.get(old_ref, set()) - {inf_id}
+        if not remaining_refs and old_ref in inferences_by_id:
+            logger.info(
+                "DAG review: skipping rewire %s: %s -> %s (would orphan %s)",
+                inf_id, old_ref, new_ref, old_ref,
+            )
+            continue
+        inf = inferences_by_id[inf_id]
+        old_op = inf["operation"]
+        new_op = re.sub(rf'\b{re.escape(old_ref)}\b', new_ref, old_op)
+        if new_op != old_op:
+            inf["operation"] = new_op
+            ref_counts.get(old_ref, set()).discard(inf_id)
+            ref_counts.setdefault(new_ref, set()).add(inf_id)
+            logger.info("DAG review: rewired %s: %s -> %s (%s)", inf_id, old_ref, new_ref, fix.get("reason", ""))
+
+    # Apply removals: drop redundant inferences and rewire downstream refs
+    removed_ids: dict[str, str] = {}  # removed_id -> use_instead_id
+    for rem in removals:
+        drop_id = rem.get("drop", "")
+        use_instead = rem.get("use_instead", "")
+        if drop_id not in inferences_by_id or use_instead not in valid_ids:
+            continue
+        if drop_id == use_instead:
+            continue
+        removed_ids[drop_id] = use_instead
+        logger.info("DAG review: dropping %s (use %s instead) — %s", drop_id, use_instead, rem.get("reason", ""))
+
+    if not removed_ids:
+        return inferences
+
+    # Remove redundant inferences
+    cleaned = [inf for inf in inferences if inf["id"] not in removed_ids]
+
+    # Rewire downstream references
+    for inf in cleaned:
+        op = inf["operation"]
+        for removed_id, replacement_id in removed_ids.items():
+            op = re.sub(rf'\b{re.escape(removed_id)}\b', replacement_id, op)
+        inf["operation"] = op
+
+    # Renumber sequentially
+    for idx, inf in enumerate(cleaned, start=1):
+        old_id = inf["id"]
+        new_id = f"I{idx}"
+        if old_id != new_id:
+            # Update references in all subsequent inferences
+            for other in cleaned[idx:]:
+                other["operation"] = re.sub(rf'\b{re.escape(old_id)}\b', new_id, other["operation"])
+            inf["id"] = new_id
+
+    return cleaned
 
 
 def extract_dependencies(operation: str, known_names: dict[str, str]) -> list[str]:

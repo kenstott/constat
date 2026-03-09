@@ -207,6 +207,12 @@ class ExecutionMixin:
             query_embedding, document_name, limit=limit, query_text=query,
         )
 
+        if results:
+            top_sim = max(sim for _, sim, _ in results)
+            logger.info("[DOC_SEARCH] query=%r document=%r -> %d chunks (top_sim=%.3f)", query, document_name, len(results), top_sim)
+        else:
+            logger.warning("[DOC_SEARCH] query=%r document=%r -> 0 chunks", query, document_name)
+
         # Check for table continuation markers — expand to neighboring chunks
         has_continuation = any("[TABLE:cont]" in c.content or "[TABLE:start]" in c.content
                                for _, _, c in results)
@@ -263,13 +269,18 @@ class ExecutionMixin:
 
             Args:
                 description: What table to find (e.g., "raise guidelines").
-                document: Document name as configured.
+                document: Document name as configured (e.g., 'business_rules').
                 columns: Optional column names to enforce.
 
             Returns:
                 pandas DataFrame with extracted rows and columns.
             """
+            if '\n' in document or len(document) > 100:
+                # Caller passed raw text instead of document name — use it directly
+                return _llm_extract_table(document, description, columns=columns)
             results = self._search_document_chunks(description, document)
+            if not results:
+                raise ValueError(f"No content found in document '{document}' matching '{description}'")
             text = self._assemble_chunk_text(results)
             return _llm_extract_table(text, description, columns=columns)
         return llm_extract_table
@@ -290,13 +301,18 @@ class ExecutionMixin:
 
             Args:
                 query: What to look for (e.g., "VIP thresholds").
-                document: Document name as configured.
+                document: Document name as configured (e.g., 'business_rules').
                 context: Optional domain context.
 
             Returns:
                 List of fact dicts with name, value, dtype, metadata.
             """
+            if '\n' in document or len(document) > 100:
+                # Caller passed raw text instead of document name — use it directly
+                return _llm_extract_facts(document, context=context)
             results = self._search_document_chunks(query, document)
+            if not results:
+                raise ValueError(f"No content found in document '{document}' matching '{query}'")
             text = self._assemble_chunk_text(results)
             return _llm_extract_facts(text, context=context)
         return llm_extract_facts
@@ -446,6 +462,7 @@ class ExecutionMixin:
             return tuple(numbers)
 
         import constat.llm
+        import constat.llm.wrappers
 
         globals_dict = {
             "store": self.datastore,  # Persistent datastore - only shared state between steps
@@ -465,11 +482,11 @@ class ExecutionMixin:
             ),  # Visualization/file output helper
             "publish": self._create_publish_helper(),  # Mark artifact as published for artifacts panel
             "facts": self._get_facts_dict(),  # Resolved facts as dict (loaded from _facts table)
-            "llm_map": constat.llm.llm_map,
-            "llm_classify": constat.llm.llm_classify,
+            "llm_map": constat.llm.wrappers.llm_map,
+            "llm_classify": constat.llm.wrappers.llm_classify,
             "llm_extract": constat.llm.llm_extract,
             "llm_summarize": constat.llm.llm_summarize,
-            "llm_score": constat.llm.llm_score,
+            "llm_score": constat.llm.wrappers.llm_score,
             "llm_extract_table": self._create_extract_table_helper(),
             "llm_extract_facts": self._create_extract_facts_helper(),
             "doc_read": self._create_doc_read_helper(),
