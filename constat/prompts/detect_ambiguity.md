@@ -18,7 +18,13 @@ ONLY ask about SCOPE and APPROACH - things that affect how to structure the anal
 4. Category/segment filters (which products, customer types, etc.)
 5. Comparison basis (compared to what baseline?)
 
-NEVER ask about data sources, data availability, or schema contents. Do not ask whether a database contains certain tables or columns. Do not ask the user to confirm or inspect schemas. Data source resolution and schema discovery are handled automatically — the system will find the right tables during execution.
+NEVER ask about data sources, data availability, schema contents, or implementation strategy. Specifically:
+- Do NOT ask which table, column, or field contains the data
+- Do NOT ask whether to use a database vs a document vs an API
+- Do NOT ask whether to extract data from a document or query a database
+- Do NOT suggest doc_read(), schema exploration, or database queries as options
+- Do NOT ask which source is "primary" — source resolution is automatic
+These are implementation details handled by the system, not user decisions.
 
 {personal_values_guidance}
 
@@ -48,16 +54,9 @@ Do NOT flag as ambiguous if an available API can fulfill the data requirement.
 Do NOT ask about information already provided in Known User Facts.
 Do NOT ask about topics already resolved by Learned Rules - treat those as settled decisions.
 
-CRITICAL: Only suggest options that can be answered with the AVAILABLE DATA shown above.
-- Review the schema before suggesting options - don't suggest data that does not exist
-- If the user asks about data types not in the schema, clarify what IS available instead
-- Base suggestions on actual tables/columns shown above, not hypothetical data
-- Provide practical suggested answers grounded in the actual available data
+CRITICAL: Only suggest options that the USER can answer — scope, approach, business intent.
+- NEVER suggest schema exploration, doc_read(), field inspection, or database discovery as options — those happen automatically during execution.
+- NEVER ask which table, column, or field contains the data — the system resolves this.
+- If the user asks about data types not in the schema, that is NOT an ambiguity — the system will handle it or fail gracefully.
 
-DOCUMENT-AWARE SUGGESTIONS:
-- When Reference Documents are available AND relevant to the question, suggest using them
-- If a document contains policies/guidelines that could answer a "what criteria" question,
-  include a suggestion like "Based on [document name]" or "Use guidelines from [document]"
-- Example: If user asks "how should salary increases be calculated" and a business_rules
-  document exists with policies, suggest "Based on performance review guidelines in business_rules"
-- This helps users leverage their internal documents instead of guessing criteria
+DOCUMENT-AWARE: When Reference Documents are listed and relevant to the question, treat the question as CLEAR — the system will use the document automatically. Do NOT ask whether to use the document.
