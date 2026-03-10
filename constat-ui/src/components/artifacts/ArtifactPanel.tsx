@@ -3715,32 +3715,14 @@ ${skill.body}`
                 {facts.map((fact) => (
                   <React.Fragment key={fact.name}>
                   <tr
-                    className={`border-b border-gray-100 dark:border-gray-800 last:border-b-0 group ${
-                      fact.source === 'config'
-                        ? 'bg-purple-50/50 dark:bg-purple-900/10'
-                        : fact.is_persisted
-                        ? 'bg-amber-50/50 dark:bg-amber-900/10'
-                        : ''
-                    }`}
+                    className="border-b border-gray-100 dark:border-gray-800 last:border-b-0 group"
                   >
                     <td className="py-2 px-1 font-medium text-gray-700 dark:text-gray-300">
                       <span className="flex items-center gap-1 flex-wrap">
                         {fact.name}
-                        {fact.source === 'config' && (
-                          <span className="px-1 py-0.5 text-[10px] bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-200 rounded">
-                            core
-                          </span>
-                        )}
-                        {fact.is_persisted && fact.source !== 'config' && (
-                          <span className="px-1 py-0.5 text-[10px] bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 rounded">
-                            saved
-                          </span>
-                        )}
-                        <DomainBadge domain={fact.domain} />
+                        <DomainBadge domain={fact.source === 'config' ? 'system' : fact.domain || (fact.is_persisted ? 'user' : null)} />
                         {fact.role_id && (
-                          <span className="px-1 py-0.5 text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">
-                            {fact.role_id}
-                          </span>
+                          <DomainBadge domain={fact.role_id} />
                         )}
                       </span>
                     </td>
@@ -3748,7 +3730,7 @@ ${skill.body}`
                       {String(fact.value)}
                     </td>
                     <td className="py-2 px-1 text-xs text-gray-400 dark:text-gray-500">
-                      {fact.source === 'config' ? 'core' : fact.source}
+                      <DomainBadge domain={fact.source === 'config' ? 'system' : fact.source} />
                     </td>
                     <td className="py-2 px-1 flex items-center gap-1">
                       {/* Don't show persist/forget buttons for config facts */}
